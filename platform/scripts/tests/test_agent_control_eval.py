@@ -23,11 +23,14 @@ No AWS, no network: the STS and DynamoDB clients are injected, and the two that
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -798,13 +801,19 @@ class TestEntryPointFailsClosed:
         assert all(code != 0 for code in codes[1:])
 
 
-    def test_a_partially_implemented_wave_two_cannot_exit_zero(self, tmp_path: Path):
+    def test_a_wave_two_run_without_its_evidence_cannot_exit_zero(self, tmp_path: Path):
         """The honesty guarantee that replaces wave 2's blanket refusal (#3964).
 
         S5 registers wave 2 so its four checks can actually run, which removes the
         `EXIT_CONFIG` that previously made `--wave 2` safe by making it impossible.
         What must survive that change is the property the refusal was protecting:
-        wave 2 cannot report success while six of its ten checks have no predicate.
+        wave 2 cannot report success unless all ten of its checks were answered.
+
+        #5825 completed the predicate table, so the thing that keeps this run
+        nonzero is no longer a missing implementation but missing *evidence* — a
+        wave-1 config carries none of wave 2's artifacts, and a run that could not
+        look is NOT RUN rather than a pass. That is the substitution this test
+        guards: the gate must hold on evidence, not on the absence of code.
 
         Asserted through `main`, not through `report_is_passing` alone, so it covers
         the exit code an operator's shell actually branches on.
@@ -827,18 +836,25 @@ class TestEntryPointFailsClosed:
         assert report["required"] == 10
         assert report["wave"] == 2
         assert _mod.report_is_passing(report) is False
-        # The remaining unowned checks are NOT RUN and say so — never skipped, which
-        # some gates tolerate, and never passed. W2-03..W2-05 dropped off this list
-        # when S2 (#3961) implemented them; W2-01 (wave preflight) and W2-10 (#3968's
-        # cleanup and security recheck) are still nobody's delivered work, and they
-        # are what keeps `--wave 2` unable to exit 0 on a partially implemented wave.
+        # Neither check is passed and neither is skipped, which some gates tolerate.
+        # The two statuses are different on purpose, and the difference is the
+        # four-status model doing its job: W2-01 could not look, because this wave-1
+        # config declares no `wave2_preflight` artifact, so it is NOT RUN. W2-10 did
+        # look — cleanup ran and recorded that it had no rows to remove — and a
+        # wave-2 run whose fixture seeded nothing contradicts the wave, so it is
+        # FAILED. Both are nonzero; neither is a pass.
+        assert report["checks"]["W2-01"]["status"] == _mod.STATUS_NOT_RUN
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
         for check_id in ("W2-01", "W2-10"):
             entry = report["checks"][check_id]
-            assert entry["status"] == _mod.STATUS_NOT_RUN, check_id
-            assert "not implemented in this revision" in entry["message"], check_id
             # §7: every evidence list is nonempty, including for a check that
             # could not run — its evidence is the reason.
             assert entry["evidence"], check_id
+        # And the reason is the missing observation, not a missing predicate: every
+        # wave-2 ID now resolves to a real method.
+        assert set(_mod.WAVE2_PREDICATES) == {
+            spec.check_id for spec in _mod.WAVE2_CHECKS
+        }
 
 
     def test_wave_two_reports_carry_every_wave_two_id_and_no_wave_one_id(
@@ -1316,11 +1332,13 @@ class TestCheckIdsMatchTheEvaluationFile:
         Asserted in both directions. An extra predicate here would mean S3 is
         claiming evidence for a property it did not build.
 
-        Updated when S2 (#3961) landed W2-03..W2-05: the point of this assertion is
-        that W2-02 maps to AC-T7 and that every registered predicate resolves to a
-        real method, not that S3 is the only story to have delivered one.
+        Updated when S2 (#3961) landed W2-03..W2-05, and again when #3968's defect
+        (#5825) landed W2-01 and W2-10: the point of this assertion is that W2-02
+        maps to AC-T7 and that every registered predicate resolves to a real method,
+        not that S3 is the only story to have delivered one.
         """
         assert set(_mod.WAVE2_PREDICATES) == {
+            "W2-01",  # #3968 defect #5825 — consolidated wave-2 preflight
             "W2-02",  # S3 #3962 — AC-T7, this story's own
             "W2-03",  # S2 #3961
             "W2-04",  # S2 #3961
@@ -1329,6 +1347,7 @@ class TestCheckIdsMatchTheEvaluationFile:
             "W2-07",
             "W2-08",
             "W2-09",
+            "W2-10",  # #3968 defect #5825 — cleanup and security recheck
         }
         assert _mod.CHECK_ACCEPTANCE_IDS["W2-02"] == ("AC-T7",)
         for method_name in _mod.WAVE2_PREDICATES.values():
@@ -1438,14 +1457,14 @@ class TestCheckIdsMatchTheEvaluationFile:
         this story asserting another story's work; a missing one would be a check
         reported NOT RUN when it could actually have been answered.
 
-        S2 (#3961) has since added W2-03..W2-05 for AC-P1/P2/P3/P5/P6, so the
-        implemented set is asserted as S3's + S2's + S5's rather than S5's alone.
-        The two IDs that remain unimplemented are named explicitly below, because
-        "everything is implemented" and "everything is implemented except the two
-        the wave preflight and #3968 own" are different states and only the second
-        one is true.
+        S2 (#3961) has since added W2-03..W2-05 for AC-P1/P2/P3/P5/P6 and #3968's
+        defect (#5825) added W2-01 and W2-10, so the implemented set is asserted as
+        S3's + S2's + S5's + the defect's rather than S5's alone. Every wave-2 ID now
+        resolves to a predicate; what still makes a wave-2 run fail is absent or
+        contradicted evidence, which is a different and correct reason.
         """
         assert set(_mod.WAVE2_PREDICATES) == {
+            "W2-01",  # #3968 / #5825 — consolidated preflight
             "W2-02",  # S3 #3962 — AC-T7
             "W2-03",  # S2 #3961 — AC-P1
             "W2-04",  # S2 #3961 — AC-P2
@@ -1454,17 +1473,26 @@ class TestCheckIdsMatchTheEvaluationFile:
             "W2-07",
             "W2-08",
             "W2-09",
+            "W2-10",  # #3968 / #5825 — cleanup and security recheck
         }
         for check_id, method_name in _mod.WAVE2_PREDICATES.items():
             assert hasattr(_mod.Driver, method_name), check_id
 
 
     def test_every_unimplemented_wave_two_check_names_its_owner(self):
-        """A NOT RUN with no owner is a dead end for the operator reading it."""
+        """A NOT RUN with no owner is a dead end for the operator reading it.
+
+        Wave 2 is now fully implemented, so the correct assertion is that the
+        mapping carries no stale wave-2 entry — an owner recorded against a
+        delivered check reads as outstanding work forever. The both-directions
+        invariant across every wave lives in
+        `test_every_unimplemented_manifest_entry_names_an_owner`.
+        """
         implemented = set(_mod.WAVE2_PREDICATES)
         all_ids = {spec.check_id for spec in _mod.WAVE2_CHECKS}
 
-        assert set(_mod.PENDING_CHECK_OWNERS) == all_ids - implemented
+        assert all_ids - implemented == set()
+        assert not (set(_mod.PENDING_CHECK_OWNERS) & all_ids)
         assert all(owner.strip() for owner in _mod.PENDING_CHECK_OWNERS.values())
 
 
@@ -2524,7 +2552,8 @@ class TestCleanupIsBoundedAndAlwaysRuns:
             "cleanup_items": [{"event_id": "e1", "arrived_at": "a1"}],
         }
 
-        ok, notes = _mod.run_cleanup(config, dynamodb)
+        outcome = _mod.run_cleanup(config, dynamodb)
+        ok, notes = outcome.ok, outcome.notes
 
         assert ok is True
         dynamodb.delete_item.assert_called_once_with(
@@ -2552,9 +2581,10 @@ class TestCleanupIsBoundedAndAlwaysRuns:
         """A delete keyed on event_id alone could match an unrelated item."""
         dynamodb = ddb_stub()
 
-        ok, notes = _mod.run_cleanup(
+        outcome = _mod.run_cleanup(
             {"invocation_table": "t", "cleanup_items": [{"event_id": "e"}]}, dynamodb
         )
+        ok, notes = outcome.ok, outcome.notes
 
         assert ok is False
         dynamodb.delete_item.assert_not_called()
@@ -2563,10 +2593,11 @@ class TestCleanupIsBoundedAndAlwaysRuns:
     def test_a_surviving_item_is_a_cleanup_failure(self):
         dynamodb = ddb_stub(item={"event_id": {"S": "e"}})
 
-        ok, notes = _mod.run_cleanup(
+        outcome = _mod.run_cleanup(
             {"invocation_table": "t", "cleanup_items": [{"event_id": "e", "arrived_at": "a"}]},
             dynamodb,
         )
+        ok, notes = outcome.ok, outcome.notes
 
         assert ok is False
         assert "still present" in " ".join(notes)
@@ -2575,10 +2606,11 @@ class TestCleanupIsBoundedAndAlwaysRuns:
         dynamodb = ddb_stub()
         dynamodb.delete_item.side_effect = RuntimeError("AccessDenied")
 
-        ok, notes = _mod.run_cleanup(
+        outcome = _mod.run_cleanup(
             {"invocation_table": "t", "cleanup_items": [{"event_id": "e", "arrived_at": "a"}]},
             dynamodb,
         )
+        ok, notes = outcome.ok, outcome.notes
 
         assert ok is False
         assert "AccessDenied" in " ".join(notes)
@@ -2795,11 +2827,20 @@ class TestThePublishedWaveTwoCommand:
         `failed == 0` is the half that distinguishes "this wave is unfinished"
         from "this wave regressed", and it is why the exit code alone is not
         enough of an assertion here.
+
+        The row cleanup is what is asserted clean, not the whole fixture. This
+        fixture declares no `resource_teardown` and W2-10 is outstanding, so the
+        aggregate `cleanup_ok` is correctly false: nothing in this run established
+        that the fixture's resources are gone. That is a reporting fact about an
+        unfinished wave and not a cleanup failure, which is why the exit code stays
+        EXIT_CHECKS_FAILED rather than becoming EXIT_CLEANUP.
         """
         code, report = self._run(tmp_path, wave=2)
 
         assert code == _mod.EXIT_CHECKS_FAILED
-        assert report["cleanup_ok"] is True
+        assert report["cleanup"]["ok"] is True
+        assert report["fixture_cleanup"]["rows_ok"] is True
+        assert report["cleanup_ok"] is False
         assert report["failed"] == 0
         assert report["passed"] == 1
         assert report["not_run"] == 9
@@ -2965,11 +3006,116 @@ class TestTheDocumentedFixtureConfig:
         for key in _mod.REQUIRED_ARTIFACT_KEYS["neutral_contract"]:
             assert key in text, key
 
-    def test_the_runbook_warns_that_wave_two_is_incomplete(self):
-        """`--wave 2` runs and exits nonzero. An operator must not read that as broken."""
+    def test_the_runbook_explains_why_a_wave_two_run_can_exit_nonzero(self):
+        """An operator must not read a nonzero `--wave 2` as the harness being broken.
+
+        This test used to pin the heading "Wave 2 is incomplete on purpose", which
+        was true while W2-01 and W2-10 had no predicate. #5825 implemented them, so
+        the prose had to change — but the operator's need did not: a nonzero run
+        still has to be explained, and now the explanation is different. It is one
+        of missing evidence, a contradicted deployment, or incomplete cleanup, all
+        three of which are the operator's to act on rather than a gap in the harness.
+
+        Pinned on the three causes rather than on a heading string, because the
+        heading is prose and the causes are the contract.
+        """
         text = self.DOC.read_text(encoding="utf-8")
 
-        assert "Wave 2 is incomplete on purpose" in text
+        assert "Wave 2 is fully implemented" in text
+        # The three reasons a complete wave-2 run can still exit nonzero.
+        assert "required artifact is missing" in text
+        assert "disagrees with the contract" in text
+        assert "cleanup did not complete" in text
+        # And that reaching ten of ten is now possible at all, which is the state
+        # #5825 made reachable and the previous prose denied.
+        assert "complete wave-2 report is therefore now reachable" in text
+
+    def test_the_runbook_documents_capturing_the_wave_two_only_artifacts(self):
+        """An undocumented artifact is one the operator omits.
+
+        The consequence is a `not_run` they cannot explain — which looks exactly
+        like the harness being broken. Each new artifact needs its own capture
+        instructions, and every required key has to appear, or a half-filled file
+        produces a `failed` whose missing key the operator has no way to source.
+
+        There are three, not two: W2-10's single `cleanup_security_recheck` became
+        `security_capture` (read before teardown) and `teardown_verification` (read
+        after), because one artifact cannot hold both a live observation and the
+        absence of the thing observed. The split is the operator-visible half of the
+        ordering fix, so the doc has to carry both halves separately — an operator
+        who writes one file for both would be back to claiming the live capability
+        surface of a torn-down fixture.
+        """
+        text = self.DOC.read_text(encoding="utf-8")
+
+        for artifact in ("wave2_preflight", "security_capture", "teardown_verification"):
+            assert f"### `{artifact}`" in text, artifact
+            for key in _mod.REQUIRED_ARTIFACT_KEYS[artifact]:
+                assert key in text, (artifact, key)
+        # The superseded single artifact must not linger as a fourth capture
+        # section: a doc offering both shapes lets the operator pick the broken one.
+        assert "### `cleanup_security_recheck`" not in text
+
+    def test_the_documented_cleanup_record_matches_what_the_harness_writes(self):
+        """The `cleanup` block is the evidence a reviewer reads instead of a verdict.
+
+        Its field names are documented, so they can drift from the dataclass that
+        produces them — and a reviewer following a stale doc would look for a key
+        that is not there and conclude the record was incomplete. Pinned against
+        `RowDeletion.to_evidence()` itself rather than a literal list.
+        """
+        text = self.DOC.read_text(encoding="utf-8")
+        record = _mod.CleanupOutcome(
+            ok=True,
+            notes=[],
+            deletions=[
+                _mod.RowDeletion(
+                    event_id="msg-0000000000000001",
+                    arrived_at="2026-09-12T10:00:00Z",
+                    both_keys_present=True,
+                    deleted=True,
+                    confirmed_absent=True,
+                )
+            ],
+            declared_items=3,
+        ).to_evidence()
+
+        for key in record:
+            assert key in text, key
+        for key in record["deletions"][0]:
+            assert key in text, key
+
+    def test_the_runbook_explains_the_capture_teardown_verify_ordering(self):
+        """The ordering is the defect #5825 fixed, and it is operator-visible.
+
+        This test previously required the doc to say "keep the `live_run_id` row
+        readable" past teardown. That instruction was the defect in prose form: it
+        asked the operator to leave a control-enabled fixture row alive so a check
+        could read it, which is the opposite of what W2-10 exists to establish, and
+        an operator who did the right thing instead got `not_run`. The requirement
+        is inverted here deliberately — the doc must NOT ask for a surviving row.
+
+        What the operator does need told: reads happen first, teardown second,
+        absence-verification third; and the substitution they would otherwise reach
+        for — answering a post-teardown question with an asserted boolean, or with a
+        removal the creation ledger never mentioned — does not work.
+        """
+        # Whitespace-normalized: these are sentences, and markdown rewraps them at
+        # the column limit, so a line break landing mid-phrase is not a contract
+        # change and must not read as one.
+        text = " ".join(self.DOC.read_text(encoding="utf-8").split())
+
+        assert "W2-10 runs after cleanup" in text
+        assert "captures, then tears down, then verifies" in text
+        # The retired instruction must be gone, not merely supplemented: a doc that
+        # still tells the operator to preserve the row teaches the old workaround.
+        assert "keep the `live_run_id` row readable" not in text.lower()
+        # A removed resource is not an answer, and a not-found is not the pass.
+        assert "cannot answer a post-teardown request" in text
+        assert "never accepted" in text
+        # The substitution the issue forbids, stated where the operator would
+        # otherwise reach for it.
+        assert "would simply be ignored" in text
 
     def test_the_example_is_valid_json_and_passes_every_config_guard(
         self, tmp_path: Path
@@ -3111,6 +3257,11 @@ def test_w2_02_rejects_non_object_second_adapter(tmp_path, second):
 
 ABORTED_RUN_ID = "msg-aborted-001"
 
+# The run the native-interruption experiment was performed on. A separate row from
+# the aborted one on purpose: the experiment's whole point is that this run was cut
+# off by the provider and did NOT become an aborted run.
+NATIVE_INTERRUPT_RUN_ID = "msg-native-interrupt-001"
+
 def wave2_artifact_payloads() -> dict:
     """A complete, passing artifact set for the wave-2 checks S5 owns (#3964).
 
@@ -3125,8 +3276,15 @@ def wave2_artifact_payloads() -> dict:
             "adapter_a": {"aborted": 1, "completed": 2, "failed": 0},
             "adapter_b": {"aborted": 1, "completed": 2, "failed": 0},
             # A native interrupt that never got a confirmed ADP abort finalization.
-            # It must NOT have become an aborted run.
-            "native_interrupt_status": "failed",
+            # It must NOT have become an aborted run — and the outcome has to be one
+            # the writer could actually have produced, recorded with the run it was
+            # observed on and how it was read back. A bare status (or an empty field)
+            # used to pass here, which is the false green #5825 fixes.
+            "native_interrupt_status": {
+                "status": "failed",
+                "run_id": NATIVE_INTERRUPT_RUN_ID,
+                "observed_by": "GET /me/agent-invocations/{run_id} after provider interrupt",
+            },
             "shared_code_imports_sdk": False,
         },
         "aborted_counters": {
@@ -3318,17 +3476,692 @@ def pause_artifact_payloads() -> dict:
     }
 
 
+# The three synthetic rows a wave-2 fixture seeds, and the revisions involved.
+# Full 40-character SHAs because that is what W2-01 requires: a short SHA or a
+# branch name names whatever a ref happened to point at, and the point of the field
+# is to remove that ambiguity.
+#
+# Four DISTINCT revisions, and the distinctness is the fixture's whole shape. It
+# models the normal, correct topology root's review named: the deployed build is
+# NEWER than the merge commits it contains. An earlier fixture used one revision
+# for everything, which made equality and containment indistinguishable — so a check
+# that demanded equality passed the test suite and then failed every correct
+# deployment, because a real deployment is never equal to one story's merge commit.
+WAVE1_ACCEPTED_REVISION = "b" * 40  # the oldest: wave 1's accepted build
+WAVE2_REVISION = "a" * 40  # the wave-2 stories' merge commit
+DEPLOYED_WORKER_REVISION = "c" * 40  # what is RUNNING, newer than both
+DEPLOYED_GATEWAY_REVISION = "d" * 40  # ships from its own workflow, so its own SHA
+WORKER_DIGEST = "sha256:" + "1" * 64
+GATEWAY_DIGEST = "sha256:" + "2" * 64
+# The verbs this build does not implement. Must agree with `wave2_gateway_stub`'s
+# default capability map, because W2-10 compares the recorded claim against the
+# harness's own pre-teardown live reads, and a stub that disagreed with the artifact
+# would make the passing fixture fail for a reason no test intended.
+UNSUPPORTED_VERBS = ("steer", "abort")
+
+
+class CommitGraph:
+    """A real commit graph the harness's git queries are answered from.
+
+    The cluster-free analogue of `SharedRowStore` and `FixtureResources`, and here for
+    the same reason: W2-01 no longer reads `is_ancestor` out of the artifact, it asks
+    git. A fake that returned "yes" to every query would put the tests back where the
+    review found them — asserting against an answer the test itself supplied. So this
+    models the ONE fact that matters: which commits exist, and which reach which.
+
+    The shape is the normal correct topology. Wave 1's accepted build is the oldest;
+    the wave-2 stories merge on top of it; the two deployed components build from two
+    later commits on separate branches. Every invented SHA is simply absent, which is
+    what makes "internally consistent but invented" fail here rather than pass.
+    """
+
+    def __init__(
+        self,
+        parents: dict[str, tuple[str, ...]] | None = None,
+        *,
+        fail_with: int | None = None,
+        raises: Exception | None = None,
+    ):
+        # The two ways git can decline to answer, rather than answer: an unexpected
+        # exit status (a broken or shallow checkout) and not being runnable at all.
+        # Held here rather than passed to `runner()` so a test can hand a broken graph
+        # anywhere a working one goes.
+        self._fail_with = fail_with
+        self._raises = raises
+        self.parents = dict(
+            parents
+            if parents is not None
+            else {
+                WAVE1_ACCEPTED_REVISION: (),
+                WAVE2_REVISION: (WAVE1_ACCEPTED_REVISION,),
+                DEPLOYED_WORKER_REVISION: (WAVE2_REVISION,),
+                DEPLOYED_GATEWAY_REVISION: (WAVE2_REVISION,),
+            }
+        )
+        self.queries: list[list[str]] = []
+
+    def reaches(self, ancestor: str, descendant: str) -> bool:
+        """Whether `descendant` reaches `ancestor` by walking parents.
+
+        Reflexive, as `git merge-base --is-ancestor` is: a commit contains itself.
+        """
+        seen, stack = set(), [descendant]
+        while stack:
+            current = stack.pop()
+            if current == ancestor:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            stack.extend(self.parents.get(current, ()))
+        return False
+
+    def runner(self):
+        """A `git_runner` answering `cat-file -e` and `merge-base --is-ancestor`."""
+
+        def run(argv):
+            self.queries.append(list(argv))
+            if self._raises is not None:
+                raise self._raises
+            # `fail_with` breaks the ancestry query only, leaving `cat-file` to succeed.
+            # That is the case worth covering: the commits exist, so the harness gets
+            # past the existence check and then git fails to answer — which must not be
+            # read as "not an ancestor". Breaking cat-file too would land on the
+            # absent-commit path instead and cover it twice.
+            if self._fail_with is not None and "merge-base" in argv:
+                return SimpleNamespace(
+                    returncode=self._fail_with, stdout="", stderr="broken checkout"
+                )
+            if "cat-file" in argv:
+                revision = argv[-1].split("^")[0]
+                return SimpleNamespace(
+                    returncode=0 if revision in self.parents else 128,
+                    stdout="",
+                    stderr="" if revision in self.parents else "Not a valid object name",
+                )
+            ancestor, descendant = argv[-2], argv[-1]
+            return SimpleNamespace(
+                returncode=0 if self.reaches(ancestor, descendant) else 1, stdout="", stderr=""
+            )
+
+        return run
+
+
+# A well-formed SHA that is not a commit anywhere. The "internally consistent but
+# invented" case root's review asked the tests to reject: it passes every syntax check
+# and every self-comparison, and git has never heard of it.
+INVENTED_REVISION = "f" * 40
+
+
+def contained_in_claim(**overrides) -> dict:
+    """The ancestry map the artifact used to be believed about, kept as a NEGATIVE.
+
+    It exists only so tests can assert that writing it down changes nothing. That is
+    the shape of root's finding: `is_ancestor: true` is the conclusion the check
+    reaches, so an artifact stating it was restating the question. No passing fixture
+    includes this; every test that does is proving it is inert.
+    """
+    claim = {
+        "worker": {"deployed_revision": DEPLOYED_WORKER_REVISION, "is_ancestor": True},
+        "gateway": {"deployed_revision": DEPLOYED_GATEWAY_REVISION, "is_ancestor": True},
+    }
+    claim.update(overrides)
+    return claim
+
+
+def graph_without(component: str, revision: str) -> CommitGraph:
+    """A graph where one deployed component does NOT contain `revision`.
+
+    The honest shape of a stale deployment: the component's build branched from
+    somewhere that never included the commit. Both commits still exist — so git can
+    answer, and the answer is "no", which is a failed evaluation rather than an
+    unrun one.
+    """
+    graph = CommitGraph()
+    deployed = {
+        "worker": DEPLOYED_WORKER_REVISION,
+        "gateway": DEPLOYED_GATEWAY_REVISION,
+    }[component]
+    # Re-root that component on a commit of its own, which descends from nothing the
+    # stories or wave 1 merged into.
+    graph.parents[revision] = graph.parents.get(revision, ())
+    graph.parents[deployed] = (STALE_BRANCH_POINT,)
+    graph.parents[STALE_BRANCH_POINT] = ()
+    return graph
+
+
+# The commit a stale component branched from: real, and an ancestor of nothing under
+# review. Distinct from `INVENTED_REVISION`, and the distinction is the one the harness
+# has to keep — this one makes git say "no", that one makes git say "I cannot tell you".
+STALE_BRANCH_POINT = "e" * 40
+
+
+def raw_metadata(command: str, body, **overrides) -> dict:
+    """One archived tool response: how it was obtained, when, and what came back."""
+    document = {
+        "command": command,
+        "retrieved_at": relative_time(-30),
+        "body": body,
+    }
+    document.update(overrides)
+    return document
+
+
+def codebuild_body(
+    build_id: str, revision: str, tag: str, *, status: str = "SUCCEEDED", **build_overrides
+) -> dict:
+    """A real-shaped `aws codebuild batch-get-builds` response for one build.
+
+    The field locations are the ones the API actually uses, because that is what the
+    harness parses: `buildStatus` for the outcome, `environment.environmentVariables`
+    for the `ADP_SOURCE_SHA` and `IMAGE_TAG` overrides `codebuild-run.sh` passes, and
+    `source.location` for the `codebuild/src/<sha>-<unique>.zip` archive that script
+    uploads. A GitHub Actions run document would not model our build path at all.
+    """
+    build = {
+        "id": build_id,
+        "projectName": build_id.split(":")[0],
+        "buildStatus": status,
+        "source": {
+            "type": "S3",
+            "location": f"adp-terraform-state-879318057152/codebuild/src/{revision}-a1b2c3.zip",
+        },
+        "environment": {
+            "environmentVariables": [
+                {"name": "ADP_SOURCE_SHA", "value": revision, "type": "PLAINTEXT"},
+                {"name": "IMAGE_TAG", "value": tag, "type": "PLAINTEXT"},
+                {"name": "PUBLISH_LATEST", "value": "true", "type": "PLAINTEXT"},
+            ]
+        },
+    }
+    build.update(build_overrides)
+    return {"builds": [build]}
+
+
+def push_log_body(tag: str, digest: str) -> dict:
+    """A real-shaped `aws logs get-log-events` response containing a push digest line.
+
+    `docker push` ends each tag with `<tag>: digest: sha256:... size: <bytes>`, and
+    that line is the build's own statement of what it published — the corroboration
+    `built_digest` previously had none of.
+    """
+    return {
+        "events": [
+            {"message": "Build started"},
+            {"message": "The push refers to repository [123.dkr.ecr.us-east-1.amazonaws.com/x]"},
+            {"message": f"{tag}: digest: {digest} size: 4703"},
+            {"message": "Phase complete: BUILD State: SUCCEEDED"},
+        ]
+    }
+
+
+def build_record(component: str, revision: str, digest: str, **overrides) -> dict:
+    """The archived provenance tying one running digest to the build that made it.
+
+    Modelled on what the real deployed build path emits, because that is the point of
+    the schema: `aws codebuild batch-get-builds` reports the build, its outcome and the
+    source archive it consumed; the build log reports the digest `docker push`
+    published for the tag; `aws ecr describe-images` reports the digest being served.
+    The summary fields are restatements of those three bodies, and W2-01 PARSES the
+    bodies at their real field locations — so a test cannot fabricate a link by
+    asserting it, and a document that merely mentions the right strings does not pass.
+    """
+    build_id = f"adp-{component}-build:{'0' * 8}-1111-2222-3333-{'4' * 12}"
+    tag = revision[:12]
+    record = {
+        "project": f"adp-{component}-build",
+        "build_id": build_id,
+        "build_url": (
+            "https://console.aws.amazon.com/codesuite/codebuild/projects/"
+            f"adp-{component}-build/build/{build_id}"
+        ),
+        "built_revision": revision,
+        "image_tag": tag,
+        "built_digest": digest,
+        "repository": f"adp-{component}",
+        "registry_digest": digest,
+        "raw": {
+            "build": raw_metadata(
+                f"aws codebuild batch-get-builds --ids {build_id}",
+                codebuild_body(build_id, revision, tag),
+            ),
+            "build_log": raw_metadata(
+                f"aws logs get-log-events --log-group-name /aws/codebuild/adp-{component}-build "
+                f"--log-stream-name {build_id.split(':')[1]}",
+                push_log_body(tag, digest),
+            ),
+            "registry": raw_metadata(
+                f"aws ecr describe-images --repository-name adp-{component} "
+                f"--image-ids imageTag={tag}",
+                {
+                    "imageDetails": [
+                        {
+                            "repositoryName": f"adp-{component}",
+                            "imageDigest": digest,
+                            "imageTags": [tag],
+                        }
+                    ]
+                },
+            ),
+        },
+    }
+    record.update(overrides)
+    return record
+
+
+def deployed_components(**overrides) -> dict:
+    """What is RUNNING, per component: revision, image digest, source revision, build.
+
+    Two components with distinct revisions AND distinct digests, because they ship
+    from separate workflows and W2-01 rejects an equal digest pair — that pair is
+    what a value copied over its neighbour looks like, and it would let a stale
+    half-deployment satisfy every per-component comparison.
+
+    `source_revision == revision` per component is the source-to-image link, and
+    `build_record` is what makes that pair mean something: the archived output of the
+    run that performed the build and of the registry serving the result. Without it
+    the pair only established that the operator wrote one SHA twice.
+    """
+    components = {
+        "worker": {
+            "revision": DEPLOYED_WORKER_REVISION,
+            "image_digest": WORKER_DIGEST,
+            "source_revision": DEPLOYED_WORKER_REVISION,
+            "build_record": build_record("worker", DEPLOYED_WORKER_REVISION, WORKER_DIGEST),
+        },
+        "gateway": {
+            "revision": DEPLOYED_GATEWAY_REVISION,
+            "image_digest": GATEWAY_DIGEST,
+            "source_revision": DEPLOYED_GATEWAY_REVISION,
+            "build_record": build_record("gateway", DEPLOYED_GATEWAY_REVISION, GATEWAY_DIGEST),
+        },
+    }
+    components.update(overrides)
+    return components
+
+
+def required_ci_gates(*, tested_revision: str | None = None, **overrides) -> dict:
+    """The gates CI actually defines, each on a revision that is actually deployed.
+
+    Keyed by the required names rather than by whatever the operator happened to
+    record: an arbitrary nonempty map of "passed" values demonstrates the operator's
+    spelling, not the build's gates. `tested_revision` is what makes a green run
+    evidence about THIS build instead of a green run of unknown subject, and `raw` is
+    the run document those fields are read out of — the correction for a gate whose
+    `run_id` could be any truthy value at all.
+
+    `tested_revision` is a parameter rather than a constant because the harness
+    requires the gates to have run on a revision that is actually deployed, so a test
+    that changes what is deployed has to be able to move the gates with it.
+    """
+    tested = tested_revision or DEPLOYED_WORKER_REVISION
+    gates = {}
+    for index, name in enumerate(_mod.WAVE2_REQUIRED_CI_GATES):
+        run_id = f"ci-run-{index}"
+        job_id = _mod.CI_GATE_JOB_IDS[name]
+        gates[name] = {
+            "status": "passed",
+            "run_id": run_id,
+            "run_url": f"https://github.com/aws-e/adp/actions/runs/990{index}",
+            "tested_revision": tested,
+            "raw": {
+                "run": raw_metadata(
+                    f"gh run view {run_id} --json databaseId,headSha,attempt,event,jobs",
+                    {
+                        "databaseId": run_id,
+                        "headSha": tested,
+                        "attempt": 1,
+                        "event": "pull_request",
+                        "jobs": [{"name": name, "conclusion": "success"}],
+                    },
+                ),
+                "checkout": raw_metadata(
+                    f"gh run download {run_id} -n checked-out-revision-{job_id}",
+                    checkout_artifact(job_id, run_id, tested),
+                ),
+            },
+        }
+    gates.update(overrides)
+    return gates
+
+
+def checkout_artifact(job_id: str, run_id: str, revision: str, **overrides) -> dict:
+    """The JSON `agent-control-ci.yml` uploads as `checked-out-revision-<job>`.
+
+    Exactly the six keys the workflow's `Verify and record the checked-out revision`
+    step writes — the test fixture models the emitted schema rather than a convenient
+    one, because root's finding was that the harness must read this artifact instead of
+    a SHA the operator typed into the run response.
+    """
+    artifact = {
+        "job": job_id,
+        "checked_out_revision": revision,
+        "run_id": run_id,
+        "run_attempt": "1",
+        "event_name": "pull_request",
+        "workflow_ref_sha": revision,
+    }
+    artifact.update(overrides)
+    return artifact
+
+
+def fixture_identity(**overrides) -> dict:
+    """Which fixture, in which account and environment, these observations describe.
+
+    Without it a complete, internally consistent artifact from a previous run against
+    a different fixture is indistinguishable from this run's evidence.
+    """
+    config = valid_config()
+    identity = {
+        "account_id": config["account_id"],
+        "environment": config["environment"],
+        "run_id": config["live_run_id"],
+    }
+    identity.update(overrides)
+    return identity
+
+
+# The resources a wave-2 fixture creates, with the identity each was observed to
+# have AT CREATION. Identities rather than names because `kubectl apply` can adopt a
+# pre-existing same-name object and `create-queue` can return an existing queue — so
+# a name establishes neither ownership nor, at teardown, that the thing removed was
+# the thing created.
+def creation_ledger() -> list[dict]:
+    return [
+        {
+            "kind": "Deployment",
+            "name": "agent-worker-fixture-1",
+            "identity": "uid:11111111-1111-1111-1111-111111111111",
+            "created": True,
+        },
+        {
+            "kind": "Pod",
+            "name": "control-probe-1",
+            "identity": "uid:22222222-2222-2222-2222-222222222222",
+            "created": True,
+        },
+        {
+            "kind": "NetworkPolicy",
+            "name": "control-fixture-isolation",
+            "identity": "uid:33333333-3333-3333-3333-333333333333",
+            "created": True,
+        },
+    ]
+
+
+def relative_time(offset_seconds: int) -> str:
+    """An ISO-8601 instant `offset_seconds` from now.
+
+    Anchored to real time rather than a fixed date because the harness stamps its own
+    teardown window with `datetime.now()`, and W2-10 compares the artifact's
+    `captured_at` against that window. A fixed 2026-09-12 literal would sit years
+    before every real run, so the honest fixture would fail the ordering check for a
+    reason that has nothing to do with what the test is about. Offsets keep the
+    RELATIVE order — which is the property being tested — while staying comparable to
+    the harness's own clock.
+    """
+    return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).isoformat()
+
+
+#: How long after the teardown begins each fixture resource is removed. The
+#: control-enabled workloads go FIRST and the NetworkPolicy last, which is the order
+#: DP-INV-1 requires: deleting the policy while its workload still runs leaves a
+#: control-enabled pod reachable with its ingress restriction already gone.
+LEDGER_REMOVAL_OFFSETS = {
+    "Deployment": 10,
+    "Pod": 15,
+    "NetworkPolicy": 40,
+}
+
+
+def ledger_removals(**overrides) -> list[dict]:
+    """One absence observation per created resource, keyed by the SAME identity.
+
+    `observed_by` records HOW absence was established. Without it the entry is a
+    claim rather than an observation, which is the substitution root's fourth finding
+    named: `{name: True}` maps let omitting a leaked resource pass.
+
+    `removed_at` is what makes the ORDER checkable rather than only the end state:
+    both the workload and the policy must be gone, but the policy must go last.
+    """
+    by_identity = {
+        entry["identity"]: {
+            "identity": entry["identity"],
+            "absent": True,
+            "observed_by": f"kubectl get {entry['kind'].lower()} {entry['name']} --ignore-not-found",
+            "removed_at": relative_time(LEDGER_REMOVAL_OFFSETS[entry["kind"]]),
+        }
+        for entry in creation_ledger()
+    }
+    by_identity.update(overrides)
+    return list(by_identity.values())
+
+
+def bent_removal(identity: str, **fields) -> dict:
+    """A complete absence observation for `identity`, with `fields` replaced.
+
+    Exists so a test that bends ONE field of one observation does not also silently
+    drop the others. Hand-writing the whole dict was how these negatives were built
+    before `removed_at` was required, and an incomplete literal now fails on the
+    missing key instead of on the defect the test is named for — which would leave the
+    real behaviour unasserted while the suite still went green.
+    """
+    complete = next(
+        removal for removal in ledger_removals() if removal["identity"] == identity
+    )
+    return {**complete, **fields}
+
+
+def wave2_preflight_payload(**overrides) -> dict:
+    """A complete, passing W2-01 artifact.
+
+    Every required key present with the passing value, so a test exercising one
+    failure mode bends exactly one field.
+    """
+    payload: dict = {
+        "wave1_evidence": {
+            "accepted": True,
+            "evaluation": _mod.WAVE_EVALUATIONS[1],
+            "passed": len(_mod.WAVE1_CHECKS),
+            "required": len(_mod.WAVE1_CHECKS),
+            "cleanup_ok": True,
+            "revision": WAVE1_ACCEPTED_REVISION,
+            # Identity, so a reviewer can retrieve wave 1's report rather than take
+            # this summary of it on trust.
+            "run_id": "eval-3967-run-1",
+        },
+        # No `contained_in`: containment is not something the artifact gets to claim
+        # any more. The harness computes it from the commit graph, so the fixture's
+        # contribution is the revisions themselves and `CommitGraph` supplies the
+        # ancestry — a fixture that could assert containment would be asserting the
+        # answer the check exists to reach.
+        "merged_revisions": {
+            story: {"merged": True, "revision": WAVE2_REVISION}
+            for story in _mod.WAVE2_REQUIRED_STORIES
+        },
+        "protocol_version": _mod.CONTROL_PROTOCOL_VERSION,
+        "adapter_id": _mod.CLAUDE_ADAPTER_ID,
+        "sdk_version": _mod.EXPECTED_CLAUDE_SDK_VERSION,
+        "package_versions": {
+            name: "0.3.220" for name in _mod.WAVE2_REQUIRED_PACKAGES
+        },
+        "deployed_components": deployed_components(),
+        "ci_gates": required_ci_gates(),
+        "isolation_before_listener": True,
+        "ordinary_flags_off": True,
+        "fixture_only_flag_scope": {
+            "enabled_in_fixture": True,
+            # An enumerated empty list, not `false`: the claim is "nowhere else",
+            # and a list is the only form of it an auditor can check.
+            "enabled_elsewhere": [],
+            "fixture_environment": valid_config()["environment"],
+        },
+        "fixture_identity": fixture_identity(),
+        "creation_ledger": creation_ledger(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def security_capture_payload(**overrides) -> dict:
+    """A complete, passing W2-10 artifact for the observations taken BEFORE teardown.
+
+    Half of what was one `cleanup_security_recheck` artifact. The split is the
+    ordering correction: these are observations of a RUNNING deployment, so they have
+    to be recorded while it exists. Asking for them after teardown is what made a
+    correct teardown report NOT RUN.
+
+    `observed_revisions` binds them to the DEPLOYED build — not to a story's
+    historical merge commit, which a correct (newer) deployment does not equal.
+    """
+    payload: dict = {
+        "captured_before_teardown": True,
+        "observed_revisions": {
+            component: {
+                "revision": entry["revision"],
+                "image_digest": entry["image_digest"],
+            }
+            for component, entry in deployed_components().items()
+        },
+        "fixture_identity": fixture_identity(),
+        "isolation_present": True,
+        "wave1_security": {
+            "unauthenticated_rejected": True,
+            "cross_tenant_indistinguishable": True,
+            "nonowner_indistinguishable": True,
+            "transport_targets_blocked": True,
+            "no_token_in_public_state": True,
+            "admission_authorization_preserved": True,
+            "delivery_authorization_preserved": True,
+        },
+        "unsupported_verbs": {verb: 501 for verb in UNSUPPORTED_VERBS},
+        "unsupported_adapter_capabilities": {verb: False for verb in UNSUPPORTED_VERBS},
+        "general_flag_enablement": False,
+        "ordinary_flags_off": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+#: How long after the teardown begins the absence observations were recorded: AFTER
+#: the last removal in `LEDGER_REMOVAL_OFFSETS`, because the honest producer of this
+#: artifact is the teardown command itself — it removes the resources, reads their
+#: absence, and writes this. A value predating the teardown is the prefilled artifact
+#: W2-10 refuses.
+TEARDOWN_VERIFIED_OFFSET = 60
+
+
+def teardown_verification_payload(**overrides) -> dict:
+    """A complete, passing W2-10 artifact for what teardown ACHIEVED.
+
+    Only absence, because absence is the only thing teardown produces. Nothing here
+    requires a removed resource to respond — that requirement is the defect this
+    split fixes.
+
+    Deliberately carries no row-deletion claim: the deletion half of W2-10 is
+    verified against the harness's own `CleanupOutcome`, and a field here saying
+    "cleanup succeeded" is exactly the substitute #5825 exists to remove.
+    """
+    payload: dict = {
+        "verified_after_teardown": True,
+        # Dated inside the teardown window the harness records, because that is what
+        # distinguishes a fresh observation from a file written earlier in the run.
+        "captured_at": relative_time(TEARDOWN_VERIFIED_OFFSET),
+        "fixture_identity": fixture_identity(),
+        "removals": ledger_removals(),
+        # The environment's PERSISTENT baseline isolation, not the fixture's own
+        # policies: those are ledger resources and must be gone. Conflating the two
+        # made this artifact unsatisfiable alongside ledger reconciliation.
+        "baseline_isolation_present": True,
+        "general_flag_enablement": False,
+        "ordinary_flags_off": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def wave2_cleanup_items() -> list[dict]:
+    """Exact-key teardown for every synthetic row a wave-2 fixture seeds.
+
+    Both key halves on every row, and the `unknown_run_id` deliberately absent:
+    it names a row that must NOT exist, so "cleaning" it would mean deleting an
+    object the harness never created.
+    """
+    config = valid_config()
+    return [
+        {"event_id": config["live_run_id"], "arrived_at": "2026-09-12T00:00:00Z"},
+        {"event_id": config["terminal_run_id"], "arrived_at": "2026-09-12T00:00:00Z"},
+        {"event_id": ABORTED_RUN_ID, "arrived_at": "2026-09-12T00:00:00Z"},
+    ]
+
+
 def wave2_config(tmp_path: Path, **overrides) -> dict:
     """`live_config` plus the wave-2 artifacts and the seeded aborted run."""
     payloads = overrides.pop("artifact_payloads", None) or {
         **artifact_payloads(),
         **wave2_artifact_payloads(),
         **pause_artifact_payloads(),
+        **wave2_only_artifact_payloads(),
     }
     config = live_config(tmp_path, artifact_payloads=payloads)
     config["aborted_run_id"] = ABORTED_RUN_ID
+    # Wave 1 declares only its own live row; wave 2 seeds three, and W2-01 fails a
+    # fixture whose teardown does not cover all of them.
+    config["cleanup_items"] = wave2_cleanup_items()
     config.update(overrides)
     return config
+
+
+def wave2_only_artifact_payloads() -> dict:
+    """The three artifacts #5825 added: W2-01's preflight and W2-10's two halves.
+
+    Two for W2-10, not one, because they are recorded at opposite sides of the
+    teardown boundary: the security observations while the fixture runs, the absence
+    observations after it is gone. One combined artifact could not express that
+    ordering, and the version that tried made a post-teardown check depend on a
+    deleted resource.
+    """
+    return {
+        "wave2_preflight": wave2_preflight_payload(),
+        "security_capture": security_capture_payload(),
+        "teardown_verification": teardown_verification_payload(),
+    }
+
+
+def _artifacts_read_by(method_names) -> tuple[str, ...]:
+    """Every `_artifact("name")` a set of `Driver` methods reads, from the source.
+
+    Derived by scanning the harness rather than listed by hand. The reason is the
+    same one that motivates this whole issue: a hand-maintained inventory stops
+    being exhaustive silently, and a test parametrized over a stale list passes by
+    covering less than it claims. Scanning means a check that starts reading a new
+    artifact is covered the moment the call appears.
+
+    Bounded per method by the next `def` at the same indentation, so one check's
+    reads are not attributed to its neighbour.
+    """
+    source = _SCRIPT_PATH.read_text(encoding="utf-8")
+    found: list[str] = []
+    for name in method_names:
+        start = source.find(f"    def {name}(")
+        if start == -1:
+            continue
+        end = source.find("\n    def ", start + 1)
+        body = source[start : end if end != -1 else len(source)]
+        for artifact in re.findall(r'_artifact\("([^"]+)"\)', body):
+            if artifact not in found:
+                found.append(artifact)
+    return tuple(found)
+
+
+# Every artifact a wave-2 check reads. Used to parametrize the "no single missing
+# artifact can exit zero" test over the real input space of omissions, and guarded
+# by a test that fails if the derivation ever yields a short list.
+WAVE2_READ_ARTIFACTS: tuple[str, ...] = _artifacts_read_by(
+    _mod.WAVE2_PREDICATES[spec.check_id]
+    for spec in _mod.WAVE2_CHECKS
+    if spec.check_id in _mod.WAVE2_PREDICATES
+)
 
 
 def stats_body(**overrides) -> dict:
@@ -3440,15 +4273,544 @@ def wave2_gateway_stub(**overrides):
     return client
 
 
-def run_wave2(tmp_path: Path, *, config=None, client=None) -> dict:
-    """Drive the four wave-2 checks S5 owns and return ``{check_id: CheckResult}``."""
-    config = config if config is not None else wave2_config(tmp_path)
+class SharedRowStore:
+    """One row store behind BOTH the fake DynamoDB and the fake gateway.
+
+    This class is the reason the rest of the wave-2 regression is trustworthy, and it
+    exists because of a specific defect root's review reproduced. The previous fixture
+    used two independent fakes: `ddb_stub` answered `get_item` from a canned value and
+    `wave2_gateway_stub` answered every `/state` with a static 200. They described
+    different worlds. Cleanup could delete a row in one world while the gateway in the
+    other went on serving it as live — so a post-teardown check that (wrongly) needed
+    the deleted run to answer still saw a 200, and the positive test passed. Against a
+    real gateway, which stops serving a deleted row, the same harness reported
+    `W2-10 not_run`: a CORRECT teardown could not produce a passing wave.
+
+    A stub can only be evidence about a real deployment where it is CONSTRAINED like
+    one. So here there is exactly one dict of rows: `delete_item` removes from it,
+    `get_item` reads from it, and the gateway's `/state` and command routes 404 for a
+    run whose row is gone. Any check that depends on a removed resource answering now
+    fails the test suite instead of passing it.
+    """
+
+    def __init__(self, run_ids):
+        pairs = [(str(run_id), str(arrived_at)) for run_id, arrived_at in run_ids]
+        # Present rows, keyed the way the real table is keyed: an existing row is one
+        # this fixture seeded and teardown has not yet removed.
+        self.rows: dict[tuple[str, str], dict] = {
+            pair: {"event_id": {"S": pair[0]}} for pair in pairs
+        }
+        # Every run this store ever held. Retained after removal because the gateway
+        # half needs to distinguish "this fixture's row, now deleted" (404) from a run
+        # this store never described at all (left to the inner stub).
+        self.seeded: frozenset[str] = frozenset(event_id for event_id, _ in pairs)
+        self.deletes: list[dict] = []
+
+    # ---- the DynamoDB half ------------------------------------------------
+
+    def exists(self, run_id: str) -> bool:
+        return any(event_id == str(run_id) for event_id, _ in self.rows)
+
+    def dynamodb(self, *, delete_raises=None, refuse_delete_for=()) -> MagicMock:
+        """A DynamoDB client whose deletes and reads act on this store.
+
+        `delete_raises` and `refuse_delete_for` model the two failure shapes that
+        matter — an API error, and a delete that reports success while the row stays
+        present — without letting either drift away from what the gateway then sees.
+        """
+        client = dynamodb_with_schema(CORRECT_SCHEMA)
+        calls = {"n": 0}
+
+        def delete_item(**kwargs):
+            calls["n"] += 1
+            key = kwargs["Key"]
+            pair = (key["event_id"]["S"], key["arrived_at"]["S"])
+            self.deletes.append(dict(kwargs))
+            if delete_raises is not None and calls["n"] in delete_raises:
+                raise RuntimeError(delete_raises[calls["n"]])
+            if pair[0] in refuse_delete_for:
+                # The silent-failure case: the API accepts the delete and the row is
+                # still there. Only a read can tell.
+                return {}
+            self.rows.pop(pair, None)
+            return {}
+
+        def get_item(**kwargs):
+            key = kwargs["Key"]
+            pair = (key["event_id"]["S"], key["arrived_at"]["S"])
+            row = self.rows.get(pair)
+            return {"Item": row} if row else {}
+
+        client.delete_item.side_effect = delete_item
+        client.get_item.side_effect = get_item
+        return client
+
+    # ---- the gateway half -------------------------------------------------
+
+    def gateway(self, **overrides):
+        """A gateway that stops serving a run once its row is gone."""
+        return self.wrap(wave2_gateway_stub(**overrides))
+
+    def wrap(self, inner):
+        """Constrain an EXISTING fake gateway by this store's rows.
+
+        Takes a client rather than building one so a test that bends some other
+        response — a 500 on the detail route, a missing capability map — still gets the
+        one constraint a real deployment cannot be without. Otherwise every such test
+        would quietly revert to the two-worlds fixture this class exists to eliminate.
+
+        Every other response stays exactly what the rest of the wave-2 suite relies on.
+        The 404 is returned rather than a 200 with `available: false` because a deleted
+        row is a run the gateway cannot find, not a run it knows to be unavailable.
+        """
+
+        def handler(method, url, headers=None, content=None, json=None, timeout=None):
+            for run_id in self.seeded:
+                if f"/{run_id}" in url and not self.exists(run_id):
+                    response = MagicMock()
+                    response.status_code = 404
+                    response.json = lambda: {"detail": "not found"}
+                    return response
+            return inner.request(
+                method, url, headers=headers, content=content, json=json, timeout=timeout
+            )
+
+        client = MagicMock()
+        client.request.side_effect = handler
+        return client
+
+
+class FixtureResources:
+    """The fixture's CLUSTER resources, modelled the way `SharedRowStore` models rows.
+
+    The point of this class is the same as that one's, applied to root's second
+    finding. W2-10's absence half was previously judged against a hand-written
+    artifact that said the pods and policies were gone; nothing in the test had any
+    notion of a pod, so the artifact could say anything and the fixture could not
+    disagree with it. Here the resources really exist, the teardown command really
+    removes them, and the absence artifact is written FROM this state rather than
+    asserted alongside it.
+
+    That means a test can no longer accidentally describe an impossible run. A
+    prefilled artifact and a teardown that removes nothing now produce different
+    bytes on disk, which is exactly the distinction the harness's digest comparison
+    is looking for.
+
+    `removal_order` is what makes finding 4 testable: the teardown removes kinds in
+    the order given, stamping each with an increasing timestamp, so a test can ask
+    for the unsafe order (policy before workload) and get a genuinely unsafe removal
+    rather than a doctored timestamp.
+    """
+
+    #: Kinds removed in the DP-INV-1-safe order: control-enabled workloads first, the
+    #: NetworkPolicy restricting reach to them last.
+    SAFE_ORDER = ("Deployment", "Pod", "NetworkPolicy")
+
+    def __init__(self, ledger=None, *, removal_order=None, clock=None):
+        self.ledger = list(ledger if ledger is not None else creation_ledger())
+        self.present = {entry["identity"]: dict(entry) for entry in self.ledger}
+        self.removed_at: dict[str, str] = {}
+        self.removal_order = tuple(removal_order or self.SAFE_ORDER)
+        # Monotonic offsets from real time. The offsets — not wall-clock resolution —
+        # carry the ordering, so the assertions do not depend on how fast the test
+        # machine is; anchoring to now keeps them comparable to the window the harness
+        # stamps with its own clock.
+        self._tick = 0
+        self._clock = clock or relative_time
+
+    def remove_all(self) -> None:
+        """Remove every fixture resource, in `removal_order`, stamping each removal."""
+        by_kind: dict[str, list[dict]] = {}
+        for entry in self.ledger:
+            by_kind.setdefault(str(entry.get("kind")), []).append(entry)
+        ordered = [kind for kind in self.removal_order if kind in by_kind]
+        ordered += [kind for kind in by_kind if kind not in ordered]
+        for kind in ordered:
+            for entry in by_kind[kind]:
+                self._tick += 5
+                self.removed_at[entry["identity"]] = self._clock(self._tick)
+                self.present.pop(entry["identity"], None)
+
+    def absence_observations(self) -> list[dict]:
+        """What a real post-teardown read of these resources would report.
+
+        `absent` is computed from `present`, not asserted: a resource this teardown
+        failed to remove reports `absent: False` here, and the check fails on it. A
+        resource never removed carries no `removed_at`, for the same reason.
+        """
+        return [
+            {
+                "identity": entry["identity"],
+                "absent": entry["identity"] not in self.present,
+                "observed_by": (
+                    f"kubectl get {str(entry['kind']).lower()} {entry['name']} --ignore-not-found"
+                ),
+                "removed_at": self.removed_at.get(entry["identity"]),
+            }
+            for entry in self.ledger
+        ]
+
+    def latest_removal(self) -> str:
+        """The last removal stamp, for dating an artifact written after teardown."""
+        return max(self.removed_at.values(), default=self._clock(0))
+
+
+def teardown_runner_for(
+    tmp_path: Path,
+    config: dict,
+    resources: FixtureResources,
+    *,
+    exit_code: int = 0,
+    remove: bool = True,
+    write_verification: bool = True,
+    verification=None,
+    raises: BaseException | None = None,
+):
+    """A stand-in for the operator's `resource_teardown` command.
+
+    Models the honest lifecycle: remove the resources, then record their absence,
+    then exit. That ORDER is the thing being tested — the artifact is written from
+    post-removal state, so it cannot claim an absence that did not happen.
+
+    Each keyword turns off one part of that lifecycle, which is how the negatives are
+    built: `remove=False` is a command that reports success while removing nothing,
+    `write_verification=False` is one that removes without recording, `exit_code`
+    makes it fail, and `raises` makes it unrunnable. None of them let a test fake the
+    *result* — they change what the command does and let the harness notice.
+    """
+    # Resolved the same way `ArtifactStore` resolves it, so the command writes the file
+    # the harness reads. A test whose runner wrote somewhere else would leave the
+    # original prefilled artifact in place and look like the defect it is testing for.
+    #
+    # `None` when the config declares no such artifact. A fixture that never told the
+    # harness where to read absence from has nowhere for this command to write it
+    # either, and inventing a path would hand the harness a file it was not pointed at.
+    raw = (config.get("artifacts") or {}).get("teardown_verification")
+    path = None
+    if raw:
+        declared = Path(raw)
+        path = declared if declared.is_absolute() else tmp_path / declared
+
+    def runner(argv, timeout):  # noqa: ANN001, ARG001 - matches the real runner's shape
+        if raises is not None:
+            raise raises
+        if remove:
+            resources.remove_all()
+        if write_verification and path is not None:
+            payload = (
+                verification
+                if verification is not None
+                else teardown_verification_payload(
+                    removals=resources.absence_observations(),
+                    captured_at=resources.latest_removal(),
+                )
+            )
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        completed = MagicMock()
+        completed.returncode = exit_code
+        completed.stdout = f"removed {len(resources.removed_at)} fixture resources\n"
+        completed.stderr = ""
+        return completed
+
+    return runner
+
+
+def shared_store_for(config: dict) -> SharedRowStore:
+    """A `SharedRowStore` seeded with exactly the rows this config declares.
+
+    Built from `cleanup_items` rather than a literal so a test that changes the
+    declared rows cannot leave the store describing different ones.
+    """
+    items = config.get("cleanup_items") or []
+    return SharedRowStore(
+        (item.get("event_id"), item.get("arrived_at"))
+        for item in items
+        if isinstance(item, dict) and item.get("event_id") and item.get("arrived_at")
+    )
+
+
+def cleanup_outcome_for(config: dict, **overrides) -> object:
+    """The record a successful `run_cleanup` produces for this config's rows.
+
+    Built from the config's own `cleanup_items` rather than a literal, so a test
+    that changes the declared rows does not silently leave the deletion record
+    describing different ones — which is the mismatch W2-10 is built to notice.
+    """
+    items = config.get("cleanup_items") or []
+    deletions = []
+    ok = True
+    for item in items:
+        pair = item if isinstance(item, dict) else {}
+        event_id, arrived_at = pair.get("event_id"), pair.get("arrived_at")
+        # Mirrors `run_cleanup`'s own branching rather than assuming success: a row
+        # declared without both key halves is REFUSED there, and a helper that
+        # reported it deleted anyway would hand W2-10 a record the real teardown
+        # never produces.
+        both = bool(event_id) and bool(arrived_at)
+        ok = ok and both
+        deletions.append(
+            _mod.RowDeletion(
+                event_id=str(event_id or ""),
+                arrived_at=str(arrived_at or ""),
+                both_keys_present=both,
+                deleted=both,
+                confirmed_absent=both,
+                error=None if both else "partial key; refused",
+            )
+        )
+    fields = {
+        "ok": ok,
+        "notes": [f"removed {d.event_id}/{d.arrived_at}" for d in deletions if d.deleted],
+        "deletions": deletions,
+        "declared_items": len(items),
+    }
+    fields.update(overrides)
+    return _mod.CleanupOutcome(**fields)
+
+
+_UNSET = object()
+
+
+def capture_for(config: dict, client=None, **overrides) -> object:
+    """The pre-teardown capture the harness's OWN reads produce for this fixture.
+
+    Produced by calling `capture_security_observations` against the stub gateway
+    rather than hand-building a `SecurityCapture`, so a helper cannot hand W2-10
+    observations the real capture would never make. `overrides` replaces a field
+    afterwards, which is how a test models a capture that half-completed.
+
+    Called while the store's rows are still present, which is the ordering the real
+    `main` uses — a capture taken after teardown is precisely the defect.
+    """
     probe = _mod.Probe(config["gateway_url"], client or wave2_gateway_stub())
-    artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
-    driver = _mod.Driver(config, probe, artifacts, dynamodb=ddb_stub())
+    artifacts = _mod.ArtifactStore(Path("/nonexistent"), {})
+    driver = _mod.Driver(config, probe, artifacts, dynamodb=None)
     with patch.dict("os.environ", IDENTITY_ENV, clear=False):
-        results = _mod.run_checks(driver, _mod.WAVE2_CHECKS)
+        capture = _mod.capture_security_observations(driver, config)
+    if not overrides:
+        return capture
+    fields = {
+        "ok": capture.ok,
+        "run_id": capture.run_id,
+        "adapters": capture.adapters,
+        "notes": capture.notes,
+    }
+    fields.update(overrides)
+    return _mod.SecurityCapture(**fields)
+
+
+def run_wave2(  # noqa: PLR0913 - one parameter per substitutable collaborator
+    tmp_path: Path,
+    *,
+    config=None,
+    client=None,
+    cleanup=_UNSET,
+    capture=_UNSET,
+    teardown=_UNSET,
+    resources=None,
+    runner=None,
+    graph=None,
+) -> dict:
+    """Drive all ten wave-2 checks and return ``{check_id: CheckResult}``.
+
+    `cleanup` defaults to the successful record the config's declared rows would
+    produce, because this helper models a *correct* run; pass `None` to model a run
+    where cleanup never happened, or a bent record to prove W2-10 notices.
+
+    `capture` likewise defaults to the observations the harness's own pre-teardown
+    reads would produce against this client; pass `None` to model a run where the
+    capture never happened.
+
+    `teardown` defaults to running the real `run_resource_teardown` against `runner`
+    — by default a `teardown_runner_for` command that genuinely removes `resources`
+    and records their absence. Pass `None` to model a run where the seam never
+    executed.
+
+    **The ordering is the real one.** Both fakes are wired to a single
+    `SharedRowStore`, the capture is taken while its rows are still present, the
+    resource teardown runs between the capture and the verification, and the default
+    `cleanup` record is the one that store's own deletes produce. A helper that
+    captured afterwards — or that let the gateway keep serving a row the deletion
+    record calls gone, or that read an absence artifact no teardown had written —
+    would hand W2-10 a combination no real run can produce, which is exactly how the
+    previous fixture passed while the deployed harness failed.
+    """
+    config = config if config is not None else wave2_config(tmp_path)
+    store = shared_store_for(config)
+    client = store.wrap(client or wave2_gateway_stub())
+    probe = _mod.Probe(config["gateway_url"], client)
+    artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
+    dynamodb = store.dynamodb()
+    # A real commit graph behind W2-01's containment queries. The default is the
+    # correct topology — deployed builds newer than the merge commits they contain —
+    # and a test models a stale deployment by giving a graph where they are not.
+    graph = graph if graph is not None else CommitGraph()
+    driver = _mod.Driver(
+        config, probe, artifacts, dynamodb=dynamodb, git_runner=graph.runner()
+    )
+    resources = resources if resources is not None else FixtureResources()
+    config.setdefault("resource_teardown", ["/fixture/teardown.sh", "--wave", "2"])
+    # The same split `main` performs, for the same reason: the nine checks read live
+    # rows, so running them after teardown would make them fail for the one reason
+    # that is not a defect.
+    pre = [s for s in _mod.WAVE2_CHECKS if s.check_id not in _mod.POST_CLEANUP_CHECK_IDS]
+    post = [s for s in _mod.WAVE2_CHECKS if s.check_id in _mod.POST_CLEANUP_CHECK_IDS]
+    expected = tuple(spec.check_id for spec in _mod.WAVE2_CHECKS)
+    with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+        results = _mod.run_checks(driver, pre, manifest_ids=expected)
+        # Pre-teardown: the rows still exist, so these reads can be made at all.
+        capture = (
+            _mod.capture_security_observations(driver, config)
+            if capture is _UNSET
+            else capture
+        )
+        # Resource teardown, through the real `run_resource_teardown`, so the freshness
+        # snapshot it takes of the absence artifact is a real one. The command really
+        # removes `resources` and writes the artifact from what remains.
+        if teardown is _UNSET:
+            teardown = _mod.run_resource_teardown(
+                config,
+                artifacts,
+                runner=runner or teardown_runner_for(tmp_path, config, resources),
+            )
+        # Then rows, through the real `run_cleanup` against the shared store, so the
+        # deletion record and what the gateway then serves cannot disagree.
+        cleanup = _mod.run_cleanup(config, dynamodb) if cleanup is _UNSET else cleanup
+        results.extend(
+            _mod.run_checks(
+                driver,
+                post,
+                manifest_ids=expected,
+                cleanup=cleanup,
+                capture=capture,
+                teardown=teardown,
+            )
+        )
     return {result.check_id: result for result in results}
+
+
+NATIVE_INTERRUPT_OBSERVATION = {
+    "status": "failed",
+    "run_id": NATIVE_INTERRUPT_RUN_ID,
+    "observed_by": "GET /me/agent-invocations/{run_id} after provider interrupt",
+}
+
+
+def run_wave2_native_interrupt(tmp_path: Path, recorded) -> dict:
+    """Drive wave 2 with exactly one thing bent: the native-interruption outcome."""
+    payloads = {
+        **artifact_payloads(),
+        **wave2_artifact_payloads(),
+        **pause_artifact_payloads(),
+        **wave2_only_artifact_payloads(),
+    }
+    payloads["harness_neutrality"] = {
+        **payloads["harness_neutrality"],
+        "native_interrupt_status": recorded,
+    }
+    return run_wave2(
+        tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+    )
+
+
+class TestNativeInterruptMeasurementCannotBeAbsent:
+    """W2-06 must not pass on an unmeasured native-interruption outcome.
+
+    Root reproduced four false passes through `run_wave2`: `None`, `""`, `{}` and
+    `"invented"` all reported PASSED, exactly as a valid `"failed"` did, because the
+    predicate tested only `!= "aborted"`. The claim is a NEGATIVE — a provider's
+    interrupted turn did not by itself become an ADP abort — and a negative cannot be
+    established by a field nobody filled in.
+
+    The distinction these tests pin: absent measurement is NOT RUN (nothing was
+    observed, so there is nothing to judge), an unrecognised value FAILS (something
+    was recorded and the deployment could not have produced it), and the valid
+    non-aborted control still passes.
+    """
+
+    def test_the_valid_non_aborted_control_still_passes(self, tmp_path: Path):
+        """The positive control, asserted FIRST so the negatives below are not vacuous.
+
+        If this regressed to a fail, every other test in this class would pass for
+        the wrong reason — a check that can never pass rejects bad input too.
+        """
+        results = run_wave2_native_interrupt(tmp_path, NATIVE_INTERRUPT_OBSERVATION)
+
+        assert results["W2-06"].status == _mod.STATUS_PASSED, results["W2-06"].message
+
+    @pytest.mark.parametrize("absent", [None, "", {}, []])
+    def test_an_unmeasured_outcome_is_not_run_rather_than_a_pass(
+        self, tmp_path: Path, absent
+    ):
+        """`None`/`""`/`{}` from root's reproduction: three of the four false passes."""
+        results = run_wave2_native_interrupt(tmp_path, absent)
+
+        assert results["W2-06"].status == _mod.STATUS_NOT_RUN, results["W2-06"].message
+        assert "native-interruption" in results["W2-06"].message
+
+    @pytest.mark.parametrize("invalid", ["invented", "in_progress", "active", 0, 1, True])
+    def test_a_status_outside_the_writers_vocabulary_fails(
+        self, tmp_path: Path, invalid
+    ):
+        """`"invented"` — the fourth false pass — and the still-running statuses.
+
+        `active`/`in_progress` are rejected for a specific reason rather than for
+        tidiness: the experiment interrupts a turn, so a row still reported as
+        running means the experiment never reached the state it claims to describe.
+        """
+        results = run_wave2_native_interrupt(
+            tmp_path, {**NATIVE_INTERRUPT_OBSERVATION, "status": invalid}
+        )
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED, results["W2-06"].message
+
+    def test_a_bare_status_string_carries_no_provenance_and_fails(self, tmp_path: Path):
+        """Even a VALID status fails without the experiment behind it.
+
+        This is the discriminating case: `"failed"` is a legitimate outcome, so a
+        check that only validated the vocabulary would accept it. What makes it
+        unusable is that it names neither the run interrupted nor how the outcome was
+        read back — so it cannot be distinguished from an expectation somebody typed.
+        """
+        results = run_wave2_native_interrupt(tmp_path, "failed")
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert "provenance" in results["W2-06"].message
+
+    @pytest.mark.parametrize("key", ["run_id", "observed_by"])
+    def test_an_experiment_missing_its_provenance_fails(self, tmp_path: Path, key):
+        recorded = {k: v for k, v in NATIVE_INTERRUPT_OBSERVATION.items() if k != key}
+
+        results = run_wave2_native_interrupt(tmp_path, recorded)
+
+        assert results["W2-06"].status == _mod.STATUS_FAILED
+        assert key in results["W2-06"].message
+
+    def test_no_recorded_value_reaches_a_pass_without_a_real_outcome(
+        self, tmp_path: Path
+    ):
+        """The property, stated once over the whole space root probed.
+
+        A per-value test can be satisfied by special-casing that value. This asserts
+        the general shape: of everything root tried, only a recognised status with
+        provenance passes, and every other value is not_run or failed — never passed.
+        """
+        for recorded in (
+            None,
+            "",
+            {},
+            [],
+            "invented",
+            "failed",
+            "aborted",
+            {**NATIVE_INTERRUPT_OBSERVATION, "status": "aborted"},
+            {**NATIVE_INTERRUPT_OBSERVATION, "status": "invented"},
+            {**NATIVE_INTERRUPT_OBSERVATION, "status": None},
+        ):
+            results = run_wave2_native_interrupt(tmp_path, recorded)
+            assert results["W2-06"].status != _mod.STATUS_PASSED, (
+                f"{recorded!r} reached a PASS without an observed non-aborted outcome"
+            )
 
 
 class TestWave2AbortedChecks:
@@ -3469,18 +4831,24 @@ class TestWave2AbortedChecks:
                 results[check_id].message,
             )
 
-    def test_the_unowned_checks_are_not_run_not_passed(self, tmp_path: Path):
+    def test_no_check_reports_not_run_on_a_complete_fixture(self, tmp_path: Path):
         """The honesty property, at the driver level.
 
-        Narrowed from five IDs to two when S2 (#3961) implemented W2-03..W2-05: a
-        check with a predicate must no longer report `not_run` on a complete
-        fixture, and the two that remain have no predicate in this revision.
+        Narrowed from five IDs to two when S2 (#3961) implemented W2-03..W2-05, and
+        inverted by #5825, which implemented the last two. The property worth
+        asserting is now the strong direction: given complete evidence, no check
+        reports `not_run`. A `not_run` here would mean an observation the harness
+        claims to make that it silently cannot, which is the failure the old
+        ID-by-ID list was a stand-in for.
         """
         results = run_wave2(tmp_path)
 
-        for check_id in ("W2-01", "W2-10"):
-            assert results[check_id].status == _mod.STATUS_NOT_RUN, check_id
-            assert "delivered by" in results[check_id].message, check_id
+        unanswered = {
+            check_id: result.message
+            for check_id, result in results.items()
+            if result.status == _mod.STATUS_NOT_RUN
+        }
+        assert unanswered == {}
 
     # ---- W2-06: terminality and neutrality -----------------------------
 
@@ -3530,11 +4898,8 @@ class TestWave2AbortedChecks:
 
     def test_a_native_interrupt_recorded_as_aborted_fails(self, tmp_path: Path):
         """The harness-neutral contract's central prohibition."""
-        payloads = {**artifact_payloads(), **wave2_artifact_payloads()}
-        payloads["harness_neutrality"]["native_interrupt_status"] = "aborted"
-
-        results = run_wave2(
-            tmp_path, config=wave2_config(tmp_path, artifact_payloads=payloads)
+        results = run_wave2_native_interrupt(
+            tmp_path, {**NATIVE_INTERRUPT_OBSERVATION, "status": "aborted"}
         )
 
         assert results["W2-06"].status == _mod.STATUS_FAILED
@@ -4431,29 +5796,4478 @@ def test_wave2_rejects_empty_or_vacuous_evidence(tmp_path, artifact, field, valu
 
 
 
-def test_combined_wave2_runs_both_stories_and_keeps_the_full_gate(tmp_path):
+def test_combined_wave2_runs_every_story_and_can_now_reach_a_complete_report(tmp_path):
+    """The state #5825 exists to make reachable: ten of ten, on complete evidence.
+
+    Before this defect was fixed the arithmetic could not add up — W2-01 and W2-10
+    had no predicate, so the wave was permanently 8/10 and evaluation #3968 could
+    never close. This asserts the counting end to end: every ID answered, every one
+    passed, and `report_is_passing` agreeing.
+
+    Note what is being demonstrated and what is not. This is a complete *fixture*,
+    which proves the harness would accept a correct deployment. It is not live
+    evidence, and merging it does not accept wave 2 — the real run belongs to the
+    maintainer. The companion property, that nothing short of this reaches a pass,
+    is `TestNoPassingWave2WithoutTenChecksAndVerifiedCleanup`.
+    """
     config = wave2_config(tmp_path)
     results = run_wave2(tmp_path, config=config)
     passed = {key for key, value in results.items() if value.status == _mod.STATUS_PASSED}
-    # S3's W2-02, S2's W2-03..W2-05 and S5's W2-06..W2-09 — eight of the ten.
-    assert passed == {
-        "W2-02",
-        "W2-03",
-        "W2-04",
-        "W2-05",
-        "W2-06",
-        "W2-07",
-        "W2-08",
-        "W2-09",
-    }
-    assert {key for key, value in results.items() if value.status == _mod.STATUS_NOT_RUN} == set(_mod.PENDING_CHECK_OWNERS)
+    # All ten: S3's W2-02, S2's W2-03..W2-05, S5's W2-06..W2-09 and #5825's
+    # W2-01 preflight plus W2-10 verified cleanup.
+    assert passed == {spec.check_id for spec in _mod.WAVE2_CHECKS}
+    assert not [key for key, value in results.items() if value.status == _mod.STATUS_NOT_RUN]
     report = _mod.build_report(config, list(results.values()), cleanup_ok=True, wave=2,
                               expected_ids=tuple(spec.check_id for spec in _mod.WAVE2_CHECKS))
     assert report["required"] == 10
-    # The arithmetic that matters is that it still does not add up to ten: the
-    # wave cannot report success while W2-01 and W2-10 have no predicate, however
-    # many of the other eight pass.
-    assert report["passed"] == 8
-    assert report["not_run"] == 2
+    assert report["passed"] == 10
+    assert report["not_run"] == 0
     assert report["failed"] == 0
-    assert not _mod.report_is_passing(report)
+    assert _mod.report_is_passing(report)
+
+
+# ===========================================================================
+# W2-01 (consolidated preflight) and W2-10 (verified cleanup and security
+# recheck), delivered by #5825 to close evaluation #3968's last gap.
+#
+# The posture is the same as every other driver test here and worth restating,
+# because it is what makes these tests worth their length: the harness never
+# runs in CI, so nothing below observes a deployment. What CI proves is that
+# each check would NOTICE a deployment being wrong. Every test starts from the
+# complete passing fixture above and bends exactly one observation, so a failure
+# names one defect rather than being ambiguous between several.
+#
+# A check that cannot fail is worse than a missing one, because it looks like
+# evidence. These are the tests that establish these two can.
+# ===========================================================================
+
+
+def run_w2_01(tmp_path: Path, *, preflight=None, config=None, client=None, graph=None):
+    """Drive W2-01 alone and return its CheckResult.
+
+    `preflight` replaces the W2-01 artifact payload; pass `False` to omit the
+    artifact from the config entirely, which is the distinct "could not look" case.
+    `graph` replaces the commit graph W2-01's containment queries are answered from,
+    which is how a test models a deployment that does not contain a story.
+    """
+    payloads = {
+        **artifact_payloads(),
+        **wave2_artifact_payloads(),
+        **pause_artifact_payloads(),
+        **wave2_only_artifact_payloads(),
+    }
+    if preflight is False:
+        payloads.pop("wave2_preflight")
+    elif preflight is not None:
+        payloads["wave2_preflight"] = preflight
+    config = config or wave2_config(tmp_path, artifact_payloads=payloads)
+    results = run_wave2(tmp_path, config=config, client=client, graph=graph)
+    return results["W2-01"]
+
+
+def run_w2_10(
+    tmp_path: Path,
+    *,
+    capture_artifact=None,
+    verification=None,
+    cleanup=_UNSET,
+    capture=_UNSET,
+    teardown=_UNSET,
+    resources=None,
+    runner=None,
+    config=None,
+    client=None,
+):
+    """Drive W2-10 alone and return its CheckResult.
+
+    `capture_artifact` replaces the pre-teardown `security_capture` artifact and
+    `verification` the post-teardown `teardown_verification` one (`False` omits
+    either). `cleanup` replaces the harness's own deletion record, `capture` its own
+    pre-teardown observations, and `teardown` its own record of invoking the fixture's
+    resource teardown (`None` for each models that half never having happened).
+    `resources`/`runner` change what the teardown command actually DOES. Defaults
+    model a correct teardown of a correct fixture.
+
+    A bent `verification` is modelled as what the teardown command WROTE, not as a
+    file sitting on disk beforehand. That distinction matters: the seam refuses an
+    artifact whose bytes did not change across the teardown, so pre-seeding a bent
+    payload would trip the prefilled-artifact rule and every test below would fail for
+    that one reason instead of the defect it names. Writing it from the runner keeps
+    each test bending exactly one observation of an otherwise honest run. The
+    prefilled case gets its own explicit test rather than being an artefact of how
+    this helper stages files.
+
+    The two artifacts are separate parameters rather than one because they are the
+    two sides of the teardown boundary, and a test that bends the security half must
+    be unable to accidentally perturb the absence half.
+    """
+    payloads = {
+        **artifact_payloads(),
+        **wave2_artifact_payloads(),
+        **pause_artifact_payloads(),
+        **wave2_only_artifact_payloads(),
+    }
+    if capture_artifact is False:
+        payloads.pop("security_capture")
+    elif capture_artifact is not None:
+        payloads["security_capture"] = capture_artifact
+    if verification is False:
+        # An absent artifact: the teardown must not write one either, or the file
+        # would exist after all and the "could not look" case would not be modelled.
+        payloads.pop("teardown_verification")
+    config = config or wave2_config(tmp_path, artifact_payloads=payloads)
+    if runner is None and (verification is not None or "teardown_verification" not in payloads):
+        resources = resources if resources is not None else FixtureResources()
+        runner = teardown_runner_for(
+            tmp_path,
+            config,
+            resources,
+            write_verification=verification is not False,
+            verification=verification if verification is not False else None,
+        )
+    # `cleanup`, `capture` and `teardown` are forwarded UNRESOLVED so the default path
+    # runs the real `run_cleanup`, the real capture and the real teardown seam against
+    # the shared store and the fixture resources, in order. Materializing a cleanup
+    # record here instead would leave the store's rows in place while the record called
+    # them deleted — the two-worlds fixture again.
+    results = run_wave2(
+        tmp_path,
+        config=config,
+        client=client,
+        cleanup=cleanup,
+        capture=capture,
+        teardown=teardown,
+        resources=resources,
+        runner=runner,
+    )
+    return results["W2-10"]
+
+
+class TestWave2PreflightIsDiscriminating:
+    """W2-01: does this evidence describe the build under review?
+
+    The reason this check is `Gate/regression` rather than an acceptance ID: if it
+    is wrong, the other nine checks are correct observations of the WRONG THING,
+    which reads exactly like a passing wave. So the failure mode it guards against
+    is not "a check went red" but "nine checks went green about nothing".
+    """
+
+    def test_a_complete_preflight_passes(self, tmp_path: Path):
+        result = run_w2_01(tmp_path)
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    def test_an_absent_artifact_is_not_run_not_failed_and_not_passed(self, tmp_path: Path):
+        """"Could not look" is a third thing, and the distinction is the contract.
+
+        `not_run` is nonzero, so this is never a false green — but it must not be
+        `failed` either, because a missing recording is the operator's omission
+        rather than evidence the deployment is wrong, and telling them apart is
+        what makes the report actionable.
+        """
+        result = run_w2_01(tmp_path, preflight=False)
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert result.status != _mod.STATUS_PASSED
+        assert "wave2_preflight" in result.message
+
+    def test_a_present_but_incomplete_artifact_fails_rather_than_not_running(
+        self, tmp_path: Path
+    ):
+        """Half-filled is a different thing from absent, and it is a failure.
+
+        The operator looked and recorded a partial answer. Reporting that as
+        `not_run` would invite them to "fix the omission" by supplying the file
+        they already supplied.
+        """
+        payload = wave2_preflight_payload()
+        del payload["deployed_components"]
+
+        result = run_w2_01(tmp_path, preflight=payload)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "deployed_components" in result.message
+
+    # ---- (1) prior-wave compatibility ----------------------------------
+
+    @pytest.mark.parametrize(
+        "field,value,expected_in_message",
+        [
+            # Not accepted at all.
+            ("accepted", False, "not recorded as accepted"),
+            ("accepted", None, "not recorded as accepted"),
+            # Accepted, but the evidence belongs to another evaluation.
+            ("evaluation", "3968", "not wave 1's acceptance"),
+            # Accepted "as a whole" while short of its own bar. `accepted: true`
+            # alone cannot distinguish a 10/10 run from a 9/10 one, which is why
+            # the counts are asserted separately.
+            ("passed", 9, "not an accepted baseline"),
+            ("required", 9, "not an accepted baseline"),
+            # Accepted with its fixture left enabled — the DP-INV-1 state.
+            ("cleanup_ok", False, "did not complete cleanup"),
+            # Provenance that does not identify a build.
+            ("revision", "main", "not a full 40-character git SHA"),
+            ("revision", "abc1234", "not a full 40-character git SHA"),
+            ("revision", None, "not a full 40-character git SHA"),
+            # Accepted, pinned, and anonymous. A revision says which build was
+            # evaluated; the run identity is what lets a reviewer retrieve the report
+            # instead of taking this summary of it on trust.
+            ("run_id", None, "records no 'run_id'"),
+            ("run_id", "", "records no 'run_id'"),
+        ],
+    )
+    def test_incompatible_or_absent_wave_one_evidence_fails(
+        self, tmp_path: Path, field, value, expected_in_message
+    ):
+        wave1 = wave2_preflight_payload()["wave1_evidence"]
+        wave1[field] = value
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(wave1_evidence=wave1))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert expected_in_message in result.message, result.message
+
+    def test_wave_one_evidence_that_is_not_an_object_fails(self, tmp_path: Path):
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(wave1_evidence="accepted")
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "must be an object" in result.message
+
+    @pytest.mark.parametrize(
+        "asserted",
+        [
+            {"compatible_with_current_revision": True},
+            {"compatible_with_current_revision": "yes"},
+            {"contained_in": contained_in_claim()},
+        ],
+    )
+    def test_an_asserted_wave_one_compatibility_claim_is_not_evidence(
+        self, tmp_path: Path, asserted
+    ):
+        """Root's third finding, on the prior-wave half.
+
+        Both spellings of the same circularity. `compatible_with_current_revision:
+        true` is the CONCLUSION this section is supposed to reach, and so is a
+        `contained_in` map carrying `is_ancestor: true` — renaming the assertion did
+        not turn it into evidence, which is precisely what the review said about my
+        previous attempt. The positive-looking value is the one under test, because it
+        is the one that used to pass.
+
+        Neither can help now: the harness asks git, and wave 1's revision is absent
+        from the graph this parametrization runs against. So the claim in the artifact
+        is inert — which is the property, not an incidental detail.
+        """
+        wave1 = wave2_preflight_payload()["wave1_evidence"]
+        wave1.update(asserted)
+        wave1["revision"] = INVENTED_REVISION
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(wave1_evidence=wave1))
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert "is not a commit in this checkout" in result.message, result.message
+        assert INVENTED_REVISION in result.message
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    def test_wave_one_evidence_not_contained_in_a_deployed_component_fails(
+        self, tmp_path: Path, component
+    ):
+        """The subtle case: a TRUE observation of a build this one has since changed.
+
+        Stale rather than wrong — wave 1 really was accepted, on a revision this
+        deployment no longer contains. Expressed as a GRAPH in which the component
+        branched before wave 1's accepted commit, because that is what the situation
+        actually is; the artifact has no field left that could express it, which is the
+        point of computing containment instead of reading it.
+
+        Parametrized over both components because containment in one and absence from
+        the other is the half-deployment shape, and a check reading only the worker
+        would pass a gateway that dropped it.
+        """
+        result = run_w2_01(tmp_path, graph=graph_without(component, WAVE1_ACCEPTED_REVISION))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "is not contained in the deployed" in result.message
+        assert component in result.message
+
+    # ---- (2) merged revisions, versions and CI -------------------------
+
+    @pytest.mark.parametrize("story", sorted(_mod.WAVE2_REQUIRED_STORIES))
+    def test_an_unmerged_contributing_story_fails(self, tmp_path: Path, story):
+        """Wave 2's checks span three stories; evidence gathered while one is
+        unmerged describes a build that does not implement the wave.
+
+        Parametrized over the stories rather than testing one, because "S2 is
+        checked and the others are assumed" is exactly the gap that lets a story
+        land unverified.
+        """
+        merged = wave2_preflight_payload()["merged_revisions"]
+        merged[story]["merged"] = False
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(merged_revisions=merged)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert story in result.message
+        assert "not recorded as merged" in result.message
+
+    @pytest.mark.parametrize("story", sorted(_mod.WAVE2_REQUIRED_STORIES))
+    def test_a_missing_story_revision_fails(self, tmp_path: Path, story):
+        merged = wave2_preflight_payload()["merged_revisions"]
+        del merged[story]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(merged_revisions=merged)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "no merged revision recorded" in result.message
+
+    @pytest.mark.parametrize("bad_revision", ["main", "a" * 39, "A" * 40, "", None, 40])
+    def test_provenance_that_does_not_pin_a_commit_fails(self, tmp_path: Path, bad_revision):
+        """Malformed provenance, enumerated.
+
+        A branch name, a short SHA, an uppercase SHA, empty, absent and a non-string
+        each have to fail: every one of them names something other than exactly one
+        commit, and the whole purpose of the field is to name exactly one commit.
+        """
+        merged = wave2_preflight_payload()["merged_revisions"]
+        merged["S2"]["revision"] = bad_revision
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(merged_revisions=merged)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not a full 40-character git SHA" in result.message
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    def test_a_merged_story_absent_from_the_running_build_fails(
+        self, tmp_path: Path, component
+    ):
+        """Merged is necessary and not sufficient: merged-but-not-deployed.
+
+        The stories landed on `main` and the running build branched before them, which
+        is what a deployment nobody refreshed looks like. Both components, because
+        containment in one and absence from the other is the half-deployment shape and
+        a check reading only the worker would pass a gateway that lacks the wave.
+        """
+        result = run_w2_01(tmp_path, graph=graph_without(component, WAVE2_REVISION))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "is not contained in the deployed" in result.message
+        assert component in result.message
+
+    @pytest.mark.parametrize(
+        "asserted",
+        [{"ci_passed": True}, {"contained_in": contained_in_claim()}],
+    )
+    def test_asserted_story_claims_are_not_containment_evidence(
+        self, tmp_path: Path, asserted
+    ):
+        """Neither a green merge nor a written-down ancestry says the story is running.
+
+        `ci_passed: true` says the merge was gated — a genuinely different question
+        from whether it is deployed, and an earlier revision took it as sufficient. A
+        `contained_in` map asserting `is_ancestor: true` is worse: it states the
+        conclusion. Both are in the artifact here, and the check reaches its answer
+        without consulting either, so the story still fails for the real reason.
+        """
+        merged = wave2_preflight_payload()["merged_revisions"]
+        merged["S5"].update(asserted)
+
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(merged_revisions=merged),
+            graph=graph_without("worker", WAVE2_REVISION),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "is not contained in the deployed" in result.message
+
+    def test_every_deployed_component_is_queried_for_every_story(self, tmp_path: Path):
+        """Both directions of reconciliation, now that the deployed set is authoritative.
+
+        The artifact no longer supplies a containment map, so it can neither omit a
+        deployed component nor invent an undeployed one — the harness iterates what is
+        deployed and asks git about each. This pins that: one query pair per
+        (story or prior wave) × component, plus the per-gate head-containment query the
+        pull_request path adds, and nothing else.
+        """
+        graph = CommitGraph()
+
+        result = run_w2_01(tmp_path, graph=graph)
+
+        assert result.status == _mod.STATUS_PASSED
+        asked = {
+            (argv[-2], argv[-1]) for argv in graph.queries if "merge-base" in argv
+        }
+        subjects = {WAVE1_ACCEPTED_REVISION, WAVE2_REVISION}
+        deployed = {DEPLOYED_WORKER_REVISION, DEPLOYED_GATEWAY_REVISION}
+        # The gates in the default fixture are `pull_request` runs, where the job builds
+        # a merge of the run's head — so each gate also asks whether its head is
+        # contained in what it checked out. Here both are the tested revision, which
+        # `--is-ancestor` answers reflexively.
+        tested = required_ci_gates()[_mod.WAVE2_REQUIRED_CI_GATES[0]]["tested_revision"]
+        assert asked == {(s, d) for s in subjects for d in deployed} | {(tested, tested)}
+
+    def test_an_invented_story_revision_cannot_be_confirmed(self, tmp_path: Path):
+        """The internally-consistent-but-invented case, on the story half.
+
+        A well-formed SHA nobody ever committed. Every syntax check passes and every
+        self-comparison agrees; git has simply never heard of it. That is NOT RUN
+        rather than FAILED — the harness could not look, and reporting a deployment
+        defect it did not observe would be the mirror of the false pass.
+        """
+        merged = wave2_preflight_payload()["merged_revisions"]
+        merged["S2"]["revision"] = INVENTED_REVISION
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(merged_revisions=merged)
+        )
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert "is not a commit in this checkout" in result.message
+        assert INVENTED_REVISION in result.message
+
+    @pytest.mark.parametrize(
+        ("broken", "expected_in_message"),
+        [
+            ({"fail_with": 128}, "exited 128"),
+            ({"raises": FileNotFoundError("git")}, "git could not be run"),
+        ],
+    )
+    def test_a_checkout_that_cannot_answer_is_not_run_rather_than_failed(
+        self, tmp_path: Path, broken, expected_in_message
+    ):
+        """git failing to answer is a gap in the evidence, not a defect in the build.
+
+        A broken checkout and an absent git both have to come back NOT RUN. The
+        alternative is worse than a false pass in one specific way: it would report a
+        stale deployment that is not stale, and an operator who trusted it would
+        redeploy a correct environment to chase an evaluator's error.
+        """
+        result = run_w2_01(tmp_path, graph=CommitGraph(**broken))
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert expected_in_message in result.message
+
+    def test_a_deployment_newer_than_the_merge_commits_passes(self, tmp_path: Path):
+        """Root's second finding, stated as the property rather than as a negative.
+
+        The deployed revisions in this fixture are NOT equal to any story's merge
+        commit — they are newer, which is what a correct deployment is. An earlier
+        revision required `recheck_revision == merged_revisions.S2.revision`, so this
+        entirely correct topology failed, and the only way to satisfy it would have
+        been to redeploy an old merge commit to please the evaluator.
+        """
+        preflight = wave2_preflight_payload()
+        deployed = {
+            entry["revision"] for entry in preflight["deployed_components"].values()
+        }
+        merge_commits = {
+            entry["revision"] for entry in preflight["merged_revisions"].values()
+        }
+        # The premise: this fixture really is the newer-deployment case.
+        assert not (deployed & merge_commits)
+        assert WAVE1_ACCEPTED_REVISION not in deployed
+
+        result = run_w2_01(tmp_path, preflight=preflight)
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    @pytest.mark.parametrize(
+        "field,value,expected_in_message",
+        [
+            ("protocol_version", 2, "control protocol version"),
+            ("protocol_version", "1", "control protocol version"),
+            ("adapter_id", "echo", "records adapter"),
+            ("sdk_version", "0.3.219", "the lockfile pins"),
+        ],
+    )
+    def test_a_contract_version_mismatch_fails(
+        self, tmp_path: Path, field, value, expected_in_message
+    ):
+        """The gateway peer, the adapter and this harness must move together.
+
+        `protocol_version: "1"` is in the table deliberately: the string and the
+        integer are equal to a human reader and unequal to the contract, and a
+        recording that stringified the version is the realistic form of this defect.
+        """
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(**{field: value}))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert expected_in_message in result.message
+
+    @pytest.mark.parametrize("package", _mod.WAVE2_REQUIRED_PACKAGES)
+    def test_an_unpinned_package_version_fails(self, tmp_path: Path, package):
+        """The control path spans two runtimes; an unrecorded version on either
+        side is a contract nobody pinned."""
+        packages = dict(wave2_preflight_payload()["package_versions"])
+        del packages[package]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(package_versions=packages)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert package in result.message
+
+    @pytest.mark.parametrize("empty_version", ["", "   "])
+    def test_a_blank_package_version_fails(self, tmp_path: Path, empty_version):
+        """Present-but-blank is the form a templated recording takes when the
+        substitution did not happen, and it must not read as pinned."""
+        packages = dict(wave2_preflight_payload()["package_versions"])
+        packages[_mod.WAVE2_REQUIRED_PACKAGES[0]] = empty_version
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(package_versions=packages)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+
+    # ---- (3) deployed identity, per component -------------------------
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    def test_an_image_not_built_from_the_deployed_revision_fails(
+        self, tmp_path: Path, component
+    ):
+        """Root's third finding: the source-to-image link, without which a digest
+        establishes nothing.
+
+        The component records a running revision and a well-formed digest, but the
+        image was BUILT FROM some other commit — so what is running traces to source
+        nobody reviewed. Both sides are parametrized because one component checked and
+        the other assumed is the half-deployment shape, and that asymmetry is exactly
+        what makes a stale image survive review.
+
+        The archived run document agrees with the wrong revision, which is the honest
+        shape of this defect: the build really did consume that commit. So there is
+        nothing internally inconsistent to catch, and the check has to notice the thing
+        that is actually wrong — a running image tracing to unreviewed source.
+        """
+        other = STALE_BRANCH_POINT
+        components = deployed_components()
+        components[component]["source_revision"] = other
+        components[component]["build_record"] = build_record(
+            component, other, components[component]["image_digest"]
+        )
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert component in result.message
+        assert "was built from source revision" in result.message
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    @pytest.mark.parametrize("key", _mod.DEPLOYED_COMPONENT_KEYS)
+    def test_an_incomplete_deployed_identity_fails(self, tmp_path: Path, component, key):
+        """Every one of the three facts, on every component.
+
+        Parametrized over the full product rather than one example: a missing
+        `source_revision` on the gateway is a different blind spot from a missing
+        `image_digest` on the worker, and a check covering some of them would leave
+        the rest unexamined.
+        """
+        components = deployed_components()
+        del components[component][key]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    # ---- (1b) the build record: provenance rather than self-agreement ----
+    #
+    # Root's finding 3, stated as the discriminating question: does this pass because
+    # something was RETRIEVED, or because two fields the operator wrote agree? Every
+    # test below keeps the record internally consistent and removes only the retrieval,
+    # because "well-formed, self-agreeing, and not linked to anything retrievable" is
+    # the case the review asked for — not a mismatched string.
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    def test_a_self_agreeing_component_with_no_build_record_fails(
+        self, tmp_path: Path, component
+    ):
+        """The exact shape that used to pass: `revision == source_revision`, valid digest.
+
+        Nothing here is malformed and nothing disagrees. It is the pre-#5825 record in
+        full, and the only thing missing is any evidence that a build ever happened —
+        which is precisely why it must not pass. Two equal recorded strings establish
+        that the operator wrote one SHA twice.
+        """
+        components = deployed_components()
+        del components[component]["build_record"]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "build_record" in result.message
+
+    @pytest.mark.parametrize("key", _mod.BUILD_RECORD_KEYS)
+    def test_a_build_record_missing_any_link_fails(self, tmp_path: Path, key):
+        """Each link in the chain, separately.
+
+        Parametrized over the whole key set rather than one example: a record without
+        `registry_digest` cannot say what is being served, one without `run_url` cannot
+        be opened, and one without `raw` is a summary of a document nobody archived.
+        Those are different blind spots, and covering one would leave the others.
+        """
+        components = deployed_components()
+        del components["worker"]["build_record"][key]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    @pytest.mark.parametrize("truthy", [True, 1, ["run"], {"id": 1}])
+    def test_a_build_run_identity_that_is_not_a_string_fails(self, tmp_path: Path, truthy):
+        """An arbitrary truthy value satisfies a presence check and identifies nothing.
+
+        The literal defect root named on the CI half, tested here on the build half
+        too: a bare `if not record.get(key)` accepts `True`, and `True` is not a run
+        anybody can retrieve.
+        """
+        components = deployed_components()
+        components["worker"]["build_record"]["build_id"] = truthy
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "must be a string identifying the build run" in result.message
+
+    @pytest.mark.parametrize(
+        "not_a_location", ["the CI run", "adp/actions/runs/1", "http://example.invalid/1"]
+    )
+    def test_a_build_run_url_that_cannot_be_opened_fails(
+        self, tmp_path: Path, not_a_location
+    ):
+        """The field is there so a reviewer can go and read the run.
+
+        A prose description, a bare path and a plaintext URL all fail: the first two
+        are not locations at all, and the point of requiring https is that the value
+        has to be a fetchable reference rather than a plausible-looking string.
+        """
+        components = deployed_components()
+        components["worker"]["build_record"]["build_url"] = not_a_location
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not an https URL" in result.message
+
+    @pytest.mark.parametrize("document", _mod.BUILD_RECORD_RAW_DOCUMENTS)
+    @pytest.mark.parametrize("key", _mod.RAW_METADATA_KEYS)
+    def test_an_archived_document_missing_its_own_provenance_fails(
+        self, tmp_path: Path, document, key
+    ):
+        """An archive has to say how it was obtained, when, and what came back.
+
+        Without `command` a reviewer cannot re-retrieve it; without `retrieved_at` a
+        document carried over from a previous evaluation is invisible; without `body`
+        the archive is a claim that an archive exists. All three documents, because the
+        build, its log and the registry read are independently forgeable.
+        """
+        components = deployed_components()
+        del components["worker"]["build_record"]["raw"][document][key]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    @pytest.mark.parametrize("document", _mod.BUILD_RECORD_RAW_DOCUMENTS)
+    def test_an_empty_archived_body_is_not_an_archive(self, tmp_path: Path, document):
+        """The shape a placeholder takes, and it must not satisfy a presence check.
+
+        `body: {}` is what a collection script writes when the retrieval failed and
+        nobody looked. It is present, correctly typed, and says nothing.
+        """
+        components = deployed_components()
+        components["worker"]["build_record"]["raw"][document]["body"] = {}
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "body" in result.message
+
+    def test_an_undatable_archive_retrieval_fails(self, tmp_path: Path):
+        """A retrieval nobody can date cannot be told from one carried forward.
+
+        The same reasoning as the teardown artifact's `captured_at`: a document from an
+        earlier evaluation may describe a build this one has since replaced, and an
+        unparseable timestamp makes that indistinguishable from a fresh read.
+        """
+        components = deployed_components()
+        components["worker"]["build_record"]["raw"]["build"]["retrieved_at"] = "recently"
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not a parseable ISO-8601 instant" in result.message
+
+    @pytest.mark.parametrize("uncorroborated", ["built_revision", "build_id", "image_tag"])
+    def test_a_build_summary_the_archive_does_not_corroborate_fails(
+        self, tmp_path: Path, uncorroborated
+    ):
+        """The cross-check that makes the archive load-bearing rather than decorative.
+
+        One field at a time: the archived build document is a real, well-formed
+        SUCCEEDED response that corroborates everything EXCEPT the value under test.
+        The record stays internally consistent throughout, so what fails is
+        specifically the absence of retrieval behind one claim — which is what an
+        invented summary attached to a genuine document looks like, and what a
+        shape-only check would accept.
+        """
+        components = deployed_components()
+        record = components["worker"]["build_record"]
+        other_revision = "0" * 40
+        # A complete, plausible SUCCEEDED build, with the one value under test replaced
+        # by something the build genuinely reported instead.
+        substitutions = {
+            "build_id": ("adp-worker-build:some-other-build", record["built_revision"], record["image_tag"]),
+            "built_revision": (record["build_id"], other_revision, record["image_tag"]),
+            "image_tag": (record["build_id"], record["built_revision"], "some-other-tag"),
+        }
+        build_id, revision, tag = substitutions[uncorroborated]
+        body = codebuild_body(build_id, revision, tag)
+        if uncorroborated == "built_revision":
+            # Keep the source archive consistent with the revision the build reports,
+            # so the ONLY thing wrong is that the summary claims a different one.
+            body["builds"][0]["source"]["location"] = f"bucket/codebuild/src/{revision}-a1b2c3.zip"
+        record["raw"]["build"]["body"] = body
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "but the archived build document reports" in result.message
+        assert uncorroborated in result.message
+
+    def test_a_failed_build_cannot_establish_what_is_running(self, tmp_path: Path):
+        """Root's reproduction (b): a build whose own outcome is a failure.
+
+        Reported as still passing at `9b797746`, and this is why. The check dumped the
+        archived body to JSON and searched it for the expected revision and build id.
+        Both appear in a FAILED build's response exactly as they appear in a successful
+        one — the response is about that build either way — so the outcome field was
+        never consulted. A build that failed published no image, so its output cannot
+        be the provenance of a running one.
+
+        Every CodeBuild non-success state, because "not SUCCEEDED" is the condition,
+        not a list of the ones somebody remembered.
+        """
+        for status in ("FAILED", "FAULT", "STOPPED", "TIMED_OUT", "IN_PROGRESS"):
+            components = deployed_components()
+            record = components["worker"]["build_record"]
+            record["raw"]["build"]["body"] = codebuild_body(
+                record["build_id"],
+                record["built_revision"],
+                record["image_tag"],
+                status=status,
+            )
+
+            result = run_w2_01(
+                tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+            )
+
+            assert result.status == _mod.STATUS_FAILED, status
+            assert f"buildStatus {status!r}" in result.message
+            assert "did not publish an image" in result.message
+
+    def test_an_unrelated_document_that_merely_mentions_the_right_strings_fails(
+        self, tmp_path: Path
+    ):
+        """Root's reproduction (c), and the one that shows presence bought nothing.
+
+        The entire archived build document is replaced by a single prose field that
+        happens to contain the build id and the revision. Under the substring matcher
+        this passed — the strings were there — which means requiring the archive gave
+        no more assurance than requiring the summary alone, since the operator writes
+        both. A document that is not a `batch-get-builds` response cannot corroborate
+        a build, however many of the right words it contains.
+        """
+        components = deployed_components()
+        record = components["worker"]["build_record"]
+        record["raw"]["build"]["body"] = {
+            "unrelated_notes": (
+                f"build {record['build_id']} was started for revision "
+                f"{record['built_revision']} and tagged {record['image_tag']}"
+            )
+        }
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not a usable `aws codebuild batch-get-builds` response" in result.message
+        assert "'builds' in the CodeBuild response must be a nonempty list" in result.message
+
+    def test_a_build_whose_source_archive_is_another_revision_fails(self, tmp_path: Path):
+        """The override says one commit; the archive the build consumed is another.
+
+        `codebuild-run.sh` uploads `git archive <sha>` to
+        `codebuild/src/<sha>-<unique>.zip` and separately passes `ADP_SOURCE_SHA`. The
+        environment override is just a string the caller set, so on its own it is the
+        same class of evidence as the summary field. What the build actually compiled
+        is the archive, and when the two disagree the override is wrong about the
+        build.
+        """
+        components = deployed_components()
+        record = components["worker"]["build_record"]
+        body = codebuild_body(
+            record["build_id"], record["built_revision"], record["image_tag"]
+        )
+        body["builds"][0]["source"]["location"] = (
+            "bucket/codebuild/src/" + "9" * 40 + "-a1b2c3.zip"
+        )
+        record["raw"]["build"]["body"] = body
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "which does not name revision" in result.message
+
+    def test_a_built_digest_the_build_log_does_not_report_fails(self, tmp_path: Path):
+        """The link root's review said was never corroborated by build output at all.
+
+        `built_digest` was compared against the running image and against the registry
+        — both of which the same operator recorded — so a digest nobody published
+        satisfied the chain as long as it was written consistently in three places.
+        The build states what it pushed, on the `<tag>: digest: sha256:... size: ...`
+        line, and that line is the only first-hand source for the value.
+        """
+        components = deployed_components()
+        record = components["worker"]["build_record"]
+        other = "sha256:" + "7" * 64
+        record["raw"]["build_log"]["body"] = push_log_body(record["image_tag"], other)
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "reports the build pushed tag" in result.message
+        assert other in result.message
+
+    def test_a_build_log_with_no_push_line_cannot_corroborate_a_digest(
+        self, tmp_path: Path
+    ):
+        """A log that never says it pushed anything is not evidence that it did.
+
+        The shape a truncated or wrong-stream log takes. It is present, correctly
+        typed, and contains no statement about a published digest — so the recorded
+        one is still a value the operator typed.
+        """
+        components = deployed_components()
+        record = components["worker"]["build_record"]
+        record["raw"]["build_log"]["body"] = {
+            "events": [
+                {"message": "Phase complete: BUILD State: SUCCEEDED"},
+                {"message": f"pushed {record['built_digest']} eventually"},
+            ]
+        }
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "no `docker push` digest line" in result.message
+
+    def test_a_registry_serving_a_different_digest_fails(self, tmp_path: Path):
+        """The build succeeded; something else is running.
+
+        The one link the operator cannot retype their way around, because the registry
+        reports what is actually being served. A build record that agrees with itself
+        while the registry serves another image is a deployment that did not take.
+        """
+        components = deployed_components()
+        record = components["worker"]["build_record"]
+        other = "sha256:" + "7" * 64
+        record["registry_digest"] = other
+        record["raw"]["registry"]["body"] = {
+            "imageDetails": [
+                {
+                    "repositoryName": record["repository"],
+                    "imageDigest": other,
+                    "imageTags": [record["image_tag"]],
+                }
+            ]
+        }
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "the registry is the side that cannot be retyped" in result.message.lower()
+
+    def test_a_registry_entry_without_the_pushed_tag_fails(self, tmp_path: Path):
+        """The digest is right; it is not the image this build's tag resolves to.
+
+        The tag is the only thing binding a build to a registry entry, so a response
+        describing an image that does not carry it is a response about a different
+        image — the "unrelated record containing the desired strings" case, on the
+        registry side.
+        """
+        components = deployed_components()
+        record = components["worker"]["build_record"]
+        record["raw"]["registry"]["body"] = {
+            "imageDetails": [
+                {
+                    "repositoryName": record["repository"],
+                    "imageDigest": record["registry_digest"],
+                    "imageTags": ["some-other-tag"],
+                }
+            ]
+        }
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "reports the served image carrying tags" in result.message
+
+    def test_the_real_codebuild_source_and_ecr_path_satisfies_the_schema(
+        self, tmp_path: Path
+    ):
+        """Root's actual build path, not an attestation format nobody can produce.
+
+        Root reported what the live builds emit: `codebuild-run.sh` with
+        `ADP_RELEASE_BUILD=true` uploads a `git archive` of the exact commit to a
+        per-build S3 key, passes the commit as the `ADP_SOURCE_SHA` environment
+        override, tags the image with the full SHA, and the evidence available for
+        acceptance is `aws codebuild batch-get-builds` plus the S3 source object and
+        the ECR digest — with `PUBLISH_LATEST=false` so no moving tag is involved.
+        They asked, reasonably, that the harness support that rather than require a
+        GitHub attestation format they cannot obtain.
+
+        This test is how that request is answered as a fact rather than a promise. It
+        builds the record entirely out of what those commands really return —
+        `source.location` naming the S3 archive, `ADP_SOURCE_SHA` and `IMAGE_TAG` in
+        `environment.environmentVariables`, `buildStatus`, the `docker push` digest
+        line in the build log, the ECR image detail, and the CodeBuild console link —
+        and asserts W2-01 accepts it.
+
+        The negatives around it are what make this meaningful: the same document with
+        `buildStatus` anything but SUCCEEDED fails, a build whose source archive names
+        another revision fails, a log that does not report the push digest fails, and a
+        registry entry not carrying the pushed tag fails. A positive control alone would
+        only establish that some document passes.
+
+        The `raw` bodies are the redacted shapes, not real output — a test cannot
+        produce real output, and pretending otherwise would be the same substitution
+        this whole review is about. What it establishes is that the schema admits
+        this path; whether the archived documents are genuine is root's to see when
+        they run it against the live account.
+        """
+        revision = "405d1e6eb531105239432b2719844e1e51e60a93"
+        digest = "sha256:" + "c" * 64
+        tag = revision
+        codebuild_id = "adp-dev-agent-runtime:9f8e7d6c-1234-4abc-8def-0123456789ab"
+        source_object = (
+            "adp-terraform-state-879318057152/codebuild/src/" + revision + "-1758672000-4242.zip"
+        )
+
+        record = build_record(
+            "worker",
+            revision,
+            digest,
+            project="adp-dev-agent-runtime",
+            build_id=codebuild_id,
+            build_url=(
+                "https://us-east-1.console.aws.amazon.com/codesuite/codebuild/projects/"
+                "adp-dev-agent-runtime/build/" + codebuild_id.replace(":", "%3A")
+            ),
+            image_tag=tag,
+            repository="adp-dev-agent-runtime",
+            raw={
+                "build": raw_metadata(
+                    f"aws codebuild batch-get-builds --ids {codebuild_id} --region us-east-1",
+                    {
+                        "builds": [
+                            {
+                                "id": codebuild_id,
+                                "projectName": "adp-dev-agent-runtime",
+                                "buildStatus": "SUCCEEDED",
+                                # The S3 source object: the release build's source is a
+                                # `git archive` of one commit, so this key IS the source
+                                # revision's contents and names it.
+                                "source": {"type": "S3", "location": source_object},
+                                "resolvedSourceVersion": "3HL4kqtJlcpXroDTDmjVBH40Nrjfkd",
+                                "environment": {
+                                    "environmentVariables": [
+                                        {"name": "ADP_SOURCE_SHA", "value": revision},
+                                        {"name": "IMAGE_TAG", "value": tag},
+                                        {"name": "PUBLISH_LATEST", "value": "false"},
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                ),
+                "build_log": raw_metadata(
+                    "aws logs get-log-events "
+                    "--log-group-name /aws/codebuild/adp-dev-agent-runtime "
+                    "--log-stream-name 9f8e7d6c-1234-4abc-8def-0123456789ab --region us-east-1",
+                    {
+                        "events": [
+                            {
+                                "message": "The push refers to repository "
+                                "[879318057152.dkr.ecr.us-east-1.amazonaws.com/"
+                                "adp-dev-agent-runtime]"
+                            },
+                            {"message": f"{tag}: digest: {digest} size: 4703"},
+                            {"message": "Phase complete: BUILD State: SUCCEEDED"},
+                        ]
+                    },
+                ),
+                "registry": raw_metadata(
+                    "aws ecr describe-images --repository-name adp-dev-agent-runtime "
+                    f"--image-ids imageTag={tag} --region us-east-1",
+                    {
+                        "imageDetails": [
+                            {
+                                "repositoryName": "adp-dev-agent-runtime",
+                                "imageDigest": digest,
+                                "imageTags": [tag],
+                                "registryId": "879318057152",
+                            }
+                        ]
+                    },
+                ),
+            },
+        )
+        components = deployed_components()
+        components["worker"] = {
+            "revision": revision,
+            "image_digest": digest,
+            "source_revision": revision,
+            "build_record": record,
+        }
+        # The commit graph has to contain the revision, because containment is
+        # computed rather than recorded — the real run answers from the operator's
+        # clone, which is where this commit actually lives.
+        graph = CommitGraph()
+        graph.parents[revision] = (WAVE2_REVISION,)
+        gates = required_ci_gates(tested_revision=revision)
+
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                deployed_components=components, ci_gates=gates
+            ),
+            graph=graph,
+        )
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    def test_a_missing_deployed_component_fails(self, tmp_path: Path, component):
+        """A gateway speaking this contract in front of a worker that does not is the
+        normal half-deployment, and it is invisible to any check reading one side."""
+        components = deployed_components()
+        del components[component]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "no deployed identity recorded" in result.message
+        assert component in result.message
+
+    @pytest.mark.parametrize("bad", ["main", "a" * 39, "A" * 40, "", None, 40])
+    @pytest.mark.parametrize("key", ["revision", "source_revision"])
+    def test_a_deployed_revision_that_does_not_pin_a_commit_fails(
+        self, tmp_path: Path, key, bad
+    ):
+        """A branch name, a short SHA, an uppercase SHA, empty, absent, a non-string.
+
+        Each names something other than exactly one commit, and pinning exactly one
+        commit is the entire purpose of the field. `main` matters most: it is what an
+        operator writes when the deployment came from a moving ref, which is precisely
+        when "what is running" is unknowable.
+        """
+        components = deployed_components()
+        components["worker"][key] = bad
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not a full 40-character git SHA" in result.message
+
+    @pytest.mark.parametrize("bad", ["pending", "not-a-digest", "sha256:abc", "", None])
+    def test_a_malformed_image_digest_fails_rather_than_comparing_equal(
+        self, tmp_path: Path, bad
+    ):
+        """Two equally-malformed values compare equal.
+
+        The mutation that separates a real digest check from a string comparison: an
+        unparseable value cannot identify a build, and a comparison between two of them
+        succeeds whenever they are equally malformed. `pending` is the realistic form —
+        what a templated recording holds when the substitution never happened.
+        """
+        components = deployed_components()
+        components["worker"]["image_digest"] = bad
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not a sha256 digest" in result.message
+
+    def test_identical_worker_and_gateway_digests_fail(self, tmp_path: Path):
+        """A copied value would make a stale half-deployment pass both pairings.
+
+        Worker and gateway are separate images from separate Dockerfiles, so an equal
+        pair cannot be a true recording — and the specific way it lies is that it
+        satisfies every per-component comparison above while describing one image
+        twice.
+
+        The copy is thorough on purpose: the gateway's build record is rewritten around
+        the worker's digest too, so every per-component link still holds and the ONLY
+        thing wrong is that two components claim one image. A test that copied the
+        digest alone would be caught by the build-record cross-check instead, and would
+        stop covering the defect it names.
+        """
+        components = deployed_components()
+        components["gateway"]["image_digest"] = WORKER_DIGEST
+        components["gateway"]["build_record"] = build_record(
+            "gateway", DEPLOYED_GATEWAY_REVISION, WORKER_DIGEST
+        )
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(deployed_components=components)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "same image digest" in result.message
+
+    def test_a_flat_deployed_record_fails(self, tmp_path: Path):
+        """The shape an earlier revision used: four flat digest fields.
+
+        It cannot say which of two independently-shipped components is stale, and it
+        carried no source revision at all — so the only thing its matching pair
+        established was that the operator wrote the same value twice.
+        """
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                deployed_components="sha256:" + "1" * 64
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "must be an object keyed by component" in result.message
+
+    # ---- (3b) required CI gates, by name, on the tested revision -------
+
+    @pytest.mark.parametrize("gate", _mod.WAVE2_REQUIRED_CI_GATES)
+    def test_a_missing_required_gate_fails(self, tmp_path: Path, gate):
+        """Root's third finding: gates BY NAME.
+
+        Every required gate parametrized, because a check verifying one of the three
+        would let the other two go unrun. The names are the ones
+        `.github/workflows/agent-control-ci.yml` actually defines — renaming a job
+        breaks this deliberately.
+        """
+        gates = required_ci_gates()
+        del gates[gate]
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert gate in result.message
+
+    def test_green_gates_with_names_nobody_required_fail(self, tmp_path: Path):
+        """The exact input root's review named as passing when it must not.
+
+        `{"anything": "passed"}` — and here a more plausible version: three real-looking
+        green gates whose names are not the required ones. It demonstrates the
+        operator's spelling, not the build's gates, and a check that only scanned for
+        non-passing values would accept it.
+        """
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                ci_gates={
+                    "anything": {
+                        "status": "passed",
+                        "run_id": "ci-1",
+                        "tested_revision": DEPLOYED_WORKER_REVISION,
+                    },
+                    "Unit tests": {
+                        "status": "passed",
+                        "run_id": "ci-2",
+                        "tested_revision": DEPLOYED_WORKER_REVISION,
+                    },
+                }
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "no result recorded for the required CI gate" in result.message
+
+    def test_a_gate_tested_on_a_revision_that_is_not_deployed_fails(self, tmp_path: Path):
+        """A genuinely green run, of a build that is not the one running.
+
+        This is the mutation that separates "the gate passed" from "the gate passed on
+        what is deployed". The gate name is right, the status is right, the run exists —
+        and its subject is some other commit, so it is evidence about a build nobody is
+        evaluating.
+        """
+        gates = required_ci_gates()
+        gates[_mod.WAVE2_REQUIRED_CI_GATES[0]]["tested_revision"] = "9" * 40
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "tested revision" in result.message
+
+    @pytest.mark.parametrize("bad", ["main", "abc1234", "", None])
+    def test_a_gate_whose_tested_revision_is_not_a_commit_fails(self, tmp_path: Path, bad):
+        gates = required_ci_gates()
+        gates[_mod.WAVE2_REQUIRED_CI_GATES[0]]["tested_revision"] = bad
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+
+    @pytest.mark.parametrize("key", _mod.CI_GATE_KEYS)
+    def test_a_gate_missing_its_identity_or_subject_fails(self, tmp_path: Path, key):
+        """A gate without a run ID is unretrievable; without a tested revision it
+        names a green run of unknown subject. Both are claims rather than evidence."""
+        gates = required_ci_gates()
+        del gates[_mod.WAVE2_REQUIRED_CI_GATES[0]][key]
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    @pytest.mark.parametrize("truthy", [True, 1, ["ci-1"], {"id": "ci-1"}])
+    def test_a_gate_run_identity_that_is_not_a_string_fails(self, tmp_path: Path, truthy):
+        """The literal input root's review named: an arbitrary truthy `run_id`.
+
+        `if not entry.get("run_id")` accepts `True`, and `True` identifies no run. Every
+        other field here is correct, so this isolates the defect: the check was testing
+        truthiness where it needed an identity.
+        """
+        gates = required_ci_gates()
+        gates[_mod.WAVE2_REQUIRED_CI_GATES[0]]["run_id"] = truthy
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "must be a string identifying the run" in result.message
+
+    @pytest.mark.parametrize("not_a_location", ["the run", "actions/runs/1", "ftp://x/1"])
+    def test_a_gate_run_url_that_cannot_be_opened_fails(self, tmp_path: Path, not_a_location):
+        """A gate is evidence only if the run behind it can be opened and read."""
+        gates = required_ci_gates()
+        gates[_mod.WAVE2_REQUIRED_CI_GATES[0]]["run_url"] = not_a_location
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not an https URL" in result.message
+
+    @pytest.mark.parametrize(
+        "uncorroborated", ["run_id", "tested_revision", "job name"]
+    )
+    def test_a_gate_summary_the_run_document_does_not_corroborate_fails(
+        self, tmp_path: Path, uncorroborated
+    ):
+        """An invented gate, in the only form left: summary fields with no run behind them.
+
+        The archived document is real and well-formed and corroborates everything except
+        the one value under test. The `job name` case is the sharpest of the three: a
+        genuine run of a DIFFERENT workflow, whose green conclusion says nothing about
+        the gate being claimed — which is the "green run of unknown subject" the field
+        exists to rule out.
+        """
+        gate = _mod.WAVE2_REQUIRED_CI_GATES[0]
+        gates = required_ci_gates()
+        entry = gates[gate]
+        entry["raw"]["run"]["body"] = {
+            "databaseId": "some-other-run" if uncorroborated == "run_id" else entry["run_id"],
+            # A head that EXISTS and is a real commit, but one the checked-out revision
+            # does not contain: WAVE1_ACCEPTED_REVISION is an ancestor of the tested
+            # revision, so its descendant direction is the failing one. An absent commit
+            # would land on the not_run path instead — git could not look — and would
+            # cover the unanswerable case rather than the uncorroborated one.
+            "headSha": DEPLOYED_GATEWAY_REVISION
+            if uncorroborated == "tested_revision"
+            else entry["tested_revision"],
+            "attempt": 1,
+            "event": "pull_request",
+            "jobs": [
+                {
+                    "name": "Some other job" if uncorroborated == "job name" else gate,
+                    "conclusion": "success",
+                }
+            ],
+        }
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        expected = {
+            "run_id": "reports databaseId",
+            # On a pull_request run the job builds a merge OF the head, so the head must
+            # be contained in what was checked out. A run document naming an unrelated
+            # real commit as its head is not a document about this run.
+            "tested_revision": "does not contain that head",
+            "job name": "contains no job named",
+        }[uncorroborated]
+        assert expected in result.message
+
+    def test_a_run_whose_jobs_all_failed_is_not_a_passing_gate(self, tmp_path: Path):
+        """Root's reproduction (a): every job in the archived run concluded `failure`.
+
+        Reported as still passing at `9b797746`. The substring matcher looked for the
+        run id, the tested revision and the job NAME in the dumped body — all three of
+        which a red run's document contains, because it is a document about that run
+        and that job. The conclusion was never read, so a wholly failed run satisfied a
+        gate whose entire content is "this job passed".
+
+        Both halves are set red, the run and the job, because the gate is the job's
+        outcome and either alone would leave the other unchecked.
+        """
+        gate = _mod.WAVE2_REQUIRED_CI_GATES[0]
+        gates = required_ci_gates()
+        entry = gates[gate]
+        entry["raw"]["run"]["body"] = {
+            "databaseId": entry["run_id"],
+            "headSha": entry["tested_revision"],
+            "conclusion": "failure",
+            "jobs": [
+                {"name": name, "conclusion": "failure"}
+                for name in _mod.WAVE2_REQUIRED_CI_GATES
+            ],
+        }
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not a passing gate" in result.message or "conclusion 'failure'" in result.message
+
+    @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", None])
+    def test_a_named_job_that_did_not_succeed_is_not_a_passing_gate(
+        self, tmp_path: Path, conclusion
+    ):
+        """The run is green overall; the required job is not.
+
+        A run can conclude `success` while a specific job was skipped — a `paths` filter
+        or an `if` condition does exactly that — so the run's own status cannot stand in
+        for the job's. `None` is the in-progress case: a job with no conclusion yet has
+        not passed, and treating a null as "not failure" is how an unfinished run
+        becomes a gate.
+        """
+        gate = _mod.WAVE2_REQUIRED_CI_GATES[0]
+        gates = required_ci_gates()
+        entry = gates[gate]
+        entry["raw"]["run"]["body"] = {
+            "databaseId": entry["run_id"],
+            "headSha": entry["tested_revision"],
+            "conclusion": "success",
+            "jobs": [{"name": gate, "conclusion": conclusion}],
+        }
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert f"reports job {gate!r} as {conclusion!r}" in result.message
+
+    def test_an_unrelated_run_document_mentioning_the_gate_is_not_a_gate(
+        self, tmp_path: Path
+    ):
+        """Reproduction (c) on the CI half: prose containing all the right strings.
+
+        The gate's whole archive is replaced by a note that mentions the run id, the
+        revision and the job name. Under presence-matching this passed. It is not a
+        `gh run view` response, so it establishes nothing about a run.
+        """
+        gate = _mod.WAVE2_REQUIRED_CI_GATES[0]
+        gates = required_ci_gates()
+        entry = gates[gate]
+        entry["raw"]["run"]["body"] = {
+            "unrelated_notes": (
+                f"run {entry['run_id']} ran {gate} on {entry['tested_revision']}"
+            )
+        }
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "does not establish a passing run of that job" in result.message
+        assert "databaseId" in result.message
+
+    # ---- the manual path: the checkout artifact, not an appended SHA ----
+    #
+    # Root's second finding on `ae57ee24`: the runbook had the operator paste
+    # `checked_out_revision` into the archived `gh run view` body, and the parser
+    # trusted it — so the one fact the manual path exists to establish was back to
+    # being an assertion, inside a document otherwise written by GitHub. The workflow
+    # already uploads the real value per job. These cover reading THAT, and refusing
+    # the three ways a wrong artifact could be substituted for the right one.
+
+    def _dispatch_gate(self, **artifact_overrides) -> tuple[str, dict]:
+        """One required gate, as a manual dispatch: head is the workflow ref, not the subject."""
+        gate = _mod.WAVE2_REQUIRED_CI_GATES[0]
+        gates = required_ci_gates()
+        entry = gates[gate]
+        entry["raw"]["run"]["body"] = {
+            "databaseId": entry["run_id"],
+            # Deliberately NOT the subject: on a manual run this names the ref the
+            # workflow file was loaded from.
+            "headSha": "f" * 40,
+            "attempt": 1,
+            "event": "workflow_dispatch",
+            "conclusion": "success",
+            "jobs": [{"name": gate, "conclusion": "success"}],
+        }
+        artifact = checkout_artifact(
+            _mod.CI_GATE_JOB_IDS[gate],
+            entry["run_id"],
+            entry["tested_revision"],
+            event_name="workflow_dispatch",
+            workflow_ref_sha="f" * 40,
+        )
+        # Applied after construction so a case can override `run_id`/`job` too, which
+        # are positional above.
+        artifact.update(artifact_overrides)
+        entry["raw"]["checkout"]["body"] = artifact
+        return gate, gates
+
+    def test_a_sha_appended_to_the_run_response_cannot_override_the_checkout(
+        self, tmp_path: Path
+    ):
+        """Root's finding: an operator-added `checked_out_revision` is refused, not trusted.
+
+        `gh run view` does not return that key, so its presence means someone edited the
+        authoritative response — and it is edited at exactly the field that decides what
+        the gate is evidence about. Refusing it is what makes the artifact the only
+        source for that value.
+        """
+        gate, gates = self._dispatch_gate()
+        gates[gate]["raw"]["run"]["body"]["checked_out_revision"] = gates[gate][
+            "tested_revision"
+        ]
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "carries a 'checked_out_revision' key" in result.message
+
+    def test_a_manual_run_without_the_checkout_artifact_fails(self, tmp_path: Path):
+        """No artifact, no tested revision — `headSha` may not stand in for it.
+
+        The document is a real, green, well-formed manual run. What it cannot say is
+        which revision the jobs checked out, so the gate is unusable rather than
+        assumed-good.
+        """
+        gate, gates = self._dispatch_gate()
+        del gates[gate]["raw"]["checkout"]
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "archives no ['checkout'] document" in result.message
+
+    def test_a_checkout_artifact_from_another_job_is_not_this_gate(self, tmp_path: Path):
+        """A manual run uploads one artifact per test job. They are not interchangeable.
+
+        Each job checks out independently, so the harness-tests job's artifact says
+        nothing about whether the agent-control job checked out the right tree — and
+        substituting one would make two of the three gates unverified.
+        """
+        other = _mod.CI_GATE_JOB_IDS[_mod.WAVE2_REQUIRED_CI_GATES[2]]
+        gate, gates = self._dispatch_gate(job=other)
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert f"is for job {other!r}" in result.message
+
+    def test_a_checkout_artifact_from_another_run_is_not_this_gate(self, tmp_path: Path):
+        """The right job, the right revision — from a different run.
+
+        Without binding the artifact to the archived run, any past green run of the
+        same job would serve as every gate's checkout evidence.
+        """
+        gate, gates = self._dispatch_gate(run_id="ci-run-999")
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "checkout artifact from run 'ci-run-999'" in result.message
+
+    def test_a_checkout_artifact_from_another_attempt_is_not_this_gate(
+        self, tmp_path: Path
+    ):
+        """A re-run checks out afresh, so the attempt that produced the evidence matters.
+
+        Attempt 1 can have checked out one tree and attempt 2 another; reporting
+        attempt 2's conclusion against attempt 1's checkout mixes two runs.
+        """
+        gate, gates = self._dispatch_gate(run_attempt="2")
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "from attempt '2'" in result.message
+
+    def test_a_manual_run_whose_job_checked_out_another_revision_fails(
+        self, tmp_path: Path
+    ):
+        """The dispatch asked for one revision; the job's own artifact reports another.
+
+        This is the case the workflow's verify step is supposed to have failed already.
+        The harness checks it anyway: a gate is judged on what was actually built, and
+        the two guards fail independently.
+        """
+        gate, gates = self._dispatch_gate(checked_out_revision="9" * 40)
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "artifact says it checked out" in result.message
+
+    def test_a_manual_run_on_the_dispatched_revision_is_a_passing_gate(
+        self, tmp_path: Path
+    ):
+        """The positive control for the manual path: the artifact's SHA is the subject.
+
+        Without this the tests above would be satisfiable by rejecting every
+        `workflow_dispatch` run, which would make the new manual CI entry point useless
+        as evidence. Note `headSha` here is `f`*40 — the workflow ref — and the gate
+        still passes, because the subject is read from the artifact.
+        """
+        gates = required_ci_gates()
+        for gate, entry in gates.items():
+            entry["raw"]["run"]["body"] = {
+                "databaseId": entry["run_id"],
+                "headSha": "f" * 40,  # the workflow ref, deliberately NOT the subject
+                "attempt": 1,
+                "event": "workflow_dispatch",
+                "conclusion": "success",
+                "jobs": [{"name": gate, "conclusion": "success"}],
+            }
+            entry["raw"]["checkout"]["body"] = checkout_artifact(
+                _mod.CI_GATE_JOB_IDS[gate],
+                entry["run_id"],
+                entry["tested_revision"],
+                event_name="workflow_dispatch",
+                workflow_ref_sha="f" * 40,
+            )
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    @pytest.mark.parametrize("key", _mod.CHECKOUT_ARTIFACT_KEYS)
+    def test_a_checkout_artifact_missing_an_emitted_field_fails(
+        self, tmp_path: Path, key
+    ):
+        """Scoped to the schema the workflow emits — all six keys, no more.
+
+        A document missing any of them is not that artifact, and accepting a partial one
+        would let a hand-written stub take its place.
+        """
+        gate, gates = self._dispatch_gate()
+        del gates[gate]["raw"]["checkout"]["body"][key]
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert f"missing ['{key}']" in result.message
+
+    def test_the_gate_job_ids_are_the_ones_ci_defines(self):
+        """The artifact name and the `job` field both carry the workflow's job id.
+
+        Mapped explicitly rather than slugified from the display name: they are
+        independent strings in the workflow, so a job renamed on one side only must
+        fail here rather than resolve to a plausible artifact name that does not exist.
+        """
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "agent-control-ci.yml"
+        ).read_text(encoding="utf-8")
+
+        assert set(_mod.CI_GATE_JOB_IDS) == set(_mod.WAVE2_REQUIRED_CI_GATES)
+        for gate, job_id in _mod.CI_GATE_JOB_IDS.items():
+            assert f"  {job_id}:\n    # AC-S7 required-check name. Do not rename.\n    name: {gate}\n" in workflow, job_id
+            assert f"name: checked-out-revision-{job_id}" in workflow, job_id
+
+    # ---- a pull_request run tests a MERGE commit, not the branch tip ----
+    #
+    # Root's finding on `1166f1d9`, reproduced with the real artifact of a real run
+    # rather than a constructed one. GitHub does not build the branch as pushed on a
+    # `pull_request` event: it builds a temporary merge of the branch into its base, and
+    # that merge is what `actions/checkout` gives the job and what the tests ran against.
+    # The API reports the branch tip as the run's head. Both values are authentic and
+    # they are different facts.
+    #
+    # Run 35956224007 of this very workflow:
+    #     API headSha                       1166f1d9aee982c3a22f7bd88e643b120ae8c457
+    #     artifact checked_out_revision     92d6cb4ccb4bcf3e39b69d9a3b7666e02088464c
+    #     artifact workflow_ref_sha         92d6cb4ccb4bcf3e39b69d9a3b7666e02088464c
+    #     run_id / run_attempt / event      35956224007 / 1 / pull_request
+    #
+    # The harness demanded equality for every non-dispatch trigger, so that honest gate
+    # FAILED. These cover accepting it on the relation that actually holds — a merge of
+    # the head contains the head — while still refusing an unrelated revision.
+
+    #: The real values above, so the fixtures below model the observed contract.
+    REAL_PR_HEAD = "1166f1d9aee982c3a22f7bd88e643b120ae8c457"
+    REAL_PR_MERGE = "92d6cb4ccb4bcf3e39b69d9a3b7666e02088464c"
+    REAL_PR_RUN_ID = "35956224007"
+
+    def _real_pr_gate(self, *, merge: str | None = None, head: str | None = None, **artifact_overrides):
+        """One gate as the real pull_request run 35956224007 actually recorded it."""
+        merge = merge or self.REAL_PR_MERGE
+        head = head or self.REAL_PR_HEAD
+        gate = _mod.WAVE2_REQUIRED_CI_GATES[0]
+        gates = required_ci_gates(tested_revision=merge)
+        entry = gates[gate]
+        entry["run_id"] = self.REAL_PR_RUN_ID
+        entry["raw"]["run"]["body"] = {
+            "databaseId": self.REAL_PR_RUN_ID,
+            "headSha": head,
+            "attempt": 1,
+            "event": "pull_request",
+            "conclusion": "success",
+            "jobs": [{"name": gate, "conclusion": "success"}],
+        }
+        artifact = checkout_artifact(
+            _mod.CI_GATE_JOB_IDS[gate],
+            self.REAL_PR_RUN_ID,
+            merge,
+            event_name="pull_request",
+            workflow_ref_sha=merge,
+        )
+        artifact.update(artifact_overrides)
+        entry["raw"]["checkout"]["body"] = artifact
+        # The other two gates are left on the default revision, so this gate's merge
+        # commit has to be deployed for the "tested a deployed revision" check to hold.
+        return gate, gates, merge
+
+    def _pr_graph(self, merge: str, head: str) -> CommitGraph:
+        """A graph in which `merge` is a merge commit of `head` — and is deployed."""
+        graph = CommitGraph()
+        graph.parents[head] = (WAVE2_REVISION,)
+        graph.parents[merge] = (head, WAVE2_REVISION)
+        return graph
+
+    def test_the_real_pull_request_run_is_accepted_with_its_merge_commit(
+        self, tmp_path: Path
+    ):
+        """The honest case root reproduced: unmodified API response, real artifact.
+
+        This is the positive control for the whole change, and it fails against the
+        previous revision with "Outside a manual dispatch those are the same revision".
+        The tested revision is the merge commit, because that is the tree the tests ran
+        in — the branch tip was never built.
+        """
+        gate, gates, merge = self._real_pr_gate()
+        graph = self._pr_graph(merge, self.REAL_PR_HEAD)
+
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                ci_gates=gates,
+                deployed_components=deployed_components(
+                    worker={
+                        "revision": merge,
+                        "image_digest": WORKER_DIGEST,
+                        "source_revision": merge,
+                        "build_record": build_record("worker", merge, WORKER_DIGEST),
+                    }
+                ),
+            ),
+            graph=graph,
+        )
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    def test_a_pull_request_checkout_that_does_not_contain_the_head_fails(
+        self, tmp_path: Path
+    ):
+        """The negative that keeps containment from being a licence to differ.
+
+        A real, existing commit that simply is not a merge of this run's head. Accepting
+        it would mean any two archived documents could be paired as long as both parsed,
+        which is the substitution the run/attempt bindings exist to prevent.
+        """
+        gate, gates, merge = self._real_pr_gate()
+        graph = CommitGraph()
+        graph.parents[self.REAL_PR_HEAD] = (WAVE2_REVISION,)
+        # `merge` exists and is deployed, but branched BEFORE the head — so it cannot
+        # be a merge of it.
+        graph.parents[merge] = (WAVE2_REVISION,)
+
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                ci_gates=gates,
+                deployed_components=deployed_components(
+                    worker={
+                        "revision": merge,
+                        "image_digest": WORKER_DIGEST,
+                        "source_revision": merge,
+                        "build_record": build_record("worker", merge, WORKER_DIGEST),
+                    }
+                ),
+            ),
+            graph=graph,
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "does not contain that head" in result.message
+
+    def test_a_pull_request_head_git_cannot_resolve_is_not_run(self, tmp_path: Path):
+        """Unanswerable is NOT RUN, never a pass.
+
+        The one way a containment check could quietly become permissive is by treating
+        "git could not be asked" as "nothing to object to". An unfetched head — a
+        shallow clone, or a branch tip deleted after the merge — has to report that the
+        harness could not look.
+        """
+        gate, gates, merge = self._real_pr_gate(head=INVENTED_REVISION)
+        graph = CommitGraph()
+        graph.parents[merge] = (WAVE2_REVISION,)
+
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                ci_gates=gates,
+                deployed_components=deployed_components(
+                    worker={
+                        "revision": merge,
+                        "image_digest": WORKER_DIGEST,
+                        "source_revision": merge,
+                        "build_record": build_record("worker", merge, WORKER_DIGEST),
+                    }
+                ),
+            ),
+            graph=graph,
+        )
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert "is not a commit in this checkout" in result.message
+
+    def test_a_pull_request_artifact_whose_ref_sha_is_not_its_checkout_fails(
+        self, tmp_path: Path
+    ):
+        """`workflow_ref_sha` was parsed, shape-checked, and then never used.
+
+        On a pull_request run GITHUB_SHA is the merge commit the job built, so the two
+        fields the step writes are the same value — as the real artifact above shows.
+        Leaving it unchecked meant an artifact could name any workflow ref at all.
+        """
+        gate, gates, merge = self._real_pr_gate(workflow_ref_sha="e" * 40)
+        graph = self._pr_graph(merge, self.REAL_PR_HEAD)
+
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                ci_gates=gates,
+                deployed_components=deployed_components(
+                    worker={
+                        "revision": merge,
+                        "image_digest": WORKER_DIGEST,
+                        "source_revision": merge,
+                        "build_record": build_record("worker", merge, WORKER_DIGEST),
+                    }
+                ),
+            ),
+            graph=graph,
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "recorded workflow_ref_sha" in result.message
+
+    def test_a_manual_run_whose_ref_sha_is_not_the_api_head_fails(self, tmp_path: Path):
+        """The manual half of the same binding.
+
+        On a `workflow_dispatch` run `headSha` names the ref the workflow FILE was
+        loaded from, which is exactly what the step records as `workflow_ref_sha`. They
+        are therefore checkable against each other, and were not being checked. The
+        tested revision still comes only from `checked_out_revision`.
+        """
+        gate, gates = self._dispatch_gate(workflow_ref_sha="e" * 40)
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "recorded workflow_ref_sha" in result.message
+
+    @pytest.mark.parametrize("field", ["attempt", "event"])
+    def test_a_run_document_omitting_a_binding_field_fails_rather_than_skipping_it(
+        self, tmp_path: Path, field
+    ):
+        """A document that says less must not be judged less strictly.
+
+        Both comparisons used to be conditional on the field being present, so omitting
+        `attempt` skipped the attempt binding and omitting `event` skipped the trigger
+        binding that decides which head rule applies. The collector requests both, so an
+        absent one is an incomplete archive.
+        """
+        gates = required_ci_gates()
+        del gates[_mod.WAVE2_REQUIRED_CI_GATES[0]]["raw"]["run"]["body"][field]
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert f"records no {field!r}" in result.message
+
+    @pytest.mark.parametrize("key", _mod.RAW_METADATA_KEYS)
+    def test_a_gate_archive_missing_its_own_provenance_fails(self, tmp_path: Path, key):
+        """The gate's run document needs the same three facts every archive needs.
+
+        Not a duplicate of the build-record case: these are separate code paths reached
+        through separate schemas, and a gate whose archive went unvalidated would be the
+        one remaining place an unretrievable claim could enter.
+        """
+        gates = required_ci_gates()
+        del gates[_mod.WAVE2_REQUIRED_CI_GATES[0]]["raw"]["run"][key]
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    @pytest.mark.parametrize("status", ["failure", "cancelled", "skipped", "", None, True])
+    def test_a_gate_that_did_not_pass_fails(self, tmp_path: Path, status):
+        """`skipped` and `cancelled` are in the table with `failure` deliberately: a
+        gate that did not run is not a gate that passed, and a check testing
+        `!= "failure"` would accept both."""
+        gates = required_ci_gates()
+        gates[_mod.WAVE2_REQUIRED_CI_GATES[0]]["status"] = status
+
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+
+    @pytest.mark.parametrize("gates", [{}, None, "passed", []])
+    def test_a_vacuous_gate_record_fails_rather_than_passing_vacuously(
+        self, tmp_path: Path, gates
+    ):
+        """An empty map makes "no gate failed" trivially true.
+
+        Indistinguishable, to any check that only looks for failures, from a build
+        whose gates never ran — the state a recording produced before CI finished
+        would be in.
+        """
+        result = run_w2_01(tmp_path, preflight=wave2_preflight_payload(ci_gates=gates))
+
+        assert result.status == _mod.STATUS_FAILED
+
+    def test_a_flat_passed_gate_string_is_not_evidence(self, tmp_path: Path):
+        """The shape an earlier revision accepted: name → "passed".
+
+        No run to retrieve and no revision it tested, so it cannot be distinguished
+        from a value someone typed. The failure has to name the shape rather than the
+        status, because the status is the only part that looks right.
+        """
+        result = run_w2_01(
+            tmp_path,
+            preflight=wave2_preflight_payload(
+                ci_gates={name: "passed" for name in _mod.WAVE2_REQUIRED_CI_GATES}
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+
+    def test_the_required_gate_names_are_the_ones_ci_defines(self):
+        """The tripwire against the constant drifting away from the workflow.
+
+        `WAVE2_REQUIRED_CI_GATES` is only meaningful if those jobs exist: a required
+        gate CI does not define can never be green, and a renamed job would make this
+        check unsatisfiable rather than discriminating. Read from the workflow file, so
+        renaming a job fails here instead of in a live evaluation.
+        """
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "agent-control-ci.yml"
+        ).read_text(encoding="utf-8")
+
+        for gate in _mod.WAVE2_REQUIRED_CI_GATES:
+            assert f"name: {gate}" in workflow, gate
+
+    def test_the_workflow_can_be_dispatched_against_an_exact_revision(self):
+        """The gates must be runnable on a revision the PR `paths` filters never ran.
+
+        Root reported the concrete consequence: the deployed source
+        `405d1e6eb531105239432b2719844e1e51e60a93` has only "Script Tests" on GitHub,
+        because Agent Control CI triggers on filtered pull requests alone. W2-01
+        requires each required gate to have passed ON a deployed revision, so without a
+        manual entry point that requirement is unsatisfiable for exactly the revisions
+        it exists for — an evaluation would have to be failed for a reason no operator
+        could fix.
+
+        Asserted from the workflow file rather than described in a runbook, because the
+        evaluation's `checked_out_revision` contract depends on the workflow actually
+        publishing that value. Checked here: the dispatch input exists and is required,
+        every one of the three required jobs waits on the validation job and checks out
+        its ref, and each verifies `git rev-parse HEAD` against the expected SHA rather
+        than assuming the checkout obeyed.
+        """
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "agent-control-ci.yml"
+        ).read_text(encoding="utf-8")
+
+        assert "workflow_dispatch:" in workflow
+        assert "source_sha:" in workflow
+        assert "required: true" in workflow
+        # The PR path must be untouched — the filters and the main-branch restriction
+        # are what keep this workflow off PRs that cannot affect the control path.
+        assert "pull_request:" in workflow
+        assert "- main" in workflow
+
+        assert workflow.count("needs: resolve-source") == len(_mod.WAVE2_REQUIRED_CI_GATES)
+        assert workflow.count("ref: ${{ needs.resolve-source.outputs.ref }}") == len(
+            _mod.WAVE2_REQUIRED_CI_GATES
+        )
+        # Each job asks git what it actually has and fails on a mismatch. Trusting the
+        # checkout would make the recorded revision an assumption again.
+        assert workflow.count('ACTUAL="$(git rev-parse HEAD)"') == len(
+            _mod.WAVE2_REQUIRED_CI_GATES
+        )
+        assert workflow.count('[ "$ACTUAL" != "$EXPECTED" ]') == len(
+            _mod.WAVE2_REQUIRED_CI_GATES
+        )
+        # And archives it machine-readably, under the field name the harness reads.
+        assert workflow.count('"checked_out_revision": "${ACTUAL}"') == len(
+            _mod.WAVE2_REQUIRED_CI_GATES
+        )
+        # github.sha is recorded as the workflow ref, never as the tested source.
+        assert '"workflow_ref_sha": "${GITHUB_SHA}"' in workflow
+        assert '"checked_out_revision": "${GITHUB_SHA}"' not in workflow
+
+    # ---- (4) fixture scope, inventory and teardown readiness ----------
+
+    def test_isolation_applied_after_the_listener_fails(self, tmp_path: Path):
+        """Ordering, not presence. DP-INV-1 requires the ingress policy BEFORE any
+        enabled listener; the reverse order means the fixture was briefly reachable
+        while control-enabled, and by recheck time it looks identical to the correct
+        order."""
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(isolation_before_listener=False)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "before listener start" in result.message
+
+    def test_ordinary_flags_left_on_fails(self, tmp_path: Path):
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(ordinary_flags_off=False)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "ordinary" in result.message
+
+    def test_a_flag_off_fixture_cannot_produce_this_waves_evidence(self, tmp_path: Path):
+        scope = dict(wave2_preflight_payload()["fixture_only_flag_scope"])
+        scope["enabled_in_fixture"] = False
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(fixture_only_flag_scope=scope)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not recorded as enabled in the fixture" in result.message
+
+    def test_the_flag_enabled_outside_the_fixture_fails(self, tmp_path: Path):
+        """DP-INV-1 itself: the invariant the whole evaluation is conditioned on."""
+        scope = dict(wave2_preflight_payload()["fixture_only_flag_scope"])
+        scope["enabled_elsewhere"] = ["dev", "embark1"]
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(fixture_only_flag_scope=scope)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "enabled outside the fixture" in result.message
+        assert "dev" in result.message and "embark1" in result.message
+
+    @pytest.mark.parametrize("claim", [False, True, "no", None])
+    def test_a_boolean_enabled_elsewhere_claim_is_not_evidence(self, tmp_path: Path, claim):
+        """The form of the answer is the point.
+
+        `enabled_elsewhere: false` is the CLAIM; an enumerated empty list is the
+        EVIDENCE for it. `False` is in this table alongside `True` deliberately:
+        the "correct-looking" boolean must fail too, because a boolean cannot be
+        audited against the environments it implicitly ranges over.
+        """
+        scope = dict(wave2_preflight_payload()["fixture_only_flag_scope"])
+        scope["enabled_elsewhere"] = claim
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(fixture_only_flag_scope=scope)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "must be a list" in result.message
+
+    def test_a_preflight_describing_another_fixture_fails(self, tmp_path: Path):
+        """The flag was enabled somewhere — just not here. A true recording of the
+        wrong environment, which is the stale-evidence shape again."""
+        scope = dict(wave2_preflight_payload()["fixture_only_flag_scope"])
+        scope["fixture_environment"] = "dev-control-fixture-embark2"
+
+        result = run_w2_01(
+            tmp_path, preflight=wave2_preflight_payload(fixture_only_flag_scope=scope)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "different fixture" in result.message
+
+    @pytest.mark.parametrize("dropped", ["W2-03", "W2-07", "W2-10"])
+    def test_a_short_wave_fails_the_inventory(self, tmp_path: Path, dropped):
+        """The self-referential assertion, and the reason it is not circular.
+
+        A future revision that quietly drops a check would produce a wave whose
+        every PRESENT check passes — a green report about nine tenths of the
+        evaluation. The inventory is compared against #3968's table, so the missing
+        ID is named rather than being absent from both sides of the comparison.
+        """
+        config = wave2_config(tmp_path)
+        probe = _mod.Probe(config["gateway_url"], wave2_gateway_stub())
+        artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
+        driver = _mod.Driver(
+            config, probe, artifacts, dynamodb=ddb_stub(), git_runner=CommitGraph().runner()
+        )
+        short = tuple(
+            spec.check_id for spec in _mod.WAVE2_CHECKS if spec.check_id != dropped
+        )
+
+        with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+            results = _mod.run_checks(
+                driver,
+                [s for s in _mod.WAVE2_CHECKS if s.check_id == "W2-01"],
+                manifest_ids=short,
+            )
+
+        assert results[0].status == _mod.STATUS_FAILED
+        assert dropped in results[0].message
+
+    @pytest.mark.parametrize("extra", ["W2-11", "W3-01"])
+    def test_an_unknown_check_id_fails_the_inventory(self, tmp_path: Path, extra):
+        """Both directions. An extra ID means the report claims evidence for a
+        check #3968's table does not define, which no reviewer can interpret."""
+        config = wave2_config(tmp_path)
+        probe = _mod.Probe(config["gateway_url"], wave2_gateway_stub())
+        artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
+        driver = _mod.Driver(
+            config, probe, artifacts, dynamodb=ddb_stub(), git_runner=CommitGraph().runner()
+        )
+        inflated = tuple(spec.check_id for spec in _mod.WAVE2_CHECKS) + (extra,)
+
+        with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+            results = _mod.run_checks(
+                driver,
+                [s for s in _mod.WAVE2_CHECKS if s.check_id == "W2-01"],
+                manifest_ids=inflated,
+            )
+
+        assert results[0].status == _mod.STATUS_FAILED
+        assert extra in results[0].message
+
+    def test_a_fixture_with_no_declared_teardown_fails_at_preflight(self, tmp_path: Path):
+        """Cleanup is bounded to declared pairs by design — there is no scan to fall
+        back on — so an undeclared row is one that survives the evaluation. Catching
+        that BEFORE anything is seeded is the difference between a preflight failure
+        and a fixture nobody can take apart."""
+        config = wave2_config(tmp_path, cleanup_items=[])
+
+        result = run_w2_01(tmp_path, config=config)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "no 'cleanup_items' are declared" in result.message
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"event_id": "msg-live-001"},
+            {"arrived_at": "2026-09-12T00:00:00Z"},
+            {"event_id": "msg-live-001", "arrived_at": ""},
+            {"event_id": "", "arrived_at": "2026-09-12T00:00:00Z"},
+            "msg-live-001",
+        ],
+    )
+    def test_a_partial_key_declaration_fails_at_preflight(self, tmp_path: Path, item):
+        """Wrong row keys, caught early.
+
+        A delete keyed on the partition key alone could match an unrelated item, so
+        the harness refuses it at teardown. Declaring both halves here is what turns
+        that refusal into a preflight failure instead of a surprise after the
+        fixture exists.
+        """
+        config = wave2_config(tmp_path, cleanup_items=[item])
+
+        result = run_w2_01(tmp_path, config=config)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "BOTH event_id and arrived_at" in result.message
+
+    @pytest.mark.parametrize(
+        "uncovered_key", ["live_run_id", "terminal_run_id", "aborted_run_id"]
+    )
+    def test_a_seeded_row_missing_from_the_teardown_fails(self, tmp_path: Path, uncovered_key):
+        """Every synthetic row this wave seeds must be covered, and each one is
+        parametrized: a check that only verified the live row would leave the
+        terminal and aborted rows behind, which is the fixture left in the state
+        DP-INV-1 forbids."""
+        config = wave2_config(tmp_path)
+        target = str(config[uncovered_key])
+        config["cleanup_items"] = [
+            item for item in config["cleanup_items"] if str(item["event_id"]) != target
+        ]
+
+        result = run_w2_01(tmp_path, config=config)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert uncovered_key in result.message
+
+    def test_the_unknown_run_id_is_not_required_to_be_cleaned_up(self, tmp_path: Path):
+        """The deliberate asymmetry, asserted so a later "consistency" change does
+        not quietly introduce a delete of something the harness never created.
+
+        `unknown_run_id` names a row that must NOT exist. Requiring it in
+        `cleanup_items` would mean declaring a deletion of an object outside the
+        fixture's ownership — which §7 forbids.
+        """
+        config = wave2_config(tmp_path)
+        assert config["unknown_run_id"] not in {
+            item["event_id"] for item in config["cleanup_items"]
+        }
+
+        result = run_w2_01(tmp_path, config=config)
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+
+class TestWave2VerifiedCleanupIsDiscriminating:
+    """W2-10: verified teardown, and the security posture that survived it.
+
+    This is the check the defect was really about. The tests are organized around
+    the one property that matters most: there is NO input to this check that
+    reports a successful teardown without one having happened.
+    """
+
+    def test_a_correct_teardown_and_recheck_passes(self, tmp_path: Path):
+        result = run_w2_10(tmp_path)
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    # ---- the harness's own deletion record ----------------------------
+
+    def test_an_absent_cleanup_record_is_not_run_never_a_pass(self, tmp_path: Path):
+        """The single most important assertion in this class.
+
+        `cleanup=None` is what a run where cleanup never happened looks like from
+        inside this check. It must be `not_run` — nonzero — and specifically not
+        `passed`: a check that treats "I have no record" as "it must have worked"
+        is the false green #5825 exists to remove.
+        """
+        result = run_w2_10(tmp_path, cleanup=None)
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert result.status != _mod.STATUS_PASSED
+        assert "cleanup record is absent" in result.message
+
+    def test_a_failed_cleanup_fails_the_check(self, tmp_path: Path):
+        """Never let a cleanup check pass before cleanup actually succeeds."""
+        config = wave2_config(tmp_path)
+        broken = cleanup_outcome_for(
+            config, ok=False, notes=["cleanup failed for msg-live-001: ThrottlingException"]
+        )
+
+        result = run_w2_10(tmp_path, config=config, cleanup=broken)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "cleanup did not complete" in result.message
+        assert "ThrottlingException" in result.message
+
+    def test_an_empty_deletion_record_fails_rather_than_passing_vacuously(
+        self, tmp_path: Path
+    ):
+        """`ok=True` with nothing removed.
+
+        This is the shape a "cleanup succeeded" boolean has, and it is exactly what
+        the issue forbids as a substitute for observations: every per-row assertion
+        below iterates the deletions, so an empty list satisfies all of them.
+        """
+        config = wave2_config(tmp_path)
+        empty = cleanup_outcome_for(config, deletions=[], declared_items=0)
+
+        result = run_w2_10(tmp_path, config=config, cleanup=empty)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "vacuously true" in result.message
+
+    def test_a_declared_row_with_no_deletion_record_fails(self, tmp_path: Path):
+        """Partial failure: three rows declared, two accounted for."""
+        config = wave2_config(tmp_path)
+        full = cleanup_outcome_for(config)
+        partial = _mod.CleanupOutcome(
+            ok=True,
+            notes=full.notes,
+            deletions=full.deletions[:-1],
+            declared_items=full.declared_items,
+        )
+
+        result = run_w2_10(tmp_path, config=config, cleanup=partial)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "nobody can account for" in result.message
+
+    def test_a_row_deleted_with_only_half_its_key_fails(self, tmp_path: Path):
+        """Wrong row keys. A delete keyed on the partition key alone could match an
+        unrelated item — deleting an ordinary row, which is explicitly forbidden."""
+        config = wave2_config(tmp_path)
+        full = cleanup_outcome_for(config)
+        bent = list(full.deletions)
+        bent[0] = _mod.RowDeletion(
+            event_id=bent[0].event_id,
+            arrived_at="",
+            both_keys_present=False,
+            deleted=False,
+            confirmed_absent=False,
+            error="partial key; refused",
+        )
+
+        result = run_w2_10(
+            tmp_path,
+            config=config,
+            cleanup=_mod.CleanupOutcome(
+                ok=True, notes=full.notes, deletions=bent, declared_items=full.declared_items
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "BOTH" in result.message
+
+    @pytest.mark.parametrize(
+        "deleted,confirmed_absent",
+        [(True, False), (False, True), (False, False)],
+    )
+    def test_a_row_not_confirmed_absent_fails(self, tmp_path: Path, deleted, confirmed_absent):
+        """Both halves are required, and each is a real failure mode.
+
+        `deleted=True, confirmed_absent=False` is a DeleteItem that returned success
+        while the row is still readable. `deleted=False, confirmed_absent=True` is
+        an absence claimed without a delete having been issued — the shape a
+        hand-written record takes. Absence is established by a CONSISTENT read
+        because an eventually-consistent one can report an item gone before it is.
+        """
+        config = wave2_config(tmp_path)
+        full = cleanup_outcome_for(config)
+        bent = list(full.deletions)
+        bent[1] = _mod.RowDeletion(
+            event_id=bent[1].event_id,
+            arrived_at=bent[1].arrived_at,
+            both_keys_present=True,
+            deleted=deleted,
+            confirmed_absent=confirmed_absent,
+        )
+
+        result = run_w2_10(
+            tmp_path,
+            config=config,
+            cleanup=_mod.CleanupOutcome(
+                ok=True, notes=full.notes, deletions=bent, declared_items=full.declared_items
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not confirmed absent" in result.message
+
+    def test_a_deletion_the_config_never_declared_fails(self, tmp_path: Path):
+        """What a scan-and-delete would produce.
+
+        Cleanup must be bounded to declared pairs — no scan, no prefix, no wildcard
+        — so an undeclared deletion means an ordinary row was reachable. Asserted
+        here as well as in `run_cleanup` because this is the record the evaluation
+        actually reads.
+        """
+        config = wave2_config(tmp_path)
+        full = cleanup_outcome_for(config)
+        extra = _mod.RowDeletion(
+            event_id="msg-someone-elses-real-row",
+            arrived_at="2026-09-12T00:00:00Z",
+            both_keys_present=True,
+            deleted=True,
+            confirmed_absent=True,
+        )
+
+        result = run_w2_10(
+            tmp_path,
+            config=config,
+            cleanup=_mod.CleanupOutcome(
+                ok=True,
+                notes=full.notes,
+                deletions=[*full.deletions, extra],
+                declared_items=full.declared_items + 1,
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "never declared" in result.message
+        assert "msg-someone-elses-real-row" in result.message
+
+    def test_deleting_the_unknown_run_id_fails(self, tmp_path: Path):
+        """The unknown run ID names a row that must NOT exist, so deleting it means
+        the harness removed an object it did not create."""
+        config = wave2_config(tmp_path)
+        unknown = str(config["unknown_run_id"])
+        config["cleanup_items"] = [
+            *config["cleanup_items"],
+            {"event_id": unknown, "arrived_at": "2026-09-12T00:00:00Z"},
+        ]
+
+        result = run_w2_10(tmp_path, config=config, cleanup=cleanup_outcome_for(config))
+
+        assert result.status == _mod.STATUS_FAILED
+        assert unknown in result.message
+
+    # ---- the pre-teardown capture: it must have HAPPENED ---------------
+
+    def test_an_absent_capture_is_not_run_never_a_pass(self, tmp_path: Path):
+        """The ordering defect's other half, stated as a status.
+
+        `capture=None` is what a run looks like from inside this check when nobody
+        observed the live capability surface before teardown. These observations are
+        unrecoverable — after teardown there is no deployment to read — so the honest
+        answer is `not_run`, nonzero, and specifically not a pass. The tempting wrong
+        answer is to treat the now-absent fixture as confirmation.
+        """
+        result = run_w2_10(tmp_path, capture=None)
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert result.status != _mod.STATUS_PASSED
+        assert "never observed while the fixture existed" in result.message
+
+    def test_a_capture_that_did_not_complete_fails(self, tmp_path: Path):
+        """`ok=False` carries the reason the capture could not be made.
+
+        `capture_security_observations` records its failures rather than raising,
+        precisely so a failed capture cannot abort the run before teardown — the
+        fixture has to come down either way. That design only works if the failure is
+        still fatal to W2-10's verdict, which is what this asserts.
+        """
+        config = wave2_config(tmp_path)
+        broken = capture_for(
+            config, ok=False, notes=["no owner token in the environment; cannot capture"]
+        )
+
+        result = run_w2_10(tmp_path, config=config, capture=broken)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "did not complete" in result.message
+        assert "owner token" in result.message
+
+    def test_an_absent_capture_artifact_is_not_run(self, tmp_path: Path):
+        result = run_w2_10(tmp_path, capture_artifact=False)
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert result.status != _mod.STATUS_PASSED
+        assert "security_capture" in result.message
+
+    def test_an_absent_verification_artifact_is_not_run(self, tmp_path: Path):
+        result = run_w2_10(tmp_path, verification=False)
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert result.status != _mod.STATUS_PASSED
+        assert "teardown_verification" in result.message
+
+    # ---- the executable teardown seam ----------------------------------
+    #
+    # Root's second finding: `main` captured live state, deleted ROWS only, and then
+    # immediately read an artifact already claiming the pods and queues were gone.
+    # Nothing in between removed a resource. These tests are about the lifecycle
+    # rather than the artifact's contents — whether the removal actually happened,
+    # whether the harness caused it, and whether the observations postdate it.
+
+    def test_an_undeclared_teardown_command_is_not_run(self, tmp_path: Path):
+        """No seam configured means the lifecycle was never executed.
+
+        `not_run`, not a pass, and this is the distinction the whole finding rests on:
+        a fixture that never tore its resources down has not demonstrated verified
+        cleanup, and the absence artifact it offers would necessarily predate the
+        removal it describes. Nonzero either way.
+        """
+        config = wave2_config(tmp_path)
+        config.pop("resource_teardown", None)
+        # Passed explicitly so `run_wave2`'s default cannot put the key back.
+        result = run_w2_10(
+            tmp_path,
+            config=config,
+            teardown=_mod.run_resource_teardown(config),
+        )
+
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert result.status != _mod.STATUS_PASSED
+        assert "resource_teardown" in result.message
+
+    def test_a_teardown_the_harness_never_invoked_fails(self, tmp_path: Path):
+        """A declared-but-unrun seam is worse than an undeclared one.
+
+        Undeclared is an incomplete fixture. Declared and not invoked means the
+        lifecycle was described and then skipped, so the absence artifact is again
+        older than the removal it reports. That is a failure, not a missing input.
+        """
+        result = run_w2_10(
+            tmp_path,
+            teardown=_mod.ResourceTeardown(
+                configured=True,
+                invoked=False,
+                ok=False,
+                exit_code=None,
+                started_at=None,
+                finished_at=None,
+                stdout_digest=None,
+                verification_present_before=False,
+                verification_digest_before=None,
+                notes=["declared but never run"],
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "declared but not invoked" in result.message
+
+    def test_a_failing_teardown_command_fails_the_check(self, tmp_path: Path):
+        """A nonzero teardown means the resources are not established as removed.
+
+        The command really runs and really reports failure, so this is the honest
+        model of a teardown script that could not finish — and W2-10 must not pass
+        before teardown has actually succeeded, whatever the artifact says.
+        """
+        resources = FixtureResources()
+        result = run_w2_10(
+            tmp_path,
+            resources=resources,
+            runner=teardown_runner_for(
+                tmp_path,
+                wave2_config(tmp_path),
+                resources,
+                exit_code=1,
+                remove=False,
+                write_verification=False,
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "resource teardown failed" in result.message
+
+    def test_an_unrunnable_teardown_command_fails_rather_than_crashing(
+        self, tmp_path: Path
+    ):
+        """A missing script is a failure of the evaluation, not of the harness.
+
+        `run_resource_teardown` records the exception instead of raising, because
+        `main` calls it on the path to row cleanup and an exception here would abandon
+        deletions that still have to happen — leaving the fixture in the DP-INV-1
+        state this whole evaluation exists to prevent.
+        """
+        resources = FixtureResources()
+        result = run_w2_10(
+            tmp_path,
+            resources=resources,
+            runner=teardown_runner_for(
+                tmp_path,
+                wave2_config(tmp_path),
+                resources,
+                raises=FileNotFoundError("teardown-control-fixture.sh"),
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "could not be run" in result.message
+
+    def test_a_prefilled_absence_artifact_cannot_pass(self, tmp_path: Path):
+        """The defect itself, reproduced end to end.
+
+        The artifact is complete, internally consistent, correctly dated relative to
+        nothing, and says every resource is gone — exactly the file the previous
+        revision accepted. What is wrong is that the teardown command did not write
+        it: the bytes on disk are identical before and after the removal, so the
+        observations in it were made while the fixture still existed.
+
+        This is why freshness is established by the harness's own digest rather than
+        by a field in the artifact. Every claim inside the file, `captured_at`
+        included, is written by the same hand as the absence claims.
+        """
+        resources = FixtureResources()
+        result = run_w2_10(
+            tmp_path,
+            resources=resources,
+            # Removes the resources, but records nothing: the pre-seeded artifact from
+            # `wave2_only_artifact_payloads()` is left exactly as it was.
+            runner=teardown_runner_for(
+                tmp_path,
+                wave2_config(tmp_path),
+                resources,
+                write_verification=False,
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "unchanged across the resource teardown" in result.message
+
+    def test_a_rewritten_but_backdated_artifact_cannot_pass(self, tmp_path: Path):
+        """The gap the digest comparison alone would leave.
+
+        A teardown script that rewrites the file — so the bytes do change — but stamps
+        it with observations from before the removal. The digest check is satisfied and
+        the dating check is what catches it. Both are needed: the digest catches an
+        untouched file with a plausible timestamp, and the timestamp catches a touched
+        file describing an earlier moment.
+        """
+        result = run_w2_10(
+            tmp_path,
+            verification=teardown_verification_payload(
+                captured_at=relative_time(-3600)
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "before the fixture's resource teardown even began" in result.message
+
+    @pytest.mark.parametrize("captured_at", [None, "", "shortly after teardown", 0])
+    def test_an_undatable_absence_artifact_fails(self, tmp_path: Path, captured_at):
+        """An artifact that cannot be dated cannot be shown to postdate anything.
+
+        `"shortly after teardown"` is the entry that matters: it is a truthy string, so
+        a presence check would accept it, and it is precisely the kind of value someone
+        writes when the real timestamp was not recorded.
+        """
+        result = run_w2_10(
+            tmp_path,
+            verification=teardown_verification_payload(captured_at=captured_at),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "captured_at" in result.message
+
+    def test_a_teardown_that_removes_nothing_cannot_report_absence(
+        self, tmp_path: Path
+    ):
+        """The seam and the resource state cannot disagree.
+
+        The command exits 0 and writes the artifact, but removes nothing — so the
+        absence observations it reads back say `absent: false`, because they are
+        computed from the resources rather than asserted alongside them. A fixture
+        whose resources model nothing at all could not express this case, which is why
+        `FixtureResources` exists.
+        """
+        resources = FixtureResources()
+        result = run_w2_10(
+            tmp_path,
+            resources=resources,
+            runner=teardown_runner_for(
+                tmp_path, wave2_config(tmp_path), resources, remove=False
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "still present after teardown" in result.message
+        assert resources.present, "the resources must really still be there"
+
+    def test_the_capture_happens_before_the_teardown_removes_anything(
+        self, tmp_path: Path
+    ):
+        """Ordering, asserted against the resources rather than against a flag.
+
+        The live capability reads need the fixture to exist; the absence observations
+        need it gone. If the seam ran first, the capture would be reading a torn-down
+        deployment and a CORRECT teardown would produce `not_run` — the inverted
+        ordering that made this check unpassable before.
+        """
+        resources = FixtureResources()
+        observed_during_capture = {}
+        # Bound before patching, or the wrapper would resolve to itself.
+        real_capture = _mod.capture_security_observations
+
+        def recording_capture(driver, config):
+            observed_during_capture["present"] = len(resources.present)
+            return real_capture(driver, config)
+
+        with patch.object(_mod, "capture_security_observations", recording_capture):
+            result = run_w2_10(tmp_path, resources=resources)
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+        # All three resources were still up when the capture was taken...
+        assert observed_during_capture["present"] == len(creation_ledger())
+        # ...and all three are gone by the end.
+        assert resources.present == {}
+
+    @pytest.mark.parametrize("value", [False, None, "yes", "true"])
+    def test_a_capture_not_recorded_as_pre_teardown_fails(self, tmp_path: Path, value):
+        """The flag that makes the ordering auditable.
+
+        `"yes"` and `"true"` are in the table because a truthiness test would accept
+        both, and the thing being asserted is an operator's positive statement that
+        these reads happened before teardown — recorded after it, they describe an
+        environment that no longer existed.
+        """
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(captured_before_teardown=value)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "captured_before_teardown" in result.message
+
+    @pytest.mark.parametrize("value", [False, None, "yes"])
+    def test_a_verification_not_recorded_as_post_teardown_fails(self, tmp_path: Path, value):
+        """The mirror of the above, and the reason both flags exist.
+
+        Absence observations recorded BEFORE teardown would describe the fixture while
+        it still existed — they would be observations of presence relabelled as
+        absence.
+        """
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(verified_after_teardown=value)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "verified_after_teardown" in result.message
+
+    def test_an_incomplete_capture_artifact_fails(self, tmp_path: Path):
+        payload = security_capture_payload()
+        del payload["isolation_present"]
+
+        result = run_w2_10(tmp_path, capture_artifact=payload)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "isolation_present" in result.message
+
+    # ---- the capture must be bound to the DEPLOYED build ---------------
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    @pytest.mark.parametrize("key", ["revision", "image_digest"])
+    def test_a_capture_bound_to_a_different_build_fails(
+        self, tmp_path: Path, component, key
+    ):
+        """Root's second finding, in the check that motivated it.
+
+        The observation was TRUE — just not of this deployment. What it is compared
+        against is the preflight's `deployed_components`: what is actually RUNNING,
+        per component, revision and digest. An earlier revision compared it against
+        story S2's historical merge commit instead, which a correct deployment does
+        not equal, so a newer compatible build failed.
+        """
+        observed = security_capture_payload()["observed_revisions"]
+        observed[component] = {**observed[component], key: "9" * (40 if key == "revision" else 64)}
+
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(observed_revisions=observed)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "stale-evidence" in result.message
+        assert component in result.message
+
+    def test_a_capture_bound_to_a_story_merge_commit_fails(self, tmp_path: Path):
+        """The specific wrong subject root's review named, asserted directly.
+
+        S2's merge commit is a real revision in the fixture's history and it is NOT
+        what is deployed — the deployment is newer. An implementation comparing
+        against it would pass this input and fail every correct deployment, so the
+        test asserting it FAILS is what keeps that implementation from returning.
+        """
+        observed = {
+            component: {"revision": WAVE2_REVISION, "image_digest": entry["image_digest"]}
+            for component, entry in deployed_components().items()
+        }
+
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(observed_revisions=observed)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "stale-evidence" in result.message
+
+    @pytest.mark.parametrize("component", ["worker", "gateway"])
+    def test_a_capture_that_names_no_build_for_a_component_fails(
+        self, tmp_path: Path, component
+    ):
+        """An unbound observation is a true statement about an unknown subject."""
+        observed = security_capture_payload()["observed_revisions"]
+        del observed[component]
+
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(observed_revisions=observed)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "records no observed revision/digest" in result.message
+        assert component in result.message
+
+    @pytest.mark.parametrize("bad", [{}, None, "c" * 40, []])
+    def test_a_capture_with_no_build_binding_at_all_fails(self, tmp_path: Path, bad):
+        """`"c"*40` is the shape an earlier revision used: one flat revision string.
+
+        It cannot distinguish the two independently-shipped components, so it cannot
+        say which of them the observation actually describes.
+        """
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(observed_revisions=bad)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+
+    # ---- both artifacts must describe THIS fixture run -----------------
+
+    @pytest.mark.parametrize(
+        "artifact", ["security_capture", "teardown_verification"]
+    )
+    @pytest.mark.parametrize("key", ["account_id", "environment"])
+    def test_an_artifact_describing_another_fixture_fails(
+        self, tmp_path: Path, artifact, key
+    ):
+        """A complete, internally consistent artifact from a previous run.
+
+        Parametrized over both artifacts because either one carried over would make
+        half the verdict evidence about a fixture nobody is evaluating, and over both
+        identity fields because the same account in a different environment is a
+        different fixture.
+        """
+        wrong = {"account_id": "000000000000", "environment": "staging"}[key]
+        payload = (
+            security_capture_payload
+            if artifact == "security_capture"
+            else teardown_verification_payload
+        )(fixture_identity=fixture_identity(**{key: wrong}))
+
+        kwargs = (
+            {"capture_artifact": payload}
+            if artifact == "security_capture"
+            else {"verification": payload}
+        )
+        result = run_w2_10(tmp_path, **kwargs)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "describes a different fixture" in result.message
+
+    def test_a_capture_artifact_describing_another_run_fails(self, tmp_path: Path):
+        """The artifact's run and the harness's own capture must be the same run.
+
+        This is the cross-check that cannot be satisfied by a consistent forgery: the
+        harness knows which run it read, so an artifact naming a different one is
+        evidence from another evaluation regardless of how complete it is.
+        """
+        result = run_w2_10(
+            tmp_path,
+            capture_artifact=security_capture_payload(
+                fixture_identity=fixture_identity(run_id="msg-some-other-run")
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "observations from another run" in result.message
+
+    def test_the_two_halves_must_describe_the_same_run(self, tmp_path: Path):
+        """Capture of fixture A, teardown of fixture B.
+
+        Each artifact is individually complete and consistent; together they describe
+        a security posture that was never torn down and a teardown whose posture was
+        never observed. Only comparing them catches it.
+        """
+        result = run_w2_10(
+            tmp_path,
+            verification=teardown_verification_payload(
+                fixture_identity=fixture_identity(run_id="msg-live-002")
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "must be about the same fixture run" in result.message
+
+    def test_a_missing_preflight_does_not_double_count_as_a_w2_10_failure(
+        self, tmp_path: Path
+    ):
+        """One missing artifact must not read as two independent defects.
+
+        W2-01 owns the absent-preflight failure. If W2-10 re-raised it, a single
+        operator omission would read as two failures — which inflates the apparent
+        damage and sends the reader looking for a second cause. So W2-10's build
+        cross-check is skipped rather than failed.
+
+        What it must NOT do is pass: the creation ledger lives in that preflight, and
+        without it teardown completeness cannot be measured against anything. So the
+        honest answer is `not_run` — "could not measure" — which is still nonzero.
+        This is the distinction the whole check rests on: skipping a comparison
+        because another check owns it is fine; skipping the MEASUREMENT is not.
+        """
+        payloads = {
+            **artifact_payloads(),
+            **wave2_artifact_payloads(),
+            **pause_artifact_payloads(),
+            **wave2_only_artifact_payloads(),
+        }
+        payloads.pop("wave2_preflight")
+        config = wave2_config(tmp_path, artifact_payloads=payloads)
+        results = run_wave2(tmp_path, config=config)
+
+        assert results["W2-01"].status == _mod.STATUS_NOT_RUN
+        assert results["W2-10"].status == _mod.STATUS_NOT_RUN
+        assert results["W2-10"].status != _mod.STATUS_PASSED
+        assert "creation ledger is unavailable" in results["W2-10"].message
+        # And the absent preflight is not reported as a W2-10 FAILURE.
+        assert results["W2-10"].status != _mod.STATUS_FAILED
+
+    def test_a_malformed_ledger_does_not_become_an_empty_one(self, tmp_path: Path):
+        """The subtle version of the above, and the one an implementation gets wrong.
+
+        W2-01 owns a malformed ledger, so W2-10 swallows the validation error to avoid
+        double-counting — and the trap is that swallowing it leaves an EMPTY ledger,
+        against which "every created resource was removed" is vacuously true. The
+        emptiness check is what stops a malformed ledger from becoming a pass.
+        """
+        preflight = wave2_preflight_payload(creation_ledger=[{"kind": "Pod"}])
+        payloads = {
+            **artifact_payloads(),
+            **wave2_artifact_payloads(),
+            **pause_artifact_payloads(),
+            **wave2_only_artifact_payloads(),
+            "wave2_preflight": preflight,
+        }
+        config = wave2_config(tmp_path, artifact_payloads=payloads)
+        results = run_wave2(tmp_path, config=config)
+
+        assert results["W2-01"].status == _mod.STATUS_FAILED
+        assert results["W2-10"].status == _mod.STATUS_NOT_RUN
+        assert results["W2-10"].status != _mod.STATUS_PASSED
+
+    # ---- teardown completeness, against the creation ledger ------------
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_a_created_resource_with_no_absence_observation_fails(
+        self, tmp_path: Path, index
+    ):
+        """Root's fourth finding, and the exact way the previous check was fooled.
+
+        The removal record was a caller-chosen map of names to booleans, so OMITTING a
+        leaked resource passed — nothing compared the list against what the fixture
+        created. Here each ledger entry is dropped from the removals in turn, because
+        a check that reconciled only the first would leave the rest omittable. Every
+        one of them must be named as unaccounted for.
+        """
+        ledger = creation_ledger()
+        dropped = ledger[index]
+        removals = [
+            removal
+            for removal in ledger_removals()
+            if removal["identity"] != dropped["identity"]
+        ]
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "no post-teardown absence observation" in result.message
+        assert dropped["name"] in result.message
+        assert dropped["identity"] in result.message
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_a_resource_still_present_after_teardown_fails(self, tmp_path: Path, index):
+        """A fixture workload left running is a control-enabled pod outliving its
+        evaluation — the concrete harm DP-INV-1 exists to prevent."""
+        ledger = creation_ledger()
+        identity = ledger[index]["identity"]
+        removals = ledger_removals(
+            **{
+                identity: bent_removal(
+                    identity,
+                    absent=False,
+                    observed_by="kubectl get -o name returned the object",
+                )
+            }
+        )
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "still present after teardown" in result.message
+        assert ledger[index]["name"] in result.message
+
+    @pytest.mark.parametrize("absent", [None, "true", "yes", 1, "absent"])
+    def test_an_absence_not_recorded_true_fails(self, tmp_path: Path, absent):
+        """`"true"`, `"yes"` and `1` are the table's whole point: a truthiness test
+        would accept all three, and each is a string or number someone typed rather
+        than the outcome of a read."""
+        identity = creation_ledger()[0]["identity"]
+        removals = ledger_removals(**{identity: bent_removal(identity, absent=absent)})
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "still present after teardown" in result.message
+
+    def test_removing_something_the_fixture_never_created_fails(self, tmp_path: Path):
+        """The other direction, and it is not a formality.
+
+        A removal of an identity the ledger does not contain means teardown had an
+        unrelated resource in reach — someone else's workload, deleted by this
+        evaluation. Reconciliation in one direction only would treat that as a bonus.
+        """
+        removals = [
+            *ledger_removals(),
+            {
+                "identity": "uid:99999999-9999-9999-9999-999999999999",
+                "absent": True,
+                "observed_by": "kubectl get deployment someone-elses-app",
+                # Complete, so it fails for being unrelated to this fixture rather than
+                # for being malformed. An incomplete literal here would pass the test
+                # while leaving the reconciliation direction it names unasserted.
+                "removed_at": relative_time(LEDGER_REMOVAL_OFFSETS["Deployment"]),
+            },
+        ]
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "which the creation ledger does not contain" in result.message
+
+    def test_a_removal_keyed_by_name_instead_of_identity_fails(self, tmp_path: Path):
+        """Names are not identities, and this is why the ledger records both.
+
+        `kubectl apply` can adopt a pre-existing same-name object, so "some object
+        called control-probe-1 is gone" is also satisfied by a resource that was
+        recreated under the same name. Only the observed UID distinguishes "this exact
+        object is gone".
+        """
+        # Complete observations in every respect EXCEPT that they are keyed by name, so
+        # the only thing the check can object to is the identity.
+        removals = [
+            {
+                **bent_removal(entry["identity"]),
+                "identity": entry["name"],
+            }
+            for entry in creation_ledger()
+        ]
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "the creation ledger does not contain" in result.message
+
+    @pytest.mark.parametrize("key", _mod.LEDGER_REMOVAL_KEYS)
+    def test_a_removal_missing_a_required_field_fails(self, tmp_path: Path, key):
+        """`observed_by` is the one that matters most: it records HOW absence was
+        established, and without it the entry is the asserted boolean root's review
+        told us to replace."""
+        removals = ledger_removals()
+        del removals[0][key]
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    @pytest.mark.parametrize("blank", ["", None, False])
+    def test_an_unattributed_absence_claim_fails(self, tmp_path: Path, blank):
+        """Present but empty, which a key-presence check alone would accept."""
+        identity = creation_ledger()[0]["identity"]
+        removals = ledger_removals(
+            **{identity: bent_removal(identity, observed_by=blank)}
+        )
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "records no 'observed_by'" in result.message
+
+    @pytest.mark.parametrize("vacuous", [[], {}, True, "all gone", None])
+    def test_a_vacuous_removal_record_fails(self, tmp_path: Path, vacuous):
+        """"All gone: true" cannot say which resource was checked.
+
+        `[]` and `{}` are the important entries: an empty record makes every
+        per-resource assertion above iterate nothing, so all of them pass — which is
+        indistinguishable from a fixture nobody looked for. It is only caught because
+        the ledger says three resources exist.
+        """
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=vacuous)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert result.status != _mod.STATUS_PASSED
+
+    def test_a_name_keyed_boolean_map_is_not_accepted_at_all(self, tmp_path: Path):
+        """The exact shape root's fourth finding rejected, asserted as a shape.
+
+        `{"agent-worker-fixture-1": true, "control-probe-1": true}` — the caller-chosen
+        map of names to booleans. Every value is `true` and every name is real, and it
+        still must not pass, because it carries no identity and no observation and its
+        completeness is whatever the caller chose to type.
+        """
+        result = run_w2_10(
+            tmp_path,
+            verification=teardown_verification_payload(
+                removals={entry["name"]: True for entry in creation_ledger()}
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert result.status != _mod.STATUS_PASSED
+
+    # ---- posture that must SURVIVE teardown ----------------------------
+
+    def test_baseline_isolation_removed_along_with_the_fixture_fails(
+        self, tmp_path: Path
+    ):
+        """Teardown must not take the environment's own isolation with it.
+
+        The distinction this asserts is root's fourth finding. The previous revision
+        required a single `isolation_present: true` after teardown while ALSO requiring
+        every created resource to be absent — and the fixture's NetworkPolicies are
+        created resources. So the two requirements could not both be met: either a
+        policy was left behind (a leak, the thing DP-INV-1 forbids) or it was removed
+        and "isolation present" was false. The check was unsatisfiable, which in
+        practice means it was going to be satisfied by whichever answer someone wrote.
+
+        They are two different objects with opposite lifecycles. The fixture's own
+        policies must be GONE — asserted by the ledger reconciliation above. The
+        environment's persistent baseline isolation must REMAIN, which is this.
+        """
+        result = run_w2_10(
+            tmp_path,
+            verification=teardown_verification_payload(
+                baseline_isolation_present=False
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "baseline isolation is not recorded as still present" in result.message
+
+    def test_removing_the_fixture_policy_before_its_listener_fails(
+        self, tmp_path: Path
+    ):
+        """The window the end state cannot show, and the other half of finding 4.
+
+        Both the control-enabled workload and its NetworkPolicy are gone afterwards,
+        so every absence assertion above is satisfied. What is wrong is the ORDER:
+        the policy went first, leaving an interval in which a control-enabled pod was
+        running with its ingress restriction already deleted. That interval is strictly
+        worse than either end state, and DP-INV-1 is about the interval.
+
+        The unsafe order is produced by making the teardown command genuinely remove
+        things in the wrong sequence, not by editing a timestamp — so what the test
+        exercises is a real unsafe teardown rather than a doctored record of a safe one.
+        """
+        resources = FixtureResources(
+            removal_order=("NetworkPolicy", "Deployment", "Pod")
+        )
+
+        result = run_w2_10(tmp_path, resources=resources)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "BEFORE the control-enabled workload" in result.message
+
+    def test_removing_the_fixture_policy_after_its_listener_passes(
+        self, tmp_path: Path
+    ):
+        """The positive control for the ordering, which the test above needs.
+
+        Without this, an implementation that rejected every removal order would
+        satisfy the negative while making the check impossible to pass — the failure
+        mode that turns a safety requirement into an unsatisfiable one, which is what
+        finding 4 was about in the first place.
+        """
+        resources = FixtureResources(
+            removal_order=("Deployment", "Pod", "NetworkPolicy")
+        )
+
+        result = run_w2_10(tmp_path, resources=resources)
+
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    @pytest.mark.parametrize("kind", ["Pod", "NetworkPolicy"])
+    def test_an_undated_removal_leaves_the_order_unestablished(
+        self, tmp_path: Path, kind
+    ):
+        """Both sides of the pair need a time, or the order is not checkable.
+
+        Parametrized over the workload and the policy because an implementation that
+        required the stamp on only one of them would let the other be omitted — and
+        then the comparison silently does not happen, which reads as a pass.
+        """
+        identity = next(
+            entry["identity"] for entry in creation_ledger() if entry["kind"] == kind
+        )
+        removals = ledger_removals(
+            **{identity: bent_removal(identity, removed_at=None)}
+        )
+
+        result = run_w2_10(
+            tmp_path, verification=teardown_verification_payload(removals=removals)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not a parseable instant" in result.message
+
+    def test_isolation_absent_during_the_capture_fails(self, tmp_path: Path):
+        """The same invariant at the other end of the run.
+
+        Isolation missing while the fixture was RUNNING is the more serious of the two:
+        a control-enabled listener was reachable. Both ends are asserted because a
+        check reading only one would leave the other window unobserved.
+        """
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(isolation_present=False)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "isolation was not recorded as present while the fixture was running" in (
+            result.message
+        )
+
+    @pytest.mark.parametrize("stage", ["capture", "verification"])
+    def test_ordinary_flags_on_fails_at_either_end(self, tmp_path: Path, stage):
+        payload = (
+            security_capture_payload if stage == "capture" else teardown_verification_payload
+        )(ordinary_flags_off=False)
+        kwargs = (
+            {"capture_artifact": payload} if stage == "capture" else {"verification": payload}
+        )
+
+        result = run_w2_10(tmp_path, **kwargs)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "ordinary" in result.message
+
+    @pytest.mark.parametrize("value", [True, "false", None])
+    @pytest.mark.parametrize("stage", ["capture", "verification"])
+    def test_general_flag_enablement_fails_at_either_end(
+        self, tmp_path: Path, stage, value
+    ):
+        """Widening the flag to make a check pass is the specific shortcut this
+        assertion forbids. `"false"` and `None` are in the table because a
+        truthiness test would accept both as "not enabled"; both ends are covered
+        because enabling it during the run and leaving it enabled after are different
+        failures with the same fix.
+        """
+        payload = (
+            security_capture_payload if stage == "capture" else teardown_verification_payload
+        )(general_flag_enablement=value)
+        kwargs = (
+            {"capture_artifact": payload} if stage == "capture" else {"verification": payload}
+        )
+
+        result = run_w2_10(tmp_path, **kwargs)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "general_flag_enablement" in result.message
+
+    @pytest.mark.parametrize(
+        "prop",
+        [
+            "unauthenticated_rejected",
+            "cross_tenant_indistinguishable",
+            "nonowner_indistinguishable",
+            "transport_targets_blocked",
+            "no_token_in_public_state",
+            "admission_authorization_preserved",
+            "delivery_authorization_preserved",
+        ],
+    )
+    def test_a_failed_wave_one_security_probe_fails(self, tmp_path: Path, prop):
+        """Each wave-1 guarantee is a separate property with a separate failure
+        mode, so each is parametrized rather than rolled into one probe result.
+
+        `admission_authorization_preserved` and `delivery_authorization_preserved`
+        are the two worth naming: #5029 requires authorization to be revalidated
+        immediately before physical handoff, and pause/resume is precisely the code
+        path that could have moved that revalidation earlier.
+        """
+        security = dict(security_capture_payload()["wave1_security"])
+        security[prop] = False
+
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(wave1_security=security)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert prop in result.message
+
+    @pytest.mark.parametrize(
+        "prop",
+        ["admission_authorization_preserved", "delivery_authorization_preserved"],
+    )
+    def test_an_unrecorded_wave_one_security_property_fails(self, tmp_path: Path, prop):
+        """Absent is not the same as false, and neither is a pass. An unrecorded
+        property is one nobody re-observed."""
+        security = dict(security_capture_payload()["wave1_security"])
+        del security[prop]
+
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(wave1_security=security)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert prop in result.message
+        assert "nobody re-observed" in result.message
+
+    # ---- unsupported verbs: recorded, advertised AND attempted ---------
+
+    @pytest.mark.parametrize("status", [200, 202, 403, 404, 500, "501"])
+    def test_an_unsupported_verb_not_answering_501_fails(self, tmp_path: Path, status):
+        """An authorized request for a verb this build does not implement must be
+        refused as unimplemented. `200` is the alarming one — the verb was enabled
+        — and `"501"` is in the table because a stringified status would pass a
+        loose comparison."""
+        verbs = dict(security_capture_payload()["unsupported_verbs"])
+        verbs["abort"] = status
+
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(unsupported_verbs=verbs)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "did not answer 501" in result.message
+
+    @pytest.mark.parametrize("vacuous", [{}, None, True])
+    def test_a_vacuous_unsupported_verb_claim_fails(self, tmp_path: Path, vacuous):
+        result = run_w2_10(
+            tmp_path, capture_artifact=security_capture_payload(unsupported_verbs=vacuous)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "nonempty object" in result.message
+
+    @pytest.mark.parametrize("claim", [True, "false", None])
+    def test_an_adapter_capability_not_recorded_false_fails(self, tmp_path: Path, claim):
+        caps = dict(security_capture_payload()["unsupported_adapter_capabilities"])
+        caps["abort"] = claim
+
+        result = run_w2_10(
+            tmp_path,
+            capture_artifact=security_capture_payload(
+                unsupported_adapter_capabilities=caps
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "not recorded as false" in result.message
+
+    @pytest.mark.parametrize("vacuous", [{}, None])
+    def test_a_vacuous_adapter_capability_claim_fails(self, tmp_path: Path, vacuous):
+        result = run_w2_10(
+            tmp_path,
+            capture_artifact=security_capture_payload(
+                unsupported_adapter_capabilities=vacuous
+            ),
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "nonempty object" in result.message
+
+    def test_a_deployment_that_contradicts_the_recording_fails(self, tmp_path: Path):
+        """The half the harness observes itself, and why the artifact is not enough.
+
+        The recording describes what the operator probed; the capture is what the
+        deployment told the HARNESS while it was still running. A deployment
+        advertising a verb the artifact calls unsupported means the recording and the
+        deployment disagree — and the deployment is what the next operator inherits.
+
+        Note the client is passed to `run_w2_10`, so the same stub produces both the
+        capture and the check's own reads: the disagreement is between the artifact and
+        a real observation, not between two hand-written values.
+        """
+        client = wave2_gateway_stub(
+            state_capabilities={verb: True for verb in _mod.CONTROL_VERBS}
+        )
+
+        result = run_w2_10(tmp_path, client=client)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "recording and the deployment disagree" in result.message
+
+    def test_a_state_response_with_no_capability_map_fails(self, tmp_path: Path):
+        client = wave2_gateway_stub(state_omit=("capabilities",))
+
+        result = run_w2_10(tmp_path, client=client)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert result.status != _mod.STATUS_PASSED
+
+    # ---- the harness's own authorized attempt at each refused verb -----
+
+    @pytest.mark.parametrize("verb", UNSUPPORTED_VERBS)
+    def test_a_verb_the_capture_never_attempted_fails(self, tmp_path: Path, verb):
+        """The advertised map alone is the deployment's claim about itself.
+
+        A capability map saying `abort: false` is what the build SAYS. Until someone
+        POSTs `abort` as an authorized owner, nothing has observed what it does — and
+        an enabled-but-still-advertised-false verb is exactly the quiet relaxation that
+        gap would hide. So an unattempted verb is a failure, not a pass.
+
+        The capture is bent by dropping one verb from `refusals`, which is what a
+        capture that could not complete its attempts would produce.
+        """
+        config = wave2_config(tmp_path)
+        real = capture_for(config)
+        bent = [
+            _mod.LiveCapabilityCapture(
+                adapter=entry.adapter,
+                run_id=entry.run_id,
+                status=entry.status,
+                capabilities=entry.capabilities,
+                refusals={k: v for k, v in entry.refusals.items() if k != verb},
+                error=entry.error,
+            )
+            for entry in real.adapters
+        ]
+
+        result = run_w2_10(
+            tmp_path, config=config, capture=capture_for(config, adapters=bent)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "made no authorized attempt" in result.message
+        assert verb in result.message
+
+    @pytest.mark.parametrize("observed", [200, 202, 403, 500, None])
+    def test_an_attempt_that_contradicts_the_recorded_status_fails(
+        self, tmp_path: Path, observed
+    ):
+        """The comparison root's review asked for: observation against recording.
+
+        `200` is the one that matters — the verb actually worked when POSTed, while
+        both the artifact and the capability map called it unimplemented. A check
+        reading only the map would report that deployment as correct. `None` is a
+        transport failure: an attempt that produced no status observed nothing.
+        """
+        config = wave2_config(tmp_path)
+        real = capture_for(config)
+        bent = [
+            _mod.LiveCapabilityCapture(
+                adapter=entry.adapter,
+                run_id=entry.run_id,
+                status=entry.status,
+                capabilities=entry.capabilities,
+                refusals={verb: observed for verb in entry.refusals},
+                error=entry.error,
+            )
+            for entry in real.adapters
+        ]
+
+        result = run_w2_10(
+            tmp_path, config=config, capture=capture_for(config, adapters=bent)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "describe different deployments" in result.message
+
+    def test_the_capture_really_did_attempt_the_unsupported_verbs(self, tmp_path: Path):
+        """The premise behind every test above, asserted against the real capture.
+
+        If `capture_security_observations` did not actually POST the refused verbs, the
+        comparisons in W2-10 would be trivially satisfiable and this whole section
+        would be testing nothing. Asserted on the stub's recorded calls, so it is the
+        requests that were really issued.
+
+        Equally important: it attempted ONLY those verbs. `pause` and `resume` are
+        implemented in this wave, so POSTing them would act on the run the other nine
+        checks are still describing — which is why the capture is confined to verbs the
+        deployment reports unavailable.
+        """
+        config = wave2_config(tmp_path)
+        client = wave2_gateway_stub()
+        capture = capture_for(config, client)
+
+        posted = [
+            call.args[1] if len(call.args) > 1 else call.kwargs.get("url")
+            for call in client.request.call_args_list
+            if (call.args[0] if call.args else call.kwargs.get("method")) == "POST"
+        ]
+
+        assert capture.ok, capture.notes
+        for entry in capture.adapters:
+            assert set(entry.refusals) == set(UNSUPPORTED_VERBS), entry.adapter
+        for verb in UNSUPPORTED_VERBS:
+            assert any(f"/{verb}" in url for url in posted), verb
+        for implemented in ("pause", "resume"):
+            assert not any(f"/{implemented}" in url for url in posted), implemented
+
+    @pytest.mark.parametrize("adapter", sorted(_mod.ADAPTERS))
+    def test_a_capture_that_missed_an_adapter_edge_fails(self, tmp_path: Path, adapter):
+        """Two edges, one control service, and drift between them is invisible to a
+        capture of only one. Both are parametrized because whichever edge a check read
+        would be the one that could not be wrong."""
+        config = wave2_config(tmp_path)
+        real = capture_for(config)
+        kept = [entry for entry in real.adapters if entry.adapter != adapter]
+
+        result = run_w2_10(
+            tmp_path, config=config, capture=capture_for(config, adapters=kept)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "did not observe" in result.message
+        assert adapter in result.message
+
+    @pytest.mark.parametrize("status", [404, 500, 503, None])
+    def test_a_capture_read_that_did_not_answer_fails(self, tmp_path: Path, status):
+        """A non-200 here is the deployment failing to answer, not a torn-down fixture.
+
+        That is the whole reason this read moved BEFORE teardown: afterwards a 404 is
+        expected and says nothing, so it cannot be distinguished from a broken gateway.
+        Beforehand the fixture is running, so anything other than 200 is a real defect.
+        """
+        config = wave2_config(tmp_path)
+        real = capture_for(config)
+        bent = [
+            _mod.LiveCapabilityCapture(
+                adapter=entry.adapter,
+                run_id=entry.run_id,
+                status=status,
+                capabilities=entry.capabilities,
+                refusals=entry.refusals,
+                error=None if status else "connection reset by peer",
+            )
+            for entry in real.adapters
+        ]
+
+        result = run_w2_10(
+            tmp_path, config=config, capture=capture_for(config, adapters=bent)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "pre-teardown capability read returned status" in result.message
+
+    def test_a_capture_with_no_capability_map_fails(self, tmp_path: Path):
+        config = wave2_config(tmp_path)
+        real = capture_for(config)
+        bent = [
+            _mod.LiveCapabilityCapture(
+                adapter=entry.adapter,
+                run_id=entry.run_id,
+                status=200,
+                capabilities={},
+                refusals=entry.refusals,
+                error=None,
+            )
+            for entry in real.adapters
+        ]
+
+        result = run_w2_10(
+            tmp_path, config=config, capture=capture_for(config, adapters=bent)
+        )
+
+        assert result.status == _mod.STATUS_FAILED
+        assert "carried no capabilities object" in result.message
+
+    def _drive_w2_10(
+        self, tmp_path: Path, config: dict, *, client=None, cleanup=None, capture=None
+    ):
+        """Drive W2-10 alone, bypassing `run_wave2`'s defaults.
+
+        For the two cases that need a deliberately INCONSISTENT world — a forged
+        deletion record `run_cleanup` would never emit, and a gateway that raises on
+        every request — so neither can be produced by the ordered shared-store path.
+        Everything else goes through `run_w2_10`, which does use it.
+        """
+        probe = _mod.Probe(config["gateway_url"], client or wave2_gateway_stub())
+        artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
+        driver = _mod.Driver(
+            config, probe, artifacts, dynamodb=ddb_stub(), git_runner=CommitGraph().runner()
+        )
+        with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+            return _mod.run_checks(
+                driver,
+                [s for s in _mod.WAVE2_CHECKS if s.check_id == "W2-10"],
+                cleanup=cleanup,
+                capture=capture,
+            )[0]
+
+    def test_an_unexpected_exception_is_failed_not_passed(self, tmp_path: Path):
+        """The catch-all path, asserted rather than assumed.
+
+        An unexpected exception must not escape `run_checks` — which would abandon
+        the remaining checks and write no report — and must not be swallowed into a
+        pass. `AssertionError` is `failed`, `PrerequisiteMissingError` is `not_run`,
+        and anything else is `failed`, because an unexplained error is not evidence
+        that a property holds.
+
+        Provoked by a config whose `cleanup_items` is a list of bare strings, with a
+        deletion record that nonetheless reports success. That combination cannot
+        arise from `run_cleanup` (it refuses a partial key), which is the point: it
+        forces the check past its own assertions into code that raises
+        `AttributeError`, exercising the path an unrelated future bug would take.
+        """
+        config = wave2_config(tmp_path, cleanup_items=["msg-live-001"])
+        forged = _mod.CleanupOutcome(
+            ok=True,
+            notes=["forged"],
+            deletions=[
+                _mod.RowDeletion(
+                    event_id="msg-live-001",
+                    arrived_at="2026-09-12T00:00:00Z",
+                    both_keys_present=True,
+                    deleted=True,
+                    confirmed_absent=True,
+                )
+            ],
+            declared_items=1,
+        )
+
+        result = self._drive_w2_10(tmp_path, config, cleanup=forged)
+
+        assert result.status == _mod.STATUS_FAILED
+        assert result.status != _mod.STATUS_PASSED
+        assert "unexpected AttributeError" in result.message
+
+    def test_a_transport_failure_during_the_capture_is_nonzero_never_a_pass(
+        self, tmp_path: Path
+    ):
+        """The gateway being unreachable is "could not look", not "it was fine".
+
+        `Probe` records a transport failure as an observation with no status rather
+        than propagating it, so this does not reach the catch-all above. It reaches the
+        non-200 branch, which refuses to treat an unanswered read as a satisfied one.
+
+        This case moved with the ordering fix and is worth being precise about. The
+        capture happens while the fixture is RUNNING, so an unreachable gateway there is
+        a real defect rather than the expected consequence of teardown — which is
+        exactly why the read was moved before it. Afterwards the same failure would be
+        indistinguishable from a correctly removed fixture.
+        """
+        client = wave2_gateway_stub()
+        client.request.side_effect = RuntimeError("connection reset by peer")
+
+        result = run_w2_10(tmp_path, client=client)
+
+        assert result.status in {_mod.STATUS_FAILED, _mod.STATUS_NOT_RUN}
+        assert result.status != _mod.STATUS_PASSED
+
+    def test_the_run_still_tears_down_when_the_capture_cannot_be_made(
+        self, tmp_path: Path
+    ):
+        """The design constraint behind recording capture failures instead of raising.
+
+        A capture that cannot complete must not abort the run before teardown — the
+        fixture has to come down either way, or a failed evaluation leaves
+        control-enabled workloads running. So `capture_security_observations` returns
+        `ok=False` rather than propagating, and cleanup proceeds.
+
+        Asserted on the store's rows, not on a status: the question is whether teardown
+        physically happened.
+        """
+        config = wave2_config(tmp_path)
+        store = shared_store_for(config)
+        client = store.wrap(wave2_gateway_stub())
+        client.request.side_effect = RuntimeError("connection reset by peer")
+        probe = _mod.Probe(config["gateway_url"], client)
+        artifacts = _mod.ArtifactStore(tmp_path, config.get("artifacts") or {})
+        dynamodb = store.dynamodb()
+        driver = _mod.Driver(config, probe, artifacts, dynamodb=dynamodb)
+
+        assert store.rows, "premise: the fixture's rows exist before teardown"
+        with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+            capture = _mod.capture_security_observations(driver, config)
+            cleanup = _mod.run_cleanup(config, dynamodb)
+
+        assert capture.ok is False
+        assert capture.notes
+        assert cleanup.ok, cleanup.notes
+        assert not store.rows
+
+
+class TestNoPassingWave2WithoutTenChecksAndVerifiedCleanup:
+    """The decisive property, asserted through the real `main`.
+
+    Everything above tests a check in isolation. This class tests the claim the
+    issue actually makes: there is NO input that produces a passing wave-2 report
+    without all ten checks answered AND cleanup genuinely completed. That is a
+    statement about the whole command — the exit code, the written `result.json`,
+    and the `jq` gate an operator runs over it — so it cannot be established by
+    driving predicates directly.
+
+    `main` is used unmodified. What varies is the fixture on disk and the DynamoDB
+    stub's behaviour, because those are the only things a real operator controls.
+
+    **The fakes share one row store.** `_run` wires the DynamoDB client and the
+    gateway to the same `SharedRowStore`, so a row teardown deletes is a row the
+    gateway stops serving — the constraint a real deployment has. The previous
+    fixture used two independent stubs and a gateway that answered every `/state`
+    with a static 200; that let a check depending on a deleted run still see a 200,
+    so the positive control below passed while the same harness reported
+    `W2-10 not_run` against a real gateway. A whole-command regression whose fakes
+    are mutually inconsistent cannot discriminate the defect it exists to catch.
+    """
+
+    @staticmethod
+    def _run(  # noqa: PLR0913 - one parameter per substitutable collaborator
+        tmp_path: Path,
+        *,
+        config=None,
+        client=None,
+        dynamodb=None,
+        store=None,
+        resources=None,
+        runner=None,
+        graph=None,
+    ):
+        """Drive the real CLI at `--wave 2` and return `(exit_code, report)`.
+
+        With no `client`/`dynamodb` override, both come from one `SharedRowStore`
+        seeded with the config's declared rows. Passing either separately is how a
+        test models a specific inconsistency on purpose.
+
+        The `resource_teardown` command is patched at the RUNNER, not stubbed out of
+        the harness: `main` still calls the real `run_resource_teardown`, which still
+        takes its own freshness snapshot of the absence artifact and still records the
+        window. Only the subprocess is replaced, by a command that genuinely removes
+        `resources` and writes the artifact from what is left.
+
+        The git queries are patched the same way — at `_default_git_runner`, so `main`
+        still builds its own `Driver` and still computes containment rather than
+        reading it. A `CommitGraph` answers, because the revisions this fixture names
+        are not commits in any real checkout; the real environment answers from the
+        clone the operator runs in.
+        """
+        config = config if config is not None else wave2_config(tmp_path)
+        store = store if store is not None else shared_store_for(config)
+        resources = resources if resources is not None else FixtureResources()
+        config.setdefault("resource_teardown", ["/fixture/teardown.sh", "--wave", "2"])
+        runner = runner or teardown_runner_for(tmp_path, config, resources)
+        graph = graph if graph is not None else CommitGraph()
+        path = write_config(tmp_path, config)
+        session = MagicMock()
+        session.client.side_effect = lambda name, **_: {
+            "sts": sts_for(ACCOUNT),
+            "dynamodb": dynamodb if dynamodb is not None else store.dynamodb(),
+        }[name]
+        evidence = tmp_path / "evidence"
+
+        with (
+            patch("boto3.session.Session", return_value=session),
+            patch("httpx.Client", return_value=client or store.gateway()),
+            patch.object(_mod, "_default_teardown_runner", runner),
+            patch.object(_mod, "_default_git_runner", graph.runner()),
+            patch.dict("os.environ", IDENTITY_ENV, clear=False),
+        ):
+            code = _mod.main(
+                ["--wave", "2", "--config", str(path), "--evidence-dir", str(evidence)]
+            )
+
+        report = json.loads((evidence / "result.json").read_text(encoding="utf-8"))
+        return code, report
+
+    def test_a_complete_fixture_reaches_a_passing_report(self, tmp_path: Path):
+        """The positive control, and it has to come first.
+
+        Every negative below is only meaningful if this passes: a command that can
+        never exit 0 would satisfy all of them while proving nothing. So this pins
+        that the bar is reachable — ten of ten, cleanup verified, exit 0 — before
+        anything argues about what fails to reach it.
+
+        This is a fixture, not a deployment. It shows the harness would accept a
+        correct live run; it is not itself evidence about one.
+        """
+        code, report = self._run(tmp_path)
+
+        assert code == _mod.EXIT_OK, report
+        assert report["required"] == 10
+        assert report["passed"] == 10
+        assert report["failed"] == 0
+        assert report["not_run"] == 0
+        assert report["skipped"] == 0
+        assert report["cleanup_ok"] is True
+        assert _mod.report_is_passing(report) is True
+        assert set(report["checks"]) == {spec.check_id for spec in _mod.WAVE2_CHECKS}
+
+    def test_the_command_tears_resources_down_between_capture_and_verification(
+        self, tmp_path: Path
+    ):
+        """The lifecycle root's second finding said the command did not have.
+
+        Asserted against the real `main`, because that is where the defect lived: it
+        captured live state, deleted ROWS, and then read an artifact already claiming
+        the pods and queues were gone. Nothing between those steps removed a resource.
+
+        Three things are checked, and each is a different way the ordering could be
+        wrong: the resources are really gone afterwards (the teardown ran at all), the
+        harness's own record says it invoked the command (the operator did not simply
+        assert it), and the absence artifact was rewritten across that invocation (the
+        observations postdate the removal rather than predating it).
+        """
+        resources = FixtureResources()
+        config = wave2_config(tmp_path)
+        artifact = tmp_path / config["artifacts"]["teardown_verification"]
+        before = artifact.read_bytes()
+
+        code, report = self._run(tmp_path, config=config, resources=resources)
+
+        assert code == _mod.EXIT_OK, report
+        assert resources.present == {}, "the fixture's resources must actually be gone"
+        record = report["resource_teardown"]
+        assert record["configured"] is True
+        assert record["invoked"] is True
+        assert record["ok"] is True
+        assert record["exit_code"] == 0
+        assert record["started_at"] and record["finished_at"]
+        # The evidence a reviewer needs to see that freshness was established rather
+        # than assumed: the digest the harness took going in, matching the file that
+        # was actually there, and different from what the teardown left behind.
+        assert record["verification_present_before"] is True
+        assert record["verification_digest_before"] == (
+            "sha256:" + hashlib.sha256(before).hexdigest()
+        )
+        assert artifact.read_bytes() != before
+
+    def test_the_teardown_output_digest_is_recorded_rather_than_the_output(
+        self, tmp_path: Path
+    ):
+        """A teardown script's stdout is a plausible place for a credential.
+
+        The digest ties the recorded run to the operator's own log without copying
+        arbitrary command output into an evidence file that gets attached to issues.
+        """
+        secret = "ghs_examplelookingtokenvalue0000000000"  # noqa: S105 - a fake, to prove it is not copied
+        resources = FixtureResources()
+
+        def leaky_runner(argv, timeout):  # noqa: ANN001, ARG001
+            resources.remove_all()
+            (tmp_path / "teardown_verification.json").write_text(
+                json.dumps(
+                    teardown_verification_payload(
+                        removals=resources.absence_observations(),
+                        captured_at=resources.latest_removal(),
+                    )
+                ),
+                encoding="utf-8",
+            )
+            completed = MagicMock()
+            completed.returncode = 0
+            completed.stdout = f"authenticating with {secret}\n"
+            completed.stderr = ""
+            return completed
+
+        _, report = self._run(tmp_path, resources=resources, runner=leaky_runner)
+
+        record = report["resource_teardown"]
+        assert record["stdout_digest"].startswith("sha256:")
+        assert secret not in json.dumps(report)
+
+    def test_a_failing_teardown_still_cleans_up_the_rows(self, tmp_path: Path):
+        """Adding a step in front of cleanup must not create a way to skip it.
+
+        Row deletion is the one thing that must always happen: a fixture row left
+        behind is a fixture left in the state DP-INV-1 forbids. The seam was inserted
+        ahead of it, so the failure mode to rule out is a teardown error taking the
+        deletions down with it.
+        """
+        resources = FixtureResources()
+
+        def exploding_runner(argv, timeout):  # noqa: ANN001, ARG001
+            raise OSError("the teardown host went away")
+
+        code, report = self._run(
+            tmp_path, resources=resources, runner=exploding_runner
+        )
+
+        assert code != _mod.EXIT_OK
+        # The rows were still deleted, and verifiably so.
+        assert report["cleanup"]["ok"] is True
+        assert len(report["cleanup"]["deletions"]) == 3
+        for deletion in report["cleanup"]["deletions"]:
+            assert deletion["confirmed_absent"] is True
+        # And the failure is reported rather than swallowed.
+        assert report["resource_teardown"]["ok"] is False
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+
+    def test_the_report_carries_the_first_hand_deletion_record(self, tmp_path: Path):
+        """W2-10's evidence has to be readable by the reviewer, not just by W2-10.
+
+        The per-row record goes into the report: which pairs were deleted, that both
+        key halves were used, and that a consistent read confirmed absence. Without
+        it a reviewer has only the check's verdict, and the whole point of this
+        defect is that a verdict about cleanup is not evidence of cleanup.
+        """
+        _, report = self._run(tmp_path)
+        record = report["cleanup"]
+
+        assert record["ok"] is True
+        assert record["declared_items"] == 3
+        assert len(record["deletions"]) == 3
+        for deletion in record["deletions"]:
+            assert deletion["both_keys_present"] is True
+            assert deletion["deleted"] is True
+            assert deletion["confirmed_absent"] is True
+            assert deletion["event_id"] and deletion["arrived_at"]
+
+    def test_a_row_still_present_after_delete_cannot_exit_zero(self, tmp_path: Path):
+        """The ordering defect this whole issue is about, end to end.
+
+        The consistent read finds the row still there, so cleanup did not succeed.
+        Both consequences are asserted: `cleanup_ok` false AND W2-10 failed. A
+        W2-10 that ran before the deletions would report `passed` here while
+        `cleanup_ok` was false — a report containing its own contradiction, which is
+        precisely what "never let a cleanup check pass before cleanup actually
+        succeeds" forbids.
+        """
+        # `get_item` answers with the row still present, on every call.
+        stubborn = ddb_stub(item={"event_id": {"S": "msg-live-001"}})
+
+        code, report = self._run(tmp_path, dynamodb=stubborn)
+
+        assert code != _mod.EXIT_OK
+        assert report["cleanup_ok"] is False
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+        assert report["checks"]["W2-10"]["status"] != _mod.STATUS_PASSED
+        assert _mod.report_is_passing(report) is False
+
+    def test_a_delete_that_raises_cannot_exit_zero(self, tmp_path: Path):
+        """A throttled or denied DeleteItem is a fixture left populated."""
+        angry = ddb_stub()
+        angry.delete_item.side_effect = RuntimeError("AccessDeniedException")
+
+        code, report = self._run(tmp_path, dynamodb=angry)
+
+        assert code != _mod.EXIT_OK
+        assert report["cleanup_ok"] is False
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+        assert _mod.report_is_passing(report) is False
+
+    def test_an_unrunnable_teardown_cannot_report_cleanup_success(
+        self, tmp_path: Path
+    ):
+        """Root's reproduction: rows gone, resources still running, `cleanup_ok=true`.
+
+        The exact scenario from the review, and the reason it is a CLI test rather
+        than a predicate test. Every individual verdict was already right — the run
+        exited 4 and W2-10 failed — so nothing driving predicates directly could see
+        the defect. It lived in the two places an operator actually reads: the
+        summary line and `result.json` both said `cleanup_ok: true` while all three
+        fixture resources were still present, because that field carried only the
+        DynamoDB row record.
+
+        That is the worst direction for this particular field to be wrong in. An
+        operator scanning a nonzero run to decide whether the environment is safe to
+        reuse reads it as "the fixture is gone, the failure was something else", and
+        walks away from a fixture with a control listener still enabled — the state
+        DP-INV-1 exists to forbid.
+
+        `resources` is asserted directly, not inferred from the report, because the
+        whole point is that the report was disagreeing with the world. And the row
+        record keeps its `ok: true`: the rows really did go, and losing that
+        distinction would trade this defect for a vaguer one.
+        """
+        resources = FixtureResources()
+        code, report = self._run(
+            tmp_path,
+            resources=resources,
+            runner=teardown_runner_for(
+                tmp_path,
+                wave2_config(tmp_path),
+                resources,
+                raises=OSError("teardown-control-fixture.sh: permission denied"),
+            ),
+        )
+
+        # The fixture is genuinely still standing. Every resource the ledger names.
+        assert len(resources.present) == 3
+        assert resources.removed_at == {}
+
+        # What root reported as correct, and which must stay correct.
+        assert code == _mod.EXIT_CHECKS_FAILED
+        assert report["resource_teardown"]["ok"] is False
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+
+        # What was wrong: the published cleanup verdict.
+        assert report["cleanup_ok"] is False
+        assert report["fixture_cleanup"]["resources_ok"] is False
+        assert report["fixture_cleanup"]["absence_verified"] is False
+        # Preserved as the row-specific record, under its own name.
+        assert report["cleanup"]["ok"] is True
+        assert report["fixture_cleanup"]["rows_ok"] is True
+        # And the notes say which part failed, so the summary is actionable rather
+        # than merely not-wrong.
+        assert any(
+            "resource teardown" in note for note in report["fixture_cleanup"]["notes"]
+        )
+        assert _mod.report_is_passing(report) is False
+
+    def test_retained_resources_cannot_report_cleanup_success(self, tmp_path: Path):
+        """The same reporting rule for a teardown that exits 0 and removes nothing.
+
+        Distinct from the case above, and worth its own test: here the command runs
+        fine and reports success, so `resource_teardown.ok` is TRUE. The only thing
+        that knows the resources are still there is the absence verification. If the
+        aggregate had been built from the teardown's exit status alone it would pass
+        here, which is why it reads the verification check's outcome too.
+        """
+        resources = FixtureResources()
+        code, report = self._run(
+            tmp_path,
+            resources=resources,
+            runner=teardown_runner_for(
+                tmp_path, wave2_config(tmp_path), resources, remove=False
+            ),
+        )
+
+        assert len(resources.present) == 3
+        assert code != _mod.EXIT_OK
+        assert report["resource_teardown"]["ok"] is True
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+        assert report["cleanup_ok"] is False
+        assert report["fixture_cleanup"]["resources_ok"] is True
+        assert report["fixture_cleanup"]["absence_verified"] is False
+        assert _mod.report_is_passing(report) is False
+
+    def test_a_clean_run_still_reports_cleanup_success(self, tmp_path: Path):
+        """The positive control for the two above, so the fix is not just strictness.
+
+        Without this, making `cleanup_ok` harder to earn would be indistinguishable
+        from making it unearnable — the same class of defect as the W2-10 that could
+        not pass after a correct cleanup. An honest fixture reports true on all three
+        components, and the resources really are gone.
+        """
+        resources = FixtureResources()
+        code, report = self._run(tmp_path, resources=resources)
+
+        assert code == _mod.EXIT_OK
+        assert resources.present == {}
+        assert report["cleanup_ok"] is True
+        assert report["fixture_cleanup"] == {
+            "ok": True,
+            "rows_ok": True,
+            "resources_ok": True,
+            "absence_verified": True,
+            "notes": [],
+        }
+        assert _mod.report_is_passing(report) is True
+
+    def test_a_partial_cleanup_failure_still_verifies_the_rest_and_fails(
+        self, tmp_path: Path
+    ):
+        """Partial failure: one row of three refuses to go.
+
+        Two properties at once. Cleanup must not abandon the remaining rows when one
+        fails — stopping early would leave rows behind for no reason — and the check
+        must still fail. "Mostly cleaned up" is not cleaned up.
+        """
+        flaky = ddb_stub()
+        calls = {"n": 0}
+
+        def delete(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("ProvisionedThroughputExceededException")
+            return {}
+
+        flaky.delete_item.side_effect = delete
+
+        code, report = self._run(tmp_path, dynamodb=flaky)
+
+        assert code != _mod.EXIT_OK
+        # All three attempted, not just the two before the failure.
+        assert calls["n"] == 3
+        assert report["cleanup_ok"] is False
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+        assert len(report["cleanup"]["deletions"]) == 3
+
+    @pytest.mark.parametrize("artifact", WAVE2_READ_ARTIFACTS)
+    def test_no_single_missing_artifact_can_exit_zero(self, tmp_path: Path, artifact):
+        """Parametrized over every artifact a wave-2 check actually reads.
+
+        The list is DERIVED from the harness's own source (see
+        `WAVE2_READ_ARTIFACTS`) rather than written out here, so an artifact a future
+        wave-2 check starts reading is covered the moment the `_artifact` call
+        appears. A hand-maintained list would silently stop being exhaustive, which
+        is the same class of defect as the incomplete predicate table this issue
+        fixes.
+
+        One removal, one nonzero run, every time. This is the "missing evidence
+        remains NOT RUN/nonzero" requirement stated over the whole input space of
+        omissions rather than one example of it.
+        """
+        payloads = {
+            **artifact_payloads(),
+            **wave2_artifact_payloads(),
+            **pause_artifact_payloads(),
+            **wave2_only_artifact_payloads(),
+        }
+        payloads.pop(artifact)
+        config = wave2_config(tmp_path, artifact_payloads=payloads)
+
+        code, report = self._run(tmp_path, config=config)
+
+        assert code != _mod.EXIT_OK
+        assert report["passed"] < report["required"]
+        assert _mod.report_is_passing(report) is False
+
+    def test_the_two_new_artifacts_are_among_the_ones_wave_two_reads(self):
+        """Guards the derivation above against silently covering nothing.
+
+        `WAVE2_READ_ARTIFACTS` is produced by scanning the harness source. If that
+        scan broke — a renamed helper, a reformatted call — it would yield an empty
+        or short tuple, and the parametrized test above would pass by testing
+        nothing. Naming #5825's three artifacts explicitly is the tripwire.
+
+        Three, not two: W2-10's single `cleanup_security_recheck` became
+        `security_capture` and `teardown_verification`, one on each side of the
+        teardown boundary. That split is the ordering fix, and asserting both names
+        here is what stops them being quietly recombined into an artifact that would
+        again have to be recorded at one instant.
+        """
+        assert "wave2_preflight" in WAVE2_READ_ARTIFACTS
+        assert "security_capture" in WAVE2_READ_ARTIFACTS
+        assert "teardown_verification" in WAVE2_READ_ARTIFACTS
+        # The combined artifact must be gone, not merely unused: an implementation
+        # still reading it would have kept the ordering defect available.
+        assert "cleanup_security_recheck" not in WAVE2_READ_ARTIFACTS
+        assert "cleanup_security_recheck" not in _mod.REQUIRED_ARTIFACT_KEYS
+        assert len(WAVE2_READ_ARTIFACTS) >= 10
+        assert set(WAVE2_READ_ARTIFACTS) <= set(_mod.REQUIRED_ARTIFACT_KEYS)
+
+    def test_wave_one_only_artifacts_are_genuinely_unread_by_wave_two(self, tmp_path: Path):
+        """The other side of the partition, asserted rather than assumed.
+
+        A wave-2 run does not read wave 1's artifacts, so removing one cannot fail a
+        wave-2 check — and a test that expected it to would be asserting a coupling
+        the harness deliberately does not have. Pinning it here means the exclusion
+        is a recorded decision rather than a gap somebody later "fixes" by making
+        wave 2 depend on wave 1's files.
+
+        Wave 1's evidence still reaches wave 2, but through W2-01's
+        `wave1_evidence` recording — a summarized, revision-pinned claim that the
+        preflight validates — not by re-reading wave 1's raw artifacts.
+        """
+        unread = sorted(set(_mod.REQUIRED_ARTIFACT_KEYS) - set(WAVE2_READ_ARTIFACTS))
+        assert unread, "expected wave 1 to own artifacts wave 2 does not read"
+
+        payloads = {
+            **artifact_payloads(),
+            **wave2_artifact_payloads(),
+            **pause_artifact_payloads(),
+            **wave2_only_artifact_payloads(),
+        }
+        for name in unread:
+            payloads.pop(name, None)
+        config = wave2_config(tmp_path, artifact_payloads=payloads)
+
+        code, report = self._run(tmp_path, config=config)
+
+        assert code == _mod.EXIT_OK, report
+        assert _mod.report_is_passing(report) is True
+
+    def test_an_undeclared_teardown_cannot_exit_zero(self, tmp_path: Path):
+        """No `cleanup_items` at all.
+
+        The tempting shortcut: the ROW cleanup record reports `ok=True` when nothing
+        is declared, which is correct on its own terms (a wave that created no rows
+        has nothing to remove) and is exactly why W2-10 cannot rely on it alone.
+        W2-01 fails on the undeclared teardown and W2-10 fails on the empty record,
+        so the two together close the hole the row record leaves open.
+
+        The row record's `ok=True` is pinned here deliberately, because it is the
+        trap, and because the top-level `cleanup_ok` is now the aggregate that does
+        NOT repeat it: a run whose verification check failed does not get to report
+        the fixture as cleaned up, however well the (empty) row deletion went.
+        """
+        config = wave2_config(tmp_path, cleanup_items=[])
+
+        code, report = self._run(tmp_path, config=config)
+
+        assert code != _mod.EXIT_OK
+        # The row-specific record is TRUE here, which is the trap...
+        assert report["cleanup"]["ok"] is True
+        assert report["fixture_cleanup"]["rows_ok"] is True
+        # ...and the published verdict does not inherit it.
+        assert report["cleanup_ok"] is False
+        assert report["fixture_cleanup"]["absence_verified"] is False
+        assert report["checks"]["W2-01"]["status"] == _mod.STATUS_FAILED
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+        assert _mod.report_is_passing(report) is False
+
+    def test_a_forged_cleanup_claim_in_the_operator_artifact_changes_nothing(
+        self, tmp_path: Path
+    ):
+        """The substitution the issue forbids, attempted directly.
+
+        An operator (or a well-meaning script) adds every plausible
+        "cleanup succeeded" field to the artifacts they control, while the actual
+        DynamoDB deletes fail. If any of those fields were load-bearing this would
+        exit 0. None are: the deletion half of W2-10 reads only the harness's own
+        `CleanupOutcome`, so no artifact can vote on it.
+
+        Both W2-10 artifacts are forged, because the split created a second file the
+        operator writes and a claim moved into either one would be just as wrong.
+        """
+        forged_claims = {
+            "cleanup_ok": True,
+            "cleanup_succeeded": True,
+            "rows_deleted": 3,
+            "all_rows_removed": True,
+            "teardown_verified": True,
+            "consistent_read_confirmed_absent": True,
+        }
+        payloads = {
+            **artifact_payloads(),
+            **wave2_artifact_payloads(),
+            **pause_artifact_payloads(),
+            **wave2_only_artifact_payloads(),
+            "security_capture": security_capture_payload(**forged_claims),
+            "teardown_verification": teardown_verification_payload(**forged_claims),
+        }
+        config = wave2_config(tmp_path, artifact_payloads=payloads)
+        angry = ddb_stub()
+        angry.delete_item.side_effect = RuntimeError("AccessDeniedException")
+
+        code, report = self._run(tmp_path, config=config, dynamodb=angry)
+
+        assert code != _mod.EXIT_OK
+        assert report["checks"]["W2-10"]["status"] == _mod.STATUS_FAILED
+        assert _mod.report_is_passing(report) is False
+        # And it failed on the real deletion record, not on the forged fields.
+        assert "AccessDeniedException" in report["checks"]["W2-10"]["message"]
+
+    def test_cleanup_and_its_verification_both_run_when_the_checks_raise(
+        self, tmp_path: Path
+    ):
+        """The exception path. Cleanup is in `finally` for a reason.
+
+        The failure path is exactly when a fixture is most likely to be left with a
+        live control listener — the state DP-INV-1 forbids. So an exception in the
+        pre-cleanup checks must not skip either the teardown or its verification,
+        and the evidence must still be written for the operator to read.
+
+        `assert_check_manifest` is what turns an abandoned run into `EXIT_PRECONDITION`
+        rather than a short report, so the exit code is asserted as nonzero rather
+        than as a specific value.
+        """
+        config = wave2_config(tmp_path)
+        recorder = ddb_stub()
+        boom = wave2_gateway_stub()
+        boom.request.side_effect = KeyboardInterrupt("operator interrupted")
+
+        path = write_config(tmp_path, config)
+        session = MagicMock()
+        session.client.side_effect = lambda name, **_: {
+            "sts": sts_for(ACCOUNT),
+            "dynamodb": recorder,
+        }[name]
+
+        with (
+            patch("boto3.session.Session", return_value=session),
+            patch("httpx.Client", return_value=boom),
+            patch.dict("os.environ", IDENTITY_ENV, clear=False),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _mod.main(
+                [
+                    "--wave",
+                    "2",
+                    "--config",
+                    str(path),
+                    "--evidence-dir",
+                    str(tmp_path / "evidence"),
+                ]
+            )
+
+        # Teardown still happened, for every declared row, by exact key.
+        assert recorder.delete_item.call_count == 3
+        for call in recorder.delete_item.call_args_list:
+            assert set(call.kwargs["Key"]) == {"event_id", "arrived_at"}
+
+    def test_teardown_survives_an_exception_in_the_capture_itself(self, tmp_path: Path):
+        """The failure mode the capture-then-verify reordering introduced.
+
+        Moving the security observations before `run_cleanup` put a new step between
+        the checks and teardown, and anything on that path can now be the reason the
+        fixture is never removed. `capture_security_observations` records ordinary
+        failures rather than raising, but a `BaseException` — an operator's Ctrl-C
+        during a slow probe — bypasses that entirely.
+
+        Teardown is the one step that has to survive every failure mode, including a
+        failure of the step added in front of it, because a fixture left standing is a
+        control-enabled workload outliving its evaluation. So the capture has its own
+        `finally`.
+
+        Distinct from the test above, which raises in the CHECKS: that path was always
+        covered. This one raises during the capture, which only exists after this fix.
+        """
+        config = wave2_config(tmp_path)
+        recorder = ddb_stub()
+        path = write_config(tmp_path, config)
+        session = MagicMock()
+        session.client.side_effect = lambda name, **_: {
+            "sts": sts_for(ACCOUNT),
+            "dynamodb": recorder,
+        }[name]
+
+        with (
+            patch("boto3.session.Session", return_value=session),
+            patch("httpx.Client", return_value=wave2_gateway_stub()),
+            patch.dict("os.environ", IDENTITY_ENV, clear=False),
+            patch.object(
+                _mod,
+                "capture_security_observations",
+                side_effect=KeyboardInterrupt("interrupted mid-capture"),
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _mod.main(
+                [
+                    "--wave",
+                    "2",
+                    "--config",
+                    str(path),
+                    "--evidence-dir",
+                    str(tmp_path / "evidence"),
+                ]
+            )
+
+        assert recorder.delete_item.call_count == 3
+        for call in recorder.delete_item.call_args_list:
+            assert set(call.kwargs["Key"]) == {"event_id", "arrived_at"}
+
+    def test_no_wave_two_check_id_is_missing_from_the_report(self, tmp_path: Path):
+        """The completeness of the report itself, through `main`.
+
+        Asserted separately from the count because `passed == required` is arithmetic
+        over whatever the report happens to contain: ten passes over nine checks and
+        a duplicate would satisfy it. The IDs are the wave, and `assert_check_manifest`
+        plus W2-01's and W2-10's inventory assertions are what tie the two together.
+        """
+        _, report = self._run(tmp_path)
+
+        assert sorted(report["checks"]) == sorted(
+            spec.check_id for spec in _mod.WAVE2_CHECKS
+        )
+        assert len(report["checks"]) == report["required"] == 10
+
+    def test_the_post_cleanup_check_is_the_only_one_deferred(self):
+        """The split is deliberately minimal, and that is worth pinning.
+
+        Deferring a check past cleanup is a real cost: it runs against a fixture
+        that has been torn down, so anything needing live fixture state cannot go
+        here. W2-10 is the only check whose subject IS the teardown. If this set
+        grew silently, checks would start running against a dismantled environment
+        and failing for reasons unrelated to what they test.
+        """
+        assert _mod.POST_CLEANUP_CHECK_IDS == frozenset({"W2-10"})
+        before, after = _mod.split_post_cleanup_specs(_mod.WAVE2_CHECKS)
+        assert tuple(s.check_id for s in after) == ("W2-10",)
+        assert len(before) == 9
+        # The partition is exactly the wave: nothing dropped, nothing duplicated.
+        assert {s.check_id for s in before} | {s.check_id for s in after} == {
+            spec.check_id for spec in _mod.WAVE2_CHECKS
+        }
+        # And wave 1 is untouched: it has no post-cleanup check, so its behaviour
+        # is unchanged by the split.
+        w1_before, w1_after = _mod.split_post_cleanup_specs(_mod.WAVE1_CHECKS)
+        assert w1_after == ()
+        assert w1_before == _mod.WAVE1_CHECKS
+
+class TestTheDispatchInputIsValidatedAsAWholeValue:
+    """The `resolve-source` step script, EXECUTED — not described.
+
+    Root's first finding on `ae57ee24` was found by running the block: the check was
+    `printf '%s' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'`, and `grep` matches a
+    LINE. Root passed a 40-hex SHA followed by a newline, `ref=main`, and another
+    `expected=` line; the step exited 0 and appended those lines to `$GITHUB_OUTPUT`,
+    where the last value of a key wins — so the jobs would have checked out `main`
+    while the run reported a different expected SHA.
+
+    A substring assertion on the workflow text cannot detect that, which is why these
+    tests extract the real script out of the YAML and run it under bash against a
+    temporary `$GITHUB_OUTPUT`. What is asserted is the exit status and the outputs
+    actually written, since those are what GitHub acts on.
+    """
+
+    @staticmethod
+    def _resolve_script() -> str:
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github" / "workflows" / "agent-control-ci.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        (step,) = workflow["jobs"]["resolve-source"]["steps"]
+        return step["run"]
+
+    def _run(self, tmp_path: Path, source_sha: str, event: str = "workflow_dispatch"):
+        """Execute the step and return (exit status, parsed $GITHUB_OUTPUT)."""
+        import subprocess
+
+        script = tmp_path / "resolve.sh"
+        script.write_text(self._resolve_script(), encoding="utf-8")
+        output = tmp_path / "github_output"
+        output.write_text("", encoding="utf-8")
+        summary = tmp_path / "github_step_summary"
+        summary.write_text("", encoding="utf-8")
+        completed = subprocess.run(  # noqa: S603
+            ["bash", str(script)],  # noqa: S607
+            env={
+                "PATH": "/usr/bin:/bin",
+                "SOURCE_SHA": source_sha,
+                "EVENT_NAME": event,
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_STEP_SUMMARY": str(summary),
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        # Parsed the way GitHub does: later assignments to a key override earlier ones,
+        # which is precisely what made the injection dangerous rather than merely untidy.
+        written: dict[str, str] = {}
+        for line in output.read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                written[key] = value
+        return completed.returncode, written
+
+    def test_a_full_lowercase_sha_resolves_to_itself(self, tmp_path: Path):
+        """The positive control: without it, rejecting everything would pass the rest."""
+        sha = "405d1e6eb531105239432b2719844e1e51e60a93"
+
+        status, written = self._run(tmp_path, sha)
+
+        assert status == 0
+        assert written == {"ref": sha, "expected": sha}
+
+    def test_root_s_injection_is_rejected(self, tmp_path: Path):
+        """The exact input root executed: a valid SHA, a newline, then chosen outputs.
+
+        The consequence if accepted is not a confusing log line — `ref=main` overrides
+        the SHA, so the jobs check out a moving branch while `expected` names a
+        different commit, and the gate reports a revision nobody tested.
+        """
+        injected = (
+            "a" * 40 + "\nref=main\nexpected=" + "b" * 40
+        )
+
+        status, written = self._run(tmp_path, injected)
+
+        assert status == 1
+        assert written == {}
+
+    @pytest.mark.parametrize(
+        ("label", "value"),
+        [
+            ("empty", ""),
+            ("a branch name", "main"),
+            ("an abbreviated sha", "405d1e6"),
+            ("uppercase hex", "405D1E6EB531105239432B2719844E1E51E60A93"),
+            ("39 characters", "a" * 39),
+            ("41 characters", "a" * 41),
+            ("non-hex characters", "z" * 40),
+            ("a trailing newline", "a" * 40 + "\n"),
+            ("a trailing carriage return", "a" * 40 + "\r"),
+            ("a leading newline", "\n" + "a" * 40),
+            ("surrounding whitespace", "  " + "a" * 40 + "  "),
+            ("a second sha on a second line", "a" * 40 + "\n" + "b" * 40),
+            ("a shell metacharacter suffix", "a" * 40 + "; rm -rf /"),
+            ("a command substitution", "$(git rev-parse HEAD)"),
+        ],
+    )
+    def test_anything_other_than_exactly_forty_lowercase_hex_is_rejected(
+        self, tmp_path: Path, label, value
+    ):
+        """Rejected with a nonzero exit and NO outputs written.
+
+        The two halves matter separately: a nonzero exit stops the dependent jobs, and
+        writing no outputs means nothing downstream can consume a partially-validated
+        ref even if the failure were somehow ignored.
+        """
+        status, written = self._run(tmp_path, value)
+
+        assert status == 1, label
+        assert written == {}, label
+
+    def test_a_pull_request_run_ignores_the_input_and_checks_out_the_trigger(
+        self, tmp_path: Path
+    ):
+        """The PR path is unchanged: empty outputs are `actions/checkout`'s default.
+
+        Executed with a hostile `source_sha` set, because `inputs.source_sha` is not
+        addressable on a `pull_request` event but the step must not depend on that.
+        """
+        status, written = self._run(
+            tmp_path, "main\nref=evil", event="pull_request"
+        )
+
+        assert status == 0
+        assert written == {"ref": "", "expected": ""}
+
+    def test_the_job_running_these_tests_installs_the_yaml_reader_they_need(self):
+        """The dependency this class needs must be declared where this class runs.
+
+        Every test above reaches the step script through `yaml.safe_load`, so without
+        that dependency they do not fail on the validator's behaviour — they fail on
+        import, all seventeen of them, which is how run 35956224007 went red. The
+        coupling is invisible otherwise: the tests pass on any developer machine that
+        happens to have PyYAML installed, and fail only in the job that matters.
+
+        Asserted against the workflow's own install step rather than by importing the
+        module, because the defect was never that the reader is unavailable in general.
+        It was that it is absent from the one environment where these assertions are a
+        required check.
+        """
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github" / "workflows" / "agent-control-ci.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        (install,) = [
+            step
+            for step in workflow["jobs"]["control-evaluation-harness-tests"]["steps"]
+            if step.get("name") == "Install harness test dependencies"
+        ]
+
+        assert "pyyaml" in install["run"].lower()
