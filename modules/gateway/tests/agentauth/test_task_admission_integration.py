@@ -25,8 +25,8 @@ from fastapi.testclient import TestClient
 from src.agentauth import task_admission_routes as route
 from src.agentauth import task_dispatch_routes, work_routes
 from src.agentauth.bootstrap import BootstrapStore
-from src.agentauth.routes import get_agent_runtime
 from src.agentauth.task_admission import TaskAdmission
+from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_budget import TaskBudget
 from src.agentauth.task_service_policy import TaskServicePolicyStore
 from src.agentauth.task_work import TaskWorkStore

@@ -10,8 +10,9 @@ from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.adapter import CREDENTIAL_HEADER
 from src.agentauth.bootstrap import BootstrapRefusedError
-from src.agentauth.routes import get_agent_runtime, require_agent_transport
+from src.agentauth.routes import require_agent_transport
 from src.agentauth.run_credential import CredentialError
+from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_routes import task_delivery
 from src.agentauth.task_runtime import TaskRuntime
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.agentauth import task_dispatch_routes
-from src.agentauth.routes import get_agent_runtime
+from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_dispatch_routes import router, work_store
 from src.agentauth.task_work import TaskWorkStore, work_shard
 from tests.tasks.test_store import AUTHORITY_TABLE, NOW, TABLE, _request, client, store  # noqa: F401

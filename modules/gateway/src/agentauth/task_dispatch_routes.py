@@ -11,7 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from src.agentauth.routes import AgentRuntime, get_agent_runtime
+from src.agentauth.routes import AgentRuntime
+from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_work import MAX_WORK_RECORDS_PER_INVOCATION, TaskWorkError, TaskWorkStore, TaskWorkUnavailableError
 from src.agentauth.work_routes import verify_producer
 

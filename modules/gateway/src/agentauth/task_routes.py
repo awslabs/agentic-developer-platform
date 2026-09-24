@@ -8,9 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
-from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
+from src.agentauth.routes import AgentRuntime, require_agent_transport
 from src.agentauth.run_services import OwnRunRequest
 from src.agentauth.store import AuthorityStoreError
+from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_delivery import TaskDelivery, TaskDeliveryError, enabled
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
 
