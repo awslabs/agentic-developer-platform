@@ -572,6 +572,11 @@ def _planning_refusal(exc: PlanningError) -> HTTPException:
 
     * 409 for a draft with no outcomes yet — keep refining; the conversation is fine
       and retrying the same call changes nothing until the draft does.
+    * 409 for a conversation idle too long to carry a usable grant (#5331), for the
+      same reason and with the same remedy shape: nothing is wrong with the request,
+      and the act that resolves it is continuing the conversation. Emphatically not
+      422 — there is no argument to fix — and not 403, which would suggest the caller
+      lacks access to something.
     * 422 for a malformed repository or issue reference — fix the argument.
     * 403 for a repository the tenant's installations do not carry. Not 422: the
       input may be perfectly well-formed and the caller simply has no access, which
@@ -580,6 +585,7 @@ def _planning_refusal(exc: PlanningError) -> HTTPException:
     """
     status = {
         "draft_not_ready": 409,
+        "planning_session_idle": 409,
         "too_many_outcomes": 422,
         "malformed_repository": 422,
         "malformed_issue_ref": 422,
@@ -729,7 +735,14 @@ async def plan_from_session(
                 title=title[:512],
                 outcomes=outcomes,
                 repository=repository,
-                policy_epoch=session.created_at or session.updated_at,
+                # LAST activity, not creation. A proposed grant's 24 hours are measured
+                # from here, so passing `created_at` spent them on the user's thinking
+                # time — and spent them entirely for the disconnect-and-return #5331
+                # requires, producing bounds already expired at the moment the human was
+                # asked to approve them. `updated_at` is bumped by the ingest and
+                # response Lambdas on every turn, and is the field the row's own TTL is
+                # derived from, so it is the conversation's real liveness signal.
+                last_activity_epoch=session.updated_at or session.created_at,
                 issue_ref=issue_ref,
                 intent=intent,
                 # The AUTHENTICATED tenant. Never a request field — `compile_proposal`

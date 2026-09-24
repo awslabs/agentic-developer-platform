@@ -57,9 +57,12 @@ stored document would create two copies of one value.
 import hashlib
 import json
 from dataclasses import dataclass, field
+from datetime import UTC
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.shared.models.base import utcnow
 
 from .execution_policy import PolicyRejectedError, stamp_policy
 from .genesis import APPROVAL_DECISION_KINDS
@@ -71,6 +74,7 @@ from .state import ActorKind, NodeState
 __all__ = [
     "ApprovalContext",
     "CompileResult",
+    "ExpiredExecutionPolicyError",
     "NonApprovalSupersedeError",
     "PolicyNotAcceptableError",
     "ProposalRejectedError",
@@ -78,7 +82,10 @@ __all__ = [
     "accept_execution_policy",
     "address_of",
     "compile_proposal",
+    "legacy_naive_policy_plan_hash",
     "plan_hash",
+    "prepare_execution_policy",
+    "require_unexpired_execution_policy",
     "upsert_edges",
     "upsert_nodes",
 ]
@@ -126,19 +133,18 @@ class NonApprovalSupersedeError(ProposalRejectedError):
 
 
 class PolicyNotAcceptableError(ProposalRejectedError):
-    """Raised when an execution policy cannot be accepted as submitted (#5128).
+    """Raised when execution policy authority cannot be accepted (#5128).
 
-    Two causes, both refusals of the *document* rather than of the author's
-    authority: it declared a server-stamped field (id, hash, principal), or a
-    non-human actor tried to accept one.
-
-    A subclass for the same reason as the two above — a caller asking only "was
-    this refused?" catches it — and separately catchable because a model
-    attempting to accept its own authority is an escalation attempt worth alerting
-    on, not a typo. The route maps it to 422, matching the issue's "malformed
-    policy → 422" contract; the *unauthorized-scope* case is a different path and
-    keeps the existing uniform denial.
+    Causes include a submitted server-stamped field, a non-human acceptor, an
+    unavailable credential reference and expired reviewed bounds. Submission
+    routes retain the malformed-policy 422 contract. A revision-bound gate
+    promotion is already past validation, so the controls route maps this expected
+    state conflict to 409 and rolls back the tentative gate answer.
     """
+
+
+class ExpiredExecutionPolicyError(PolicyNotAcceptableError):
+    """Raised when reviewed execution bounds are already expired."""
 
 
 @dataclass(frozen=True)
@@ -294,44 +300,19 @@ def require_evaluation_acceptor(proposal, decision, in_force=None):
         raise PolicyNotAcceptableError("Only a human acceptance may establish, change or remove an evaluation specification")
 
 
-def accept_execution_policy(
+def prepare_execution_policy(
     proposal: LoopProposal,
     *,
     decision: ApprovalContext,
     decision_kind: DecisionKind,
 ) -> LoopProposal:
-    """Bind a submitted execution policy to its acceptor, or refuse it (#5128).
+    """Deterministically bind submitted policy bounds without consulting time.
 
-    Returns the proposal unchanged when it carries no policy, which is what
-    preserves legacy semantics for every existing flow: no policy, no new
-    behaviour, not even a stamped empty one.
-
-    **A model may propose a policy but may never accept one.** That distinction is
-    enforced here, on `decision.actor_kind`, because this function is where a
-    proposed policy becomes an accepted grant. The draft-registration path
-    (`draft_routes.py`) compiles with `ActorKind.SERVICE` and is exactly the case
-    that must be refused: an agent registering a draft is proposing, and if its
-    compile could stamp a policy then an agent would be authorizing its own
-    autonomous actions — the whole authority model inverted in one call.
-
-    Refusing rather than silently dropping the policy is the safer of the two
-    failures. Dropping it would compile the graph while discarding the *bounds*,
-    producing a flow that runs with legacy unbounded semantics while its author
-    believes it is constrained. A refusal cannot be misread that way.
-
-    Args:
-        proposal: The document being compiled.
-        decision: Server-resolved acceptance context. Both the principal and the
-            tenant come from here, never from the document.
-        decision_kind: The decision kind this compile records, used only in the
-            refusal message so an operator can see which path attempted it.
-
-    Returns:
-        The proposal, with `execution_policy` stamped when one was present.
-
-    Raises:
-        PolicyNotAcceptableError: A non-human actor attempted acceptance, or the
-            document declared a server-stamped field.
+    The stamp is content-derived and the UTC normalization is deterministic, so
+    callers can hash this result and resolve an identical in-force acceptance
+    under its lock before applying the wall-clock expiry guard. A caller creating
+    a new accepted plan must call :func:`require_unexpired_execution_policy`
+    before writing it.
     """
     if decision_kind != DecisionKind.PLAN_DRAFTED:
         require_evaluation_acceptor(proposal, decision)
@@ -351,15 +332,72 @@ def accept_execution_policy(
             "delegated authority is a human act. Submit the plan without a policy, or have an authorized human accept it."
         )
 
-    try:
-        stamped = stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)
-    except PolicyRejectedError as exc:
-        # Translated rather than propagated so every refusal from this module is a
-        # `ProposalRejectedError` subclass, which is what the routes' existing
-        # handlers catch. `from exc` keeps the original cause for the logs.
-        raise PolicyNotAcceptableError(str(exc)) from exc
+    # Every writer uses UTC. Normalizing a legacy naive value here keeps both the
+    # policy identity and the plan hash stable across retries on every host.
+    expires_at = policy.expires_at if policy.expires_at.tzinfo is not None else policy.expires_at.replace(tzinfo=UTC)
+    policy = policy.model_copy(update={"expires_at": expires_at})
+
+    stamped = _stamp_execution_policy(policy, decision=decision)
 
     return proposal.model_copy(update={"execution_policy": stamped})
+
+
+def _stamp_execution_policy(policy, *, decision: ApprovalContext):
+    try:
+        return stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)
+    except PolicyRejectedError as exc:
+        raise PolicyNotAcceptableError(str(exc)) from exc
+
+
+def legacy_naive_policy_plan_hash(proposal: LoopProposal, *, decision: ApprovalContext) -> str | None:
+    """Return the pre-normalization identity for replay compatibility only.
+
+    Older accepted plans retained a submitted naive expiry in their stamped policy.
+    New acceptances normalize that value to UTC so runtime authorization can compare
+    it safely, but an identical response-lost retry must still match the prior plan
+    rather than supersede it. This alias is consulted only under the flow lock and is
+    never persisted or treated as authority for a new acceptance.
+    """
+    policy = proposal.execution_policy
+    if policy is None or policy.expires_at.tzinfo is not None:
+        return None
+
+    stamped = _stamp_execution_policy(policy, decision=decision)
+    return plan_hash(proposal.model_copy(update={"execution_policy": stamped}))
+
+
+def require_unexpired_execution_policy(proposal: LoopProposal) -> None:
+    """Refuse new authority whose exact reviewed expiry is no longer live."""
+    policy = proposal.execution_policy
+    if policy is None:
+        return
+
+    expires_at = policy.expires_at if policy.expires_at.tzinfo is not None else policy.expires_at.replace(tzinfo=UTC)
+    now = utcnow()
+    if expires_at <= now:
+        raise ExpiredExecutionPolicyError(
+            f"the execution policy this plan proposes expired at {expires_at.isoformat()} and cannot be accepted "
+            f"(it is now {now.isoformat()}). Accepting it would arm the plan with bounds every dispatch is then denied "
+            "under. The expiry is part of what was reviewed and is not extended here: request a new plan and accept that."
+        )
+
+
+def accept_execution_policy(
+    proposal: LoopProposal,
+    *,
+    decision: ApprovalContext,
+    decision_kind: DecisionKind,
+) -> LoopProposal:
+    """Bind policy authority and refuse already-expired bounds.
+
+    This immediate path is used when no persisted-plan replay can exist, including
+    revision-bound gate promotion. Direct compilation and amendment use the two
+    phases separately so a response-lost retry can return its committed result
+    even when the same bounds expire before the retry arrives.
+    """
+    prepared = prepare_execution_policy(proposal, decision=decision, decision_kind=decision_kind)
+    require_unexpired_execution_policy(prepared)
+    return prepared
 
 
 async def compile_proposal(
@@ -441,17 +479,9 @@ async def compile_proposal(
     # idempotent in the way that matters: a resubmission of the same document
     # stamps to the same id and therefore the same `document_hash`, and the
     # idempotency return below still recognises it as a retry.
-    proposal = accept_execution_policy(proposal, decision=decision, decision_kind=decision_kind)
-
-    if proposal.execution_policy is not None and proposal.execution_policy.user_credentials is not None:
-        from src.shared.services.credential_resolver import CredentialNotFoundError
-
-        from .user_credentials import validate_user_credential_authority
-
-        try:
-            await validate_user_credential_authority(session, policy=proposal.execution_policy, user_id=decision.actor_id)
-        except CredentialNotFoundError as exc:
-            raise PolicyNotAcceptableError("selected user credential is unavailable to the plan owner") from exc
+    submitted_proposal = proposal
+    proposal = prepare_execution_policy(proposal, decision=decision, decision_kind=decision_kind)
+    legacy_document_hash = legacy_naive_policy_plan_hash(submitted_proposal, decision=decision)
 
     repo = OrchestrationRepository(session)
     document = proposal.model_dump(mode="json")
@@ -489,16 +519,31 @@ async def compile_proposal(
         # --- Idempotency (R-NF2) -------------------------------------------
         # An identical document already in force means this is a retry. Return
         # what exists rather than writing a second identical plan version.
-        if in_force is not None and in_force.plan_hash == document_hash:
+        if in_force is not None and in_force.plan_hash in {document_hash, legacy_document_hash}:
             existing = await repo.list_nodes(org_id=decision.org_id, flow_id=flow.id)
             return CompileResult(
                 flow_id=flow.id,
                 plan_version=in_force.version,
                 decision_id=in_force.accepted_by_decision_id or "",
-                plan_hash=document_hash,
+                plan_hash=in_force.plan_hash,
                 node_ids={address_of(flow.slug, node): node.id for node in existing},
                 already_compiled=True,
             )
+
+        # Consult the clock only after the locked replay check. A request that
+        # committed before expiry but lost its response must return that result;
+        # genuinely new authority still fails before any plan mutation.
+        require_unexpired_execution_policy(proposal)
+
+        if proposal.execution_policy is not None and proposal.execution_policy.user_credentials is not None:
+            from src.shared.services.credential_resolver import CredentialNotFoundError
+
+            from .user_credentials import validate_user_credential_authority
+
+            try:
+                await validate_user_credential_authority(session, policy=proposal.execution_policy, user_id=decision.actor_id)
+            except CredentialNotFoundError as exc:
+                raise PolicyNotAcceptableError("selected user credential is unavailable to the plan owner") from exc
 
         # --- Gate 3: only an approval may rewrite the plan of record ----------
         # Checked *after* the idempotency return above, deliberately: an identical

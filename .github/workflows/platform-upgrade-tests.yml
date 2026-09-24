@@ -25,6 +25,18 @@ on:
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
+      # Capacity-subnet retention (#5830). The rules that stop an absent or stale
+      # configuration from removing the cluster's added subnets are asserted by
+      # test_capacity_subnets.py, which no other workflow executes -- upgrade-contracts
+      # runs a pinned list, and Script Tests only discovers .github/scripts/tests. The
+      # runbook is a subject too, not documentation-only: the shell regression executes
+      # the resolve block extracted from its text, so an edit that reintroduces the
+      # `export VAR="$(resolver)"` failure-masking must re-run the gate that catches it.
+      - 'platform/scripts/capacity_subnets.py'
+      - 'platform/scripts/resolve-capacity-subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnet_runbook.py'
+      - 'docs/runbooks/eks-pod-ip-exhaustion.md'
       - 'modules/agent-factory/infra/outputs.tf'
       - 'modules/agent-factory/infra/variables.tf'
       - 'modules/agent-factory/infra/main.tf'
@@ -56,6 +68,18 @@ on:
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
+      # Capacity-subnet retention (#5830). The rules that stop an absent or stale
+      # configuration from removing the cluster's added subnets are asserted by
+      # test_capacity_subnets.py, which no other workflow executes -- upgrade-contracts
+      # runs a pinned list, and Script Tests only discovers .github/scripts/tests. The
+      # runbook is a subject too, not documentation-only: the shell regression executes
+      # the resolve block extracted from its text, so an edit that reintroduces the
+      # `export VAR="$(resolver)"` failure-masking must re-run the gate that catches it.
+      - 'platform/scripts/capacity_subnets.py'
+      - 'platform/scripts/resolve-capacity-subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnets.py'
+      - 'platform/scripts/tests/test_capacity_subnet_runbook.py'
+      - 'docs/runbooks/eks-pod-ip-exhaustion.md'
       - 'modules/agent-factory/infra/outputs.tf'
       - 'modules/agent-factory/infra/variables.tf'
       - 'modules/agent-factory/infra/main.tf'
@@ -150,6 +174,10 @@ jobs:
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
       - run: python -m pytest platform/scripts/tests/test_bedrock_model_access.py -q
+      # Capacity-subnet retention and the runbook's resolve block (#5830). Pinned
+      # explicitly, like the rest of this job: a glob silently stops covering a file
+      # that is renamed, which is the same silent coverage loss this step closes.
+      - run: python -m pytest platform/scripts/tests/test_capacity_subnets.py platform/scripts/tests/test_capacity_subnet_runbook.py -q
       - run: python -m pytest --confcutdir=modules/gateway/tests/pricing_policy modules/gateway/tests/pricing_policy/test_rollout.py -q
 
   factory-before-github:

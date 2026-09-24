@@ -16,6 +16,12 @@ import sys
 import time
 import urllib.request
 
+# Shared capacity-subnet rules (#5830), also used by the CI apply path so a routine
+# apply and an --update run cannot disagree about which subnets the cluster keeps.
+# This module is loaded by path in tests, so sys.path may not contain its directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import capacity_subnets  # noqa: E402
+
 
 def aws(*args):
     proc = subprocess.run(["aws", *args, "--output", "json"], text=True, capture_output=True)
@@ -54,6 +60,39 @@ def preserve_access(state, cluster, extra=(), requested_cidrs=()):
             "eks_public_access_cidrs": sorted(set(cidrs) | set(requested_cidrs)),
             "eks_endpoint_public_access": cluster["resourcesVpcConfig"].get("endpointPublicAccess", True),
             "eks_endpoint_private_access": cluster["resourcesVpcConfig"].get("endpointPrivateAccess", True)}
+
+
+def retain_capacity_subnets(state, cluster, requested=None):
+    """Keep additional existing capacity subnets in the cluster's subnet set (#5830).
+
+    An operator relieves pod-IP exhaustion by adding already-existing private
+    subnets to the cluster's own subnet set, which is what Auto Mode's managed
+    `default` NodeClass reads. Those ids are account-specific, so they are not in
+    the repository. Without rediscovery here, the next routine update would plan
+    the repository's empty default, shrink the subnet set back, and re-break pod
+    scheduling on every node launched afterwards.
+
+    The rules (what counts as an addition, and never narrowing the live set as a
+    side effect of absent configuration) live in capacity_subnets, shared with the
+    CI apply path so both behave identically -- the failure being prevented is the
+    same one. In particular the baseline is the networking module's PRIVATE subnets,
+    not every Terraform-managed subnet: Terraform also manages public subnets, so
+    the broader rule would let a managed-but-not-baseline subnet be neither retained
+    nor recognised and disappear from the cluster's set unannounced.
+
+    `requested` is merged in for the same reason the access CIDRs are: the exported
+    tfvars file is applied as a -var-file AFTER the repository overlays, so it
+    overrides TF_VAR_ -- an operator adding a subnet during an update run would
+    otherwise have their export silently dropped. An operator export that OMITS a
+    live addition is refused rather than applied as a removal.
+    """
+    additions = capacity_subnets.live_additions(state, cluster["resourcesVpcConfig"].get("subnetIds", []))
+    zones = {}
+    if additions:
+        described = aws("ec2", "describe-subnets", "--subnet-ids", *sorted(additions))["Subnets"]
+        found = {s["SubnetId"]: s.get("AvailabilityZone") for s in described}
+        zones = {s: found.get(s) for s in sorted(additions)}
+    return capacity_subnets.effective_additions(requested, capacity_subnets.as_zone_map(zones))
 
 
 def repository_encryption(state):
@@ -298,6 +337,9 @@ def prepare(args):
     platform = preserve_access(states["platform"], cluster,
                                json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested)
     platform.update(environment=args.environment, aws_region=args.region)
+    platform["additional_private_subnet_ids_by_az"] = retain_capacity_subnets(
+        states["platform"], cluster,
+        json.loads(os.environ.get("TF_VAR_additional_private_subnet_ids_by_az", "{}")))
     platform["ecr_repository_encryption"] = repository_encryption(states["platform"])
     platform["retained_upgrade_kms_key_ids"] = [a["id"] for r, a in resources(states["platform"], "aws_kms_key")
                                                if not r.get("module") and r["name"] == "retained_upgrade"]

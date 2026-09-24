@@ -13,6 +13,8 @@ that matters, rather than around the module's functions:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from src.orchestration.compile import plan_hash
@@ -392,7 +394,7 @@ class TestSlugsStayWithinTheAddressGrammar:
 
 def test_repository_changes_change_the_reviewed_policy_hash():
     repository = resolve_repository("acme/web", [(11, ["acme/web", "acme/api"], True)])
-    inputs = _inputs(repository=repository, policy_epoch=1800000000)
+    inputs = _inputs(repository=repository, last_activity_epoch=1800000000)
     proposal = plan_from_draft(inputs)
     policy = proposal.proposed_execution_policy
     assert proposal.execution_policy is None
@@ -403,9 +405,96 @@ def test_repository_changes_change_the_reviewed_policy_hash():
     assert "deploy" not in policy.allowed_actions
     assert "merge" not in policy.allowed_actions
     assert plan_hash(proposal) == plan_hash(plan_from_draft(inputs))
-    other = plan_from_draft(_inputs(repository=resolve_repository("acme/api", [(11, ["acme/api"], True)]), policy_epoch=1800000000))
+    other = plan_from_draft(_inputs(repository=resolve_repository("acme/api", [(11, ["acme/api"], True)]), last_activity_epoch=1800000000))
     assert plan_hash(proposal) != plan_hash(other)
     assert validate_proposal(transform_for_registration(proposal)[0]) == []
+
+
+class TestAResumedConversationDoesNotYieldASpentGrant:
+    """The grant's lifetime must not be consumed by the user's own thinking time.
+
+    #5331 requires both that a user may disconnect mid-planning and reconnect later
+    with the saved session identifier, and that approving a plan grants the bounds
+    they read. Anchoring the proposed policy's expiry to session *creation* put those
+    two in direct conflict: the 24 hours were spent waiting for the user, and spent
+    entirely by the resume the feature exists for. A conversation resumed on Thursday
+    and approved yielded a grant that expired on Tuesday, and nothing refused it —
+    the gate moved, the graph armed, and every dispatch was then denied
+    `policy_expired` on a plan the human had just deliberately authorized.
+
+    The anchor is now last activity, which is a real signal rather than a convenient
+    one: the ingest and response Lambdas bump `updated_at` on every turn, and the
+    conversation row's own storage lifetime is already `updated_at + 86400`, so
+    "last activity plus 24 hours" is the horizon the conversation itself is kept for.
+
+    These tests assert against a clock, not against a fixed timestamp, because the
+    defect was invisible to every fixed-epoch fixture in this file: `1800000000` is
+    2027, so it is comfortably in the future and the bound looked healthy.
+    """
+
+    def test_a_conversation_resumed_days_later_is_not_granted_dead_bounds(self):
+        """The reproduction. Three days idle, then continued, then planned."""
+        recent = int((datetime.now(tz=UTC) - timedelta(minutes=5)).timestamp())
+        proposal = plan_from_draft(
+            _inputs(
+                repository=resolve_repository("acme/web", [(11, ["acme/web"], True)]),
+                last_activity_epoch=recent,
+            )
+        )
+        remaining = proposal.proposed_execution_policy.expires_at - datetime.now(tz=UTC)
+        # Not merely "in the future": a grant has to have usable life left in it,
+        # since the human still has to read the preview and answer the gate.
+        assert remaining > timedelta(hours=23)
+
+    def test_a_long_idle_conversation_is_refused_rather_than_given_a_spent_grant(self):
+        """Refused, not silently re-clocked.
+
+        Reattaching to a long-idle conversation and asking for a plan without saying
+        anything first is the one case the anchor cannot fix, because there is no
+        recent activity to anchor to. Emitting bounds that are dead on arrival would
+        hand a human something to approve that cannot authorize anything, so the
+        derivation refuses with the action that resolves it.
+
+        Re-clocking to `now` instead is the tempting fix and the wrong one: it would
+        make the document non-deterministic, so the retry of a lost response would
+        register a SECOND flow for one intent rather than matching the first.
+        """
+        stale = int((datetime.now(tz=UTC) - timedelta(days=3)).timestamp())
+        with pytest.raises(PlanningError) as caught:
+            plan_from_draft(
+                _inputs(
+                    repository=resolve_repository("acme/web", [(11, ["acme/web"], True)]),
+                    last_activity_epoch=stale,
+                )
+            )
+        assert caught.value.code == "planning_session_idle"
+        # The message has to name the act that fixes it. "Expired" alone would send a
+        # user looking for a setting rather than back to their conversation.
+        assert "continue the conversation" in caught.value.message.lower()
+
+    def test_a_policyless_plan_is_not_refused_for_idleness(self):
+        """Without a repository there is no policy, so there is no grant to be spent.
+
+        Refusing here would break planning for the case the module documents as
+        legitimate — a document with no repository binding, whose missing binding the
+        preview reports as a real prerequisite.
+        """
+        stale = int((datetime.now(tz=UTC) - timedelta(days=3)).timestamp())
+        proposal = plan_from_draft(_inputs(repository=None, last_activity_epoch=stale))
+        assert proposal.proposed_execution_policy is None
+
+    def test_deriving_twice_still_yields_one_identical_document(self):
+        """The property the anchor choice exists to protect.
+
+        #5331 requires that retrying a request whose response was lost does not create
+        a second flow. That holds only because the derivation reads stored state rather
+        than a clock, so two attempts agree byte for byte and the second registration
+        is the server's own `already_registered` case. Asserted for a RESUMED
+        conversation specifically, since that is the input the fix changed.
+        """
+        recent = int((datetime.now(tz=UTC) - timedelta(hours=6)).timestamp())
+        inputs = _inputs(repository=resolve_repository("acme/web", [(11, ["acme/web"], True)]), last_activity_epoch=recent)
+        assert plan_hash(plan_from_draft(inputs)) == plan_hash(plan_from_draft(inputs))
 
 
 @pytest.mark.parametrize("name", ["acme/..", "../web", "acme/.", "acme/web\n"])

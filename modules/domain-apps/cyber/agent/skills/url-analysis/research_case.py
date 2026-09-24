@@ -21,17 +21,56 @@ from urllib.parse import parse_qsl, urlsplit
 from browser_client import BrowserBrokerError, capture_url
 from browser_guard import DestinationRefused
 from case_contract import (
-    Assessment,
     SCHEMA_VERSION,
+    Assessment,
     content_digest,
     digest,
     redact_url,
     sanitize,
     utcnow,
 )
+from evidence_items import validate_inventory
 
 MAX_PROBES = 4
 CASE_FILE = "case.json"
+
+
+def collection_summary(case):
+    observations = case.get("observations", [])
+    probes = case.get("probes", [])
+    successful = [o for o in observations if 200 <= o.get("http_status", 0) < 400]
+    coverage = (
+        "none"
+        if not observations
+        else (
+            "complete"
+            if all(o["status"] == "complete" for o in observations)
+            and all(p["status"] == "complete" for p in probes)
+            else "partial"
+        )
+    )
+    if any(p["status"] == "running" for p in probes) or case.get(
+        "browser_view", {}
+    ).get("session_open"):
+        execution = "running"
+    elif not successful and probes:
+        reasons = {p.get("reason_code") for p in probes}
+        if "resolution_failed" in reasons or any(
+            o.get("http_status", 0) >= 400 for o in observations
+        ):
+            execution = "unavailable"
+        elif reasons - {None}:
+            execution = "blocked"
+        else:
+            execution = "failed"
+    else:
+        execution = "completed" if probes else "not_started"
+    return {
+        "execution": execution,
+        "coverage": coverage,
+        "observations": len(observations),
+        "successful_pages": len(successful),
+    }
 
 
 def _write_json(path: Path, value) -> None:
@@ -130,6 +169,7 @@ def add_probe(
             if not 1 <= len(observations) <= 2:
                 raise ValueError("Broker returned an invalid observation count")
             for index, raw in enumerate(observations):
+                validate_inventory(raw)
                 if raw.get("subject_sha256") != case["subject_sha256"] or raw.get(
                     "status"
                 ) not in {"complete", "partial", "failed"}:
@@ -212,6 +252,8 @@ def assess_case(output: Path, assessment: dict) -> dict:
         verify_case(output)
         case = json.loads((output / CASE_FILE).read_text())
         parsed = Assessment.model_validate(assessment)
+        for observation in case["observations"]:
+            validate_inventory(observation)
         if case.get("case_kind") == "domain_investigation" and (
             not case.get("stop_reason")
             or (
@@ -231,6 +273,17 @@ def assess_case(output: Path, assessment: dict) -> dict:
             p["status"] != "complete" for p in case["probes"]
         ):
             raise ValueError("Incomplete probes cannot support clearance")
+        if (
+            parsed.verdict != "inconclusive"
+            and case.get("case_kind") != "domain_investigation"
+            and any(
+                p.get("manifest", {}).get("cleanup_status") != "stopped"
+                for p in case["probes"]
+            )
+        ):
+            raise ValueError(
+                "Non-inconclusive assessment requires confirmed browser cleanup"
+            )
         case["assessment"] = sanitize(parsed.model_dump())
         case["assessed_at"] = utcnow()
         save_case(output, case)
@@ -389,6 +442,7 @@ def _investigation_report(case):
 
 
 def save_case(output: Path, case: dict) -> None:
+    case["collection"] = collection_summary(case)
     """JSON is authoritative. Reports are regenerated from the same captured evidence."""
     _write_json(output / CASE_FILE, case)
     rows = indicators(case)
@@ -410,6 +464,7 @@ def save_case(output: Path, case: dict) -> None:
         f"# URL research case: {a['verdict']}",
         "",
         f"Target: {_md(case['target_url'])}",
+        f"Execution: {case['collection']['execution']} · Coverage: {case['collection']['coverage']}",
         "",
         "Observed infrastructure is unassessed until a finding supports its relevance.",
         "",
@@ -419,6 +474,11 @@ def save_case(output: Path, case: dict) -> None:
     cards = []
     for f in a["findings"]:
         citations = ", ".join(f"[{i}](#{i})" for i in f["evidence_ids"])
+        if f.get("evidence_refs"):
+            citations += "; items: " + ", ".join(
+                _md(r["observation_id"] + "/" + r["item_id"])
+                for r in f["evidence_refs"]
+            )
         lines.append(f"- {_md(f['statement'])} ({f['basis']}; {citations})")
     for o in case["observations"]:
         lines += [
@@ -504,6 +564,7 @@ def save_case(output: Path, case: dict) -> None:
         "section{background:white;padding:24px;margin:24px 0;border:1px solid #d0d7de;overflow-wrap:anywhere}img{max-width:100%;max-height:420px;border:1px solid #ddd}pre{white-space:pre-wrap;overflow-wrap:anywhere}"
         "small{color:#57606a}</style>"
         f"<h1>{_escaped(a['verdict'])}</h1><p>{_escaped(case['target_url'])}</p>"
+        f"<p>Execution: {_escaped(case['collection']['execution'])} · Coverage: {_escaped(case['collection']['coverage'])}</p>"
         '<p><a href="case.json">Case JSON</a> · <a href="indicators.csv">Observed indicators CSV</a></p>'
         f"<h2>Findings</h2><ul>{findings}</ul><details><summary>Investigation choices and provenance</summary><pre>{_escaped(json.dumps(case['probes'], indent=2))}</pre></details>"
         + investigation_html

@@ -75,31 +75,33 @@ A wave label groups related work; it does not erase cross-component integration 
 
 The graph stores issue references and the proposed machine-evaluation intent. No runtime evaluation specification is fabricated for a workflow or fixture that has not been implemented. T0 defines the versioned manifest and contract validator; each subsequent wave supplies its own real checks. Bind the implemented runner revision, fixture definition and permitted environment before enabling machine execution. Criteria are defined now; implementation and measured PASS evidence are later work.
 
-The proposed revision preserves the acceptance gate address and its unanswered decision. It assigns T0 and V0 to `component-delivery`, and the remaining five waves to `validation-v1` through `validation-v5`. When this revision is supported and applied, old graph addresses must remain as superseded history, with nine implementation stories and six issue-backed evaluations in the current plan.
+The applied draft revision preserves the acceptance gate address and its unanswered decision. It assigns T0 and V0 to `component-delivery`, and the remaining five waves to `validation-v1` through `validation-v5`. Old graph addresses remain as superseded history, with nine implementation stories and six issue-backed evaluations in the current plan.
 
 ## Proposal publication status
 
 The GitHub epic and all 15 native children carry this wave plan. The existing
-ADP flow `1275a30d-a84d-4f98-9ddb-f461c5aeb2d1` (`task-api-5792`) remains at
-plan version 1, paused, with its acceptance gate unanswered and no active
-execution policy. The six-wave replacement is prepared; it has not been applied. The exact
-authored document is [flow-proposal.json](flow-proposal.json), pinned to the
-committed wave-definition revision. It omits the acceptance gate that the server
-inserts during draft preview. This is a review artifact for the same flow, not
-an instruction to create or approve another flow.
+ADP flow `1275a30d-a84d-4f98-9ddb-f461c5aeb2d1` (`task-api-5792`) was updated
+through `adp flow draft preview` and `adp flow draft save` on 2026-09-24, using the
+inert revision support merged in [#5829](https://github.com/aws-e/adp/pull/5829).
+The exact authored document remains [flow-proposal.json](flow-proposal.json).
 
-The current API cannot revise this inert plan while retaining its proposed
-policy. Draft registration rejects a different document for an existing flow;
-the accepted-plan amendment path rejects an unaccepted proposed policy. The
-assigned-author amendment-draft path requires an existing server-created
-replan assignment and does not itself apply a revision. Editable pre-acceptance
-revisions remain part of [#5331](https://github.com/aws-e/adp/issues/5331), with
-post-acceptance amendment interaction owned by
-[#5329](https://github.com/aws-e/adp/issues/5329).
+The current draft is **version 2**, hash
+`40a150cd9f73865409e1a084be276ab93fc11b9701a28b764e8afc8307c6bdc9`.
+Its six waves contain nine implementation stories and six issue-backed
+evaluations, plus the original acceptance gate. Version 1 remains readable;
+nine removed graph addresses are superseded history. The gate, T0 and V1–V5
+retain their original node identities. All 84 original criteria and eight V0
+criteria are unchanged.
 
-Apply this proposal only through supported inert revision semantics that retain
-the same flow, prior plan history, gate identity, pause state and unaccepted
-policy bounds. Do not remove or promote the proposed policy to make an amendment
-succeed. Before any later execution approval, refresh the proposed policy's
-expiry and bind the actual evaluation tooling through a separately reviewed
-revision.
+Live readback verified that the flow remains paused, its original gate
+`32acf998-58b8-4fb6-906b-fab8461712b9` remains unanswered, every attempt count is
+zero, and there is no active execution policy. The scheduler remains disabled.
+The CLI identifies version 2 as proposed, with no accepted version. Saving this
+draft did not approve execution or launch work.
+
+The proposed policy remains unaccepted and all runtime evaluation specifications
+remain unbound. Before later execution approval, review and refresh the policy's
+expiry and bind the actual implemented evaluation tooling through its human
+acceptance path. Broader guided planning remains tracked in
+[#5331](https://github.com/aws-e/adp/issues/5331); post-acceptance amendment
+interaction is owned by [#5329](https://github.com/aws-e/adp/issues/5329).

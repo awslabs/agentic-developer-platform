@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.parse
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -521,6 +522,26 @@ def list_plans(args, api):
     if unavailable:
         return unavailable
     versions = api.request("GET", f"{FLOWS}/{segment(args.flow_id)}/plans")
+    current = next((plan for plan in reversed(versions) if plan.get("superseded_at") is None), None)
+    acceptance = "unknown"
+    if current and current.get("accepted_by_decision_id"):
+        # The storage column also points to PLAN_DRAFTED. A decision ID alone
+        # proves attribution, not approval. Resolve actual human decisions.
+        decisions = api.request("GET", f"{FLOWS}/{segment(args.flow_id)}/decisions")
+        source = next((d for d in decisions if d.get("id") == current["accepted_by_decision_id"]), {})
+        approvals = {"plan_accepted", "plan_amended", "gate_approved"}
+
+        def human_approval(decision):
+            return decision.get("actor_kind") == "human" and decision.get("kind", "").lower() in approvals
+
+        if human_approval(source):
+            acceptance = "accepted"
+        elif source.get("kind", "").lower() == "plan_drafted":
+            # A policyless draft can be accepted by answering its gate without
+            # writing a new plan row. Draft revision refuses any prior approval.
+            acceptance = "accepted" if any(human_approval(d) for d in decisions) else "proposed"
+    elif current:
+        acceptance = "proposed"
     rows = [
         {
             "version": plan.get("version"),
@@ -528,28 +549,29 @@ def list_plans(args, api):
             "accepted_by_decision_id": plan.get("accepted_by_decision_id"),
             "superseded_at": plan.get("superseded_at"),
             "created_at": plan.get("created_at"),
-            # A plan nobody accepted and nothing superseded is the live proposal.
-            # Derived here rather than asked of the server, which exposes no such
-            # field — and named so a reader is not left inferring it from two nulls.
-            "current_proposal": plan.get("accepted_by_decision_id") is None and plan.get("superseded_at") is None,
+            "current_proposal": plan is current and acceptance == "proposed",
         }
         for plan in versions
     ]
     detail = {"flow_id": args.flow_id, "versions": rows}
     if args.json:
         detail["documents"] = versions
-    accepted = [row for row in rows if row["accepted_by_decision_id"] and not row["superseded_at"]]
+    accepted = [row for row in rows if row["superseded_at"] is None and acceptance == "accepted"]
     proposed = [row for row in rows if row["current_proposal"]]
     detail["accepted_version"] = accepted[-1]["version"] if accepted else None
     detail["proposed_version"] = proposed[-1]["version"] if proposed else None
+    detail["current_version"] = current["version"] if current else None
+    detail["acceptance_status"] = acceptance
     if proposed:
         row = proposed[-1]
         action = (
             f"Version {row['version']} is proposed and not accepted. Read it with --json, then bind your approval to it: "
             f"'adp flow gate approve GATE_ID --expect-plan-hash {row['plan_hash']}'."
         )
+    elif accepted:
+        action = "The current plan has a recorded human approval; see flow show for pause state and remaining gates."
     else:
-        action = "Every version here is accepted or superseded; there is no pending proposal."
+        action = "Acceptance could not be verified from these records. Inspect flow decisions and flow show before proceeding."
     return common.envelope("ok", "flow plans", detail, action)
 
 
@@ -682,6 +704,26 @@ def check_plan_revision(api, flow, expected_hash):
         )
 
 
+def request_gate_answer(api, gate_id, *, approve, body):
+    """Submit a gate answer and make an expired reviewed policy actionable."""
+    try:
+        return api.request(
+            "POST",
+            f"{GATES}/{segment(gate_id)}/{'approve' if approve else 'reject'}",
+            body,
+        )
+    except CliError as exc:
+        if exc.code == "execution_policy_expired":
+            raise CliError(
+                "The reviewed execution policy has expired, so nothing was approved. "
+                "Continue planning or request a newly derived plan, review its new revision and policy, then approve that exact revision.",
+                exc.code,
+                exc.exit_code,
+                status_code=exc.status_code,
+            ) from None
+        raise
+
+
 def answer_gate(args, api):
     """Approve or reject one gate, showing what it is attached to first."""
     command = "flow gate " + args.gate_action
@@ -747,11 +789,7 @@ def answer_gate(args, api):
         # is the enforcement point: it is compared inside the same transaction that
         # moves the gate, which is the part no client re-read can do.
         body["expected_plan_hash"] = args.expect_plan_hash
-    result = api.request(
-        "POST",
-        f"{GATES}/{segment(args.gate_id)}/{'approve' if approving else 'reject'}",
-        body,
-    )
+    result = request_gate_answer(api, args.gate_id, approve=approving, body=body)
     detail = dict(
         context,
         status=result.get("status"),
@@ -992,8 +1030,38 @@ def policy_lines(policy):
         f"    repositories: {policy.get('repository_ids')}",
         f"    environment connections: {policy.get('environment_connection_ids')}",
         f"    limits: {policy.get('limits')}",
-        f"    expires: {policy.get('expires_at')}",
+        f"    expires: {expiry_text(policy.get('expires_at'))}",
     ]
+
+
+def expiry_text(expires_at):
+    """The expiry, with a past one named as past rather than printed as a timestamp.
+
+    A bare ISO timestamp does not tell a reader whether the authority they are about
+    to approve is still live — comparing it to now is work, and it is work done at
+    the one moment the reader is focused on something else. An expiry already behind
+    us is the case that matters: accepting it is refused by the server, and without
+    this the operator reads a plausible-looking date, approves, and gets a refusal
+    they have to decode.
+
+    An unparseable or absent value is passed through verbatim. Guessing at a
+    malformed expiry would be the one wrong thing to do here: a reader shown
+    "(already expired)" for a value this code simply failed to read has been told
+    something the server never said.
+    """
+    if not isinstance(expires_at, str):
+        return f"{expires_at}"
+    try:
+        moment = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return expires_at
+    if moment.tzinfo is None:
+        # Every expiry ADP writes is UTC; reading a naive one as local time would
+        # shift the comparison by the offset and could call a dead grant live.
+        moment = moment.replace(tzinfo=timezone.utc)
+    if moment <= datetime.now(tz=timezone.utc):
+        return f"{expires_at} — ALREADY EXPIRED: accepting this plan is refused. Request a new plan and accept that one."
+    return expires_at
 
 
 def registration_refusal(api, document):
@@ -1210,6 +1278,57 @@ def dispatch_text(flow_id, confirmed, summary):
     )
 
 
+def revise_draft(args, api):
+    """Preview or save one exact draft revision; never answer an execution gate."""
+    command = "flow draft " + args.draft_action
+    if args.expect_plan_version < 1 or not re.fullmatch(r"[0-9a-f]{64}", args.expect_plan_hash):
+        raise CliError("Use a positive --expect-plan-version and the current 64-character --expect-plan-hash.", "usage_error", 1)
+    if args.draft_action == "save" and not re.fullmatch(r"[0-9a-f]{64}", args.expect_proposal_hash):
+        raise CliError("Use the 64-character --expect-proposal-hash returned by draft preview.", "usage_error", 1)
+    body = {
+        "proposal": read_plan_file(args.file),
+        "expected_plan_version": args.expect_plan_version,
+        "expected_plan_hash": args.expect_plan_hash,
+        "reason": args.reason,
+    }
+    if args.draft_action == "save":
+        body["expected_proposal_hash"] = args.expect_proposal_hash
+    unavailable = require_engine(api, command)
+    if unavailable:
+        return unavailable
+    operation = "preview" if args.draft_action == "preview" else "revise"
+    try:
+        result = api.request("POST", f"{FLOWS}/{segment(args.flow_id)}/draft/{operation}", body)
+    except CliError as exc:
+        if exc.status_code == 404 and exc.code != "flow_not_found":
+            raise CliError(
+                "This gateway does not support registered draft revisions. Upgrade the gateway and CLI; no fallback was attempted.",
+                "draft_revision_unavailable",
+                4,
+            ) from None
+        if exc.status_code == 409:
+            raise CliError(
+                f"Draft revision refused ({exc.code}). Read the current flow and preview again. No revision was saved.", exc.code, 4
+            ) from None
+        raise
+    if result.get("execution_authorized") is not False or result.get("flow_id") != args.flow_id:
+        raise CliError(
+            "Unexpected draft revision response. Read the flow before retrying; no execution approval was requested.", "invalid_draft_response", 5
+        )
+    if args.draft_action == "preview":
+        next_action = (
+            f"Preview only: {len(result.get('added_nodes', []))} nodes added, {len(result.get('removed_nodes', []))} superseded. "
+            f"Review the effective proposal and policy. Save with --expect-proposal-hash {result.get('proposal_hash')}; "
+            "retain the same base plan version/hash and file. Saving does not approve execution."
+        )
+    else:
+        next_action = (
+            f"Draft revision {result.get('plan_version')} saved. "
+            "The gate remains unanswered and the pause setting is unchanged. No execution was approved."
+        )
+    return common.envelope("ready", command, result, next_action)
+
+
 def create_flow(args, api):
     """Dry-run a plan from disk, register it INERT, preview it, then accept it explicitly.
 
@@ -1376,13 +1495,14 @@ def register_preview_accept(api, document, *, verb, reason, assume_yes, expected
         "and the approval is recorded against your identity.",
         assume_yes,
     )
-    answer = api.request(
-        "POST",
-        f"{GATES}/{segment(gate_id)}/approve",
+    answer = request_gate_answer(
+        api,
+        gate_id,
+        approve=True,
         # The binding, server-enforced. Sent even under --yes: a script that
         # accepts whatever is live is the concurrent-edit hole, and the hash it
         # sends is the one this run previewed.
-        {"reason": reason, "expected_plan_hash": plan_hash},
+        body={"reason": reason, "expected_plan_hash": plan_hash},
     )
     detail["acceptance"] = {
         "gate_id": gate_id,
@@ -1835,6 +1955,19 @@ def parser():
     )
     create.add_argument("--json", action="store_true", help="Print machine-readable output")
 
+    draft = commands.add_parser("draft", help="Preview or save an existing unapproved draft without starting execution")
+    draft_actions = draft.add_subparsers(dest="draft_action", required=True)
+    for verb in ("preview", "save"):
+        edit = draft_actions.add_parser(verb, help=f"{verb.title()} a revision of the same inert flow")
+        edit.add_argument("flow_id", metavar="FLOW_ID")
+        edit.add_argument("--file", required=True, metavar="PLAN_JSON", help="Authored proposal; omit the server-inserted acceptance gate")
+        edit.add_argument("--expect-plan-version", required=True, type=int, metavar="N")
+        edit.add_argument("--expect-plan-hash", required=True, metavar="HASH")
+        if verb == "save":
+            edit.add_argument("--expect-proposal-hash", required=True, metavar="HASH", help="Effective proposal hash returned by draft preview")
+        edit.add_argument("--reason", help="Reason recorded with the draft revision")
+        edit.add_argument("--json", action="store_true", help="Print machine-readable output")
+
     listing = commands.add_parser("list", help="List the flows you can see")
     listing.add_argument("--status", choices=FLOW_STATUSES, help="Only flows with this status")
     listing.add_argument("--needs-me", action="store_true", help="Only flows waiting on a decision from you")
@@ -1885,6 +2018,7 @@ def parser():
 HANDLERS = {
     "start": start_flow,
     "create": create_flow,
+    "draft": revise_draft,
     "list": list_flows,
     "show": show_flow,
     "watch": watch_flow,

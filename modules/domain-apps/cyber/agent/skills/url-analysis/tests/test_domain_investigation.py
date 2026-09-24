@@ -9,11 +9,10 @@ from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
-import pytest
-
 import domain_investigation as cli
+import pytest
 from browser_broker import BrowserBrokerHandler
-from browser_client import investigation_request, BrowserBrokerError
+from browser_client import BrowserBrokerError, investigation_request
 from browser_guard import DestinationRefused, PinnedResponse, open_guarded_browser
 from case_capture import recorded_browser
 from investigation_browser import BrowserInvestigation, InvestigationManager
@@ -129,6 +128,42 @@ def decision(case, question="Does the verification link lead to a credential for
         "expected_signal": "The next view should identify the form or its operator.",
         "evidence_ids": [case["observations"][-1]["id"]],
     }
+
+
+def test_invalid_finish_does_not_close_browser_or_prevent_valid_finish(
+    live_fixture, tmp_path
+):
+    request, _, clients = live_fixture
+    output = tmp_path / "finish-case"
+    c = cli.start(
+        output, "https://public.test/seed", "Inspect the fixture", request=request
+    )
+    review(c, output)
+    invalid = {
+        "verdict": "suspicious",
+        "assessor": "fixture",
+        "findings": [
+            {
+                "kind": "other",
+                "basis": "observation",
+                "statement": "Unobserved claim",
+                "evidence_ids": ["obs-999"],
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="unknown observation"):
+        cli.finish(output, invalid, "Attempt to finish", request=request)
+    assert not clients[0].stopped
+    assert json.loads((output / "case.json").read_text())["browser_view"][
+        "session_open"
+    ]
+    c = cli.finish(
+        output,
+        {"verdict": "inconclusive", "assessor": "fixture"},
+        "Fixture investigation completed",
+        request=request,
+    )
+    assert clients[0].stopped and c["assessment"]["verdict"] == "inconclusive"
 
 
 def test_agent_selected_link_preserves_state_and_exact_link_then_revises_hypothesis(
@@ -396,6 +431,7 @@ def test_explicit_external_scope_follows_observed_lead(live_fixture):
 
 def test_idle_lease_expires_without_another_agent_action(live_fixture, monkeypatch):
     import time
+
     import investigation_browser
 
     monkeypatch.setattr(investigation_browser, "LEASE_SECONDS", 3)
@@ -420,6 +456,7 @@ def test_idle_lease_expires_without_another_agent_action(live_fixture, monkeypat
 
 def test_close_queued_at_expiry_gets_the_known_cleanup_result():
     from concurrent.futures import Future
+
     from investigation_browser import _Actor
 
     entered = threading.Event()

@@ -78,10 +78,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import logging
 import os
 import re
+import subprocess  # noqa: S404 - invokes only the operator's declared teardown command
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -95,6 +97,11 @@ EXIT_CONFIG = 2
 EXIT_PRECONDITION = 3
 EXIT_CHECKS_FAILED = 4
 EXIT_CLEANUP = 5
+
+# The checkout this script lives in. W2-01 reads the commit graph from here to compute
+# revision containment itself instead of accepting the operator's `is_ancestor` claim;
+# this file sits at `platform/scripts/`, so the repository root is two levels up.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Check statuses. These are the four the §7 aggregates count, and the report uses
 # exactly these strings because the operator's `jq` compares against "passed".
@@ -118,6 +125,225 @@ CONTROL_PROTOCOL_VERSION = 1
 CLAUDE_ADAPTER_ID = "claude"
 EXPECTED_CLAUDE_SDK_VERSION = "0.3.220"
 
+# The stories whose source must be merged and deployed before wave 2's evidence
+# means anything, keyed by the story number the evaluation names. W2-01 requires a
+# recorded revision for each: wave 2's checks span all three, so evidence gathered
+# while one of them is only partly deployed describes a build no reviewer approved.
+#
+# Keyed by story rather than a flat list so the failure message can say WHICH
+# story's revision is missing — the three have different owners.
+WAVE2_REQUIRED_STORIES: dict[str, str] = {
+    "S3": "3962 — harness-neutral adapter contract (W2-02)",
+    "S2": "3961 — proven pause/resume (W2-03..W2-05)",
+    "S5": "3964 — aborted vocabulary and counters (W2-06..W2-09)",
+}
+
+# A git revision as recorded in provenance: a full 40-character SHA. Short SHAs
+# and branch names are refused, because "merged at main" is not a revision — it
+# names whatever main happened to be, which is the ambiguity this field exists to
+# remove.
+_GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+
+# A content digest as recorded for a built image or source tree.
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+# The packages whose versions wave 2's behaviour depends on, beyond the adapter SDK
+# already pinned above. Both are recorded in the preflight because the control path
+# is split across two runtimes: a worker built against a different agent SDK, or a
+# gateway serving a different control-schema package, is a different contract than
+# the one under review.
+WAVE2_REQUIRED_PACKAGES: tuple[str, ...] = (
+    "@anthropic-ai/claude-agent-sdk",
+    "control-runtime",
+)
+
+# The gates that must be green, BY THE NAME CI actually defines, on the revision
+# actually deployed. Mirrored from `.github/workflows/agent-control-ci.yml`'s three
+# job names (a test pins them against that file, so a rename there surfaces as a
+# harness test to update rather than as an evaluation that accepts a gate nobody
+# ran).
+#
+# Why by name: an earlier revision of this check accepted any nonempty job map whose
+# every value was "passed", so `{"anything": "passed"}` demonstrated a green build.
+# That is a check on the operator's spelling, not on the build. Requiring these
+# exact names means a missing gate is a NAMED failure, and a renamed one cannot
+# silently drop out of the required set.
+WAVE2_REQUIRED_CI_GATES: tuple[str, ...] = (
+    "Agent control tests",
+    "Worker control tests",
+    "Control evaluation harness tests",
+)
+
+# The two components the control path is split across. Each ships as its own image
+# from its own workflow, so each has its own deployed revision and digest — and a
+# gateway speaking the new contract in front of a worker that does not is the
+# half-deployment no single-component check can see.
+#
+# "Deployed revision" here means the revision the RUNNING build was produced from,
+# which is not the same thing as the commit where a story merged: a correct
+# deployment is normally newer, carrying that story plus later changes. Conflating
+# the two made this check reject correct deployments and implicitly demand that an
+# operator redeploy an old merge commit to satisfy the evaluator. Containment
+# (is each required story actually IN what is deployed?) is asserted separately,
+# against `contained_in`.
+WAVE2_DEPLOYED_COMPONENTS: tuple[str, ...] = ("worker", "gateway")
+
+# Per-component deployed-identity keys. `source_revision` is what the image was
+# BUILT FROM, which is what ties a running digest back to reviewed source; without
+# it a digest pair only establishes that two recorded strings match each other.
+#
+# `build_record` is what makes even that pair mean something. Root's review named the
+# defect precisely: `source_revision == revision` compares two fields the same hand
+# wrote, so any invented pair of matching valid-looking SHAs passed. The link has to
+# come from the system that PERFORMED the build — the workflow run and the registry
+# read — so the entry carries a retrievable identity for each and the archived raw
+# response they produced. See `BUILD_RECORD_KEYS`.
+DEPLOYED_COMPONENT_KEYS: tuple[str, ...] = (
+    "revision",
+    "image_digest",
+    "source_revision",
+    "build_record",
+)
+
+# What the archived build provenance for ONE component must record.
+#
+# The shape follows the build path this platform actually deploys through, which is
+# CodeBuild: `platform/scripts/codebuild-run.sh` uploads `git archive <sha>` to
+# `codebuild/src/<sha>-<unique>.zip`, starts the project with
+# --source-location-override and an `ADP_SOURCE_SHA` override, and the buildspec
+# (e.g. `codebuild/bs-agent-runtime.yml`) does `docker push $REGISTRY/$ECR_REPO:$IMAGE_TAG`.
+# An earlier revision of this schema modelled a GitHub Actions build instead, which
+# root's review rejected: a fixture describing a build path we do not deploy through
+# cannot establish anything about a running image, and there is no reason to invent an
+# attestation format when the deployed path already emits every fact.
+#
+#   * `project` / `build_id` / `build_url`  — which build, retrievably. `build_id` is
+#     what `aws codebuild batch-get-builds --ids` takes; `build_url` is what a
+#     reviewer opens.
+#   * `built_revision`   — the revision the build consumed, as the BUILD reported it
+#     (`ADP_SOURCE_SHA`), corroborated against the source archive key it actually
+#     built, not as the operator retyped it.
+#   * `image_tag`        — the tag the build pushed (`IMAGE_TAG`), which is the only
+#     thing binding a build to a registry entry.
+#   * `built_digest`     — the digest the build's own `docker push` output reported
+#     for that tag. Read out of the build log, because a digest the operator typed is
+#     a digest nobody published.
+#   * `repository` / `registry_digest` — the ECR repository read, and the digest it
+#     reports for that tag: the image the cluster is actually pulling.
+#   * `raw` — the archived responses themselves (`build`, `build_log`, `registry`),
+#     each with the command that produced it, so every link above is checked against
+#     the bytes rather than against a summary of them. `RAW_METADATA_KEYS` names their
+#     shape.
+#
+# None of these are new facts the operator has to invent: `aws codebuild
+# batch-get-builds`, `aws logs get-log-events` and `aws ecr describe-images` emit all
+# of them. What changes is that the harness now PARSES those responses at their real
+# field locations and requires the build to have succeeded — where it previously asked
+# only whether the expected strings appeared somewhere in the archived text, which a
+# failed build and an unrelated document that merely mentioned them both satisfied.
+BUILD_RECORD_KEYS: tuple[str, ...] = (
+    "project",
+    "build_id",
+    "build_url",
+    "built_revision",
+    "image_tag",
+    "built_digest",
+    "repository",
+    "registry_digest",
+    "raw",
+)
+
+# The archived documents a build record must carry, in the order the chain reads them:
+# what the build was and whether it succeeded, what digest it pushed for its tag, and
+# what the registry serves for that tag today.
+BUILD_RECORD_RAW_DOCUMENTS: tuple[str, ...] = ("build", "build_log", "registry")
+
+# What one archived raw document must carry. `command` is how it was obtained (so a
+# reviewer can re-run it) and `body` is what came back verbatim. `retrieved_at` dates
+# the retrieval, which is what distinguishes evidence collected for this evaluation
+# from a document carried forward from an earlier one.
+RAW_METADATA_KEYS: tuple[str, ...] = ("command", "retrieved_at", "body")
+
+# What one required CI gate must record. A gate without the revision it TESTED is
+# not evidence about this build: it names a green run of unknown subject.
+#
+# `run_url` and `raw` are the same correction as above, for the same reason: an
+# arbitrary truthy `run_id` was accepted, so `run_id: true` demonstrated a gate. The
+# gate's own run document has to be archived, and the harness reads the status,
+# workflow name, run identity and tested revision OUT of it — the summary fields are
+# then a cross-check on the archive rather than the evidence themselves.
+CI_GATE_KEYS: tuple[str, ...] = (
+    "status",
+    "run_id",
+    "run_url",
+    "tested_revision",
+    "raw",
+)
+
+# The archived documents a gate must carry, and where each comes from.
+#
+# `run` is the unmodified `gh run view --json ...` response. `checkout` is the
+# per-job artifact `.github/workflows/agent-control-ci.yml` uploads, downloaded with
+# `gh run download`. They are kept as two separate documents deliberately: an earlier
+# revision had the operator paste a `checked_out_revision` field INTO the run
+# response, which root rejected — that made the one fact the manual path exists to
+# establish an operator assertion inside a document otherwise written by GitHub, and
+# it silently rewrote the authoritative response. The workflow already emits the real
+# value, so the harness reads it from the artifact GitHub stored and binds it to the
+# run; the run response stays byte-for-byte what the API returned.
+CI_GATE_RAW_DOCUMENTS: tuple[str, ...] = ("run", "checkout")
+
+# The fields of that artifact (see the `Verify and record the checked-out revision`
+# step). Limited to what the workflow actually writes — this is not a general
+# attestation format, it is one JSON file with six known keys.
+CHECKOUT_ARTIFACT_KEYS: tuple[str, ...] = (
+    "job",
+    "checked_out_revision",
+    "run_id",
+    "run_attempt",
+    "event_name",
+    "workflow_ref_sha",
+)
+
+# Required-check NAME -> the workflow's job id, which is what the artifact's `job`
+# field and the `checked-out-revision-<id>` artifact name both carry. Spelled out
+# rather than derived by slugifying the display name: the two are independent strings
+# in the workflow, and a job renamed on one side only must fail here rather than
+# resolve to a plausible-looking artifact that does not exist.
+CI_GATE_JOB_IDS: dict[str, str] = {
+    "Agent control tests": "agent-control-tests",
+    "Worker control tests": "worker-control-tests",
+    "Control evaluation harness tests": "control-evaluation-harness-tests",
+}
+
+# What one creation-ledger entry must record, and what one teardown observation must
+# record about it. `identity` is the resource's own unforgeable identity as observed
+# at creation (a Kubernetes UID, a queue URL, an ARN) rather than its name: root's
+# fixture review established that a name prefix does not establish ownership,
+# because `kubectl apply` can adopt a pre-existing same-name object and
+# `create-queue` can return an existing queue. Recording identity at creation is
+# what makes "this exact object is gone" checkable, and distinguishes it from "some
+# object of this name is gone" — which a recreated resource also satisfies.
+LEDGER_ENTRY_KEYS: tuple[str, ...] = ("kind", "name", "identity", "created")
+LEDGER_REMOVAL_KEYS: tuple[str, ...] = ("identity", "absent", "observed_by", "removed_at")
+
+# The two ledger kinds whose removal ORDER matters, rather than only their end state.
+#
+# The fixture creates both the control-enabled workload (the "listener") and the
+# NetworkPolicies restricting reach to it. Both must be gone at the end — they are
+# ledger resources — but removing the policy FIRST opens a window in which a
+# control-enabled pod is still running with its ingress restriction already deleted.
+# That interval is strictly worse than either end state and is invisible to a check
+# that only looks at what is true afterwards, which is why removal timestamps are
+# required and compared rather than just collected.
+#
+# This is also what makes DP-INV-1 and ledger completeness satisfiable together: the
+# fixture's own policies come down (so nothing leaks), the environment's persistent
+# baseline isolation stays (so the environment is still isolated), and the ordering
+# assertion covers the gap between those two facts.
+LISTENER_LEDGER_KINDS: tuple[str, ...] = ("listener", "workload", "pod", "deployment")
+POLICY_LEDGER_KINDS: tuple[str, ...] = ("networkpolicy", "policy")
+
 # `steer` is the one verb whose request model REQUIRES its free text: pause,
 # resume and abort take the idempotency key plus an optional `reason`, while
 # steer takes the key plus a non-empty length-bounded `instruction`
@@ -131,6 +357,37 @@ EXPECTED_CLAUDE_SDK_VERSION = "0.3.220"
 # than as a silent 400 in a live evaluation.
 STEER_VERB = "steer"
 ABORTED_STATUS = "aborted"
+
+# The outcomes a native provider interruption may legitimately normalize to, and the
+# provenance the experiment that observed one must carry.
+#
+# Why an explicit set rather than "anything but aborted": the claim W2-06 makes is
+# that a provider's own interrupted turn does NOT by itself become a deliberate ADP
+# abort. The evidence for that is an OBSERVED outcome. An earlier revision tested
+# only `!= "aborted"`, so `null`, `""`, `{}` and `"invented"` all passed — meaning an
+# operator who never ran the experiment, or whose collection script wrote an empty
+# field, got a pass. A missing measurement cannot prove a negative, and a value
+# outside the writer's vocabulary is not an outcome the deployment could have
+# produced: it is a typo or a fabrication, and either way nothing was measured.
+#
+# Mirrored from the writer's allowlist (W2-08's `writer_allowed_statuses`): these are
+# the non-aborted terminal statuses a run that was cut off can legitimately land in.
+# `active`/`in_progress` are deliberately absent — the experiment interrupts a turn,
+# so its subject has stopped, and a still-running row means the experiment did not
+# reach the state it claims to describe.
+NATIVE_INTERRUPT_ALLOWED_STATUSES: tuple[str, ...] = (
+    "failed",
+    "complete",
+    "completed",
+    "skipped",
+    "budget_stopped",
+)
+
+# What the native-interruption experiment must record besides its outcome. Without
+# these the status is a bare word: `run_id` names the run that was interrupted, and
+# `observed_by` records HOW the outcome was read back, which is what makes it an
+# observation rather than an expectation.
+NATIVE_INTERRUPT_KEYS: tuple[str, ...] = ("status", "run_id", "observed_by")
 
 # Short and deliberately inert. Every command in wave 1 is refused — by
 # authorization, by the terminal-row gate, or by the 501 that follows both — so
@@ -389,10 +646,17 @@ WAVE_REVISIONS: dict[int, str] = {
 # not_run says who to go to rather than just "missing". Registering a check with
 # no predicate is deliberate — see WAVE2_CHECKS above — but it must never be
 # indistinguishable from a check the harness forgot.
-PENDING_CHECK_OWNERS: dict[str, str] = {
-    "W2-01": "S2 #3961 — consolidated Wave 2 preflight after S3/S2/S5 merge",
-    "W2-10": "evaluation #3968 — Wave 2 cleanup and security recheck",
-}
+#
+# EMPTY as of #5825: waves 1 and 2 are both fully implemented. Deliberately kept
+# rather than deleted, because the mechanism is still load-bearing — waves 3 and 4
+# register their manifests before their predicates land, and `run_checks` FAILS an
+# unowned unimplemented check. An empty mapping is the correct state for a
+# fully-implemented set of waves, not a dead constant.
+#
+# Note what this does NOT mean: a wave whose every check has a predicate can still
+# report not_run, for a missing artifact or an unset identity variable. "Nobody
+# owes an implementation" and "the evidence is complete" are different claims.
+PENDING_CHECK_OWNERS: dict[str, str] = {}
 
 # Retained for the manifest guard and for callers that only need wave 1's ID set.
 # Deliberately still wave 1: it is the DEFAULT for `assert_check_manifest`, and a
@@ -484,6 +748,78 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
         "suites",
     ),
     "stats_schema_keys": ("levels",),
+    # W2-01 / Gate-regression. The consolidated wave-2 preflight. Everything here
+    # is either a fact about a build (a digest, a merge, a CI result) or about the
+    # fixture's configuration at listener-start time — none of which is observable
+    # over HTTP after the fact, and all of which decides whether the other nine
+    # checks are describing the thing under review at all.
+    #
+    # One key per named observation rather than a rolled-up "preflight_ok": a
+    # single boolean cannot say whether the gateway digest or the worker digest was
+    # the stale one, and those have different owners.
+    # `deployed_components` replaces the four flat digest fields an earlier revision
+    # carried: each component now records the revision it runs, its image digest and
+    # the source revision that image was BUILT FROM, so a running digest is tied back
+    # to reviewed source rather than merely equal to another recorded string.
+    # `merged_revisions` records containment against those deployed revisions instead
+    # of demanding the deployment BE a story's merge commit.
+    "wave2_preflight": (
+        "wave1_evidence",
+        "merged_revisions",
+        "protocol_version",
+        "adapter_id",
+        "sdk_version",
+        "package_versions",
+        "deployed_components",
+        "ci_gates",
+        "isolation_before_listener",
+        "ordinary_flags_off",
+        "fixture_only_flag_scope",
+        "fixture_identity",
+        "creation_ledger",
+    ),
+    # W2-10 / Gate-regression, the PRE-teardown half. Captured while the fixture
+    # still exists, because a torn-down fixture cannot answer — requiring it to was
+    # the defect that made a correct teardown produce NOT RUN. The harness makes its
+    # own live capability reads at this point too; this artifact is the in-cluster
+    # part it cannot see over HTTP.
+    #
+    # `observed_revisions` binds these observations to the deployed build: a security
+    # observation that cannot be tied to what was running is a true statement about
+    # an unknown subject.
+    "security_capture": (
+        "captured_before_teardown",
+        "observed_revisions",
+        "fixture_identity",
+        "isolation_present",
+        "wave1_security",
+        "unsupported_verbs",
+        "unsupported_adapter_capabilities",
+        "general_flag_enablement",
+        "ordinary_flags_off",
+    ),
+    # W2-10 / Gate-regression, the POST-teardown half. Only what teardown is supposed
+    # to have ACHIEVED: absence. The ROW deletions are not here — those are the
+    # harness's own first-hand record (`CleanupOutcome`), because an
+    # operator-supplied "cleanup succeeded: true" is exactly the substitute for
+    # observation this check exists to refuse.
+    #
+    # `removals` is reconciled against the preflight's `creation_ledger` rather than
+    # being a caller-chosen map of names: a map whose keys the operator picks can
+    # only confirm the resources it mentions, so omitting a leaked workload passed.
+    # `captured_at` is what places these observations AFTER the teardown the harness
+    # itself invoked. Without it the artifact's own `verified_after_teardown: true` is
+    # the only ordering evidence, and that is the claim it cannot be trusted on: a file
+    # written before the resources were removed says exactly the same thing.
+    "teardown_verification": (
+        "verified_after_teardown",
+        "captured_at",
+        "fixture_identity",
+        "removals",
+        "baseline_isolation_present",
+        "general_flag_enablement",
+        "ordinary_flags_off",
+    ),
     # Wave 2 / S2 (#3961). The pause barrier's proof is inherently in-cluster: the
     # claim is about tool side effects during an interval, which no HTTP reader can
     # observe. Keys are declared per named property for the same reason as
@@ -676,6 +1012,36 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_timestamp(value: object) -> datetime | None:
+    """Parse an ISO-8601 instant, or ``None`` if it is not one.
+
+    Ordering two recorded times is the only way this harness can establish that an
+    observation postdates the removal it describes, and comparing them as STRINGS
+    does not do that. Two spellings of the same instant differ by punctuation —
+    ``2026-09-12T01:00:30Z`` versus ``2026-09-12T01:00:30+00:00`` — and ``"Z"``
+    sorts after ``"+"``, so a ``Z``-suffixed artifact compares as *later* than a
+    harness record written at the same moment. That is a false pass in the exact
+    direction this check exists to refuse, so the comparison has to go through real
+    datetimes.
+
+    A naive timestamp is read as UTC rather than rejected: the harness's own records
+    are always offset-aware, and an operator's collection script writing local-naive
+    time should not make the comparison silently incomparable. Returning ``None`` for
+    an unparseable value lets the caller say "this cannot be ordered" instead of
+    guessing.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def redact(value):  # noqa: ANN001, ANN201
     """Recursively strip credentials from an evidence structure.
 
@@ -749,6 +1115,11 @@ class CheckResult:
     acceptance_ids: tuple[str, ...] = ()
     observations: list[Observation] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
+    # Ancestry answers the harness computed itself while running this check. Recorded
+    # because they are first-hand observations, and because a reviewer reading the
+    # evidence file should be able to see WHICH revisions were compared rather than
+    # only that containment held.
+    ancestry: list[dict] = field(default_factory=list)
     message: str = ""
 
     @property
@@ -764,6 +1135,7 @@ class CheckResult:
         # not_run, whose evidence is the reason it could not run.
         evidence: list[object] = [obs.to_evidence() for obs in self.observations]
         evidence.extend({"artifact": path} for path in self.artifacts)
+        evidence.extend({"git_ancestry": answer} for answer in self.ancestry)
         if not evidence:
             evidence.append({"note": redact(self.message) or "no observation recorded"})
         return {
@@ -775,6 +1147,664 @@ class CheckResult:
             "evidence": evidence,
             "message": redact(self.message),
         }
+
+
+@dataclass(frozen=True)
+class RowDeletion:
+    """What actually happened to one declared fixture row.
+
+    Both key halves, the delete, and the confirming read are recorded separately
+    because they fail separately and W2-10 must be able to name which one. A
+    single ``removed: bool`` would make "deleted with a partial key" and "deleted
+    and confirmed gone" the same evidence.
+    """
+
+    event_id: str
+    arrived_at: str
+    both_keys_present: bool
+    deleted: bool
+    confirmed_absent: bool
+    error: str | None = None
+
+    def to_evidence(self) -> dict:
+        return {
+            "event_id": self.event_id,
+            "arrived_at": self.arrived_at,
+            "both_keys_present": self.both_keys_present,
+            "deleted": self.deleted,
+            "confirmed_absent": self.confirmed_absent,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class CleanupOutcome:
+    """The harness's own record of the teardown it performed.
+
+    This exists so W2-10 can be a *verified* cleanup check. The alternative —
+    reading a "cleanup_succeeded" boolean out of an operator artifact — would pass
+    on a fixture that was never torn down, which is the specific defect W2-10 is
+    supposed to catch. ``deletions`` is first-hand: it is written by the code that
+    issued the DeleteItem and read the consistent get.
+    """
+
+    ok: bool
+    notes: list[str]
+    deletions: list[RowDeletion]
+    declared_items: int
+
+    def to_evidence(self) -> dict:
+        return {
+            "ok": self.ok,
+            "declared_items": self.declared_items,
+            "deletions": [deletion.to_evidence() for deletion in self.deletions],
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True)
+class FixtureCleanup:
+    """Whether the WHOLE fixture is established as cleaned up — not just its rows.
+
+    ``CleanupOutcome.ok`` answers a narrower question than the report's top-level
+    ``cleanup_ok`` implies: it covers the DynamoDB rows the harness deleted itself,
+    and nothing else. Root reproduced what that costs. A run whose resource teardown
+    could not even be executed — leaving all three fixture resources in place —
+    still printed ``cleanup_ok=true`` on its summary line and wrote it into
+    ``result.json``. The exit code and W2-10 were both right; the field an operator
+    reads to decide whether the environment was left clean was wrong, and that is
+    the field that matters for DP-INV-1.
+
+    So the row record keeps its own name and stays in the report as ``cleanup``,
+    and the top-level ``cleanup_ok`` becomes this aggregate: the rows were deleted,
+    AND the fixture's resource teardown actually ran and succeeded, AND the
+    post-teardown absence verification passed.
+
+    ``ok`` is WITHHELD on anything unestablished rather than granted, including a
+    verification check that failed for some reason other than absence. The check is
+    not decomposable from out here, and cleanup reporting is one place where the
+    conservative direction is not arbitrary: "this run did not establish that the
+    fixture is gone" invites somebody to look, while the opposite mistake leaves a
+    control-enabled workload running with a green line beside it.
+    """
+
+    ok: bool
+    rows_ok: bool
+    resources_ok: bool
+    absence_verified: bool
+    notes: list[str]
+
+    def to_evidence(self) -> dict:
+        return {
+            "ok": self.ok,
+            "rows_ok": self.rows_ok,
+            "resources_ok": self.resources_ok,
+            "absence_verified": self.absence_verified,
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True)
+class LiveCapabilityCapture:
+    """One adapter's capability surface, read live while the fixture still existed.
+
+    This is the harness's own half of the security capture, and it exists because of
+    an ordering defect worth stating plainly: the question "does this deployment
+    still refuse the unimplemented verbs?" can only be answered while there is a
+    deployment to ask. An earlier revision asked it AFTER teardown, about a run whose
+    row teardown had just deleted — so a *correct* teardown produced a not-found and
+    the check reported NOT RUN. A removed resource must never be required to answer.
+
+    ``status`` and ``capabilities`` are what the live read actually returned, kept as
+    raw observations rather than reduced to a verdict, so a reviewer can see what was
+    read and not merely what was concluded from it.
+
+    ``refusals`` maps each verb the deployment itself reported as UNAVAILABLE to the
+    status it returned for an authorized owner's attempt at it. Recording the attempt
+    is what makes "unsupported verbs are still refused" a first-hand observation
+    rather than a restatement of the operator's map. It is confined to verbs the
+    capability surface reports false precisely so it cannot mutate the fixture: an
+    unimplemented verb's handler refuses before doing anything, whereas posting an
+    IMPLEMENTED verb (pause and resume, in this wave) would actually act on the run.
+    """
+
+    adapter: str
+    run_id: str
+    status: int | None
+    capabilities: dict
+    refusals: dict
+    error: str | None = None
+
+    def to_evidence(self) -> dict:
+        return {
+            "adapter": self.adapter,
+            "run_id": self.run_id,
+            "status": self.status,
+            "capabilities": dict(self.capabilities),
+            "refusals": dict(self.refusals),
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class SecurityCapture:
+    """The pre-teardown security observations, bound to the run that made them.
+
+    Held by `main` across the teardown boundary and handed to W2-10 afterwards. The
+    binding matters as much as the content: ``run_id`` is what stops an observation
+    from another run being presented as this one's evidence.
+
+    Binding to the BUILD is deliberately not carried here, because the harness cannot
+    honestly observe it: the §7 state contract carries run state, not build identity
+    (`run_id`, `generation`, `available`, `reason`, `capabilities`, `state`,
+    `active_tool_count`, `updated_at`, `commands` — no revision or digest anywhere).
+    A `deployed_revisions` field on this record could therefore only ever be a copy
+    of the operator artifact it is supposed to corroborate, which is circular. The
+    build binding is instead asserted in W2-10 by comparing the artifact's
+    `observed_revisions` against the preflight's `deployed_components` — two
+    separately recorded operator observations that must agree — while this record
+    supplies the part the harness genuinely saw for itself: the capability surface
+    the deployment returned, pre-teardown, for this run.
+
+    ``ok`` false means the capture itself did not complete, which is NOT RUN for the
+    half that depends on it — never a pass. An absent capture (``None`` at the call
+    site) means the same thing.
+    """
+
+    ok: bool
+    run_id: str
+    adapters: list[LiveCapabilityCapture]
+    notes: list[str]
+
+    def to_evidence(self) -> dict:
+        return {
+            "ok": self.ok,
+            "run_id": self.run_id,
+            "adapters": [adapter.to_evidence() for adapter in self.adapters],
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True)
+class ResourceTeardown:
+    """The harness's own record of INVOKING the fixture's resource teardown.
+
+    This closes an ordering gap that documentation could not: the published command
+    captured live state, deleted ROWS only, and then judged W2-10 against an artifact
+    already declaring the pods, queues and policies gone. Nothing in between removed a
+    resource or waited for one to go, so a normal sequential operator run could not
+    legitimately produce that artifact at the point it was read — the only way to have
+    it was to write it before the resources were removed, which is the prefilled
+    absence the evaluation must refuse.
+
+    The harness cannot perform resource teardown itself. It has no cluster access, and
+    acquiring any would give a read-only evaluator the ability to delete workloads. So
+    the seam is an explicit command the operator's fixture script supplies
+    (``resource_teardown`` in the fixture config), which the harness INVOKES between
+    the capture and the verification, recording:
+
+    * ``invoked``       — whether the harness actually ran it (not whether the
+                          operator says it was run);
+    * ``exit_code`` /
+      ``ok``            — what it reported;
+    * ``started_at`` /
+      ``finished_at``   — the window, so the absence artifact can be required to have
+                          been written INSIDE it rather than beforehand;
+    * ``stdout_digest`` — a digest of its output, kept as evidence without putting
+                          arbitrary command output (a plausible place for a token to
+                          appear) into the report.
+
+    ``configured=False`` is the "no seam" case, which makes W2-10 ``not_run``: the
+    lifecycle the check verifies was never executed, and that is a missing
+    prerequisite rather than a pass.
+
+    **Freshness is established by the harness, not by the artifact.** The two
+    ``verification_*_before`` fields are a digest of the post-teardown absence
+    artifact taken *immediately before* the teardown command is invoked. W2-10 then
+    digests the file it actually read and refuses a match. This is what makes the
+    ordering real rather than documentary: a file that has not changed across the
+    removal it describes was written before that removal happened, and no field the
+    operator can put *inside* the artifact can establish otherwise — a ``captured_at``
+    is a string the same hand wrote. So the operator's teardown script has to record
+    absence as part of tearing down, which is the lifecycle this check is supposed to
+    be verifying.
+    """
+
+    configured: bool
+    invoked: bool
+    ok: bool
+    exit_code: int | None
+    started_at: str | None
+    finished_at: str | None
+    stdout_digest: str | None
+    verification_present_before: bool
+    verification_digest_before: str | None
+    notes: list[str]
+
+    def to_evidence(self) -> dict:
+        return {
+            "configured": self.configured,
+            "invoked": self.invoked,
+            "ok": self.ok,
+            "exit_code": self.exit_code,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "stdout_digest": self.stdout_digest,
+            "verification_present_before": self.verification_present_before,
+            "verification_digest_before": self.verification_digest_before,
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True)
+class GitAncestry:
+    """The harness's own answer to "is this revision contained in that one?".
+
+    A first-hand record, in the same sense as the other dataclasses here: it holds
+    what the harness OBSERVED rather than what the operator claimed. The artifact's
+    ``is_ancestor`` field is the conclusion the check is supposed to reach, so
+    accepting it made the check a restatement of the claim under test.
+
+    ``available`` separates the two negative answers that must not be confused:
+    ``available=True, is_ancestor=False`` is git saying the running build does not
+    contain the revision (a failed evaluation), while ``available=False`` is git being
+    unable to answer — an absent commit, a shallow clone, no git at all — which is a
+    missing prerequisite. ``reason`` carries which, so the check can say so.
+    """
+
+    ancestor: str
+    descendant: str
+    available: bool
+    is_ancestor: bool | None
+    reason: str | None
+
+    def to_evidence(self) -> dict:
+        return {
+            "ancestor": self.ancestor,
+            "descendant": self.descendant,
+            "available": self.available,
+            "is_ancestor": self.is_ancestor,
+            "reason": self.reason,
+        }
+
+
+class ProvenanceParseError(Exception):
+    """An archived tool document could not be parsed as the schema it claims to be.
+
+    Separate from :class:`AssertionError` at the raising site only so the parsers can
+    be written as ordinary functions; every caller converts it into an
+    ``AssertionError``, because an unparseable provenance document is a failed
+    evaluation rather than a missing one — the document IS present, it just does not
+    say what the summary claims.
+    """
+
+
+# The build outcomes that mean "this build produced the artifact". Anything else —
+# FAILED, FAULT, STOPPED, TIMED_OUT, IN_PROGRESS for CodeBuild; failure, cancelled,
+# skipped, action_required, or a null in-progress conclusion for GitHub — is a build
+# whose output must not be treated as a published image. Root's reproduction (b) was
+# exactly this: a build document with `conclusion: failure` passed, because nothing
+# read the field at all.
+_CODEBUILD_SUCCESS = "SUCCEEDED"
+_GITHUB_SUCCESS = "success"
+
+
+def _require(condition: bool, message: str) -> None:  # noqa: FBT001 - internal guard
+    if not condition:
+        raise ProvenanceParseError(message)
+
+
+def _as_list(value: object, what: str) -> list:
+    _require(isinstance(value, list) and bool(value), f"{what} must be a nonempty list")
+    return list(value)  # type: ignore[arg-type]
+
+
+def _as_dict(value: object, what: str) -> dict:
+    _require(isinstance(value, dict), f"{what} must be an object")
+    return value  # type: ignore[return-value]
+
+
+def parse_codebuild_build(body: object) -> dict:
+    """Extract the build facts from a real `aws codebuild batch-get-builds` response.
+
+    This is the parser root's review asked for, and the reason it is a parser rather
+    than a substring search is worth stating exactly. The previous implementation
+    dumped the archived body to JSON and asked whether the expected values appeared
+    anywhere in that text. Presence in text is not the same claim as a field holding
+    a value, and root demonstrated the gap with three cases that all passed: a build
+    whose ``conclusion`` was ``failure``, a CI run whose every job had failed, and a
+    body containing nothing but ``{"unrelated_notes": "...<run id> ... <revision>"}``.
+    The third is the clearest: any document that merely MENTIONS the right strings
+    satisfied a substring test, so the archive requirement had bought nothing.
+
+    So the fields are read from their actual locations and the outcome is checked:
+
+    * ``builds[0].id``                                   — the build identity
+    * ``builds[0].buildStatus``                          — must be ``SUCCEEDED``
+    * ``builds[0].environment.environmentVariables``     — ``ADP_SOURCE_SHA`` is the
+      revision the release build archived, and ``IMAGE_TAG`` is the tag it pushed
+    * ``builds[0].source.location``                      — the S3 source object, which
+      ``codebuild-run.sh`` names ``codebuild/src/<sha>-<unique>.zip``, so the archive
+      the build actually consumed is bound to the revision by the key itself and not
+      only by the environment override
+
+    Returns the extracted facts so the caller can compare them against the summary
+    fields; raises :class:`ProvenanceParseError` if the document is not a build
+    response, describes more or fewer than one build, or reports a non-success
+    outcome.
+    """
+    document = _as_dict(body, "the archived CodeBuild document")
+    builds = _as_list(document.get("builds"), "'builds' in the CodeBuild response")
+    _require(
+        len(builds) == 1,
+        f"the archived CodeBuild response describes {len(builds)} builds; archive the response for "
+        "exactly the build that produced this image, so there is no ambiguity about which one the "
+        "summary refers to",
+    )
+    build = _as_dict(builds[0], "the CodeBuild build entry")
+
+    status = build.get("buildStatus")
+    _require(
+        status == _CODEBUILD_SUCCESS,
+        f"the archived CodeBuild build reports buildStatus {status!r}, not {_CODEBUILD_SUCCESS!r}. A "
+        "build that failed, was stopped, timed out or is still running did not publish an image, so "
+        "its output must not be read as provenance for a running one",
+    )
+    build_id = build.get("id")
+    _require(
+        isinstance(build_id, str) and bool(build_id),
+        f"the archived CodeBuild build records id {build_id!r}; the build identity is what makes the "
+        "record retrievable",
+    )
+
+    environment = _as_dict(
+        build.get("environment"), "'environment' in the CodeBuild build"
+    )
+    variables = _as_list(
+        environment.get("environmentVariables"),
+        "'environment.environmentVariables' in the CodeBuild build",
+    )
+    resolved: dict[str, str] = {}
+    for variable in variables:
+        entry = _as_dict(variable, "a CodeBuild environment variable")
+        name, value = entry.get("name"), entry.get("value")
+        if isinstance(name, str) and isinstance(value, str):
+            resolved[name] = value
+    source_sha = resolved.get("ADP_SOURCE_SHA")
+    _require(
+        isinstance(source_sha, str) and bool(_GIT_REVISION_RE.match(source_sha)),
+        f"the archived CodeBuild build records ADP_SOURCE_SHA {source_sha!r}, which is not a full "
+        "40-character git SHA. On the release path (`codebuild-run.sh` with ADP_RELEASE_BUILD=true) "
+        "this override IS the revision whose `git archive` became the build's source, so it is the "
+        "only field in the response that names the commit",
+    )
+    image_tag = resolved.get("IMAGE_TAG")
+    _require(
+        isinstance(image_tag, str) and bool(image_tag),
+        f"the archived CodeBuild build records IMAGE_TAG {image_tag!r}; the tag is what binds the "
+        "build to a registry entry, and a build whose tag is unrecorded cannot be matched to the "
+        "image the component is running",
+    )
+
+    # The source the build CONSUMED, not only the revision it was told it was
+    # building. `codebuild-run.sh` uploads `git archive <sha>` to
+    # `codebuild/src/<sha>-<unique>.zip` and passes that key as
+    # --source-location-override, so the key itself carries the revision. Checking it
+    # means a build whose ADP_SOURCE_SHA override disagrees with the archive it
+    # actually built is rejected, rather than the override being taken on trust.
+    source = _as_dict(build.get("source"), "'source' in the CodeBuild build")
+    location = source.get("location")
+    _require(
+        isinstance(location, str) and bool(location),
+        f"the archived CodeBuild build records source.location {location!r}; without the source "
+        "location there is nothing to bind the build to the archive it consumed",
+    )
+    _require(
+        source_sha in location,
+        f"the archived CodeBuild build consumed source {location!r}, which does not name revision "
+        f"{source_sha!r}. `codebuild-run.sh` uploads `git archive <sha>` to "
+        "`codebuild/src/<sha>-<unique>.zip`, so the key names the revision it packaged; a build whose "
+        "ADP_SOURCE_SHA claims one revision while its source archive is another built something else",
+    )
+    return {
+        "build_id": build_id,
+        "status": status,
+        "source_revision": source_sha,
+        "source_location": location,
+        "image_tag": image_tag,
+        "publish_latest": resolved.get("PUBLISH_LATEST"),
+    }
+
+
+def parse_push_digest_from_build_log(body: object, *, image_tag: str) -> str:
+    """Read the digest `docker push` reported for one tag out of an archived build log.
+
+    This is the link root's review said was missing entirely: ``built_digest`` was
+    compared against the running image and against the registry, but nothing ever
+    corroborated it against the BUILD's own output, so the value was still one the
+    operator typed. The build log is where the build states the digest it published —
+    `docker push` ends each tag with a line of the form::
+
+        <tag>: digest: sha256:<64 hex> size: <bytes>
+
+    so the digest can be extracted rather than asserted. Accepts the
+    ``aws logs get-log-events`` response shape (``{"events": [{"message": ...}]}``),
+    which is what the real collection command returns, or the log text directly.
+
+    Raises :class:`ProvenanceParseError` if no push line for ``image_tag`` is present,
+    or if the log reports pushing that tag more than once with different digests —
+    an ambiguous log cannot establish which digest the tag ended up at.
+    """
+    if isinstance(body, str):
+        text = body
+    else:
+        document = _as_dict(body, "the archived build-log document")
+        events = _as_list(document.get("events"), "'events' in the build-log response")
+        messages = []
+        for event in events:
+            entry = _as_dict(event, "a build-log event")
+            message = entry.get("message")
+            _require(
+                isinstance(message, str),
+                f"a build-log event records message {message!r}; log events carry their text in "
+                "'message'",
+            )
+            messages.append(message)
+        text = "\n".join(messages)
+
+    pattern = re.compile(
+        rf"^\s*{re.escape(image_tag)}:\s+digest:\s+(sha256:[0-9a-f]{{64}})\s+size:\s+\d+",
+        re.MULTILINE,
+    )
+    found = {match.group(1) for match in pattern.finditer(text)}
+    _require(
+        bool(found),
+        f"the archived build log contains no `docker push` digest line for tag {image_tag!r}. The "
+        "build states the digest it published on the line `<tag>: digest: sha256:... size: ...`, and "
+        "without it the recorded built_digest is a value nobody read out of the build — which is the "
+        "case root's review found uncorroborated",
+    )
+    _require(
+        len(found) == 1,
+        f"the archived build log reports pushing tag {image_tag!r} at {len(found)} different digests "
+        f"({sorted(found)}). An ambiguous log cannot establish which digest the tag ended up at, so it "
+        "cannot corroborate one",
+    )
+    return found.pop()
+
+
+def parse_github_run(body: object, *, required_job: str | None = None) -> dict:
+    """Extract the run facts from a real `gh run view --json ...` response.
+
+    The GitHub counterpart of :func:`parse_codebuild_build`, and it closes root's
+    reproduction (a): every job in the archived document had ``conclusion: failure``
+    and the gate still passed, because the conclusions were never read.
+
+    * ``databaseId``  — the run identity ``gh run view`` takes
+    * ``headSha``     — the revision the run checked out
+    * ``conclusion``  — must be ``success`` when present
+    * ``jobs[]``      — when ``required_job`` is given, a job of that exact name must
+      be present AND have concluded ``success``. A gate is a NAMED job; "some job in
+      this run passed" is a different and much weaker claim.
+
+    This response must be **unmodified**. The revision a manual run actually checked
+    out does not come from here — it comes from the workflow's own uploaded artifact
+    (:func:`parse_checkout_artifact`). An earlier revision let the operator paste a
+    ``checked_out_revision`` key into this document and then trusted it; root rejected
+    that, because it makes the one fact the manual path exists to establish an
+    assertion inside a document otherwise written by GitHub. Such a key is now a
+    parse error rather than an accepted override.
+    """
+    document = _as_dict(body, "the archived GitHub run document")
+
+    run_id = document.get("databaseId")
+    _require(
+        isinstance(run_id, (str, int)) and str(run_id).strip() != "",
+        f"the archived run document records databaseId {run_id!r}; without the run identity the "
+        "document cannot be tied to a retrievable run",
+    )
+    head_sha = document.get("headSha")
+    _require(
+        isinstance(head_sha, str) and bool(_GIT_REVISION_RE.match(head_sha)),
+        f"the archived run document records headSha {head_sha!r}, which is not a full 40-character "
+        "git SHA",
+    )
+    conclusion = document.get("conclusion")
+    if conclusion is not None:
+        _require(
+            conclusion == _GITHUB_SUCCESS,
+            f"the archived run document reports conclusion {conclusion!r}, not {_GITHUB_SUCCESS!r}. A "
+            "failed, cancelled or still-running workflow is not a green gate, and an in-progress run "
+            "carries a null conclusion rather than a passing one",
+        )
+
+    job_conclusions: dict[str, object] = {}
+    if "jobs" in document:
+        for job in _as_list(document.get("jobs"), "'jobs' in the archived run document"):
+            entry = _as_dict(job, "a job in the archived run document")
+            name = entry.get("name")
+            if isinstance(name, str):
+                job_conclusions[name] = entry.get("conclusion")
+    if required_job is not None:
+        _require(
+            required_job in job_conclusions,
+            f"the archived run document contains no job named {required_job!r} (it has "
+            f"{sorted(job_conclusions)}). The required gate is a NAMED job, so a run that never ran it "
+            "does not satisfy it however green the rest of the run was",
+        )
+        actual = job_conclusions[required_job]
+        _require(
+            actual == _GITHUB_SUCCESS,
+            f"the archived run document reports job {required_job!r} as {actual!r}, not "
+            f"{_GITHUB_SUCCESS!r}. The gate is this job's outcome; the run's overall status can be "
+            "green while a specific required job was skipped or failed",
+        )
+
+    # A hand-added checked-out SHA is refused rather than believed. This is the
+    # authoritative API response and nothing else; the revision the jobs checked out
+    # is read from the workflow's uploaded artifact, which the operator did not write.
+    for key in ("checked_out_revision", "checkedOutRevision"):
+        _require(
+            key not in document,
+            f"the archived run document carries a {key!r} key. `gh run view` does not return one, so it "
+            "was added by hand — and the revision a manual run checked out is exactly the fact that must "
+            "not be an assertion. Archive the workflow's own `checked-out-revision-*` artifact instead, "
+            "and leave this response as the API returned it",
+        )
+    return {
+        "run_id": str(run_id),
+        "head_revision": head_sha,
+        "conclusion": conclusion,
+        "jobs": job_conclusions,
+        "attempt": document.get("attempt"),
+        "event": document.get("event"),
+    }
+
+
+def parse_checkout_artifact(body: object, *, expected_job: str) -> dict:
+    """Read the revision a CI job actually checked out, from the job's own artifact.
+
+    The counterpart to :func:`parse_github_run`, and the answer to root's second
+    manual-CI finding. `.github/workflows/agent-control-ci.yml` runs `git rev-parse
+    HEAD` inside each test job, fails the job when it disagrees with the dispatched
+    SHA, and uploads the result as `checked-out-revision-<job>`. That file is written
+    by the job, in the job, about the tree the job had — which is what makes it
+    evidence rather than a claim, and it is why the operator archives the artifact
+    instead of transcribing a SHA into the run response.
+
+    Scoped to the six keys that step actually writes (:data:`CHECKOUT_ARTIFACT_KEYS`).
+    ``job`` must be the job this gate is about, because a run has three of these
+    artifacts and the one for a different job says nothing about this gate's checkout.
+    The caller additionally binds ``run_id``/``run_attempt`` to the archived run.
+    """
+    document = _as_dict(body, "the archived checkout artifact")
+    missing = [key for key in CHECKOUT_ARTIFACT_KEYS if key not in document]
+    _require(
+        not missing,
+        f"the archived checkout artifact is missing {sorted(missing)}; the workflow's "
+        f"`Verify and record the checked-out revision` step writes all of "
+        f"{list(CHECKOUT_ARTIFACT_KEYS)}, so a document without them is not that artifact",
+    )
+    job = document["job"]
+    _require(
+        job == expected_job,
+        f"the archived checkout artifact is for job {job!r}, not {expected_job!r}. A manual run uploads "
+        "one of these per test job, so an artifact from a different job establishes a different job's "
+        "checkout",
+    )
+    revision = document["checked_out_revision"]
+    _require(
+        isinstance(revision, str) and bool(_GIT_REVISION_RE.match(revision)),
+        f"the archived checkout artifact records checked_out_revision {revision!r}, which is not a full "
+        "40-character git SHA",
+    )
+    workflow_ref_sha = document["workflow_ref_sha"]
+    _require(
+        isinstance(workflow_ref_sha, str) and bool(_GIT_REVISION_RE.match(workflow_ref_sha)),
+        f"the archived checkout artifact records workflow_ref_sha {workflow_ref_sha!r}, which is not a "
+        "full 40-character git SHA",
+    )
+    return {
+        "job": job,
+        "checked_out_revision": revision,
+        "run_id": str(document["run_id"]),
+        "run_attempt": str(document["run_attempt"]),
+        "event_name": document["event_name"],
+        "workflow_ref_sha": workflow_ref_sha,
+    }
+
+
+def parse_ecr_images(body: object) -> dict:
+    """Extract the served digest and its tags from `aws ecr describe-images` output.
+
+    The registry is the one side of the chain the operator cannot retype their way
+    around, so this reads ``imageDetails[0].imageDigest`` and ``imageTags`` from their
+    real locations rather than asking whether a digest-shaped string appears somewhere
+    in the response.
+    """
+    document = _as_dict(body, "the archived ECR document")
+    details = _as_list(
+        document.get("imageDetails"), "'imageDetails' in the ECR response"
+    )
+    _require(
+        len(details) == 1,
+        f"the archived ECR response describes {len(details)} images; archive the response for exactly "
+        "the image the component is running, so there is no ambiguity about which digest is served",
+    )
+    detail = _as_dict(details[0], "the ECR image detail")
+    digest = detail.get("imageDigest")
+    _require(
+        isinstance(digest, str) and bool(_DIGEST_RE.match(digest)),
+        f"the archived ECR response records imageDigest {digest!r}, which is not a sha256 digest",
+    )
+    tags = detail.get("imageTags")
+    if tags is not None:
+        tags = _as_list(tags, "'imageTags' in the ECR image detail")
+    return {
+        "digest": digest,
+        "tags": [tag for tag in (tags or []) if isinstance(tag, str)],
+        "repository": detail.get("repositoryName"),
+    }
 
 
 def load_config(path: Path) -> dict:
@@ -992,6 +2022,23 @@ class ArtifactStore:
         self._mapping = mapping if isinstance(mapping, dict) else {}
         self._cache: dict[str, tuple[dict, str]] = {}
 
+    def resolve(self, name: str) -> Path | None:
+        """Where an artifact WOULD be read from, without reading or validating it.
+
+        Separate from :meth:`require` because one caller needs the path before the
+        file is supposed to exist: the teardown seam has to observe whether the
+        post-teardown absence artifact was already sitting there beforehand, and
+        ``require`` would either raise on the absent file or cache a stale read of a
+        prefilled one.
+        """
+        raw_path = self._mapping.get(name)
+        if not raw_path:
+            return None
+        path = Path(raw_path)
+        if not path.is_absolute() and self._base is not None:
+            path = self._base / path
+        return path
+
     def require(self, name: str) -> tuple[dict, str]:
         """Return ``(payload, path)`` for an artifact, or raise."""
         if name in self._cache:
@@ -1035,12 +2082,29 @@ class Driver:
     ``PrerequisiteMissingError`` (not_run, naming what it wanted).
     """
 
-    def __init__(self, config: dict, probe: Probe, artifacts: ArtifactStore, *, dynamodb=None):  # noqa: ANN001
+    def __init__(  # noqa: ANN001, PLR0913 - each collaborator is a separately substitutable seam
+        self,
+        config: dict,
+        probe: Probe,
+        artifacts: ArtifactStore,
+        *,
+        dynamodb=None,
+        repo_root: Path | None = None,
+        git_runner=None,
+    ):
         self.config = config
         self.probe = probe
         self.artifacts = artifacts
         self.dynamodb = dynamodb
+        # Where the commit graph is read from when W2-01 computes containment. Defaults
+        # to the checkout this script lives in, which is the repository whose revisions
+        # the provenance names.
+        self._repo_root = repo_root if repo_root is not None else REPO_ROOT
+        self._git_runner = git_runner
         self._used_artifacts: list[str] = []
+        # Every ancestry answer git gave, in order, so the evidence file records what
+        # was computed rather than only that the check passed.
+        self._ancestry: list[dict] = []
 
     # ---- helpers -------------------------------------------------------
 
@@ -1076,6 +2140,578 @@ class Driver:
     @staticmethod
     def _body_of(observation: Observation) -> dict:
         return observation.body if isinstance(observation.body, dict) else {}
+
+    @staticmethod
+    def _deployed_components(preflight: dict) -> dict:
+        """Per-component deployed identity: what is running, and what it was built from.
+
+        Three facts per component rather than a source/deployed digest pair. The pair
+        was insufficient in a way worth being explicit about: two equal recorded
+        strings establish that the operator wrote the same value twice, and nothing
+        about the running image. ``source_revision`` is what the image was BUILT FROM,
+        so the chain is source revision → image digest → running component, and each
+        link is separately checkable.
+
+        The components must also not be identical to each other: they are separate
+        images from separate Dockerfiles, so an equal digest pair means one recorded
+        value was copied over the other — which would let a stale half-deployment
+        satisfy every per-component comparison.
+        """
+        entries = preflight["deployed_components"]
+        if not isinstance(entries, dict):
+            raise AssertionError(
+                f"'deployed_components' must be an object keyed by component, got {entries!r}. The control "
+                f"path ships as {len(WAVE2_DEPLOYED_COMPONENTS)} images from separate workflows, so a "
+                "single flat record cannot say which of them is stale"
+            )
+        resolved: dict[str, dict] = {}
+        for component in WAVE2_DEPLOYED_COMPONENTS:
+            entry = entries.get(component)
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"no deployed identity recorded for the {component!r} component ({entry!r}). A "
+                    "gateway speaking this contract in front of a worker that does not is the normal "
+                    "half-deployment, and it is invisible to any check that reads only one side"
+                )
+            missing = [key for key in DEPLOYED_COMPONENT_KEYS if key not in entry]
+            if missing:
+                raise AssertionError(
+                    f"the {component!r} deployed identity is missing {sorted(missing)}; without all of "
+                    f"{list(DEPLOYED_COMPONENT_KEYS)} a running image cannot be tied back to reviewed "
+                    "source"
+                )
+            for key in ("revision", "source_revision"):
+                value = entry[key]
+                if not isinstance(value, str) or not _GIT_REVISION_RE.match(value):
+                    raise AssertionError(
+                        f"the {component!r} {key} is {value!r}, which is not a full 40-character git SHA. "
+                        "A branch name or short SHA names whatever that ref happened to point at, which "
+                        "is the ambiguity this field exists to remove"
+                    )
+            digest = entry["image_digest"]
+            if not isinstance(digest, str) or not _DIGEST_RE.match(digest):
+                raise AssertionError(
+                    f"the {component!r} image digest is {digest!r}, which is not a sha256 digest. An "
+                    "unparseable digest cannot identify a build, and a comparison between two malformed "
+                    "values would succeed whenever they are equally malformed"
+                )
+            # The link that makes the digest mean something, and the one root's review
+            # said was missing. Comparing `source_revision` to `revision` compares two
+            # fields the same hand wrote, so it establishes only that the operator
+            # typed one SHA twice. What has to agree is the archived output of the
+            # system that performed the build.
+            Driver._assert_build_record(component, entry)
+            resolved[component] = entry
+
+        digests = {name: entry["image_digest"] for name, entry in resolved.items()}
+        if len(set(digests.values())) != len(digests):
+            raise AssertionError(
+                f"two components record the same image digest ({digests}). They are separate images built "
+                "from separate Dockerfiles, so an equal pair means one recorded value was copied over the "
+                "other — which would make a stale half-deployment pass every per-component comparison"
+            )
+        return resolved
+
+    @staticmethod
+    def _assert_raw_metadata(raw: object, *, subject: str, expected: tuple[str, ...]) -> dict:
+        """Validate an archive of raw tool output, and return it keyed by document.
+
+        The distinction this enforces is the whole of root's finding 3: a *summary* of
+        what a tool said is written by the operator, whereas the tool's own output is
+        written by the tool. Requiring the archive does not make forgery impossible —
+        nothing available from outside the cluster can — but it moves the bar from
+        "retype one SHA twice" to "hand-forge a set of self-consistent tool responses",
+        and it leaves a reviewer something to re-retrieve and compare.
+
+        Each document carries the ``command`` that produced it, so the retrieval is
+        reproducible, a ``retrieved_at`` so a document carried over from an earlier
+        evaluation is visible as one, and the ``body`` verbatim. An empty body is
+        refused explicitly: a present-but-empty archive is the shape a placeholder
+        takes, and it would otherwise satisfy a presence check.
+        """
+        if not isinstance(raw, dict):
+            raise AssertionError(
+                f"{subject}: 'raw' must be an object holding the archived {list(expected)} tool output, "
+                f"got {raw!r}. Summary fields are written by the operator; the archived response is "
+                "written by the tool, and only the second can corroborate the first"
+            )
+        absent = sorted(set(expected) - set(raw))
+        if absent:
+            raise AssertionError(
+                f"{subject}: 'raw' archives no {absent} document(s). Each link in the provenance chain "
+                f"needs the retrieval that established it, so all of {list(expected)} must be present"
+            )
+        for name in expected:
+            document = raw[name]
+            if not isinstance(document, dict):
+                raise AssertionError(
+                    f"{subject}: the archived {name!r} document must be an object carrying "
+                    f"{list(RAW_METADATA_KEYS)}, got {document!r}"
+                )
+            missing = [key for key in RAW_METADATA_KEYS if not document.get(key)]
+            if missing:
+                raise AssertionError(
+                    f"{subject}: the archived {name!r} document is missing or empty at {sorted(missing)}. "
+                    f"'command' is how a reviewer re-retrieves it, 'retrieved_at' dates the retrieval, and "
+                    "'body' is the response itself — an archive without the body is a claim that one exists"
+                )
+            if _parse_timestamp(document["retrieved_at"]) is None:
+                raise AssertionError(
+                    f"{subject}: the archived {name!r} document records retrieved_at "
+                    f"{document['retrieved_at']!r}, which is not a parseable ISO-8601 instant. An undatable "
+                    "retrieval cannot be told apart from one carried forward from an earlier evaluation"
+                )
+        return raw
+
+    @staticmethod
+    def _assert_build_record(component: str, entry: dict) -> None:
+        """Tie a running image digest to the build that produced it from reviewed source.
+
+        The chain, with every link PARSED out of an archived retrieval at its real
+        field location rather than found as a substring of one:
+
+            source archive --(the build consumed it)------> build, SUCCEEDED
+            build ----------(its `docker push` printed)---> built digest, for a tag
+            tag ------------(the registry serves it)------> running component
+
+        Why parsing and not presence. The previous implementation dumped each archived
+        body to JSON text and asked whether the expected values appeared anywhere in
+        it. Root's review demonstrated that this establishes almost nothing, with three
+        documents that all passed: a CI run whose every job had ``conclusion:
+        failure``; a build whose own ``conclusion`` was ``failure``; and a build
+        document replaced wholesale by ``{"unrelated_notes": "<run id> <revision>"}``.
+        The third is the decisive one — a document that merely MENTIONS the right
+        strings satisfied the check, so requiring the archive had bought nothing over
+        requiring the summary. And ``built_digest`` was never compared against build
+        output at all: it was checked against the running image and the registry, both
+        of which the same operator also recorded.
+
+        So each fact is now read from the field that holds it, by
+        :func:`parse_codebuild_build`, :func:`parse_push_digest_from_build_log` and
+        :func:`parse_ecr_images`; a build that did not reach ``SUCCEEDED`` is rejected
+        on its status rather than on what it happens to mention; and the digest is the
+        one the build's own push output reported for the tag the build was given.
+
+        This is the deployed CodeBuild path specifically — see ``BUILD_RECORD_KEYS``.
+        The archived bodies stay in the report verbatim, so a reviewer can re-run the
+        three commands and compare.
+        """
+        record = entry["build_record"]
+        subject = f"the {component!r} build_record"
+        if not isinstance(record, dict):
+            raise AssertionError(
+                f"{subject} is {record!r}; it must be an object carrying {list(BUILD_RECORD_KEYS)}. A "
+                "digest with no build behind it is a string of the right shape, which is what an "
+                "invented one also is"
+            )
+        missing = [key for key in BUILD_RECORD_KEYS if not record.get(key)]
+        if missing:
+            raise AssertionError(
+                f"{subject} is missing or empty at {sorted(missing)}. Without all of "
+                f"{list(BUILD_RECORD_KEYS)} the running digest cannot be traced to a build of reviewed "
+                "source: the build identity is what makes the build retrievable, the tag is what binds "
+                "it to a registry entry, and the registry read is what establishes that this digest is "
+                "the one actually being served"
+            )
+        for key in ("project", "build_id", "build_url", "image_tag", "repository"):
+            if not isinstance(record[key], str):
+                raise AssertionError(
+                    f"{subject} records {key}={record[key]!r}; it must be a string identifying the build "
+                    f"run. A non-string is not an identity anybody can look up — an arbitrary truthy "
+                    "value satisfying a presence check is the defect this replaces"
+                )
+        if not record["build_url"].startswith("https://"):
+            raise AssertionError(
+                f"{subject} records build_url {record['build_url']!r}, which is not an https URL. The "
+                "point of the field is that a reviewer can open the build and read it; a value that is "
+                "not a location cannot be opened"
+            )
+        for key in ("built_digest", "registry_digest"):
+            value = record[key]
+            if not isinstance(value, str) or not _DIGEST_RE.match(value):
+                raise AssertionError(
+                    f"{subject} records {key}={value!r}, which is not a sha256 digest. An unparseable "
+                    "digest cannot identify an image, and a comparison between two malformed values "
+                    "succeeds whenever they are malformed in the same way"
+                )
+        built_revision = record["built_revision"]
+        if not isinstance(built_revision, str) or not _GIT_REVISION_RE.match(built_revision):
+            raise AssertionError(
+                f"{subject} records built_revision {built_revision!r}, which is not a full 40-character "
+                "git SHA. The revision a build consumed is the anchor of the whole chain, so a moving ref "
+                "cannot stand in for it"
+            )
+        raw = Driver._assert_raw_metadata(
+            record["raw"], subject=subject, expected=BUILD_RECORD_RAW_DOCUMENTS
+        )
+
+        # --- (1) the build: it exists, it is THIS build, and it SUCCEEDED -------
+        try:
+            build = parse_codebuild_build(raw["build"]["body"])
+        except ProvenanceParseError as error:
+            raise AssertionError(
+                f"{subject}: the archived build document (retrieved by {raw['build']['command']!r}) is "
+                f"not a usable `aws codebuild batch-get-builds` response: {error}"
+            ) from error
+        for label, recorded, parsed in (
+            ("build_id", record["build_id"], build["build_id"]),
+            ("built_revision", built_revision, build["source_revision"]),
+            ("image_tag", record["image_tag"], build["image_tag"]),
+        ):
+            if recorded != parsed:
+                raise AssertionError(
+                    f"{subject} records {label} {recorded!r}, but the archived build document reports "
+                    f"{parsed!r} (retrieved by {raw['build']['command']!r}). The summary is a restatement "
+                    "of that response, so a disagreement means the summary describes a different build "
+                    "than the one archived"
+                )
+
+        # --- (2) the digest, read out of the build's own push output ------------
+        # The link root's review found entirely missing. Without it `built_digest` was
+        # corroborated only by fields the same operator wrote.
+        try:
+            pushed = parse_push_digest_from_build_log(
+                raw["build_log"]["body"], image_tag=build["image_tag"]
+            )
+        except ProvenanceParseError as error:
+            raise AssertionError(
+                f"{subject}: the archived build log (retrieved by {raw['build_log']['command']!r}) does "
+                f"not establish the digest this build published: {error}"
+            ) from error
+        if pushed != record["built_digest"]:
+            raise AssertionError(
+                f"{subject} records built_digest {record['built_digest']!r}, but the archived build log "
+                f"reports the build pushed tag {build['image_tag']!r} at {pushed!r}. The digest a build "
+                "produced is stated by the build; a recorded value that disagrees with it was not read "
+                "out of the build"
+            )
+
+        # --- (3) the registry: what that tag serves now -------------------------
+        try:
+            served = parse_ecr_images(raw["registry"]["body"])
+        except ProvenanceParseError as error:
+            raise AssertionError(
+                f"{subject}: the archived registry document (retrieved by "
+                f"{raw['registry']['command']!r}) is not a usable `aws ecr describe-images` response: "
+                f"{error}"
+            ) from error
+        if served["digest"] != record["registry_digest"]:
+            raise AssertionError(
+                f"{subject} records registry_digest {record['registry_digest']!r}, but the archived "
+                f"registry document reports {served['digest']!r}. The digest being served has to be read "
+                "from the registry, not asserted alongside it"
+            )
+        if served["repository"] is not None and served["repository"] != record["repository"]:
+            raise AssertionError(
+                f"{subject} records repository {record['repository']!r}, but the archived registry "
+                f"document describes {served['repository']!r}. A digest read from a different repository "
+                "is a digest for a different image"
+            )
+        if served["tags"] and build["image_tag"] not in served["tags"]:
+            raise AssertionError(
+                f"{subject}: the build pushed tag {build['image_tag']!r}, but the archived registry "
+                f"document reports the served image carrying tags {sorted(served['tags'])}. The tag is "
+                "what binds the build to the registry entry, so an image that does not carry it is not "
+                "the one this build published"
+            )
+        if record["built_digest"] != entry["image_digest"]:
+            raise AssertionError(
+                f"the {component!r} build produced digest {record['built_digest']!r} but the component is "
+                f"recorded as running {entry['image_digest']!r}. A running image the build did not produce "
+                "is an image built somewhere else, which is exactly what this chain exists to detect"
+            )
+        if record["registry_digest"] != entry["image_digest"]:
+            raise AssertionError(
+                f"the {component!r} registry reports digest {record['registry_digest']!r} for the image "
+                f"being served, but the component is recorded as running {entry['image_digest']!r}. The "
+                "registry is the side that cannot be retyped, so a disagreement means the recorded "
+                "deployment is not the deployed one"
+            )
+        if built_revision != entry["source_revision"]:
+            raise AssertionError(
+                f"the {component!r} build run built source revision {built_revision!r}, but the component "
+                f"records source_revision {entry['source_revision']!r}. The revision under review is the "
+                "one the RUN consumed; the recorded field is a restatement of it and must agree"
+            )
+        if entry["source_revision"] != entry["revision"]:
+            raise AssertionError(
+                f"the {component!r} image was built from source revision "
+                f"{entry['source_revision']!r} but the component is recorded as running "
+                f"{entry['revision']!r}. A running image that does not trace to the revision under "
+                "review is the stale-deployment case this pairing exists to catch"
+            )
+
+    def _assert_contained_in(
+        self,
+        revision: str,
+        *,
+        subject: str,
+        deployed_revisions: dict,
+        hint: str = "",
+    ) -> None:
+        """Assert a revision is contained in every deployed component — by asking git.
+
+        Containment, not equality, is the correct relation between "a story merged
+        here" and "this is what is running". A correct deployment is normally NEWER
+        than a story's merge commit: it carries that story plus the later changes the
+        fixture needs. Demanding equality therefore fails correct deployments, and —
+        worse — pressures an operator into redeploying an old merge commit purely to
+        satisfy the evaluator, which would make the evaluation the reason the
+        environment is wrong.
+
+        **The answer is computed, not read.** An earlier revision took the artifact's
+        ``contained_in[component].is_ancestor`` at face value, which root's review
+        named as an assertion presented as evidence: ``is_ancestor: true`` IS the
+        conclusion this method exists to reach, so accepting it made the check restate
+        its own subject and let any invented pair of well-formed SHAs pass. The commit
+        graph in the harness's own checkout answers the question directly, with no
+        credential and no network, so there is no reason to ask the operator for it.
+
+        Because git also answers "does this commit exist at all", an invented revision
+        now fails HERE rather than passing a syntax check. That is the
+        internally-consistent-but-invented case, and it is the one the reproduction in
+        the review exercised.
+
+        A checkout that cannot answer — shallow, or without the deployed revision
+        fetched — raises :class:`PrerequisiteMissingError` rather than failing. The
+        harness could not look, which is a gap in the evidence-gathering environment
+        rather than a defect in the deployment, and conflating the two would let a
+        broken clone report a deployment defect that is not there.
+        """
+        for component, deployed in sorted(deployed_revisions.items()):
+            ancestry = git_ancestry(
+                revision, deployed, repo=self._repo_root, runner=self._git_runner
+            )
+            self._ancestry.append({"subject": subject, "component": component, **ancestry.to_evidence()})
+            if not ancestry.available:
+                raise PrerequisiteMissingError(
+                    f"the harness could not establish whether {subject} is contained in the deployed "
+                    f"{component!r} revision {deployed}: {ancestry.reason}. Containment is computed here "
+                    "rather than read from the artifact, because the artifact's own 'is_ancestor' field is "
+                    "the conclusion this check exists to reach"
+                )
+            if not ancestry.is_ancestor:
+                raise AssertionError(
+                    f"{subject} is not contained in the deployed {component!r} revision {deployed}: "
+                    f"`git merge-base --is-ancestor` says no. The running build does not include it, so "
+                    f"wave 2's checks would be observing a deployment that lacks it. {hint}".strip()
+                )
+
+    @staticmethod
+    def _assert_creation_ledger(ledger: object) -> dict:
+        """Validate the record of what the fixture actually CREATED, with identities.
+
+        This is the half that makes teardown completeness checkable. Without it,
+        removal evidence is a map whose keys the operator chose, so it can only
+        confirm the resources it happens to mention and omitting a leaked workload
+        passes. Reconciling against what was created is the only way "everything is
+        gone" can be a claim about the fixture rather than about the list.
+
+        Each entry carries the resource's own identity as observed AT CREATION — a
+        Kubernetes UID, a queue URL, an ARN — not just its name. Root's fixture review
+        established why: `kubectl apply` can adopt a pre-existing same-name object and
+        `create-queue` can return an existing queue, so a name proves neither
+        ownership nor, at teardown, that the thing removed was the thing created. An
+        identity distinguishes "this exact object is gone" from "some object of this
+        name is gone", which a recreated resource also satisfies.
+        """
+        if not isinstance(ledger, list) or not ledger:
+            raise AssertionError(
+                f"'creation_ledger' must be a nonempty list of the resources this fixture created, got "
+                f"{ledger!r}. Teardown completeness is measured against it, and an empty ledger makes "
+                "'everything was removed' vacuously true — indistinguishable from a fixture nobody "
+                "inventoried"
+            )
+        by_identity: dict[str, dict] = {}
+        for entry in ledger:
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"creation-ledger entry {entry!r} must be an object carrying {list(LEDGER_ENTRY_KEYS)}"
+                )
+            missing = [key for key in LEDGER_ENTRY_KEYS if not entry.get(key)]
+            if missing:
+                raise AssertionError(
+                    f"creation-ledger entry {entry!r} is missing {sorted(missing)}. Without an observed "
+                    "identity a resource cannot be distinguished from a same-named one that already "
+                    "existed, so neither ownership nor its later removal is establishable"
+                )
+            if entry.get("created") is not True:
+                raise AssertionError(
+                    f"creation-ledger entry {entry.get('name')!r} is not recorded as created by this run "
+                    f"({entry.get('created')!r}). A resource this fixture adopted rather than created is "
+                    "not one it may delete — recording a pre-existing object here would authorize removing "
+                    "someone else's"
+                )
+            identity = str(entry["identity"])
+            if identity in by_identity:
+                raise AssertionError(
+                    f"creation-ledger identity {identity!r} appears twice ({by_identity[identity].get('name')!r} "
+                    f"and {entry.get('name')!r}); identities must be unique or reconciliation cannot tell "
+                    "which resource a removal observation refers to"
+                )
+            by_identity[identity] = entry
+        return by_identity
+
+    @staticmethod
+    def _assert_listener_died_before_policies(
+        ledger: dict, removals: dict
+    ) -> None:
+        """The fixture's listener must be gone BEFORE its network policies are.
+
+        Both are ledger resources, so both must be absent at the end — that much the
+        reconciliation above already establishes. This is about the ORDER, which the end
+        state cannot show: deleting the NetworkPolicy first leaves a control-enabled
+        workload running with its ingress restriction already removed. That window is
+        worse than either end state, and DP-INV-1 is about exactly that interval rather
+        than about the final snapshot.
+
+        Ordering is asserted only between resources whose kinds are recognised, and a
+        fixture with no policy in its ledger is not forced to have one: the fixture's
+        shape is #3968's to define, and this check's job is to refuse a shape that is
+        unsafe rather than to mandate one.
+        """
+
+        def kinds_of(names: tuple[str, ...]) -> list[tuple[str, dict]]:
+            return [
+                (identity, removals[identity])
+                for identity, entry in ledger.items()
+                if str(entry.get("kind", "")).lower() in names and identity in removals
+            ]
+
+        listeners = kinds_of(LISTENER_LEDGER_KINDS)
+        policies = kinds_of(POLICY_LEDGER_KINDS)
+        if not listeners or not policies:
+            # Nothing to order. Not a pass for the ordering property so much as an
+            # absence of the pair it constrains; completeness is the reconciliation's
+            # job and it has already run.
+            return
+        for policy_identity, policy in policies:
+            policy_removed = _parse_timestamp(policy.get("removed_at"))
+            if policy_removed is None:
+                raise AssertionError(
+                    f"the fixture policy {ledger[policy_identity].get('name')!r} records "
+                    f"removed_at={policy.get('removed_at')!r}, which is not a parseable instant, so it "
+                    "cannot be shown to have been deleted AFTER the control-enabled workload it "
+                    "restricted. Removing a policy while its workload is still running leaves a "
+                    "control-enabled pod reachable without its ingress restriction"
+                )
+            for listener_identity, listener in listeners:
+                listener_removed = _parse_timestamp(listener.get("removed_at"))
+                if listener_removed is None:
+                    raise AssertionError(
+                        f"the fixture workload {ledger[listener_identity].get('name')!r} records "
+                        f"removed_at={listener.get('removed_at')!r}, which is not a parseable instant, so "
+                        "the order of its removal against the fixture's policies is unestablished — and "
+                        "that order is what DP-INV-1 constrains"
+                    )
+                if policy_removed < listener_removed:
+                    raise AssertionError(
+                        f"the fixture policy {ledger[policy_identity].get('name')!r} was removed at "
+                        f"{policy.get('removed_at')!r}, BEFORE the control-enabled workload "
+                        f"{ledger[listener_identity].get('name')!r} was removed at "
+                        f"{listener.get('removed_at')!r}. That leaves an interval in which a "
+                        "control-enabled pod is running with its ingress restriction already deleted; the "
+                        "workload has to die first"
+                    )
+
+    @staticmethod
+    def _assert_native_interrupt_outcome(recorded: object) -> None:
+        """A native interruption must have an OBSERVED non-aborted outcome.
+
+        W2-06's claim is that a provider's own interrupted turn does not by itself
+        become a deliberate ADP abort. That is a negative, and a negative cannot be
+        established by the absence of a measurement — which is exactly what an earlier
+        revision did: it tested only ``!= "aborted"``, so ``null``, ``""``, ``{}`` and
+        ``"invented"`` every one of them PASSED. An operator who never ran the
+        experiment, or whose collection script wrote an empty field, got a green check
+        for a property nobody had observed.
+
+        Three outcomes, deliberately distinct:
+
+        * absent (``None``, ``""``, or no ``status``) → ``PrerequisiteMissingError``,
+          i.e. ``not_run``. Nothing was measured, so there is nothing to judge.
+        * present but not a recognised writer status → failure. Something was
+          recorded and it is not an outcome this deployment could have produced.
+        * exactly ``"aborted"`` → failure, unchanged: that IS the defect this check
+          has always existed to catch.
+        """
+        # Absent measurement. A dict/list here means the collection script wrote a
+        # structure where a status belongs, so the field was never populated either.
+        if recorded is None or (isinstance(recorded, (str, dict, list)) and not recorded):
+            raise PrerequisiteMissingError(
+                "the harness-neutrality artifact records no outcome for the native-interruption "
+                f"experiment ({recorded!r}). AC-A3's claim is that a provider's interrupted turn does "
+                "NOT by itself become an ADP abort, which is a negative: it requires an OBSERVED "
+                f"non-aborted outcome from {list(NATIVE_INTERRUPT_ALLOWED_STATUSES)}. An absent "
+                "measurement cannot establish it, so this is NOT RUN rather than a pass"
+            )
+        # Provenance is required, so the experiment must be recorded as an object. A
+        # bare status string — which is what the fixture carried while this check was
+        # passing on unmeasured fields — says nothing about which run was interrupted
+        # or how its outcome was read back, and those are what separate an observation
+        # from an expectation somebody typed.
+        if not isinstance(recorded, dict):
+            raise AssertionError(
+                f"the native interruption is recorded as {recorded!r}. It must be an object carrying "
+                f"{list(NATIVE_INTERRUPT_KEYS)}: a bare status cannot say WHICH run was interrupted or "
+                "HOW its outcome was read back, and an outcome with no provenance is indistinguishable "
+                "from an expectation nobody measured"
+            )
+        missing = [key for key in NATIVE_INTERRUPT_KEYS if not recorded.get(key)]
+        if missing:
+            raise AssertionError(
+                f"the native-interruption experiment is missing {sorted(missing)}. A bare outcome "
+                "cannot say WHICH run was interrupted or HOW its status was read back, and without "
+                "both the value is an expectation rather than an observation"
+            )
+        status = recorded["status"]
+        if status == ABORTED_STATUS:
+            raise AssertionError(
+                "a native interrupted turn with no confirmed ADP abort finalization was recorded as "
+                f"{ABORTED_STATUS!r}. Only a confirmed abort finalization may carry this status; "
+                "pattern-matching a provider's interrupt string is the specific error forbidden here"
+            )
+        if not isinstance(status, str) or status not in NATIVE_INTERRUPT_ALLOWED_STATUSES:
+            raise AssertionError(
+                f"the native interruption is recorded as {status!r}, which is not one of the writer's "
+                f"non-aborted terminal statuses {list(NATIVE_INTERRUPT_ALLOWED_STATUSES)}. A value the "
+                "deployment could not have written is a typo or a fabrication, not a measured outcome — "
+                "and accepting anything that merely is not 'aborted' is how an unmeasured field passed"
+            )
+
+    @staticmethod
+    def _assert_fixture_identity(payload: dict, artifact: str, config: dict) -> str:
+        """The artifact must describe THIS fixture, in THIS account and environment.
+
+        Without it a complete, internally consistent artifact from a previous run
+        against a different fixture is indistinguishable from this run's evidence —
+        and a reused artifact is the easiest way to produce a green wave with no live
+        observations behind it at all.
+        """
+        identity = payload["fixture_identity"]
+        if not isinstance(identity, dict):
+            raise AssertionError(
+                f"{artifact}: 'fixture_identity' must be an object identifying the fixture these "
+                f"observations were taken against, got {identity!r}"
+            )
+        for key in ("account_id", "environment", "run_id"):
+            if not identity.get(key):
+                raise AssertionError(
+                    f"{artifact}: 'fixture_identity.{key}' is missing or empty; an observation that "
+                    "cannot be tied to a specific fixture run cannot be distinguished from one carried "
+                    "over from an earlier evaluation"
+                )
+        for key, expected in (
+            ("account_id", str(config.get("account_id"))),
+            ("environment", config.get("environment")),
+        ):
+            if str(identity.get(key)) != str(expected):
+                raise AssertionError(
+                    f"{artifact}: 'fixture_identity.{key}' is {identity.get(key)!r} but this run "
+                    f"targets {expected!r}; the artifact describes a different fixture than the one under "
+                    "evaluation"
+                )
+        return str(identity["run_id"])
 
     # ---- W1-01 ---------------------------------------------------------
 
@@ -1571,6 +3207,528 @@ class Driver:
                 f"missing {sorted(expected - set(emitted_ids))}, unexpected {sorted(set(emitted_ids) - expected)}"
             )
 
+    # ---- W2-01 ---------------------------------------------------------
+
+    def check_w2_01(self, *, emitted_ids: tuple[str, ...] = ()) -> None:
+        """The consolidated wave-2 preflight: does this evidence describe the build under review?
+
+        Every other wave-2 check reports on a deployment. This one establishes that
+        the deployment is the one the reviewer thinks it is — which is why it is
+        `Gate/regression` rather than an AC: if this is wrong, the other nine
+        checks are *correct observations of the wrong thing*, which reads exactly
+        like a passing wave.
+
+        Four families of observation, and each is a distinct way for that to go
+        wrong:
+
+        1. **Prior-wave compatibility.** Wave 2 extends wave 1's contract rather
+           than replacing it, so wave 1 must have been accepted — identified by the
+           run and revision it was accepted on, and recorded as contained in what is
+           deployed now. An accepted wave 1 from before a breaking change is not
+           evidence about this build, and a bare ``compatible: true`` is an assertion
+           of that rather than evidence for it.
+        2. **Deployed identity, containment and gates.** Each component records the
+           revision it RUNS, its image digest, and the source revision that image was
+           built from. Each required story then records the gates that tested it and
+           the deployed revisions it is contained in. Containment is the right
+           relation and equality is not: a correct deployment is normally NEWER than
+           a story's merge commit, carrying that story plus later changes the fixture
+           needs, so demanding equality would reject correct deployments and
+           implicitly demand redeploying an old merge to satisfy the evaluator.
+        3. **Gates by name, on the tested revision.** The required gates are compared
+           against the names CI actually defines, each carrying the run it came from
+           and the revision it tested. An arbitrary nonempty map of "passed" values
+           demonstrates the operator's spelling, not the build's gates.
+        4. **Fixture scope, ownership and teardown readiness.** The flag is on in the
+           disposable fixture and nowhere shared, ordinary flags are off, every one
+           of the wave's ten check IDs is present, cleanup is configured BEFORE
+           anything is seeded, and every created resource is in the ledger with its
+           own observed identity — so teardown can later be reconciled against what
+           was actually created rather than against what someone remembered to list.
+
+        Each is asserted individually with its own message. A rolled-up verdict
+        would tell the operator that preflight failed without telling them which of
+        four different owners has to fix it.
+        """
+        preflight = self._artifact("wave2_preflight")
+
+        # --- (0) what is actually deployed, per component ----------------------
+        # Parsed first because everything downstream is relative to it: story
+        # containment, gate subjects, and the security capture's binding all have to
+        # name the revisions running RIGHT NOW. Recording them once here is what
+        # keeps "deployed" a single fact rather than a phrase each section
+        # interprets for itself.
+        deployed = self._deployed_components(preflight)
+        deployed_revisions = {name: entry["revision"] for name, entry in deployed.items()}
+
+        # --- (1) accepted wave 1 evidence, and its compatibility --------------
+        wave1 = preflight["wave1_evidence"]
+        if not isinstance(wave1, dict):
+            raise AssertionError(
+                f"'wave1_evidence' must be an object describing the accepted wave-1 run, got {wave1!r}"
+            )
+        if wave1.get("accepted") is not True:
+            raise AssertionError(
+                f"wave 1 is not recorded as accepted ({wave1.get('accepted')!r}). Wave 2 extends wave 1's "
+                f"contract rather than replacing it, so evaluation #{WAVE_EVALUATIONS[1]}'s acceptance is a "
+                "prerequisite: without it there is no established baseline for these checks to be an "
+                "increment on"
+            )
+        if str(wave1.get("evaluation") or "") != WAVE_EVALUATIONS[1]:
+            raise AssertionError(
+                f"'wave1_evidence.evaluation' is {wave1.get('evaluation')!r}, expected "
+                f"{WAVE_EVALUATIONS[1]!r}; evidence attached to a different evaluation is not wave 1's "
+                "acceptance"
+            )
+        # The counts, not just the word "accepted". #3967 accepted wave 1 at 10/10,
+        # and a recorded acceptance with nine passes is either a different run or a
+        # misremembered one — both of which make this baseline claim false.
+        passed, required = wave1.get("passed"), wave1.get("required")
+        if required != len(WAVE1_CHECKS) or passed != required:
+            raise AssertionError(
+                f"wave 1 is recorded as {passed!r}/{required!r}, but its acceptance was "
+                f"{len(WAVE1_CHECKS)}/{len(WAVE1_CHECKS)}. A partial wave-1 result is not an accepted "
+                "baseline, and 'accepted' alone cannot distinguish the two"
+            )
+        if wave1.get("cleanup_ok") is not True:
+            raise AssertionError(
+                "wave 1's recorded run did not complete cleanup; an accepted wave whose fixture was left "
+                "enabled is the DP-INV-1 state, and reusing that environment is what this catches"
+            )
+        wave1_revision = wave1.get("revision")
+        if not isinstance(wave1_revision, str) or not _GIT_REVISION_RE.match(wave1_revision):
+            raise AssertionError(
+                f"wave 1's accepted revision is {wave1_revision!r}, which is not a full 40-character git "
+                "SHA. A branch name or short SHA does not identify a build: it names whatever that ref "
+                "happened to point at, which is the ambiguity this field exists to remove"
+            )
+        # Identity, not just a revision: the run that produced wave 1's report, so a
+        # reviewer can go and read that report rather than take this record's word
+        # for what it said.
+        if not wave1.get("run_id"):
+            raise AssertionError(
+                "wave 1's evidence records no 'run_id' identifying the accepted evaluation run. A "
+                "revision says which build was evaluated; the run identity is what lets a reviewer "
+                "retrieve the report and confirm this summary of it"
+            )
+        # Compatibility as CONTAINMENT rather than as a claim. An earlier revision
+        # accepted `compatible_with_current_revision: true`, which is the conclusion
+        # this check is supposed to reach — asserting it is not evidence for it.
+        # Wave 1's accepted revision must be an ancestor of every deployed component,
+        # which is exactly what "this build still contains what wave 1 accepted"
+        # means and is checkable from recorded ancestry.
+        self._assert_contained_in(
+            wave1_revision,
+            subject=f"wave 1's accepted revision {wave1_revision}",
+            deployed_revisions=deployed_revisions,
+            hint=(
+                "Accepted-but-stale prior-wave evidence is the subtle case: it was a true observation of "
+                "a build this one has since changed, so it cannot carry forward unchecked"
+            ),
+        )
+
+        # --- (2) merged revisions, versions and CI ----------------------------
+        merged = preflight["merged_revisions"]
+        if not isinstance(merged, dict):
+            raise AssertionError(f"'merged_revisions' must be an object keyed by story, got {merged!r}")
+        for story, description in WAVE2_REQUIRED_STORIES.items():
+            entry = merged.get(story)
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"no merged revision recorded for {story} ({description}); wave 2's checks span all "
+                    f"{len(WAVE2_REQUIRED_STORIES)} stories, so evidence gathered while one is unmerged "
+                    "describes a build that does not implement the wave"
+                )
+            if entry.get("merged") is not True:
+                raise AssertionError(
+                    f"{story} ({description}) is not recorded as merged: {entry.get('merged')!r}"
+                )
+            revision = entry.get("revision")
+            if not isinstance(revision, str) or not _GIT_REVISION_RE.match(revision):
+                raise AssertionError(
+                    f"{story}'s merged revision is {revision!r}, which is not a full 40-character git "
+                    f"SHA. {description} must be pinned to an exact commit, not to a moving ref"
+                )
+            # Merged is necessary and not sufficient. What matters for this evaluation
+            # is whether the story is IN what is running — and a merge commit that
+            # predates the deployment is the normal, correct case, so this is an
+            # ancestry question rather than an equality one.
+            self._assert_contained_in(
+                revision,
+                subject=f"{story}'s merged revision {revision} ({description})",
+                deployed_revisions=deployed_revisions,
+                hint="A merged story that is not in the running build is not deployed.",
+            )
+
+        if preflight["protocol_version"] != CONTROL_PROTOCOL_VERSION:
+            raise AssertionError(
+                f"the preflight records control protocol version {preflight['protocol_version']!r}, but "
+                f"this harness verifies version {CONTROL_PROTOCOL_VERSION}. The gateway peer, the adapter "
+                "and this harness must move together; a mismatch means one of the three describes a "
+                "different contract than the other two"
+            )
+        if preflight["adapter_id"] != CLAUDE_ADAPTER_ID:
+            raise AssertionError(
+                f"the preflight records adapter {preflight['adapter_id']!r}, expected "
+                f"{CLAUDE_ADAPTER_ID!r}: Claude is the first production adapter in this wave"
+            )
+        if preflight["sdk_version"] != EXPECTED_CLAUDE_SDK_VERSION:
+            raise AssertionError(
+                f"the preflight records SDK {preflight['sdk_version']!r}, but the lockfile pins "
+                f"{EXPECTED_CLAUDE_SDK_VERSION!r}. The streaming-input and shouldQuery behaviours this "
+                "wave relies on are observed SDK behaviour rather than documented guarantees, so evidence "
+                "from a different version does not carry over"
+            )
+        packages = preflight["package_versions"]
+        if not isinstance(packages, dict):
+            raise AssertionError(f"'package_versions' must be an object, got {packages!r}")
+        for name in WAVE2_REQUIRED_PACKAGES:
+            version = packages.get(name)
+            if not isinstance(version, str) or not version.strip():
+                raise AssertionError(
+                    f"no version recorded for the {name!r} package ({version!r}). The control path spans "
+                    "two runtimes, and an unrecorded version on either side is a contract nobody pinned"
+                )
+
+        # --- (3) the required gates, by name, on the revision they tested -------
+        # Every gate this wave depends on, named as CI names it. An earlier revision
+        # accepted any nonempty map whose values were all "passed", so
+        # `{"anything": "passed"}` demonstrated a green build — a check on the
+        # operator's spelling rather than on the gates. Requiring these exact names
+        # makes a missing gate a NAMED failure, and each gate must carry the run it
+        # came from and the revision it tested, because a green run of unknown subject
+        # is not evidence about this build.
+        gates = preflight["ci_gates"]
+        if not isinstance(gates, dict):
+            raise AssertionError(
+                f"'ci_gates' must be an object keyed by the CI job name, got {gates!r}"
+            )
+        absent_gates = sorted(set(WAVE2_REQUIRED_CI_GATES) - set(gates))
+        if absent_gates:
+            raise AssertionError(
+                f"no result recorded for the required CI gate(s) {absent_gates}. The required set is "
+                f"{list(WAVE2_REQUIRED_CI_GATES)}, named as `.github/workflows/agent-control-ci.yml` names "
+                "them; an unrecorded gate is one nobody confirmed ran, and a gate absent from the record "
+                "is indistinguishable from a gate that was never required"
+            )
+        for gate in WAVE2_REQUIRED_CI_GATES:
+            entry = gates[gate]
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"the CI gate {gate!r} is recorded as {entry!r}; it must be an object carrying "
+                    f"{list(CI_GATE_KEYS)} so the result can be traced to a run and a tested revision"
+                )
+            missing = [key for key in CI_GATE_KEYS if not entry.get(key)]
+            if missing:
+                raise AssertionError(
+                    f"the CI gate {gate!r} is missing {sorted(missing)}. A bare pass/fail cannot say WHICH "
+                    "run produced it or WHAT revision it tested, and both are required for it to be "
+                    "evidence about this deployment"
+                )
+            if entry["status"] != STATUS_PASSED:
+                raise AssertionError(
+                    f"the required CI gate {gate!r} is recorded as {entry['status']!r} rather than "
+                    f"{STATUS_PASSED!r} (run {entry['run_id']!r}); a merge with red required checks is a "
+                    "merge, not a verified revision"
+                )
+            tested = entry["tested_revision"]
+            if not isinstance(tested, str) or not _GIT_REVISION_RE.match(tested):
+                raise AssertionError(
+                    f"the CI gate {gate!r} records tested revision {tested!r}, which is not a full "
+                    "40-character git SHA; the subject of the gate is unidentifiable"
+                )
+            # The gate must have tested something that is actually deployed. A green
+            # gate on an unrelated revision is the case this catches: true, and about
+            # a build nobody is evaluating.
+            if tested not in set(deployed_revisions.values()):
+                raise AssertionError(
+                    f"the CI gate {gate!r} tested revision {tested!r}, which is not any deployed component "
+                    f"revision ({sorted(set(deployed_revisions.values()))}). A gate that passed on a "
+                    "different build is not a gate on this deployment"
+                )
+            # The archive, and the three fields that have to be readable out of it.
+            # Root's review: an arbitrary truthy `run_id` was accepted, so `run_id:
+            # true` demonstrated a gate. A run document that mentions neither the run
+            # nor the revision nor the job is not a document about this gate, and the
+            # `gh run view --json` output that a real collection step produces mentions
+            # all three.
+            for key in ("run_id", "run_url"):
+                if not isinstance(entry[key], str):
+                    raise AssertionError(
+                        f"the CI gate {gate!r} records {key}={entry[key]!r}; it must be a string "
+                        f"identifying the run. An arbitrary truthy value passes a presence check without "
+                        "naming anything a reviewer can retrieve"
+                    )
+            if not entry["run_url"].startswith("https://"):
+                raise AssertionError(
+                    f"the CI gate {gate!r} records run_url {entry['run_url']!r}, which is not an https "
+                    "URL. A gate is evidence only if the run behind it can be opened and read"
+                )
+            raw = self._assert_raw_metadata(
+                entry["raw"],
+                subject=f"the CI gate {gate!r}",
+                expected=CI_GATE_RAW_DOCUMENTS,
+            )
+            # Parsed, not searched. Root's reproduction (a) archived a run document in
+            # which the run AND every job had `conclusion: failure`, and the gate
+            # passed, because a substring search over the dumped body finds the run id,
+            # the revision and the job name in a red document exactly as readily as in
+            # a green one. `parse_github_run` reads the fields at their locations and
+            # requires this NAMED job to have concluded `success`.
+            try:
+                run = parse_github_run(raw["run"]["body"], required_job=gate)
+            except ProvenanceParseError as error:
+                raise AssertionError(
+                    f"the CI gate {gate!r}: the archived run document (retrieved by "
+                    f"{raw['run']['command']!r}) does not establish a passing run of that job: {error}"
+                ) from error
+            if run["run_id"] != str(entry["run_id"]):
+                raise AssertionError(
+                    f"the CI gate {gate!r} records run_id {entry['run_id']!r}, but the archived run "
+                    f"document reports databaseId {run['run_id']!r}. The recorded field is a summary of "
+                    "that response, so a disagreement means the summary describes a different run than "
+                    "the one archived"
+                )
+            # Which revision the run TESTED — read from the job's own uploaded
+            # artifact, never from `headSha` and never from a field the operator added
+            # to the run response. On a `workflow_dispatch` run `headSha` names the ref
+            # the WORKFLOW file was loaded from, so treating it as the tested source
+            # would label the workflow ref as the thing under test; root flagged both
+            # that and the operator-appended override that replaced it.
+            job_id = CI_GATE_JOB_IDS[gate]
+            try:
+                checkout = parse_checkout_artifact(
+                    raw["checkout"]["body"], expected_job=job_id
+                )
+            except ProvenanceParseError as error:
+                raise AssertionError(
+                    f"the CI gate {gate!r}: the archived checkout artifact (retrieved by "
+                    f"{raw['checkout']['command']!r}) does not establish which revision the job checked "
+                    f"out: {error}"
+                ) from error
+            # Bound to the SAME run and the same attempt as the archived run document.
+            # Without this an artifact from any other run of the same job — including a
+            # green run of an entirely different revision — would serve as this gate's
+            # checkout.
+            if checkout["run_id"] != run["run_id"]:
+                raise AssertionError(
+                    f"the CI gate {gate!r} archives a checkout artifact from run "
+                    f"{checkout['run_id']!r}, but the archived run document is run {run['run_id']!r}. The "
+                    "artifact is evidence about the run that produced it, so one from a different run says "
+                    "nothing about this gate"
+                )
+            # `attempt` and `event` are REQUIRED rather than skipped when absent. Both
+            # comparisons below used to be conditional on the run document carrying the
+            # field, which held a document that said less to a weaker standard: omitting
+            # `attempt` skipped the attempt binding entirely, and omitting `event`
+            # skipped the trigger binding that decides which head rule applies. The
+            # collector asks for both (`gh run view --json ...,attempt,event`), so an
+            # absent one is an incomplete archive, not a licence to check less.
+            for run_field in ("attempt", "event"):
+                if run[run_field] is None:
+                    raise AssertionError(
+                        f"the CI gate {gate!r}: the archived run document records no {run_field!r}. It is "
+                        f"needed to bind the checkout artifact to this run — a missing value would "
+                        f"otherwise SKIP that binding rather than fail it, so a less complete document "
+                        f"would be judged less strictly. Archive the response of `gh run view <id> --json "
+                        f"databaseId,headSha,attempt,event,conclusion,jobs`, which returns it"
+                    )
+            if checkout["run_attempt"] != str(run["attempt"]):
+                raise AssertionError(
+                    f"the CI gate {gate!r} archives a checkout artifact from attempt "
+                    f"{checkout['run_attempt']!r} of run {run['run_id']!r}, but the archived run document "
+                    f"reports attempt {run['attempt']!r}. A re-run checks out afresh, so the attempt that "
+                    "produced the evidence must be the attempt being reported"
+                )
+            if checkout["event_name"] != run["event"]:
+                raise AssertionError(
+                    f"the CI gate {gate!r} archives a checkout artifact recording event "
+                    f"{checkout['event_name']!r}, but the archived run document reports "
+                    f"{run['event']!r}. The two describe the same run and cannot disagree about how it "
+                    "was triggered"
+                )
+            actual = checkout["checked_out_revision"]
+            if actual != tested:
+                raise AssertionError(
+                    f"the CI gate {gate!r} records tested_revision {tested!r}, but the job's own checkout "
+                    f"artifact says it checked out {actual!r}. A gate is evidence about the revision the "
+                    "jobs actually built, so the recorded subject must be that revision"
+                )
+            # How the run's head relates to what the job checked out depends on the
+            # TRIGGER, and the three cases are genuinely different. An earlier revision
+            # applied one rule — equality for everything that is not a manual dispatch —
+            # which rejected the honest `pull_request` case root reproduced with the real
+            # artifact of run 35956224007: API `headSha` 1166f1d9 (the branch tip), the
+            # job's own artifact 92d6cb4c (the merge commit it actually built). Both
+            # documents were authentic and unmodified, and the gate failed. A rule that
+            # refuses genuine evidence is as harmful as one that accepts invented
+            # evidence, because the way around it is to make the documents agree by hand.
+            if checkout["event_name"] == "pull_request":
+                # GitHub does not build the branch as pushed: it builds a temporary merge
+                # of the branch into its base, and THAT is what `actions/checkout` gives
+                # the job and what the tests ran against. So the checkout is expected to
+                # differ from the head — but not arbitrarily. A merge of this branch
+                # CONTAINS this branch, which is a real relation the harness can verify
+                # first-hand from the commit graph in its own checkout, with no
+                # credential and no network. Containment accepts the merge commit and
+                # still rejects an artifact naming an unrelated revision.
+                ancestry = git_ancestry(
+                    run["head_revision"], actual, repo=self._repo_root, runner=self._git_runner
+                )
+                self._ancestry.append(
+                    {"subject": f"the CI gate {gate!r} head", "component": "ci_checkout", **ancestry.to_evidence()}
+                )
+                if not ancestry.available:
+                    raise PrerequisiteMissingError(
+                        f"the CI gate {gate!r}: the harness could not establish whether the run's head "
+                        f"{run['head_revision']} is contained in the revision its job checked out "
+                        f"{actual}: {ancestry.reason}. On a pull_request run the job builds a merge "
+                        "commit, so containment is the relation to check — and a checkout that cannot "
+                        "answer is an unrun check, never a pass"
+                    )
+                if not ancestry.is_ancestor:
+                    raise AssertionError(
+                        f"the CI gate {gate!r} archives a pull_request run whose head is "
+                        f"{run['head_revision']!r}, but its job checked out {actual!r}, which does not "
+                        "contain that head. A pull_request job builds a merge of the head into its base, "
+                        "and such a merge contains the head; a revision that does not is not this run's "
+                        "checkout"
+                    )
+                # On a pull_request run `GITHUB_SHA` is that same merge commit, so the
+                # step's own `workflow_ref_sha` must equal what it checked out. Checked
+                # for the same reason as the manual case below: the field was parsed and
+                # then discarded, so an artifact could name any workflow ref at all.
+                if checkout["workflow_ref_sha"] != actual:
+                    raise AssertionError(
+                        f"the CI gate {gate!r} archives a pull_request run whose job checked out "
+                        f"{actual!r} but recorded workflow_ref_sha {checkout['workflow_ref_sha']!r}. On a "
+                        "pull_request run GITHUB_SHA is the merge commit the job built, so the two are "
+                        "the same value and a disagreement means the artifact is not this job's record"
+                    )
+            elif checkout["event_name"] == "workflow_dispatch":
+                # On a manual run `headSha` names the ref the WORKFLOW FILE was loaded
+                # from, which is exactly what the step records as `workflow_ref_sha`. So
+                # the two are checkable against each other — this is the binding that was
+                # parsed, shape-validated and then discarded, which let an artifact name
+                # any workflow ref at all. The tested revision still comes only from
+                # `checked_out_revision`.
+                if checkout["workflow_ref_sha"] != run["head_revision"]:
+                    raise AssertionError(
+                        f"the CI gate {gate!r} archives a workflow_dispatch run whose head is "
+                        f"{run['head_revision']!r}, but the job recorded workflow_ref_sha "
+                        f"{checkout['workflow_ref_sha']!r}. On a manual run those are the same value — "
+                        "the ref the workflow file was loaded from — so a disagreement means the run "
+                        "document and the artifact describe different runs"
+                    )
+            elif actual != run["head_revision"]:
+                # Every other trigger (`push`, `schedule`, …) checks out the run's head
+                # directly, so equality is the correct relation and is kept.
+                raise AssertionError(
+                    f"the CI gate {gate!r} archives a {checkout['event_name']!r} run whose head is "
+                    f"{run['head_revision']!r} but whose job checked out {actual!r}. On that trigger the "
+                    "job checks out the run's head, so a mismatch means the run document and the "
+                    "artifact describe different runs"
+                )
+
+        # --- (4) fixture scope, check inventory and teardown readiness ---------
+        # This artifact must describe THIS fixture. Checked here rather than left
+        # implicit because every observation above is otherwise satisfiable by a
+        # complete, internally consistent record from a previous run.
+        self._assert_fixture_identity(preflight, "wave2_preflight", self.config)
+        self._assert_creation_ledger(preflight["creation_ledger"])
+        if preflight["isolation_before_listener"] is not True:
+            raise AssertionError(
+                "isolation was not recorded as existing before listener start; DP-INV-1 requires the "
+                "ingress policy to be applied BEFORE any enabled listener, and the reverse order means "
+                "the fixture was briefly reachable while enabled"
+            )
+        if preflight["ordinary_flags_off"] is not True:
+            raise AssertionError(
+                "ordinary gateway/worker/SPA control flags were not recorded as false; the flag may be "
+                "enabled only in the isolated fixture (DP-INV-1)"
+            )
+        scope = preflight["fixture_only_flag_scope"]
+        if not isinstance(scope, dict):
+            raise AssertionError(f"'fixture_only_flag_scope' must be an object, got {scope!r}")
+        if scope.get("enabled_in_fixture") is not True:
+            raise AssertionError(
+                "the control flag is not recorded as enabled in the fixture; wave 2's checks are about an "
+                "enabled control path, so a flag-off fixture cannot produce this wave's evidence"
+            )
+        # The other direction, and the one that matters for DP-INV-1: enabled
+        # NOWHERE ELSE. A count is required rather than a boolean, because
+        # "enabled_elsewhere: false" is the claim and an enumerated empty list is
+        # the evidence for it.
+        elsewhere = scope.get("enabled_elsewhere")
+        if not isinstance(elsewhere, list):
+            raise AssertionError(
+                f"'fixture_only_flag_scope.enabled_elsewhere' must be a list of every other environment "
+                f"the flag was found enabled in, got {elsewhere!r}. A boolean cannot be audited; an "
+                "enumerated empty list can"
+            )
+        if elsewhere:
+            raise AssertionError(
+                f"the control flag is enabled outside the fixture, in {sorted(map(str, elsewhere))}. "
+                "DP-INV-1 permits it only in an operator-created isolated test fixture — this is the "
+                "invariant the whole evaluation is conditioned on"
+            )
+        fixture_environment = scope.get("fixture_environment")
+        if fixture_environment != self.config.get("environment"):
+            raise AssertionError(
+                f"the flag was enabled in environment {fixture_environment!r} but this run targets "
+                f"{self.config.get('environment')!r}; the preflight is describing a different fixture "
+                "than the one under evaluation"
+            )
+
+        # The wave's own completeness. Self-referential deliberately: a future
+        # revision that drops a check would otherwise produce a short wave whose
+        # every present check passes.
+        expected = {spec.check_id for spec in WAVE2_CHECKS}
+        if emitted_ids and set(emitted_ids) != expected:
+            raise AssertionError(
+                f"the wave's check inventory is not exactly evaluation #{WAVE_EVALUATIONS[2]}'s table: "
+                f"missing {sorted(expected - set(emitted_ids))}, unexpected "
+                f"{sorted(set(emitted_ids) - expected)}. A short wave whose present checks all pass is "
+                "the failure this assertion exists for"
+            )
+
+        # Teardown must be CONFIGURED before anything is seeded — W2-10 verifies it
+        # ran, and this is the half that has to be true at preflight time. A
+        # fixture seeded without a declared teardown is one the harness cannot
+        # clean up, and §7 forbids reaching for a scan to compensate.
+        items = self.config.get("cleanup_items") or []
+        if not items:
+            raise AssertionError(
+                "no 'cleanup_items' are declared, so the synthetic rows this wave seeds could not be "
+                "removed by exact key afterwards. Cleanup is bounded to declared pairs by design — there "
+                "is no scan to fall back on — so an undeclared row is one that survives the evaluation"
+            )
+        for item in items:
+            if not isinstance(item, dict) or not item.get("event_id") or not item.get("arrived_at"):
+                raise AssertionError(
+                    f"cleanup item {item!r} does not carry BOTH event_id and arrived_at. A delete keyed "
+                    "on the partition key alone could match an unrelated item, so the harness refuses it "
+                    "at teardown — declaring it here is what makes the refusal a preflight failure "
+                    "instead of a surprise after the fixture exists"
+                )
+        # Every synthetic row this wave seeds must be covered. The unknown run ID
+        # is deliberately NOT required: it names a row that must not exist, so
+        # "cleaning" it would mean deleting something the harness never created.
+        seeded = {
+            key: self.config.get(key)
+            for key in ("live_run_id", "terminal_run_id", "aborted_run_id")
+            if self.config.get(key)
+        }
+        covered = {str(item.get("event_id")) for item in items}
+        uncovered = sorted(
+            f"{key}={value}" for key, value in seeded.items() if str(value) not in covered
+        )
+        if uncovered:
+            raise AssertionError(
+                f"these seeded fixture rows are not covered by 'cleanup_items': {uncovered}. A row left "
+                "behind is a fixture left in the state DP-INV-1 forbids"
+            )
+
     # ---- W2-02 ---------------------------------------------------------
 
     def check_w2_02(self) -> None:
@@ -1812,12 +3970,7 @@ class Driver:
                 f"two adapters' normalized outcome accounting differs: {first!r} vs {second!r}. The "
                 "shared writers and readers must not be able to tell which harness produced a run"
             )
-        if neutrality["native_interrupt_status"] == ABORTED_STATUS:
-            raise AssertionError(
-                "a native interrupted turn with no confirmed ADP abort finalization was recorded as "
-                f"{ABORTED_STATUS!r}. Only a confirmed abort finalization may carry this status; "
-                "pattern-matching a provider's interrupt string is the specific error forbidden here"
-            )
+        self._assert_native_interrupt_outcome(neutrality["native_interrupt_status"])
         if neutrality["shared_code_imports_sdk"] is not False:
             raise AssertionError(
                 "the shared writer/reader path was recorded as importing a provider SDK; the shared "
@@ -2473,6 +4626,574 @@ class Driver:
                 "left unresolved and the aborting run cannot finish cleanly"
             )
 
+    # ---- W2-10 ---------------------------------------------------------
+
+    def check_w2_10(
+        self,
+        *,
+        cleanup: CleanupOutcome | None = None,
+        capture: SecurityCapture | None = None,
+        teardown: ResourceTeardown | None = None,
+        emitted_ids: tuple[str, ...] = (),
+    ) -> None:
+        """Verified teardown, and the security posture observed while it was possible.
+
+        This check runs AFTER `run_cleanup`, which is what makes it a verification
+        rather than a claim. The distinction is the whole point: a predicate that
+        ran with the other nine would necessarily execute before the deletions it
+        describes, so the only thing it could assert is that an operator *said*
+        cleanup would work. `cleanup` here is the harness's own first-hand record —
+        the pairs it issued DeleteItem for, whether it had both key halves, and
+        what the confirming consistent read returned.
+
+        So there is no input to this check that reports a successful teardown
+        without one having happened. `cleanup=None` means cleanup did not run, which
+        is `not_run` (nonzero), never a pass. A recorded failure is a failure.
+
+        **Capture then verify.** The security half is observed BEFORE teardown
+        (`capture`, taken by `main` while the fixture still exists) and only absence
+        is verified after it. This ordering is a correction, not a preference: an
+        earlier revision made its live capability reads after teardown, against a run
+        whose row teardown had just deleted, so a real gateway's not-found made a
+        CORRECT teardown report NOT RUN — the wave could never pass. No removed
+        resource is required to answer here. Nor is a not-found accepted AS the pass:
+        row absence is established by the harness's own consistent read, and resource
+        absence by reconciling against the preflight's creation ledger.
+
+        The security observations exist because teardown is a plausible moment to
+        quietly relax something: a probe pod left running, an
+        ingress policy dropped along with the fixture, or an unsupported verb
+        switched on to get something to pass. Those are in-cluster facts, so they
+        arrive as an operator artifact — but the unsupported-verb claim is ALSO
+        compared against the harness's own pre-teardown live reads, so the recording
+        and the deployment have to agree.
+        """
+        # --- (1) the harness's own deletion record ----------------------------
+        if cleanup is None:
+            raise PrerequisiteMissingError(
+                "the cleanup record is absent, so this check cannot confirm the teardown actually "
+                "happened. W2-10 is verified against the harness's own DeleteItem/consistent-read record "
+                "rather than an operator assertion, and a missing record is NOT RUN — treating it as a "
+                "pass is exactly the false green this check exists to prevent"
+            )
+        if not cleanup.ok:
+            raise AssertionError(
+                f"cleanup did not complete: {'; '.join(cleanup.notes) or 'no detail recorded'}. A fixture "
+                "left with rows present is the state DP-INV-1 forbids, and this check must never pass "
+                "before cleanup has actually succeeded"
+            )
+        if cleanup.declared_items <= 0 or not cleanup.deletions:
+            raise AssertionError(
+                f"the cleanup record covers {cleanup.declared_items} declared row(s) and "
+                f"{len(cleanup.deletions)} deletion(s). Wave 2 seeds synthetic invocations, so an empty "
+                "teardown record means either they were never removed or they were never declared — and "
+                "an empty record would make every per-row assertion below vacuously true"
+            )
+        if len(cleanup.deletions) != cleanup.declared_items:
+            raise AssertionError(
+                f"{cleanup.declared_items} row(s) were declared for cleanup but {len(cleanup.deletions)} "
+                "were acted on; a declared row with no deletion record is one nobody can account for"
+            )
+        for deletion in cleanup.deletions:
+            if not deletion.both_keys_present:
+                raise AssertionError(
+                    f"row {deletion.event_id!r}/{deletion.arrived_at!r} was not removed using BOTH "
+                    "event_id and arrived_at. A delete keyed on the partition key alone could match an "
+                    "unrelated item, which is deleting an ordinary row — explicitly forbidden"
+                )
+            if not deletion.deleted or not deletion.confirmed_absent:
+                raise AssertionError(
+                    f"row {deletion.event_id!r}/{deletion.arrived_at!r} is not confirmed absent "
+                    f"(deleted={deletion.deleted}, confirmed_absent={deletion.confirmed_absent}, "
+                    f"error={deletion.error!r}). Absence is established by a CONSISTENT read: an "
+                    "eventually-consistent one can report an item gone before it is"
+                )
+        # Bounded to exactly the declared synthetic rows. Asserted here as well as
+        # in `run_cleanup` because this is the check the evaluation reads: the
+        # record must not contain a row the config never declared, which is what a
+        # scan-and-delete would produce.
+        declared = {
+            (str(item.get("event_id")), str(item.get("arrived_at")))
+            for item in (self.config.get("cleanup_items") or [])
+        }
+        acted = {(deletion.event_id, deletion.arrived_at) for deletion in cleanup.deletions}
+        unexpected = sorted(acted - declared)
+        if unexpected:
+            raise AssertionError(
+                f"the teardown removed rows that the fixture config never declared: {unexpected}. "
+                "Cleanup must be bounded to declared pairs — no scan, no prefix, no wildcard — so an "
+                "undeclared deletion means an ordinary row was reachable"
+            )
+        # The unknown run ID names a row that must NOT exist. Deleting it would mean
+        # the harness removed something it never created.
+        unknown = self.config.get("unknown_run_id")
+        if unknown and any(deletion.event_id == str(unknown) for deletion in cleanup.deletions):
+            raise AssertionError(
+                f"the teardown deleted {unknown!r}, which is the 'unknown' run ID: it names a row that "
+                "must not exist, so deleting it means the harness removed an object it did not create"
+            )
+
+        # --- (2) the security observations captured BEFORE teardown ------------
+        # Ordering is the whole correction here. An earlier revision asked the live
+        # deployment "do you still refuse the unimplemented verbs?" AFTER teardown,
+        # about a run whose row teardown had just deleted — so a CORRECT teardown
+        # produced a not-found and this check reported NOT RUN, which is the defect
+        # that made wave 2 unpassable. A removed resource must never be required to
+        # answer.
+        #
+        # So the live capability reads happen while the fixture still exists
+        # (`capture_security_observations`, called by `main` before `run_cleanup`), and
+        # what arrives here is that first-hand record plus the operator's in-cluster
+        # half. Absent capture is NOT RUN, never a pass.
+        if capture is None:
+            raise PrerequisiteMissingError(
+                "the pre-teardown security capture is absent, so the deployed capability surface was "
+                "never observed while the fixture existed. These observations cannot be made after "
+                "teardown — the resources are gone by then — so this is NOT RUN rather than a pass"
+            )
+        if not capture.ok:
+            raise AssertionError(
+                f"the pre-teardown security capture did not complete: "
+                f"{'; '.join(capture.notes) or 'no detail recorded'}. Without it the wave has no evidence "
+                "about the capability surface of the build it evaluated"
+            )
+        capture_artifact = self._artifact("security_capture")
+        if capture_artifact["captured_before_teardown"] is not True:
+            raise AssertionError(
+                f"'security_capture.captured_before_teardown' is "
+                f"{capture_artifact['captured_before_teardown']!r}. These observations are only meaningful "
+                "if they were taken while the fixture was still running; recorded after teardown they "
+                "describe an environment that no longer existed"
+            )
+        capture_run = self._assert_fixture_identity(
+            capture_artifact, "security_capture", self.config
+        )
+        if capture_run != capture.run_id:
+            raise AssertionError(
+                f"the security capture artifact describes run {capture_run!r} but this run is "
+                f"{capture.run_id!r}; observations from another run are not this evaluation's evidence"
+            )
+
+        # The capture must be bound to what was actually DEPLOYED, per component.
+        # An earlier revision compared it against one story's historical merge commit,
+        # which a correct (newer) deployment does not equal — so it failed correct
+        # deployments and implicitly demanded redeploying an old merge. The right
+        # subject is the running build.
+        try:
+            preflight = self._artifact("wave2_preflight")
+        except (PrerequisiteMissingError, AssertionError):
+            # W2-01 owns that failure and reports it. Not re-raised here: two checks
+            # failing for one missing artifact would double-count a single defect.
+            preflight = {}
+        deployed_entries = preflight.get("deployed_components")
+        expected_identity = {}
+        if isinstance(deployed_entries, dict):
+            for component in WAVE2_DEPLOYED_COMPONENTS:
+                entry = deployed_entries.get(component)
+                if isinstance(entry, dict):
+                    expected_identity[component] = {
+                        "revision": entry.get("revision"),
+                        "image_digest": entry.get("image_digest"),
+                    }
+        observed = capture_artifact["observed_revisions"]
+        if not isinstance(observed, dict):
+            raise AssertionError(
+                f"'security_capture.observed_revisions' must be an object keyed by component, got "
+                f"{observed!r}. A security observation that cannot be tied to the build it was made "
+                "against is a true statement about an unknown subject"
+            )
+        for component, expected in sorted(expected_identity.items()):
+            entry = observed.get(component)
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"the security capture records no observed revision/digest for the {component!r} "
+                    f"component ({entry!r}); it must name what it observed, per component"
+                )
+            for key in ("revision", "image_digest"):
+                if expected.get(key) and entry.get(key) != expected.get(key):
+                    raise AssertionError(
+                        f"the security capture observed {component!r} {key} {entry.get(key)!r}, but "
+                        f"the preflight records the DEPLOYED {key} as {expected.get(key)!r}. "
+                        "Observing a different build is the stale-evidence case: it was a true "
+                        "observation, just not of this deployment"
+                    )
+
+        if capture_artifact["isolation_present"] is not True:
+            raise AssertionError(
+                f"isolation was not recorded as present while the fixture was running "
+                f"({capture_artifact['isolation_present']!r}); DP-INV-1 requires it for as long as "
+                "anything control-enabled exists"
+            )
+        if capture_artifact["ordinary_flags_off"] is not True:
+            raise AssertionError(
+                "ordinary gateway/worker/SPA control flags were not recorded as off during the capture; "
+                "the flag must not have spread beyond the fixture during the evaluation"
+            )
+        if capture_artifact["general_flag_enablement"] is not False:
+            raise AssertionError(
+                f"'security_capture.general_flag_enablement' is "
+                f"{capture_artifact['general_flag_enablement']!r}: the evaluation must not have enabled "
+                "the control flag generally. Widening the flag to make a check pass is the specific "
+                "shortcut this assertion forbids"
+            )
+
+        # Wave 1's security properties, re-observed rather than assumed to persist.
+        # Named individually: these are separate guarantees with separate failure
+        # modes, and #5029's authorization-at-handoff is called out explicitly
+        # because it is the one a pause/resume implementation could plausibly have
+        # relaxed.
+        security = capture_artifact["wave1_security"]
+        if not isinstance(security, dict):
+            raise AssertionError(f"'wave1_security' must be an object, got {security!r}")
+        required_properties = (
+            "unauthenticated_rejected",
+            "cross_tenant_indistinguishable",
+            "nonowner_indistinguishable",
+            "transport_targets_blocked",
+            "no_token_in_public_state",
+            "admission_authorization_preserved",
+            "delivery_authorization_preserved",
+        )
+        absent = [name for name in required_properties if name not in security]
+        if absent:
+            raise AssertionError(
+                f"the wave-1 security recheck records no result for {absent}; an unrecorded property is "
+                "one nobody re-observed, and these are exactly the guarantees a new control verb could "
+                "have relaxed"
+            )
+        failed = sorted(name for name in required_properties if security[name] is not True)
+        if failed:
+            raise AssertionError(
+                f"wave-1 security properties did not hold on the current revision: {failed}. #5029 "
+                "requires admission and delivery authorization to be revalidated immediately before "
+                "physical handoff, and pause/resume is precisely the code path that could have moved that "
+                "revalidation earlier"
+            )
+
+        # --- (3) unsupported verbs and adapters: recorded AND live-observed ------
+        # The recorded claim, then the harness's OWN live reads from the capture. Either
+        # alone is weaker: the artifact describes what the operator probed, and the
+        # capture is what the deployment answered the harness while it was running.
+        unsupported = capture_artifact["unsupported_verbs"]
+        if not isinstance(unsupported, dict) or not unsupported:
+            raise AssertionError(
+                f"'unsupported_verbs' must be a nonempty object mapping each unimplemented verb to the "
+                f"status it returned, got {unsupported!r}"
+            )
+        wrong = sorted(
+            f"{verb}={status!r}" for verb, status in unsupported.items() if status != 501
+        )
+        if wrong:
+            raise AssertionError(
+                f"unsupported verbs did not answer 501: {wrong}. An authorized request for a verb this "
+                "build does not implement must be refused as unimplemented — any other status means it "
+                "was either enabled or is failing for a different reason"
+            )
+        capabilities_claim = capture_artifact["unsupported_adapter_capabilities"]
+        if not isinstance(capabilities_claim, dict) or not capabilities_claim:
+            raise AssertionError(
+                f"'unsupported_adapter_capabilities' must be a nonempty object, got {capabilities_claim!r}"
+            )
+        enabled_claim = sorted(
+            verb for verb, value in capabilities_claim.items() if value is not False
+        )
+        if enabled_claim:
+            raise AssertionError(
+                f"these unsupported adapter capabilities are not recorded as false: {enabled_claim}"
+            )
+
+        # The harness's own live reads, taken pre-teardown. Both adapters must have
+        # been reached: a capture covering one edge cannot speak for the other, which
+        # is the whole reason there are two path templates.
+        captured_adapters = {entry.adapter for entry in capture.adapters}
+        missing_adapters = sorted(set(ADAPTERS) - captured_adapters)
+        if missing_adapters:
+            raise AssertionError(
+                f"the pre-teardown capture did not observe the {missing_adapters} adapter edge(s). The two "
+                "edges share one control service, so a capture of only one of them cannot establish that "
+                "they did not drift"
+            )
+        for entry in capture.adapters:
+            if entry.status != 200 or entry.error:
+                raise AssertionError(
+                    f"{entry.adapter}: the pre-teardown capability read returned status {entry.status!r} "
+                    f"(error={entry.error!r}). This read happens while the fixture is still running, so a "
+                    "non-200 here is the deployment failing to answer rather than a torn-down fixture"
+                )
+            if not entry.capabilities:
+                raise AssertionError(
+                    f"{entry.adapter}: the pre-teardown state read carried no capabilities object, so the "
+                    "deployed capability surface was not observed"
+                )
+            for verb, recorded_status in sorted(unsupported.items()):
+                if entry.capabilities.get(verb) is not False:
+                    raise AssertionError(
+                        f"{entry.adapter}: the deployed capability map reported {verb!r} as "
+                        f"{entry.capabilities.get(verb)!r}, but the recheck records it as unsupported. The "
+                        "recording and the deployment disagree, and the deployment is what the next "
+                        "operator inherits"
+                    )
+                # The harness's own authorized attempt, not just the advertised map.
+                # A capability map is a claim the deployment makes about itself; the
+                # status it returns when the verb is actually POSTed is what a caller
+                # would get. An enabled-but-still-advertised-false verb is exactly the
+                # quiet relaxation this half of the check exists to catch, and only the
+                # attempt can see it.
+                observed_status = entry.refusals.get(verb)
+                if verb not in entry.refusals:
+                    raise AssertionError(
+                        f"{entry.adapter}: the pre-teardown capture made no authorized attempt at the "
+                        f"unsupported verb {verb!r}, so nothing observed how the deployment answers it. "
+                        "The advertised capability map alone is the deployment's own claim about itself"
+                    )
+                if observed_status != recorded_status:
+                    raise AssertionError(
+                        f"{entry.adapter}: an authorized owner's {verb!r} returned {observed_status!r} "
+                        f"live, but the recheck records {recorded_status!r}. The harness's own observation "
+                        "and the operator's recording describe different deployments"
+                    )
+
+        # --- (4) what teardown ACHIEVED: absence, against the creation ledger ----
+        # Only absence is asked for after teardown, because absence is the only thing
+        # teardown is supposed to produce. Nothing here requires a removed resource to
+        # respond.
+        # The harness's own record of INVOKING the fixture's teardown. Asserted BEFORE
+        # the artifact is read, because it is what makes reading the artifact
+        # meaningful at all: without this step the published command captured state,
+        # deleted rows, and then read a file already declaring the pods and queues
+        # gone — so no sequential operator run could have produced that file honestly
+        # at that point, and the only way to have it was to write it beforehand.
+        if teardown is None or not teardown.configured:
+            raise PrerequisiteMissingError(
+                "the fixture config declares no 'resource_teardown' command, so the harness never tore "
+                "the fixture's resources down between observing them and verifying their absence. The "
+                "absence observations below would necessarily predate the removal they describe, which "
+                "is the prefilled-absence artifact this check must refuse — NOT RUN, not a pass"
+            )
+        if not teardown.invoked:
+            raise AssertionError(
+                f"the resource teardown was declared but not invoked: "
+                f"{'; '.join(teardown.notes) or 'no detail recorded'}"
+            )
+        if not teardown.ok:
+            raise AssertionError(
+                f"the fixture's resource teardown failed (exit {teardown.exit_code!r}): "
+                f"{'; '.join(teardown.notes) or 'no detail recorded'}. Its resources are not established "
+                "as removed, and this check must never pass before teardown has actually succeeded"
+            )
+
+        verification = self._artifact("teardown_verification")
+        # Freshness, established first-hand rather than read out of the artifact. The
+        # seam digested this file immediately before invoking teardown; if the bytes
+        # are identical now, the observations inside it were recorded before the
+        # removal they describe. That is the prefilled-absence artifact, and no field
+        # the artifact carries could rule it out — a `captured_at` is a string written
+        # by the same hand as the absence claims.
+        after_digest = file_digest(self.artifacts.resolve("teardown_verification"))
+        if (
+            teardown.verification_present_before
+            and after_digest is not None
+            and after_digest == teardown.verification_digest_before
+        ):
+            raise AssertionError(
+                "the post-teardown absence artifact is byte-for-byte unchanged across the resource "
+                f"teardown the harness invoked ({teardown.verification_digest_before}). It therefore "
+                "records state observed BEFORE the removal it describes: a prefilled absence "
+                "artifact. The fixture's teardown has to write these observations as part of tearing "
+                "down, because 'the resources are gone' is only checkable after they have gone"
+            )
+        # The absence observations must also be DATED after the teardown, which catches
+        # a rewritten-but-backdated file the digest comparison alone would accept.
+        captured_at = _parse_timestamp(verification.get("captured_at"))
+        if captured_at is None:
+            raise AssertionError(
+                f"'teardown_verification.captured_at' is {verification.get('captured_at')!r}, not a "
+                "parseable ISO-8601 instant, so the absence observations cannot be placed relative to the "
+                f"teardown the harness ran ({teardown.started_at!r} → {teardown.finished_at!r}). An "
+                "artifact that cannot be dated cannot be shown to postdate the removal it describes"
+            )
+        # Against the teardown's START, not its finish. The honest producer of this
+        # artifact is the teardown command itself — it removes the resources, then
+        # records their absence, then exits — so a correct `captured_at` falls INSIDE
+        # the window and requiring it to postdate `finished_at` would reject exactly
+        # the lifecycle being asked for. What it must not do is predate the teardown
+        # entirely, which is the backdated file the digest check would otherwise miss.
+        started_at = _parse_timestamp(teardown.started_at)
+        if started_at is not None and captured_at < started_at:
+            raise AssertionError(
+                f"the absence observations are dated {verification.get('captured_at')!r}, before the "
+                f"fixture's resource teardown even began at {teardown.started_at!r}. Observations recorded "
+                "before the removal describe the fixture while it still existed — a prefilled absence "
+                "artifact, which is what this check refuses"
+            )
+        if verification["verified_after_teardown"] is not True:
+            raise AssertionError(
+                f"'teardown_verification.verified_after_teardown' is "
+                f"{verification['verified_after_teardown']!r}; absence observations recorded before "
+                "teardown would describe the fixture while it still existed"
+            )
+        verify_run = self._assert_fixture_identity(
+            verification, "teardown_verification", self.config
+        )
+        if verify_run != capture_run:
+            raise AssertionError(
+                f"the teardown verification describes run {verify_run!r} but the security capture "
+                f"describes {capture_run!r}; the two halves must be about the same fixture run"
+            )
+        # Baseline isolation, NOT the fixture's own policies. These are different
+        # objects with opposite lifecycles, and an earlier revision conflated them into
+        # one `isolation_present: true` — which made this check unsatisfiable alongside
+        # ledger reconciliation: the fixture's NetworkPolicies are ledger resources, so
+        # either a policy was left behind (leaking) or it was removed and isolation was
+        # no longer "present". What must survive the fixture is the environment's
+        # persistent baseline isolation; what must be gone is every policy this fixture
+        # created.
+        if verification["baseline_isolation_present"] is not True:
+            raise AssertionError(
+                f"the environment's persistent baseline isolation is not recorded as still present after "
+                f"teardown ({verification['baseline_isolation_present']!r}). Teardown must remove the "
+                "fixture's OWN policies without taking the baseline with them: DP-INV-1 requires the "
+                "environment to stay isolated after the fixture is gone, and this is the namespace-level "
+                "isolation that belongs to the environment rather than to this run"
+            )
+        if verification["ordinary_flags_off"] is not True:
+            raise AssertionError(
+                "ordinary gateway/worker/SPA control flags were not recorded as off at verification time"
+            )
+        if verification["general_flag_enablement"] is not False:
+            raise AssertionError(
+                f"'teardown_verification.general_flag_enablement' is "
+                f"{verification['general_flag_enablement']!r}: the evaluation must not leave the control "
+                "flag generally enabled"
+            )
+
+        # Reconciliation against the ledger, in BOTH directions. This is what makes
+        # completeness a property of what was created rather than of what someone
+        # remembered to list: an earlier revision took a caller-keyed map of names to
+        # booleans, so omitting a leaked workload passed.
+        ledger = {}
+        if isinstance(preflight.get("creation_ledger"), list):
+            try:
+                ledger = self._assert_creation_ledger(preflight["creation_ledger"])
+            except AssertionError:
+                # W2-01 owns and reports a malformed ledger; failing here too would
+                # double-count one defect. An unusable ledger still cannot silently
+                # become an empty one, so the emptiness check below catches it.
+                ledger = {}
+        if not ledger:
+            raise PrerequisiteMissingError(
+                "the preflight's creation ledger is unavailable, so teardown completeness cannot be "
+                "measured against what the fixture actually created. Removal evidence alone only covers "
+                "the resources it happens to mention, which is exactly how a leaked resource passes"
+            )
+        removals = verification["removals"]
+        if not isinstance(removals, list) or not removals:
+            raise AssertionError(
+                f"'teardown_verification.removals' must be a nonempty list of absence observations, got "
+                f"{removals!r}"
+            )
+        observed_identities: dict[str, dict] = {}
+        for removal in removals:
+            if not isinstance(removal, dict):
+                raise AssertionError(
+                    f"removal observation {removal!r} must be an object carrying "
+                    f"{list(LEDGER_REMOVAL_KEYS)}"
+                )
+            missing = [key for key in LEDGER_REMOVAL_KEYS if key not in removal]
+            if missing:
+                raise AssertionError(
+                    f"removal observation {removal!r} is missing {sorted(missing)}. 'observed_by' records "
+                    "HOW absence was established, without which the claim is not an observation"
+                )
+            identity = str(removal["identity"])
+            if identity not in ledger:
+                raise AssertionError(
+                    f"the teardown recorded the removal of {identity!r}, which the creation ledger does "
+                    "not contain. Removing something this fixture did not create means an unrelated "
+                    "resource was in reach of teardown"
+                )
+            if not removal.get("observed_by"):
+                raise AssertionError(
+                    f"the removal of {identity!r} records no 'observed_by'; absence has to be established "
+                    "by an actual read, and an unattributed claim is the assertion this check replaced"
+                )
+            observed_identities[identity] = removal
+        # Every created resource accounted for. The direction that matters: a leaked
+        # resource is one with no absence observation, and only the ledger knows it
+        # exists.
+        unaccounted = sorted(
+            f"{entry.get('kind')}/{entry.get('name')} ({identity})"
+            for identity, entry in ledger.items()
+            if identity not in observed_identities
+        )
+        if unaccounted:
+            raise AssertionError(
+                f"these created fixture resources have no post-teardown absence observation: "
+                f"{unaccounted}. A resource nobody looked for is how a control-enabled workload outlives "
+                "its evaluation"
+            )
+        still_present = sorted(
+            f"{ledger[identity].get('kind')}/{ledger[identity].get('name')} ({identity})"
+            for identity, removal in observed_identities.items()
+            if removal.get("absent") is not True
+        )
+        if still_present:
+            raise AssertionError(
+                f"these fixture resources were still present after teardown: {still_present}. A fixture "
+                "workload left running is a control-enabled pod outliving its evaluation"
+            )
+        # The ordering WITHIN teardown, now that every removal is reconciled to a
+        # ledger entry that says what kind of resource it was.
+        self._assert_listener_died_before_policies(ledger, observed_identities)
+
+        # --- (5) the deleted row must not still read as live ---------------------
+        # A best-effort corroboration, deliberately asymmetric, and the asymmetry is
+        # the point. The authoritative absence evidence is the consistent read in (1);
+        # this read cannot CREATE a pass, because after teardown the fixture gateway is
+        # itself supposed to be gone and an unreachable or not-found edge is the
+        # expected outcome. What it can do is FAIL: a gateway still serving the deleted
+        # run as live contradicts the deletion record, and a contradiction between two
+        # observations is a finding rather than something to average out.
+        #
+        # This is also why a not-found is never relabelled as the pass. It is
+        # consistent with a correct teardown and equally consistent with a fixture
+        # that never existed, so on its own it distinguishes nothing.
+        live = self.config.get("live_run_id")
+        deleted_live = live and any(
+            deletion.event_id == str(live) and deletion.confirmed_absent
+            for deletion in cleanup.deletions
+        )
+        if deleted_live:
+            owner_token = (self.config.get("identity_env") or {}).get("owner")
+            token = os.environ.get(owner_token) if owner_token else None
+            if token:
+                for adapter, paths in ADAPTERS.items():
+                    state = self.probe.request(
+                        "GET", paths["state"].format(run_id=live), role="owner", token=token
+                    )
+                    if state.status != 200:
+                        # Expected: the row is gone, and so may be the fixture edge.
+                        continue
+                    body = self._body_of(state)
+                    if body.get("available") is True or body.get("state") == "running":
+                        raise AssertionError(
+                            f"{adapter}: after teardown the gateway still reports the deleted run "
+                            f"{live!r} as live (available={body.get('available')!r}, "
+                            f"state={body.get('state')!r}), but the harness's consistent read confirmed "
+                            "the row absent. The deployment and the deletion record disagree"
+                        )
+
+        # The wave's inventory again, at the other end of the run. W2-01 asserts it
+        # before the checks; asserting it here too is what makes "all ten answered"
+        # a property of the REPORT rather than of the manifest constant.
+        expected = {spec.check_id for spec in WAVE2_CHECKS}
+        if emitted_ids and set(emitted_ids) != expected:
+            raise AssertionError(
+                f"the result does not carry exactly evaluation #{WAVE_EVALUATIONS[2]}'s check IDs: "
+                f"missing {sorted(expected - set(emitted_ids))}, unexpected "
+                f"{sorted(set(emitted_ids) - expected)}"
+            )
+
 
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
@@ -2489,10 +5210,14 @@ WAVE1_PREDICATES: dict[str, str] = {
     "W1-10": "check_w1_10",
 }
 
-# S3 provides W2-02, S2 provides W2-03..05 and S5 provides W2-06..09. W2-01 and
-# W2-10 retain named NOT RUN results until their implementation and live evidence
-# land — see PENDING_CHECK_OWNERS.
+# S3 provides W2-02, S2 provides W2-03..05 and S5 provides W2-06..09. W2-01 (the
+# consolidated preflight) and W2-10 (verified cleanup and the security recheck)
+# are delivered by #5825, which closes the last gap that made a complete wave-2
+# report unreachable. Every ID in the manifest now has a predicate, so
+# PENDING_CHECK_OWNERS is empty for this wave — a NOT RUN from here on names a
+# missing *input*, not a missing implementation.
 WAVE2_PREDICATES: dict[str, str] = {
+    "W2-01": "check_w2_01",
     "W2-02": "check_w2_02",
     "W2-03": "check_w2_03",
     "W2-04": "check_w2_04",
@@ -2501,12 +5226,67 @@ WAVE2_PREDICATES: dict[str, str] = {
     "W2-07": "check_w2_07",
     "W2-08": "check_w2_08",
     "W2-09": "check_w2_09",
+    "W2-10": "check_w2_10",
 }
 
 CHECK_PREDICATES: dict[str, str] = {**WAVE1_PREDICATES, **WAVE2_PREDICATES}
 
+# Checks whose subject is the teardown itself, so they can only be answered after
+# `run_cleanup` has run. Keeping this as an explicit set rather than a naming
+# convention means adding a post-cleanup check is a deliberate edit here, and a
+# test pins that every member has a predicate — a post-cleanup check that silently
+# never ran would be the worst of both worlds.
+POST_CLEANUP_CHECK_IDS: frozenset[str] = frozenset({"W2-10"})
 
-def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> list[CheckResult]:
+# Predicates that need the cleanup record passed in. Distinct from
+# POST_CLEANUP_CHECK_IDS only in principle (a check could run after cleanup
+# without reading it), but named separately so the argument plumbing is explicit
+# rather than inferred from ordering.
+CLEANUP_AWARE_CHECK_IDS: frozenset[str] = POST_CLEANUP_CHECK_IDS
+
+# Predicates that need the PRE-teardown security capture. Separate from the cleanup
+# record because the two are taken at opposite sides of the teardown boundary, and
+# conflating them is what produced the defect where a post-teardown check needed a
+# deleted resource to answer.
+CAPTURE_AWARE_CHECK_IDS: frozenset[str] = frozenset({"W2-10"})
+
+# Predicates that need the harness's record of INVOKING the fixture's resource
+# teardown. Separate from the cleanup record because they are different steps with
+# different owners: `run_cleanup` deletes rows the harness itself declared, while the
+# resource teardown is the operator's own command that removes pods, queues and
+# fixture policies. A check that read only the row record could not tell whether the
+# resources had been removed at all — which is how a prefilled absence artifact passed.
+TEARDOWN_AWARE_CHECK_IDS: frozenset[str] = frozenset({"W2-10"})
+
+# Predicates that need the wave's full check-ID inventory passed in, because their
+# subject includes the report's own completeness.
+MANIFEST_AWARE_CHECK_IDS: frozenset[str] = frozenset({"W1-10", "W2-01", "W2-10"})
+
+
+def split_post_cleanup_specs(
+    specs: tuple[CheckSpec, ...],
+) -> tuple[tuple[CheckSpec, ...], tuple[CheckSpec, ...]]:
+    """Partition a wave's specs into before-cleanup and after-cleanup groups.
+
+    Order within each group is preserved, and the two groups concatenated are the
+    whole manifest — so the split cannot drop or duplicate a check. The manifest
+    guard would catch that anyway, but a partition that silently lost a check
+    would be a confusing way to find out.
+    """
+    before = tuple(spec for spec in specs if spec.check_id not in POST_CLEANUP_CHECK_IDS)
+    after = tuple(spec for spec in specs if spec.check_id in POST_CLEANUP_CHECK_IDS)
+    return before, after
+
+
+def run_checks(
+    driver: Driver,
+    specs: tuple[CheckSpec, ...] = WAVE1_CHECKS,
+    *,
+    manifest_ids: tuple[str, ...] = (),
+    cleanup: CleanupOutcome | None = None,
+    capture: SecurityCapture | None = None,
+    teardown: ResourceTeardown | None = None,
+) -> list[CheckResult]:
     """Execute every predicate, converting outcomes into check results.
 
     One check's failure never stops the others: a partial report with nine real
@@ -2517,7 +5297,28 @@ def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> l
     honest answer for a wave under construction, and it keeps the run nonzero —
     the alternative, dropping the check, would make an incomplete wave produce a
     report that passes its own gate.
+
+    ``manifest_ids`` is the wave's full check-ID inventory, needed by the checks
+    whose subject includes the report's own completeness. It defaults to the IDs of
+    ``specs`` so a direct caller driving a whole wave gets the right answer, but
+    `main` passes the manifest explicitly — because with the post-cleanup split
+    ``specs`` is only part of the wave, and a self-completeness check comparing
+    against its own partition would always agree with itself.
+
+    ``cleanup`` is the harness's first-hand teardown record, passed to the checks
+    that verify it. ``None`` means cleanup has not run, which those checks report
+    as ``not_run`` rather than assuming success.
+
+    ``capture`` is the pre-teardown live security capture, taken while the fixture
+    still existed. ``None`` means it was never made, which is also ``not_run``: those
+    observations cannot be recovered afterwards, because the resources are gone.
+
+    ``teardown`` is the harness's record of invoking the fixture's own resource
+    teardown between the capture and these checks. ``None`` means that step never ran,
+    so nothing removed the pods, queues or fixture policies — and an absence artifact
+    read at that point would necessarily predate the removal it describes.
     """
+    inventory = manifest_ids or tuple(spec.check_id for spec in specs)
     results: list[CheckResult] = []
     for spec in specs:
         method_name = CHECK_PREDICATES.get(spec.check_id)
@@ -2563,11 +5364,17 @@ def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> l
             acceptance_ids=spec.acceptance_ids,
         )
         before = len(driver.probe.log)
+        kwargs: dict[str, object] = {}
+        if spec.check_id in MANIFEST_AWARE_CHECK_IDS:
+            kwargs["emitted_ids"] = inventory
+        if spec.check_id in CLEANUP_AWARE_CHECK_IDS:
+            kwargs["cleanup"] = cleanup
+        if spec.check_id in CAPTURE_AWARE_CHECK_IDS:
+            kwargs["capture"] = capture
+        if spec.check_id in TEARDOWN_AWARE_CHECK_IDS:
+            kwargs["teardown"] = teardown
         try:
-            if spec.check_id == "W1-10":
-                method(emitted_ids=tuple(spec.check_id for spec in specs))
-            else:
-                method()
+            method(**kwargs)
         except PrerequisiteMissingError as exc:
             result.status = STATUS_NOT_RUN
             result.message = f"prerequisite missing: {exc}"
@@ -2585,6 +5392,11 @@ def run_checks(driver: Driver, specs: tuple[CheckSpec, ...] = WAVE1_CHECKS) -> l
         result.observations = driver.probe.log[before:]
         result.artifacts = list(driver._used_artifacts)  # noqa: SLF001
         driver._used_artifacts = []  # noqa: SLF001
+        # Drained the same way, and for the same reason: attributing one check's
+        # computed ancestry to the next one would make the evidence file wrong about
+        # which check established what.
+        result.ancestry = list(driver._ancestry)  # noqa: SLF001
+        driver._ancestry = []  # noqa: SLF001
         results.append(result)
     return results
 
@@ -2671,29 +5483,427 @@ def write_report(report: dict, evidence_dir: Path) -> Path:
     return path
 
 
-def run_cleanup(config: dict, dynamodb_client) -> tuple[bool, list[str]]:  # noqa: ANN001
+def capture_security_observations(driver: Driver, config: dict) -> SecurityCapture:
+    """Read the live capability surface WHILE the fixture still exists.
+
+    Called by `main` before `run_cleanup`. It exists because of an ordering defect:
+    the question "does this deployment still refuse the unimplemented verbs?" can only
+    be answered while there is a deployment to ask, and an earlier revision asked it
+    after teardown about a row teardown had just deleted — so a correct teardown
+    produced a not-found and W2-10 reported NOT RUN.
+
+    Two observations per adapter, both pre-teardown:
+
+    1. the state read's capability map — what the deployment says it supports;
+    2. for each verb that map reports FALSE, an authorized owner's POST and the status
+       it came back with — what the deployment does when asked anyway.
+
+    (2) is confined to the verbs (1) reports unavailable, which is what keeps this
+    read-only in effect: an unimplemented verb is refused before anything happens to
+    the run, while posting `pause` to a build that implements it would mutate the
+    fixture the other checks are still describing.
+
+    Observations are recorded raw (status, capability map, per-verb status, transport
+    error) rather than reduced to a verdict, so the evidence a reviewer reads is what
+    was actually returned. Failures here are recorded, never raised: a capture that
+    could not complete must make W2-10 NOT RUN or FAIL, not abort the run before
+    cleanup — the fixture must come down either way.
+    """
+    notes: list[str] = []
+    adapters: list[LiveCapabilityCapture] = []
+    run_id = str(config.get("live_run_id") or "")
+    command_id = str(config.get("command_id") or "")
+    identity_env = (config.get("identity_env") or {}).get("owner")
+    token = os.environ.get(identity_env) if identity_env else None
+    if not run_id or not token:
+        return SecurityCapture(
+            ok=False,
+            run_id=run_id,
+            adapters=[],
+            notes=[
+                (
+                    "cannot capture the live capability surface: "
+                    f"live_run_id={'set' if run_id else 'missing'}, "
+                    f"owner token={'set' if token else 'unavailable'}"
+                )
+            ],
+        )
+
+    ok = True
+    for adapter, paths in ADAPTERS.items():
+        observation = driver.probe.request(
+            "GET", paths["state"].format(run_id=run_id), role="owner", token=token
+        )
+        body = observation.body if isinstance(observation.body, dict) else {}
+        capabilities = body.get("capabilities")
+        if observation.status != 200 or not isinstance(capabilities, dict):
+            ok = False
+            capabilities = capabilities if isinstance(capabilities, dict) else {}
+            notes.append(
+                f"{adapter}: pre-teardown capability read returned {observation.status!r} "
+                f"(error={observation.error!r})"
+            )
+        else:
+            notes.append(f"{adapter}: captured capability surface at status 200")
+
+        refusals: dict[str, int | None] = {}
+        if command_id:
+            for verb in CONTROL_VERBS:
+                if capabilities.get(verb) is not False:
+                    # Either implemented (posting it would act on the run) or not
+                    # described at all (W2-05 owns that gap). Neither is this
+                    # capture's subject.
+                    continue
+                attempt = driver.probe.request(
+                    "POST",
+                    paths["verb"].format(run_id=run_id, verb=verb),
+                    role="owner",
+                    token=token,
+                    json_body=valid_command_body(verb, command_id),
+                )
+                refusals[verb] = attempt.status
+        else:
+            ok = False
+            notes.append(
+                f"{adapter}: no 'command_id' configured, so no authorized attempt at an "
+                "unsupported verb could be made"
+            )
+        adapters.append(
+            LiveCapabilityCapture(
+                adapter=adapter,
+                run_id=run_id,
+                status=observation.status,
+                capabilities=capabilities,
+                refusals=refusals,
+                error=observation.error,
+            )
+        )
+    return SecurityCapture(ok=ok, run_id=run_id, adapters=adapters, notes=notes)
+
+
+def file_digest(path: Path | None) -> str | None:
+    """``sha256:`` digest of a file's bytes, or ``None`` if it is not readable.
+
+    Used to tell a freshly written artifact from one that was already on disk before
+    the event it describes. Content rather than mtime: an mtime is trivially touched
+    and says nothing about whether the observations changed, whereas an unchanged
+    digest across a removal means the file describes state read before it.
+    """
+    if path is None or not path.is_file():
+        return None
+    try:
+        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _default_git_runner(argv: list[str]):  # noqa: ANN202
+    """Run one read-only git query in the checkout, without a shell."""
+    return subprocess.run(  # noqa: S603 - fixed argv, no operator input reaches the command name
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def git_ancestry(
+    ancestor: str, descendant: str, *, repo: Path | None = None, runner=None
+) -> GitAncestry:  # noqa: ANN001
+    """Ask git, here and now, whether one revision is contained in another.
+
+    Root's review named ``is_ancestor: true`` as an assertion presented as evidence:
+    the operator writes the conclusion the check exists to reach, so an invented pair
+    of well-formed SHAs passed. The fix is not a better-shaped claim — it is to stop
+    reading the answer out of the artifact and compute it.
+
+    This is the one provenance link the harness can establish entirely first-hand. It
+    needs no cloud credential and no network: the repository the harness is running
+    out of already contains the commit graph, so ``git merge-base --is-ancestor`` and
+    ``git cat-file -e`` answer both halves — does this revision EXIST, and is it
+    contained in what is deployed. An invented SHA fails at the first of those, which
+    is precisely the "internally consistent but invented" case that used to pass.
+
+    Both commits must be present locally for the answer to mean anything. A shallow
+    or stale clone genuinely cannot answer, and that is reported as
+    ``available=False`` with the reason — a missing capability, which the caller turns
+    into ``not_run``, never into a pass. The distinction matters: "git says no" is a
+    failed evaluation, "git could not be asked" is an unrun one, and collapsing them
+    would either fail correct deployments or pass unverified ones.
+    """
+    run = runner or _default_git_runner
+    base = ["git"] if repo is None else ["git", "-C", str(repo)]
+    for label, revision in (("ancestor", ancestor), ("descendant", descendant)):
+        if not isinstance(revision, str) or not _GIT_REVISION_RE.match(revision):
+            return GitAncestry(
+                ancestor=str(ancestor),
+                descendant=str(descendant),
+                available=False,
+                is_ancestor=None,
+                reason=f"the {label} revision {revision!r} is not a full 40-character git SHA",
+            )
+    try:
+        for label, revision in (("ancestor", ancestor), ("descendant", descendant)):
+            exists = run([*base, "cat-file", "-e", f"{revision}^{{commit}}"])
+            if exists.returncode != 0:
+                return GitAncestry(
+                    ancestor=ancestor,
+                    descendant=descendant,
+                    available=False,
+                    is_ancestor=None,
+                    reason=(
+                        f"the {label} revision {revision} is not a commit in this checkout, so git "
+                        "cannot be asked about it. Either it does not exist anywhere — an invented "
+                        "revision, which is the case this check exists to catch — or this clone is "
+                        "too shallow to contain it; fetch it and re-run"
+                    ),
+                )
+        result = run([*base, "merge-base", "--is-ancestor", ancestor, descendant])
+    except Exception as exc:  # noqa: BLE001 - an unavailable git is not_run, never a pass
+        return GitAncestry(
+            ancestor=ancestor,
+            descendant=descendant,
+            available=False,
+            is_ancestor=None,
+            reason=f"git could not be run: {type(exc).__name__}: {exc}",
+        )
+    # `--is-ancestor` communicates through the exit status: 0 yes, 1 no, anything
+    # else is git failing rather than answering. Treating a 128 as "not an ancestor"
+    # would turn a broken checkout into a reported defect in the deployment.
+    if result.returncode not in (0, 1):
+        return GitAncestry(
+            ancestor=ancestor,
+            descendant=descendant,
+            available=False,
+            is_ancestor=None,
+            reason=(
+                f"git merge-base --is-ancestor exited {result.returncode}: "
+                f"{(result.stderr or '').strip()!r}"
+            ),
+        )
+    return GitAncestry(
+        ancestor=ancestor,
+        descendant=descendant,
+        available=True,
+        is_ancestor=result.returncode == 0,
+        reason=None,
+    )
+
+
+def run_resource_teardown(
+    config: dict, artifacts: ArtifactStore | None = None, *, runner=None
+) -> ResourceTeardown:  # noqa: ANN001
+    """Invoke the fixture's own resource teardown, between capture and verification.
+
+    The executable seam finding 2 of root's review requires. Before this existed the
+    published command captured live state, deleted rows, and then read an artifact that
+    already claimed the pods and queues were gone — so no sequential operator run could
+    produce that artifact honestly at that point, and the only way to have it was to
+    write it before teardown happened.
+
+    What this does NOT do is delete resources itself. The harness has no cluster access
+    and must not acquire any: a read-only evaluator that could delete workloads is a
+    much larger blast radius than the thing it verifies, and the deletion logic belongs
+    to the fixture scripts (#3968) that created the resources. What the harness
+    contributes is the ORDERING and the first-hand record that the step ran here — the
+    part an artifact cannot establish about itself.
+
+    The command is taken from the fixture config's ``resource_teardown``. It is passed
+    as an argv LIST and run without a shell, so the fixture config cannot smuggle a
+    shell pipeline through it. Absent → ``configured=False``, which makes W2-10
+    ``not_run``: the lifecycle was never executed.
+
+    Before invoking, it digests the post-teardown absence artifact as it stands on
+    disk. W2-10 compares that against what it actually reads, so an artifact
+    unchanged across the teardown is refused as prefilled. That comparison is
+    first-hand: it does not depend on any timestamp the operator wrote.
+
+    Failures are recorded rather than raised. `main` calls this from a `finally` chain,
+    and an exception here would abandon the row cleanup that still has to happen.
+    """
+    # Snapshot BEFORE anything else, including before the validity checks below, so
+    # that every return path carries it and no error path silently loses the one
+    # observation that establishes freshness.
+    verification_path = (
+        artifacts.resolve("teardown_verification") if artifacts is not None else None
+    )
+    before_digest = file_digest(verification_path)
+    present_before = before_digest is not None
+
+    def record(**fields) -> ResourceTeardown:
+        """A teardown record with the pre-invocation snapshot already filled in."""
+        return ResourceTeardown(
+            verification_present_before=present_before,
+            verification_digest_before=before_digest,
+            **fields,
+        )
+
+    declared = config.get("resource_teardown")
+    if not declared:
+        return record(
+            configured=False,
+            invoked=False,
+            ok=False,
+            exit_code=None,
+            started_at=None,
+            finished_at=None,
+            stdout_digest=None,
+            notes=[
+                (
+                    "no 'resource_teardown' command declared in the fixture config, so the harness "
+                    "could not tear the fixture's resources down between capturing live state and "
+                    "verifying absence. Without it the absence artifact would have to predate the "
+                    "removal it describes"
+                )
+            ],
+        )
+    if not isinstance(declared, list) or not all(
+        isinstance(part, str) and part for part in declared
+    ):
+        return record(
+            configured=True,
+            invoked=False,
+            ok=False,
+            exit_code=None,
+            started_at=None,
+            finished_at=None,
+            stdout_digest=None,
+            notes=[
+                (
+                    f"'resource_teardown' must be a nonempty list of argv strings, got {declared!r}. It "
+                    "is run without a shell, so a single string cannot be accepted: it would either be "
+                    "treated as one filename or require the shell this deliberately avoids"
+                )
+            ],
+        )
+
+    timeout = config.get("resource_teardown_timeout_seconds") or 600
+    started_at = _now()
+    notes: list[str] = []
+    if present_before:
+        notes.append(
+            "the post-teardown absence artifact already existed before teardown was invoked; its "
+            "content must have changed by the time it is read, or it describes the fixture while it "
+            "still existed"
+        )
+    try:
+        completed = (runner or _default_teardown_runner)(declared, timeout)
+    except Exception as exc:  # noqa: BLE001 - a failed teardown must not skip row cleanup
+        notes.append(f"the resource teardown command could not be run: {type(exc).__name__}: {exc}")
+        return record(
+            configured=True,
+            invoked=True,
+            ok=False,
+            exit_code=None,
+            started_at=started_at,
+            finished_at=_now(),
+            stdout_digest=None,
+            notes=notes,
+        )
+    finished_at = _now()
+    exit_code = completed.returncode
+    output = (completed.stdout or "") + (completed.stderr or "")
+    # A digest rather than the output itself. The command's stdout is a plausible place
+    # for a token or an ARN to surface, and this record goes into the evidence file;
+    # a digest still lets a reviewer tie the recorded run to the operator's own log.
+    stdout_digest = (
+        "sha256:" + hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()
+        if output
+        else None
+    )
+    ok = exit_code == 0
+    if ok:
+        notes.append(f"resource teardown exited 0 ({started_at} → {finished_at})")
+    else:
+        notes.append(
+            f"resource teardown exited {exit_code}; the fixture's resources are not established as "
+            "removed, and a nonzero teardown is a failed evaluation rather than something to note"
+        )
+    return record(
+        configured=True,
+        invoked=True,
+        ok=ok,
+        exit_code=exit_code,
+        started_at=started_at,
+        finished_at=finished_at,
+        stdout_digest=stdout_digest,
+        notes=notes,
+    )
+
+
+def _default_teardown_runner(argv: list[str], timeout: int):  # noqa: ANN202
+    """Run the operator's teardown command, without a shell."""
+    return subprocess.run(  # noqa: S603 - argv list from the operator's own fixture config, shell=False
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def run_cleanup(config: dict, dynamodb_client) -> CleanupOutcome:  # noqa: ANN001
     """Delete exactly the fixture rows, then confirm absence with a consistent read.
 
     Bounded by construction: it deletes only the ``(event_id, arrived_at)`` pairs
     the config names. §7 forbids purging a shared queue or deleting ordinary
     objects, so there is no scan, no prefix and no wildcard here — an item this
     function was not told about cannot be reached by it.
+
+    Returns a :class:`CleanupOutcome` rather than a bare ``(ok, notes)`` pair
+    because W2-10 has to *observe* this work rather than be told it happened. The
+    per-row record is the difference between "the operator asserted cleanup
+    succeeded" and "the harness deleted this exact pair with both key halves and a
+    consistent read came back empty" — and only the second can fail when cleanup
+    did not actually happen.
     """
     notes: list[str] = []
+    deletions: list[RowDeletion] = []
     items = config.get("cleanup_items") or []
     if not items:
-        return True, ["no fixture rows declared for cleanup"]
+        # Still `ok`: a wave that created no synthetic rows has nothing to remove,
+        # and failing here would make the wave-1 fixture unrunnable. W2-01 is what
+        # refuses an *undeclared* cleanup configuration, and W2-10 is what refuses
+        # a cleanup record that does not cover the rows this wave seeded — so an
+        # empty record cannot be mistaken for a completed teardown.
+        return CleanupOutcome(
+            ok=True, notes=["no fixture rows declared for cleanup"], deletions=[], declared_items=0
+        )
     if dynamodb_client is None:
-        return False, ["no DynamoDB client available to run cleanup"]
+        return CleanupOutcome(
+            ok=False,
+            notes=["no DynamoDB client available to run cleanup"],
+            deletions=[],
+            declared_items=len(items),
+        )
 
     ok = True
     table = config.get("invocation_table")
     for item in items:
-        event_id = item.get("event_id")
-        arrived_at = item.get("arrived_at")
+        # A non-object entry is treated as a malformed declaration rather than
+        # allowed to raise. `main` calls this function from a `finally` block, so an
+        # exception here would abandon teardown for every REMAINING row and leave
+        # control-enabled fixture resources running — a malformed config entry must
+        # not be able to cause that. Recorded as a refusal, which W2-10 then fails on.
+        event_id = item.get("event_id") if isinstance(item, dict) else None
+        arrived_at = item.get("arrived_at") if isinstance(item, dict) else None
         if not event_id or not arrived_at:
             ok = False
             notes.append(f"cleanup item {item!r} lacks event_id/arrived_at; refusing a partial-key delete")
+            # Recorded, not skipped: a refused partial key is exactly the state
+            # W2-10 must be able to see, and an omitted record would read as a row
+            # nobody asked about.
+            deletions.append(
+                RowDeletion(
+                    event_id=str(event_id or ""),
+                    arrived_at=str(arrived_at or ""),
+                    both_keys_present=False,
+                    deleted=False,
+                    confirmed_absent=False,
+                    error="partial key; refused",
+                )
+            )
             continue
         key = {"event_id": {"S": str(event_id)}, "arrived_at": {"S": str(arrived_at)}}
         try:
@@ -2704,13 +5914,135 @@ def run_cleanup(config: dict, dynamodb_client) -> tuple[bool, list[str]]:  # noq
         except Exception as exc:  # noqa: BLE001
             ok = False
             notes.append(f"cleanup failed for {event_id}/{arrived_at}: {type(exc).__name__}: {exc}")
+            deletions.append(
+                RowDeletion(
+                    event_id=str(event_id),
+                    arrived_at=str(arrived_at),
+                    both_keys_present=True,
+                    deleted=False,
+                    confirmed_absent=False,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
             continue
         if remaining:
             ok = False
             notes.append(f"{event_id}/{arrived_at} still present after delete (consistent read)")
+            deletions.append(
+                RowDeletion(
+                    event_id=str(event_id),
+                    arrived_at=str(arrived_at),
+                    both_keys_present=True,
+                    deleted=True,
+                    confirmed_absent=False,
+                    error="still present after delete (consistent read)",
+                )
+            )
         else:
             notes.append(f"removed {event_id}/{arrived_at}; consistent read confirms absence")
-    return ok, notes
+            deletions.append(
+                RowDeletion(
+                    event_id=str(event_id),
+                    arrived_at=str(arrived_at),
+                    both_keys_present=True,
+                    deleted=True,
+                    confirmed_absent=True,
+                )
+            )
+    return CleanupOutcome(ok=ok, notes=notes, deletions=deletions, declared_items=len(items))
+
+
+def summarize_fixture_cleanup(
+    cleanup: CleanupOutcome,
+    teardown: ResourceTeardown | None,
+    results: list[CheckResult],
+    *,
+    resource_teardown_expected: bool,
+    verification_id: str = "W2-10",
+) -> FixtureCleanup:
+    """Reduce the run's cleanup records into the one boolean the report publishes.
+
+    Root reproduced the defect this closes: with a teardown runner that raises,
+    ``resource_teardown.ok`` was false and all three fixture resources were still
+    present, yet the summary line and ``result.json`` both said ``cleanup_ok=true``
+    because that field carried only ``CleanupOutcome.ok`` — the rows. An operator
+    scanning for whether the environment was left clean would have read a green
+    field over a fixture that was never torn down.
+
+    The three components are kept separate in the record rather than collapsed,
+    because "the rows went but the pods did not" and "nothing went at all" need
+    different responses from whoever reads the evidence, and an aggregate that
+    erases the difference just moves the reporting problem one level down.
+
+    ``absence_verified`` comes from the verification check's own status rather than
+    from a second copy of its logic here. Two implementations of "were the resources
+    gone?" would be free to disagree, and the report would then contain its own
+    contradiction — which is the class of defect being fixed, not a new place to
+    risk it. A wave with no such check (wave 1 declares none) has nothing to verify
+    and nothing to withhold, so its absence is not treated as a failure.
+
+    ``resource_teardown_expected`` is what keeps this from silently redefining
+    cleanup for wave 1. Wave 1 creates no cluster resources and runs no teardown
+    seam, so requiring one would turn every currently-passing wave-1 run into a
+    cleanup failure — a behavior change the review explicitly did not ask for and
+    the issue forbids. The caller passes whether this wave has a post-cleanup
+    verification phase at all, so the stricter definition applies exactly where
+    there are resources to be strict about.
+
+    Nothing here changes an exit code on its own: the run already exits nonzero on
+    a failed teardown through W2-10. What changes is that the reported field agrees
+    with it.
+    """
+    notes: list[str] = []
+    rows_ok = cleanup.ok
+    if not rows_ok:
+        notes.append("the declared fixture rows are not all confirmed deleted")
+
+    # Teardown: unconfigured and failed are different, and both withhold. An
+    # unconfigured seam means the resources were never removed by this run at all —
+    # weaker than a failure, not stronger.
+    if not resource_teardown_expected:
+        resources_ok = True
+    elif teardown is None or not teardown.configured:
+        resources_ok = False
+        notes.append(
+            "no resource teardown was configured, so this run did not remove the fixture's pods, "
+            "queues or policies"
+        )
+    elif not teardown.invoked:
+        resources_ok = False
+        notes.append("the configured resource teardown was never invoked")
+    elif not teardown.ok:
+        resources_ok = False
+        notes.append(
+            f"the fixture's resource teardown reported failure (exit {teardown.exit_code!r})"
+        )
+    else:
+        resources_ok = True
+
+    verification = next(
+        (result for result in results if result.check_id == verification_id), None
+    )
+    if verification is None:
+        # Wave 1: no post-cleanup verification exists to consult, so there is no
+        # unestablished absence to withhold on.
+        absence_verified = True
+    elif verification.status == STATUS_PASSED:
+        absence_verified = True
+    else:
+        absence_verified = False
+        notes.append(
+            f"{verification_id} did not verify the fixture's absence "
+            f"(status={verification.status})"
+        )
+
+    return FixtureCleanup(
+        ok=rows_ok and resources_ok and absence_verified,
+        rows_ok=rows_ok,
+        resources_ok=resources_ok,
+        absence_verified=absence_verified,
+        notes=notes,
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2822,22 +6154,91 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - each exit is 
     artifacts = ArtifactStore(args.config.resolve().parent, config.get("artifacts") or {})
     driver = Driver(config, probe, artifacts, dynamodb=dynamodb)
 
+    expected_ids = tuple(spec.check_id for spec in specs)
+    pre_cleanup_specs, post_cleanup_specs = split_post_cleanup_specs(specs)
+
     # Cleanup in `finally`: the failure path is exactly when a fixture is most
     # likely to be left with a live listener, which is the state DP-INV-1 forbids.
     # Raw evidence is written before cleanup runs (§7: "preserve raw evidence first").
+    #
+    # The two-phase split is what makes W2-10 a *verified* cleanup check rather than
+    # a claim: a cleanup predicate that ran inside the pass above would necessarily
+    # execute BEFORE the deletions it describes, so it could only ever report an
+    # operator's assertion. Running it after `run_cleanup` lets it read the harness's
+    # own first-hand record. `finally` still covers the whole of it, so an exception
+    # in the checks cannot skip either cleanup or its verification.
     results: list[CheckResult] = []
+    capture: SecurityCapture | None = None
+    teardown: ResourceTeardown | None = None
     try:
-        results = run_checks(driver, specs)
+        results = run_checks(driver, pre_cleanup_specs, manifest_ids=expected_ids)
     finally:
-        cleanup_ok, cleanup_notes = run_cleanup(config, dynamodb)
+        # Capture BEFORE teardown, and inside `finally` so a check raising cannot skip
+        # it. This ordering is the correction root's review demanded: these are live
+        # reads of a running deployment, and after `run_cleanup` there is no deployment
+        # and no row to read — an earlier revision made them afterwards, so a CORRECT
+        # teardown produced a not-found and W2-10 reported NOT RUN. Observations that
+        # cannot be recovered have to be taken while they still exist.
+        #
+        # Wrapped in its own try/finally because it now sits between the checks and
+        # teardown: `capture_security_observations` records ordinary failures rather
+        # than raising, but a KeyboardInterrupt or any other BaseException during it
+        # must not become the reason the fixture is never torn down. Teardown is the
+        # one step that has to survive every failure mode, including a failure of the
+        # step added in front of it.
+        try:
+            if post_cleanup_specs:
+                capture = capture_security_observations(driver, config)
+                for note in capture.notes:
+                    logger.info("capture: %s", note)
+                # The executable teardown seam. It runs HERE — after the live
+                # observations, before row cleanup and before W2-10 — because that is
+                # the only point at which the absence artifact can honestly be written:
+                # the resources are gone by the end of it, and the check that reads it
+                # has not run yet. Both steps sit inside this `try` so that a failure of
+                # either still reaches the `finally` below: they were added in front of
+                # row cleanup, and adding a step in front of the one thing that must
+                # always happen must not create a new way for it not to.
+                teardown = run_resource_teardown(config, artifacts)
+                for note in teardown.notes:
+                    logger.info("resource teardown: %s", note)
+        finally:
+            cleanup = run_cleanup(config, dynamodb)
+        cleanup_notes = list(cleanup.notes)
         for note in cleanup_notes:
             logger.info("cleanup: %s", note)
+        if post_cleanup_specs:
+            results.extend(
+                run_checks(
+                    driver,
+                    post_cleanup_specs,
+                    manifest_ids=expected_ids,
+                    cleanup=cleanup,
+                    capture=capture,
+                    teardown=teardown,
+                )
+            )
+        # The reported `cleanup_ok` is computed HERE, after the verification check has
+        # run, because that is the first point at which the whole fixture's disposal is
+        # known. Reading `cleanup.ok` at the old site — before the post-cleanup checks —
+        # is what let a run with three resources still present publish
+        # `cleanup_ok=true`: at that moment the only thing that had been established
+        # was that the rows were gone.
+        fixture_cleanup = summarize_fixture_cleanup(
+            cleanup,
+            teardown,
+            results,
+            resource_teardown_expected=bool(post_cleanup_specs),
+        )
+        cleanup_ok = fixture_cleanup.ok
+        cleanup_notes.extend(fixture_cleanup.notes)
+        for note in fixture_cleanup.notes:
+            logger.error("fixture cleanup: %s", note)
         try:
             client.close()
         except Exception:  # noqa: BLE001 - closing the client must not mask a result
             pass
 
-    expected_ids = tuple(spec.check_id for spec in specs)
     try:
         assert_check_manifest(results, expected_ids)
     except EvalPreconditionError as exc:
@@ -2848,6 +6249,25 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - each exit is 
         config, results, cleanup_ok=cleanup_ok, wave=args.wave, expected_ids=expected_ids
     )
     report["cleanup_notes"] = redact(cleanup_notes)
+    # `cleanup` stays the ROW-specific record, under its own name, so nothing that
+    # reads it loses the per-row DeleteItem/consistent-read detail. What changed is
+    # that the top-level `cleanup_ok` no longer comes from it alone.
+    report["cleanup"] = redact(cleanup.to_evidence())
+    # The breakdown behind `cleanup_ok`, so a reader can tell "the rows went but the
+    # pods did not" from "nothing went at all" without re-deriving it from three
+    # other sections of the report.
+    report["fixture_cleanup"] = redact(fixture_cleanup.to_evidence())
+    # The pre-teardown observations travel with the report, raw. A reviewer reading
+    # W2-10's verdict must be able to see the statuses and capability maps it was
+    # reached from, at the point in the run where they were still observable — the
+    # verdict alone is the thing this evaluation is trying not to take on trust.
+    if capture is not None:
+        report["security_capture"] = redact(capture.to_evidence())
+    # The teardown record travels too, for the same reason: W2-10's verdict rests on
+    # the harness having invoked the fixture's teardown at a specific point in the
+    # run, and a reviewer has to be able to see that it did rather than infer it.
+    if teardown is not None:
+        report["resource_teardown"] = redact(teardown.to_evidence())
     write_report(report, args.evidence_dir)
 
     logger.info(
@@ -2860,12 +6280,29 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - each exit is 
         report["cleanup_ok"],
     )
 
-    if not cleanup_ok:
+    # EXIT_CLEANUP keeps its established meaning: the harness's OWN row deletions did
+    # not complete, which is the one cleanup failure no check can report because it is
+    # the harness's own action. The broader fixture-cleanup verdict does not get its own
+    # exit code, and does not need one — `resources_ok` and `absence_verified` are
+    # derived from exactly the conditions W2-10 asserts, so either being false means
+    # W2-10 did not pass, which already makes this an EXIT_CHECKS_FAILED run. Promoting
+    # them to EXIT_CLEANUP would relabel a check failure that root confirmed was already
+    # reported correctly.
+    if not fixture_cleanup.rows_ok:
         logger.error(
-            "cleanup did not complete: a fixture left with a control listener enabled is the state "
+            "row cleanup did not complete: a fixture left with a control listener enabled is the state "
             "DP-INV-1 forbids, so this is a failed evaluation even if every check passed."
         )
         return EXIT_CLEANUP
+    if not cleanup_ok:
+        logger.error(
+            "the fixture is not established as fully cleaned up (rows_ok=%s, resources_ok=%s, "
+            "absence_verified=%s). Its resources may still be running; check them before reusing the "
+            "environment.",
+            fixture_cleanup.rows_ok,
+            fixture_cleanup.resources_ok,
+            fixture_cleanup.absence_verified,
+        )
     if not report_is_passing(report):
         logger.error(
             "evaluation did not pass: %s failed, %s not run. A missing prerequisite is NOT RUN and "
