@@ -12,6 +12,20 @@ export interface ServingInput {
   max_model_len: number | null;
 }
 
+export interface BatchOptions {
+  image: string;
+  command: string[];
+  args: string[];
+  gpu_count: number;
+  cpu: string;
+  memory: string;
+}
+export interface BatchInput { name: string; profile_id: string; batch_options: BatchOptions }
+export type WorkloadInput = ServingInput | BatchInput | { deploymentId: string };
+export type WorkloadKind = 'serving' | 'batch';
+export interface BatchProfile { profileId: string; options: BatchOptions }
+export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; canReviewTeardown: boolean }
+
 export interface ServingDeployment {
   deploymentId: string | null;
   operationId: string | null;
@@ -33,6 +47,7 @@ export interface ServingReview {
   resources: number;
   runtimeSeconds: number;
   maxCostMicros: number;
+  batchOptions?: BatchOptions;
 }
 
 export interface ServingProfile {
@@ -50,6 +65,43 @@ const record = (raw: unknown): raw is Record<string, unknown> =>
   typeof raw === 'object' && raw !== null && !Array.isArray(raw);
 const id = (raw: unknown): raw is string => typeof raw === 'string' && raw.length > 0 && raw.length <= 255;
 const text = (raw: unknown) => typeof raw === 'string' ? raw : null;
+
+export function parseBatchOptions(raw: unknown): BatchOptions | null {
+  if (!record(raw) || typeof raw.image !== 'string' || raw.image.length > 512 || !/^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$/.test(raw.image) ||
+      !Array.isArray(raw.command) || raw.command.length === 0 || raw.command.length > 32 ||
+      !Array.isArray(raw.args) || raw.args.length > 32 ||
+      [...raw.command, ...raw.args].some((arg) => typeof arg !== 'string' || arg.length > 1024) ||
+      typeof raw.gpu_count !== 'number' || !Number.isInteger(raw.gpu_count) || raw.gpu_count < 1 || raw.gpu_count > 8 ||
+      typeof raw.cpu !== 'string' || !/^[1-9][0-9]{0,4}m?$/.test(raw.cpu) ||
+      typeof raw.memory !== 'string' || !/^[1-9][0-9]{0,4}[MG]i$/.test(raw.memory)) return null;
+  return { image: raw.image, command: [...raw.command] as string[], args: [...raw.args] as string[], gpu_count: raw.gpu_count, cpu: raw.cpu, memory: raw.memory };
+}
+
+export function getBatchCatalog(guard: ScopeGuard, workspaceId: string) {
+  return call(guard, 'batchProfiles', { workspace_id: workspaceId }, undefined, (raw): BatchCatalog | null => {
+    if (!record(raw) || raw.workspace_id !== workspaceId || !Array.isArray(raw.profiles) || raw.profiles.length > 128 ||
+        typeof raw.can_submit !== 'boolean' || typeof raw.can_review_teardown !== 'boolean') return null;
+    const profiles: BatchProfile[] = [];
+    for (const entry of raw.profiles) {
+      if (!record(entry) || typeof entry.profile_id !== 'string' || !/^[a-z][a-z0-9-]{0,62}$/.test(entry.profile_id)) return null;
+      const options = parseBatchOptions(entry.batch_options);
+      if (!options || options.image !== entry.image) return null;
+      profiles.push({ profileId: entry.profile_id, options });
+    }
+    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown };
+  });
+}
+
+export function listBatchJobs(guard: ScopeGuard, workspaceId: string) {
+  return call(guard, 'listBatchJobs', { workspace_id: workspaceId }, undefined, (raw) => {
+    if (!record(raw) || raw.workspace_id !== workspaceId || !Array.isArray(raw.jobs) || raw.jobs.length > 100 || typeof raw.truncated !== 'boolean') return null;
+    const jobs = raw.jobs.map((job): ServingDeployment | null => {
+      if (!record(job) || !id(job.job_id)) return null;
+      return parseDeployment({ ...job, deployment_id: job.job_id });
+    });
+    return jobs.every((job): job is ServingDeployment => job !== null) ? { jobs, truncated: raw.truncated } : null;
+  });
+}
 
 export function getServingCatalog(guard: ScopeGuard, workspaceId: string) {
   return call(guard, 'servingProfiles', { workspace_id: workspaceId }, undefined, (raw): ServingCatalog | null => {
@@ -93,7 +145,7 @@ export function listDeployments(guard: ScopeGuard, workspaceId: string) {
 }
 
 export function parseServingReview(raw: unknown, workspaceId: string, requestId: string,
-  action: 'provision' | 'teardown', deploymentId?: string): ServingReview | null {
+  action: 'provision' | 'teardown', deploymentId?: string, kind: WorkloadKind = 'serving'): ServingReview | null {
   if (!record(raw) || !id(raw.deployment_id) || raw.request_id !== requestId ||
       typeof raw.revision !== 'string' || !/^[a-f0-9]{64}$/.test(raw.revision) ||
       (deploymentId !== undefined && raw.deployment_id !== deploymentId)) return null;
@@ -105,7 +157,7 @@ export function parseServingReview(raw: unknown, workspaceId: string, requestId:
   if (parameters.controller_deployment_id !== raw.deployment_id || typeof parameters.controller_plan !== 'string') return null;
   let plan: unknown;
   try { plan = JSON.parse(parameters.controller_plan); } catch { return null; }
-  if (!record(plan) || !record(plan.workload) || plan.workload.kind !== 'serving' ||
+  if (!record(plan) || !record(plan.workload) || plan.workload.kind !== kind ||
       !id(plan.provider_account_id) || !id(plan.region) || !id(plan.namespace) ||
       typeof plan.workload.image !== 'string' || !/^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$/.test(plan.workload.image)) return null;
   const values = ['max_resource_units', 'max_runtime_seconds', 'max_cost_micros'].map((key) => {
@@ -113,31 +165,35 @@ export function parseServingReview(raw: unknown, workspaceId: string, requestId:
     return typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
   });
   if (values.some((value) => !Number.isSafeInteger(value) || value < 0) || values[1] <= 0) return null;
+  const batchOptions = kind === 'batch' ? parseBatchOptions(plan.workload) : undefined;
+  if (kind === 'batch' && (!batchOptions || plan.workload.port !== null || plan.workload.auth_secret !== null || raw.job_id !== raw.deployment_id)) return null;
   return {
     deploymentId: raw.deployment_id, requestId, revision: raw.revision, approvalRequest: approval,
     account: plan.provider_account_id, region: plan.region, namespace: plan.namespace,
     image: plan.workload.image, resources: values[0], runtimeSeconds: values[1], maxCostMicros: values[2],
+    ...(batchOptions ? { batchOptions } : {}),
   };
 }
 
 export function previewServing(guard: ScopeGuard, workspaceId: string, requestId: string,
-  input: ServingInput | { deploymentId: string }) {
+  input: WorkloadInput, kind: WorkloadKind = 'serving') {
   const teardown = 'deploymentId' in input;
-  return call(guard, teardown ? 'previewDeploymentTeardown' : 'previewDeployment',
-    { workspace_id: workspaceId, ...(teardown ? { dep_id: input.deploymentId } : {}) },
+  return call(guard, kind === 'batch' ? (teardown ? 'previewBatchTeardown' : 'previewBatchJob') : (teardown ? 'previewDeploymentTeardown' : 'previewDeployment'),
+    { workspace_id: workspaceId, ...(teardown ? { [kind === 'batch' ? 'job_id' : 'dep_id']: input.deploymentId } : {}) },
     { ...(teardown ? {} : input), operation_id: requestId },
     (raw) => parseServingReview(raw, workspaceId, requestId, teardown ? 'teardown' : 'provision',
-      teardown ? input.deploymentId : undefined));
+      teardown ? input.deploymentId : undefined, kind));
 }
 
 export function submitServing(guard: ScopeGuard, workspaceId: string, review: ServingReview,
-  approvalId: string, input: ServingInput | { deploymentId: string }) {
+  approvalId: string, input: WorkloadInput, kind: WorkloadKind = 'serving') {
   const teardown = 'deploymentId' in input;
-  return call(guard, teardown ? 'deleteDeployment' : 'createDeployment',
-    { workspace_id: workspaceId, ...(teardown ? { dep_id: input.deploymentId } : {}) },
+  return call(guard, kind === 'batch' ? (teardown ? 'deleteBatchJob' : 'createBatchJob') : (teardown ? 'deleteDeployment' : 'createDeployment'),
+    { workspace_id: workspaceId, ...(teardown ? { [kind === 'batch' ? 'job_id' : 'dep_id']: input.deploymentId } : {}) },
     { ...(teardown ? {} : input), operation_id: review.requestId, approval_id: approvalId, plan_revision: review.revision },
     (raw) => {
-      const result = parseDeployment(raw);
+      const result = parseDeployment(kind === 'batch' && record(raw) ? { ...raw, deployment_id: raw.job_id } : raw);
+      if (kind === 'batch' && result?.deploymentId !== review.deploymentId) return null;
       if (!result || !result.operationId || (!teardown && result.deploymentId !== review.deploymentId)) return null;
       return result;
     });

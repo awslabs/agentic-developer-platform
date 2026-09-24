@@ -31,7 +31,18 @@ MODEL = {
 }
 
 
-def main():
+def main(kind="serving"):
+    batch = kind == "batch"
+    resource = "batch-jobs" if batch else "deployments"
+    workload_name = "browser-job" if batch else "browser-model"
+    options = {
+        "image": IMAGE,
+        "command": ["/app/run"],
+        "args": ["--input", "/app/data.json"],
+        "gpu_count": 1,
+        "cpu": "2000m",
+        "memory": "8Gi",
+    }
     OUTPUT.mkdir(parents=True, exist_ok=True)
     page_path = FRONTEND / "serving-browser-check.html"
     entry_path = FRONTEND / "serving-browser-entry.tsx"
@@ -102,7 +113,9 @@ def main():
                 )
                 requests.append({"method": method, "path": path, "body": body})
                 root = f"/api/superplane/v1/workspaces/{WORKSPACE}"
-                if path == root + "/deployment-profiles":
+                if path == root + (
+                    "/batch-profiles" if batch else "/deployment-profiles"
+                ):
                     value = {
                         "workspace_id": WORKSPACE,
                         "can_submit": True,
@@ -111,13 +124,24 @@ def main():
                             {
                                 "profile_id": "fixture-gpu",
                                 "image": IMAGE,
-                                "model_options": MODEL,
+                                **(
+                                    {"batch_options": options}
+                                    if batch
+                                    else {"model_options": MODEL}
+                                ),
                             }
                         ],
                     }
-                elif path == root + "/deployments" and method == "GET":
-                    value = {"workspace_id": WORKSPACE, "deployments": rows}
-                elif path.endswith(("/deployments/preview", "/teardown-preview")):
+                elif path == root + "/" + resource and method == "GET":
+                    value = {
+                        "workspace_id": WORKSPACE,
+                        **(
+                            {"jobs": rows, "truncated": False}
+                            if batch
+                            else {"deployments": rows}
+                        ),
+                    }
+                elif path.endswith(("/" + resource + "/preview", "/teardown-preview")):
                     action = (
                         "teardown" if path.endswith("teardown-preview") else "provision"
                     )
@@ -125,7 +149,15 @@ def main():
                         "provider_account_id": "111122223333",
                         "region": "us-east-1",
                         "namespace": "fixture-workspace",
-                        "workload": {"kind": "serving", "image": IMAGE},
+                        "workload": {
+                            "kind": kind,
+                            "image": IMAGE,
+                            **(
+                                {**options, "port": None, "auth_secret": None}
+                                if batch
+                                else {}
+                            ),
+                        },
                     }
                     reviewed.clear()
                     reviewed.update(
@@ -144,6 +176,7 @@ def main():
                     )
                     value = {
                         "deployment_id": DEPLOYMENT,
+                        **({"job_id": DEPLOYMENT} if batch else {}),
                         "request_id": body["operation_id"],
                         "revision": "b" * 64,
                         "controller_plan": plan,
@@ -167,24 +200,27 @@ def main():
                             "max_cost_micros": 2000000,
                         },
                     }
-                elif path == root + "/deployments" and method == "POST":
+                elif path == root + "/" + resource and method == "POST":
                     assert body["operation_id"] == reviewed["idempotency_key"]
                     assert (
                         body["approval_id"] == "fixture-approval"
                         and body["plan_revision"] == "b" * 64
                     )
-                    assert {key: body[key] for key in MODEL} == MODEL
+                    if batch:
+                        assert body["batch_options"] == options
+                    else:
+                        assert {key: body[key] for key in MODEL} == MODEL
                     rows[:] = [
                         {
                             "name": body["name"],
-                            "deployment_id": DEPLOYMENT,
+                            ("job_id" if batch else "deployment_id"): DEPLOYMENT,
                             "status": "Created",
                             "operation_id": "fixture-create",
                             "operation_state": "succeeded",
                         }
                     ]
                     value = rows[0]
-                elif path == root + f"/deployments/{DEPLOYMENT}" and method == "DELETE":
+                elif path == root + f"/{resource}/{DEPLOYMENT}" and method == "DELETE":
                     assert body["operation_id"] == reviewed["idempotency_key"]
                     rows[0].update(
                         status="Deleting",
@@ -206,20 +242,24 @@ def main():
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.route("**/*", transport)
                 try:
-                    page.goto(ORIGIN + "/serving-browser-check.html")
-                    name = page.get_by_label(re.compile("Deployment name"))
+                    page.goto(ORIGIN + "/serving-browser-check.html?kind=" + kind)
+                    name = page.get_by_label(
+                        re.compile("Job name" if batch else "Deployment name")
+                    )
                     expect(name).to_be_visible()
-                    name.fill("browser-model")
+                    name.fill(workload_name)
                     name.press("Tab")
-                    select = page.get_by_label("Serving profile")
+                    select = page.get_by_label(
+                        "Batch profile" if batch else "Serving profile"
+                    )
                     expect(select).to_be_focused()
                     select.press("ArrowDown")
                     select.press("Tab")
-                    prepare = page.get_by_role("button", name="Prepare serving review")
+                    prepare = page.get_by_role("button", name=f"Prepare {kind} review")
                     expect(prepare).to_be_focused()
                     prepare.press("Enter")
                     page.get_by_role(
-                        "button", name="Review serving plan", exact=True
+                        "button", name=f"Review {kind} plan", exact=True
                     ).click()
                     expect(
                         page.get_by_text(
@@ -228,19 +268,22 @@ def main():
                     ).to_be_visible()
                     page.get_by_role("button", name="Request workload approval").click()
                     submit = page.get_by_role(
-                        "button", name="Submit approved deployment"
+                        "button",
+                        name="Submit approved batch job"
+                        if batch
+                        else "Submit approved deployment",
                     )
                     expect(submit).to_be_enabled()
                     assert page.evaluate(
                         "document.documentElement.scrollWidth <= window.innerWidth"
                     )
                     page.screenshot(
-                        path=str(OUTPUT / "serving-mobile-review.png"), full_page=True
+                        path=str(OUTPUT / f"{kind}-mobile-review.png"), full_page=True
                     )
                     submit.focus()
                     submit.press("Enter")
                     page.get_by_role(
-                        "button", name="Review stop for browser-model"
+                        "button", name=f"Review stop for {workload_name}"
                     ).click()
                     page.get_by_role(
                         "button", name="Review stop plan", exact=True
@@ -261,14 +304,14 @@ def main():
                         "document.documentElement.scrollWidth <= window.innerWidth"
                     )
                     page.screenshot(
-                        path=str(OUTPUT / "serving-mobile-stop.png"), full_page=True
+                        path=str(OUTPUT / f"{kind}-mobile-stop.png"), full_page=True
                     )
                     page.set_viewport_size({"width": 1280, "height": 900})
                     assert page.evaluate(
                         "document.documentElement.scrollWidth <= window.innerWidth"
                     )
                     page.screenshot(
-                        path=str(OUTPUT / "serving-desktop.png"), full_page=True
+                        path=str(OUTPUT / f"{kind}-desktop.png"), full_page=True
                     )
                     assert not errors, errors
                     mutations = [
@@ -276,14 +319,14 @@ def main():
                         for item in requests
                         if item["method"] == "DELETE"
                         or item["method"] == "POST"
-                        and item["path"].endswith("/deployments")
+                        and item["path"].endswith("/" + resource)
                     ]
                     assert len(mutations) == 2
                     assert (
                         mutations[0]["body"]["operation_id"]
                         != mutations[1]["body"]["operation_id"]
                     )
-                    (OUTPUT / "receipt.json").write_text(
+                    (OUTPUT / f"{kind}-receipt.json").write_text(
                         json.dumps(
                             {
                                 "evidence": "isolated browser with fixture transports; not live acceptance",
@@ -295,7 +338,9 @@ def main():
                         )
                     )
                 except BaseException:
-                    page.screenshot(path=str(OUTPUT / "failure.png"), full_page=True)
+                    page.screenshot(
+                        path=str(OUTPUT / f"{kind}-failure.png"), full_page=True
+                    )
                     raise
                 finally:
                     browser.close()
@@ -312,4 +357,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main("serving")
+    main("batch")
