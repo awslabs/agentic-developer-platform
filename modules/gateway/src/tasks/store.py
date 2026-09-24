@@ -115,6 +115,7 @@ from src.tasks.records import (
     idempotency_partition,
     is_terminal,
     payload_digest,
+    report_sort_key,
     run_sort_key,
     task_artifact_partition,
     task_authority_partition,
@@ -132,6 +133,7 @@ from src.tasks.records import (
     task_work_locator_partition,
     task_work_partition,
     turn_sort_key,
+    validate_artifact_id,
     validate_task_id,
     validate_transition,
     validate_uuid,
@@ -166,6 +168,46 @@ TTL_EXEMPT_WHILE_ACTIVE: Final = frozenset({"TASK", "TASK_RUN", "TASK_IDEMP", "T
 
 WORK_LEASE_SECONDS: Final = 45
 MAX_WORK_PER_CLAIM: Final = 100
+MAX_TASK_EVENTS: Final = 10_000
+FINAL_EVENT_RESERVE: Final = 100
+_REPORT_EVENT_TYPES: Final = frozenset(
+    {
+        "run.started",
+        "progress.updated",
+        "artifact.created",
+        "input.required",
+        "input.accepted",
+        "input.consumed",
+        "input.rejected",
+        "command.updated",
+        "cancel.requested",
+        "run.completed",
+        "run.failed",
+        "task.completed",
+        "task.failed",
+        "task.cancelled",
+        "history.gap",
+    }
+)
+_TERMINAL_REPORT_EVENT_TYPES: Final = frozenset({"run.completed", "run.failed", "task.completed", "task.failed", "task.cancelled"})
+_ATTEMPT_PROTECTED_TRANSITION_ATTRIBUTES: Final = frozenset({"result", "result_ref", "error", "error_code", "outcome"})
+_TRANSITION_MUTABLE_ATTRIBUTES: Final = frozenset(
+    {
+        "execution_health",
+        "queue_ack_status",
+        "result",
+        "result_ref",
+        "error",
+        "error_code",
+        "outcome",
+        "input_request",
+        "recovery_required",
+        "recovery_reason",
+        "started_at",
+        "completed_at",
+        "heartbeat_at",
+    }
+)
 _ENVELOPE_FIELDS: Final = frozenset(
     {"kind", "schema_version", "task_id", "invocation_id", "message_id", "persona", "dispatch_id", "request_digest", "input_ref", "assignment_ref"}
 )
@@ -263,6 +305,10 @@ class WorkBindingError(Exception):
 
 class WorkLeaseConflictError(Exception):
     """A work claim/settlement lost its independent lease fence."""
+
+
+class StaleAttemptError(Exception):
+    """A worker-originated write did not match the active runtime attempt."""
 
 
 @dataclass(frozen=True)
@@ -386,7 +432,7 @@ class TaskStore:
 
         try:
             self._client.transact_write_items(
-                TransactItems=self._acceptance_items(request, digest, idempotency_pk, now_iso),
+                TransactItems=self._acceptance_items(request, digest, idempotency_pk, now),
                 ClientRequestToken=component_digest("task-acceptance-token-v1", idempotency_pk, digest)[:36],
             )
         except (ClientError, BotoCoreError) as exc:
@@ -406,13 +452,14 @@ class TaskStore:
             replayed=False,
         )
 
-    def _acceptance_items(self, request: AcceptanceRequest, digest: str, idempotency_pk: str, now_iso: str) -> list[dict[str, Any]]:
+    def _acceptance_items(self, request: AcceptanceRequest, digest: str, idempotency_pk: str, now: datetime) -> list[dict[str, Any]]:
         """Compose the acceptance transaction.
 
         This is the complete cross-table transaction.  T3 supplies already
         authenticated values through :class:`AcceptanceRequest`; it must not append
         a second transaction after this one.
         """
+        now_iso = _iso(now)
         scope = {"tenant": request.tenant, "canonical_principal": request.canonical_principal}
         deadline_iso = _iso(request.deadline_at)
         envelope = _validated_envelope(request, digest)
@@ -436,6 +483,7 @@ class TaskStore:
             "version": 1,
             "generation": request.generation,
             "persona": request.persona,
+            "policy_version": request.policy_version,
             "request_digest": digest,
             "input_payload": request.request_payload,
             "idempotency_partition": idempotency_pk,
@@ -519,13 +567,14 @@ class TaskStore:
             "envelope_digest": envelope_digest,
             "publication_state": "pending",
             "publication_tries": 0,
-            "publication_deadline_at": _iso(min(request.deadline_at, self._clock() + timedelta(minutes=10))),
+            "publication_deadline_at": _iso(min(request.deadline_at, now + timedelta(minutes=10))),
             "created_at": now_iso,
             "updated_at": now_iso,
             # Sparse recovery index attributes. Only work records carry them, so
             # the index holds outstanding work rather than the whole table.
             WORK_SHARD_ATTRIBUTE: work_shard(request.task_id),
-            WORK_DUE_ATTRIBUTE: work_due_key(due_at=self._clock(), work_id=request.dispatch_id),
+            WORK_DUE_ATTRIBUTE: work_due_key(due_at=now, work_id=request.dispatch_id),
+            "due_at": now_iso,
         }
 
         locator = {
@@ -580,8 +629,14 @@ class TaskStore:
             "model_binding": request.model_binding,
             "limits": request.run_limits,
             "capabilities": ["input", "cancel"],
+            "runtime_attempt_id": None,
             "created_at": now_iso,
         }
+        grant_digest = _protected_grant_digest(run_grant)
+        metadata["grant_digest"] = grant_digest
+        dispatch["grant_digest"] = grant_digest
+        locator["grant_digest"] = grant_digest
+        task_binding["grant_digest"] = grant_digest
 
         transaction = [
             # Ordering matters for decoding a cancellation: index 0 failing means
@@ -701,7 +756,7 @@ class TaskStore:
                             "attribute_exists(event_id) AND attribute_not_exists(task_id) AND "
                             "binding_state = :unclaimed AND expires_at > :now_epoch AND "
                             "#scope.#tenant = :tenant AND #scope.#principal = :principal AND "
-                            "#version = :version AND content_sha256 = :digest"
+                            "#version = :version AND content_sha256 = :digest AND content_type = :content_type"
                         ),
                         "ExpressionAttributeNames": {
                             "#tenant": "tenant",
@@ -720,6 +775,13 @@ class TaskStore:
                                 ":principal": request.canonical_principal,
                                 ":version": int(ref["version"]),
                                 ":digest": str(ref["content_sha256"]),
+                                ":content_type": str(
+                                    next(
+                                        artifact["content_type"]
+                                        for artifact in request.immutable_input.get("artifacts", [])
+                                        if artifact["artifact_id"] == artifact_id
+                                    )
+                                ),
                             }
                         ),
                     }
@@ -841,52 +903,359 @@ class TaskStore:
 
     def resolve_work(self, work_id: str, *, expected_kind: str | None = None) -> dict[str, Any]:
         """Resolve a work UUID through its protected locator and verify all bindings."""
+        validate_uuid(work_id, "work_id")
         locator = self._get_authority(task_work_locator_partition(work_id), TASK_WORK_LOCATOR_SORT_KEY)
-        if locator is None or locator.get("binding_state") != "active":
-            raise WorkBindingError("work locator is missing, stale, or revoked")
+        required_locator = {
+            "work_id",
+            "work_kind",
+            "tenant",
+            "task_id",
+            "invocation_id",
+            "generation",
+            "grant_digest",
+            "work_event_id",
+            "work_arrived_at",
+            "binding_state",
+        }
+        if locator is None or not required_locator.issubset(locator) or locator.get("binding_state") != "active":
+            raise WorkBindingError("work locator is missing, incomplete, stale, or revoked")
         if locator.get("work_id") != work_id or (expected_kind is not None and locator.get("work_kind") != expected_kind):
             raise WorkBindingError("work locator kind or identity mismatch")
 
-        work = self._get(str(locator.get("work_event_id", "")), str(locator.get("work_arrived_at", "")))
-        if work is None:
-            raise WorkBindingError("located work record is missing")
-        compared = ("work_id", "work_kind", "task_id", "invocation_id", "generation", "request_digest", "envelope_digest")
-        if any(field in locator and locator.get(field) != work.get(field) for field in compared):
-            raise WorkBindingError("work record disagrees with its protected locator")
-        if work.get("work_kind") == "dispatch":
-            envelope = work.get("envelope")
-            if not isinstance(envelope, dict) or payload_digest(envelope) != work.get("envelope_digest"):
-                raise WorkBindingError("dispatch envelope digest mismatch")
+        task_id = str(locator["task_id"])
+        invocation_id = str(locator["invocation_id"])
+        generation = int(locator["generation"])
+        tenant = str(locator["tenant"])
+        validate_task_id(task_id)
+        validate_uuid(invocation_id, "invocation_id")
+        expected_partition = task_work_partition(task_id)
+        expected_sort_key = dispatch_sort_key(work_id) if locator["work_kind"] == "dispatch" else "RECONCILE"
+        if locator["work_event_id"] != expected_partition or locator["work_arrived_at"] != expected_sort_key:
+            raise WorkBindingError("work locator target does not match its immutable key layout")
 
-        tenant = str(locator.get("tenant", ""))
-        binding = self._get_authority(task_authority_partition(tenant), task_binding_sort_key(str(locator.get("task_id", ""))))
-        if binding is None or binding.get("status") != "active":
-            raise WorkBindingError("task binding is missing or inactive")
-        for attribute_name in ("tenant", "task_id", "invocation_id", "generation", "request_digest"):
-            if attribute_name in locator and binding.get(attribute_name) != locator.get(attribute_name):
-                raise WorkBindingError("task binding disagrees with work locator")
-        policy = self._get_authority(task_authority_partition(tenant), task_policy_sort_key(str(binding.get("canonical_principal", ""))))
+        work = self._get(expected_partition, expected_sort_key)
+        required_work = {"record_type", "work_id", "work_kind", "task_id", "invocation_id", "generation", "grant_digest", "scope"}
+        if work is None or not required_work.issubset(work) or work.get("record_type") != "TASK_WORK":
+            raise WorkBindingError("located work record is missing or incomplete")
+        for attribute_name in ("work_id", "work_kind", "task_id", "invocation_id", "generation", "grant_digest"):
+            if work.get(attribute_name) != locator.get(attribute_name):
+                raise WorkBindingError("work record disagrees with its protected locator")
+        scope = work.get("scope")
+        if not isinstance(scope, dict) or scope.get("tenant") != tenant or not scope.get("canonical_principal"):
+            raise WorkBindingError("work scope disagrees with its protected locator")
+
+        snapshot = self.read_task(task_id)
+        if snapshot is None:
+            raise WorkBindingError("work task metadata is missing")
+        for attribute_name, expected in {
+            "task_id": task_id,
+            "invocation_id": invocation_id,
+            "generation": generation,
+        }.items():
+            if snapshot.get(attribute_name) != expected:
+                raise WorkBindingError("task metadata disagrees with work locator")
+        if snapshot.get("scope") != scope:
+            raise WorkBindingError("task ownership disagrees with work scope")
+
+        authority_pk = task_authority_partition(tenant)
+        binding = self._get_authority(authority_pk, task_binding_sort_key(task_id))
+        required_binding = {
+            "tenant",
+            "canonical_principal",
+            "task_id",
+            "invocation_id",
+            "generation",
+            "request_digest",
+            "policy_version",
+            "persona",
+            "status",
+            "grant_digest",
+        }
+        if binding is None or not required_binding.issubset(binding) or binding.get("status") != "active":
+            raise WorkBindingError("task binding is missing, incomplete, or inactive")
+        for attribute_name, expected in {
+            "tenant": tenant,
+            "canonical_principal": scope["canonical_principal"],
+            "task_id": task_id,
+            "invocation_id": invocation_id,
+            "generation": generation,
+            "request_digest": snapshot.get("request_digest"),
+            "policy_version": snapshot.get("policy_version"),
+            "persona": snapshot.get("persona"),
+            "grant_digest": snapshot.get("grant_digest"),
+        }.items():
+            if binding.get(attribute_name) != expected:
+                raise WorkBindingError("task binding disagrees with work or task metadata")
+
+        policy = self._get_authority(authority_pk, task_policy_sort_key(str(binding["canonical_principal"])))
         if (
             policy is None
             or policy.get("status") != "active"
-            or int(policy.get("version", 0)) != int(binding.get("policy_version", 0))
-            or binding.get("persona") not in policy.get("personas", set())
+            or int(policy.get("version", 0)) != int(binding["policy_version"])
+            or binding["persona"] not in policy.get("personas", set())
         ):
             raise WorkBindingError("current task policy no longer permits this work")
-        if locator.get("invocation_id") is not None:
-            grant = self._get_authority(
-                task_authority_partition(tenant),
-                task_run_grant_sort_key(
-                    invocation_id=str(locator["invocation_id"]),
-                    generation=int(locator.get("generation", 0)),
-                ),
-            )
-            if grant is None or grant.get("status") != "active":
-                raise WorkBindingError("task run grant is missing or inactive")
-            for attribute_name in ("tenant", "task_id", "invocation_id", "generation", "request_digest"):
-                if attribute_name in locator and grant.get(attribute_name) != locator.get(attribute_name):
-                    raise WorkBindingError("task run grant disagrees with work locator")
+
+        grant_sk = task_run_grant_sort_key(invocation_id=invocation_id, generation=generation)
+        grant = self._get_authority(authority_pk, grant_sk)
+        required_grant = {
+            "tenant",
+            "canonical_principal",
+            "task_id",
+            "invocation_id",
+            "generation",
+            "request_digest",
+            "persona",
+            "input",
+            "status",
+        }
+        if grant is None or not required_grant.issubset(grant) or grant.get("status") != "active":
+            raise WorkBindingError("task run grant is missing, incomplete, or inactive")
+        for attribute_name in ("tenant", "canonical_principal", "task_id", "invocation_id", "generation", "request_digest", "persona"):
+            if grant.get(attribute_name) != binding.get(attribute_name):
+                raise WorkBindingError("task run grant disagrees with task binding")
+        grant_digest = _protected_grant_digest(grant)
+        if grant_digest != work["grant_digest"] or grant_digest != locator["grant_digest"] or grant_digest != binding["grant_digest"]:
+            raise WorkBindingError("protected run grant digest disagrees with work binding")
+
+        if work["work_kind"] == "dispatch":
+            required_dispatch = {"dispatch_id", "request_digest", "envelope", "envelope_digest"}
+            if not required_dispatch.issubset(work) or work.get("dispatch_id") != work_id:
+                raise WorkBindingError("dispatch work identity is incomplete or mismatched")
+            if locator.get("request_digest") != work.get("request_digest") or locator.get("envelope_digest") != work.get("envelope_digest"):
+                raise WorkBindingError("dispatch locator digest disagrees with work")
+            envelope = work["envelope"]
+            if not isinstance(envelope, dict) or payload_digest(envelope) != work["envelope_digest"]:
+                raise WorkBindingError("dispatch envelope digest mismatch")
+            expected_envelope = {
+                "task_id": task_id,
+                "invocation_id": invocation_id,
+                "message_id": invocation_id,
+                "dispatch_id": work_id,
+                "request_digest": binding["request_digest"],
+                "persona": binding["persona"],
+            }
+            if any(envelope.get(attribute_name) != value for attribute_name, value in expected_envelope.items()):
+                raise WorkBindingError("dispatch envelope disagrees with protected identity")
+            assignment = envelope.get("assignment_ref")
+            expected_assignment = {"grant_pk": authority_pk, "grant_sk": grant_sk, "generation": generation}
+            if assignment != expected_assignment:
+                raise WorkBindingError("dispatch envelope assignment is stale or mismatched")
+            if envelope.get("input_ref", {}).get("input_digest") != grant.get("input", {}).get("input_digest"):
+                raise WorkBindingError("dispatch envelope input disagrees with protected run input")
         return work
+
+    def _authority_condition_checks(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        runtime_attempt_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Build exact current-policy/task/run fences for a cross-table mutation."""
+        scope = snapshot.get("scope")
+        if not isinstance(scope, dict) or not scope.get("tenant") or not scope.get("canonical_principal"):
+            raise WorkBindingError("task ownership scope is incomplete")
+        tenant = str(scope["tenant"])
+        principal = str(scope["canonical_principal"])
+        task_id = str(snapshot["task_id"])
+        invocation_id = str(snapshot["invocation_id"])
+        generation = int(snapshot["generation"])
+        authority_pk = task_authority_partition(tenant)
+        grant_sk = task_run_grant_sort_key(invocation_id=invocation_id, generation=generation)
+        grant = self._get_authority(authority_pk, grant_sk)
+        if grant is None or _protected_grant_digest(grant) != snapshot.get("grant_digest"):
+            raise WorkBindingError("protected run grant digest disagrees with task metadata")
+        common_values = {
+            ":active": "active",
+            ":tenant": tenant,
+            ":principal": principal,
+            ":task": task_id,
+            ":invocation": invocation_id,
+            ":generation": generation,
+            ":digest": str(snapshot["request_digest"]),
+            ":persona": str(snapshot["persona"]),
+            ":policy_version": int(snapshot["policy_version"]),
+            ":grant_digest": str(snapshot["grant_digest"]),
+        }
+        grant_condition = (
+            "#status = :active AND tenant = :tenant AND canonical_principal = :principal AND "
+            "task_id = :task AND invocation_id = :invocation AND generation = :generation AND "
+            "request_digest = :digest AND persona = :persona AND #input = :grant_input AND "
+            "#model_binding = :grant_model_binding AND #limits = :grant_limits AND #capabilities = :grant_capabilities"
+        )
+        grant_values = {key: value for key, value in common_values.items() if key not in {":policy_version", ":grant_digest"}} | {
+            ":grant_input": grant["input"],
+            ":grant_model_binding": grant["model_binding"],
+            ":grant_limits": grant["limits"],
+            ":grant_capabilities": grant["capabilities"],
+        }
+        if runtime_attempt_id is not None:
+            validate_uuid(runtime_attempt_id, "runtime_attempt_id")
+            grant_condition += " AND runtime_attempt_id = :attempt"
+            grant_values[":attempt"] = runtime_attempt_id
+        return [
+            {
+                "ConditionCheck": {
+                    "TableName": self._authority_table_name,
+                    "Key": _serialize_authority({"pk": authority_pk, "sk": task_binding_sort_key(task_id)}),
+                    "ConditionExpression": (
+                        "#status = :active AND tenant = :tenant AND canonical_principal = :principal AND "
+                        "task_id = :task AND invocation_id = :invocation AND generation = :generation AND "
+                        "request_digest = :digest AND persona = :persona AND policy_version = :policy_version AND "
+                        "grant_digest = :grant_digest"
+                    ),
+                    "ExpressionAttributeNames": {"#status": "status"},
+                    "ExpressionAttributeValues": _serialize_authority(common_values),
+                }
+            },
+            {
+                "ConditionCheck": {
+                    "TableName": self._authority_table_name,
+                    "Key": _serialize_authority({"pk": authority_pk, "sk": grant_sk}),
+                    "ConditionExpression": grant_condition,
+                    "ExpressionAttributeNames": {
+                        "#status": "status",
+                        "#input": "input",
+                        "#model_binding": "model_binding",
+                        "#limits": "limits",
+                        "#capabilities": "capabilities",
+                    },
+                    "ExpressionAttributeValues": _serialize_authority(grant_values),
+                }
+            },
+            {
+                "ConditionCheck": {
+                    "TableName": self._authority_table_name,
+                    "Key": _serialize_authority({"pk": authority_pk, "sk": task_policy_sort_key(principal)}),
+                    "ConditionExpression": "#status = :active AND #version = :policy_version AND contains(personas, :persona)",
+                    "ExpressionAttributeNames": {"#status": "status", "#version": "version"},
+                    "ExpressionAttributeValues": _serialize_authority(
+                        {
+                            ":active": "active",
+                            ":policy_version": int(snapshot["policy_version"]),
+                            ":persona": str(snapshot["persona"]),
+                        }
+                    ),
+                }
+            },
+        ]
+
+    def bind_runtime_attempt(
+        self,
+        *,
+        task_id: str,
+        invocation_id: str,
+        generation: int,
+        runtime_attempt_id: str,
+        expected_version: int,
+        expected_runtime_attempt_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically bind the task, run row and protected grant to one attempt."""
+        validate_uuid(invocation_id, "invocation_id")
+        validate_uuid(runtime_attempt_id, "runtime_attempt_id")
+        if expected_runtime_attempt_id is not None:
+            validate_uuid(expected_runtime_attempt_id, "expected_runtime_attempt_id")
+        snapshot = self.read_task(task_id)
+        if snapshot is None:
+            raise TaskStateConflictError(task_id=task_id, current_state=None)
+        if snapshot.get("invocation_id") != invocation_id or int(snapshot.get("generation", 0)) != generation:
+            raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(snapshot.get("generation", 0)))
+        if is_terminal(TaskState(str(snapshot["state"]))) or snapshot.get("state") == TaskState.CANCEL_REQUESTED.value:
+            raise TaskStateConflictError(
+                task_id=task_id,
+                current_state=str(snapshot["state"]),
+                current_version=int(snapshot["version"]),
+            )
+
+        now_iso = _iso(self._clock())
+        prior_condition = "runtime_attempt_id = :prior"
+        values: dict[str, Any] = {
+            ":attempt": runtime_attempt_id,
+            ":prior": expected_runtime_attempt_id,
+            ":version": expected_version,
+            ":next_version": expected_version + 1,
+            ":invocation": invocation_id,
+            ":generation": generation,
+            ":now": now_iso,
+        }
+        if expected_runtime_attempt_id is None:
+            prior_condition = "(attribute_not_exists(runtime_attempt_id) OR attribute_type(runtime_attempt_id, :null_type))"
+            values[":null_type"] = "NULL"
+
+        task_binding_check, grant_check, policy_check = self._authority_condition_checks(snapshot=snapshot)
+        grant_fence = grant_check["ConditionCheck"]
+
+        def expression_values(*names: str) -> dict[str, Any]:
+            return _serialize_authority({name: values[name] for name in names})
+
+        prior_names = (":prior",) if expected_runtime_attempt_id is not None else (":null_type",)
+        run_key = {
+            "event_id": task_run_partition(task_id),
+            "arrived_at": run_sort_key(invocation_id=invocation_id, generation=generation),
+        }
+        grant_key = {
+            "pk": task_authority_partition(str(snapshot["scope"]["tenant"])),
+            "sk": task_run_grant_sort_key(invocation_id=invocation_id, generation=generation),
+        }
+        try:
+            self._client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Update": {
+                            "TableName": self._table_name,
+                            "Key": _serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
+                            "UpdateExpression": "SET runtime_attempt_id = :attempt, #version = :next_version, updated_at = :now",
+                            "ConditionExpression": (
+                                "#version = :version AND invocation_id = :invocation AND generation = :generation AND " + prior_condition
+                            ),
+                            "ExpressionAttributeNames": {"#version": "version"},
+                            "ExpressionAttributeValues": expression_values(
+                                ":attempt", ":version", ":next_version", ":invocation", ":generation", ":now", *prior_names
+                            ),
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": self._table_name,
+                            "Key": _serialize_authority(run_key),
+                            "UpdateExpression": "SET runtime_attempt_id = :attempt, updated_at = :now",
+                            "ConditionExpression": "invocation_id = :invocation AND generation = :generation AND " + prior_condition,
+                            "ExpressionAttributeValues": expression_values(":attempt", ":invocation", ":generation", ":now", *prior_names),
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": self._authority_table_name,
+                            "Key": _serialize_authority(grant_key),
+                            "UpdateExpression": "SET runtime_attempt_id = :attempt, updated_at = :now",
+                            "ConditionExpression": f"({grant_fence['ConditionExpression']}) AND {prior_condition}",
+                            "ExpressionAttributeNames": grant_fence["ExpressionAttributeNames"],
+                            "ExpressionAttributeValues": {
+                                **grant_fence["ExpressionAttributeValues"],
+                                **expression_values(":attempt", ":now", *prior_names),
+                            },
+                        }
+                    },
+                    task_binding_check,
+                    policy_check,
+                ]
+            )
+        except ClientError as exc:
+            if not _is_conditional_failure(exc):
+                raise TaskStoreError("task attempt binding unavailable") from exc
+            live = self.read_task(task_id)
+            if live is not None and int(live.get("generation", 0)) != generation:
+                raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(live.get("generation", 0))) from None
+            raise StaleAttemptError("runtime attempt binding is stale or authority was revoked") from None
+        except BotoCoreError as exc:
+            raise TaskStoreError("task attempt binding unavailable") from exc
+        return {
+            "task_id": task_id,
+            "invocation_id": invocation_id,
+            "generation": generation,
+            "runtime_attempt_id": runtime_attempt_id,
+            "version": expected_version + 1,
+        }
 
     # -- state transitions --------------------------------------------------
 
@@ -897,6 +1266,8 @@ class TaskStore:
         expected_version: int,
         target_state: TaskState,
         generation: int | None = None,
+        invocation_id: str | None = None,
+        runtime_attempt_id: str | None = None,
         event_kind: str | None = None,
         event_data: dict[str, Any] | None = None,
         attributes: dict[str, Any] | None = None,
@@ -921,6 +1292,16 @@ class TaskStore:
         snapshot = self.read_task(task_id)
         if snapshot is None:
             raise TaskStateConflictError(task_id=task_id, current_state=None)
+        attempt_bound = invocation_id is not None or runtime_attempt_id is not None
+        if attempt_bound:
+            if invocation_id is None or generation is None or runtime_attempt_id is None:
+                raise TaskStoreError("worker transition requires the complete invocation/generation/attempt binding")
+            validate_uuid(invocation_id, "invocation_id")
+            validate_uuid(runtime_attempt_id, "runtime_attempt_id")
+            if snapshot.get("invocation_id") != invocation_id or int(snapshot.get("generation", 0)) != generation:
+                raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(snapshot.get("generation", 0)))
+            if snapshot.get("runtime_attempt_id") != runtime_attempt_id:
+                raise StaleAttemptError("runtime attempt is not current")
 
         current = TaskState(str(snapshot["state"]))
         # In-process guard first, so an impermissible transition fails early rather
@@ -952,10 +1333,10 @@ class TaskStore:
         }
         names = {"#state": "state"}
 
+        if _ATTEMPT_PROTECTED_TRANSITION_ATTRIBUTES.intersection(attributes or {}) and not attempt_bound:
+            raise TaskStoreError("result and outcome evidence require a current runtime attempt binding")
         for key, value in (attributes or {}).items():
-            if key in {"state", "version", "event_id", "arrived_at", "scope", "task_id", "record_type"}:
-                # Refuse to let a caller rewrite identity, scope or the fence
-                # itself through the generic attribute channel.
+            if key not in _TRANSITION_MUTABLE_ATTRIBUTES:
                 raise TaskStoreError(f"attribute {key!r} cannot be set through a transition")
             placeholder = f":attr_{len(values)}"
             set_parts.append(f"{key} = {placeholder}")
@@ -965,6 +1346,10 @@ class TaskStore:
         if generation is not None:
             condition += " AND generation = :generation"
             values[":generation"] = generation
+        if attempt_bound:
+            condition += " AND invocation_id = :invocation_id AND runtime_attempt_id = :runtime_attempt_id"
+            values[":invocation_id"] = invocation_id
+            values[":runtime_attempt_id"] = runtime_attempt_id
 
         # Terminal state records both retention boundaries.  The snapshot and
         # idempotency row are tombstones through day 90; task content becomes
@@ -984,7 +1369,7 @@ class TaskStore:
                     "UpdateExpression": "SET " + ", ".join(set_parts),
                     "ConditionExpression": condition,
                     "ExpressionAttributeNames": names,
-                    "ExpressionAttributeValues": {k: _SERIALIZER.serialize(v) for k, v in values.items()},
+                    "ExpressionAttributeValues": _serialize_authority(values),
                 }
             }
         ]
@@ -994,9 +1379,7 @@ class TaskStore:
                 {
                     "Update": {
                         "TableName": self._table_name,
-                        "Key": _serialize_authority(
-                            {"event_id": str(snapshot["idempotency_partition"]), "arrived_at": META_SORT_KEY}
-                        ),
+                        "Key": _serialize_authority({"event_id": str(snapshot["idempotency_partition"]), "arrived_at": META_SORT_KEY}),
                         "UpdateExpression": "SET terminal_at = :now, expires_at = :tombstone_expires",
                         "ConditionExpression": "task_id = :task_id AND request_digest = :request_digest",
                         "ExpressionAttributeValues": _serialize_authority(
@@ -1015,9 +1398,7 @@ class TaskStore:
                     {
                         "Update": {
                             "TableName": self._table_name,
-                            "Key": _serialize_authority(
-                                {"event_id": task_artifact_partition(str(artifact_id)), "arrived_at": META_SORT_KEY}
-                            ),
+                            "Key": _serialize_authority({"event_id": task_artifact_partition(str(artifact_id)), "arrived_at": META_SORT_KEY}),
                             "UpdateExpression": "SET terminal_at = :now, expires_at = :content_expires",
                             "ConditionExpression": "task_id = :task_id AND binding_state = :bound",
                             "ExpressionAttributeValues": _serialize_authority(
@@ -1035,9 +1416,7 @@ class TaskStore:
                 {
                     "Update": {
                         "TableName": self._authority_table_name,
-                        "Key": _serialize_authority(
-                            {"pk": task_capacity_partition(str(snapshot["capacity_scope_hash"])), "sk": "ACTIVE"}
-                        ),
+                        "Key": _serialize_authority({"pk": task_capacity_partition(str(snapshot["capacity_scope_hash"])), "sk": "ACTIVE"}),
                         "UpdateExpression": "SET updated_at = :now REMOVE reservations.#task ADD active_count :minus_one",
                         "ConditionExpression": "reservations.#task = :reservation AND active_count > :zero",
                         "ExpressionAttributeNames": {"#task": task_id},
@@ -1052,6 +1431,9 @@ class TaskStore:
                     }
                 }
             )
+
+        if attempt_bound:
+            transact.extend(self._authority_condition_checks(snapshot=snapshot, runtime_attempt_id=runtime_attempt_id))
 
         if event_kind is not None:
             sequence = int(snapshot.get("event_sequence", 0)) + 1
@@ -1071,6 +1453,7 @@ class TaskStore:
                                 generation=int(snapshot.get("generation", 1)),
                                 timestamp=now_iso,
                                 data=event_data or {},
+                                runtime_attempt_id=runtime_attempt_id,
                             )
                         ),
                         # A sequence number must not be reusable: if this row
@@ -1084,11 +1467,23 @@ class TaskStore:
         try:
             self._client.transact_write_items(TransactItems=transact)
         except (ClientError, BotoCoreError) as exc:
-            self._raise_transition_failure(exc, task_id=task_id, generation=generation)
+            self._raise_transition_failure(
+                exc,
+                task_id=task_id,
+                generation=generation,
+                runtime_attempt_id=runtime_attempt_id,
+            )
 
         return {"task_id": task_id, "state": target_state.value, "version": next_version, "updated_at": now_iso}
 
-    def _raise_transition_failure(self, exc: Exception, *, task_id: str, generation: int | None) -> None:
+    def _raise_transition_failure(
+        self,
+        exc: Exception,
+        *,
+        task_id: str,
+        generation: int | None,
+        runtime_attempt_id: str | None,
+    ) -> None:
         """Translate a failed transition into a conflict carrying committed state.
 
         Re-reads rather than trusting the cancellation reasons, so the caller is
@@ -1106,6 +1501,10 @@ class TaskStore:
         current_generation = int(snapshot.get("generation", 1))
         if generation is not None and current_generation != generation:
             raise StaleGenerationError(task_id=task_id, supplied=generation, current=current_generation) from None
+        if runtime_attempt_id is not None and snapshot.get("runtime_attempt_id") != runtime_attempt_id:
+            raise StaleAttemptError("runtime attempt is stale") from None
+        if runtime_attempt_id is not None:
+            raise StaleAttemptError("runtime attempt authority was revoked or changed") from None
 
         raise TaskStateConflictError(
             task_id=task_id,
@@ -1182,6 +1581,7 @@ class TaskStore:
                             "ConditionExpression": "attribute_not_exists(event_id)",
                         }
                     },
+                    *self._authority_condition_checks(snapshot=snapshot),
                 ]
             )
         except (ClientError, BotoCoreError) as exc:
@@ -1239,24 +1639,201 @@ class TaskStore:
         generation: int,
         timestamp: str,
         data: dict[str, Any],
+        runtime_attempt_id: str | None = None,
+        producer_timestamp: str | None = None,
     ) -> dict[str, Any]:
-        return base_item(
-            partition=task_events_partition(task_id),
-            sort_key=event_sort_key(sequence),
-            record_type="TASK_EVENTS",
+        return (
+            base_item(
+                partition=task_events_partition(task_id),
+                sort_key=event_sort_key(sequence),
+                record_type="TASK_EVENTS",
+                scope=scope,
+            )
+            | {
+                "task_id": task_id,
+                "invocation_id": invocation_id,
+                "generation": generation,
+                "runtime_attempt_id": runtime_attempt_id,
+                "sequence": sequence,
+                # The public cursor form from the contract: <task_id>:<sequence>.
+                "task_event_id": f"{task_id}:{sequence}",
+                "type": kind,
+                "timestamp": timestamp,
+                "data": data,
+            }
+            | ({"producer_timestamp": producer_timestamp} if producer_timestamp is not None else {})
+        )
+
+    def append_report(
+        self,
+        *,
+        task_id: str,
+        invocation_id: str,
+        generation: int,
+        runtime_attempt_id: str,
+        report_id: str,
+        kind: str,
+        data: dict[str, Any],
+        producer_timestamp: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Deduplicate and append one worker report under the current-attempt fence."""
+        validate_task_id(task_id)
+        validate_uuid(invocation_id, "invocation_id")
+        validate_uuid(runtime_attempt_id, "runtime_attempt_id")
+        validate_uuid(report_id, "report_id")
+        if kind not in _REPORT_EVENT_TYPES:
+            raise TaskStoreError("report event type is not permitted")
+        if not isinstance(data, dict):
+            raise TaskStoreError("report data must be an object")
+        data_limit = 8_192 if kind == "progress.updated" else 65_536
+        if len(canonical_json(data)) > data_limit:
+            raise TaskStoreError("report data exceeds the fixed event limit")
+        if producer_timestamp is not None and producer_timestamp.tzinfo is None:
+            raise TaskStoreError("producer_timestamp must be timezone-aware")
+
+        producer_iso = _iso(producer_timestamp) if producer_timestamp is not None else None
+        report_digest = payload_digest(
+            {
+                "task_id": task_id,
+                "invocation_id": invocation_id,
+                "generation": generation,
+                "runtime_attempt_id": runtime_attempt_id,
+                "event_type": kind,
+                "producer_timestamp": producer_iso,
+                "data": data,
+            }
+        )
+        report_key = report_sort_key(generation=generation, report_id=report_id)
+        existing = self._get(task_report_partition(task_id), report_key)
+        if existing is not None:
+            if existing.get("report_digest") != report_digest:
+                raise IdempotencyConflictError(
+                    task_id=task_id,
+                    stored_digest=str(existing.get("report_digest", "")),
+                    supplied_digest=report_digest,
+                )
+            return {
+                "report_id": report_id,
+                "sequence": int(existing["sequence"]),
+                "event_id": str(existing["task_event_id"]),
+            }
+
+        snapshot = self.read_task(task_id)
+        if snapshot is None:
+            raise TaskStateConflictError(task_id=task_id, current_state=None)
+        if snapshot.get("invocation_id") != invocation_id or int(snapshot.get("generation", 0)) != generation:
+            raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(snapshot.get("generation", 0)))
+        if snapshot.get("runtime_attempt_id") != runtime_attempt_id:
+            raise StaleAttemptError("runtime attempt is not current")
+        current_state = TaskState(str(snapshot["state"]))
+        if is_terminal(current_state) or current_state is TaskState.CANCEL_REQUESTED:
+            raise TaskStateConflictError(
+                task_id=task_id,
+                current_state=current_state.value,
+                current_version=int(snapshot["version"]),
+            )
+        current_sequence = int(snapshot.get("event_sequence", 0))
+        maximum = MAX_TASK_EVENTS if kind in _TERMINAL_REPORT_EVENT_TYPES else MAX_TASK_EVENTS - FINAL_EVENT_RESERVE
+        if current_sequence >= maximum:
+            raise TaskStoreError("task event budget is exhausted")
+
+        sequence = current_sequence + 1
+        now_iso = _iso(self._clock())
+        scope = dict(snapshot["scope"])
+        report = base_item(
+            partition=task_report_partition(task_id),
+            sort_key=report_key,
+            record_type="TASK_REPORT",
             scope=scope,
         ) | {
             "task_id": task_id,
             "invocation_id": invocation_id,
             "generation": generation,
-            "runtime_attempt_id": None,
+            "runtime_attempt_id": runtime_attempt_id,
+            "report_id": report_id,
+            "report_digest": report_digest,
+            "event_type": kind,
             "sequence": sequence,
-            # The public cursor form from the contract: <task_id>:<sequence>.
             "task_event_id": f"{task_id}:{sequence}",
-            "type": kind,
-            "timestamp": timestamp,
-            "data": data,
+            "created_at": now_iso,
         }
+        event = self._event_item(
+            task_id=task_id,
+            scope=scope,
+            sequence=sequence,
+            kind=kind,
+            invocation_id=invocation_id,
+            generation=generation,
+            timestamp=now_iso,
+            data=data,
+            runtime_attempt_id=runtime_attempt_id,
+            producer_timestamp=producer_iso,
+        )
+        transaction = [
+            {
+                "Put": {
+                    "TableName": self._table_name,
+                    "Item": _serialize(report),
+                    "ConditionExpression": "attribute_not_exists(event_id)",
+                }
+            },
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": _serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
+                    "UpdateExpression": "SET event_sequence = :next, updated_at = :now",
+                    "ConditionExpression": (
+                        "event_sequence = :current AND #state = :state AND invocation_id = :invocation AND "
+                        "generation = :generation AND runtime_attempt_id = :attempt"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": _serialize_authority(
+                        {
+                            ":next": sequence,
+                            ":current": current_sequence,
+                            ":now": now_iso,
+                            ":state": current_state.value,
+                            ":invocation": invocation_id,
+                            ":generation": generation,
+                            ":attempt": runtime_attempt_id,
+                        }
+                    ),
+                }
+            },
+            *self._authority_condition_checks(snapshot=snapshot, runtime_attempt_id=runtime_attempt_id),
+            {
+                "Put": {
+                    "TableName": self._table_name,
+                    "Item": _serialize(event),
+                    "ConditionExpression": "attribute_not_exists(event_id)",
+                }
+            },
+        ]
+        try:
+            self._client.transact_write_items(TransactItems=transaction)
+        except ClientError as exc:
+            if not _is_conditional_failure(exc):
+                raise TaskStoreError("task report store unavailable") from exc
+            committed = self._get(task_report_partition(task_id), report_key)
+            if committed is not None:
+                if committed.get("report_digest") != report_digest:
+                    raise IdempotencyConflictError(
+                        task_id=task_id,
+                        stored_digest=str(committed.get("report_digest", "")),
+                        supplied_digest=report_digest,
+                    ) from None
+                return {
+                    "report_id": report_id,
+                    "sequence": int(committed["sequence"]),
+                    "event_id": str(committed["task_event_id"]),
+                }
+            live = self.read_task(task_id)
+            if live is not None and int(live.get("generation", 0)) != generation:
+                raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(live.get("generation", 0))) from None
+            raise StaleAttemptError("runtime attempt is stale or authority was revoked") from None
+        except BotoCoreError as exc:
+            raise TaskStoreError("task report store unavailable") from exc
+        return {"report_id": report_id, "sequence": sequence, "event_id": f"{task_id}:{sequence}"}
 
     # -- commands and turns -------------------------------------------------
 
@@ -1560,6 +2137,10 @@ class TaskStore:
             raise TaskStoreError("artifact digest must be lowercase SHA-256")
         partition = task_artifact_partition(artifact_id)
         now = self._clock()
+        object_key = (
+            f"tasks/{component_digest('task-artifact-tenant-v1', tenant)}/"
+            f"{component_digest('task-artifact-principal-v1', canonical_principal)}/{artifact_id}/{version}"
+        )
         item = base_item(
             partition=partition,
             sort_key=META_SORT_KEY,
@@ -1571,10 +2152,7 @@ class TaskStore:
             "content_sha256": content_sha256,
             "content_type": content_type,
             "size_bytes": size_bytes,
-            "object_key": (
-                f"tasks/{component_digest('task-artifact-tenant-v1', tenant)}/"
-                f"{component_digest('task-artifact-principal-v1', canonical_principal)}/{artifact_id}/{version}"
-            ),
+            "object_key": object_key,
             "binding_state": "unclaimed",
             "created_at": _iso(now),
             TTL_ATTRIBUTE: int((now + timedelta(hours=24)).timestamp()),
@@ -1588,16 +2166,23 @@ class TaskStore:
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 existing = self._get(partition, META_SORT_KEY)
-                if existing and all(
-                    existing.get(key) == value
-                    for key, value in {
-                        "version": version,
-                        "content_sha256": content_sha256,
-                        "content_type": content_type,
-                        "size_bytes": size_bytes,
-                    }.items()
-                ) and existing.get("scope") == {"tenant": tenant, "canonical_principal": canonical_principal}:
-                    return existing
+                if (
+                    existing
+                    and all(
+                        existing.get(key) == value
+                        for key, value in {
+                            "artifact_id": artifact_id,
+                            "version": version,
+                            "content_sha256": content_sha256,
+                            "content_type": content_type,
+                            "size_bytes": size_bytes,
+                            "object_key": object_key,
+                        }.items()
+                    )
+                    and existing.get("scope") == {"tenant": tenant, "canonical_principal": canonical_principal}
+                ):
+                    if existing.get("binding_state") == "bound" or int(existing.get(TTL_ATTRIBUTE, 0)) > int(now.timestamp()):
+                        return existing
                 raise IdempotencyConflictError(
                     task_id="",
                     stored_digest=str(existing.get("content_sha256", "")) if existing else "",
@@ -1638,6 +2223,7 @@ class TaskStore:
             "task_id": task_id,
             "invocation_id": snapshot["invocation_id"],
             "generation": int(snapshot["generation"]),
+            "grant_digest": snapshot["grant_digest"],
             "work_id": work_id,
             "work_kind": kind,
             "work_version": 1,
@@ -1646,9 +2232,9 @@ class TaskStore:
             "updated_at": now_iso,
             WORK_SHARD_ATTRIBUTE: work_shard(task_id),
             WORK_DUE_ATTRIBUTE: work_due_key(due_at=due_at, work_id=work_id),
+            "due_at": _iso(due_at),
         }
         locator = self._locator_for_work(work=work, tenant=str(scope["tenant"]), now_iso=now_iso)
-        authority_pk = task_authority_partition(str(scope["tenant"]))
         try:
             self._client.transact_write_items(
                 TransactItems=[
@@ -1656,24 +2242,21 @@ class TaskStore:
                         "ConditionCheck": {
                             "TableName": self._table_name,
                             "Key": _serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
-                            "ConditionExpression": "#version = :version AND generation = :generation",
+                            "ConditionExpression": (
+                                "#version = :version AND invocation_id = :invocation AND generation = :generation AND request_digest = :digest"
+                            ),
                             "ExpressionAttributeNames": {"#version": "version"},
                             "ExpressionAttributeValues": _serialize_authority(
-                                {":version": expected_task_version, ":generation": int(snapshot["generation"])}
+                                {
+                                    ":version": expected_task_version,
+                                    ":invocation": snapshot["invocation_id"],
+                                    ":generation": int(snapshot["generation"]),
+                                    ":digest": snapshot["request_digest"],
+                                }
                             ),
                         }
                     },
-                    {
-                        "ConditionCheck": {
-                            "TableName": self._authority_table_name,
-                            "Key": _serialize_authority({"pk": authority_pk, "sk": task_binding_sort_key(task_id)}),
-                            "ConditionExpression": "#status = :active AND generation = :generation",
-                            "ExpressionAttributeNames": {"#status": "status"},
-                            "ExpressionAttributeValues": _serialize_authority(
-                                {":active": "active", ":generation": int(snapshot["generation"])}
-                            ),
-                        }
-                    },
+                    *self._authority_condition_checks(snapshot=snapshot),
                     {
                         "Put": {
                             "TableName": self._table_name,
@@ -1719,6 +2302,7 @@ class TaskStore:
             "recovery_state": "pending",
             "updated_at": now_iso,
             WORK_DUE_ATTRIBUTE: work_due_key(due_at=due_at, work_id=new_work_id),
+            "due_at": _iso(due_at),
         }
         for attribute_name in (
             "recovery_lease_token",
@@ -1738,7 +2322,7 @@ class TaskStore:
                             "Key": _serialize_authority({"event_id": old["event_id"], "arrived_at": old["arrived_at"]}),
                             "UpdateExpression": (
                                 "SET work_id = :new, work_version = :version, recovery_state = :pending, "
-                                "updated_at = :now, task_due = :due "
+                                "updated_at = :now, task_due = :due, due_at = :due_at "
                                 "REMOVE recovery_lease_token, recovery_lease_expires_at, recovery_lease_taken_at"
                             ),
                             "ConditionExpression": "work_id = :old AND work_version = :old_version",
@@ -1749,6 +2333,7 @@ class TaskStore:
                                     ":pending": "pending",
                                     ":now": now_iso,
                                     ":due": replacement[WORK_DUE_ATTRIBUTE],
+                                    ":due_at": replacement["due_at"],
                                     ":old": old_work_id,
                                     ":old_version": int(old.get("work_version", 1)),
                                 }
@@ -1773,6 +2358,7 @@ class TaskStore:
                             "ConditionExpression": "attribute_not_exists(pk)",
                         }
                     },
+                    *self._authority_condition_checks(snapshot=self.read_task(str(old["task_id"])) or {}),
                 ]
             )
         except ClientError as exc:
@@ -1796,6 +2382,7 @@ class TaskStore:
             "task_id": work["task_id"],
             "invocation_id": work["invocation_id"],
             "generation": work["generation"],
+            "grant_digest": work["grant_digest"],
             "work_event_id": work["event_id"],
             "work_arrived_at": work["arrived_at"],
             "binding_state": "active",
@@ -1835,8 +2422,9 @@ class TaskStore:
           therefore wastes a read instead of double-dispatching work.
         """
         if limit < 1 or limit > 100:
-            # The design bounds recovery at 100 work records per invocation.
             raise TaskStoreError("limit must be between 1 and 100")
+        if shard not in {f"v1#{index:02d}" for index in range(16)}:
+            raise TaskStoreError("shard must be one of v1#00 through v1#15")
         try:
             query = {
                 "TableName": self._table_name,
@@ -1864,7 +2452,7 @@ class TaskStore:
                 continue
             try:
                 record = self.resolve_work(str(item.get("work_id", "")))
-            except WorkBindingError:
+            except (WorkBindingError, ValueError):
                 continue
             if record.get("event_id") != partition or record.get("arrived_at") != sort_key:
                 continue
@@ -1875,49 +2463,76 @@ class TaskStore:
         return {"work": claimed, "next_key": _deserialize(last_key) if last_key else None}
 
     def _lease_recovery(self, *, record: dict[str, Any], now: datetime, lease_seconds: int) -> dict[str, Any] | None:
-        """Take a time-bounded lease, or return False if another holder is live.
-
-        The condition permits a claim only when no lease exists or the existing one
-        has expired, so two concurrent recovery invocations cannot both act on one
-        work record. A lease expiring is not by itself evidence that the previous
-        holder stopped — the design is explicit that replacing a worker needs
-        proven termination, which is T3/T4's fence, not this lease.
-        """
+        """Take the independent recovery lease under current authority fences."""
+        if lease_seconds < 1 or lease_seconds > WORK_LEASE_SECONDS:
+            raise TaskStoreError("recovery lease must be between 1 and 45 seconds")
+        due_at = record.get("due_at")
+        if not isinstance(due_at, str):
+            raise WorkBindingError("work record has no immutable due time")
+        try:
+            due_time = datetime.fromisoformat(due_at)
+        except ValueError:
+            return None
+        if due_time.tzinfo is None or due_time > now:
+            return None
+        expected_due_key = work_due_key(due_at=due_time, work_id=str(record["work_id"]))
+        if record.get(WORK_DUE_ATTRIBUTE) != expected_due_key:
+            return None
         expiry = _iso(now + timedelta(seconds=lease_seconds))
         token = str(uuid.uuid4())
+        snapshot = self.read_task(str(record["task_id"]))
+        if snapshot is None:
+            raise WorkBindingError("work task metadata is missing")
+        transaction = [
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": _serialize_authority({"event_id": record["event_id"], "arrived_at": record["arrived_at"]}),
+                    "UpdateExpression": (
+                        "SET recovery_lease_token = :token, recovery_lease_expires_at = :expiry, "
+                        "recovery_lease_taken_at = :now, recovery_lease_version = if_not_exists(recovery_lease_version, :zero) + :one"
+                    ),
+                    "ConditionExpression": (
+                        "work_id = :work_id AND task_due = :due_key AND due_at = :due_at AND "
+                        "(attribute_not_exists(recovery_lease_expires_at) OR recovery_lease_expires_at < :now)"
+                    ),
+                    "ExpressionAttributeValues": _serialize_authority(
+                        {
+                            ":token": token,
+                            ":expiry": expiry,
+                            ":now": _iso(now),
+                            ":work_id": record["work_id"],
+                            ":due_key": expected_due_key,
+                            ":due_at": due_at,
+                            ":zero": 0,
+                            ":one": 1,
+                        }
+                    ),
+                }
+            },
+            *self._authority_condition_checks(snapshot=snapshot),
+        ]
         try:
-            self._client.update_item(
-                TableName=self._table_name,
-                Key=_serialize_authority({"event_id": record["event_id"], "arrived_at": record["arrived_at"]}),
-                UpdateExpression=(
-                    "SET recovery_lease_token = :token, recovery_lease_expires_at = :expiry, "
-                    "recovery_lease_taken_at = :now, recovery_lease_version = if_not_exists(recovery_lease_version, :zero) + :one"
-                ),
-                ConditionExpression=(
-                    "work_id = :work_id AND attribute_exists(task_due) AND "
-                    "(attribute_not_exists(recovery_lease_expires_at) OR recovery_lease_expires_at < :now)"
-                ),
-                ExpressionAttributeValues=_serialize_authority(
-                    {
-                        ":token": token,
-                        ":expiry": expiry,
-                        ":now": _iso(now),
-                        ":work_id": record["work_id"],
-                        ":zero": 0,
-                        ":one": 1,
-                    }
-                ),
-            )
+            self._client.transact_write_items(TransactItems=transaction)
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            if _is_conditional_failure(exc):
                 return None
             raise TaskStoreError("task store unavailable") from exc
         except BotoCoreError as exc:
             raise TaskStoreError("task store unavailable") from exc
-        return record | {"lease_token": token, "lease_expires_at": expiry}
+        return {
+            "work_id": str(record["work_id"]),
+            "task_id": str(record["task_id"]),
+            "kind": str(record["work_kind"]),
+            "due_at": due_at,
+            "lease_token": token,
+            "lease_expires_at": expiry,
+        }
 
     def claim_dispatch(self, *, dispatch_id: str, now: datetime | None = None, lease_seconds: int = WORK_LEASE_SECONDS) -> dict[str, Any]:
         """Claim the independent publication lease and return the exact envelope."""
+        if lease_seconds < 1 or lease_seconds > WORK_LEASE_SECONDS:
+            raise TaskStoreError("publication lease must be between 1 and 45 seconds")
         claimed_at = now or self._clock()
         work = self.resolve_work(dispatch_id, expected_kind="dispatch")
         snapshot = self.read_task(str(work["task_id"]))
@@ -1927,41 +2542,100 @@ class TaskStore:
             raise WorkLeaseConflictError("dispatch is already confirmed")
         token = str(uuid.uuid4())
         expiry = _iso(claimed_at + timedelta(seconds=lease_seconds))
+        transaction = [
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": _serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
+                    "UpdateExpression": (
+                        "SET publication_lease_token = :token, publication_lease_expires_at = :expiry, "
+                        "publication_lease_taken_at = :now, publication_lease_version = if_not_exists(publication_lease_version, :zero) + :one "
+                        "ADD publication_tries :one"
+                    ),
+                    "ConditionExpression": (
+                        "work_id = :work_id AND envelope_digest = :digest AND publication_state <> :confirmed AND "
+                        "publication_tries < :max_tries AND publication_deadline_at >= :now AND "
+                        "(attribute_not_exists(publication_lease_expires_at) OR publication_lease_expires_at < :now)"
+                    ),
+                    "ExpressionAttributeValues": _serialize_authority(
+                        {
+                            ":token": token,
+                            ":expiry": expiry,
+                            ":now": _iso(claimed_at),
+                            ":work_id": dispatch_id,
+                            ":digest": work["envelope_digest"],
+                            ":confirmed": "confirmed",
+                            ":zero": 0,
+                            ":one": 1,
+                            ":max_tries": 5,
+                        }
+                    ),
+                }
+            },
+            *self._authority_condition_checks(snapshot=snapshot),
+        ]
         try:
-            self._client.update_item(
-                TableName=self._table_name,
-                Key=_serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
-                UpdateExpression=(
-                    "SET publication_lease_token = :token, publication_lease_expires_at = :expiry, "
-                    "publication_lease_taken_at = :now, publication_lease_version = if_not_exists(publication_lease_version, :zero) + :one "
-                    "ADD publication_tries :one"
-                ),
-                ConditionExpression=(
-                    "work_id = :work_id AND envelope_digest = :digest AND publication_state <> :confirmed AND "
-                    "publication_tries < :max_tries AND publication_deadline_at >= :now AND "
-                    "(attribute_not_exists(publication_lease_expires_at) OR publication_lease_expires_at < :now)"
-                ),
-                ExpressionAttributeValues=_serialize_authority(
-                    {
-                        ":token": token,
-                        ":expiry": expiry,
-                        ":now": _iso(claimed_at),
-                        ":work_id": dispatch_id,
-                        ":digest": work["envelope_digest"],
-                        ":confirmed": "confirmed",
-                        ":zero": 0,
-                        ":one": 1,
-                        ":max_tries": 5,
-                    }
-                ),
-            )
+            self._client.transact_write_items(TransactItems=transaction)
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                raise WorkLeaseConflictError("publication lease is held or dispatch binding changed") from None
+            if _is_conditional_failure(exc):
+                raise WorkLeaseConflictError("publication lease is held or dispatch authority changed") from None
             raise TaskStoreError("task store unavailable") from exc
         except BotoCoreError as exc:
             raise TaskStoreError("task store unavailable") from exc
         return {"envelope": work["envelope"], "lease_token": token, "lease_expires_at": expiry}
+
+    def _queue_transition_items(self, *, snapshot: dict[str, Any], now_iso: str) -> list[dict[str, Any]]:
+        sequence = int(snapshot.get("event_sequence", 0)) + 1
+        next_version = int(snapshot["version"]) + 1
+        task_id = str(snapshot["task_id"])
+        return [
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": _serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
+                    "UpdateExpression": (
+                        "SET #state = :queued, #version = :next_version, event_sequence = :sequence, queue_ack_status = :pending, updated_at = :now"
+                    ),
+                    "ConditionExpression": (
+                        "#state = :accepted AND #version = :version AND invocation_id = :invocation AND "
+                        "generation = :generation AND request_digest = :digest"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state", "#version": "version"},
+                    "ExpressionAttributeValues": _serialize_authority(
+                        {
+                            ":queued": TaskState.QUEUED.value,
+                            ":accepted": TaskState.ACCEPTED.value,
+                            ":next_version": next_version,
+                            ":version": int(snapshot["version"]),
+                            ":sequence": sequence,
+                            ":pending": "pending",
+                            ":now": now_iso,
+                            ":invocation": snapshot["invocation_id"],
+                            ":generation": int(snapshot["generation"]),
+                            ":digest": snapshot["request_digest"],
+                        }
+                    ),
+                }
+            },
+            {
+                "Put": {
+                    "TableName": self._table_name,
+                    "Item": _serialize(
+                        self._event_item(
+                            task_id=task_id,
+                            scope=dict(snapshot["scope"]),
+                            sequence=sequence,
+                            kind="task.queued",
+                            invocation_id=str(snapshot["invocation_id"]),
+                            generation=int(snapshot["generation"]),
+                            timestamp=now_iso,
+                            data={"status": TaskState.QUEUED.value, "version": next_version},
+                        )
+                    ),
+                    "ConditionExpression": "attribute_not_exists(event_id)",
+                }
+            },
+        ]
 
     def settle_dispatch(
         self,
@@ -1972,7 +2646,7 @@ class TaskStore:
         sqs_message_id: str | None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
-        """Persist actual send evidence under the publication-token fence."""
+        """Persist actual send evidence and any queued transition atomically."""
         settled_at = now or self._clock()
         if publication_outcome not in {"confirmed", "unknown", "failed"}:
             raise TaskStoreError("invalid publication outcome")
@@ -1981,59 +2655,54 @@ class TaskStore:
         if publication_outcome != "confirmed" and sqs_message_id is not None:
             raise TaskStoreError("an unconfirmed publication cannot record an SQS message ID")
         work = self.resolve_work(dispatch_id, expected_kind="dispatch")
+        snapshot = self.read_task(str(work["task_id"]))
+        if snapshot is None:
+            raise WorkBindingError("dispatch task metadata is missing")
+        now_iso = _iso(settled_at)
+        transaction: list[dict[str, Any]] = [
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": _serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
+                    "UpdateExpression": (
+                        "SET publication_state = :outcome, sqs_message_id = :message, publication_settled_at = :now "
+                        "REMOVE publication_lease_token, publication_lease_expires_at"
+                    ),
+                    "ConditionExpression": (
+                        "work_id = :work_id AND publication_lease_token = :token AND "
+                        "publication_lease_expires_at >= :now AND publication_state <> :confirmed"
+                    ),
+                    "ExpressionAttributeValues": _serialize_authority(
+                        {
+                            ":outcome": publication_outcome,
+                            ":message": sqs_message_id,
+                            ":now": now_iso,
+                            ":work_id": dispatch_id,
+                            ":token": lease_token,
+                            ":confirmed": "confirmed",
+                        }
+                    ),
+                }
+            }
+        ]
+        if publication_outcome == "confirmed" and snapshot.get("state") == TaskState.ACCEPTED.value:
+            transaction.extend(self._queue_transition_items(snapshot=snapshot, now_iso=now_iso))
+        transaction.extend(self._authority_condition_checks(snapshot=snapshot))
         try:
-            self._client.update_item(
-                TableName=self._table_name,
-                Key=_serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
-                UpdateExpression=(
-                    "SET publication_state = :outcome, sqs_message_id = :message, publication_settled_at = :now "
-                    "REMOVE publication_lease_token, publication_lease_expires_at"
-                ),
-                ConditionExpression=(
-                    "work_id = :work_id AND publication_lease_token = :token AND "
-                    "publication_lease_expires_at >= :now AND publication_state <> :confirmed"
-                ),
-                ExpressionAttributeValues=_serialize_authority(
-                    {
-                        ":outcome": publication_outcome,
-                        ":message": sqs_message_id,
-                        ":now": _iso(settled_at),
-                        ":work_id": dispatch_id,
-                        ":token": lease_token,
-                        ":confirmed": "confirmed",
-                    }
-                ),
-            )
+            self._client.transact_write_items(TransactItems=transaction)
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                raise WorkLeaseConflictError("publication token is stale, expired, or already settled") from None
+            if _is_conditional_failure(exc):
+                raise WorkLeaseConflictError("publication token is stale, expired, settled, or authority changed") from None
             raise TaskStoreError("task store unavailable") from exc
         except BotoCoreError as exc:
             raise TaskStoreError("task store unavailable") from exc
 
-        if publication_outcome == "confirmed":
-            self._advance_queued_from_publication(work["task_id"])
-        snapshot = self.read_task(work["task_id"])
+        current = self.read_task(str(work["task_id"]))
         return {
             "dispatch_id": dispatch_id,
-            "queue_ack_status": publication_outcome,
-            "task_status": snapshot.get("state") if snapshot else None,
+            "queue_ack_status": str(current.get("queue_ack_status", "unknown")) if current else "unknown",
+            "task_status": current.get("state") if current else None,
         }
-
-    def _advance_queued_from_publication(self, task_id: str) -> None:
-        snapshot = self.read_task(task_id)
-        if snapshot is None or snapshot.get("state") != TaskState.ACCEPTED.value:
-            return
-        try:
-            self.transition(
-                task_id=task_id,
-                expected_version=int(snapshot["version"]),
-                target_state=TaskState.QUEUED,
-                event_kind="task.queued",
-                attributes={"queue_ack_status": "confirmed"},
-            )
-        except TaskStateConflictError:
-            return
 
     def settle_recovery(
         self,
@@ -2044,45 +2713,64 @@ class TaskStore:
         observed: bool,
         observed_at: datetime,
     ) -> dict[str, Any]:
-        """Settle recovery only from persisted evidence, never from a boolean claim."""
-        lease_checked_at = self._clock()
+        """Settle recovery only under a live token and persisted evidence fence."""
+        if observed_at.tzinfo is None:
+            raise TaskStoreError("observed_at must be timezone-aware")
+        checked_at = self._clock()
         work = self.resolve_work(work_id)
-        if evidence_kind == "publication":
-            if not observed or work.get("publication_state") != "confirmed" or not work.get("sqs_message_id"):
-                raise WorkBindingError("committed publication evidence is absent")
-            self._advance_queued_from_publication(str(work["task_id"]))
-        else:
+        if evidence_kind != "publication":
             raise WorkBindingError("this storage interface has no authoritative evidence validator for that recovery kind")
+        if not observed or work.get("publication_state") != "confirmed" or not work.get("sqs_message_id"):
+            raise WorkBindingError("committed publication evidence is absent")
+        snapshot = self.read_task(str(work["task_id"]))
+        if snapshot is None:
+            raise WorkBindingError("recovery task metadata is missing")
+        now_iso = _iso(checked_at)
+        transaction: list[dict[str, Any]] = [
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": _serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
+                    "UpdateExpression": (
+                        "SET recovery_state = :settled, recovery_evidence_kind = :kind, recovery_settled_at = :now, "
+                        "recovery_observed_at = :observed_at "
+                        "REMOVE recovery_lease_token, recovery_lease_expires_at, task_work_shard, task_due"
+                    ),
+                    "ConditionExpression": (
+                        "work_id = :work_id AND recovery_lease_token = :token AND recovery_lease_expires_at >= :now AND "
+                        "publication_state = :confirmed AND attribute_exists(sqs_message_id)"
+                    ),
+                    "ExpressionAttributeValues": _serialize_authority(
+                        {
+                            ":settled": "settled",
+                            ":kind": evidence_kind,
+                            ":now": now_iso,
+                            ":observed_at": _iso(observed_at),
+                            ":work_id": work_id,
+                            ":token": lease_token,
+                            ":confirmed": "confirmed",
+                        }
+                    ),
+                }
+            }
+        ]
+        if snapshot.get("state") == TaskState.ACCEPTED.value:
+            transaction.extend(self._queue_transition_items(snapshot=snapshot, now_iso=now_iso))
+        transaction.extend(self._authority_condition_checks(snapshot=snapshot))
         try:
-            self._client.update_item(
-                TableName=self._table_name,
-                Key=_serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
-                UpdateExpression=(
-                    "SET recovery_state = :settled, recovery_evidence_kind = :kind, recovery_settled_at = :now, "
-                    "recovery_observed_at = :observed_at "
-                    "REMOVE recovery_lease_token, recovery_lease_expires_at, task_work_shard, task_due"
-                ),
-                ConditionExpression=(
-                    "work_id = :work_id AND recovery_lease_token = :token AND recovery_lease_expires_at >= :now"
-                ),
-                ExpressionAttributeValues=_serialize_authority(
-                    {
-                        ":settled": "settled",
-                        ":kind": evidence_kind,
-                        ":now": _iso(lease_checked_at),
-                        ":observed_at": _iso(observed_at),
-                        ":work_id": work_id,
-                        ":token": lease_token,
-                    }
-                ),
-            )
+            self._client.transact_write_items(TransactItems=transaction)
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                raise WorkLeaseConflictError("recovery token is stale, expired, or already settled") from None
+            if _is_conditional_failure(exc):
+                raise WorkLeaseConflictError("recovery token is stale, expired, settled, or authority changed") from None
             raise TaskStoreError("task store unavailable") from exc
         except BotoCoreError as exc:
             raise TaskStoreError("task store unavailable") from exc
-        return {"work_id": work_id, "settled": True}
+        current = self.read_task(str(work["task_id"]))
+        return {
+            "work_id": work_id,
+            "operation_status": "confirmed",
+            "task_status": current.get("state") if current else None,
+        }
 
     def expire_content_page(
         self,
@@ -2156,13 +2844,9 @@ class TaskStore:
             self._client.update_item(
                 TableName=self._table_name,
                 Key=_serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
-                UpdateExpression=(
-                    "SET history_expired = :true, compacted_at = :now "
-                    "REMOVE input_payload, input_reference, artifact_ids"
-                ),
+                UpdateExpression=("SET history_expired = :true, compacted_at = :now REMOVE input_payload, input_reference, artifact_ids"),
                 ConditionExpression=(
-                    "version = :version AND terminal_at = :terminal AND content_expires_at <= :now_epoch AND "
-                    "recovery_required = :false"
+                    "version = :version AND terminal_at = :terminal AND content_expires_at <= :now_epoch AND recovery_required = :false"
                 ),
                 ExpressionAttributeValues=_serialize_authority(
                     {
@@ -2205,13 +2889,8 @@ class TaskStore:
                         "Update": {
                             "TableName": self._table_name,
                             "Key": _serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
-                            "UpdateExpression": (
-                                "SET envelope_compacted = :true, terminal_at = :terminal, expires_at = :expires "
-                                "REMOVE envelope"
-                            ),
-                            "ConditionExpression": (
-                                "work_id = :work_id AND recovery_state = :settled AND attribute_not_exists(task_due)"
-                            ),
+                            "UpdateExpression": ("SET envelope_compacted = :true, terminal_at = :terminal, expires_at = :expires REMOVE envelope"),
+                            "ConditionExpression": ("work_id = :work_id AND recovery_state = :settled AND attribute_not_exists(task_due)"),
                             "ExpressionAttributeValues": _serialize_authority(
                                 {
                                     ":true": True,
@@ -2226,9 +2905,7 @@ class TaskStore:
                     {
                         "Update": {
                             "TableName": self._authority_table_name,
-                            "Key": _serialize_authority(
-                                {"pk": task_work_locator_partition(work_id), "sk": TASK_WORK_LOCATOR_SORT_KEY}
-                            ),
+                            "Key": _serialize_authority({"pk": task_work_locator_partition(work_id), "sk": TASK_WORK_LOCATOR_SORT_KEY}),
                             "UpdateExpression": "SET binding_state = :retained, delete_after = :expires, compacted_at = :now",
                             "ConditionExpression": "binding_state = :active AND work_id = :work_id",
                             "ExpressionAttributeValues": _serialize_authority(
@@ -2351,7 +3028,7 @@ def _serialize(item: dict[str, Any]) -> dict[str, Any]:
     """
     assert_legacy_invisible(item)
     assert_ttl_permitted(item)
-    return {key: _SERIALIZER.serialize(value) for key, value in item.items()}
+    return {key: _SERIALIZER.serialize(_dynamodb_number(value)) for key, value in item.items()}
 
 
 def _serialize_authority(item: dict[str, Any]) -> dict[str, Any]:
@@ -2370,6 +3047,25 @@ def _dynamodb_number(value: Any) -> Any:
     return value
 
 
+def _protected_grant_digest(grant: dict[str, Any]) -> str:
+    fields = (
+        "tenant",
+        "canonical_principal",
+        "task_id",
+        "invocation_id",
+        "generation",
+        "request_digest",
+        "persona",
+        "input",
+        "model_binding",
+        "limits",
+        "capabilities",
+    )
+    if any(field_name not in grant for field_name in fields):
+        raise WorkBindingError("protected run grant is incomplete")
+    return payload_digest({field_name: grant[field_name] for field_name in fields})
+
+
 def _validate_run_bindings(request: AcceptanceRequest) -> None:
     immutable_input = request.immutable_input
     allowed_input = {"instructions", "inputs", "acceptance_criteria", "artifacts", "input_digest"}
@@ -2382,17 +3078,60 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
         raise TaskStoreError("immutable run instructions are invalid")
     if request.request_payload.get("instructions") != instructions:
         raise TaskStoreError("immutable run instructions disagree with the accepted request")
-    if "inputs" in request.request_payload and request.request_payload.get("inputs") != immutable_input.get("inputs"):
+    if request.request_payload.get("inputs", {}) != immutable_input.get("inputs", {}):
         raise TaskStoreError("immutable run inputs disagree with the accepted request")
-    if "acceptance_criteria" in request.request_payload and request.request_payload.get("acceptance_criteria") != immutable_input.get(
-        "acceptance_criteria"
-    ):
+    if request.request_payload.get("acceptance_criteria", []) != immutable_input.get("acceptance_criteria", []):
         raise TaskStoreError("immutable acceptance criteria disagree with the accepted request")
-    if immutable_input.get("input_digest") != request.envelope.get("input_ref", {}).get("input_digest"):
+    input_digest = immutable_input.get("input_digest")
+    if input_digest != payload_digest(request.request_payload):
+        raise TaskStoreError("immutable run input digest disagrees with the accepted request")
+    if input_digest != request.envelope.get("input_ref", {}).get("input_digest"):
         raise TaskStoreError("immutable run input disagrees with the dispatch envelope")
     criteria = immutable_input.get("acceptance_criteria", [])
     if not isinstance(criteria, list) or len(criteria) > 10 or any(not isinstance(value, str) or len(value) > 1_000 for value in criteria):
         raise TaskStoreError("immutable acceptance criteria exceed the fixed limits")
+
+    payload_artifact_ids = request.request_payload.get("artifact_ids", [])
+    if not isinstance(payload_artifact_ids, list) or any(not isinstance(value, str) for value in payload_artifact_ids):
+        raise TaskStoreError("artifact bindings disagree with the accepted request")
+    if len(payload_artifact_ids) != len(set(payload_artifact_ids)) or set(payload_artifact_ids) != set(request.artifact_ids):
+        raise TaskStoreError("artifact bindings disagree with the accepted request")
+    immutable_artifacts = immutable_input.get("artifacts", [])
+    if not isinstance(immutable_artifacts, list) or len(immutable_artifacts) != len(request.artifact_ids):
+        raise TaskStoreError("immutable artifact bindings are incomplete")
+    artifacts_by_id: dict[str, dict[str, Any]] = {}
+    for artifact in immutable_artifacts:
+        if not isinstance(artifact, dict) or set(artifact) != {"artifact_id", "version", "content_sha256", "content_type"}:
+            raise TaskStoreError("immutable artifact binding does not match the closed v1 schema")
+        artifact_id = str(artifact["artifact_id"])
+        validate_artifact_id(artifact_id)
+        if artifact_id in artifacts_by_id or artifact_id not in request.artifact_ids:
+            raise TaskStoreError("immutable artifact identity is duplicated or unrequested")
+        if not isinstance(artifact["version"], int) or isinstance(artifact["version"], bool) or artifact["version"] < 1:
+            raise TaskStoreError("immutable artifact version is invalid")
+        artifact_digest = artifact["content_sha256"]
+        if (
+            not isinstance(artifact_digest, str)
+            or len(artifact_digest) != 64
+            or any(character not in "0123456789abcdef" for character in artifact_digest)
+        ):
+            raise TaskStoreError("immutable artifact digest is invalid")
+        if artifact["content_type"] not in {"text/plain", "application/json"}:
+            raise TaskStoreError("immutable artifact content type is invalid")
+        artifacts_by_id[artifact_id] = artifact
+    envelope_refs = request.envelope.get("input_ref", {}).get("artifact_refs", [])
+    if not isinstance(envelope_refs, list) or any(not isinstance(value, dict) for value in envelope_refs):
+        raise TaskStoreError("dispatch envelope artifact references are invalid")
+    expected_refs = [
+        {
+            "artifact_id": artifact["artifact_id"],
+            "version": artifact["version"],
+            "content_sha256": artifact["content_sha256"],
+        }
+        for artifact in immutable_artifacts
+    ]
+    if sorted(envelope_refs, key=lambda value: value.get("artifact_id", "")) != sorted(expected_refs, key=lambda value: value["artifact_id"]):
+        raise TaskStoreError("immutable artifacts disagree with the dispatch envelope")
 
     model = request.model_binding
     required_model = {
@@ -2461,16 +3200,12 @@ def _validated_envelope(request: AcceptanceRequest, request_digest: str) -> dict
     input_ref = envelope.get("input_ref")
     if input_ref != request.input_reference or not isinstance(input_ref, dict):
         raise TaskStoreError("dispatch envelope input_ref is not the committed immutable input")
-    if not {"record_type", "input_digest"}.issubset(input_ref) or not set(input_ref).issubset(
-        {"record_type", "input_digest", "artifact_refs"}
-    ):
+    if not {"record_type", "input_digest"}.issubset(input_ref) or not set(input_ref).issubset({"record_type", "input_digest", "artifact_refs"}):
         raise TaskStoreError("dispatch envelope input_ref does not match the closed v1 schema")
     input_digest = input_ref.get("input_digest")
     if input_ref.get("record_type") != "TASK":
         raise TaskStoreError("dispatch envelope input record type is invalid")
-    if not isinstance(input_digest, str) or len(input_digest) != 64 or any(
-        character not in "0123456789abcdef" for character in input_digest
-    ):
+    if not isinstance(input_digest, str) or len(input_digest) != 64 or any(character not in "0123456789abcdef" for character in input_digest):
         raise TaskStoreError("dispatch envelope input digest is invalid")
     artifact_refs = input_ref.get("artifact_refs", [])
     if not isinstance(artifact_refs, list) or len(artifact_refs) > 4:
@@ -2513,7 +3248,7 @@ def _deserialize(item: dict[str, Any]) -> dict[str, Any]:
 
 def _normalise_numbers(value: Any) -> Any:
     if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else value
+        return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, dict):
         return {key: _normalise_numbers(inner) for key, inner in value.items()}
     if isinstance(value, list):
@@ -2566,5 +3301,6 @@ __all__ = [
     "TaskStoreError",
     "WorkBindingError",
     "WorkLeaseConflictError",
+    "StaleAttemptError",
     "assert_ttl_permitted",
 ]

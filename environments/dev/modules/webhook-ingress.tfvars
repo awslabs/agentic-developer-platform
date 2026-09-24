@@ -40,3 +40,8 @@ domain_app_settings = {
     session_owner_routing   = "true"
   }
 }
+
+# Task API T4 was OOMKilled at 8Gi during worker regression tests (2026-09-24).
+# Reserve additional node capacity as well as raising the per-worker ceiling.
+agent_worker_memory_request = "8Gi"
+agent_worker_memory_limit   = "16Gi"

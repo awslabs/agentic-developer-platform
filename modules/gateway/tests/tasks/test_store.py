@@ -39,6 +39,7 @@ from src.tasks.records import (
     task_events_partition,
     task_partition,
     task_policy_sort_key,
+    task_report_partition,
     task_run_grant_sort_key,
     task_work_locator_partition,
     task_work_partition,
@@ -49,6 +50,7 @@ from src.tasks.store import (
     AcceptanceConditionError,
     AcceptanceRequest,
     IdempotencyConflictError,
+    StaleAttemptError,
     StaleGenerationError,
     TaskStateConflictError,
     TaskStore,
@@ -459,6 +461,19 @@ def test_acceptance_rejects_a_forged_task_identifier(store):
         store.accept(_request(task_id="tsk_../../etc/passwd"))
 
 
+def test_acceptance_persists_valid_fractional_json_and_replays_stably(store):
+    payload = {"instructions": "measure", "inputs": {"ratio": 1.5, "small": 1e-7}}
+    first = store.accept(_request(idempotency_key="numeric", request_payload=payload))
+    second = store.accept(_request(idempotency_key="numeric", request_payload=payload))
+
+    stored = store.read_task(first.task_id)
+    assert float(stored["input_payload"]["inputs"]["ratio"]) == 1.5
+    assert float(stored["input_payload"]["inputs"]["small"]) == 1e-7
+    assert second.task_id == first.task_id
+    assert second.request_digest == first.request_digest
+    assert second.replayed is True
+
+
 def test_acceptance_rejects_payload_over_frozen_body_limit(store):
     with pytest.raises(TaskStoreError, match="65536"):
         store.accept(_request(request_payload={"instructions": "x" * 65_537}))
@@ -478,6 +493,58 @@ def test_acceptance_rejects_unverified_model_or_relaxed_run_limits(store):
     relaxed = _request(run_limits={"max_turns": 9, "max_output_tokens_per_turn": 4096, "max_usd": 1, "deadline_at": "2026-09-24T13:00:00Z"})
     with pytest.raises(TaskStoreError, match="max_turns"):
         store.accept(relaxed)
+
+
+def test_acceptance_rejects_an_input_digest_not_derived_from_the_public_request(store):
+    request = _request()
+    forged_digest = "f" * 64
+    input_ref = {"record_type": "TASK", "input_digest": forged_digest}
+    forged = _request(
+        **{
+            **request.__dict__,
+            "input_reference": input_ref,
+            "envelope": {**request.envelope, "input_ref": input_ref},
+            "immutable_input": {**request.immutable_input, "input_digest": forged_digest},
+        }
+    )
+
+    with pytest.raises(TaskStoreError, match="input digest"):
+        store.accept(forged)
+    assert store.read_task(forged.task_id) is None
+
+
+def test_acceptance_rejects_an_artifact_not_present_in_the_public_request(store):
+    artifact_id = f"art_{uuid.uuid4()}"
+    digest = "a" * 64
+    payload = {"instructions": "investigate", "inputs": {}}
+    input_ref = {
+        "record_type": "TASK",
+        "input_digest": payload_digest(payload),
+        "artifact_refs": [{"artifact_id": artifact_id, "version": 1, "content_sha256": digest}],
+    }
+    request = _request(
+        request_payload=payload,
+        input_reference=input_ref,
+        artifact_ids=(artifact_id,),
+        immutable_input={
+            "instructions": payload["instructions"],
+            "inputs": payload["inputs"],
+            "artifacts": [
+                {
+                    "artifact_id": artifact_id,
+                    "version": 1,
+                    "content_sha256": digest,
+                    "content_type": "text/plain",
+                }
+            ],
+            "input_digest": input_ref["input_digest"],
+        },
+    )
+    request = _request(**{**request.__dict__, "envelope": {**request.envelope, "input_ref": input_ref}})
+
+    with pytest.raises(TaskStoreError, match="artifact bindings"):
+        store.accept(request)
+    assert store.read_task(request.task_id) is None
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +775,24 @@ def test_a_superseded_generation_cannot_write_to_the_live_run(store, client):
 
 def test_a_transition_cannot_rewrite_identity_or_the_fence_itself(store):
     accepted = store.accept(_request())
-    for attribute in ("version", "state", "event_id", "scope", "task_id"):
+    for attribute in (
+        "version",
+        "state",
+        "event_id",
+        "scope",
+        "task_id",
+        "invocation_id",
+        "generation",
+        "runtime_attempt_id",
+        "persona",
+        "policy_version",
+        "request_digest",
+        "input_payload",
+        "input_reference",
+        "artifact_ids",
+        "grant_reference",
+        "capacity_reservation_id",
+    ):
         with pytest.raises(TaskStoreError, match="cannot be set"):
             store.transition(
                 task_id=accepted.task_id,
@@ -716,6 +800,20 @@ def test_a_transition_cannot_rewrite_identity_or_the_fence_itself(store):
                 target_state=TaskState.QUEUED,
                 attributes={attribute: "forged"},
             )
+
+
+def test_result_evidence_requires_current_attempt_authority(store):
+    accepted = store.accept(_request())
+    with pytest.raises(TaskStoreError, match="current runtime attempt"):
+        store.transition(
+            task_id=accepted.task_id,
+            expected_version=1,
+            target_state=TaskState.FAILED,
+            attributes={"outcome": "failed", "error_code": "forged"},
+            event_kind="task.failed",
+        )
+    assert store.read_task(accepted.task_id)["state"] == TaskState.ACCEPTED.value
+    assert [event["sequence"] for event in store.read_events(task_id=accepted.task_id)] == [1]
 
 
 def test_transitioning_an_unknown_task_is_a_conflict_not_a_crash(store):
@@ -800,7 +898,7 @@ def test_a_stale_reporter_cannot_reuse_a_sequence_number_already_taken(store, cl
     """
     accepted = store.accept(_request())
 
-    competitor = TaskStore(table_name=TABLE, dynamodb_client=client, clock=lambda: NOW)
+    competitor = TaskStore(table_name=TABLE, authority_table_name=AUTHORITY_TABLE, dynamodb_client=client, clock=lambda: NOW)
 
     def commit_competing_event():
         competitor.append_event(task_id=accepted.task_id, kind="task.progress", data={"who": "competitor"})
@@ -866,6 +964,136 @@ def test_a_state_transition_and_its_event_are_atomic(store, client):
     store._client = client
     assert store.read_task(accepted.task_id)["state"] == TaskState.ACCEPTED.value
     assert [event["type"] for event in store.read_events(task_id=accepted.task_id)] == ["task.accepted"]
+
+
+# ---------------------------------------------------------------------------
+# Protected attempt and producer-report transactions
+# ---------------------------------------------------------------------------
+
+
+def _bind_attempt(store, task_id: str, invocation_id: str, generation: int = 1) -> str:
+    attempt_id = str(uuid.uuid4())
+    store.bind_runtime_attempt(
+        task_id=task_id,
+        invocation_id=invocation_id,
+        generation=generation,
+        runtime_attempt_id=attempt_id,
+        expected_version=1,
+    )
+    return attempt_id
+
+
+def test_report_is_deduplicated_with_event_under_current_attempt_authority(store, client):
+    request = _request()
+    store.accept(request)
+    attempt_id = _bind_attempt(store, request.task_id, request.invocation_id)
+    report_id = str(uuid.uuid4())
+
+    first = store.append_report(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=1,
+        runtime_attempt_id=attempt_id,
+        report_id=report_id,
+        kind="progress.updated",
+        data={"message": "working", "stage": "analysis", "ratio": 1.5},
+        producer_timestamp=NOW,
+    )
+    second = store.append_report(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=1,
+        runtime_attempt_id=attempt_id,
+        report_id=report_id,
+        kind="progress.updated",
+        data={"message": "working", "stage": "analysis", "ratio": 1.5},
+        producer_timestamp=NOW,
+    )
+
+    assert second == first
+    assert _query_count(client, task_report_partition(request.task_id)) == 1
+    events = store.read_events(task_id=request.task_id)
+    assert [event["sequence"] for event in events] == [1, 2]
+    assert events[-1]["runtime_attempt_id"] == attempt_id
+    assert events[-1]["producer_timestamp"] == "2026-09-24T12:00:00Z"
+
+
+def test_report_id_reuse_with_different_content_conflicts(store):
+    request = _request()
+    store.accept(request)
+    attempt_id = _bind_attempt(store, request.task_id, request.invocation_id)
+    report_id = str(uuid.uuid4())
+    kwargs = {
+        "task_id": request.task_id,
+        "invocation_id": request.invocation_id,
+        "generation": 1,
+        "runtime_attempt_id": attempt_id,
+        "report_id": report_id,
+        "kind": "progress.updated",
+    }
+    store.append_report(data={"message": "one", "stage": "analysis"}, **kwargs)
+    with pytest.raises(IdempotencyConflictError):
+        store.append_report(data={"message": "two", "stage": "analysis"}, **kwargs)
+
+
+def test_replaced_runtime_attempt_cannot_append_a_report(store):
+    request = _request()
+    store.accept(request)
+    old_attempt = _bind_attempt(store, request.task_id, request.invocation_id)
+    new_attempt = str(uuid.uuid4())
+    store.bind_runtime_attempt(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=1,
+        runtime_attempt_id=new_attempt,
+        expected_version=2,
+        expected_runtime_attempt_id=old_attempt,
+    )
+
+    with pytest.raises(StaleAttemptError):
+        store.append_report(
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=1,
+            runtime_attempt_id=old_attempt,
+            report_id=str(uuid.uuid4()),
+            kind="progress.updated",
+            data={"message": "late", "stage": "analysis"},
+        )
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
+
+
+def test_policy_revocation_racing_a_report_aborts_report_and_event(store, client):
+    request = _request()
+    store.accept(request)
+    attempt_id = _bind_attempt(store, request.task_id, request.invocation_id)
+
+    def revoke_policy():
+        client.update_item(
+            TableName=AUTHORITY_TABLE,
+            Key={
+                "pk": {"S": task_authority_partition(request.tenant)},
+                "sk": {"S": task_policy_sort_key(request.canonical_principal)},
+            },
+            UpdateExpression="SET #status = :revoked",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":revoked": {"S": "revoked"}},
+        )
+
+    store._client = _InterleavingClient(client, before="transact_write_items", action=revoke_policy)
+    with pytest.raises(StaleAttemptError):
+        store.append_report(
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=1,
+            runtime_attempt_id=attempt_id,
+            report_id=str(uuid.uuid4()),
+            kind="progress.updated",
+            data={"message": "must not land", "stage": "analysis"},
+        )
+    store._client = client
+    assert _query_count(client, task_report_partition(request.task_id)) == 0
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
 
 
 # ---------------------------------------------------------------------------
@@ -1036,6 +1264,39 @@ def test_an_empty_turn_is_refused(store):
         store.commit_turn(task_id=task_id, turn_number=1, turn_id=str(uuid.uuid4()), command_ids=[], expected_version=3)
 
 
+def test_protected_grant_mutation_racing_a_report_aborts_report_and_event(store, client):
+    request = _request()
+    store.accept(request)
+    attempt_id = _bind_attempt(store, request.task_id, request.invocation_id)
+
+    def mutate_grant_input():
+        client.update_item(
+            TableName=AUTHORITY_TABLE,
+            Key={
+                "pk": {"S": task_authority_partition(request.tenant)},
+                "sk": {"S": task_run_grant_sort_key(invocation_id=request.invocation_id, generation=1)},
+            },
+            UpdateExpression="SET #input.instructions = :instructions",
+            ExpressionAttributeNames={"#input": "input"},
+            ExpressionAttributeValues={":instructions": {"S": "tampered during report"}},
+        )
+
+    store._client = _InterleavingClient(client, before="transact_write_items", action=mutate_grant_input)
+    with pytest.raises(StaleAttemptError):
+        store.append_report(
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=1,
+            runtime_attempt_id=attempt_id,
+            report_id=str(uuid.uuid4()),
+            kind="progress.updated",
+            data={"message": "must not land", "stage": "analysis"},
+        )
+    store._client = client
+    assert _query_count(client, task_report_partition(request.task_id)) == 0
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
+
+
 # ---------------------------------------------------------------------------
 # T1-AC05: recovery without scans, retention that protects active records
 # ---------------------------------------------------------------------------
@@ -1046,7 +1307,9 @@ def test_due_work_is_found_by_a_sharded_index_query_not_a_scan(store, client):
     store.accept(request)
 
     claimed = store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(minutes=1))
-    assert [record["dispatch_id"] for record in claimed] == [request.dispatch_id]
+    assert [record["work_id"] for record in claimed] == [request.dispatch_id]
+    assert set(claimed[0]) == {"work_id", "task_id", "kind", "due_at", "lease_token", "lease_expires_at"}
+    assert claimed[0]["kind"] == "dispatch"
 
 
 def test_the_work_index_holds_only_work_records(store, client):
@@ -1068,6 +1331,24 @@ def test_work_not_yet_due_is_not_claimed(store):
     request = _request()
     store.accept(request)
     assert store.claim_due_work(shard=work_shard(request.task_id), now=NOW - timedelta(minutes=5)) == []
+
+
+def test_recovery_claim_revalidates_due_time_against_the_sparse_index_key(store, client):
+    request = _request()
+    store.accept(request)
+    client.update_item(
+        TableName=TABLE,
+        Key={
+            "event_id": {"S": task_work_partition(request.task_id)},
+            "arrived_at": {"S": f"DISPATCH#{request.dispatch_id}"},
+        },
+        UpdateExpression="SET due_at = :future",
+        ExpressionAttributeValues={":future": {"S": "2026-09-24T14:00:00Z"}},
+    )
+
+    assert store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(minutes=1)) == []
+    work = store.resolve_work(request.dispatch_id)
+    assert "recovery_lease_token" not in work
 
 
 def test_two_concurrent_recovery_passes_do_not_both_claim_the_same_work(store):
@@ -1103,21 +1384,31 @@ def test_dispatch_recovery_uses_two_independent_leases(store):
     with pytest.raises(WorkLeaseConflictError):
         store.claim_dispatch(dispatch_id=request.dispatch_id, now=NOW + timedelta(seconds=2))
 
-    store.settle_dispatch(
+    dispatch_settlement = store.settle_dispatch(
         dispatch_id=request.dispatch_id,
         lease_token=publication["lease_token"],
         publication_outcome="confirmed",
         sqs_message_id="sqs-message-1",
         now=NOW + timedelta(seconds=2),
     )
+    assert dispatch_settlement == {
+        "dispatch_id": request.dispatch_id,
+        "queue_ack_status": "pending",
+        "task_status": "queued",
+    }
     assert store.read_task(request.task_id)["state"] == TaskState.QUEUED.value
-    store.settle_recovery(
+    recovery_settlement = store.settle_recovery(
         work_id=request.dispatch_id,
         lease_token=recovery["lease_token"],
         evidence_kind="publication",
         observed=True,
         observed_at=NOW + timedelta(seconds=3),
     )
+    assert recovery_settlement == {
+        "work_id": request.dispatch_id,
+        "operation_status": "confirmed",
+        "task_status": "queued",
+    }
     assert store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(minutes=2)) == []
 
 
@@ -1134,6 +1425,39 @@ def test_recovery_boolean_cannot_fabricate_publication(store):
             observed_at=NOW,
         )
     assert store.read_task(request.task_id)["state"] == TaskState.ACCEPTED.value
+
+
+def test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work(store, client):
+    request = _request()
+    store.accept(request)
+    first = store.claim_due_work(shard=work_shard(request.task_id), now=NOW, lease_seconds=10)[0]
+    client.update_item(
+        TableName=TABLE,
+        Key={"event_id": {"S": task_work_partition(request.task_id)}, "arrived_at": {"S": f"DISPATCH#{request.dispatch_id}"}},
+        UpdateExpression="SET publication_state = :confirmed, sqs_message_id = :message",
+        ExpressionAttributeValues={":confirmed": {"S": "confirmed"}, ":message": {"S": "sqs-message-1"}},
+    )
+    second = store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(seconds=11))[0]
+
+    with pytest.raises(WorkLeaseConflictError):
+        store.settle_recovery(
+            work_id=request.dispatch_id,
+            lease_token=first["lease_token"],
+            evidence_kind="publication",
+            observed=True,
+            observed_at=NOW + timedelta(seconds=12),
+        )
+    assert store.read_task(request.task_id)["state"] == TaskState.ACCEPTED.value
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
+
+    settled = store.settle_recovery(
+        work_id=request.dispatch_id,
+        lease_token=second["lease_token"],
+        evidence_kind="publication",
+        observed=True,
+        observed_at=NOW + timedelta(seconds=12),
+    )
+    assert settled == {"work_id": request.dispatch_id, "operation_status": "confirmed", "task_status": "queued"}
 
 
 def test_stale_publication_token_cannot_settle_a_reclaim(store):
@@ -1185,6 +1509,54 @@ def test_envelope_digest_disagreement_fails_closed(store, client):
     )
     with pytest.raises(WorkBindingError, match="digest"):
         store.claim_dispatch(dispatch_id=request.dispatch_id)
+
+
+def test_incomplete_or_stale_locator_and_generation_bindings_fail_closed(store, client):
+    request = _request()
+    store.accept(request)
+    locator_key = {
+        "pk": {"S": task_work_locator_partition(request.dispatch_id)},
+        "sk": {"S": TASK_WORK_LOCATOR_SORT_KEY},
+    }
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key=locator_key,
+        UpdateExpression="REMOVE generation",
+    )
+    with pytest.raises(WorkBindingError, match="incomplete"):
+        store.resolve_work(request.dispatch_id)
+
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key=locator_key,
+        UpdateExpression="SET generation = :generation",
+        ExpressionAttributeValues={":generation": {"N": "1"}},
+    )
+    client.update_item(
+        TableName=TABLE,
+        Key={"event_id": {"S": task_partition(request.task_id)}, "arrived_at": {"S": META_SORT_KEY}},
+        UpdateExpression="SET generation = :generation",
+        ExpressionAttributeValues={":generation": {"N": "2"}},
+    )
+    with pytest.raises(WorkBindingError, match="metadata"):
+        store.resolve_work(request.dispatch_id)
+
+
+def test_protected_input_digest_disagreement_fails_work_resolution(store, client):
+    request = _request()
+    store.accept(request)
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={
+            "pk": {"S": task_authority_partition(request.tenant)},
+            "sk": {"S": task_run_grant_sort_key(invocation_id=request.invocation_id, generation=1)},
+        },
+        UpdateExpression="SET #input.instructions = :instructions",
+        ExpressionAttributeNames={"#input": "input"},
+        ExpressionAttributeValues={":instructions": {"S": "tampered instructions"}},
+    )
+    with pytest.raises(WorkBindingError, match="grant digest|input"):
+        store.resolve_work(request.dispatch_id)
 
 
 def test_revoked_current_policy_fails_work_resolution(store, client):
@@ -1296,18 +1668,32 @@ def test_artifact_binding_is_owner_checked_and_claimed_atomically(store, client)
     assert artifact["object_key"].startswith("tasks/")
     assert TTL_ATTRIBUTE in artifact
 
+    payload = {"instructions": "investigate", "inputs": {"a": 1}, "artifact_ids": [artifact_id]}
     input_ref = {
         "record_type": "TASK",
-        "input_digest": payload_digest({"instructions": "investigate", "inputs": {"a": 1}}),
+        "input_digest": payload_digest(payload),
         "artifact_refs": [{"artifact_id": artifact_id, "version": 1, "content_sha256": digest}],
     }
-    request = _request(input_reference=input_ref, artifact_ids=(artifact_id,))
+    immutable_input = {
+        "instructions": payload["instructions"],
+        "inputs": payload["inputs"],
+        "artifacts": [
+            {
+                "artifact_id": artifact_id,
+                "version": 1,
+                "content_sha256": digest,
+                "content_type": "text/plain",
+            }
+        ],
+        "input_digest": input_ref["input_digest"],
+    }
     request = _request(
-        **{
-            **request.__dict__,
-            "envelope": {**request.envelope, "input_ref": input_ref},
-        }
+        request_payload=payload,
+        input_reference=input_ref,
+        immutable_input=immutable_input,
+        artifact_ids=(artifact_id,),
     )
+    request = _request(**{**request.__dict__, "envelope": {**request.envelope, "input_ref": input_ref}})
     store.accept(request)
     bound = _item(client, task_artifact_partition(artifact_id), META_SORT_KEY)
     assert bound["task_id"]["S"] == request.task_id
@@ -1327,17 +1713,102 @@ def test_foreign_owner_cannot_claim_artifact(store):
         content_type="application/json",
         size_bytes=64,
     )
-    payload = {"instructions": "investigate", "inputs": {"a": 1}}
+    payload = {"instructions": "investigate", "inputs": {"a": 1}, "artifact_ids": [artifact_id]}
     input_ref = {
         "record_type": "TASK",
         "input_digest": payload_digest(payload),
         "artifact_refs": [{"artifact_id": artifact_id, "version": 1, "content_sha256": digest}],
     }
-    request = _request(tenant="tenant-b", request_payload=payload, input_reference=input_ref, artifact_ids=(artifact_id,))
+    immutable_input = {
+        "instructions": payload["instructions"],
+        "inputs": payload["inputs"],
+        "artifacts": [
+            {
+                "artifact_id": artifact_id,
+                "version": 1,
+                "content_sha256": digest,
+                "content_type": "application/json",
+            }
+        ],
+        "input_digest": input_ref["input_digest"],
+    }
+    request = _request(
+        tenant="tenant-b",
+        request_payload=payload,
+        input_reference=input_ref,
+        immutable_input=immutable_input,
+        artifact_ids=(artifact_id,),
+    )
     request = _request(**{**request.__dict__, "envelope": {**request.envelope, "input_ref": input_ref}})
     with pytest.raises(TaskStoreError):
         store.accept(request)
     assert store.read_task(request.task_id) is None
+
+
+def test_artifact_content_type_disagreement_aborts_acceptance(store):
+    artifact_id = f"art_{uuid.uuid4()}"
+    digest = "e" * 64
+    store.create_artifact_binding(
+        artifact_id=artifact_id,
+        tenant="tenant-a",
+        canonical_principal="svc-principal-1",
+        version=1,
+        content_sha256=digest,
+        content_type="text/plain",
+        size_bytes=64,
+    )
+    payload = {"instructions": "investigate", "inputs": {}, "artifact_ids": [artifact_id]}
+    input_ref = {
+        "record_type": "TASK",
+        "input_digest": payload_digest(payload),
+        "artifact_refs": [{"artifact_id": artifact_id, "version": 1, "content_sha256": digest}],
+    }
+    request = _request(
+        request_payload=payload,
+        input_reference=input_ref,
+        artifact_ids=(artifact_id,),
+        immutable_input={
+            "instructions": payload["instructions"],
+            "inputs": payload["inputs"],
+            "artifacts": [
+                {
+                    "artifact_id": artifact_id,
+                    "version": 1,
+                    "content_sha256": digest,
+                    "content_type": "application/json",
+                }
+            ],
+            "input_digest": input_ref["input_digest"],
+        },
+    )
+    request = _request(**{**request.__dict__, "envelope": {**request.envelope, "input_ref": input_ref}})
+
+    with pytest.raises(AcceptanceConditionError, match="artifact ownership"):
+        store.accept(request)
+    assert store.read_task(request.task_id) is None
+
+
+def test_artifact_binding_replay_rejects_a_retargeted_object_key(store, client):
+    artifact_id = f"art_{uuid.uuid4()}"
+    digest = "d" * 64
+    kwargs = {
+        "artifact_id": artifact_id,
+        "tenant": "tenant-a",
+        "canonical_principal": "svc-principal-1",
+        "version": 1,
+        "content_sha256": digest,
+        "content_type": "text/plain",
+        "size_bytes": 16,
+    }
+    store.create_artifact_binding(**kwargs)
+    client.update_item(
+        TableName=TABLE,
+        Key={"event_id": {"S": task_artifact_partition(artifact_id)}, "arrived_at": {"S": META_SORT_KEY}},
+        UpdateExpression="SET object_key = :key",
+        ExpressionAttributeValues={":key": {"S": "tasks/foreign/retargeted"}},
+    )
+    with pytest.raises(IdempotencyConflictError):
+        store.create_artifact_binding(**kwargs)
 
 
 def test_an_active_task_carries_no_expiry_stamp(store, client):

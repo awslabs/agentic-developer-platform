@@ -54,6 +54,10 @@ def test_worker_mixed_writes_are_denied_for_every_task_namespace() -> None:
     ):
         assert f'"{prefix}"' in deny
     assert 'adp-*-chat-artifacts-*/tasks/*' in deny
+    authority_deny = source.split('Sid    = "DenyTaskAuthorityWrites"', 1)[1]
+    assert 'arn:aws:dynamodb:*:*:table/adp-*-agent-authority' in authority_deny
+    for action in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
+        assert f'"dynamodb:{action}"' in authority_deny
 
 
 def test_legacy_ingress_cannot_act_as_task_locator_deputy() -> None:
@@ -64,3 +68,26 @@ def test_legacy_ingress_cannot_act_as_task_locator_deputy() -> None:
     assert '"TASK_WORK_ID#*"' in deny
     for action in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
         assert f'"dynamodb:{action}"' in deny
+
+
+def test_legacy_ingress_mixed_writes_cannot_create_task_request_records() -> None:
+    source = _source("iam.tf")
+    deny = source.split('Sid      = "DenyTaskRequestWrites"', 1)[1].split('Sid      = "DenyTaskWorkLocatorWrites"', 1)[0]
+    assert 'Effect   = "Deny"' in deny
+    assert '"ForAnyValue:StringLike"' in deny
+    assert "aws_dynamodb_table.webhook_events.arn" in deny
+    for action in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
+        assert f'"dynamodb:{action}"' in deny
+    for prefix in (
+        "TASK#*",
+        "TASK_RUN#*",
+        "TASK_EVENTS#*",
+        "TASK_COMMANDS#*",
+        "TASK_TURNS#*",
+        "TASK_OPS#*",
+        "TASK_IDEMP#*",
+        "TASK_WORK#*",
+        "TASK_REPORT#*",
+        "TASK_ARTIFACT#*",
+    ):
+        assert f'"{prefix}"' in deny

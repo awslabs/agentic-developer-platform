@@ -24,19 +24,45 @@ adapters and queue send; it consumes `modules/gateway/src/tasks/store.py`.
 `TaskStore.accept` submits one stable-token DynamoDB transaction containing the
 idempotency row, task/run/event/work rows, complete schema-valid envelope,
 protected envelope digest, locator, task binding, run grant, policy condition,
-capacity reservation, and any artifact claims. A cancelled transaction exposes
-none of them. Replays verify the locator, work, envelope digest, and current task
-binding before returning the original task.
+capacity reservation, and any artifact claims. The immutable input digest must
+be the RFC 8785 digest of the exact accepted public payload; caller artifact IDs,
+immutable bootstrap bindings, and envelope references must agree exactly. A
+cancelled transaction exposes none of them. Replays verify the locator, work,
+envelope digest, and current task binding before returning the original task.
 
 Artifact records use a gateway-derived
 `tasks/<tenant-hash>/<principal-hash>/<artifact-id>/<version>` key. Unclaimed
-uploads expire after 24 hours; admission atomically verifies owner, version, and
-digest, binds them to the task, and removes their TTL.
+uploads expire after 24 hours; admission atomically verifies owner, version,
+digest, and content type, binds them to the task, and removes their TTL. Replays also verify the
+gateway-derived object key, so an existing artifact ID cannot be retargeted.
+
+Finite fractional and exponential JSON numbers are valid request data. Digests
+use RFC 8785 number formatting and DynamoDB persistence converts Python floats to
+exact decimal descriptors instead of rejecting otherwise valid JSON.
+
+## Attempts and reports
+
+`TaskStore.bind_runtime_attempt` atomically updates task metadata, run history and
+the protected run grant under the prior-attempt, task-version, policy and binding
+fences. `TaskStore.append_report` commits the `TASK_REPORT` deduplication row,
+next ordered event and sequence counter in one cross-table transaction. The
+transaction checks the exact current task binding, policy version, runtime
+attempt, and immutable run-grant input/model/limit/capability values. The grant is
+read consistently, verified against its protected digest, then compared again in
+the mutation transaction so a racing protected-field change commits neither
+report nor event. An identical report UUID returns its original receipt; changed
+content conflicts; stale generation/attempt or racing revocation commits neither
+report nor event. Generic transitions cannot rewrite owner, input, generation,
+digest, artifact or attempt fields, and result/outcome fields require a current
+attempt binding.
 
 ## Separate leases
 
 Recovery uses `recovery_lease_token` and `recovery_lease_expires_at` for 45
-seconds. Publication uses the independent `publication_lease_token` and
+seconds. Before mutation it recomputes the sparse due key from the persisted work
+UUID and due timestamp, rejects future work, and conditionally compares both
+values so an inconsistent or stale index projection cannot authorize an early
+lease. Publication uses the independent `publication_lease_token` and
 `publication_lease_expires_at` fields. For dispatch recovery the required order
 is:
 
@@ -49,8 +75,18 @@ is:
 
 Recovery settlement reads committed publication state and SQS evidence. The
 request's boolean observation cannot create send evidence or advance a task.
-Expired/superseded tokens fail their conditional write, and queue settlement
-never regresses a running or terminal task.
+Expired/superseded tokens fail the same transaction that would settle work and
+advance an accepted task, so a stale token cannot mutate state or event history.
+Queue settlement never regresses a running or terminal task.
+
+The adapter-facing repository values match the closed HTTP bodies without adding
+a tenant or caller-selected task identity: recovery claims return only `work_id`,
+`task_id`, `kind`, `due_at`, `lease_token`, and `lease_expires_at`; dispatch claims
+return the exact envelope and publication lease; dispatch settlement returns
+`dispatch_id`, `queue_ack_status`, and `task_status`; recovery settlement returns
+`work_id`, `operation_status`, and `task_status`. Dispatch publication changes an
+accepted task to `queued` while queue acknowledgement remains `pending`; SQS
+message deletion is separate evidence and is never fabricated from send success.
 
 Reusable scenario IDs and exact test selectors are versioned in
 `storage-fixtures-v1.json` and registered in

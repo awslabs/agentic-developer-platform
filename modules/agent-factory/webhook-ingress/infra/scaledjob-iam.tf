@@ -95,6 +95,18 @@ locals {
       }
     },
     {
+      Sid    = "DenyTaskAuthorityWrites"
+      Effect = "Deny"
+      Action = [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:TransactWriteItems",
+      ]
+      Resource = "arn:aws:dynamodb:*:*:table/adp-*-agent-authority"
+    },
+    {
       Sid      = "DenyDirectTaskArtifacts"
       Effect   = "Deny"
       Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]

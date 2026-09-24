@@ -64,11 +64,11 @@ def contract() -> dict:
 
 def test_t1_storage_fixture_manifest_is_versioned_and_non_vacuous():
     fixture = json.loads(STORAGE_FIXTURE_PATH.read_text())
-    assert fixture["fixture_version"] == "1.0.0"
+    assert fixture["fixture_version"] == "1.1.0"
     assert fixture["design_revision"] == "b5761a4a2502aceaa9133afef552b567a19cb46e"
     assert set(fixture["commands"]) == {"storage", "infrastructure", "contract_regression", "terraform_validate"}
     scenarios = fixture["scenarios"]
-    assert len(scenarios) == 7
+    assert len(scenarios) == 9
     assert all(scenario["tests"] and scenario["assertions"] and scenario["criteria"] for scenario in scenarios)
     iam = next(scenario for scenario in scenarios if scenario["id"] == "T1-IAM-01")
     assert iam["required_followup_lane"] == "deployed AWS IAM simulation and attempted legacy/task writes"
@@ -128,9 +128,7 @@ def test_protected_task_work_locator_and_bindings_use_exact_primary_keys():
     assert records.TASK_WORK_LOCATOR_SORT_KEY == "BINDING"
     assert records.task_authority_partition("tenant-a") == "TENANT#tenant-a"
     assert records.task_binding_sort_key(TASK_ID) == f"TASK#{TASK_ID}"
-    assert records.task_run_grant_sort_key(invocation_id=INVOCATION_ID, generation=3) == (
-        f"TASK_RUN#{INVOCATION_ID}#GEN#0000000003"
-    )
+    assert records.task_run_grant_sort_key(invocation_id=INVOCATION_ID, generation=3) == (f"TASK_RUN#{INVOCATION_ID}#GEN#0000000003")
     assert records.task_capacity_partition("a" * 64) == f"TASK_CAPACITY#{'a' * 64}"
 
 
@@ -300,18 +298,27 @@ def test_canonical_json_preserves_unicode_unescaped():
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
 def test_canonical_json_rejects_nonfinite_numbers(bad):
     """The API rejects these; emitting NaN would not even be valid JSON."""
-    with pytest.raises(TaskRecordError, match="nonfinite"):
+    with pytest.raises(TaskRecordError, match="representable|nonfinite"):
         canonical_json({"n": bad})
 
 
-def test_canonical_json_rejects_non_integral_floats():
-    """Refuse rather than emit a digest another implementation would not reproduce."""
-    with pytest.raises(TaskRecordError, match="non-integral"):
-        canonical_json({"n": 1.5})
+@pytest.mark.parametrize(
+    ("number", "encoded"),
+    [
+        (1.5, b'{"n":1.5}'),
+        (1e-7, b'{"n":1e-7}'),
+        (1e-6, b'{"n":0.000001}'),
+        (1e20, b'{"n":100000000000000000000}'),
+        (1e21, b'{"n":1e+21}'),
+        (-0.0, b'{"n":0}'),
+    ],
+)
+def test_canonical_json_accepts_valid_fractional_and_exponential_numbers(number, encoded):
+    assert canonical_json({"n": number}) == encoded
 
 
 def test_nonfinite_numbers_are_rejected_when_nested():
-    with pytest.raises(TaskRecordError, match="nonfinite"):
+    with pytest.raises(TaskRecordError, match="representable|nonfinite"):
         canonical_json({"outer": [{"inner": float("inf")}]})
 
 

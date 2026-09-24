@@ -340,6 +340,30 @@ resource "aws_iam_role_policy" "lambda_agent_authority" {
         Resource = [aws_dynamodb_table.agent_authority.arn]
       },
       {
+        # The legacy ingress role must not become a deputy for task records,
+        # including when one reserved key is hidden in a mixed batch/transaction.
+        Sid      = "DenyTaskRequestWrites"
+        Effect   = "Deny"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:TransactWriteItems"]
+        Resource = [aws_dynamodb_table.webhook_events.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = {
+            "dynamodb:LeadingKeys" = [
+              "TASK#*",
+              "TASK_RUN#*",
+              "TASK_EVENTS#*",
+              "TASK_COMMANDS#*",
+              "TASK_TURNS#*",
+              "TASK_OPS#*",
+              "TASK_IDEMP#*",
+              "TASK_WORK#*",
+              "TASK_REPORT#*",
+              "TASK_ARTIFACT#*",
+            ]
+          }
+        }
+      },
+      {
         # Task work IDs are resolved and authorized by the gateway.  The shared
         # ingress Lambda retains its pre-existing legacy authority writes, but it
         # can neither create nor retarget a TASK_WORK_ID locator, including as

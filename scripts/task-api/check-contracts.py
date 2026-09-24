@@ -1378,13 +1378,16 @@ def check_manifest(results: Results) -> None:
     runnable = sorted(
         cid for cid, entry in criteria.items() if entry["command_status"] == "runnable"
     )
-    expected_runnable = sorted(
-        cid for cid in criteria if cid.startswith(("V0-", "T0-"))
-    )
+    baseline_runnable = {cid for cid in criteria if cid.startswith(("V0-", "T0-"))}
+    invalid_runnable = [
+        cid
+        for cid in runnable
+        if cid.startswith("V") and cid not in baseline_runnable
+    ]
     results.record(
-        "only the V0 validator and T0 criteria are runnable at this wave",
-        runnable == expected_runnable,
-        f"runnable: {runnable}",
+        "implementation commands may become runnable without claiming later evaluation evidence",
+        baseline_runnable.issubset(runnable) and not invalid_runnable,
+        f"runnable: {runnable}; invalid evaluation commands: {invalid_runnable}",
         ["T0-AC03"],
         group="manifest",
     )
@@ -1481,9 +1484,9 @@ def check_v0_obligations(results: Results) -> None:
     V0-06 asks for a manifest covering every criterion with nothing removed,
     weakened or counted as passing from a skipped test. V0-07 asks for a
     recorded cross-component consistency review against the exact source
-    revision. V0-08 asks for a runnable entry point that actually executes and
-    names later commands as not yet implemented. None of these can be proved by
-    a fixture, so they are checked here.
+    revision. V0-08 asks for registered runnable entry points and visible
+    unimplemented commands. None of these can be proved by a fixture, so they
+    are checked here.
     """
     manifest_path = REPO_ROOT / "docs" / "task-api" / "evaluation-manifest.json"
     review_path = CONTRACT_DIR / "consistency-review.json"
@@ -1525,12 +1528,15 @@ def check_v0_obligations(results: Results) -> None:
             ["T0-AC03", "V0-08"],
             group="v0_obligations",
         )
+        runnable_commands = []
+        for entry in criteria.values():
+            if entry["command_status"] == "runnable" and entry["command"] not in runnable_commands:
+                runnable_commands.append(entry["command"])
         results.record(
-            "the runnable entry point is the one registered in the manifest",
-            manifest.get("runnable_now")
-            == ["python3 scripts/task-api/check-contracts.py"]
+            "every runnable entry point is registered in the manifest",
+            set(manifest.get("runnable_now", [])) == set(runnable_commands)
             and (REPO_ROOT / "scripts" / "task-api" / "check-contracts.py").exists(),
-            f"runnable_now is {manifest.get('runnable_now')}",
+            f"runnable_now is {manifest.get('runnable_now')}; criteria commands are {runnable_commands}",
             ["V0-08"],
             group="v0_obligations",
         )

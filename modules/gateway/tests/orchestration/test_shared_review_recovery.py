@@ -262,6 +262,70 @@ async def test_policy_recovers_stalled_review_through_existing_runner_once(recov
         assert await recovered_worker_exit(db, prior, claim)
 
 
+async def test_failed_reviewer_recovers_without_waiting_for_outer_node_stall(recovery):
+    from src.orchestration.models import OrchestrationAcceptedPlan
+    from src.orchestration.review_recovery import recover_stalled_stories
+
+    ctx = recovery.ctx
+    async with ctx.factory() as db:
+        row = await db.get(OrchestrationRunReport, recovery.run)
+        assert row.dispatch_metadata["persona"] == "agent-codex-reviewer"
+        row.terminal_receipt = {"outcome": "failed"}
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = 3
+        plan.plan_document = document
+        await db.commit()
+    assert (await protocol.tick(ctx)).blocked == 1
+    assert (await protocol.state(ctx))[2].state == "running"
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 1
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 0
+    assert (await protocol.tick(ctx)).effects_succeeded == 1
+    assert len(ctx.calls) == 2
+    assert ctx.calls[-1]["persona"] == "agent-codex-reviewer"
+    assert ctx.calls[-1]["review_cycle_input"]["recovery"]["prior_run_id"] == recovery.run
+    execution, claim, node, _ = await protocol.state(ctx)
+    assert node.attempts == 1 and execution.attempts == 2
+    async with ctx.factory() as db:
+        prior = await db.get(OrchestrationRunReport, recovery.run)
+        assert prior.terminal_receipt == {"outcome": "failed"} and prior.review_receipt is None
+        latest = await db.get(OrchestrationRunReport, claim.active_run_id)
+        latest.terminal_receipt = {"outcome": "failed"}
+        await db.commit()
+    # The developer and both reviewers exhaust the same original allowance.
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 0
+    assert len(ctx.calls) == 2
+
+
+@pytest.mark.parametrize("hold", ["live", "cancelled", "complete", "missing_terminal", "verdict", "paused", "developer", "wrong_trigger"])
+async def test_failed_reviewer_recovery_preserves_failure_and_authority_boundaries(recovery, hold):
+    from src.orchestration.models import OrchestrationFlow
+    from src.orchestration.review_recovery import recover_stalled_stories
+
+    ctx = recovery.ctx
+    async with ctx.factory() as db:
+        row = await db.get(OrchestrationRunReport, recovery.run)
+        row.terminal_receipt = {"outcome": "complete" if hold == "complete" else "failed"}
+        if hold == "missing_terminal":
+            row.terminal_receipt = None
+        if hold == "verdict":
+            row.review_receipt = {"recorded": True}
+        if hold == "paused":
+            (await db.get(OrchestrationFlow, ctx.flow.id)).execution_paused = True
+        if hold in {"developer", "wrong_trigger"}:
+            metadata = json.loads(json.dumps(row.dispatch_metadata))
+            if hold == "developer":
+                metadata["persona"] = "developer"
+            else:
+                metadata["intent"] = {"trigger": "other"}
+            row.dispatch_metadata = metadata
+        await db.commit()
+    if hold in {"live", "cancelled"}:
+        recovery.resolver.read_current.return_value["status"] = "in_progress" if hold == "live" else "cancelled"
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 0
+    assert len(ctx.calls) == 1
+
+
 @pytest.mark.parametrize("reason", ["pause", "not_stalled", "limit", "live", "explicit_blocker"])
 async def test_automatic_recovery_preserves_holds(recovery, reason):
     from src.orchestration.models import OrchestrationExecution, OrchestrationFlow
@@ -320,7 +384,10 @@ async def test_no_pr_creates_draft_from_checkpoint_and_reconciles_lost_response(
     monkeypatch.setattr("src.orchestration.pr_bindings.resolve_registration_target", AsyncMock(return_value=target))
     monkeypatch.setattr("src.orchestration.review_recovery.report_exit_resolver", lambda row: recovery.resolver)
     monkeypatch.setattr("src.knowledge.github_app_service.resolve_tenant_app_credentials", AsyncMock(return_value=("app", "key")))
-    monkeypatch.setattr("src.knowledge.github_app_service.mint_installation_token_with_expiry", AsyncMock(return_value=("fake-token", None)))
+    monkeypatch.setattr(
+        "src.knowledge.github_app_service.mint_installation_token_with_expiry",
+        AsyncMock(side_effect=lambda *a, **kw: ("readable-refs" if kw["permissions"].get("contents") == "read" else "unreadable-refs", None)),
+    )
     monkeypatch.setattr(
         "src.orchestration.pr_identity.resolve_pr_identity",
         AsyncMock(return_value=PullRequestIdentity(123, "PR_recovery", protocol.REPO, 78, ctx.head)),
@@ -340,6 +407,14 @@ async def test_no_pr_creates_draft_from_checkpoint_and_reconciles_lost_response(
             return httpx.Response(200, json=body, request=httpx.Request("GET", "https://api.github.com" + path))
 
         async def post(self, path, **kwargs):
+            # GitHub refuses PR creation when the token cannot read both refs,
+            # even with pull_requests:write ("not all refs are readable").
+            if kwargs["headers"]["Authorization"] != "Bearer readable-refs":
+                httpx.Response(
+                    422,
+                    json={"message": "not all refs are readable"},
+                    request=httpx.Request("POST", "https://api.github.com" + path),
+                ).raise_for_status()
             # The intent must be committed and visible on another connection
             # before GitHub receives a write.
             async with ctx.factory() as other:

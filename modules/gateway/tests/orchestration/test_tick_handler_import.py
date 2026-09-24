@@ -126,3 +126,34 @@ def test_activity_lazy_router_exports_still_resolve():
     import src.activity as activity
 
     assert activity.router is activity.activity_router
+
+
+def test_recovery_exit_lookup_runs_without_web_session_secret():
+    """Autonomous recovery uses its exact-key resolver without web auth imports."""
+    result = _import_in_scrubbed_subprocess("""
+import asyncio
+import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from src.orchestration.review_recovery import exited_run
+from src.orchestration.review_cycle import CycleBlockedError
+
+async def check():
+    resolver = SimpleNamespace(read_current=AsyncMock(return_value={
+        'tenant_id': 'aws-e', 'status': 'failed', 'arrived_at': '2026-09-24T20:00:00Z',
+    }))
+    assert (await exited_run('review-run', 'aws-e', resolver))['status'] == 'failed'
+    resolver.read_current.assert_awaited_once_with('review-run')
+    resolver.read_current.return_value['tenant_id'] = 'other-tenant'
+    try:
+        await exited_run('review-run', 'aws-e', resolver)
+    except CycleBlockedError as error:
+        assert error.reason == 'prior_worker_active_or_unverified'
+    else:
+        raise AssertionError('cross-tenant registry record accepted')
+    assert 'src.auth.middleware' not in sys.modules
+    assert 'src.orchestration.controls' not in sys.modules
+
+asyncio.run(check())
+""")
+    assert result.returncode == 0, f"Autonomous recovery loaded web auth:\n{result.stderr}"

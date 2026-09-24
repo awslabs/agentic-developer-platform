@@ -8,12 +8,13 @@ import asyncio
 import json
 import logging
 import time
+import traceback
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from .continuation import digest
 from .execution_policy import Action
@@ -41,10 +42,12 @@ class ReviewRecoveryRequest(BaseModel):
 
 
 async def exited_run(run_id, org_id, resolver=None):
-    from .controls import get_run_binding_resolver
     from .work_claims import compute_liveness
 
-    resolver = resolver or await get_run_binding_resolver()
+    if resolver is None:
+        from .controls import get_run_binding_resolver
+
+        resolver = await get_run_binding_resolver()
     # Lifecycle is mutable; the budget resolver's day-long identity cache cannot
     # establish a current exit. Read the registry consistently at acceptance.
     run = await resolver.read_current(run_id)
@@ -110,6 +113,8 @@ async def prepare_recovery(session, *, org_id, node_id, actor_id, actor_role, re
     context = RunnerContext(identity, execution, datetime.now(UTC))
     await authorize_shared_action(session, context, proposed, binding, report.run_id, Action.REVIEW, observation=True)
     exit_evidence = await exited_run(report.run_id, org_id, resolver or (report_exit_resolver(report) if autonomous else None))
+    if autonomous and node.state != "failed" and exit_evidence["status"] != "failed":
+        raise CycleBlockedError("reviewer_exit_not_failed")
     remote = await resolve_pr_identity(org_id=org_id, installation_id=binding.installation_id, repo=binding.repo, pr_number=binding.pr_number)
     if (
         remote.head_sha != request.expected_head_sha
@@ -506,10 +511,17 @@ def recovery_actor_matches(row, data):
 
 
 async def require_autonomous_recovery(session, node, report, execution, inputs):
-    """Only timed-out shared stories with policy headroom enter autonomous review."""
+    """Recover engine stalls and failed reviewer processes, never their verdicts."""
     from .flow_execution import flow_is_paused
 
-    if node.state != "failed" or node.kind != "story":
+    failed_reviewer = (
+        node.state in {"running", "awaiting_merge"}
+        and (report.terminal_receipt or {}).get("outcome") == "failed"
+        and report.dispatch_metadata.get("persona") == "agent-codex-reviewer"
+        and (report.dispatch_metadata.get("intent") or {}).get("trigger") == "engine_review_cycle"
+        and bool(report.dispatch_metadata.get("review_cycle_input"))
+    )
+    if (node.state != "failed" and not failed_reviewer) or node.kind != "story":
         raise CycleBlockedError("not_a_stalled_story")
     if await flow_is_paused(session, org_id=node.org_id, flow_id=node.flow_id):
         raise CycleBlockedError("flow_paused")
@@ -524,7 +536,7 @@ async def require_autonomous_recovery(session, node, report, execution, inputs):
         .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
         .limit(1)
     )
-    if last is None or last.kind != DecisionKind.NODE_STALLED.value or last.to_state != "failed":
+    if not failed_reviewer and (last is None or last.kind != DecisionKind.NODE_STALLED.value or last.to_state != "failed"):
         raise CycleBlockedError("not_an_engine_stall")
     if execution.pending_action_key:
         raise CycleBlockedError("pending_effect_requires_reconciliation")
@@ -549,6 +561,15 @@ async def recover_stalled_stories(factory, *, resolver=None):
     if not RunnerConfig.from_env().enabled:
         return 0
     async with factory() as session:
+        failed_review_nodes = (
+            select(OrchestrationRunReport.node_id)
+            .join(OrchestrationWorkClaim, OrchestrationWorkClaim.active_run_id == OrchestrationRunReport.run_id)
+            .where(
+                OrchestrationWorkClaim.state == "held",
+                OrchestrationRunReport.terminal_receipt["outcome"].as_string() == "failed",
+                OrchestrationRunReport.dispatch_metadata["persona"].as_string() == "agent-codex-reviewer",
+            )
+        )
         node_ids = list(
             (
                 await session.scalars(
@@ -557,7 +578,10 @@ async def recover_stalled_stories(factory, *, resolver=None):
                     .where(
                         OrchestrationFlow.execution_paused.is_(False),
                         OrchestrationNode.kind == "story",
-                        OrchestrationNode.state == "failed",
+                        or_(
+                            OrchestrationNode.state == "failed",
+                            OrchestrationNode.state.in_(["running", "awaiting_merge"]) & OrchestrationNode.id.in_(failed_review_nodes),
+                        ),
                     )
                     # Sample so permanently blocked stories cannot monopolize the pass.
                     .order_by(func.random())
@@ -609,21 +633,35 @@ async def recover_stalled_stories(factory, *, resolver=None):
                     expected_plan_version=plan.version,
                     expected_run_id=report.run_id,
                     expected_head_sha=remote.head_sha,
-                    reason="Policy-authorized review of retained work after an engine-recorded stall.",
+                    reason="Policy-authorized review of retained work after an engine stall or recorded reviewer failure.",
                 )
                 arguments = dict(
                     org_id=node.org_id, node_id=node.id, actor_id=RECOVERY_ACTOR, actor_role="engine", resolver=resolver, autonomous=True
                 )
                 preview = await request_review_recovery(session, request=request, **arguments)
                 request.expected_snapshot = preview["snapshot"]
-                await request_review_recovery(session, request=request, accept=True, **arguments)
+                accepted = await request_review_recovery(session, request=request, accept=True, **arguments)
                 await session.commit()
-                recovered += 1
+                recovered += int(accepted["created"])
         except Exception as error:
             # A provider or policy failure never disables the other flows' tick.
             # Store only a bounded code, never provider exception text/credentials.
+            from httpx import HTTPStatusError
+
             code = error.reason if isinstance(error, CycleBlockedError) else "recovery_evidence_unavailable"
-            logging.getLogger(__name__).info("stalled review recovery blocked node=%s code=%s", node_id, code)
+            if isinstance(error, HTTPStatusError):
+                code = f"recovery_provider_http_{error.response.status_code}"
+            frames = traceback.extract_tb(error.__traceback__)
+            location = f"{frames[-1].name}:{frames[-1].lineno}" if frames else "unknown"
+            # Lambda installs a WARNING root handler. Keep the failure visible
+            # without printing provider bodies, request headers, or exception text.
+            logging.getLogger(__name__).warning(
+                "stalled review recovery blocked node=%s code=%s error_type=%s location=%s",
+                node_id,
+                code,
+                type(error).__name__,
+                location,
+            )
             async with factory() as session:
                 node = await session.get(OrchestrationNode, node_id)
                 if node is not None:

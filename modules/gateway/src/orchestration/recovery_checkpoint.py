@@ -151,7 +151,11 @@ async def ensure_checkpoint_pr(session, *, node, report, execution, identity):
         raise CycleBlockedError("recovery_checkpoint_changed")
     app, secret = await resolve_tenant_app_credentials(node.org_id)
     token, _ = await mint_installation_token_with_expiry(
-        app, secret, target.installation_id, repositories=[target.repo.split("/")[1]], permissions={"metadata": "read", "pull_requests": "write"}
+        app,
+        secret,
+        target.installation_id,
+        repositories=[target.repo.split("/")[1]],
+        permissions={"metadata": "read", "contents": "read", "pull_requests": "write"},
     )
     async with httpx.AsyncClient(base_url="https://api.github.com", timeout=10, trust_env=False, follow_redirects=False) as client:
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}

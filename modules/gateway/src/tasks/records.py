@@ -54,23 +54,21 @@ another's. The design calls this out as "versioned length-delimited components,
 not ambiguous concatenation".
 
 ``src/agentauth/model_policy.py::canonical_json`` exists but is a sorted-key
-``json.dumps``, which is not RFC 8785 (it does not normalise numbers or escapes)
-and it carries a policy-snapshot size ceiling and raises ``ModelPolicyError``.
-Reusing it would either bend that module's contract or silently weaken this one,
-so this is a deliberate narrow duplication with provenance recorded here — the
-"narrow helper duplication is acceptable" allowance in the story's compatibility
-boundary.
+``json.dumps``, which is not RFC 8785 (notably for fractional/exponential number
+forms and UTF-16 property ordering), carries a policy-snapshot size ceiling and
+raises ``ModelPolicyError``. Task digests therefore use the dedicated RFC 8785
+implementation rather than bending that module's contract.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
-import math
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Final
+
+import rfc8785
 
 # --------------------------------------------------------------------------
 # Record namespaces (design section 6 table)
@@ -448,49 +446,15 @@ def validate_transition(current: TaskState, target: TaskState) -> None:
 def canonical_json(value: Any) -> bytes:
     """Serialise ``value`` to RFC 8785 canonical JSON bytes.
 
-    Canonical means one byte representation per logical value, so a digest cannot
-    change because a client reordered keys or added whitespace. Python's
-    ``json.dumps`` with ``sort_keys`` and tight separators gives RFC 8785's key
-    ordering and formatting for the value types the Task API permits; the
-    remaining gaps are rejected rather than silently normalised:
-
-    * ``ensure_ascii=False`` with UTF-8 output, per RFC 8785's requirement that
-      strings are not escaped beyond JSON's minimum.
-    * NaN and infinity raise. The design already rejects nonfinite numbers at the
-      API boundary; allowing them here would produce ``NaN`` tokens that are not
-      JSON at all and would make a digest unreproducible by any other language.
-    * Non-integral floats raise. RFC 8785 mandates ECMAScript number formatting,
-      which Python's ``repr`` does not always reproduce; rather than emit a digest
-      that a conforming implementation would compute differently, this refuses.
-      The Task API's ordering numbers are specified as positive integers, so no
-      legitimate payload needs a fractional number.
+    Public task inputs permit every finite JSON number, not only integers. The
+    RFC implementation supplies ECMAScript number formatting, UTF-16 property
+    ordering and the I-JSON numeric-domain checks needed for cross-language
+    request and command digests.
     """
-    _reject_noncanonical_numbers(value)
     try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
-    except (TypeError, ValueError) as exc:
+        return rfc8785.dumps(value)
+    except (rfc8785.CanonicalizationError, TypeError, ValueError) as exc:
         raise TaskRecordError(f"value is not canonicalisable JSON: {exc}") from None
-
-
-def _reject_noncanonical_numbers(value: Any) -> None:
-    """Walk ``value`` and refuse numbers whose canonical form is not reproducible."""
-    if isinstance(value, bool):
-        return
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            raise TaskRecordError("nonfinite numbers are not permitted")
-        if not value.is_integer():
-            raise TaskRecordError("non-integral floats have no reproducible RFC 8785 form; use integers or strings")
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TaskRecordError("canonical JSON object keys must be strings")
-            _reject_noncanonical_numbers(item)
-        return
-    if isinstance(value, list | tuple):
-        for item in value:
-            _reject_noncanonical_numbers(item)
 
 
 def payload_digest(value: Any) -> str:

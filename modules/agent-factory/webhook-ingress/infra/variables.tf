@@ -617,3 +617,25 @@ variable "github_auto_pr_review_enabled" {
   type        = bool
   default     = false
 }
+
+variable "agent_worker_memory_request" {
+  description = "Memory reserved for each agent worker, including its subprocesses and tests."
+  type        = string
+  default     = "4Gi"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*(Mi|Gi)$", var.agent_worker_memory_request))
+    error_message = "agent_worker_memory_request must be a positive Mi or Gi memory quantity."
+  }
+}
+
+variable "agent_worker_memory_limit" {
+  description = "Memory limit for each agent worker, including its subprocesses and tests."
+  type        = string
+  default     = "8Gi"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*(Mi|Gi)$", var.agent_worker_memory_limit))
+    error_message = "agent_worker_memory_limit must be a positive Mi or Gi memory quantity."
+  }
+}
