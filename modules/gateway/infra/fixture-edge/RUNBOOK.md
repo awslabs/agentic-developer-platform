@@ -156,6 +156,62 @@ fixture-edge/dev/879318057152/<nonce>/terraform.tfstate
 Two concurrent runs cannot corrupt each other, and a mistyped bucket belonging to
 another account cannot collide with that account's fixture state.
 
+### What every later command re-checks about that binding
+
+`init` records the resolved backend in `$TF_DATA_DIR/terraform.tfstate` (or
+`.terraform/`). Every subcommand that touches state — `plan`, `apply`, `handoff`,
+`verify`, `destroy` — re-reads that record and **refuses** unless four things match
+its own command line. Checking only the state *key* was not enough:
+
+| Checked | Why the key alone missed it |
+|---------|------------------------------|
+| `key` | the original check: nonce + account, so `init --nonce A; plan --nonce B` is refused |
+| `bucket` | the same key in **another bucket** is a different state file entirely — a typo, or another account's state bucket this credential can reach, passed while reading foreign state |
+| `type` | an `s3` record replaced by a `local` one still carries a matching key, and local state has none of the per-run isolation teardown's ownership story rests on |
+| `profile` | the backend's profile is the identity that **reads and writes** the state; if it differs from `--profile`, the plan is built from state that the run's account/cluster checks were never made against |
+
+### `--profile` binds the AWS CLI; the provider is bound separately
+
+`terraform` has **no `--profile` flag** — its AWS provider resolves credentials from
+the process environment. So a run whose `aws` calls are all correctly bound can still
+have `plan`/`apply`/`destroy` act on a *different* account, which is the exact split
+the account guards exist to prevent (guards run through the CLI, mutations through
+the provider).
+
+Every terraform invocation therefore goes through a wrapper that exports
+`AWS_PROFILE=<--profile>` **and clears the higher-precedence variables**
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+`AWS_DEFAULT_PROFILE`, `AWS_CREDENTIAL_PROFILES_FILE`). Setting `AWS_PROFILE` alone
+is not sufficient: static keys outrank it in the SDK chain, so an operator or CI job
+with another account's keys already exported would have terraform use **those** while
+`aws --profile` kept reporting the correct account and every guard passed.
+
+### The cluster is pinned by its API endpoint, not its context name
+
+`handoff` and `recover-secret` mutate Kubernetes, and `--profile` does not bind
+`kubectl` at all. A kubectl **context name is a local label** chosen by whoever wrote
+the kubeconfig: it can read `arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks`
+while pointing at anyone's API server, so parsing it proves nothing.
+
+The script instead reads the resolved endpoint
+(`kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'`) and
+compares its host against `aws eks describe-cluster --query cluster.endpoint` for the
+named cluster, **through this run's bound profile and region**. That both confirms the
+cluster exists in the authorised account and pins the connection kubectl will really
+make.
+
+`--expect-cluster` is the **EKS cluster NAME** to verify against AWS — not a string
+compared to the context name. (In the previous revision it was the latter, which made
+it a free-form bypass: echoing back `kubectl config current-context` always satisfied
+it.) Pass it whenever the context is an alias:
+
+```bash
+./scripts/fixture-lifecycle.sh handoff ... --expect-cluster adp-dev-eks
+```
+
+With an EKS-ARN-shaped context the name is taken from the ARN as a convenience — the
+verification against AWS still runs, because the ARN is also just a local string.
+
 > **There is no "just keep state locally" alternative.** An earlier revision of this
 > step said you could omit the `-backend-config` flags and keep state locally. That
 > is false, and was reproduced as false on Terraform 1.15.3: with a `backend "s3"`

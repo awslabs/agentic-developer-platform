@@ -112,6 +112,40 @@ aws_() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# `--profile` DOES NOT BIND THE TERRAFORM PROVIDER.
+#
+# aws_() passes --profile to the AWS CLI. The AWS provider is a SEPARATE
+# credential consumer: it runs inside the terraform process and resolves its own
+# chain (env vars, then AWS_PROFILE, then the default profile, then IMDS). So
+# every `aws_` call could be correctly bound to adp-embark1 while terraform
+# planned and APPLIED against whatever ambient credential the shell happened to
+# carry -- a different account, with only main.tf's account precondition standing
+# between that and a fixture edge created in the wrong place. A CLI flag that the
+# provider never sees is not a binding.
+#
+# `-backend-config=profile=` (set in init) binds only the S3 BACKEND, not the
+# provider, which is why that was not sufficient either.
+#
+# Terraform has no --profile flag, so the provider is bound the only way it can
+# be: through the environment of the terraform process itself. AWS_PROFILE and
+# AWS_REGION are set, and the lower-precedence static/ambient variables are
+# CLEARED so they cannot win over the named profile. main.tf's account/region
+# preconditions then re-verify the result rather than trusting this.
+# ---------------------------------------------------------------------------
+terraform_() {
+  if [ -n "$PROFILE" ]; then
+    # AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN outrank AWS_PROFILE in the provider's
+    # chain, so leaving them set would silently override the named profile.
+    env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+        -u AWS_DEFAULT_PROFILE -u AWS_CREDENTIAL_PROFILES_FILE \
+        AWS_PROFILE="$PROFILE" AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION" \
+        terraform "$@"
+  else
+    env AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION" terraform "$@"
+  fi
+}
+
 assert_live_account() {
   local live
   live="$(aws_ sts get-caller-identity --query Account --output text)" \
@@ -132,38 +166,74 @@ assert_live_account() {
 # cluster, while every aws_ call in the same run is correctly bound. Every
 # mutating subcommand must therefore assert the cluster too, BEFORE mutating.
 # ---------------------------------------------------------------------------
+# A CONTEXT NAME IS A LOCAL LABEL, NOT THE CLUSTER'S IDENTITY.
+#
+# The previous revision decided this by PARSING the context name: an EKS-ARN-shaped
+# name had its account/region compared, and anything else was accepted once the
+# operator passed --expect-cluster with the same string. Both halves are weak in the
+# same way -- the name is an arbitrary local alias chosen by whoever wrote the
+# kubeconfig, and it can say `arn:aws:eks:us-east-1:<right account>:cluster/adp-dev-eks`
+# while pointing at ANY server. So --expect-cluster was a free-form bypass: repeating
+# the current context name always satisfied it, which made it a typing exercise
+# rather than a check.
+#
+# What is actually authoritative is the API SERVER ENDPOINT kubectl will connect to
+# (kubeconfig `cluster.server`) compared against the endpoint AWS reports for the
+# named cluster (`eks describe-cluster`, read through the run's own bound profile).
+# That resolves the cluster's true account and region from the AWS side, and pins the
+# connection kubectl will actually make. --expect-cluster is now the CLUSTER NAME to
+# verify against AWS, not a string to echo back.
 assert_kube_context() {
-  local ctx
+  local ctx server
   ctx="$(kubectl config current-context 2>/dev/null)" \
     || fail "no current kubectl context. Refusing to mutate an unknown cluster."
   [ -n "$ctx" ] || fail "kubectl current-context is empty. Refusing to continue."
-  # An EKS context ARN embeds the account and region, so when it is one we can
-  # check the cluster belongs to the SAME account the AWS credential resolved to.
-  case "$ctx" in
-    arn:aws:eks:*)
-      local ctx_account ctx_region
-      ctx_region="$(printf '%s' "$ctx" | cut -d: -f4)"
-      ctx_account="$(printf '%s' "$ctx" | cut -d: -f5)"
-      [ "$ctx_account" = "$ACCOUNT" ] || fail "kubectl context is for account $ctx_account but
-     --account-id is $ACCOUNT. The AWS CLI and kubectl are pointed at DIFFERENT
-     accounts; refusing to mutate. Context: $ctx"
-      [ "$ctx_region" = "$REGION" ] || fail "kubectl context region $ctx_region != --region $REGION.
-     Context: $ctx"
-      ;;
-    *)
-      # A short/aliased context cannot be verified by parsing, so require the
-      # operator to state it explicitly rather than accepting whatever is current.
-      [ -n "$EXPECT_CLUSTER" ] || fail "the kubectl context '$ctx' is not an EKS ARN, so its
-     account cannot be verified by inspection. Pass --expect-cluster '$ctx' to
-     confirm this is deliberately the intended cluster. Refusing to mutate an
-     unverifiable cluster."
-      ;;
-  esac
-  if [ -n "$EXPECT_CLUSTER" ]; then
-    [ "$ctx" = "$EXPECT_CLUSTER" ] || fail "kubectl context is '$ctx' but --expect-cluster is
-     '$EXPECT_CLUSTER'. Refusing to mutate the wrong cluster."
+
+  # The endpoint kubectl will really talk to, from the resolved (--minify) context.
+  server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || printf '')"
+  [ -n "$server" ] || fail "could not read the API server endpoint for context '$ctx'. Without it
+     the cluster kubectl would mutate cannot be identified, and a context NAME is only
+     a local label. Refusing to mutate an unidentifiable cluster."
+
+  # The cluster NAME to verify. Derived from an EKS-ARN context when available (a
+  # convenience, not the proof -- the ARN is still just a local string), otherwise it
+  # must be stated, because there is nothing to look up.
+  local cluster_name="$EXPECT_CLUSTER"
+  if [ -z "$cluster_name" ]; then
+    case "$ctx" in
+      arn:aws:eks:*:cluster/*) cluster_name="${ctx##*/}" ;;
+      *) fail "the kubectl context '$ctx' is a local alias, so the cluster it points at cannot
+     be named from it. Pass --expect-cluster <EKS cluster name> -- the NAME of the
+     cluster, which is then verified against AWS via eks describe-cluster. Refusing
+     to mutate an unverified cluster." ;;
+    esac
   fi
-  ok "kubectl context verified ($ctx)"
+
+  # THE AUTHORITATIVE READ. Through aws_, so it uses this run's bound profile and
+  # region: the cluster is therefore confirmed to exist in the account every other
+  # check in this run was made against.
+  local aws_endpoint
+  aws_endpoint="$(aws_ eks describe-cluster --name "$cluster_name" \
+    --query cluster.endpoint --output text 2>/dev/null || printf '')"
+  [ -n "$aws_endpoint" ] && [ "$aws_endpoint" != "None" ] \
+    || fail "EKS cluster '$cluster_name' does not exist in account $ACCOUNT / $REGION (as
+     resolved through --profile), so kubectl's target cannot be confirmed to be the
+     cluster this run is authorised for. Refusing to mutate. This is the check a
+     context-name comparison could not make: the name is a local label and can claim
+     any account."
+
+  # Compare on host, since kubeconfig and the API may differ in scheme/trailing slash
+  # while naming the same endpoint.
+  local want_host have_host
+  want_host="$(printf '%s' "$aws_endpoint" | sed -e 's#^https\{0,1\}://##' -e 's#/.*$##')"
+  have_host="$(printf '%s' "$server" | sed -e 's#^https\{0,1\}://##' -e 's#/.*$##')"
+  [ "$have_host" = "$want_host" ] || fail "kubectl would connect to a DIFFERENT cluster than the one verified.
+       kubeconfig server   : $have_host
+       AWS says $cluster_name is : $want_host
+     The context name ('$ctx') is only a local label and can name any cluster, so this
+     endpoint comparison is what actually pins the target. Refusing to mutate."
+
+  ok "cluster verified against AWS: $cluster_name ($want_host) in $ACCOUNT/$REGION"
 }
 
 # ---------------------------------------------------------------------------
@@ -393,7 +463,7 @@ cmd_init() {
   # The account id is IN the key, so a mistyped bucket belonging to another
   # account cannot silently collide with that account's fixture state.
   cd "$ROOT_DIR"
-  terraform init -input=false -reconfigure \
+  terraform_ init -input=false -reconfigure \
     -backend-config="bucket=$BUCKET" \
     -backend-config="key=$STATE_KEY" \
     -backend-config="region=$REGION" \
@@ -426,16 +496,40 @@ assert_backend_binding() {
      against, so proceeding would mean planning or destroying through whatever
      state happened to be configured."
   state_key
-  python3 - "$cfg" "$STATE_KEY" "$ACCOUNT" "$REGION" <<'PY' \
+  # The BUCKET, TYPE and PROFILE are checked as well as the key.
+  #
+  # Validating only the key was insufficient in three distinct ways, all of which
+  # leave the run acting on state it did not intend:
+  #   * the same key in a DIFFERENT BUCKET is a different state file entirely, so a
+  #     re-init against another bucket (a typo, or another account's state bucket
+  #     this credential can reach) passed the check while reading foreign state;
+  #   * a backend of another TYPE (local, or an s3 record replaced by one) has no
+  #     per-run isolation at all, and "the key matches" says nothing about it;
+  #   * the backend's PROFILE is the credential that reads and writes the state. If
+  #     it differs from --profile, this command reads state through one identity
+  #     while terraform_/aws_ act through another -- so the state the plan is built
+  #     from is not the state the account checks were run against.
+  python3 - "$cfg" "$STATE_KEY" "$ACCOUNT" "$REGION" "${BUCKET:-}" "${PROFILE:-}" <<'PY' \
     || fail "backend binding check refused this command; see above."
 import json, sys
-cfg, expect_key, account, region = sys.argv[1:5]
+cfg, expect_key, account, region, expect_bucket, expect_profile = sys.argv[1:7]
 try:
     doc = json.load(open(cfg))
 except Exception as exc:                      # noqa: BLE001
     sys.exit(f"could not read the initialised backend record {cfg}: {exc}")
 backend = doc.get("backend") or {}
 conf = backend.get("config") or {}
+
+# --- the backend must be the isolated remote one this component requires -----
+actual_type = backend.get("type")
+if actual_type != "s3":
+    sys.exit(
+        f"BACKEND MISMATCH -- the initialised backend type is {actual_type!r}, not 's3'.\n"
+        "This component's whole ownership story rests on an isolated per-run S3 state\n"
+        "key: it is what lets teardown prove which objects this run created. A local\n"
+        "(or otherwise substituted) backend has no such isolation, so refusing."
+    )
+
 actual_key = conf.get("key")
 if not actual_key:
     sys.exit("the initialised backend records no state key; re-run init")
@@ -450,10 +544,39 @@ if actual_key != expect_key:
         "exact arguments, or re-issue this command with the nonce/account the\n"
         "backend was initialised for."
     )
+
+# --- the bucket: the same key in another bucket is another state file --------
+actual_bucket = conf.get("bucket")
+if not actual_bucket:
+    sys.exit("the initialised backend records no bucket; re-run init")
+if expect_bucket and actual_bucket != expect_bucket:
+    sys.exit(
+        "BACKEND MISMATCH -- same key, DIFFERENT BUCKET.\n"
+        f"  initialised in : {actual_bucket}\n"
+        f"  this command   : {expect_bucket}\n"
+        "A matching key in another bucket is a different state file, so this command\n"
+        "would act on resources recorded somewhere other than where it believes. Re-run\n"
+        "'init' with the intended bucket."
+    )
+
 actual_region = conf.get("region")
 if actual_region and actual_region != region:
     sys.exit(f"backend region {actual_region} != --region {region}; re-run init")
-print(f"  [ ok ] backend binding verified ({actual_key})")
+
+# --- the profile: the identity that reads/writes the state -------------------
+actual_profile = conf.get("profile") or ""
+if expect_profile and actual_profile != expect_profile:
+    sys.exit(
+        "BACKEND MISMATCH -- the state is read through a DIFFERENT credential than this\n"
+        "command is bound to.\n"
+        f"  backend profile : {actual_profile or '<none: ambient credential>'}\n"
+        f"  --profile       : {expect_profile}\n"
+        "Every account check in this run was made against --profile, so a backend on\n"
+        "another identity means the state the plan is built from was never the state\n"
+        "those checks applied to. Re-run 'init' with this --profile."
+    )
+print(f"  [ ok ] backend binding verified "
+      f"(s3://{actual_bucket}/{actual_key}, profile {actual_profile or '<ambient>'})")
 PY
 }
 
@@ -470,7 +593,7 @@ cmd_plan() {
 
   step "terraform plan"
   cd "$ROOT_DIR"
-  terraform plan -input=false -var-file="$tfvars" -out="$out" \
+  terraform_ plan -input=false -var-file="$tfvars" -out="$out" \
     || fail "terraform plan failed. A plan-time REFUSAL here is the run-binding gate
      working: it blocks a wrong account/region, a public or foreign-VPC fixture ALB,
      an ALB not tagged for this run, one the VPC Link cannot reach, or the ordinary
@@ -478,7 +601,7 @@ cmd_plan() {
 
   # Refuse a plan that reaches outside this root. Separate state and a separate API
   # should make it impossible; a plan that shows otherwise means the wrong backend.
-  terraform show -json "$out" > "$dir/fixture.plan.json"
+  terraform_ show -json "$out" > "$dir/fixture.plan.json"
   python3 - "$dir/fixture.plan.json" <<'PY' || fail "plan review refused the plan"
 import json, sys
 plan = json.load(open(sys.argv[1]))
@@ -523,7 +646,7 @@ cmd_apply() {
   fi
   step "terraform apply (reviewed plan)"
   cd "$ROOT_DIR"
-  terraform apply -input=false "$PLAN_FILE" || fail "terraform apply failed"
+  terraform_ apply -input=false "$PLAN_FILE" || fail "terraform apply failed"
   ok "applied"
 
   # Record the Terraform-owned resources in the ledger IMMEDIATELY. Until this
@@ -544,7 +667,7 @@ cmd_apply() {
 record_terraform_ownership() {
   local dir; dir="$(artifact_dir)"
   cd "$ROOT_DIR"
-  terraform output -json ownership > "$dir/ownership.json" \
+  terraform_ output -json ownership > "$dir/ownership.json" \
     || fail "applied, but could not read the ownership output. Resolve before proceeding:
      the run's resources exist and are recorded ONLY in state right now."
   ok "ownership receipt written to $dir/ownership.json"
@@ -582,7 +705,7 @@ cmd_handoff() {
 
   cd "$ROOT_DIR"
   local param
-  param="$(terraform output -raw ssm_provenance_parameter_name)" \
+  param="$(terraform_ output -raw ssm_provenance_parameter_name)" \
     || fail "could not read ssm_provenance_parameter_name from state. Apply first."
   [ -n "$param" ] || fail "ssm_provenance_parameter_name is empty — is fixture_edge_enabled true?"
   # Refuse the ordinary parameter outright. If the fixture were pointed at it, the
@@ -1188,7 +1311,7 @@ cmd_destroy() {
 
   cd "$ROOT_DIR"
   local api_id
-  api_id="$(terraform output -raw rest_api_id 2>/dev/null || echo "")"
+  api_id="$(terraform_ output -raw rest_api_id 2>/dev/null || echo "")"
 
   step "1/3 review the destroy plan against exact state"
   # A REVIEWED destroy plan, not an unchecked sweep: this is what shows exactly
@@ -1201,12 +1324,12 @@ cmd_destroy() {
     note "--recover: using -refresh=false because a deleted fixture ALB makes the"
     note "           data source unreadable and blocks the destroy plan entirely."
   fi
-  terraform plan -destroy -input=false -var-file="$tfvars" $refresh_flag \
+  terraform_ plan -destroy -input=false -var-file="$tfvars" $refresh_flag \
     -out="$dir/destroy.plan" \
     || fail "could not plan the destroy. If the fixture ALB/Ingress was ALREADY deleted,
      the data source read fails and this is expected — re-run with --recover, which
      adds -refresh=false. Do not resort to deleting resources by name."
-  terraform show -json "$dir/destroy.plan" > "$dir/destroy.plan.json"
+  terraform_ show -json "$dir/destroy.plan" > "$dir/destroy.plan.json"
   python3 - "$dir/destroy.plan.json" <<'PY' || fail "destroy plan review refused"
 import json, sys
 plan = json.load(open(sys.argv[1]))
@@ -1230,7 +1353,7 @@ PY
   # ORDERING IS LOAD-BEARING. The edge must stop accepting and forwarding traffic
   # BEFORE the fixture ALB is removed, and main.tf READS that ALB, so removing it
   # first makes this step unplannable. Both directions verified.
-  terraform apply -input=false "$dir/destroy.plan" \
+  terraform_ apply -input=false "$dir/destroy.plan" \
     || fail "destroy failed partway. State is isolated per nonce, so re-running is safe
      and idempotent. Resolve and re-run; do NOT delete by name prefix."
   ok "fixture edge destroyed"
@@ -1357,8 +1480,8 @@ cmd_verify() {
   assert_backend_binding
   cd "$ROOT_DIR"
   local endpoint api_id
-  endpoint="$(terraform output -raw worker_control_endpoint)" || fail "no endpoint in state"
-  api_id="$(terraform output -raw rest_api_id)" || fail "no rest_api_id in state"
+  endpoint="$(terraform_ output -raw worker_control_endpoint)" || fail "no endpoint in state"
+  api_id="$(terraform_ output -raw rest_api_id)" || fail "no rest_api_id in state"
 
   step "edge identity"
   printf '  endpoint: %s\n' "$endpoint"
@@ -1451,7 +1574,7 @@ cmd_verify() {
       local probe_role
       probe_role="$(printf '%s' "$probe_arn" | awk -F/ '{print $2}')"
       local allowlisted=0 allowed_arns
-      allowed_arns="$(terraform output -json allowed_caller_role_arns 2>/dev/null \
+      allowed_arns="$(terraform_ output -json allowed_caller_role_arns 2>/dev/null \
         | python3 -c 'import json,sys
 try:
     print("\n".join(json.load(sys.stdin)))

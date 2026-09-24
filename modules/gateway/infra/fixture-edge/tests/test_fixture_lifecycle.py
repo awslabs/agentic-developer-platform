@@ -41,6 +41,12 @@ DEPLOY = "w2-fixture-gateway-5836"
 SECRET = f"w2-fixture-provenance-{NONCE}"
 PARAM = f"/adp/dev/gateway/fixture/{NONCE}/apigw-provenance-secret"
 
+# The state bucket and the named profile every harness command is bound to. Both
+# are part of the backend binding the script checks, so they are constants rather
+# than literals repeated at each call site.
+BUCKET = "tf-state-bucket"
+PROFILE = "adp-embark1"
+
 # #3968's ACTUAL fixture labels (lib/render_fixture.py, branch agent/issue-3968).
 # Named here so a drift in that renderer breaks these tests loudly instead of
 # silently making the ownership checks vacuous again.
@@ -106,6 +112,22 @@ if args[:2] == ["configure", "get"]:
         "of a config file: static keys are absent for assumed-role/SSO profiles and "
         "passing them to curl puts the secret in argv.\n" % (args[2] if len(args) > 2 else ""))
     sys.exit(97)
+
+# The AUTHORITATIVE cluster identity: AWS's own endpoint for the named cluster,
+# resolved through the run's bound profile/region. Compared against the kubeconfig
+# server, this pins the connection kubectl will actually make -- which a context-name
+# comparison cannot do.
+if args[:2] == ["eks", "describe-cluster"]:
+    want = os.environ.get("FAKE_EKS_CLUSTER_NAME", "adp-dev-eks")
+    asked = args[args.index("--name") + 1]
+    if asked != want or os.environ.get("FAKE_EKS_CLUSTER_MISSING") == "1":
+        sys.stderr.write(
+            "An error occurred (ResourceNotFoundException): No cluster found for name: "
+            "%s.\n" % asked)
+        sys.exit(254)
+    print("https://" + os.environ.get(
+        "FAKE_EKS_ENDPOINT_HOST", "ABCDEF0123.gr7.us-east-1.eks.amazonaws.com"))
+    sys.exit(0)
 
 if args[:2] == ["ssm", "get-parameter"]:
     name = args[args.index("--name") + 1]
@@ -206,6 +228,20 @@ if args[:3] == ["config", "current-context"]:
         ctx = "arn:aws:eks:%s:%s:cluster/adp-dev-eks" % (
             os.environ.get("FAKE_REGION", "us-east-1"), os.environ["FAKE_ACCOUNT"])
     print(ctx); sys.exit(0)
+
+# THE API SERVER ENDPOINT kubectl would really connect to. This -- not the context
+# NAME -- is what identifies the cluster: the name is an arbitrary local alias and can
+# claim any account, so a context called
+# `arn:aws:eks:us-east-1:<right account>:cluster/adp-dev-eks` may point anywhere.
+# FAKE_KUBE_SERVER models exactly that divergence.
+if args[:2] == ["config", "view"]:
+    server = os.environ.get("FAKE_KUBE_SERVER", "__default__")
+    if server == "__none__":
+        print(""); sys.exit(0)
+    if server == "__default__":
+        server = "https://" + os.environ.get(
+            "FAKE_EKS_ENDPOINT_HOST", "ABCDEF0123.gr7.us-east-1.eks.amazonaws.com")
+    print(server); sys.exit(0)
 
 if args[:2] == ["get", "deployment"]:
     if os.environ.get("FAKE_DEPLOY_MISSING") == "1":
@@ -359,6 +395,24 @@ import json, os, sys, pathlib
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write("terraform " + " ".join(args) + "\n")
+
+# The CREDENTIAL ENVIRONMENT each terraform invocation actually ran with.
+#
+# terraform has no --profile flag: the AWS provider resolves credentials from the
+# process environment, where AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN OUTRANK
+# AWS_PROFILE. So "this run is bound to --profile" is a claim about terraform only
+# if that environment is controlled, and the only way a test can check it is to
+# record what the child really received.
+if os.environ.get("FAKE_TF_ENV"):
+    with open(os.environ["FAKE_TF_ENV"], "a") as fh:
+        fh.write(json.dumps({
+            "argv": args,
+            "env": {k: os.environ.get(k) for k in (
+                "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                "AWS_CREDENTIAL_PROFILES_FILE", "AWS_REGION",
+                "AWS_DEFAULT_REGION")},
+        }) + "\n")
 
 def out_path(flag="-out"):
     for a in args:
@@ -610,14 +664,32 @@ def harness(tmp_path):
     tf_data = tmp_path / "tfdata"
     tf_data.mkdir()
 
+    # One JSON line per terraform invocation recording the credential environment
+    # it ran with. See FAKE_TERRAFORM: this is the only observable that can show
+    # the provider is bound to --profile, since terraform has no --profile flag.
+    tf_env = tmp_path / "terraform-env.jsonl"
+    tf_env.write_text("")
+
     def write_backend(nonce=NONCE, account=ACCOUNT, region="us-east-1",
-                      environment="dev"):
+                      environment="dev", bucket=BUCKET, profile=PROFILE,
+                      backend_type="s3"):
+        """The record a REAL `terraform init` leaves in $TF_DATA_DIR.
+
+        `profile` is in it because cmd_init passes `-backend-config=profile=...`,
+        and terraform writes the RESOLVED backend config -- including that profile
+        -- into this file. Modelling it is what lets a test show the credential the
+        state is read through is the credential the run's account checks were made
+        against.
+        """
+        conf = {
+            "bucket": bucket,
+            "key": f"fixture-edge/{environment}/{account}/{nonce}/terraform.tfstate",
+            "region": region, "encrypt": True}
+        if profile is not None:
+            conf["profile"] = profile
         (tf_data / "terraform.tfstate").write_text(json.dumps({
             "version": 3, "serial": 1,
-            "backend": {"type": "s3", "config": {
-                "bucket": "tf-state-bucket",
-                "key": f"fixture-edge/{environment}/{account}/{nonce}/terraform.tfstate",
-                "region": region, "encrypt": True}}}))
+            "backend": {"type": backend_type, "config": conf}}))
 
     write_backend()
 
@@ -638,6 +710,7 @@ def harness(tmp_path):
             FAKE_LOG=str(log), FAKE_ACCOUNT=ACCOUNT, FAKE_NONCE=NONCE,
             FAKE_PARAM=PARAM, FAKE_DEPLOY_STATE=str(deploy_state),
             FAKE_SECRET_PAYLOAD=str(secret_payload), FAKE_NAMESPACE=NAMESPACE,
+            FAKE_TF_ENV=str(tf_env),
         )
         env.update(edge.env)
         env.update(extra_env or {})
@@ -656,6 +729,7 @@ def harness(tmp_path):
     harness.secret_payload = secret_payload
     harness.artifacts = artifacts
     harness.tf_data = tf_data
+    harness.tf_env = tf_env
     harness.tmp = tmp_path
     harness.write_backend = write_backend
     harness.edge = edge
@@ -1268,6 +1342,124 @@ def test_commands_refuse_when_no_backend_was_initialised(harness):
     assert "no initialised backend" in r.stderr
 
 
+def test_the_same_key_in_another_bucket_is_another_state_file(harness):
+    """Validating only the KEY was not enough.
+
+    A re-init against a different bucket — a typo, or another account's state bucket
+    this credential happens to reach — left the key matching exactly while the run
+    read and wrote a completely different state file. "The key matches" is not
+    "this is the state I think it is".
+    """
+    harness.write_backend(bucket="someone-elses-state")
+    r = harness.run("plan", args=["--state-bucket", BUCKET])
+    assert r.returncode != 0, "a matching key in a foreign bucket was accepted"
+    assert "DIFFERENT BUCKET" in r.stderr
+    assert "someone-elses-state" in r.stderr and BUCKET in r.stderr
+    assert "terraform plan" not in harness.log.read_text()
+
+
+def test_a_substituted_local_backend_is_refused(harness):
+    """This component's whole ownership story rests on the isolated per-run S3 key:
+    it is what lets teardown name the exact objects this run created. A local backend
+    has no such isolation, and the key check says nothing about the type — an s3
+    record replaced by a local one still carried a matching `key`."""
+    harness.write_backend(backend_type="local")
+    r = harness.run("plan", args=["--state-bucket", BUCKET])
+    assert r.returncode != 0
+    assert "backend type" in r.stderr and "'local'" in r.stderr
+    assert "terraform plan" not in harness.log.read_text()
+
+
+def test_state_read_through_a_different_credential_is_refused(harness):
+    """The backend's PROFILE is the identity that reads and writes the state.
+
+    If it differs from --profile, the run reads state through one identity while
+    every account/cluster check it made ran as another — so the state the plan is
+    built from was never the state those checks applied to. A run can then pass all
+    its guards and still act on a foreign account's recorded resources.
+    """
+    harness.write_backend(profile="some-other-profile")
+    r = harness.run("plan", args=["--state-bucket", BUCKET])
+    assert r.returncode != 0
+    assert "DIFFERENT credential" in r.stderr
+    assert "some-other-profile" in r.stderr and PROFILE in r.stderr
+
+
+def test_an_ambient_credential_backend_is_refused_when_a_profile_is_named(harness):
+    """The mismatch that is easiest to create by hand: `init` without --profile, then
+    everything else with one. The recorded backend has NO profile, so the state moves
+    on whatever ambient credential the environment supplies."""
+    harness.write_backend(profile=None)
+    r = harness.run("plan", args=["--state-bucket", BUCKET])
+    assert r.returncode != 0
+    assert "DIFFERENT credential" in r.stderr
+    assert "ambient credential" in r.stderr
+
+
+# --- 3b. The terraform PROVIDER is bound to the same credential ------------
+def _tf_runs(harness) -> list:
+    return [json.loads(l) for l in harness.tf_env.read_text().splitlines() if l.strip()]
+
+
+def test_every_terraform_invocation_is_bound_to_the_named_profile(harness):
+    """`--profile` BINDS THE AWS CLI ONLY.
+
+    terraform has no --profile flag; its AWS provider resolves credentials from the
+    process environment. So a run whose `aws_` calls were all correctly bound could
+    still have terraform plan/apply/destroy against a DIFFERENT account — the exact
+    split this component's account guards exist to prevent, since the guards run
+    through the CLI and the mutations run through the provider.
+
+    Enumerated over every subcommand that shells terraform, so a new call site
+    cannot quietly escape the binding.
+    """
+    for sub, extra in (("init", ["--state-bucket", BUCKET]),
+                       ("plan", []), ("apply", []), ("verify", []),
+                       ("destroy", []),
+                       ("handoff", ["--fixture-deployment", DEPLOY])):
+        harness.tf_env.write_text("")
+        harness.run(sub, VERIFY_OK_ENV, args=extra)
+        runs = _tf_runs(harness)
+        if not runs:
+            continue
+        for run in runs:
+            env = run["env"]
+            assert env["AWS_PROFILE"] == PROFILE, (
+                f"{sub}: terraform {run['argv'][:1]} ran without the bound profile: {env}")
+            assert env["AWS_REGION"] == "us-east-1"
+
+
+def test_ambient_static_keys_cannot_outrank_the_named_profile(harness):
+    """PRECEDENCE, not presence.
+
+    Exporting AWS_PROFILE is not enough: in the AWS SDK chain
+    AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN OUTRANK it. An operator (or a CI job)
+    with those already exported for another account would have terraform use THOSE
+    while AWS_PROFILE sat there ignored — and `aws --profile` would meanwhile report
+    the correct account, so every guard in the run would pass.
+
+    The binding must therefore CLEAR the higher-precedence variables, not just set
+    the lower-precedence one.
+    """
+    r = harness.run("plan", {
+        "AWS_ACCESS_KEY_ID": "AKIAINTERLOPERKEY0001",
+        "AWS_SECRET_ACCESS_KEY": "interloper-secret",
+        "AWS_SESSION_TOKEN": "interloper-token",
+        "AWS_DEFAULT_PROFILE": "interloper-profile",
+    }, args=["--state-bucket", BUCKET])
+    assert r.returncode == 0, r.stderr
+    runs = _tf_runs(harness)
+    assert runs, "plan ran no terraform at all"
+    for run in runs:
+        env = run["env"]
+        assert env["AWS_PROFILE"] == PROFILE
+        for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                    "AWS_SESSION_TOKEN", "AWS_DEFAULT_PROFILE"):
+            assert env[var] is None, (
+                f"{var} survived into terraform and outranks AWS_PROFILE, so the "
+                f"provider would have used the ambient credential: {env}")
+
+
 # --- 4. Foreign / replaced Deployment refusal ------------------------------
 def test_handoff_refuses_a_deployment_the_ledger_does_not_vouch_for(harness):
     """EXISTENCE IS NOT OWNERSHIP.
@@ -1467,28 +1659,92 @@ def test_handoff_asserts_the_kubectl_context_before_mutating(harness):
         "FAKE_KUBE_CONTEXT": "arn:aws:eks:us-east-1:111111111111:cluster/other"},
         args=["--fixture-deployment", DEPLOY])
     assert r.returncode != 0
-    assert "111111111111" in r.stderr
-    assert "DIFFERENT" in r.stderr
     assert not harness.secret_payload.exists()
 
 
-def test_handoff_refuses_an_unverifiable_kubectl_context(harness):
-    """A short/aliased context cannot be verified by parsing, so it must be declared
-    rather than assumed. Refusing is the safe default; assuming is how the wrong
-    cluster gets mutated."""
+def test_the_cluster_is_pinned_by_its_aws_endpoint_not_its_context_name(harness):
+    """A CONTEXT NAME IS A LOCAL LABEL, NOT AN IDENTITY.
+
+    The kubeconfig author chooses the context name freely, so it can read
+    `arn:aws:eks:us-east-1:<the right account>:cluster/adp-dev-eks` while pointing at
+    ANY server. Parsing that string therefore proves nothing, and this test models
+    exactly that divergence: a perfectly correct-looking context whose API server is
+    somebody else's cluster. Only comparing the kubeconfig endpoint against the
+    endpoint AWS reports for the named cluster catches it.
+    """
+    r = harness.run("handoff", {
+        "FAKE_KUBE_SERVER": "https://99999999.gr7.us-east-1.eks.amazonaws.com"},
+        args=["--fixture-deployment", DEPLOY])
+    assert r.returncode != 0, (
+        "the handoff mutated a cluster whose API server is NOT the verified cluster's; "
+        "the context name looked right, which is exactly the failure mode")
+    assert "DIFFERENT cluster" in r.stderr
+    assert "99999999" in r.stderr, "the refusal must show the endpoint it would have used"
+    assert not harness.secret_payload.exists()
+
+
+def test_the_cluster_must_exist_in_the_runs_own_account(harness):
+    """The endpoint is read through `aws_`, i.e. the run's bound profile and region.
+
+    So a cluster that does not exist in the authorised account cannot be confirmed at
+    all — which is the check a context-name comparison could never make, because the
+    name can claim any account.
+    """
+    r = harness.run("handoff", {"FAKE_EKS_CLUSTER_MISSING": "1"},
+                    args=["--fixture-deployment", DEPLOY])
+    assert r.returncode != 0
+    assert "does not exist in account" in r.stderr
+    assert not harness.secret_payload.exists()
+
+
+def test_expect_cluster_is_not_a_free_form_bypass(harness):
+    """THE BYPASS ROOT OBJECTED TO.
+
+    Previously --expect-cluster was compared against the CONTEXT NAME, so echoing
+    back whatever `kubectl config current-context` printed always satisfied it. It was
+    a typing exercise, not a check. It is now the cluster NAME to verify against AWS,
+    so naming a cluster that is not the one kubectl points at FAILS rather than
+    waving the check through.
+    """
+    r = harness.run("handoff", {"FAKE_KUBE_CONTEXT": "my-alias"},
+                    args=["--fixture-deployment", DEPLOY,
+                          "--expect-cluster", "my-alias"])
+    assert r.returncode != 0, (
+        "--expect-cluster still passes when it merely repeats the context name")
+    assert "does not exist in account" in r.stderr
+
+
+def test_handoff_refuses_an_unnameable_kubectl_context(harness):
+    """An aliased context gives nothing to look up, so the cluster name must be
+    stated. Refusing is the safe default; assuming is how the wrong cluster gets
+    mutated."""
     r = harness.run("handoff", {"FAKE_KUBE_CONTEXT": "minikube"},
                     args=["--fixture-deployment", DEPLOY])
     assert r.returncode != 0
     assert "--expect-cluster" in r.stderr
+    assert "local alias" in r.stderr
     assert not harness.secret_payload.exists()
 
 
-def test_handoff_accepts_a_declared_non_arn_context(harness):
-    """Positive control for the above: the check must be satisfiable, not a wall."""
-    r = harness.run("handoff", {"FAKE_KUBE_CONTEXT": "my-cluster"},
+def test_handoff_refuses_a_context_with_no_readable_api_server(harness):
+    """No endpoint means no identity. Proceeding would mutate a cluster that cannot
+    be named at all."""
+    r = harness.run("handoff", {"FAKE_KUBE_SERVER": "__none__"},
+                    args=["--fixture-deployment", DEPLOY])
+    assert r.returncode != 0
+    assert "could not read the API server endpoint" in r.stderr
+    assert not harness.secret_payload.exists()
+
+
+def test_an_aliased_context_is_accepted_when_the_named_cluster_verifies(harness):
+    """Positive control: the check must be satisfiable by a real aliased kubeconfig,
+    not a wall. The alias is fine — what matters is that the endpoint it points at is
+    the one AWS reports for the declared cluster."""
+    r = harness.run("handoff", {"FAKE_KUBE_CONTEXT": "my-alias"},
                     args=["--fixture-deployment", DEPLOY,
-                          "--expect-cluster", "my-cluster"])
+                          "--expect-cluster", "adp-dev-eks"])
     assert r.returncode == 0, r.stderr
+    assert "cluster verified against AWS: adp-dev-eks" in r.stdout
 
 
 def test_handoff_records_under_the_ledgers_run_id_not_an_invented_one(harness):
