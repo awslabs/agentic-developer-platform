@@ -14,10 +14,11 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
+from analyst_context import SOURCES, context_records, incident_records, lookup
 from browser_client import investigation_request
 from browser_guard import DestinationRefused
 from case_contract import Assessment, content_digest, digest, sanitize, utcnow
-from evidence_items import validate_inventory
+from evidence_items import evidence_eligibility, validate_inventory
 from research_case import (
     CASE_FILE,
     _inconclusive,
@@ -99,7 +100,7 @@ def _accept(output, case, probe, packet):
     if packet.get("schema_version") != "domain-investigation/1":
         raise ValueError("Incompatible investigation response")
     manifest = packet["manifest"]
-    if manifest.get("cleanup_status") not in {"open", "stopped", "failed"}:
+    if manifest.get("cleanup_status") not in {"open", "stopped", "failed", "unknown"}:
         raise ValueError("Missing browser lifecycle evidence")
     observations = packet.get("observations", [])
     if not 1 <= len(observations) <= 2:
@@ -215,8 +216,25 @@ def _record_close(case, result):
 def _failure(output, case, probe, error):
     probe.update(status="failed", completed_at=utcnow(), error=type(error).__name__)
     probe["diagnostic"] = sanitize(str(error))[:1000]
+    if getattr(error, "code", None):
+        probe["broker_error_code"] = error.code
+        probe["retry_after_seconds"] = getattr(error, "retry_after", None)
+    if getattr(error, "browser_start_unattempted", False) is True:
+        case["unconfirmed_browser_start"] = False
+    cleanup = getattr(error, "cleanup", None)
+    if cleanup and cleanup.get("session_id"):
+        if not any(s["id"] == cleanup["session_id"] for s in case["sessions"]):
+            case["sessions"].append({"id": cleanup["session_id"], "profile": "unknown"})
+        _record_close(case, cleanup)
+        if cleanup.get("cleanup_status") == "stopped":
+            case["unconfirmed_browser_start"] = False
     if hasattr(error, "reason_code"):
         probe["reason_code"] = error.reason_code
+        if (
+            not case["observations"]
+            and getattr(error, "browser_start_unattempted", False) is True
+        ):
+            case["unconfirmed_browser_start"] = False
     case["assessment"] = _inconclusive(f"{probe['id']} failed; retain earlier evidence")
     if not case["observations"]:
         case["stop_reason"] = (
@@ -229,16 +247,26 @@ def _failure(output, case, probe, error):
     save_case(output, case)
 
 
-def start(
+def _initialize(
     output,
     url,
     objective,
     *,
     profile="desktop",
     scope="host",
-    request=investigation_request,
+    incident_context=None,
+    brand_references=None,
 ):
     objective = _text(objective, "objective")
+    reports = incident_records(incident_context or [])
+    from corroboration import BrandReference, compare_brand
+
+    references = [
+        BrandReference.model_validate(r).model_dump(mode="json")
+        for r in (brand_references or [])
+    ]
+    if len(references) > 10:
+        raise ValueError("At most ten brand references are allowed")
     case = new_case(output, url)
     case.update(
         case_kind="domain_investigation",
@@ -247,12 +275,118 @@ def start(
         sessions=[],
         reviews=[],
         browser_view={"session_open": False},
+        incident_context=reports,
+        corroboration=[],
     )
+    for reference in references:
+        _append_context(case, {**compare_brand(case, reference), "status": "available"})
+    _private_write(
+        _lease_path(output), {"url": url, "scope": scope, "profile": profile}
+    )
+    save_case(output, case)
+    return case
+
+
+def prepare(output, url, objective, *, lookup_fn=lookup, **options):
+    """Collect historical context without starting a browser or consuming a lease."""
+    case = _initialize(output, url, objective, **options)
+    _append_context(
+        case,
+        {
+            **lookup_fn("common_crawl", url),
+            "requested_source": "common_crawl",
+            "request_reason": "Establish historical coverage before the initial hypothesis",
+        },
+    )
+    case["workflow"] = "archive_then_browser"
+    save_case(output, case)
+    return case
+
+
+def hypothesize(output, value):
+    with _case(output) as case:
+        if case["probes"] or case.get("workflow") != "archive_then_browser":
+            raise ValueError("Initial hypothesis belongs to a prepared, unopened case")
+        if not isinstance(value, dict) or set(value) != {
+            "hypothesis",
+            "source_ids",
+            "limitations",
+            "next_question",
+        }:
+            raise ValueError(
+                "Supply hypothesis, source_ids, limitations and next_question"
+            )
+        known = {r["id"] for r in context_records(case)}
+        ids = value["source_ids"]
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or not all(isinstance(i, str) and i in known for i in ids)
+        ):
+            raise ValueError(
+                "Cite the recorded context, including unavailable coverage when appropriate"
+            )
+        if (
+            not isinstance(value["limitations"], list)
+            or not 1 <= len(value["limitations"]) <= 10
+        ):
+            raise ValueError("Record one to ten historical-coverage limitations")
+        case["initial_hypothesis"] = {
+            "hypothesis": _text(value["hypothesis"], "hypothesis"),
+            "next_question": _text(value["next_question"], "next_question"),
+            "source_ids": ids,
+            "limitations": [_text(v, "limitation") for v in value["limitations"]],
+            "recorded_at": utcnow(),
+            "basis": "hypothesis_not_a_verdict",
+        }
+        save_case(output, case)
+        return case
+
+
+def browse(output, *, request=investigation_request):
+    with _case(output) as case:
+        if case["probes"] or not case.get("initial_hypothesis"):
+            raise ValueError(
+                "Prepare and record an initial hypothesis before opening the browser; do not replay starts"
+            )
+        lease = json.loads(_lease_path(output).read_text())
+        return _open_initial(
+            output, case, lease["url"], lease["profile"], lease["scope"], request
+        )
+
+
+def start(
+    output,
+    url,
+    objective,
+    *,
+    profile="desktop",
+    scope="host",
+    incident_context=None,
+    brand_references=None,
+    request=investigation_request,
+):
+    """Compatibility entry point for existing browser-only adapters."""
+    case = _initialize(
+        output,
+        url,
+        objective,
+        profile=profile,
+        scope=scope,
+        incident_context=incident_context,
+        brand_references=brand_references,
+    )
+    return _open_initial(output, case, url, profile, scope, request)
+
+
+def _open_initial(output, case, url, profile, scope, request):
     probe = _new_probe(
         case,
         "start",
         {
-            "question": objective,
+            "question": case.get("initial_hypothesis", {}).get(
+                "next_question", case["objective"]
+            ),
             "reason": "Inspect the supplied seed before choosing an investigation path",
         },
     )
@@ -394,6 +528,28 @@ def step(
         return case
 
 
+def retained_findings(case):
+    """Retain validated browser findings from the latest rejected assessment."""
+    retained = []
+    for attempt in case.get("assessment_attempts", [])[-1:]:
+        candidate = attempt["assessment"]
+        if not isinstance(candidate, dict) or not isinstance(
+            candidate.get("findings", []), list
+        ):
+            continue
+        for finding in candidate.get("findings", []):
+            try:
+                checked = Assessment.model_validate(
+                    {**candidate, "findings": [finding], "context_assessment": None}
+                )
+                checked.validate_evidence(case["observations"])
+                if finding not in retained:
+                    retained.append(finding)
+            except (ValueError, TypeError):
+                continue
+    return retained[:30]
+
+
 def close(output, reason, *, request=investigation_request):
     reason = _text(reason, "stop reason")
     with _case(output) as case:
@@ -416,6 +572,15 @@ def close(output, reason, *, request=investigation_request):
                 save_case(output, case)
                 raise
         case["stop_reason"] = reason
+        if case["assessment"]["assessor"] == "collection-system" and case.get(
+            "assessment_attempts"
+        ):
+            case["assessment"] = {
+                **_inconclusive(
+                    "Assessment did not validate; preserve individually supported findings and rejected attempts"
+                ),
+                "findings": retained_findings(case),
+            }
         save_case(output, case)
         if all(s["cleanup_status"] == "stopped" for s in case["sessions"]):
             # Keep the seed privately until the caller has chosen whether to branch.
@@ -465,8 +630,22 @@ def finish(
 ):
     """Validate before closing, so a malformed report cannot destroy the context."""
     with _case(output) as case:
-        parsed = Assessment.model_validate(assessment)
-        parsed.validate_evidence(case["observations"])
+        try:
+            parsed = Assessment.model_validate(assessment)
+            parsed.validate_evidence(case["observations"])
+            parsed.validate_context(context_records(case))
+        except ValueError as error:
+            attempts = case.setdefault("assessment_attempts", [])
+            attempts.append(
+                {
+                    "assessment": sanitize(assessment),
+                    "error": str(error)[:2000],
+                    "validation": getattr(error, "detail", None),
+                }
+            )
+            case["assessment_attempts"] = attempts[-10:]
+            save_case(output, case)
+            raise
         if (
             case["observations"]
             and review_data is None
@@ -490,6 +669,10 @@ def assessment_contract(case=None):
             evidence_items={
                 o["id"]: o.get("evidence_items", []) for o in case["observations"]
             },
+            evidence_eligibility={
+                o["id"]: evidence_eligibility(o) for o in case["observations"]
+            },
+            valid_context_ids=[r["id"] for r in context_records(case) if "id" in r],
             empty_evidence_assessment=_inconclusive(
                 "No page observations were captured"
             ),
@@ -509,15 +692,26 @@ def status(case):
     }
     return {
         "case_id": case["case_id"],
+        "target_url": case["target_url"],
         "objective": case["objective"],
         "collection": collection_summary(case),
         "assessment": case["assessment"],
-        "assessment_required": bool(case["observations"]),
+        "assessment_required": bool(case["observations"] or context_records(case)),
         "terminal": bool(case.get("stop_reason")) and not view.get("session_open"),
         "valid_evidence_ids": [o["id"] for o in case["observations"]],
         "evidence_items": latest.get("evidence_items", []),
         "corroboration": case.get("corroboration", []),
-        "last_probe": case["probes"][-1],
+        "incident_context": case.get("incident_context", []),
+        "context_records": context_records(case),
+        "enrichment_available": True,
+        "last_probe": case["probes"][-1] if case["probes"] else None,
+        "initial_hypothesis": case.get("initial_hypothesis"),
+        "next_operation": (
+            "hypothesize"
+            if case.get("workflow") == "archive_then_browser"
+            and not case.get("initial_hypothesis")
+            else ("browse" if not case["probes"] else None)
+        ),
         "latest_observation": {
             k: latest.get(k)
             for k in (
@@ -540,16 +734,47 @@ def status(case):
     }
 
 
+def _append_context(case, record):
+    records = case.setdefault("corroboration", [])
+    if len(records) >= 10:
+        raise ValueError("Corroboration budget exhausted")
+    records.append({**sanitize(record), "id": f"corroboration-{len(records) + 1:03d}"})
+
+
+def enrich(output, source, reason, *, lookup_fn=lookup):
+    """One model-selected provider lookup for the seed; browser state is preserved."""
+    reason = _text(reason, "enrichment reason")
+    if source not in SOURCES:
+        raise ValueError("Unsupported enrichment source")
+    with _case(output) as case:
+        if len(case.get("corroboration", [])) >= 10:
+            raise ValueError("Corroboration budget exhausted")
+        if any(
+            r.get("requested_source") == source for r in case.get("corroboration", [])
+        ):
+            raise ValueError("This source was already queried; use its recorded result")
+        lease = json.loads(_lease_path(output).read_text())
+        record = lookup_fn(
+            source, lease["url"], api_key=os.environ.get("CYBER_VT_API_KEY")
+        )
+        _append_context(case, {**record, "requested_source": source, "reason": reason})
+        save_case(output, case)
+        return case
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("schema", help="Print the complete assessment JSON Schema")
-    p = commands.add_parser("start")
-    p.add_argument("url")
-    p.add_argument("--objective", required=True)
-    p.add_argument("--case", required=True, type=Path)
-    p.add_argument("--profile", choices=["desktop", "mobile"], default="desktop")
-    p.add_argument("--scope", choices=["host", "observed_external"], default="host")
+    for command in ("start", "prepare"):
+        p = commands.add_parser(command)
+        p.add_argument("url")
+        p.add_argument("--objective", required=True)
+        p.add_argument("--case", required=True, type=Path)
+        p.add_argument("--profile", choices=["desktop", "mobile"], default="desktop")
+        p.add_argument("--scope", choices=["host", "observed_external"], default="host")
+        p.add_argument("--incident-context", type=Path)
+        p.add_argument("--brand-references", type=Path)
     for command in (
         "review",
         "step",
@@ -561,11 +786,16 @@ def main(argv=None):
         "finish",
         "contract",
         "corroborate",
+        "enrich",
+        "hypothesize",
+        "browse",
     ):
         p = commands.add_parser(command)
         p.add_argument("--case", required=True, type=Path)
         if command == "review":
             p.add_argument("--review", required=True, type=Path)
+        if command == "hypothesize":
+            p.add_argument("--hypothesis", required=True, type=Path)
         if command in {"step", "profile"}:
             p.add_argument("--decision", required=True, type=Path)
         if command == "step":
@@ -585,6 +815,9 @@ def main(argv=None):
         if command == "corroborate":
             p.add_argument("--brand-reference", type=Path)
             p.add_argument("--virustotal-url")
+        if command == "enrich":
+            p.add_argument("--source", choices=SOURCES, required=True)
+            p.add_argument("--reason", required=True)
     args = parser.parse_args(argv)
     if args.command == "schema":
         print(json.dumps(assessment_contract(), indent=2))
@@ -618,17 +851,37 @@ def main(argv=None):
                 )
             if len(case.get("corroboration", [])) + len(records) > 10:
                 raise ValueError("Corroboration budget exhausted")
-            case.setdefault("corroboration", []).extend(records)
-            case["assessment"] = _inconclusive(
-                "Review new corroboration alongside the captured evidence"
-            )
+            for record in records:
+                _append_context(case, {"status": "available", **record})
+            # A skipped lookup must not erase accepted findings. Context is
+            # appended for the next assessment, as in the maintained enrich path.
             save_case(args.case, case)
             print(json.dumps(sanitize(status(case)), indent=2))
         return 0
-    if args.command == "start":
-        result = start(
-            args.case, args.url, args.objective, profile=args.profile, scope=args.scope
+    if args.command in {"start", "prepare"}:
+        result = (prepare if args.command == "prepare" else start)(
+            args.case,
+            args.url,
+            args.objective,
+            profile=args.profile,
+            scope=args.scope,
+            incident_context=(
+                json.loads(args.incident_context.read_text())
+                if args.incident_context
+                else None
+            ),
+            brand_references=(
+                json.loads(args.brand_references.read_text())
+                if args.brand_references
+                else None
+            ),
         )
+    elif args.command == "hypothesize":
+        result = hypothesize(args.case, json.loads(args.hypothesis.read_text()))
+    elif args.command == "browse":
+        result = browse(args.case)
+    elif args.command == "enrich":
+        result = enrich(args.case, args.source, args.reason)
     elif args.command == "review":
         result = review(args.case, json.loads(args.review.read_text()))
     elif args.command == "step":

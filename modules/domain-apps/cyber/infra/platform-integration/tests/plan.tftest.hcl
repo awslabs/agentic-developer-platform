@@ -47,3 +47,23 @@ run "independent_browser_release" {
     error_message = "The IRSA trust must follow the configured namespace."
   }
 }
+
+run "archive_first_isolated_browser_release" {
+  command = plan
+  variables {
+    common_crawl_partitions = ["CC-MAIN-2026-39", "CC-MAIN-2026-34"]
+    session_owner_routing   = true
+  }
+  assert {
+    condition     = aws_athena_workgroup.common_crawl[0].configuration[0].enforce_workgroup_configuration && aws_athena_workgroup.common_crawl[0].configuration[0].bytes_scanned_cutoff_per_query == 1073741824
+    error_message = "Historical lookups must enforce a per-query scan limit."
+  }
+  assert {
+    condition     = aws_glue_catalog_table.common_crawl[0].parameters["projection.crawl.type"] == "injected" && output.worker_environment.CYBER_CC_CRAWLS == "CC-MAIN-2026-39,CC-MAIN-2026-34"
+    error_message = "Every lookup must constrain explicitly configured crawl partitions."
+  }
+  assert {
+    condition     = kubernetes_service.url_analysis_browser_broker.spec[0].session_affinity == "None" && kubernetes_deployment.url_analysis_browser_broker.spec[0].template[0].spec[0].container[0].readiness_probe[0].http_get[0].path == "/readyz"
+    error_message = "New session admission must use available replicas instead of worker-IP affinity."
+  }
+}

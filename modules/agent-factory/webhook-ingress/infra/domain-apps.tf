@@ -1,15 +1,17 @@
 # Platform composition only; implementation and release settings belong to the app.
 module "cyber" {
-  source            = "../../../domain-apps/cyber/infra/platform-integration"
-  name_prefix       = local.name_prefix
-  aws_region        = var.aws_region
-  environment       = var.environment
-  account_id        = local.account_id
-  namespace         = kubernetes_namespace.adp_agents.metadata[0].name
-  oidc_provider_arn = local.oidc_provider_arn
-  oidc_issuer       = local.oidc_issuer
-  worker_role_name  = aws_iam_role.agent_scaledjob.id
-  broker_image      = lookup(var.domain_app_images, "cyber-browser", "")
+  source                  = "../../../domain-apps/cyber/infra/platform-integration"
+  name_prefix             = local.name_prefix
+  aws_region              = var.aws_region
+  environment             = var.environment
+  account_id              = local.account_id
+  namespace               = kubernetes_namespace.adp_agents.metadata[0].name
+  oidc_provider_arn       = local.oidc_provider_arn
+  oidc_issuer             = local.oidc_issuer
+  worker_role_name        = aws_iam_role.agent_scaledjob.id
+  broker_image            = lookup(var.domain_app_images, "cyber-browser", "")
+  common_crawl_partitions = compact(split(",", lookup(lookup(var.domain_app_settings, "cyber", {}), "common_crawl_partitions", "")))
+  session_owner_routing   = lookup(lookup(var.domain_app_settings, "cyber", {}), "session_owner_routing", "false") == "true"
 }
 
 locals {

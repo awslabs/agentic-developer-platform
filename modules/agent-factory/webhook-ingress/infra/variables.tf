@@ -605,6 +605,12 @@ variable "domain_app_images" {
   }
 }
 
+variable "domain_app_settings" {
+  type        = map(map(string))
+  default     = {}
+  description = "Application-owned deployment settings passed through platform composition."
+}
+
 # This controls only pull_request event reviews, not mentions, labels or engine work.
 variable "github_auto_pr_review_enabled" {
   description = "Automatically review agent PRs from GitHub PR events. Keep disabled when the engine owns reviewer dispatch. Explicit issue triggers remain available."

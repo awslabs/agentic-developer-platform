@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from harness_jobs.identity import ContractViolation, OperationRefused, OperationRequest
 from superplane_executor.deployment_plan import (
+    BATCH_FIELDS,
     build_deployment_preview,
     teardown_request,
     validate_request,
@@ -96,6 +97,56 @@ def build(profile=None, **changes):
         **changes,
     }
     return build_deployment_preview(**values), values
+
+
+@pytest.mark.parametrize(
+    "change",
+    [None, "endpoint", "secret", "model", "invocation", "empty-command", "unbounded"],
+)
+def test_batch_profile_requires_closed_immutable_invocation_without_serving_surface(
+    change,
+):
+    profile = profile_fixture(uuid4())
+    profile["model_options"] = {}
+    profile["serving_auth_contract"] = None
+    profile["workload"].update(
+        kind="batch", port=None, auth_secret=None, command=["/app/batch"]
+    )
+    if change == "endpoint":
+        profile["workload"]["port"] = 8000
+    elif change == "secret":
+        profile["workload"]["auth_secret"] = "token"
+    elif change == "model":
+        profile["model_options"] = {"model_name": "a-model"}
+    elif change == "empty-command":
+        profile["workload"]["command"] = []
+    elif change == "unbounded":
+        profile["max_runtime_seconds"] = 0
+    options = {key: deepcopy(profile["workload"][key]) for key in BATCH_FIELDS}
+    if change == "invocation":
+        options["command"] = ["/app/other"]
+    if change is not None:
+        with pytest.raises(OperationRefused):
+            build(
+                profile, model_options={}, workload_kind="batch", batch_options=options
+            )
+    else:
+        preview, values = build(
+            profile, model_options={}, workload_kind="batch", batch_options=options
+        )
+        parsed = validate_request(
+            preview.request,
+            values["target"],
+            org_id=values["org_id"],
+            workspace_id=values["workspace_id"],
+        )
+        assert parsed.data["workload"]["kind"] == "batch"
+        assert preview.deployment_request == {
+            "name": values["name"],
+            "profile_id": values["profile_id"],
+            "kind": "batch",
+            **options,
+        }
 
 
 def test_producer_and_teardown_use_same_real_plan_validator_and_allocation():

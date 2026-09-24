@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from evidence_items import checked_item, partial_evidence_usable
+from evidence_items import (
+    checked_item,
+    partial_evidence_usable,
+    warning_evidence_usable,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "url-research/1"
-COLLECTOR_VERSION = "1.2.0"
+COLLECTOR_VERSION = "1.3.0"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
@@ -66,7 +70,7 @@ class Contract(BaseModel):
 class EvidenceReference(Contract):
     observation_id: str = Field(pattern=r"^obs-[0-9]{3}$")
     item_id: str = Field(
-        pattern=r"^(text|form|script|network|redirect|download|screenshot)-[0-9]{3}$"
+        pattern=r"^(text|form|script|network|redirect|download|screenshot|warning)-[0-9]{3}$"
     )
 
 
@@ -78,12 +82,44 @@ class Finding(Contract):
         "redirect",
         "content_variation",
         "benign_context",
+        "threat_warning",
+        "coverage_limitation",
         "other",
     ]
     statement: str = Field(min_length=1, max_length=2000)
     basis: Literal["observation", "hypothesis"]
     evidence_ids: list[str] = Field(min_length=1, max_length=10)
     evidence_refs: list[EvidenceReference] = Field(default_factory=list, max_length=30)
+
+
+class IncidentReport(Contract):
+    source: str = Field(min_length=1, max_length=300)
+    reported_at: str = Field(min_length=1, max_length=100)
+    summary: str = Field(min_length=1, max_length=4000)
+
+
+class ContextFinding(Contract):
+    statement: str = Field(min_length=1, max_length=2000)
+    source_ids: list[str] = Field(min_length=1, max_length=10)
+    basis: Literal["reported", "hypothesis"]
+
+
+class ContextAssessment(Contract):
+    risk: Literal["suspicious", "inconclusive", "no_specific_concern"]
+    findings: list[ContextFinding] = Field(default_factory=list, max_length=20)
+    limitations: list[str] = Field(min_length=1, max_length=20)
+
+
+class EvidenceValidationError(ValueError):
+    def __init__(self, message, *, finding_index, observation_id, correction):
+        self.detail = {
+            "finding_index": finding_index,
+            "observation_id": observation_id,
+            "correction": correction,
+        }
+        super().__init__(
+            f"Finding {finding_index}, {observation_id}: {message}. {correction}"
+        )
 
 
 class Assessment(Contract):
@@ -95,6 +131,26 @@ class Assessment(Contract):
     recommended_actions: list[str] = Field(default_factory=list, max_length=20)
     assessor: str = Field(min_length=1, max_length=200)
     model_version: str = Field(default="", max_length=200)
+    context_assessment: ContextAssessment | None = None
+
+    def validate_context(self, records):
+        if self.context_assessment is None:
+            return
+        by_id = {r["id"]: r for r in records if "id" in r}
+        for finding in self.context_assessment.findings:
+            if not set(finding.source_ids) <= by_id.keys():
+                raise ValueError("Context finding cites an unknown source ID")
+            if finding.basis == "reported" and any(
+                by_id[i].get("status") not in {"available", "reported"}
+                for i in finding.source_ids
+            ):
+                raise ValueError(
+                    "Unavailable context sources cannot support reported facts"
+                )
+        if self.context_assessment.risk != "inconclusive" and not any(
+            f.basis == "reported" for f in self.context_assessment.findings
+        ):
+            raise ValueError("Context risk requires a sourced reported finding")
 
     def validate_evidence(self, observations: list[dict]) -> None:
         by_id = {o["id"]: o for o in observations}
@@ -108,6 +164,12 @@ class Assessment(Contract):
                         "Item references must belong to cited observations"
                     )
                 checked_item(by_id[ref.observation_id], ref.item_id)
+            if finding.kind == "threat_warning" and not any(
+                warning_evidence_usable(o) for o in cited_observations
+            ):
+                raise ValueError(
+                    "Threat-warning findings require a captured threat warning"
+                )
             if finding.kind == "redirect" and not any(
                 r.get("kind") in {"http", "navigation"}
                 for o in cited_observations
@@ -138,19 +200,59 @@ class Assessment(Contract):
                 ):
                     raise ValueError("Variation requires different captured content")
         if self.verdict != "inconclusive":
-            if not any(f.basis == "observation" for f in self.findings):
+            if not any(
+                f.basis == "observation" and f.kind != "coverage_limitation"
+                for f in self.findings
+            ):
                 raise ValueError("An assessment requires evidence-linked findings")
-            for finding in self.findings:
+            if self.verdict == "malicious" and not any(
+                f.basis == "observation"
+                and f.kind
+                not in {"threat_warning", "coverage_limitation", "benign_context"}
+                for f in self.findings
+            ):
+                raise ValueError(
+                    "A displayed warning alone cannot establish malicious page behavior; assess suspicion and context separately"
+                )
+            for index, finding in enumerate(self.findings):
                 for observation_id in finding.evidence_ids:
                     observation = by_id[observation_id]
+                    if (
+                        finding.kind == "coverage_limitation"
+                        and self.verdict != "no_adverse_behavior_observed"
+                    ):
+                        if not self.limitations:
+                            raise ValueError(
+                                "Coverage findings must also be stated in limitations"
+                            )
+                        continue
+                    if finding.kind == "threat_warning" and warning_evidence_usable(
+                        observation
+                    ):
+                        if not any(
+                            r.observation_id == observation_id
+                            and r.item_id == "warning-001"
+                            for r in finding.evidence_refs
+                        ):
+                            raise ValueError(
+                                "Cite the intact warning-001 item; it does not establish hidden page behavior"
+                            )
+                        if not self.limitations:
+                            raise ValueError(
+                                "A threat-warning finding must state its limitations"
+                            )
+                        continue
                     if observation["status"] == "complete":
                         continue
                     if (
                         self.verdict == "no_adverse_behavior_observed"
                         or not partial_evidence_usable(observation)
                     ):
-                        raise ValueError(
-                            "Incomplete collection supports only an inconclusive assessment"
+                        raise EvidenceValidationError(
+                            "Incomplete collection cannot support this finding",
+                            finding_index=index,
+                            observation_id=observation_id,
+                            correction="Retain earlier supported findings with their own citations. Describe this view as coverage_limitation; do not change the verdict merely to work around an unsupported citation.",
                         )
                     refs = [
                         r

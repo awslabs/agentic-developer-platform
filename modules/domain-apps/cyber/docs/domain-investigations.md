@@ -1,7 +1,8 @@
 # Agent-directed domain investigations
 
 The researcher supplies a seed URL and a question. The existing cyber agent
-inspects evidence, forms a hypothesis, chooses a useful next browser action, and
+queries Common Crawl through Athena, records an initial hypothesis, then
+inspects live evidence, chooses a useful next browser action, and
 revises its assessment from the result. It can explore multiple pages in one
 browser context. The broker executes individual actions and enforces boundaries;
 it does not choose the route or instantiate another model.
@@ -14,6 +15,8 @@ Follow relevant pages within this domain and cite the evidence.”
 
 | Stage | Agent decision | Evidence retained |
 | --- | --- | --- |
+| Archive context | Examine historical index coverage and metadata | Query ID, crawl partitions, sampled records and limitations |
+| Initial hypothesis | Identify a question to test against the current site | Source-linked hypothesis before any browser lease starts |
 | Seed | Identify unanswered questions from the landing page | Initial screenshot, DOM, forms, scripts, links, requests |
 | Review | Support, refute or revise a hypothesis | Concise explanation and actual observation IDs |
 | Next action | Select a relevant observed link/control, root, back, scroll or wait | Research question, reason and expected signal before execution |
@@ -41,8 +44,11 @@ The full workflow and JSON review/decision shapes are in the
 [agent skill](../agent/skills/url-analysis/SKILL.md).
 
 ```bash
-python /app/skills/url-analysis/domain_investigation.py start "$SEED_URL" \
+python /app/skills/url-analysis/domain_investigation.py prepare "$SEED_URL" \
   --case "$CASE_DIR" --objective "$RESEARCH_QUESTION"
+python /app/skills/url-analysis/domain_investigation.py hypothesize \
+  --case "$CASE_DIR" --hypothesis "$HYPOTHESIS_FILE"
+python /app/skills/url-analysis/domain_investigation.py browse --case "$CASE_DIR"
 python /app/skills/url-analysis/domain_investigation.py review \
   --case "$CASE_DIR" --review "$REVIEW_FILE"
 python /app/skills/url-analysis/domain_investigation.py step follow \
@@ -62,9 +68,10 @@ outside run artifacts. The capability is removed after confirmed close. The repo
 contains session IDs and cleanup outcomes, never the capability or CDP endpoints.
 
 The broker exposes `/v1/investigation/start`, `/step` and `/close` over its existing
-internal service. Each lease runs on one owning thread because Playwright's sync
-API is thread-affine. Service `ClientIP` affinity routes a worker's steps to the
-owning replica. The broker Pod opts out of voluntary Karpenter consolidation to
+internal service. Each lease runs in one supervised process, keeping Playwright's
+sync API on that process's main thread. With owner routing enabled, new sessions
+are balanced across available replicas and subsequent steps use a private
+capability naming their owner. The broker Pod opts out of voluntary Karpenter consolidation to
 avoid disrupting active contexts. Unexpected replica loss still fails closed;
 the managed 300-second session timeout is the cleanup backstop. Legacy `/v1/capture`
 and `/v1/analyze` operations remain compatible.
@@ -113,8 +120,10 @@ measurement of threat-detection accuracy. They used a real Bedrock model and loc
 guarded Chromium, not the deployed UI/GitHub entrypoint. No public Lambda fixture
 is permitted or needed. Fixture CI stays on `arc-runner-org` without AWS credentials.
 
-Release requires the updated broker image and Service affinity before workers
-receive the new skill. Build one immutable runtime, roll out the backward-compatible
-broker first, then pin new workers to the same digest. Preserve running jobs and the
+Release requires matching broker and worker code before enabling owner routing.
+The compatibility mode retains `ClientIP` affinity until that coordinated change.
+Drain existing investigations before changing routing. Preserve running jobs and the
 separate protected-worker migration hold. Follow the canonical deployment guide
 and use only reviewed scoped saved plans for the relevant resources.
+See [Common Crawl setup and runtime recovery](common-crawl-investigation.md) for
+the archive configuration, query bounds and isolated-process acceptance requirements.

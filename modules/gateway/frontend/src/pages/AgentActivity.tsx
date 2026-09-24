@@ -1013,6 +1013,28 @@ export default function AgentActivity() {
         isOpen={detailItem !== null}
         onClose={() => setDetailItem(null)}
         isAdmin={viewMode === 'all' && isAdmin}
+        /*
+          Issue #3966: re-read the open run after a live control command.
+
+          `detailItem` is a snapshot taken when the row was clicked, so a
+          pause/resume/abort would otherwise leave the modal's status row
+          contradicting the control panel beside it. Failures are ignored on
+          purpose: the panel already reports the command's own outcome, and a
+          refresh error is not evidence about the command.
+        */
+        onRefreshItem={() => {
+          const openId = detailItem?.invocation_id;
+          if (!openId) return;
+          getMyInvocationDetail(openId)
+            .then((item) => {
+              // Only apply if the same run is still open — the operator may have
+              // closed or switched runs while this was in flight.
+              setDetailItem((current) =>
+                current && current.invocation_id === openId ? item : current,
+              );
+            })
+            .catch(() => {});
+        }}
       />
 
       {/* Issue #3069: Transcript viewer — opened from table row transcript links */}

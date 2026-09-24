@@ -967,7 +967,52 @@ def artifact_payloads() -> dict:
             )
         },
         "neutral_contract": neutral_contract_payload(),
+        "browser_control_run": browser_control_run_payload(),
     }
+
+
+def browser_control_run_payload(**overrides) -> dict:
+    """A complete, passing wave-4 browser capture.
+
+    Every value is the one a correct deployed dashboard would produce, so a test
+    that wants one failure mutates exactly one key and the resulting message names
+    that key rather than being ambiguous between several.
+    """
+    payload = {
+        "bundle_revision": "a" * 40,
+        "gateway_url": "https://gw.internal",
+        "captured_at": "2026-09-24T10:00:00Z",
+        "spec_digest": "sha256:spec",
+        "flag_off": {"control_nodes": 0, "command_requests": 0},
+        "flag_loading": {"control_nodes": 0, "command_requests": 0},
+        "flag_error": {"control_nodes": 0, "command_requests": 0},
+        "advertised_capabilities": {
+            "pause": True,
+            "resume": True,
+            "steer": False,
+            "abort": True,
+        },
+        "rendered_controls": ["pause", "resume", "abort"],
+        "nonowner_submit_blocked": True,
+        "terminal_submit_blocked": True,
+        "phase_sequence": ["running", "pause_requested", "paused", "running"],
+        "pause_copy_mentions_spend": True,
+        "active_tool_reason": "Tools in progress: unknown",
+        "steer_request": {"path": "/activity/invocations/msg-live/agent/steer", "status": 202},
+        "steer_status_sequence": ["pending", "delivered"],
+        "poll_intervals_ms": [2010, 1990, 2005],
+        "polled_while_hidden": False,
+        "polled_after_close": False,
+        "polled_after_terminal": False,
+        "backoff_intervals_ms": [2000, 4000, 8000],
+        "detail_refreshed_after_command": True,
+        "request_destinations": ["https://gw.internal/activity/invocations/msg-live/agent/state"],
+        "request_bodies_contain_pod_address": False,
+        "request_bodies_contain_token": False,
+        "spoofed_identity_rejected": True,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def neutral_contract_payload(**overrides) -> dict:
@@ -1115,7 +1160,10 @@ def gateway_stub(**overrides):
             return response
 
         if url.endswith("/state"):
-            return reply(200, dict(state_body))
+            # Defaults to 200 so no existing test shifts; the override exists for
+            # checks that compare a live contract and must refuse to compare it
+            # against a response the gateway did not serve.
+            return reply(overrides.get("state_status", 200), dict(state_body))
         if url.endswith("/ping"):
             return reply(200, {"run_id": "msg-live", "available": True})
         if not auth:
@@ -1165,9 +1213,19 @@ def gateway_stub(**overrides):
     return client
 
 
-def ddb_stub(item: dict | None = None) -> MagicMock:
+def ddb_stub(item: dict | None = None, *, existed: bool = True) -> MagicMock:
+    """A DynamoDB stub for the cleanup path.
+
+    `existed` drives DeleteItem's ALL_OLD response, which is how the harness tells
+    "removed the fixture row" from "deleted nothing". It is set explicitly rather
+    than left to MagicMock's default, because an auto-created attribute is truthy
+    and would make every test read as a successful removal for no stated reason.
+    """
     client = dynamodb_with_schema(CORRECT_SCHEMA)
     client.get_item.return_value = {"Item": item} if item else {}
+    client.delete_item.return_value = (
+        {"Attributes": {"event_id": {"S": "fixture-row"}}} if existed else {}
+    )
     return client
 
 
@@ -1294,15 +1352,21 @@ class TestCheckIdsMatchTheEvaluationFile:
         for check_id, method_name in _mod.WAVE1_PREDICATES.items():
             assert hasattr(_mod.Driver, method_name), check_id
 
-    def test_waves_one_and_two_are_carried_by_this_revision(self):
-        """S1 delivered wave 1; S3 #3962 adds wave 2's manifest with W2-02.
+    def test_waves_one_two_and_four_are_carried_by_this_revision(self):
+        """S1 delivered wave 1; S3 #3962 added wave 2; S7 #3966 adds wave 4.
 
-        Was `== (1,)` when S1 was the only landed story. Updated rather than
-        deleted, because the property it protects is unchanged: a wave reachable
-        from the CLI must have a real manifest behind it, so `--wave 3` is still
-        a refusal rather than an empty pass.
+        Was `== (1,)`, then `== (1, 2)`. Updated rather than deleted each time,
+        because the property it protects is unchanged: a wave reachable from the
+        CLI must have a real manifest behind it, so `--wave 3` is still a refusal
+        rather than an empty pass.
+
+        Wave 4 landing before wave 3 is deliberate and not an ordering mistake.
+        The waves are owned by different stories (S4/S6 own wave 3) and a story
+        registers its own manifest when it lands; wave 4's own consolidation
+        checks are what refuse to pass while wave 3 is unaccepted, so the gap
+        cannot be used to skip it.
         """
-        assert _mod.SUPPORTED_WAVES == (1, 2)
+        assert _mod.SUPPORTED_WAVES == (1, 2, 4)
         assert 3 not in _mod.WAVE_CHECKS
 
     def test_wave_two_carries_the_whole_evaluation_manifest(self):
@@ -1402,11 +1466,65 @@ class TestCheckIdsMatchTheEvaluationFile:
         assert set(_mod.WAVE_REVISIONS) == set(_mod.WAVE_CHECKS)
 
 
-    def test_waves_three_and_four_are_still_unregistered(self):
-        """S4/S6 extend wave 3, S7 wave 4 (§7). Wave 2 is registered as of #3964."""
-        assert _mod.SUPPORTED_WAVES == (1, 2)
+    def test_wave_three_is_still_unregistered_and_wave_four_is_not(self):
+        """S4/S6 extend wave 3; S7 #3966 has now extended wave 4 (§7).
+
+        Wave 3 must stay absent rather than become an empty manifest: `--wave 3`
+        is an honest "this revision carries no checks for that wave" nonzero, and
+        a registered-but-empty wave would divide by zero checks and exit 0.
+        """
+        assert _mod.SUPPORTED_WAVES == (1, 2, 4)
         assert 3 not in _mod.WAVE_CHECKS
-        assert 4 not in _mod.WAVE_CHECKS
+        assert 4 in _mod.WAVE_CHECKS
+
+    def test_wave_four_carries_the_full_ten_check_manifest(self):
+        """#3970's whole table, not only the four checks S7 implements.
+
+        Same load-bearing property as wave 2: registering only S7's four checks
+        would make `required` 4, all four could pass, `passed == required` would
+        hold and `--wave 4` would exit 0 — a report indistinguishable from a
+        complete wave-4 pass, on a wave whose entire purpose is consolidating all
+        37 criteria. The count stays at ten so the six it does not implement show
+        up as NOT RUN against a real bar.
+        """
+        assert tuple(spec.check_id for spec in _mod.WAVE4_CHECKS) == (
+            "W4-01",
+            "W4-02",
+            "W4-03",
+            "W4-04",
+            "W4-05",
+            "W4-06",
+            "W4-07",
+            "W4-08",
+            "W4-09",
+            "W4-10",
+        )
+
+    def test_wave_four_implements_only_the_dashboard_checks_it_owns(self):
+        """The four S7 can evidence, and no more.
+
+        Pinned in both directions. An implemented predicate for a check whose
+        criteria belong to another story would be a partial assertion reporting a
+        green consolidation — e.g. a W4-03 that checked the browser steer and not
+        S6's retry/FIFO/cap proof.
+        """
+        assert set(_mod.WAVE4_PREDICATES) == {"W4-02", "W4-04", "W4-07", "W4-08"}
+        owed = {spec.check_id for spec in _mod.WAVE4_CHECKS} - set(_mod.WAVE4_PREDICATES)
+        assert owed == {"W4-01", "W4-03", "W4-05", "W4-06", "W4-09", "W4-10"}
+        # Every owed check names who owes it, or it becomes nobody's job.
+        for check_id in owed:
+            assert _mod.PENDING_CHECK_OWNERS.get(check_id, "").strip(), check_id
+
+    def test_wave_four_records_its_evaluation_and_revision(self):
+        """#3970 reads wave 4, under revision revival-2026-09-12.
+
+        The revision matters: the wave-4 body self-identifies as
+        revival-2026-09-12, and harness-neutral-2026-09-15 is only a
+        compatibility amendment that explicitly does not authorize this wave.
+        Recording the amendment here would overstate what has been approved.
+        """
+        assert _mod.WAVE_EVALUATIONS[4] == "3970"
+        assert _mod.WAVE_REVISIONS[4] == "revival-2026-09-12"
 
 
     def test_wave_two_carries_the_full_ten_check_manifest(self):
@@ -2557,12 +2675,62 @@ class TestCleanupIsBoundedAndAlwaysRuns:
 
         assert ok is True
         dynamodb.delete_item.assert_called_once_with(
-            TableName="t", Key={"event_id": {"S": "e1"}, "arrived_at": {"S": "a1"}}
+            TableName="t",
+            Key={"event_id": {"S": "e1"}, "arrived_at": {"S": "a1"}},
+            # ALL_OLD is part of the contract: without it a delete against a key
+            # that never existed is indistinguishable from a real teardown.
+            ReturnValues="ALL_OLD",
         )
         # A consistent read, because an eventually-consistent one can report an
         # item gone before it is.
         assert dynamodb.get_item.call_args.kwargs["ConsistentRead"] is True
         assert "confirms absence" in " ".join(notes)
+
+    def test_a_delete_that_removed_nothing_is_not_reported_as_a_removal(self):
+        """DeleteItem succeeds identically on a key that never existed.
+
+        This is the failure a wrong `invocation_table`, a wrong `environment` or a
+        stale key format produces, and every other field on the record — deleted,
+        confirmed_absent, error — reads exactly as it does for a real teardown. I hit
+        it for real: running the runbook's example config against the live dev
+        account reported three rows "removed ... consistent read confirms absence"
+        while deleting nothing, because its placeholder `msg-0000...` keys match no
+        row in a table of 413k UUID-keyed items. Had those placeholders been real
+        IDs, the same green output would have covered destroying production rows in
+        a table with no point-in-time recovery.
+        """
+        dynamodb = ddb_stub(existed=False)
+        config = {
+            "invocation_table": "t",
+            "cleanup_items": [{"event_id": "e1", "arrived_at": "a1"}],
+        }
+
+        outcome = _mod.run_cleanup(config, dynamodb)
+
+        # Still ok: the row may legitimately have expired by TTL or been removed by
+        # an earlier run. The evidence just must not claim this harness removed it.
+        assert outcome.ok is True
+        assert outcome.deletions[0].existed is False
+        assert "was already absent" in " ".join(outcome.notes)
+        assert "confirms absence" not in " ".join(outcome.notes)
+        assert outcome.deletions[0].to_evidence()["existed"] is False
+
+    def test_a_delete_that_removed_a_row_records_that_it_existed(self):
+        outcome = _mod.run_cleanup(
+            {"invocation_table": "t", "cleanup_items": [{"event_id": "e1", "arrived_at": "a1"}]},
+            ddb_stub(existed=True),
+        )
+        assert outcome.deletions[0].existed is True
+        assert "confirms absence" in " ".join(outcome.notes)
+
+    def test_a_refused_partial_key_records_no_existence_claim(self):
+        """`existed` must be None, not False: nothing was asked of the table."""
+        outcome = _mod.run_cleanup(
+            {"invocation_table": "t", "cleanup_items": [{"event_id": "e1"}]},
+            ddb_stub(),
+        )
+        assert outcome.ok is False
+        assert outcome.deletions[0].existed is None
 
     def test_it_never_scans_or_queries(self):
         """No scan, no prefix, no wildcard: an item it was not told about is
@@ -10271,3 +10439,573 @@ class TestTheDispatchInputIsValidatedAsAWholeValue:
         ]
 
         assert "pyyaml" in install["run"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 (#3966): the dashboard's own checks
+#
+# These read a captured browser run, so the thing worth testing is that the
+# capture cannot be made to pass by asserting a conclusion in it. Each test below
+# mutates one key of an otherwise-passing capture and expects a named failure.
+# ---------------------------------------------------------------------------
+
+
+def run_w4(tmp_path: Path, check_id: str, *, capture=None, client=None, config=None):
+    """Drive one wave-4 check alone and return its CheckResult.
+
+    `capture` replaces the browser_control_run payload; pass `False` to omit the
+    artifact entirely (the not_run path).
+    """
+    payloads = artifact_payloads()
+    if capture is False:
+        payloads.pop("browser_control_run")
+    elif capture is not None:
+        payloads["browser_control_run"] = capture
+    cfg = config or live_config(tmp_path, artifact_payloads=payloads)
+    spec = next(s for s in _mod.WAVE4_CHECKS if s.check_id == check_id)
+    results = run_driver(
+        tmp_path,
+        config=cfg,
+        client=client or gateway_stub(),
+        specs=(spec,),
+    )
+    return results[check_id]
+
+
+class TestWaveFourManifestHonesty:
+    """The wave cannot report itself complete on the four checks S7 implements."""
+
+    def test_the_unimplemented_checks_report_not_run_naming_their_owner(self, tmp_path):
+        """An owned not_run, never a silent pass and never an unowned failure."""
+        cfg = live_config(tmp_path)
+        results = run_driver(
+            tmp_path, config=cfg, client=gateway_stub(), specs=_mod.WAVE4_CHECKS
+        )
+        for check_id in ("W4-01", "W4-03", "W4-05", "W4-06", "W4-09", "W4-10"):
+            result = results[check_id]
+            assert result.status == _mod.STATUS_NOT_RUN, (check_id, result.status)
+            assert result.message and result.message.strip(), check_id
+
+    def test_a_full_wave_four_run_cannot_report_complete_in_this_revision(self, tmp_path):
+        """The honest bar: ten required, six unanswerable, so never `not_run == 0`.
+
+        This is the assertion that stops wave 4 being cited as passed on the
+        strength of the dashboard checks alone.
+        """
+        cfg = live_config(tmp_path)
+        results = run_driver(
+            tmp_path, config=cfg, client=gateway_stub(), specs=_mod.WAVE4_CHECKS
+        )
+        assert len(results) == 10
+        assert any(r.status == _mod.STATUS_NOT_RUN for r in results.values())
+
+
+class TestW4_02_FeatureGating:
+    """AC-F3: absent with the flag off, while loading, and on backend error."""
+
+    @pytest.mark.parametrize("phase", ["flag_off", "flag_loading", "flag_error"])
+    def test_a_rendered_control_node_in_any_negative_phase_fails(self, tmp_path, phase):
+        capture = browser_control_run_payload(
+            **{phase: {"control_nodes": 1, "command_requests": 0}}
+        )
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert phase.split("_")[-1] in result.message or "control node" in result.message
+
+    @pytest.mark.parametrize("phase", ["flag_off", "flag_loading", "flag_error"])
+    def test_a_command_request_in_any_negative_phase_fails(self, tmp_path, phase):
+        """Zero nodes with a request sent means an invisible control still acted."""
+        capture = browser_control_run_payload(
+            **{phase: {"control_nodes": 0, "command_requests": 1}}
+        )
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "command request" in result.message
+
+    def test_a_boolean_instead_of_a_count_is_rejected(self, tmp_path):
+        """`False` cannot distinguish "none observed" from "not measured"."""
+        capture = browser_control_run_payload(
+            flag_off={"control_nodes": False, "command_requests": 0}
+        )
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "counted integer" in result.message
+
+    def test_offering_an_unadvertised_verb_fails(self, tmp_path):
+        """The fail-open this check exists for: a button the run cannot honour."""
+        capture = browser_control_run_payload(
+            advertised_capabilities={
+                "pause": True, "resume": False, "steer": False, "abort": False
+            },
+            rendered_controls=["pause", "steer"],
+        )
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "steer" in result.message
+
+    def test_no_rendered_controls_is_not_run_rather_than_a_pass(self, tmp_path):
+        """A capture that never exercised the positive case proves nothing."""
+        capture = browser_control_run_payload(rendered_controls=[])
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_NOT_RUN
+
+    @pytest.mark.parametrize(
+        "key", ["nonowner_submit_blocked", "terminal_submit_blocked"]
+    )
+    def test_an_unproven_submit_block_fails(self, tmp_path, key):
+        result = run_w4(tmp_path, "W4-02", capture=browser_control_run_payload(**{key: False}))
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    def test_a_passing_capture_passes(self, tmp_path):
+        assert run_w4(tmp_path, "W4-02").status == _mod.STATUS_PASSED
+
+    def test_a_missing_capture_is_not_run(self, tmp_path):
+        result = run_w4(tmp_path, "W4-02", capture=False)
+        assert result.status == _mod.STATUS_NOT_RUN
+
+
+class TestW4_02_CaptureProvenance:
+    """A capture that cannot be tied to a deployment cannot answer for one."""
+
+    @pytest.mark.parametrize("key", ["bundle_revision", "gateway_url"])
+    def test_a_capture_without_provenance_is_not_run(self, tmp_path, key):
+        result = run_w4(tmp_path, "W4-02", capture=browser_control_run_payload(**{key: ""}))
+        assert result.status == _mod.STATUS_NOT_RUN
+        assert key in result.message
+
+    def test_a_capture_from_another_deployment_fails(self, tmp_path):
+        """Observations from a laptop dev server must not answer for the fixture."""
+        capture = browser_control_run_payload(gateway_url="http://localhost:5173")
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "localhost" in result.message
+
+    def test_an_unorderable_capture_time_fails(self, tmp_path):
+        capture = browser_control_run_payload(captured_at="last tuesday")
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "captured_at" in result.message
+
+    def test_a_capture_without_a_spec_digest_fails(self, tmp_path):
+        """A weakened spec and the real one must not leave identical evidence."""
+        capture = browser_control_run_payload(spec_digest="")
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "spec_digest" in result.message
+
+
+class TestW4_04_PauseHonesty:
+    """AC-P4: the phase sequence, the spend warning, and no false quiescence."""
+
+    def test_a_passing_capture_passes(self, tmp_path):
+        assert run_w4(tmp_path, "W4-04").status == _mod.STATUS_PASSED
+
+    def test_a_missing_transition_fails(self, tmp_path):
+        capture = browser_control_run_payload(phase_sequence=["running", "paused"])
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "pause_requested" in result.message
+
+    def test_paused_without_passing_through_requested_fails(self, tmp_path):
+        """The specific lie: the UI deciding a run is paused rather than reporting it."""
+        capture = browser_control_run_payload(
+            phase_sequence=["running", "paused", "pause_requested", "paused", "running"]
+        )
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+
+    def test_missing_spend_copy_fails(self, tmp_path):
+        capture = browser_control_run_payload(pause_copy_mentions_spend=False)
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "spend" in result.message
+
+    def test_an_unobserved_count_rendered_as_a_bare_zero_fails(self, tmp_path):
+        """"0 tools" from an unreported count is the false quiescence claim."""
+        capture = browser_control_run_payload(active_tool_reason="Tools in progress: 0")
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+
+    def test_asserting_quiescence_outright_fails(self, tmp_path):
+        capture = browser_control_run_payload(active_tool_reason="No tools running")
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "Tool count unknown, so no tools running right now",
+            "Tools in progress: unknown — nothing is running",
+        ],
+    )
+    def test_hedged_text_that_still_asserts_quiescence_fails(self, tmp_path, reason):
+        """The guard must survive text that also says "unknown".
+
+        Copy that says both — "unknown" to satisfy the wording rule and "no tools
+        running" to reassure the operator — is the worst version of this bug, since
+        it reads as quiescence while passing a naive keyword check. Without this
+        case the outright-quiescence branch is never reached: the missing-hedge
+        check above it fires first on plainly-worded text.
+        """
+        capture = browser_control_run_payload(active_tool_reason=reason)
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "quiescence" in result.message
+
+    def test_a_qualified_zero_is_accepted(self, tmp_path):
+        """"none reported" attributes the zero to the worker rather than claiming it."""
+        capture = browser_control_run_payload(
+            active_tool_reason="Tools in progress: none reported"
+        )
+        assert run_w4(tmp_path, "W4-04", capture=capture).status == _mod.STATUS_PASSED
+
+
+class TestW4_08_PollingLifecycle:
+    """Measured intervals, not a configured constant."""
+
+    def test_a_passing_capture_passes(self, tmp_path):
+        assert run_w4(tmp_path, "W4-08").status == _mod.STATUS_PASSED
+
+    def test_a_single_timestamp_is_not_an_interval(self, tmp_path):
+        capture = browser_control_run_payload(poll_intervals_ms=[2000])
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "two measured intervals" in result.message
+
+    @pytest.mark.parametrize("interval", [200, 30000])
+    def test_an_interval_outside_the_contract_fails(self, tmp_path, interval):
+        capture = browser_control_run_payload(poll_intervals_ms=[interval, interval])
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "2-second contract" in result.message
+
+    @pytest.mark.parametrize(
+        "key", ["polled_while_hidden", "polled_after_close", "polled_after_terminal"]
+    )
+    def test_polling_that_did_not_stop_fails(self, tmp_path, key):
+        result = run_w4(tmp_path, "W4-08", capture=browser_control_run_payload(**{key: True}))
+        assert result.status == _mod.STATUS_FAILED
+        assert key in result.message
+
+    @pytest.mark.parametrize(
+        "key", ["polled_while_hidden", "polled_after_close", "polled_after_terminal"]
+    )
+    def test_an_unmeasured_stop_condition_fails(self, tmp_path, key):
+        """Must be an observed `false`, not an absent key read as falsy."""
+        capture = browser_control_run_payload(**{key: None})
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+
+    def test_a_decreasing_retry_interval_fails(self, tmp_path):
+        """Retrying a failing endpoint faster is the load-amplifying bug.
+
+        The contract is non-decreasing rather than strictly increasing, because a
+        bounded backoff legitimately plateaus at its cap — so equal intervals are
+        accepted and only a decrease is a failure.
+        """
+        decreasing = browser_control_run_payload(backoff_intervals_ms=[8000, 2000])
+        result = run_w4(tmp_path, "W4-08", capture=decreasing)
+        assert result.status == _mod.STATUS_FAILED
+        assert "do not increase" in result.message
+
+    def test_a_backoff_plateaued_at_its_cap_is_accepted(self, tmp_path):
+        capture = browser_control_run_payload(backoff_intervals_ms=[30000, 30000])
+        assert run_w4(tmp_path, "W4-08", capture=capture).status == _mod.STATUS_PASSED
+
+    def test_a_detail_that_never_refreshed_fails(self, tmp_path):
+        capture = browser_control_run_payload(detail_refreshed_after_command=False)
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "detail" in result.message
+
+    def test_a_delivered_steer_with_no_pending_state_fails(self, tmp_path):
+        """Labelling an enqueue as delivered is the comprehension claim AC-T1 forbids."""
+        capture = browser_control_run_payload(steer_status_sequence=["delivered"])
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "delivered" in result.message
+
+
+class TestW4_02_MalformedCaptureShapes:
+    """A capture whose observations are the wrong TYPE must fail, not crash.
+
+    These are the paths a hand-edited or partially-written evidence file takes.
+    They matter because the alternative to an explicit type check is a
+    `TypeError` escaping the predicate, which the driver would report as a
+    harness crash rather than as the unusable evidence it is.
+    """
+
+    @pytest.mark.parametrize("phase", ["flag_off", "flag_loading", "flag_error"])
+    def test_a_negative_phase_that_is_not_an_object_fails(self, tmp_path, phase):
+        capture = browser_control_run_payload(**{phase: "no controls"})
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert phase in result.message
+
+    def test_an_absent_count_key_fails(self, tmp_path):
+        """A half-written observation is not evidence of zero."""
+        capture = browser_control_run_payload(flag_off={"control_nodes": 0})
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "command_requests" in result.message
+
+    def test_non_dict_advertised_capabilities_fails(self, tmp_path):
+        capture = browser_control_run_payload(advertised_capabilities=["pause"])
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "advertised_capabilities" in result.message
+
+    def test_non_list_rendered_controls_fails(self, tmp_path):
+        capture = browser_control_run_payload(rendered_controls="pause,resume")
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "rendered_controls" in result.message
+
+    def test_a_truthy_non_true_capability_does_not_authorize_a_control(self, tmp_path):
+        """`"pause": "yes"` is not an advertisement; only `true` is.
+
+        Guards the `value is True` comparison. A loose truthiness test would let a
+        gateway serving a string, or a `1`, license a rendered control.
+        """
+        capture = browser_control_run_payload(
+            advertised_capabilities={
+                "pause": "yes", "resume": False, "steer": False, "abort": False
+            },
+            rendered_controls=["pause"],
+        )
+        result = run_w4(tmp_path, "W4-02", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "pause" in result.message
+
+
+class TestW4_04_MalformedPhaseSequence:
+    @pytest.mark.parametrize("sequence", [None, [], "running,paused"])
+    def test_a_sequence_that_is_not_a_nonempty_list_fails(self, tmp_path, sequence):
+        capture = browser_control_run_payload(phase_sequence=sequence)
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "phase_sequence" in result.message
+
+    @pytest.mark.parametrize("reason", [None, "", "   ", 0])
+    def test_an_unrecorded_tool_reason_fails(self, tmp_path, reason):
+        """Absent text is not the same as text that says "unknown"."""
+        capture = browser_control_run_payload(active_tool_reason=reason)
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "active_tool_reason" in result.message
+
+    def test_no_resume_after_the_pause_fails(self, tmp_path):
+        """The sequence must close the loop: a run that never resumed is stuck."""
+        capture = browser_control_run_payload(
+            phase_sequence=["running", "pause_requested", "paused"]
+        )
+        result = run_w4(tmp_path, "W4-04", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "running" in result.message
+
+
+class TestW4_07_LiveSchemaParity:
+    """The live response must carry every field control_schemas.py declares.
+
+    W4-07 is the only wave-4 check that talks to the gateway rather than reading a
+    capture, so its failure modes are served responses — and the one that matters
+    most is the pod-address leak, since that reaches the browser regardless of
+    what the UI chooses to render.
+    """
+
+    def test_a_conforming_response_passes(self, tmp_path):
+        assert run_w4(tmp_path, "W4-07").status == _mod.STATUS_PASSED
+
+    def test_a_non_200_state_response_fails(self, tmp_path):
+        """A contract cannot be compared against a response that was not served."""
+        result = run_w4(tmp_path, "W4-07", client=gateway_stub(state_status=503))
+        assert result.status == _mod.STATUS_FAILED
+        assert "503" in result.message
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "run_id",
+            "generation",
+            "available",
+            "reason",
+            "capabilities",
+            "state",
+            "active_tool_count",
+            "updated_at",
+            "commands",
+        ],
+    )
+    def test_a_field_the_backend_declares_but_the_response_omits_fails(
+        self, tmp_path, field
+    ):
+        result = run_w4(tmp_path, "W4-07", client=gateway_stub(state_omit=(field,)))
+        assert result.status == _mod.STATUS_FAILED
+        assert field in result.message
+
+    def test_an_omitted_capability_verb_fails(self, tmp_path):
+        """An absent verb key is indistinguishable from `false` to the client."""
+        partial = {v: False for v in _mod.CONTROL_VERBS}
+        dropped = partial.pop("steer")
+        assert dropped is False
+        result = run_w4(tmp_path, "W4-07", client=gateway_stub(capabilities=partial))
+        assert result.status == _mod.STATUS_FAILED
+        assert "steer" in result.message
+
+    def test_non_object_capabilities_fails(self, tmp_path):
+        result = run_w4(
+            tmp_path, "W4-07", client=gateway_stub(state_extra={"capabilities": []})
+        )
+        assert result.status == _mod.STATUS_FAILED
+        assert "capabilities" in result.message
+
+    @pytest.mark.parametrize(
+        "banned",
+        ["pod_ip", "pod_address", "pod_port", "control_token", "token", "address"],
+    )
+    def test_a_pod_coordinate_in_the_public_body_fails(self, tmp_path, banned):
+        """The response the browser receives: a leak here is a leak to devtools."""
+        result = run_w4(
+            tmp_path, "W4-07", client=gateway_stub(state_extra={banned: "10.0.42.7"})
+        )
+        assert result.status == _mod.STATUS_FAILED
+        assert banned in result.message
+
+    def test_non_list_commands_fails(self, tmp_path):
+        result = run_w4(
+            tmp_path, "W4-07", client=gateway_stub(state_extra={"commands": {}})
+        )
+        assert result.status == _mod.STATUS_FAILED
+        assert "commands" in result.message
+
+    def test_a_non_object_command_entry_fails(self, tmp_path):
+        result = run_w4(
+            tmp_path, "W4-07", client=gateway_stub(state_extra={"commands": ["cmd-1"]})
+        )
+        assert result.status == _mod.STATUS_FAILED
+        assert "commands[0]" in result.message
+
+    def test_a_command_entry_missing_its_acknowledgement_fields_fails(self, tmp_path):
+        """The per-command status the dashboard keys on must be fully present."""
+        entry = {"command_id": "c-1", "action": "pause", "status": "pending"}
+        result = run_w4(
+            tmp_path, "W4-07", client=gateway_stub(state_extra={"commands": [entry]})
+        )
+        assert result.status == _mod.STATUS_FAILED
+        assert "delivered_at" in result.message
+
+    def test_a_fully_populated_command_entry_passes(self, tmp_path):
+        entry = {
+            "command_id": "c-1",
+            "action": "pause",
+            "status": "delivered",
+            "accepted_at": "2026-09-12T00:00:00Z",
+            "delivered_at": "2026-09-12T00:00:01Z",
+            "reason": None,
+        }
+        result = run_w4(
+            tmp_path, "W4-07", client=gateway_stub(state_extra={"commands": [entry]})
+        )
+        assert result.status == _mod.STATUS_PASSED
+
+
+class TestW4_08_MalformedPollObservations:
+    @pytest.mark.parametrize("intervals", [None, "2000,2000", [2000, "2000"]])
+    def test_non_numeric_intervals_fail(self, tmp_path, intervals):
+        capture = browser_control_run_payload(poll_intervals_ms=intervals)
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "poll_intervals_ms" in result.message
+
+    @pytest.mark.parametrize("backoff", [None, [2000], "2000,4000"])
+    def test_an_unmeasured_backoff_fails(self, tmp_path, backoff):
+        capture = browser_control_run_payload(backoff_intervals_ms=backoff)
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+        assert "backoff_intervals_ms" in result.message
+
+    def test_a_non_numeric_backoff_entry_fails(self, tmp_path):
+        capture = browser_control_run_payload(backoff_intervals_ms=[2000, "4000"])
+        result = run_w4(tmp_path, "W4-08", capture=capture)
+        assert result.status == _mod.STATUS_FAILED
+
+    def test_a_pending_then_delivered_steer_is_accepted(self, tmp_path):
+        capture = browser_control_run_payload(
+            steer_status_sequence=["pending", "pending", "delivered"]
+        )
+        assert run_w4(tmp_path, "W4-08", capture=capture).status == _mod.STATUS_PASSED
+
+    def test_a_steer_that_never_reached_delivered_is_accepted(self, tmp_path):
+        """A still-pending steer is an honest state, not a failure.
+
+        W4-08 forbids claiming delivery without a preceding pending; it does not
+        require delivery to have happened, which is S6's subject and not this
+        check's to assert.
+        """
+        capture = browser_control_run_payload(steer_status_sequence=["pending"])
+        assert run_w4(tmp_path, "W4-08", capture=capture).status == _mod.STATUS_PASSED
+
+    @pytest.mark.parametrize("sequence", [None, [], "pending"])
+    def test_an_absent_steer_sequence_does_not_fail_this_check(self, tmp_path, sequence):
+        """Steer is optional here: a run whose adapter cannot steer still polls.
+
+        W4-08's subject is the polling lifecycle. The steer vocabulary is asserted
+        only when the capture recorded one, because a deployment that advertises
+        `steer: false` has no sequence to show and must not fail a polling check
+        for it. AC-T1's steer evidence is W4-03's, which S6 owns.
+        """
+        capture = browser_control_run_payload(steer_status_sequence=sequence)
+        assert run_w4(tmp_path, "W4-08", capture=capture).status == _mod.STATUS_PASSED
+
+
+class TestSummarizeFixtureCleanupUsesTheDeclaredVerificationIds:
+    """The hardcoded "W2-10" was a latent false green for any third wave.
+
+    `resource_teardown_expected` is derived from whether the wave HAS post-cleanup
+    checks, while the absence lookup used a literal ID. A wave whose verification
+    check had a different name would set the first True, find no "W2-10", take the
+    "this wave declares none" branch and publish absence_verified=True with nothing
+    having verified absence. Both now derive from POST_CLEANUP_CHECK_IDS.
+    """
+
+    @staticmethod
+    def _result(check_id: str, status: str):
+        return _mod.CheckResult(
+            check_id=check_id, status=status, description="d", acceptance_ids=("x",)
+        )
+
+    def test_the_default_verification_ids_come_from_the_declared_set(self):
+        import inspect
+
+        default = inspect.signature(_mod.summarize_fixture_cleanup).parameters[
+            "verification_ids"
+        ].default
+        assert set(default) == set(_mod.POST_CLEANUP_CHECK_IDS)
+
+    def test_a_differently_named_verification_check_still_withholds(self):
+        """The regression: a failed post-cleanup check under another ID must not pass."""
+        cleanup = _mod.CleanupOutcome(ok=True, notes=[], deletions=[], declared_items=0)
+        teardown = _mod.ResourceTeardown(
+            configured=True, invoked=True, ok=True, exit_code=0,
+            started_at="2026-09-24T10:00:00Z", finished_at="2026-09-24T10:01:00Z",
+            stdout_digest=None, notes=[],
+            verification_present_before=False, verification_digest_before=None,
+        )
+        results = [self._result("W9-99", _mod.STATUS_FAILED)]
+        summary = _mod.summarize_fixture_cleanup(
+            cleanup, teardown, results,
+            resource_teardown_expected=True,
+            verification_ids=("W9-99",),
+        )
+        assert summary.absence_verified is False
+        assert summary.ok is False
+        assert any("W9-99" in note for note in summary.notes)
+
+    def test_a_wave_with_no_verification_check_is_unaffected(self):
+        """Wave 1 declares none, so there is no unestablished absence to withhold."""
+        cleanup = _mod.CleanupOutcome(ok=True, notes=[], deletions=[], declared_items=0)
+        summary = _mod.summarize_fixture_cleanup(
+            cleanup, None, [], resource_teardown_expected=False
+        )
+        assert summary.ok is True

@@ -269,6 +269,9 @@ def assess_case(output: Path, assessment: dict) -> dict:
                 "Record the stopping reason; unconfirmed cleanup permits only inconclusive assessment"
             )
         parsed.validate_evidence(case["observations"])
+        from analyst_context import context_records
+
+        parsed.validate_context(context_records(case))
         if parsed.verdict == "no_adverse_behavior_observed" and any(
             p["status"] != "complete" for p in case["probes"]
         ):
@@ -427,16 +430,12 @@ def _investigation_report(case):
         f"<li>{_escaped(x['url'])} <small>{_escaped(x['observation_id'])}</small></li>"
         for x in leads
     )
-    markup = (
-        "<h2>Investigation path and hypothesis updates</h2>"
-        f"<p>Scope: {_escaped(case.get('scope', 'host'))}</p><ol>"
-        + "".join(items)
-        + f"</ol><p><strong>Stopping reason:</strong> {_escaped(stop)}</p>"
-        + (
-            f"<details><summary>External or unavailable leads ({len(leads)})</summary><ul>{lead_html}</ul></details>"
-            if leads
-            else ""
-        )
+    markup = "<h2>Investigation path and hypothesis updates</h2>" f"<p>Scope: {_escaped(case.get('scope', 'host'))}</p><ol>" + "".join(
+        items
+    ) + f"</ol><p><strong>Stopping reason:</strong> {_escaped(stop)}</p>" + (
+        f"<details><summary>External or unavailable leads ({len(leads)})</summary><ul>{lead_html}</ul></details>"
+        if leads
+        else ""
     )
     return lines, markup
 
@@ -460,6 +459,53 @@ def save_case(output: Path, case: dict) -> None:
         )
     (output / "indicators.csv").write_text(buffer.getvalue())
     a = case["assessment"]
+    from analyst_context import context_records
+
+    context = context_records(case)
+    context_assessment = a.get("context_assessment")
+    context_lines = [
+        "",
+        "## Incident and intelligence context (not observed page behavior)",
+        "",
+    ]
+    if context_assessment:
+        context_lines += ["Context risk: " + _md(context_assessment["risk"]), ""]
+        context_lines += [
+            f"- {_md(f['statement'])} ({_md(f['basis'])}; {_md(', '.join(f['source_ids']))})"
+            for f in context_assessment["findings"]
+        ]
+        context_lines += [
+            f"- Limitation: {_md(s)}" for s in context_assessment["limitations"]
+        ]
+    context_lines += ["", "Sourced records:", ""]
+    initial_hypothesis = case.get("initial_hypothesis")
+    if initial_hypothesis:
+        context_lines += [
+            "Initial hypothesis (before live browsing):",
+            "",
+            _md(json.dumps(initial_hypothesis, ensure_ascii=False)),
+            "",
+        ]
+    context_lines += [f"- {_md(json.dumps(r, ensure_ascii=False))}" for r in context]
+    context_html = (
+        (
+            "<h2>Incident and intelligence context (not observed page behavior)</h2>"
+            + (
+                "<h3>Initial hypothesis before live browsing</h3>"
+                + f"<pre>{_escaped(json.dumps(initial_hypothesis, indent=2))}</pre>"
+                if initial_hypothesis
+                else ""
+            )
+            + (
+                f"<pre>{_escaped(json.dumps(context_assessment, indent=2))}</pre>"
+                if context_assessment
+                else ""
+            )
+            + f"<details><summary>Sourced records</summary><pre>{_escaped(json.dumps(context, indent=2))}</pre></details>"
+        )
+        if context or context_assessment
+        else ""
+    )
     lines = [
         f"# URL research case: {a['verdict']}",
         "",
@@ -537,6 +583,8 @@ def save_case(output: Path, case: dict) -> None:
             f"<details><summary>Structured observation</summary><pre>{_escaped(json.dumps(o, indent=2))}</pre></details></section>"
         )
     investigation_lines, investigation_html = _investigation_report(case)
+    if context or context_assessment:
+        lines += context_lines
     lines += investigation_lines
     lines += ["", "## Limitations", ""] + [f"- {_md(x)}" for x in a["limitations"]]
     limits = set(a["limitations"])
@@ -568,6 +616,7 @@ def save_case(output: Path, case: dict) -> None:
         '<p><a href="case.json">Case JSON</a> · <a href="indicators.csv">Observed indicators CSV</a></p>'
         f"<h2>Findings</h2><ul>{findings}</ul><details><summary>Investigation choices and provenance</summary><pre>{_escaped(json.dumps(case['probes'], indent=2))}</pre></details>"
         + investigation_html
+        + context_html
         + "".join(cards)
         + "<h2>Limitations</h2><ul>"
         + "".join(f"<li>{_escaped(x)}</li>" for x in sorted(limits))

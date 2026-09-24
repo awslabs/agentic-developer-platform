@@ -81,6 +81,8 @@ def build_evidence_items(observation):
             add(kind, i, value, complete)
     if observation.get("screenshot_sha256"):
         add("screenshot", 0, observation["screenshot_sha256"], True)
+    if observation.get("interstitial", {}).get("kind") == "threat_warning":
+        add("warning", 0, observation["interstitial"], True)
     return items
 
 
@@ -120,3 +122,53 @@ def partial_evidence_usable(observation):
             x.get("navigation") for x in observation.get("blocked_requests", [])
         )
     )
+
+
+def warning_evidence_usable(observation):
+    """A captured warning is evidence of the warning, never the hidden page."""
+    return (
+        observation.get("interstitial", {}).get("kind") == "threat_warning"
+        and observation.get("status") == "partial"
+        and type(observation.get("http_status")) is int
+        and 200 <= observation["http_status"] < 500
+        and bool(observation.get("screenshot_sha256"))
+        and bool(observation.get("dom_snapshot"))
+        and bool(observation.get("evidence_items"))
+        and "threat_warning" in observation.get("errors", [])
+        and set(observation["errors"])
+        <= {
+            "threat_warning",
+            "page_capture_truncated",
+            "network_requests_failed",
+            "observation_coverage_limited",
+            "connections_truncated",
+        }
+        and not any(
+            x.get("navigation") for x in observation.get("blocked_requests", [])
+        )
+    )
+
+
+def evidence_eligibility(observation):
+    """Expose the same reference rules used by assessment validation to the agent."""
+    ordinary = observation["status"] == "complete" or partial_evidence_usable(
+        observation
+    )
+    warning = warning_evidence_usable(observation)
+    return {
+        "page_findings_supported": ordinary,
+        "warning_finding_supported": warning,
+        "coverage_only": not ordinary and not warning,
+        "requires_item_refs": observation["status"] != "complete",
+        "errors": observation.get("errors", []),
+        "intact_item_ids": [
+            x["id"] for x in observation.get("evidence_items", []) if x["complete"]
+        ],
+        "guidance": (
+            "Cite this view's intact items and state coverage gaps."
+            if ordinary
+            else "Cite warning-001 as threat_warning; provider identity and hidden content are unverified."
+            if warning
+            else "Use coverage_limitation only; retain earlier supported findings with their own citations."
+        ),
+    }

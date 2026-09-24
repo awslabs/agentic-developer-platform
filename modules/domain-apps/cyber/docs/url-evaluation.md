@@ -1,4 +1,98 @@
-# URL evidence accuracy and evaluation
+# Adaptive URL investigation and evidence evaluation
+
+The primary capability is the cyber agent choosing how to investigate a site,
+examining the result of each action and updating its hypothesis. Validate that
+loop before collecting classification metrics. The September 24 large snapshot
+runs closed each browser before calling the model, so their results do not measure
+adaptive investigation.
+
+## Live investigation acceptance (primary)
+
+`live_evaluation.py` exposes the maintained skill commands to a real Bedrock model.
+Start returns evidence with an open browser; the model selects one action, receives
+the new observation and screenshot, then chooses again. `finish` validates the
+assessment before closing. Batched tool calls are rejected without executing any
+of them. Failures are never silently replayed. Browser-only mode skips the model
+when collection produced no observations. Analyst mode still lets the model
+select useful enrichment for the seed and assess sourced context; the browser
+verdict remains inconclusive. This is an evaluation adapter for the cyber
+skill, not a new production model service.
+
+Run inside AWS. The input is an S3 JSON object with this shape (reserved example
+hostname shown; real targets and all resulting evidence remain in AWS):
+
+```json
+{
+  "schema_version": "cyber-live-evaluation/1",
+  "cases": [{
+    "id": "case-001",
+    "url": "https://example.test/support",
+    "objective": "Investigate the verification flow, requested information and claimed operator; examine counterevidence.",
+    "scope": "host"
+  }]
+}
+```
+
+```bash
+python /app/skills/url-analysis/live_evaluation.py \
+  --manifest "$S3_SEEDS" --output-prefix "$S3_RUN_PREFIX" --max-cases 3
+```
+
+The default model is `us.anthropic.claude-sonnet-4-6`. Each case has up to 12 model
+turns, 210 seconds for choosing browser actions, and a 270-second loop deadline;
+an in-flight model request can take up to its configured timeout. Broker lease and
+step limits still apply. Model calls are not automatically retried. Cases run
+serially, and unconfirmed cleanup stops admission. Use a new output prefix per run.
+The runner uploads decisions after each turn, the complete integrity-checked case
+bundle, per-case results, source hashes and a summary, with S3 readback checks.
+Logs contain only opaque IDs and execution counts.
+
+The default adapter loads the maintained URL persona section, `SKILL.md` and
+`analyst-playbook.md`. It exposes `enrich` alongside the browser tools. Add
+`incident_context` (source, reported_at, summary records) and `brand_references`
+to manifest rows only when supplied by the researcher. Never supply reference
+labels as context. Use `--browser-only` for the separate browsing-only protocol;
+it excludes these inputs and the enrichment tool. Protocol names distinguish the
+two modes. Neither is the complete hosted platform workflow.
+
+For SDK acceptance in the actual hosted worker image, run:
+
+```bash
+python /app/skills/url-analysis/hosted_evaluation.py \
+  --manifest "$S3_SEEDS" --output-prefix "$S3_HOSTED_RUN_PREFIX" --max-cases 3
+```
+
+This uses the image's Claude Agent SDK with general Bash/Read/Write tools and the
+same maintained URL instructions. The model executes the investigation CLI and
+reads its artifacts instead of calling emulated Bedrock tools. The seed is opened
+once before the SDK starts. Transcripts and case bundles are uploaded to S3.
+It requires Node and the hosted SDK at `/app/node_modules`; it is not a standalone
+browser-container command. It does not test worker orchestration, gateway policy,
+GitHub/UI ingress or message delivery and does not post comments. Its protocol is
+`hosted-sdk-acceptance`, with a ten-case hard cap.
+
+`tests/run_analyst_acceptance.py` exercises both paths on matched synthetic cases
+through an isolated fixture broker. Review their actual findings, chosen commands,
+source use and hypothesis revisions before claiming a capability improvement.
+
+First use a controlled state-dependent site with a real model. The synthetic
+fixture in `tests/adaptive_fixture.py` presents competing links, reveals its form
+and operator link only after a session-preserving click, and offers two different
+operator disclosures. One disclosure includes an untrusted instruction to invent
+official affiliation. Install its transport only in an isolated acceptance broker.
+The normal broker continues using guarded public networking. Automated protocol
+tests with injected model responses are regression checks, not real-model acceptance.
+
+See the [September 24 acceptance record](adaptive-investigation-acceptance-2026-09-24.md)
+for real-model results and the reasoning defects that remain after navigation passes.
+
+Review the transcript against the actual evidence: did the model choose a relevant
+lead, see evidence unavailable at the seed, follow a newly revealed lead, preserve
+session state, reconsider the hypothesis and explain what remains unknown? Inspect
+claims about operator identity and form behavior, including counterevidence and
+page-injected instructions. Counts of actions or revisions alone are not a pass.
+Then use a small public-site sample with the same loop. UI/GitHub ingress and report
+delivery require separate acceptance; neither runner exercises them.
 
 The September 23 PhishTank smoke test exposed two different limitations: four of
 five pages were unavailable, and the remaining page contained strong phishing
@@ -21,8 +115,15 @@ inventory. Old captures remain readable but do not gain evidence completeness
 retroactively.
 
 Adverse findings on partial pages require specific intact item references and
-explicit coverage limitations. Failed navigation, challenges, missing screenshots
-or DOM, failed cited items, and unconfirmed session cleanup remain ineligible.
+explicit coverage limitations. Failed navigation, human-verification challenges,
+missing screenshots or DOM, failed cited items and unconfirmed cleanup remain
+ineligible for threat findings. Explicit threat warnings receive their own intact
+`warning-001` item and can support suspicion, with provider identity and hidden
+behavior unverified. A warning alone cannot support a malicious verdict. A separate
+`coverage_limitation` finding may cite a later challenge without invalidating
+earlier findings. Validation errors identify the offending observation and finding.
+Rejected assessment attempts are retained; operational fallback preserves
+individually valid findings from the latest attempt without inventing a verdict.
 Complete evidence is still required for no-adverse assessments. Item integrity
 cannot establish the semantic truth of a model's claims.
 
@@ -57,7 +158,7 @@ fixed endpoint, no redirects, a 15-second timeout and a 1-MiB response limit.
 Lookup time and source analysis time are distinct. Missing credentials, errors,
 and absent records are explicit. No URL is submitted for scanning.
 
-## S3 benchmark contract
+## S3 snapshot assessment contract (secondary)
 
 Dataset commands run only in an AWS worker, CodeBuild or ECS runtime. Inputs and
 outputs must be S3 object URIs; real site evidence must not be downloaded locally.

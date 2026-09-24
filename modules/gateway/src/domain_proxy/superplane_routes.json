@@ -262,5 +262,33 @@
   [
     "POST",
     "/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-profiles"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs/preview"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/teardown-preview"
+  ],
+  [
+    "DELETE",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}"
   ]
 ]

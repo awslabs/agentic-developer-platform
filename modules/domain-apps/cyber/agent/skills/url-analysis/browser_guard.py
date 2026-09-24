@@ -112,6 +112,7 @@ class DestinationRefused(Exception):
         super().__init__(f"destination refused for {safe_url}: {result.reason}")
         self.url = safe_url
         self.result = result
+        self.browser_start_unattempted = False
 
     @property
     def reason(self) -> str:
@@ -738,7 +739,11 @@ def open_guarded_browser(
     navigation_check=None,
 ) -> GuardedBrowserSession:
     """Create and return the only supported URL-analysis browser interface."""
-    vetted = vet_destination(url, config)
+    try:
+        vetted = vet_destination(url, config)
+    except DestinationRefused as error:
+        error.browser_start_unattempted = True
+        raise
 
     if client_factory is None:
         from bedrock_agentcore.tools.browser_client import BrowserClient

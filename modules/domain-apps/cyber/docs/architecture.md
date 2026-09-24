@@ -1,6 +1,6 @@
 # Cyber Domain App — Architecture
 
-> **Scope.** This document describes the cyber domain app (`modules/domain-apps/cyber/`) as-built on 2026-05-06. It supersedes the v1 architecture diagram in [EPIC #224](https://github.com/aws-e/adp/issues/224). Sources of truth remain the code, the skill playbooks, and the EPIC thread — this document summarizes and connects them.
+> **Scope.** This document began with the May 6 cyber app and includes September URL-investigation updates. Historical run examples are not descriptions of the current browser interface. See [the historical comparison](url-analysis-historical-comparison-2026-09-24.md) and [current evaluation contracts](url-evaluation.md). Code and skill playbooks remain authoritative.
 
 ---
 
@@ -9,7 +9,7 @@
 A research assistant for threat researchers, built as a thin domain-specific layer on top of ADP. One persona (`malware-analysis-agent`) drives two analytical paths:
 
 1. **File analysis** — seven-stage pipeline that detonates a sample, produces a structured case file, and recovers MITRE ATT&CK techniques from evidence.
-2. **URL analysis** — single-turn skill that visits a suspicious URL in an isolated browser, captures evidence, and produces a structured forensic report.
+2. **URL investigation** — the cyber agent explores a site in a persistent isolated browser, chooses relevant actions from observed links and controls, revises hypotheses, and produces evidence-linked findings.
 
 Both paths use the same trigger surface (GitHub label / @mention / webhook / email-gateway forward / SIEM / chat), the same persona, the same reasoning-tier → byte-handling-tier split, and drop their output into the same surfaces (issue comments, chat-artifacts bucket, DDB case rows).
 
@@ -44,11 +44,11 @@ The original v1 diagram (see EPIC #224 §Architecture) was drawn when the cyber 
 │   │  Drives Stages 1/3/4 workers in Threat Research VPC    │        │
 │   ╰────────────────────────────────────────────────────────╯        │
 │                                                                     │
-│   ╭─── URL analysis (single-turn skill) ───────────────────╮        │
+│   ╭─── URL investigation (adaptive skill) ───────────────────╮        │
 │   │  Unprivileged client → trusted guarded-browser broker   │        │
 │   │  → pinned transport → AgentCore Browser session         │        │
-│   │  → Enrichment (WHOIS, PDNS, crt.sh, VT, URLhaus, MISP)  │        │
-│   │  → verdict.py (deterministic) → markdown report         │        │
+│   │  → Review evidence → choose action → inspect result    │        │
+│   │  → Revise hypothesis → validated finish → report       │        │
 │   │  Evidence envelope + screenshots to cyber S3 bucket     │        │
 │   ╰────────────────────────────────────────────────────────╯        │
 │                                                                     │
@@ -111,7 +111,7 @@ Located at `modules/domain-apps/cyber/agent/personas/malware-analysis-agent.md`.
 
 **Role.** The same persona handles both URL triage and file analysis. It knows when to use which skill:
 
-- A URL in the issue body or a label targeting URL work → loads `url-analysis` skill, runs the single-turn playbook (pre-flight → browser → enrichment → verdict → report).
+- A URL in the issue body or a label targeting URL work → loads `url-analysis` and investigates through `domain_investigation.py` (start → review → choose action → inspect new evidence → finish).
 - A sample S3 URI + label targeting file analysis → loads the seven stage skills, orchestrates the chain.
 
 **Reasoning heuristics baked into the persona:**
@@ -153,51 +153,35 @@ Each directory contains a `SKILL.md` (playbook the agent reads at runtime) and, 
 
 ### 5.1. Shape
 
-One skill and one agent turn. The agent loads `url-analysis/SKILL.md`, writes an orchestration script per URL, and submits each URL to a trusted browser broker. The reasoning pod is explicitly denied AgentCore Browser access; the broker owns the guarded session and returns bounded evidence. The script populates an Evidence object, runs `verdict.py`, renders a report, and posts a comment.
+The existing cyber agent supplies the reasoning. `domain_investigation.py start`
+opens a guarded browser and returns an observation, screenshot and observed
+choices. The agent reviews the evidence, selects one relevant action, and examines
+its result before choosing again. Cookies, session storage and history survive
+between actions. The broker executes bounded actions and owns browser credentials;
+it does not choose the investigation route.
 
+```mermaid
+flowchart TD
+    A[Seed URL and research question] --> B[Start guarded browser]
+    B --> C[Agent inspects observation and screenshot]
+    C --> D[Record evidence-backed hypothesis update]
+    D --> E{Useful unresolved question?}
+    E -->|Yes| F[Agent chooses observed link or bounded action]
+    F --> G[Broker executes in the same context]
+    G --> C
+    E -->|No, limit, or failure| H[Validate assessment and stopping reason]
+    H --> I[Close browser and publish evidence bundle]
 ```
-        GitHub issue with URL(s)
-                 │
-                 ▼
-   malware-analysis-agent pod
-                 │
-                 ├── For each URL:
-                 │     │
-                 │     ├── POST URL to guarded browser broker
-                 │     │   (worker has explicit AgentCore deny)
-                 │     │
-                 │     ├── Broker vets + pins every request,
-                 │     │   owns CDP, and returns bounded capture
-                 │     │
-                 │     ├── Resize screenshot for Claude
-                 │     │   (shrink_for_claude, max 1024px)
-                 │     │
-                 │     ├── Enrichment (in parallel where possible):
-                 │     │   WHOIS/RDAP, PassiveDNS, crt.sh,
-                 │     │   VirusTotal, URLhaus, MISP
-                 │     │
-                 │     ├── Populate Evidence (pydantic)
-                 │     │   target_url, final_url, http_status,
-                 │     │   screenshots, redirects, forms,
-                 │     │   auto_downloads, anti_analysis_signals,
-                 │     │   enrichment
-                 │     │
-                 │     ├── Upload evidence to S3
-                 │     │   (screenshots + envelope.json)
-                 │     │   — gracefully falls back to inline
-                 │     │   base64 if bucket/policy missing
-                 │     │
-                 │     ├── verdict.synthesize_verdict()
-                 │     │   deterministic scoring →
-                 │     │   severity, confidence, category,
-                 │     │   MITRE TTPs, recommended actions
-                 │     │
-                 │     └── report.render_markdown_report()
-                 │         executive line → evidence → caveats
-                 │         → IOCs → MITRE → recommended actions
-                 │
-                 └── Post comment(s) to issue + run summary
-```
+
+`finish` validates before closure so the model can correct a malformed assessment
+without losing the context. Browser failures are not silently replayed. A profile
+comparison deliberately creates a fresh context. Reputation enrichment is optional
+context, and legacy one-shot capture and deterministic scoring remain compatible
+interfaces rather than the default investigation path.
+
+Evaluate the live reasoning/action loop first; see [adaptive evaluation](url-evaluation.md).
+Snapshot assessment does not exercise browser control. Hosted UI/GitHub ingress
+and artifact delivery require separate acceptance.
 
 ### 5.2. Substrate: AWS Bedrock AgentCore Browser
 
@@ -277,10 +261,10 @@ Real #500 run numbers (morning 4-URL triage):
 |---|---|
 | Wall time | ~5 min |
 | Sessions | 4 AgentCore Browser sessions (one per URL), all TERMINATED |
-| Browser transport | 4/4 broker-owned CDP (no direct fallback) |
+| Browser transport | 4/4 direct Playwright-over-CDP, as reported in the May issue; this predates the September broker |
 | Enrichment sources reached | WHOIS (partial), PassiveDNS (all), crt.sh (degraded), VT / URLhaus / MISP (skipped — creds pending) |
 | Reports posted | 4 forensic reports + 1 run summary |
-| Verdict accuracy | 4/4 correct (2 malicious phish, 1 malicious malware, 1 clean gov) |
+| Reported verdicts | 3 malicious, 1 clean; not independently scored accuracy |
 
 ---
 
@@ -536,7 +520,7 @@ Designed for MSSP-scale from day one. Current state: single-tenant in dev; multi
   - #278 — 7-stage wiring smoke (gate for demo)
   - #297 — first end-to-end file run (benign `/bin/ls`)
   - #304 — Atomic T1059.004 closed-loop (21 m 26 s, Stage 5 independent TTP recovery)
-  - #500 — URL triage, 4 URLs, all CDP, 4/4 correct verdicts
+  - #500 — May URL triage, 4 URLs, all CDP; reported 3 malicious and 1 clean
   - #503 — URL triage, 3 URLs, surfaced Claude-image-size issue (fixed PR #504)
   - #505 — URL triage afternoon batch
   - #506 — T1059.004 fresh run (in progress)
