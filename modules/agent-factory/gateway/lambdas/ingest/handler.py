@@ -14,6 +14,7 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 import time
 import uuid
 from decimal import Decimal
@@ -265,6 +266,12 @@ def lambda_handler(event, context):
     if connection_id:
         body = parse_body(event)
         action = body.get("action", "")
+        # #5615 (S16): server-issued session ids. Routed here rather than as its
+        # own API Gateway route because the WS API selects on
+        # `$request.body.action` with a `$default` route already present, so an
+        # unlisted action reaches this Lambda unchanged.
+        if action == "create-session":
+            return handle_create_session(event, connection_id, body)
         if action == "upload-token":
             return handle_upload_token(event, connection_id, body)
         if action == "upload-complete":
@@ -659,6 +666,131 @@ def _reserve_upload_session(session_id: str, connection_id: str,
         logger.error("Upload session collision lookup failed for %s: %s", session_id, error)
         raise SessionOwnershipError(session_id) from error
     _assert_session_item_owner(existing, expected_principal, session_id)
+
+
+# ─── Server-issued session ids (#5615 / S16) ──────────────────
+# Number of random bytes behind a minted session id. 16 bytes = 128 bits, the
+# same order as the uuid4 the CLI path already mints, rendered as 32 hex chars
+# so the result stays inside SESSION_ID_PATTERN and MAX_SESSION_ID_LENGTH.
+SESSION_ID_ENTROPY_BYTES = 16
+
+# A mint retries only on the vanishingly unlikely collision with an existing
+# row. Bounded so a systematically failing store surfaces as an error instead of
+# an unbounded loop inside a Lambda invocation.
+SESSION_MINT_ATTEMPTS = 3
+
+
+def _mint_session_id() -> str:
+    """Return an unguessable session id.
+
+    `secrets` (the OS CSPRNG), never `random`/`Math.random`/a timestamp. The
+    browser previously built this id as `sess-<epoch-ms>-<Math.random suffix>`,
+    which is predictable: most of it is the clock, and `Math.random` is not a
+    cryptographic source. Ownership is still enforced separately — see
+    `_create_webchat_session` — so entropy here supplements that check rather
+    than replacing it. What entropy alone fixes is SQUATTING: an id a victim's
+    browser was about to choose could be pre-created by somebody else, leaving
+    the victim's own new conversation refused.
+
+    Keeps the `sess-` prefix every existing reader already tolerates, so live
+    conversations and the shape rule above are unaffected.
+    """
+    return f"sess-{secrets.token_hex(SESSION_ID_ENTROPY_BYTES)}"
+
+
+def _create_webchat_session(connection_id: str, identity: dict[str, str]) -> str:
+    """Mint and record a new webchat session owned by the verified caller.
+
+    The owner is derived ONLY from `identity`, which comes from the claims the
+    $connect authorizer verified and we persisted — never from the request body.
+    So the row is owned from the instant it exists, and every existing ownership
+    check (`get_or_create_session`, `_assert_session_owned_by_caller`) applies to
+    it unchanged.
+
+    Raises SessionStoreError if the caller's identity is incomplete or no id
+    could be recorded, so a failure can never be mistaken for a created session.
+    """
+    expected_principal = _session_owner_principal(
+        identity["tenant_id"], identity["org_id"], identity["team_id"],
+        identity["user_id"], "webchat",
+    )
+    for _ in range(SESSION_MINT_ATTEMPTS):
+        session_id = _mint_session_id()
+        now = int(time.time())
+        item = {
+            "session_id": session_id,
+            "owner_principal": expected_principal,
+            "owner_user_id": identity["user_id"],
+            "user_workspace": f'{identity["user_id"]}#webchat',
+            "tenant_id": identity["tenant_id"],
+            "connection_id": connection_id,
+            "channel": "webchat",
+            "messages": [],
+            "threads": {},
+            "created_at": now,
+            "updated_at": now,
+            "expires_at": now + 86400,
+        }
+        # Match get_or_create_session, which omits these rather than writing ""
+        # so a row never claims an org/team the caller does not have.
+        if identity["org_id"]:
+            item["org_id"] = identity["org_id"]
+        if identity["team_id"]:
+            item["team_id"] = identity["team_id"]
+        try:
+            sessions_table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(session_id)",
+            )
+            return session_id
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                logger.error("Session mint failed: %s", error)
+                raise SessionStoreError("session create failed") from error
+            # Collision: fail closed and mint a FRESH id rather than adopting the
+            # existing row. Adopting it would hand the caller a conversation they
+            # may not own — exactly the bug this route exists to prevent.
+            logger.warning("Minted session id collided; retrying with a fresh id")
+        except Exception as error:
+            logger.error("Session mint failed: %s", error)
+            raise SessionStoreError("session create failed") from error
+    raise SessionStoreError("could not mint a unique session id")
+
+
+def handle_create_session(event: dict, connection_id: str, body: dict) -> dict:
+    """WS action `create-session`: hand the client a server-issued session id.
+
+    #5615 (S16): this is the ONLY way a webchat conversation comes into
+    existence. The client sends no identifier and cannot influence the one it
+    gets back. Paired with the message path's refusal to create an unknown id
+    (`_handle_unified_message`), that removes client choice from session
+    addressing altogether.
+
+    The reply is posted over the socket and correlated by `request_id`, because
+    API Gateway discards a WebSocket integration's return body — the same reason
+    the upload routes below do it. A client that never sees the reply must retry
+    and use the NEW id; a lost reply orphans an empty row that TTL reaps, which
+    is why the id is never reused.
+    """
+    request_id = body.get("request_id", "")
+
+    def _respond(status: int, payload: dict) -> dict:
+        _send_ws_response(connection_id, request_id, payload)
+        return {"statusCode": status, "body": json.dumps(payload)}
+
+    ident = _get_upload_claims(event, connection_id)
+    if not ident:
+        return _respond(401, {"error": "Missing identity claims"})
+
+    try:
+        session_id = _create_webchat_session(connection_id, ident)
+    except SessionStoreError as error:
+        # Includes an incomplete identity (no usable tenant). Refused, not
+        # downgraded to a session outside the caller's own scope.
+        logger.warning("Refused create-session for %s: %s", connection_id, error)
+        return _respond(503, {"error": "could not start a conversation"})
+
+    return _respond(200, {"session_id": session_id})
 
 
 def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
@@ -1485,6 +1617,34 @@ def parse_body(event):
 
 # ─── Session & Thread DynamoDB Operations ─────────────────────
 
+def _client_may_name_a_new_session(message) -> bool:
+    """True when this channel's session id legitimately originates off-server.
+
+    #5615 (S16): for the BROWSER chat path the answer is now no. Its ids are
+    issued by `handle_create_session`, so an id the store has never seen was
+    never issued — and a request naming one is not authorization to create it.
+    Without this, an attacker could pre-create an id a victim's browser was
+    about to choose and lock the victim out of their own new conversation.
+
+    The other two callers are unchanged, because neither takes an id from an
+    untrusted browser:
+
+      - `gateway-api` (the CLI / operator plane) already mints its ids
+        SERVER-side in `gateway/src/orchestration/intake_dispatch.py`
+        (`new_session_id`) and reaches this Lambda through an IAM-gated direct
+        invocation. It is identified by its `ingress` provenance marker rather
+        than its channel, because it deliberately emits ChannelType.WEBCHAT so
+        its rows stay indistinguishable from browser-started ones (see
+        `channels/gateway_api.py`).
+      - Slack's session id IS the thread timestamp Slack assigns
+        (`channels/slack.py`), so first contact on a thread must still create
+        the row or Slack chat stops working entirely.
+    """
+    if message.platform_data.get("ingress") == GATEWAY_API_SOURCE:
+        return True
+    return message.channel != ChannelType.WEBCHAT
+
+
 def get_or_create_session(session_id, connection_id, message, now):
     org_id = str(message.platform_data.get("org_id", "") or "")
     tenant_id = str(message.platform_data.get("tenant_id", "") or org_id)
@@ -1524,6 +1684,17 @@ def get_or_create_session(session_id, connection_id, message, now):
 
     if resp.get("Item"):
         return verify_and_rebind(resp["Item"])
+
+    # #5615 (S16): an unknown id on the browser path was never issued by us.
+    # Refuse with the SAME error the ownership check raises, so the response
+    # still cannot distinguish "never existed" from "someone else's" — keeping
+    # this endpoint from becoming an oracle for enumerating session ids.
+    if not _client_may_name_a_new_session(message):
+        logger.warning(
+            "OWNERSHIP REFUSED session=%s: unknown id on a channel with server-issued ids",
+            session_id,
+        )
+        raise SessionOwnershipError(session_id)
 
     item = {
         "session_id": session_id,
