@@ -112,9 +112,20 @@ class TaskDelivery:
             if not isinstance(envelope, dict) or not isinstance(envelope.get("message_id"), str) or not envelope["message_id"]:
                 raise TaskDeliveryError("invalid_task")
             digest = envelope_digest(envelope)
-            pending = self.store._read(f"INVOCATION#{envelope['message_id']}", "DISPATCH")
-            if not pending or pending.get("envelope_digest") != {"S": digest}:
-                raise TaskDeliveryError("invalid_task")
+            if envelope.get("kind") == "adp.task":
+                from src.tasks.store import TaskStore, TaskStoreError
+
+                try:
+                    work = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table).resolve_work(
+                        envelope.get("dispatch_id", ""), expected_kind="dispatch")
+                    if work.get("envelope") != envelope:
+                        raise TaskDeliveryError("invalid_task")
+                except TaskStoreError:
+                    raise TaskDeliveryError("invalid_task") from None
+            else:
+                pending = self.store._read(f"INVOCATION#{envelope['message_id']}", "DISPATCH")
+                if not pending or pending.get("envelope_digest") != {"S": digest}:
+                    raise TaskDeliveryError("invalid_task")
             # Count from before receive: an underestimated visibility window is
             # safe; counting from a slow response could authorize an old receipt.
             assigned = {

@@ -66,6 +66,7 @@ UNIT_MODULES = [
     # scheduled reconciler (STS producer proof), not a TokenReview-bound pod, and
     # recovery holds a distinct role allowlist from dispatch.
     "src.agentauth.task_dispatch_routes",
+    "src.agentauth.task_runtime_routes",
     "src.agentauth.artifact_service",
     "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",
