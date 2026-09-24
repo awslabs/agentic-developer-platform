@@ -12,8 +12,31 @@ nothing. A concurrency test there passes whether or not the lock is present, so 
 distinguish the fix from the defect — the one thing it is supposed to check. This file
 follows the module's existing convention for tests that need a real server
 (``test_installation_postgres.py``, ``test_controller_management_postgres.py``): skipped
-unless ``SUPERPLANE_TEST_POSTGRES_URL`` or ``pgserver`` is available, and run by domain
-CI.
+unless ``SUPERPLANE_TEST_POSTGRES_URL`` or ``pgserver`` is available.
+
+WHERE IT ACTUALLY RUNS TODAY — NOWHERE AUTOMATED, AND THAT IS WORTH KNOWING
+--------------------------------------------------------------------------
+``superplane-domain-ci.yml`` installs neither ``pgserver`` nor any PostgreSQL, so this
+file SKIPS in CI exactly as it does on a developer laptop. The sibling files above say
+"installed by domain CI" in their skip reason; that is not true of this module's lane —
+only ``harness-jobs-ci.yml`` installs ``pgserver``, for a different package. The skip
+reason below therefore does not repeat the claim.
+
+So the concurrency guarantee is NOT established by any automated lane at present. Run it
+deliberately, either way:
+
+    pip install pgserver          # needs Python <= 3.12; no 3.13 wheel exists
+    python -m pytest tests/test_deployment_quota_concurrency_postgres.py
+
+    # or against a disposable server you already have:
+    SUPERPLANE_TEST_POSTGRES_URL=postgresql+asyncpg://... python -m pytest ...
+
+The alternative to writing it this way was to write no contended test at all, or to write
+one on SQLite that passes unconditionally. Both are worse: this one fails honestly the
+moment someone runs it against a database, and the source-level lock assertion in
+``test_deployment_quota_and_isolation.py`` catches removal of the lock in the meantime.
+Wiring a pgserver step into the domain lane is a CI-ownership change outside this issue's
+scope (it would need Python pinned <= 3.12 for the whole lane).
 
 The service layer is called directly rather than through HTTP. The contended resource is
 the workspace row, and going through the app would add its own session management between
@@ -39,7 +62,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 pytestmark = pytest.mark.skipif(
     not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL")
     and importlib.util.find_spec("pgserver") is None,
-    reason="requires pgserver (installed by domain CI) or a disposable PostgreSQL URL",
+    reason="requires pgserver (pip install pgserver, Python <= 3.12) or "
+    "SUPERPLANE_TEST_POSTGRES_URL; no CI lane for this module provides either",
 )
 
 ORG_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-00000000000a")
