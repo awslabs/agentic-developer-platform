@@ -20,14 +20,14 @@
       "Effect": "Allow",
       "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
       "Resource": "${authority_table_arn}",
-      "Condition": {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["TENANT#*", "TASK_CAPACITY#*", "TASK_WORK_ID#*", "PODTASK#*"]}}
+      "Condition": {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["TENANT#*", "TASK_CAPACITY#*", "TASK_WORK_ID#*", "PODTASK#*", "TASK_ADMISSION_CLEANUP#*"]}}
     },
     {
       "Sid": "RetainedTaskLocatorCleanup",
       "Effect": "Allow",
       "Action": ["dynamodb:Query", "dynamodb:DeleteItem"],
       "Resource": "${authority_table_arn}",
-      "Condition": {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["TASK_WORK_ID#*"]}}
+      "Condition": {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["TASK_WORK_ID#*", "TASK_ADMISSION_CLEANUP#*"]}}
     },
     {
       "Sid": "TaskArtifactObjects",

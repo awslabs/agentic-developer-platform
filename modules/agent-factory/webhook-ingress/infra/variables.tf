@@ -523,11 +523,7 @@ variable "agent_control_enabled" {
 # #5222: pause/resume require this protected path and configured signing keys.
 # Keep activation explicit; distributing control keys must not bypass the
 # worker isolation/readiness gates in #5195/#5210.
-variable "task_api_admission_enabled" {
-  description = "Enable Task API acceptance/publication only after storage, IAM, and consumer qualification. Default-off."
-  type        = bool
-  default     = false
-}
+
 
 variable "task_api_recovery_enabled" {
   description = "Enable the independent 60-second task recovery schedule and adapters. Default-off."

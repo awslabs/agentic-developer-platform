@@ -272,7 +272,10 @@ async def finalize(request: Request):
     identity = await authenticate_task_attempt(request)
     body = await parse(request, Finalize, 65536)
     bind(body.attempt, identity)
-    return http.ok(await run_in_threadpool(TaskCommands(get_store().repository).finalize, identity, body.model_dump(exclude_unset=True)), status=200)
+    repository = get_store().repository
+    result = await run_in_threadpool(TaskCommands(repository).finalize, identity, body.model_dump(exclude_unset=True))
+    await settle_admission_headroom(repository, identity)
+    return http.ok(result, status=200)
 
 
 @router.post("/internal/v1/agent/task/settlement", dependencies=[Depends(require_agent_transport)])
@@ -289,6 +292,19 @@ async def settlement(request: Request):
         "generation": identity.generation,
     }:
         raise errors.not_found()
-    return http.ok(
-        await run_in_threadpool(TaskCommands(get_store().repository).settlement, identity, body.model_dump(exclude_unset=True)), status=200
-    )
+    repository = get_store().repository
+    result = await run_in_threadpool(TaskCommands(repository).settlement, identity, body.model_dump(exclude_unset=True))
+    await settle_admission_headroom(repository, identity)
+    return http.ok(result, status=200)
+
+
+async def settle_admission_headroom(repository, identity):
+    from src.agentauth.task_budget_settlement import settle_task_admission
+    import logging
+    try:
+        await settle_task_admission(repository, identity)
+    except Exception as exc:
+        # Preserve committed terminal evidence and the conservative hold. The
+        # host's settlement retry can reconcile; this never retries inference.
+        logging.getLogger(__name__).warning("Task admission settlement remains unconfirmed",
+            extra={"task_id": identity.task_id, "exception_type": type(exc).__name__})
