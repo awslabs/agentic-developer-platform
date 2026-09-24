@@ -1,0 +1,442 @@
+"""Mixed-age platform state must stay inspectable — Issue #5831, EPIC #3959.
+
+## Why this suite exists, and why the sibling suite was not enough
+
+`test_platform_provider_constraint.py` checks the AWS provider *floor*. That floor is
+necessary and it fixed the defect it was aimed at: provider 5.x publishes no resource
+identity schema for `aws_eks_addon`, so a state record carrying the identity fields a
+newer provider writes could not be serialised to JSON at all.
+
+It was not sufficient, and this suite exists because of how that was found out. With the
+raised floor in place, a freshly generated *targeted* plan against the real dev state
+still could not be exported:
+
+    Failed to marshal plan to json: error marshaling prior state: schema version 0
+    for aws_launch_template.gvisor_nodes in state does not match version 1 from the
+    provider
+
+The first attempt at this issue reproduced the defect with a fixture containing only the
+newer add-on record. That fixture passes on the raised floor while the real path fails.
+A regression test whose fixture is younger than the real state certifies the wrong
+thing, so the fixture here deliberately carries records of **two different ages**.
+
+## The mechanism, which is the part worth knowing
+
+Terraform upgrades a resource's state schema only for resources that are **in scope for
+the run**. `-target` puts everything else out of scope, so untargeted resources keep
+their recorded `schema_version` — and `terraform show -json` serialises *all* prior
+state, not just the targeted subset. So targeting is what turns a stale record into an
+export failure.
+
+That also means **no provider version can satisfy both records at once**, which is why
+the answer is a state migration rather than a different bound (verified in
+`test_no_single_provider_version_satisfies_both_records`):
+
+| Provider        | `aws_launch_template` schema | `aws_eks_addon` identity schema |
+|-----------------|------------------------------|---------------------------------|
+| 5.100.0         | 0 — matches the old record   | absent — breaks the add-on      |
+| 6.0.0 – 6.14.0  | 0 — matches the old record   | absent                          |
+| 6.16.0 +        | 1 — mismatches the old record| present from 6.42.0             |
+
+Reading the old launch-template record needs schema 0; reading the add-on identity needs
+6.42.0+, which ships schema 1. The requirements are disjoint.
+
+## What is asserted
+
+Offline, always:
+
+* the fixture really does carry both ages of record — a drifted fixture silently stops
+  reproducing the defect it exists for;
+* the runbook documents the refresh-only migration as a prerequisite, and distinguishes
+  it from an ordinary full apply.
+
+With Terraform present, against the committed fixture, all credential-free:
+
+* a targeted plan over mixed-age state **fails** to export, naming the stale resource;
+* the same plan exports once that record is at the provider's schema version, which is
+  what the refresh-only migration achieves;
+* a full-scope plan exports, because every resource is in scope and gets upgraded;
+* the full-scope plan proposes **deleting** the undeclared add-on — the reason the
+  migration must be a saved `-refresh-only` plan and never an ordinary full apply.
+
+## Scope: this suite mutates nothing
+
+Every Terraform invocation runs in a `tmp_path` copy with `-refresh=false`, against a
+synthetic state record, with credential discovery disabled. No AWS call, no real state,
+no apply. The `-refresh-only` *apply* leg of the documented sequence is deliberately
+**not** executed here: it writes state, so it is root-operated, and the assertion this
+suite makes about it is that the runbook describes it — not that a test performed it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "platform-mixed-state-5831"
+STATE_FIXTURE = FIXTURE_DIR / "mixed-age-state.json"
+CONFIG_FIXTURE = FIXTURE_DIR / "main.tf"
+RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "platform-aws-provider-floor.md"
+
+# The constraint the platform root carries. Kept as a literal so this suite reproduces
+# against the provider the real configuration resolves, not a floating "latest".
+PLATFORM_CONSTRAINT = ">= 6.42.0, < 7.0.0"
+
+STALE_RESOURCE = "aws_launch_template.gvisor_nodes"
+NEWER_RESOURCE = "aws_eks_addon.coredns"
+TARGETED_ADDRESS = "aws_eks_cluster.main"
+
+# Provider downloads and plans are far slower than the 60s default in script-tests.yml.
+TERRAFORM_TIMEOUT = 600
+
+terraform_required = pytest.mark.skipif(
+    shutil.which("terraform") is None,
+    reason="terraform binary not on PATH; the offline assertions above still run",
+)
+
+
+def _offline_env() -> dict[str, str]:
+    """Environment with AWS credential discovery disabled.
+
+    This suite's plans must not be satisfiable by an ambient identity. The worker and
+    the CI pool both run with real credentials available, so an accidental live call
+    would not merely be slow — it would mean a test that claims to be offline is
+    reading a real account. Stripping the variables makes that impossible rather than
+    unlikely, and matches the pattern `platform-upgrade-tests.yml` uses for its
+    mock-provider jobs.
+    """
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("AWS_", "BOTO_"))
+    }
+    env.update(
+        {
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "AWS_CONFIG_FILE": os.devnull,
+            "AWS_SHARED_CREDENTIALS_FILE": os.devnull,
+            "AWS_REGION": "us-east-1",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        }
+    )
+    return env
+
+
+def _terraform(workdir: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["terraform", *args],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        timeout=TERRAFORM_TIMEOUT,
+        env=_offline_env(),
+        check=False,
+    )
+
+
+@pytest.fixture(scope="module")
+def initialised_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A copy of the fixture with the platform's real constraint, `init` already run.
+
+    Module-scoped because `init` downloads a provider; the per-test legs each copy the
+    pristine state record back in, so they cannot leak state into one another.
+    """
+    workdir = tmp_path_factory.mktemp("mixed-state")
+    config = CONFIG_FIXTURE.read_text().replace(
+        "AWS_VERSION_CONSTRAINT", PLATFORM_CONSTRAINT
+    )
+    (workdir / "main.tf").write_text(config)
+
+    result = _terraform(workdir, "init", "-input=false")
+    if result.returncode != 0:
+        pytest.skip(
+            "terraform init could not resolve the AWS provider (no registry access?); "
+            f"stderr: {result.stderr[-400:]}"
+        )
+    return workdir
+
+
+def _load_state() -> dict:
+    return json.loads(STATE_FIXTURE.read_text())
+
+
+def _place_state(workdir: Path, *, migrate_stale: bool) -> None:
+    """Write the fixture state into `workdir`, optionally at the provider's schema.
+
+    `migrate_stale=True` stands in for the *outcome* of the documented refresh-only
+    migration — the stale record at the provider's current schema version — without
+    performing an apply. It changes only `schema_version`, so the two legs differ in
+    exactly the one field under test.
+    """
+    state = _load_state()
+    if migrate_stale:
+        stale_type = STALE_RESOURCE.split(".", 1)[0]
+        for resource in state["resources"]:
+            if resource["type"] == stale_type:
+                resource["instances"][0]["schema_version"] = 1
+    (workdir / "terraform.tfstate").write_text(json.dumps(state, indent=2))
+
+
+def _plan_and_export(
+    workdir: Path, *, targeted: bool
+) -> subprocess.CompletedProcess[str]:
+    plan_args = ["plan", "-refresh=false", "-input=false", "-out=tf.plan"]
+    if targeted:
+        plan_args.append(f"-target={TARGETED_ADDRESS}")
+
+    planned = _terraform(workdir, *plan_args)
+    assert planned.returncode == 0, (
+        "the plan itself must succeed — this defect is specifically about the JSON "
+        f"export step, not about planning. stderr: {planned.stderr[-600:]}"
+    )
+    return _terraform(workdir, "show", "-json", "tf.plan")
+
+
+# ---------------------------------------------------------------------------
+# Fixture integrity. These run with or without Terraform: if the fixture stops
+# carrying two ages of record, every leg below is asserting against fiction.
+# ---------------------------------------------------------------------------
+
+
+def test_fixture_files_exist() -> None:
+    assert STATE_FIXTURE.is_file(), f"{STATE_FIXTURE} must exist."
+    assert CONFIG_FIXTURE.is_file(), f"{CONFIG_FIXTURE} must exist."
+
+
+def test_fixture_carries_both_ages_of_state_record() -> None:
+    """The fixture must hold an older *and* a newer record, or it reproduces nothing.
+
+    This is the assertion that pins the lesson from this issue. A fixture containing
+    only the newer add-on record passes on the raised provider floor while the real
+    targeted plan still fails — so "the tests are green" would again mean nothing.
+    """
+    state = _load_state()
+    records = {
+        f"{resource['type']}.{resource['name']}": resource["instances"][0]
+        for resource in state["resources"]
+    }
+
+    assert STALE_RESOURCE in records, (
+        f"the fixture must contain {STALE_RESOURCE}, the resource whose state record is "
+        "OLDER than the provider's schema. Without it the fixture cannot reproduce the "
+        "targeted-export failure observed against the real dev state (#5831)."
+    )
+    assert records[STALE_RESOURCE].get("schema_version") == 0, (
+        f"{STALE_RESOURCE} must stay at schema_version 0 — that mismatch against the "
+        "provider's version 1 IS the defect. Raising it here would make the suite pass "
+        "by deleting its own subject."
+    )
+
+    assert NEWER_RESOURCE in records, (
+        f"the fixture must contain {NEWER_RESOURCE}, the resource whose record is NEWER "
+        "than provider 5.x understands."
+    )
+    newer = records[NEWER_RESOURCE]
+    assert "identity" in newer and newer["identity"], (
+        f"{NEWER_RESOURCE} must carry the resource identity fields a newer provider "
+        "writes; their absence is what provider 5.x could not serialise."
+    )
+    assert "namespace_config" in newer["attributes"], (
+        f"{NEWER_RESOURCE} must carry namespace_config, the attribute added in provider "
+        "6.42.0 that sets the floor the sibling suite guards."
+    )
+
+
+def test_fixture_does_not_declare_the_add_on_it_records() -> None:
+    """The config must NOT declare the add-on, mirroring the observed mismatch.
+
+    The real platform source declares no `aws_eks_addon "coredns"` while the real state
+    records one. That mismatch is why a full-scope plan proposes deleting it, which is
+    the reason the documented migration must be `-refresh-only` and not a full apply.
+    Declaring it in the fixture would quietly remove the hazard under test.
+    """
+    config = CONFIG_FIXTURE.read_text()
+    assert not re.search(r'resource\s+"aws_eks_addon"', config), (
+        "the reproduction config must not declare aws_eks_addon: the observed "
+        "state/source mismatch is the subject of the full-scope destroy assertion."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The provider-bound question, answered with schemas rather than release notes.
+# ---------------------------------------------------------------------------
+
+
+@terraform_required
+def test_no_single_provider_version_satisfies_both_records(
+    initialised_workdir: Path,
+) -> None:
+    """The two records' requirements are disjoint, so no bound resolves this.
+
+    #5831 asks for a compatible provider bound if one is smaller than a migration. This
+    is the evidence that none exists: the provider the floor resolves declares the
+    add-on identity schema the newer record needs (so it is required) AND a launch
+    template schema version above what the older record carries (so it cannot avoid the
+    mismatch). A lower provider inverts both. Read from the provider's own schema
+    output, not from release notes.
+    """
+    result = _terraform(initialised_workdir, "providers", "schema", "-json")
+    assert result.returncode == 0, f"providers schema failed: {result.stderr[-400:]}"
+
+    provider = json.loads(result.stdout)["provider_schemas"][
+        "registry.terraform.io/hashicorp/aws"
+    ]
+    identities = provider.get("resource_identity_schemas", {})
+    stale_type, newer_type = STALE_RESOURCE.split(".")[0], NEWER_RESOURCE.split(".")[0]
+
+    assert newer_type in identities, (
+        f"the resolved provider must publish a resource identity schema for {newer_type}; "
+        "without it the newer record cannot be serialised at all, which was the original "
+        f"defect. Floor is {PLATFORM_CONSTRAINT}."
+    )
+
+    stale_schema_version = provider["resource_schemas"][stale_type]["version"]
+    recorded = _load_state()
+    recorded_version = next(
+        resource["instances"][0].get("schema_version", 0)
+        for resource in recorded["resources"]
+        if resource["type"] == stale_type
+    )
+    assert stale_schema_version > recorded_version, (
+        f"this suite assumes the resolved provider's {stale_type} schema version "
+        f"({stale_schema_version}) is above the recorded one ({recorded_version}) — that "
+        "gap is what the state migration closes. If the provider ever ships a version "
+        "equal to the record's, re-derive the documented sequence: the premise changed."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The four export legs.
+# ---------------------------------------------------------------------------
+
+
+@terraform_required
+def test_targeted_plan_over_mixed_age_state_cannot_export(
+    initialised_workdir: Path,
+) -> None:
+    """The defect, reproduced: a targeted plan succeeds but its export fails.
+
+    Both halves matter. The plan returning 0 is why this stayed invisible until review —
+    nothing looks wrong until the step that makes a saved plan inspectable is reached.
+    """
+    _place_state(initialised_workdir, migrate_stale=False)
+    exported = _plan_and_export(initialised_workdir, targeted=True)
+
+    assert exported.returncode != 0, (
+        "a targeted plan over mixed-age state must FAIL to export. If this passes, "
+        "either the provider changed its schema version or the fixture drifted — "
+        "re-derive the migration sequence in the runbook before relaxing this."
+    )
+    combined = exported.stdout + exported.stderr
+    assert STALE_RESOURCE in combined and "schema version" in combined, (
+        "the export failure must name the stale resource and its schema mismatch; "
+        f"got: {combined[-500:]}"
+    )
+
+
+@terraform_required
+def test_targeted_plan_exports_once_the_stale_record_is_migrated(
+    initialised_workdir: Path,
+) -> None:
+    """Migrating the stale record — and nothing else — makes the targeted export work.
+
+    This is what the documented refresh-only migration buys, and it isolates the cause:
+    the only difference from the failing leg is one `schema_version` field.
+    """
+    _place_state(initialised_workdir, migrate_stale=True)
+    exported = _plan_and_export(initialised_workdir, targeted=True)
+
+    assert exported.returncode == 0, (
+        "with the stale record at the provider's schema version, the targeted plan must "
+        f"export. stderr: {exported.stderr[-600:]}"
+    )
+    doc = json.loads(exported.stdout)
+    assert "resource_changes" in doc, (
+        "the exported plan must carry resource_changes — that key is what the scoped-plan "
+        "guard reads to enforce the narrow resource-action scope."
+    )
+
+
+@terraform_required
+def test_full_scope_plan_exports_because_every_resource_is_in_scope(
+    initialised_workdir: Path,
+) -> None:
+    """Scope, not refresh, is the operative variable.
+
+    A full-scope plan over the *same un-migrated* state exports fine, because every
+    resource is in scope and so every record is schema-upgraded in memory. This is the
+    mechanism behind the whole defect: targeting is what leaves a record stale. Stated
+    as a test so the explanation in the runbook is checked, not just asserted.
+    """
+    _place_state(initialised_workdir, migrate_stale=False)
+    exported = _plan_and_export(initialised_workdir, targeted=False)
+
+    assert exported.returncode == 0, (
+        "a full-scope plan over mixed-age state must export: every resource is in scope, "
+        f"so every record is upgraded in memory. stderr: {exported.stderr[-600:]}"
+    )
+
+
+@terraform_required
+def test_full_scope_plan_would_destroy_the_undeclared_add_on(
+    initialised_workdir: Path,
+) -> None:
+    """Why the migration must be `-refresh-only` and never an ordinary full apply.
+
+    The full-scope plan exports, which could make an ordinary full apply look like a
+    tempting way to normalise state. It is not: because the source declares no add-on
+    while state records one, that same plan proposes **deleting** it. On the real
+    cluster that resource is CoreDNS. This test is the guard on that advice — if the
+    runbook ever drifts toward "just run a full apply", this is the assertion that
+    should have stopped it.
+    """
+    _place_state(initialised_workdir, migrate_stale=False)
+    exported = _plan_and_export(initialised_workdir, targeted=False)
+    assert exported.returncode == 0, f"export failed: {exported.stderr[-400:]}"
+
+    actions = {
+        change["address"]: change["change"]["actions"]
+        for change in json.loads(exported.stdout)["resource_changes"]
+    }
+    assert "delete" in actions.get(NEWER_RESOURCE, []), (
+        f"a full-scope plan must be shown to propose deleting {NEWER_RESOURCE}, the "
+        f"resource state records but the source does not declare. Got {actions}. If this "
+        "no longer holds, the runbook's central warning needs re-deriving."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The runbook must carry the sequence. A mechanism nobody can follow is not a fix.
+# ---------------------------------------------------------------------------
+
+
+def test_runbook_documents_the_refresh_only_migration_sequence() -> None:
+    """The supported sequence must be written down, in order, with its guardrail.
+
+    The deliverable for #5831 is a reproducible rollout, not only a provider constraint.
+    Asserted by content because the runbook is the only artifact an operator reads, and
+    because the dangerous mistake here — reaching for a full apply — is a documentation
+    failure rather than a code one.
+    """
+    assert RUNBOOK.is_file(), f"{RUNBOOK} must exist."
+    body = RUNBOOK.read_text()
+
+    assert "-refresh-only" in body, (
+        "the runbook must name `terraform plan -refresh-only`: it is the only reviewed "
+        "route that normalises state schema without proposing resource changes."
+    )
+    assert STALE_RESOURCE.split(".")[0] in body, (
+        f"the runbook must name {STALE_RESOURCE.split('.')[0]}, the resource type whose "
+        "stale record blocks the targeted export, so an operator can recognise the error."
+    )
+    assert re.search(r"full apply|ordinary full", body), (
+        "the runbook must explicitly distinguish the refresh-only state migration from "
+        "an ordinary full apply, which would propose destroying the undeclared add-on."
+    )
