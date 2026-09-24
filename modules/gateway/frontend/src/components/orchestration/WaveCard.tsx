@@ -25,6 +25,7 @@ interface WaveCardProps {
 }
 
 export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecution }: WaveCardProps) {
+  const dependencyLabel = (epic: string, ref: string) => graph.wave_metadata?.find((item) => item.epic_ref === epic && item.wave_ref === ref)?.title || waveLabel(ref);
   const counts = countByDisplayState(wave.nodes);
   const stories = countStories(wave.nodes);
   const gates = wave.nodes.filter((node) => node.kind === 'gate').length;
@@ -44,6 +45,7 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
       key={node.id}
       node={node}
       dependencies={nodeDependencies(graph, node)}
+      dependencyWaveTitle={(dependency) => dependencyLabel(dependency.epic_ref, dependency.wave_ref)}
       controls={<GateControls node={node} flowId={graph.flow_id} />}
       execution={renderExecution?.(node)}
     />
@@ -67,7 +69,7 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
           <span aria-hidden="true" className="mt-0.5 text-gray-500">{expanded ? '▾' : '▸'}</span>
           <span className="min-w-0 flex-1 space-y-1">
             <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span className="text-base font-semibold text-gray-900 dark:text-gray-100">{waveLabel(wave.waveRef)}</span>
+              <span className="text-base font-semibold text-gray-900 dark:text-gray-100">{wave.title || waveLabel(wave.waveRef)}</span>
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                 {stories.total > 0
                   ? <>{stories.total} {storyType}{stories.total === 1 ? 'story' : 'stories'}</>
@@ -83,6 +85,7 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
                 {status}
               </span>
             </span>
+            {wave.description && <span className="block text-sm font-normal text-gray-600 dark:text-gray-300">{wave.description}</span>}
             <span className="block text-xs font-normal text-gray-500 dark:text-gray-400">
               {stories.total > 0 && <>{stories.complete} of {stories.total} stories complete · {stories.implementation} implementation · {stories.evaluation} evaluation · </>}
               {gates} approval {gates === 1 ? 'gate' : 'gates'}
@@ -90,7 +93,7 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
             </span>
             <span className="block text-xs font-normal text-gray-600 dark:text-gray-400">
               {wave.dependsOn.length
-                ? `Dependencies in ${wave.dependsOn.map((dependency) => `${dependency.epicRef === epicRef ? '' : dependency.epicRef + ' / '}${waveLabel(dependency.waveRef)}`).join(', ')}`
+                ? `Dependencies in ${wave.dependsOn.map((dependency) => `${dependency.epicRef === epicRef ? '' : dependency.epicRef + ' / '}${dependencyLabel(dependency.epicRef, dependency.waveRef)}`).join(', ')}`
                 : 'No dependencies on other waves'}
             </span>
           </span>

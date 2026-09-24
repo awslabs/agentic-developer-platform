@@ -970,3 +970,41 @@ it('shows the persisted per-flow pause state alongside graph progress', async ()
   expect(await screen.findByText('Paused')).toBeInTheDocument();
   expect(screen.getByText(/Resume preserves progress and attempts/)).toBeInTheDocument();
 });
+
+
+it('shows wave names and descriptions while collapsed and resolves dependency names', async () => {
+  const a = makeNode({ id: 'a', node_ref: 'a' });
+  const b = makeNode({ id: 'b', node_ref: 'b', wave_ref: 'wave-2' });
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    nodes: [a, b],
+    edges: [{ from_node_id: 'a', to_node_id: 'b' }],
+    wave_metadata: [
+      { epic_ref: a.epic_ref, wave_ref: a.wave_ref, title: 'Contracts and design', description: 'Freeze the contracts and verify the baseline.' },
+      { epic_ref: b.epic_ref, wave_ref: b.wave_ref, title: 'Worker execution', description: 'Build and qualify the worker.' },
+    ],
+  }));
+  renderGraph();
+  expect(await screen.findByText('Contracts and design')).toBeVisible();
+  expect(screen.getByText('Freeze the contracts and verify the baseline.')).toBeVisible();
+  expect(screen.getByText('Dependencies in Contracts and design')).toBeVisible();
+  const wave = screen.getByTestId(`wave-${a.epic_ref}-${a.wave_ref}`);
+  const button = within(wave).getByRole('button', { name: /Contracts and design/ });
+  if (button.getAttribute('aria-expanded') === 'true') fireEvent.click(button);
+  expect(button).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByText('Freeze the contracts and verify the baseline.')).toBeVisible();
+});
+
+
+it('shows the epic purpose directly below its readable heading', async () => {
+  const node = makeNode();
+  const description = 'Services need to submit tasks without a GitHub issue.\n\nProvide durable acceptance and retained progress, preserving tenant isolation.';
+  mockGetFlowGraph.mockResolvedValue(makeGraph({
+    nodes: [node],
+    epic_metadata: [{ epic_ref: node.epic_ref, title: 'External task invocation', description }],
+  }));
+  renderGraph();
+  const heading = await screen.findByRole('heading', { name: 'External task invocation' });
+  expect(heading.nextElementSibling).toHaveTextContent('Services need to submit tasks without a GitHub issue.');
+  expect(heading.nextElementSibling).toHaveTextContent('preserving tenant isolation.');
+  expect(heading.nextElementSibling).toBeVisible();
+});

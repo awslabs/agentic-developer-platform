@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits
-from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
+from src.orchestration.proposal import EpicDisplay, EpicMetadata, LoopProposal, ProposedEdge, ProposedNode, WaveDisplay, WaveMetadata
 
 __all__ = [
     "MAX_OUTCOMES",
@@ -149,6 +149,8 @@ class PlanningInputs:
     # sourcing it from the caller's own identity means the two can never disagree and
     # the refusal is unreachable rather than merely handled.
     org_id: str
+    wave_display: WaveDisplay | None = None
+    epic_display: EpicDisplay | None = None
     repository: ResolvedRepository | None = None
     # The conversation's LAST ACTIVITY, as a unix epoch — the anchor a proposed
     # grant's expiry is measured from. Named for what it must be rather than for
@@ -401,6 +403,23 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
         # (`HASH_EXCLUDED_FIELDS`), so wording changes here cannot invalidate a
         # revision a human already bound their acceptance to.
         description=inputs.intent.strip()[:500] or None,
+        epic_metadata=[
+            EpicMetadata(
+                epic_ref=DEFAULT_EPIC,
+                title=inputs.epic_display.title if inputs.epic_display else inputs.title.strip()[:200],
+                description=inputs.epic_display.description if inputs.epic_display else inputs.intent.strip()[:3000] or inputs.title,
+            )
+        ],
+        wave_metadata=[
+            WaveMetadata(
+                epic_ref=DEFAULT_EPIC,
+                wave_ref=FIRST_WAVE,
+                # New conversations carry model-authored display text. Older
+                # drafts remain usable without a naming question or another call.
+                title=inputs.wave_display.title if inputs.wave_display else inputs.title.strip()[:120],
+                description=inputs.wave_display.description if inputs.wave_display else inputs.intent.strip()[:500] or None,
+            )
+        ],
         nodes=nodes,
         edges=edges,
         proposed_execution_policy=(

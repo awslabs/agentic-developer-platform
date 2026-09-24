@@ -2598,3 +2598,13 @@ def test_plan_with_missing_attribution_does_not_claim_acceptance(server):
     code, result = run_cli(["plans", FLOW_ID])
     assert code == 0 and result["detail"]["accepted_version"] is None
     assert result["detail"]["acceptance_status"] == "unknown"
+
+
+def test_wave_preview_displays_metadata_and_preserves_legacy_fallback():
+    waves = [
+        {"epic_ref": "epic-1", "wave_ref": "wave-1", "stage": 0, "title": "Contracts", "description": "Freeze contracts."},
+        {"epic_ref": "epic-2", "wave_ref": "wave-1", "stage": 0},
+    ]
+    text = "\n".join(cli.wave_lines(waves))
+    assert "stage 0 (concurrent): Contracts (epic-1/wave-1), epic-2/wave-1" in text
+    assert "Freeze contracts." in text

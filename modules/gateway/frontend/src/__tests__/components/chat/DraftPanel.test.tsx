@@ -100,3 +100,15 @@ describe('DraftPanel', () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+
+it('displays model-authored epic and wave purposes without asking for text input', () => {
+  render(<DraftPanel draft={{
+    epicDisplay: { title: 'External tasks', description: 'Services need a durable task lifecycle.' },
+    waveDisplay: { title: 'Task dispatch', description: 'Submit and dispatch tasks reliably.' },
+  }} />);
+  expect(screen.getByText('External tasks')).toBeVisible();
+  expect(screen.getByText('Services need a durable task lifecycle.')).toBeVisible();
+  expect(screen.getByText('Submit and dispatch tasks reliably.')).toBeVisible();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+});

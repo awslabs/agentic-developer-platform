@@ -322,3 +322,53 @@ Reads need usage-read; planning and inert registration need plan-draft;
 approvals need plan-approve. A flow belonging to another
 organization reports *not found* rather than *forbidden*, so identifiers cannot be
 enumerated.
+
+
+### Wave display names and descriptions
+
+Proposals can include `wave_metadata` alongside `nodes` and `edges`:
+
+```json
+"wave_metadata": [
+  {
+    "epic_ref": "epic-1",
+    "wave_ref": "wave-1",
+    "title": "API and persistence",
+    "description": "Build durable task storage and authenticated APIs; evaluate authorization and storage."
+  }
+]
+```
+
+Metadata matches both refs, which must identify a wave in the proposal. Each pair
+can occur once. Titles are 1–120 characters; descriptions, when supplied, are
+1–500 characters. Blank strings are rejected. Names and descriptions appear in
+wave previews, graph cards and flow summaries. Plans without metadata keep their
+existing labels. AI-DLC emits this same format for new plans.
+
+For an unapproved registered draft, use `draft preview` then `draft save` with the
+full proposal to improve wording. Keep addresses and edges unchanged. Display
+metadata is excluded from the execution plan hash but included in the draft
+preview hash, so saving is bound to the exact wording reviewed. Saving does not
+approve execution. Full replacement plans retain metadata for retained waves and
+remove entries for waves no longer present.
+
+
+Epic descriptions use an additional optional `epic_metadata` list:
+
+```json
+"epic_metadata": [
+  {
+    "epic_ref": "epic-1",
+    "title": "External task invocation",
+    "description": "External services need to submit work and retrieve results without a GitHub issue. Provide durable task acceptance, retained progress and follow-up input while preserving tenant isolation."
+  }
+]
+```
+
+Epic titles are 1–200 characters and descriptions are 1–3000 characters, both
+nonblank. Use short paragraphs to explain the user need, what is being built,
+why it matters and the key scope boundaries. The graph shows the description
+directly below the epic heading. Both metadata lists share the same hash and
+revision rules above. AI-DLC and the hosted intent-refinement model choose this
+wording from the known intent and requirements; users review the generated plan
+without filling in naming fields or answering a separate naming question.

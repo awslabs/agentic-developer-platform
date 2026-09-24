@@ -341,5 +341,50 @@
       "from_address": "task-api-5792/epic-5792/validation-v4/v4",
       "to_address": "task-api-5792/epic-5792/validation-v5/v5"
     }
+  ],
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "component-delivery",
+      "title": "Contracts and design",
+      "description": "Freeze the task API, lifecycle and data contracts, resolve implementation decisions, and establish the fixtures and evaluation manifest. V0 verifies the contract baseline."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v1",
+      "title": "API and persistence",
+      "description": "Build durable task storage, authenticated submission, recoverable dispatch, and status/progress reporting. V1 qualifies contracts, authorization and storage."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v2",
+      "title": "Worker execution",
+      "description": "Implement the task worker entrypoint and independent task agent in the existing worker image. V2 verifies task isolation and compatibility with the existing worker path."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v3",
+      "title": "Interaction and recovery",
+      "description": "Deliver follow-up input and cancellation to running tasks. V3 qualifies failure recovery, durable streaming and control behavior across the integrated components."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v4",
+      "title": "External integration",
+      "description": "Provide the external client example and bounded qualification tooling. V4 verifies live integration and coexistence with the existing platform."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v5",
+      "title": "Release acceptance",
+      "description": "Qualify rollout, rollback, cleanup and operational readiness using the integrated implementation and V4 evidence. V5 records release acceptance."
+    }
+  ],
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-5792",
+      "title": "Task API: external invocation and independent task agents",
+      "description": "External applications need to give ADP useful work and follow it through to a result without turning every request into a GitHub issue. This epic adds a Task API so a service can submit work, receive a stable task handle, observe live progress, provide follow-up input, request cancellation and retrieve the result. It must work for tenants with no GitHub integration.\n\nTasks will run through the existing ADP API Gateway, ingress Lambda, queue and worker infrastructure, using a separate task agent inside the existing worker image. Durable acceptance, idempotency, recoverable dispatch and retained progress let clients reconnect without losing accepted work or its history. Authentication, tenant isolation, model, budget and credential policies remain authoritative.\n\nThe delivery covers contracts, storage and APIs, worker execution, interaction and recovery, external integration, and release qualification. Each wave has an independent evaluation. Rollout must preserve accepted tasks and existing GitHub, Claude and Codex paths; retiring those paths is outside this epic."
+    }
   ]
 }

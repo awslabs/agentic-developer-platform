@@ -179,6 +179,8 @@ export interface SessionMeta {
  * optional because a draft fills in over the course of a conversation.
  */
 export interface IntentDraft {
+  waveDisplay?: { title: string; description: string };
+  epicDisplay?: { title: string; description: string };
   intent?: string;
   motivation?: string;
   outcomes?: string[];

@@ -1,10 +1,16 @@
 # Task API waves and evaluation definitions
 
+External applications need to give ADP useful work and follow it through to a result without turning every request into a GitHub issue. This epic adds a Task API so a service can submit work, receive a stable task handle, observe live progress, provide follow-up input, request cancellation and retrieve the result. It must work for tenants with no GitHub integration.
+
+Tasks will run through the existing ADP API Gateway, ingress Lambda, queue and worker infrastructure, using a separate task agent inside the existing worker image. Durable acceptance, idempotency, recoverable dispatch and retained progress let clients reconnect without losing accepted work or its history. Authentication, tenant isolation, model, budget and credential policies remain authoritative.
+
+The delivery covers contracts, storage and APIs, worker execution, interaction and recovery, external integration, and release qualification. Each wave has an independent evaluation. Rollout must preserve accepted tasks and existing GitHub, Claude and Codex paths; retiring those paths is outside this epic.
+
 ## Wave plan and evaluation ownership
 
 | Wave | Implementation stories | Evaluation |
 |---|---|---|
-| 1 — Contracts | [T0 #5793](https://github.com/aws-e/adp/issues/5793) | [V0 #5821](https://github.com/aws-e/adp/issues/5821) |
+| 1 — Contracts and design | [T0 #5793](https://github.com/aws-e/adp/issues/5793) | [V0 #5821](https://github.com/aws-e/adp/issues/5821) |
 | 2 — API and persistence | [T1 #5794](https://github.com/aws-e/adp/issues/5794), [T2 #5795](https://github.com/aws-e/adp/issues/5795), [T3 #5796](https://github.com/aws-e/adp/issues/5796), [T6 #5799](https://github.com/aws-e/adp/issues/5799) | [V1 #5802](https://github.com/aws-e/adp/issues/5802) |
 | 3 — Worker execution | [T4 #5797](https://github.com/aws-e/adp/issues/5797), [T5 #5798](https://github.com/aws-e/adp/issues/5798) | [V2 #5803](https://github.com/aws-e/adp/issues/5803) |
 | 4 — Interaction and recovery | [T7 #5800](https://github.com/aws-e/adp/issues/5800) | [V3 #5804](https://github.com/aws-e/adp/issues/5804) |
@@ -18,6 +24,20 @@ T0 → V0 establishes the start boundary. After V0 passes, implementation storie
 T0 owns the command/report/coverage manifest and runnable V0 checks. T1/T2/T3/T6 supply the V1 fixtures; T3/T4/T5/T6 supply V2; T1–T7 supply V3. T8 integrates those into the external client and bounded V4/V5 live/rollout tooling. V1–V3 no longer wait on T8 or a generic component-evidence barrier.
 
 Each evaluator records criterion outcomes and reproducible source/fixture/runner evidence. FAIL returns defects to the implementation owner and requires an independent rerun; NOT RUN/BLOCKED never completes the wave. This update defines planning and evaluation responsibilities; the existing flow remains paused with no accepted execution policy or newly granted live authority.
+
+### Display names and purpose
+
+Display metadata preserves the stable wave references used by node addresses.
+
+| Display name | Purpose | Stable wave ref |
+|---|---|---|
+| Contracts and design | Freeze the task API, lifecycle and data contracts, resolve implementation decisions, and establish the fixtures and evaluation manifest. V0 verifies the contract baseline. | `component-delivery` |
+| API and persistence | Build durable task storage, authenticated submission, recoverable dispatch, and status/progress reporting. V1 qualifies contracts, authorization and storage. | `validation-v1` |
+| Worker execution | Implement the task worker entrypoint and independent task agent in the existing worker image. V2 verifies task isolation and compatibility with the existing worker path. | `validation-v2` |
+| Interaction and recovery | Deliver follow-up input and cancellation to running tasks. V3 qualifies failure recovery, durable streaming and control behavior across the integrated components. | `validation-v3` |
+| External integration | Provide the external client example and bounded qualification tooling. V4 verifies live integration and coexistence with the existing platform. | `validation-v4` |
+| Release acceptance | Qualify rollout, rollback, cleanup and operational readiness using the integrated implementation and V4 evidence. V5 records release acceptance. | `validation-v5` |
+
 
 ## Evaluation execution contract
 
@@ -83,7 +103,9 @@ The GitHub epic and all 15 native children carry this wave plan. The existing
 ADP flow `1275a30d-a84d-4f98-9ddb-f461c5aeb2d1` (`task-api-5792`) was updated
 through `adp flow draft preview` and `adp flow draft save` on 2026-09-24, using the
 inert revision support merged in [#5829](https://github.com/aws-e/adp/pull/5829).
-The exact authored document remains [flow-proposal.json](flow-proposal.json).
+The authored document is [flow-proposal.json](flow-proposal.json). Its new epic
+and wave display metadata is prepared for a wording-only revision; the live
+publication state below still refers to version 2 until that revision is saved.
 
 The current draft is **version 2**, hash
 `40a150cd9f73865409e1a084be276ab93fc11b9701a28b764e8afc8307c6bdc9`.

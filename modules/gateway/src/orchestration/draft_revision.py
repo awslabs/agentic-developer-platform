@@ -140,7 +140,12 @@ def _base_matches(context: DraftContext, request: DraftRevisionRequest) -> bool:
 
 def draft_hash(proposal: LoopProposal) -> str:
     """Bind the complete reviewed document, including descriptive draft edits."""
-    document = json.dumps(proposal.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    payload = proposal.model_dump(mode="json")
+    # Preserve receipts and preview hashes created before display metadata existed.
+    for field in ("wave_metadata", "epic_metadata"):
+        if not payload.get(field):
+            payload.pop(field, None)
+    document = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(document.encode()).hexdigest()
 
 

@@ -1384,6 +1384,8 @@ class TestEndpoint:
             {
                 "epic_ref": "epic-1",
                 "wave_ref": "wave-1",
+                "title": None,
+                "description": None,
                 "total": 3,
                 "done": 0,
                 "story_count": 3,
