@@ -97,6 +97,13 @@ import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
+from src.tasks.json_storage import (
+    JSON_ENCODING_FIELD,
+    decode_record_json,
+    encode_json_updates,
+    encode_json_value,
+    encode_record_json,
+)
 from src.tasks.records import (
     META_SORT_KEY,
     TASK_WORK_LOCATOR_SORT_KEY,
@@ -345,6 +352,9 @@ class AcceptanceRequest:
     generation: int = 1
     input_reference: dict[str, Any] | None = None
     artifact_ids: tuple[str, ...] = field(default_factory=tuple)
+    budget_reservation: dict[str, Any] | None = None
+    submit_rate_scope_hash: str | None = None
+    submit_rate_window_end: int | None = None
 
 
 @dataclass(frozen=True)
@@ -547,7 +557,7 @@ class TaskStore:
             invocation_id=request.invocation_id,
             generation=request.generation,
             timestamp=now_iso,
-            data={"persona": request.persona},
+            data={"status": TaskState.ACCEPTED.value, "version": 1},
         )
 
         dispatch = base_item(
@@ -632,6 +642,12 @@ class TaskStore:
             "runtime_attempt_id": None,
             "created_at": now_iso,
         }
+        if request.budget_reservation is not None:
+            if request.budget_reservation.get("status") != "reserved" or not request.budget_reservation.get("reservation_id"):
+                raise TaskStoreError("acceptance requires a confirmed budget reservation")
+            run_grant["budget_reservation"] = request.budget_reservation
+            metadata["budget_reservation"] = request.budget_reservation
+
         grant_digest = _protected_grant_digest(run_grant)
         metadata["grant_digest"] = grant_digest
         dispatch["grant_digest"] = grant_digest
@@ -731,7 +747,30 @@ class TaskStore:
             },
         ]
 
+        if request.submit_rate_scope_hash is not None:
+            if request.submit_rate_window_end is None:
+                raise TaskStoreError("submit rate window is missing")
+            transaction.append({"Update": {
+                "TableName": self._authority_table_name,
+                "Key": _serialize_authority({"pk": task_capacity_partition(request.submit_rate_scope_hash), "sk": "ACTIVE"}),
+                "UpdateExpression": "SET expires_at = :expires ADD request_count :one",
+                "ConditionExpression": "attribute_not_exists(request_count) OR request_count < :max",
+                "ExpressionAttributeValues": _serialize_authority({":expires": request.submit_rate_window_end,
+                                                                  ":one": 1, ":max": 10}),
+            }})
+
         transaction.extend(self._artifact_claim_items(request=request, now_iso=now_iso))
+        if request.budget_reservation and request.budget_reservation.get("authority_pk"):
+            reservation = request.budget_reservation
+            transaction.append({"Update": {
+                "TableName": self._authority_table_name,
+                "Key": _serialize_authority({"pk": reservation["authority_pk"], "sk": reservation["authority_sk"]}),
+                "UpdateExpression": "SET #state = :committed, task_id = :task",
+                "ConditionExpression": "#state = :preparing AND owner_token = :owner AND lease_expires_at >= :now",
+                "ExpressionAttributeNames": {"#state": "state"},
+                "ExpressionAttributeValues": _serialize_authority({":committed": "committed", ":preparing": "preparing",
+                    ":task": request.task_id, ":owner": reservation["owner_token"], ":now": int(self._clock().timestamp())}),
+            }})
         return transaction
 
     def _artifact_claim_items(self, *, request: AcceptanceRequest, now_iso: str) -> list[dict[str, Any]]:
@@ -812,7 +851,12 @@ class TaskStore:
                 raise AcceptanceConditionError("task policy no longer permits acceptance") from None
             if len(reasons) > 9 and reasons[9] == "ConditionalCheckFailed":
                 raise AcceptanceConditionError("task capacity is exhausted or changed") from None
-            if any(reason == "ConditionalCheckFailed" for reason in reasons[10:]):
+            artifact_start = 10
+            if request.submit_rate_scope_hash is not None:
+                if len(reasons) > 10 and reasons[10] == "ConditionalCheckFailed":
+                    raise AcceptanceConditionError("task submission rate is exhausted") from None
+                artifact_start = 11
+            if any(reason == "ConditionalCheckFailed" for reason in reasons[artifact_start:]):
                 raise AcceptanceConditionError("artifact ownership, digest, version, or expiry was refused") from None
             logger.warning(
                 "Task acceptance did not commit",
@@ -1339,8 +1383,16 @@ class TaskStore:
             if key not in _TRANSITION_MUTABLE_ATTRIBUTES:
                 raise TaskStoreError(f"attribute {key!r} cannot be set through a transition")
             placeholder = f":attr_{len(values)}"
-            set_parts.append(f"{key} = {placeholder}")
-            values[placeholder] = value
+            attribute_name = f"#attr_{len(values)}"
+            names[attribute_name] = key
+            set_parts.append(f"{attribute_name} = {placeholder}")
+            values[placeholder] = encode_json_updates(snapshot, {key: value})[key]
+
+        json_updates = encode_json_updates(snapshot, attributes or {})
+        if JSON_ENCODING_FIELD in json_updates:
+            names["#json_encoding"] = JSON_ENCODING_FIELD
+            set_parts.append("#json_encoding = :json_encoding")
+            values[":json_encoding"] = json_updates[JSON_ENCODING_FIELD]
 
         condition = "version = :expected_version AND attribute_exists(event_id)"
         if generation is not None:
@@ -1560,7 +1612,7 @@ class TaskStore:
                             "Key": {"event_id": {"S": task_partition(task_id)}, "arrived_at": {"S": META_SORT_KEY}},
                             "UpdateExpression": "SET event_sequence = :next, updated_at = :now",
                             "ConditionExpression": condition,
-                            "ExpressionAttributeValues": {k: _SERIALIZER.serialize(v) for k, v in values.items()},
+                            "ExpressionAttributeValues": _serialize_authority(values),
                         }
                     },
                     {
@@ -3028,11 +3080,15 @@ def _serialize(item: dict[str, Any]) -> dict[str, Any]:
     """
     assert_legacy_invisible(item)
     assert_ttl_permitted(item)
-    return {key: _SERIALIZER.serialize(_dynamodb_number(value)) for key, value in item.items()}
+    return {key: _SERIALIZER.serialize(_dynamodb_number(value)) for key, value in encode_record_json(item).items()}
 
 
 def _serialize_authority(item: dict[str, Any]) -> dict[str, Any]:
-    return {key: _SERIALIZER.serialize(_dynamodb_number(value)) for key, value in item.items()}
+    physical = encode_record_json(item)
+    for name in (":grant_input", ":grant_model_binding", ":grant_limits"):
+        if name in physical:
+            physical[name] = encode_json_value(physical[name])[0]
+    return {key: _SERIALIZER.serialize(_dynamodb_number(value)) for key, value in physical.items()}
 
 
 def _dynamodb_number(value: Any) -> Any:
@@ -3063,6 +3119,8 @@ def _protected_grant_digest(grant: dict[str, Any]) -> str:
     )
     if any(field_name not in grant for field_name in fields):
         raise WorkBindingError("protected run grant is incomplete")
+    if "budget_reservation" in grant:
+        fields += ("budget_reservation",)
     return payload_digest({field_name: grant[field_name] for field_name in fields})
 
 
@@ -3233,22 +3291,20 @@ def _validated_envelope(request: AcceptanceRequest, request_digest: str) -> dict
 
 
 def _deserialize(item: dict[str, Any]) -> dict[str, Any]:
-    """Read an item back, normalising DynamoDB's ``Decimal`` numbers to ``int``.
+    """Restore JSON-compatible numbers from DynamoDB's Decimal representation.
 
-    DynamoDB returns every number as ``Decimal``. Every number this module stores
-    is a whole number — sequences, versions, generations, turn numbers, epoch
-    seconds — and they are fed straight back into fixed-width key builders and
-    conditional writes that require ``int``. Normalising once here keeps a value
-    read from storage usable as a key or a condition operand, rather than failing
-    at the point of use. Non-integral values are left as ``Decimal`` so a caller's
-    payload is never silently coerced.
+    Safe integral numbers become integers for counters and version fences.
+    Fractions and larger integral JSON floats remain floats, preserving the
+    RFC8785 numeric domain when stored payloads are hashed again.
     """
-    return {key: _normalise_numbers(_DESERIALIZER.deserialize(value)) for key, value in item.items()}
+    return decode_record_json({key: _normalise_numbers(_DESERIALIZER.deserialize(value)) for key, value in item.items()})
 
 
 def _normalise_numbers(value: Any) -> Any:
     if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else float(value)
+        # Preserve integral JSON floats outside RFC8785's safe-integer domain.
+        # Otherwise e.g.1e20 accepts but cannot be rehashed after a DynamoDB read.
+        return int(value) if value == value.to_integral_value() and abs(value) <= 9007199254740991 else float(value)
     if isinstance(value, dict):
         return {key: _normalise_numbers(inner) for key, inner in value.items()}
     if isinstance(value, list):

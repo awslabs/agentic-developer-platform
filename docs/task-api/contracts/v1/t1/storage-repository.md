@@ -91,3 +91,31 @@ message deletion is separate evidence and is never fabricated from send success.
 Reusable scenario IDs and exact test selectors are versioned in
 `storage-fixtures-v1.json` and registered in
 `docs/task-api/evaluation-manifest.json`.
+
+### Finite JSON numbers and physical DynamoDB encoding
+
+The public JSON contract is not restricted to DynamoDB's numeric exponent range.
+Repository JSON columns normally remain native DynamoDB maps/lists. If a known
+JSON column contains a finite number that DynamoDB cannot represent, its physical
+value is RFC8785 canonical UTF-8 JSON text. The server-owned root attribute
+`_task_json_encoding_v1` lists exactly those encoded column names. The repository
+hydrates them before returning records or computing grant/request digests.
+Nested caller objects, including objects containing that same field name, never
+act as encoding metadata. Unknown marker columns and noncanonical text fail
+closed. Ordinary records remain physically unchanged.
+
+`src/tasks/json_storage.py` owns the closed per-record column list: task input and
+result/error fields, run results, grant input/model/limits, event data, command
+payloads, turn input/messages, and model-operation JSON content/receipts. Integers
+used for versions, generations, counters and keys remain native and bounded.
+Native integral values outside the RFC8785 safe integer range hydrate as JSON
+floats so a value such as `1e20` retains its canonical digest.
+
+Complete rows pass through `_serialize` or `_serialize_authority`; reads pass
+through `_deserialize`. Direct JSON column updates must call
+`encode_json_updates(snapshot, updates)` and persist **all** returned entries,
+including any changed encoding metadata, in their existing version/authority
+transaction. The known `:grant_input`, `:grant_model_binding` and `:grant_limits`
+condition operands receive the same physical encoding as protected grant columns.
+This preserves equality fences instead of comparing hydrated JSON to encoded
+storage. Active TTL and legacy-index isolation rules are unchanged.
