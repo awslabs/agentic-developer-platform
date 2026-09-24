@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import entrypoint  # noqa: E402
 from lib import abort_sentinel  # noqa: E402
+from lib import invocation_completion
 from lib import invocation_status  # noqa: E402
 from lib.abort_sentinel import (  # noqa: E402
     ABORT_RECEIPT_ACTION,
@@ -634,6 +635,76 @@ class TestConfirmedAcknowledgement:
         assert "aborted" in caplog.text
 
 
+class TestTheTerminalStatusIsRetried:
+    """``_persist_abort_terminal_status``: bounded retry — #3963 review finding 3.
+
+    ``update_invocation_status`` is fail-soft; it logs and returns ``False`` rather
+    than raising. So a single call put the terminal ``aborted`` row one transient
+    DynamoDB or gateway blip away from never existing, and that row is what
+    ``is_delivery_completed`` reads to refuse a redelivery and what the dashboard
+    shows the operator who asked for the stop.
+
+    The bound matters as much as the retry. These attempts run *before* the
+    DeleteMessage that actually prevents a rerun, so a long sequence here would delay
+    the one write that matters most.
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_real_sleep(self, monkeypatch):
+        monkeypatch.setattr(entrypoint.time, "sleep", lambda _: None)
+
+    def test_a_write_that_lands_first_time_is_not_repeated(self, monkeypatch):
+        write = MagicMock(return_value=True)
+        monkeypatch.setattr(entrypoint, "update_invocation_status", write)
+
+        assert entrypoint._persist_abort_terminal_status("msg-1", "t", "summary") is True
+        assert write.call_count == 1
+
+    def test_a_transient_failure_is_retried_and_then_persists(self, monkeypatch):
+        # The case the retry exists for. Before this, one `False` meant the abort had
+        # no terminal row at all.
+        write = MagicMock(side_effect=[False, True])
+        monkeypatch.setattr(entrypoint, "update_invocation_status", write)
+
+        assert entrypoint._persist_abort_terminal_status("msg-1", "t", "summary") is True
+        assert write.call_count == 2
+
+    def test_retries_are_bounded_and_report_failure_honestly(self, monkeypatch):
+        # Still `False` when every attempt fails — the narrowing must not become a
+        # claim. `_finalize_abort_acknowledgement` decides the consequence, and it can
+        # only do that if it is told the truth.
+        write = MagicMock(return_value=False)
+        monkeypatch.setattr(entrypoint, "update_invocation_status", write)
+
+        assert entrypoint._persist_abort_terminal_status("msg-1", "t", "summary") is False
+        assert write.call_count == entrypoint.ABORT_TERMINAL_WRITE_ATTEMPTS
+
+    def test_every_attempt_writes_the_same_terminal_outcome(self, monkeypatch):
+        # Idempotence, which is what makes retrying safe after an ambiguous failure: a
+        # retry must not be able to produce a second or differently-worded outcome.
+        write = MagicMock(side_effect=[False, False, True])
+        monkeypatch.setattr(entrypoint, "update_invocation_status", write)
+
+        entrypoint._persist_abort_terminal_status("msg-1", "2026-09-24T10:00:00Z", "summary")
+
+        assert {call.args for call in write.call_args_list} == {
+            ("msg-1", "2026-09-24T10:00:00Z", "aborted")
+        }
+        assert all(
+            call.kwargs["stop_reason"] == "operator_aborted" for call in write.call_args_list
+        )
+
+    def test_the_status_written_is_the_one_the_guard_reads(self, monkeypatch):
+        # Binds this writer to the legacy redelivery guard's contract rather than to
+        # the string "aborted" appearing in two places by coincidence.
+        write = MagicMock(return_value=True)
+        monkeypatch.setattr(entrypoint, "update_invocation_status", write)
+
+        entrypoint._persist_abort_terminal_status("msg-1", "t", "summary")
+
+        assert write.call_args.args[2] == invocation_completion.ABORTED_STATUS
+
+
 class TestTheAbortReachesTheEndOfTheRun:
     """The wiring in ``main()``, driven end to end.
 
@@ -1110,8 +1181,13 @@ class TestTheUnprotectedAbortIsNotReportedAsClean:
     requirement is that it is reported honestly as retryable and logged loudly.
     """
 
-    def _main_tail(self, monkeypatch, *, persisted, ack, calls):
-        """Drive the real acknowledgement branch from `main`'s teardown."""
+    def _main_tail(self, monkeypatch, *, persisted, ack, calls, repair=None, identify=True):
+        """Drive the real acknowledgement branch from `main`'s teardown.
+
+        ``repair`` is what a post-acknowledgement terminal-status repair returns, and
+        ``None`` means assert it is never attempted. ``identify=False`` drops the row
+        identity, standing in for the callers that do not supply one.
+        """
         monkeypatch.setattr(
             entrypoint,
             "_acknowledge_abort",
@@ -1122,12 +1198,22 @@ class TestTheUnprotectedAbortIsNotReportedAsClean:
             "_delete_message",
             lambda *a, **k: calls.append("plain_delete"),
         )
+
+        def _repair(*_a, **_k):
+            calls.append("repair")
+            assert repair is not None, "repair attempted where the test forbids it"
+            return repair
+
+        monkeypatch.setattr(entrypoint, "_persist_abort_terminal_status", _repair)
         return entrypoint._finalize_abort_acknowledgement(
             queue_url="q",
             region="us-east-1",
             receipt_handle="receipt",
             exit_code=0,
             terminal_persisted=persisted,
+            message_id="msg-1" if identify else "",
+            arrived_at="2026-09-24T10:00:00Z",
+            summary="Agent `developer` was aborted by an operator.",
         )
 
     def test_a_confirmed_ack_is_a_clean_abort(self, monkeypatch):
@@ -1137,14 +1223,63 @@ class TestTheUnprotectedAbortIsNotReportedAsClean:
         assert code == 0
         assert calls == ["ack"]
 
-    def test_a_confirmed_ack_is_clean_even_if_the_row_write_was_lost(self, monkeypatch):
-        # Deliberate: the message is gone, so no redelivery can occur and no guard is
-        # needed. A stale dashboard row is a reporting problem, not a restart risk,
-        # and inflating it to retryable would re-queue a run that cannot restart.
+    def test_a_lost_row_is_repaired_once_the_acknowledgement_is_confirmed(self, monkeypatch):
+        # Review finding 3: a successful delete used to be reported as a clean abort on
+        # its own, leaving an operator looking at a dashboard that still showed the run
+        # as active. A confirmed acknowledgement proves the run cannot restart; it says
+        # nothing about whether the outcome was reported, and both are required.
         calls = []
-        code = self._main_tail(monkeypatch, persisted=False, ack=True, calls=calls)
+        code = self._main_tail(monkeypatch, persisted=False, ack=True, calls=calls, repair=True)
 
         assert code == 0
+        # Order is the requirement, not merely that both happened. The repair runs
+        # AFTER the delete: attempting it first would spend retry budget before the one
+        # write that actually prevents a rerun.
+        assert calls == ["ack", "repair"]
+
+    def test_a_row_that_already_landed_is_not_rewritten(self, monkeypatch):
+        # The control on the above. `repair=None` makes the helper fail if a repair is
+        # attempted, so a future edit that unconditionally rewrites the row — turning
+        # every clean abort into an extra gateway write — fails here.
+        calls = []
+        code = self._main_tail(monkeypatch, persisted=True, ack=True, calls=calls)
+
+        assert code == 0
+        assert calls == ["ack"]
+
+    def test_a_repair_that_also_fails_stays_clean_and_says_the_row_is_stale(
+        self, monkeypatch, caplog
+    ):
+        # Still exit 0, deliberately. The run is stopped and acknowledged, so a non-zero
+        # exit would start a pod that can only pick up an unrelated message — it cannot
+        # repair this row, and it would be the replacement pod the abort exists to
+        # prevent. The honest signal is a log an operator can find.
+        calls = []
+        with caplog.at_level("ERROR"):
+            code = self._main_tail(
+                monkeypatch, persisted=False, ack=True, calls=calls, repair=False
+            )
+
+        assert code == 0
+        assert calls == ["ack", "repair"]
+        # Must distinguish itself from the unprotected case below: this one carries no
+        # rerun risk, and an operator triaging the two needs to know that.
+        assert any(
+            "stale" in record.message.lower() and "cannot execute again" in record.message.lower()
+            for record in caplog.records
+        ), "a stopped-and-acknowledged run with a lost row must be reported as stale, not as a rerun risk"
+
+    def test_no_repair_is_attempted_without_a_row_identity(self, monkeypatch):
+        # `message_id` defaults to empty for callers that do not supply one. Repairing
+        # from an empty key would write to the wrong row or fail obscurely, so the
+        # repair is skipped and the pre-existing clean-exit behaviour is kept.
+        calls = []
+        code = self._main_tail(
+            monkeypatch, persisted=False, ack=True, calls=calls, identify=False
+        )
+
+        assert code == 0
+        assert calls == ["ack"]
 
     def test_an_unconfirmed_ack_with_a_durable_row_is_retryable(self, monkeypatch):
         calls = []
@@ -1171,7 +1306,11 @@ class TestTheUnprotectedAbortIsNotReportedAsClean:
         # The ordinary path swallows delete failures because the work is already on
         # GitHub. An abort must not reach it: that reasoning is what made an
         # unconfirmed acknowledgement look successful.
+        # `repair=True` because the acknowledged-but-unpersisted combination now
+        # attempts a terminal repair. That is a status write, not a queue operation, so
+        # it does not weaken what this test is about: no combination may reach the
+        # fail-soft `_delete_message` path.
         for persisted, ack in ((True, True), (True, False), (False, False), (False, True)):
             calls = []
-            self._main_tail(monkeypatch, persisted=persisted, ack=ack, calls=calls)
+            self._main_tail(monkeypatch, persisted=persisted, ack=ack, calls=calls, repair=True)
             assert "plain_delete" not in calls
