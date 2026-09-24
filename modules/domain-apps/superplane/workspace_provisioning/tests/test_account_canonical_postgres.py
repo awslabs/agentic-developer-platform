@@ -483,6 +483,29 @@ def install_canonical_transports(scenario, operation, outputs, tmp_path, monkeyp
     )
 
 
+async def canonical_account_chain(
+    scenario, outputs, tmp_path, monkeypatch, real_bootstrap, *, before_final=None
+):
+    """Use actual separately admitted phases; interception only models process death."""
+    creation, row = await scenario.created()
+    account = await scenario.admit(continuation_parameters(row))
+    result = await account_runtime.run_account_bootstrap(account, scenario.context)
+    row = await scenario.row(result["artifact_id"])
+    prepare = await scenario.admit(continuation_parameters(row))
+    result = await account_runtime.run_account_infrastructure(prepare, scenario.context)
+    row = await scenario.row(result["artifact_id"])
+    apply = await scenario.admit(continuation_parameters(row))
+    result = await account_runtime.run_account_infrastructure(apply, scenario.context)
+    row = await scenario.row(result["artifact_id"])
+    final = await scenario.admit(continuation_parameters(row))
+    install_canonical_transports(scenario, final, outputs, tmp_path, monkeypatch)
+    monkeypatch.setattr(bootstrap_runtime, "bootstrap", real_bootstrap)
+    if before_final is not None:
+        await before_final(final)
+    result = await account_runtime.run_account_infrastructure(final, scenario.context)
+    return creation, final, result
+
+
 def test_new_account_reaches_real_canonical_registration_and_terminal_anchor(
     bootstrap_harness, tmp_path, monkeypatch
 ):
@@ -493,25 +516,8 @@ def test_new_account_reaches_real_canonical_registration_and_terminal_anchor(
     outputs = install_infrastructure(scenario)
 
     async def run():
-        creation, row = await scenario.created()
-        account = await scenario.admit(continuation_parameters(row))
-        result = await account_runtime.run_account_bootstrap(account, scenario.context)
-        row = await scenario.row(result["artifact_id"])
-        prepare = await scenario.admit(continuation_parameters(row))
-        result = await account_runtime.run_account_infrastructure(
-            prepare, scenario.context
-        )
-        row = await scenario.row(result["artifact_id"])
-        apply = await scenario.admit(continuation_parameters(row))
-        result = await account_runtime.run_account_infrastructure(
-            apply, scenario.context
-        )
-        row = await scenario.row(result["artifact_id"])
-        final = await scenario.admit(continuation_parameters(row))
-        install_canonical_transports(scenario, final, outputs, tmp_path, monkeypatch)
-        monkeypatch.setattr(bootstrap_runtime, "bootstrap", real_bootstrap)
-        result = await account_runtime.run_account_infrastructure(
-            final, scenario.context
+        creation, _, result = await canonical_account_chain(
+            scenario, outputs, tmp_path, monkeypatch, real_bootstrap
         )
         assert result["status"] == "ready"
         terminal = await scenario.row(result["result_artifact_id"])

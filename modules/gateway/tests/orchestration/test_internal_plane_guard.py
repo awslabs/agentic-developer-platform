@@ -108,6 +108,7 @@ EXPECTED_INTERNAL_ROUTES = {
     # artifacts and provider facts; this route has no promotion-state access.
     ("/internal/v1/controller-execution/recovery/lifecycle", "POST"),
     ("/internal/v1/controller-execution/recovery/account-creation", "POST"),
+    ("/internal/v1/controller-execution/recovery/bootstrap", "POST"),
     ("/internal/v1/controller-execution/recovery/settlement", "POST"),
 }
 

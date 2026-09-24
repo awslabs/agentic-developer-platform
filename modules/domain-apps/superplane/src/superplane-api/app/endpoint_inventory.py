@@ -125,6 +125,7 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/internal/controller/recovery/observe"),
         ("POST", "/internal/controller/recovery/lifecycle"),
         ("POST", "/internal/controller/recovery/account-creation"),
+        ("POST", "/internal/controller/recovery/bootstrap"),
         ("POST", "/internal/controller/recovery/settlement"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
