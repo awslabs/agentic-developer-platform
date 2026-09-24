@@ -1069,6 +1069,8 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   ADP_TASK_DISPATCH_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-dispatch-producer-roles" "")
   ADP_TASK_RECOVERY_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-recovery-producer-roles" "")
   ADP_TASK_QUALIFICATION_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-qualification-id" "")
+  ADP_TASK_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-image-digests" "disabled")
+  ADP_TASK_WORKER_SERVICE_ACCOUNT=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-worker-service-account" "agent-scaledjob-sa")
   AGENT_DISPATCH_QUEUE_URL=$(_get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
   BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
   AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
@@ -1137,6 +1139,8 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__ADP_TASK_DISPATCH_PRODUCER_ROLES__|${ADP_TASK_DISPATCH_PRODUCER_ROLES}|g" \
       -e "s|__ADP_TASK_RECOVERY_PRODUCER_ROLES__|${ADP_TASK_RECOVERY_PRODUCER_ROLES}|g" \
       -e "s|__ADP_TASK_QUALIFICATION_ID__|${ADP_TASK_QUALIFICATION_ID}|g" \
+      -e "s|__ADP_TASK_WORKER_IMAGE_DIGESTS__|${ADP_TASK_WORKER_IMAGE_DIGESTS}|g" \
+      -e "s|__ADP_TASK_WORKER_SERVICE_ACCOUNT__|${ADP_TASK_WORKER_SERVICE_ACCOUNT}|g" \
       -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
       -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
       -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
