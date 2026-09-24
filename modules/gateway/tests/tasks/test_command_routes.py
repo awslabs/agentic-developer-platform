@@ -89,7 +89,10 @@ def test_scope_is_required_before_writing(api, store, monkeypatch):
 
 def test_control_body_cannot_change_verified_attempt(api):
     web, req, identity, _ = api
-    binding = {key: getattr(identity, key) for key in ("task_id", "invocation_id", "generation", "runtime_attempt_id")}
+    binding = {
+        "run": {key: getattr(identity, key) for key in ("task_id", "invocation_id", "generation")},
+        "runtime_attempt_id": identity.runtime_attempt_id,
+    }
     body = {"schema_version": "1.0", "attempt": binding, "last_receipt_cursor": None}
     assert web.post("/internal/v1/agent/task/control", json=body).status_code == 200
     body["attempt"]["runtime_attempt_id"] = str(uuid.uuid4())
@@ -102,4 +105,23 @@ def test_finalization_requires_actual_typed_exit_evidence(api):
     body["child_exit"]["confirmed"] = False
     assert web.post("/internal/v1/agent/task/finalize", json=body).status_code == 400
     body["child_exit"].update(confirmed=True, exit_code=None, signal=None)
+    assert web.post("/internal/v1/agent/task/finalize", json=body).status_code == 409
+
+
+def test_canonical_internal_requests_validate_without_translation():
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[4]
+    catalog = json.loads((root / "docs/task-api/contracts/v1/fixtures/valid/internal-adapter-catalog.json").read_text())
+    for name, model in [("control", routes.Control), ("finalize", routes.Finalize), ("settlement", routes.Settlement)]:
+        model.model_validate(catalog[name]["request"])
+
+
+def test_explicit_null_and_numeric_boolean_are_not_contract_values(api):
+    web, req, identity, _ = api
+    message = {"schema_version": "1.0", "command_id": str(uuid.uuid4()), "text": "facts", "reply_to": None}
+    assert web.post(f"/v1/tasks/{req.task_id}/messages", json=message).status_code == 400
+    body = final_body(identity)
+    body["child_exit"]["confirmed"] = 1
     assert web.post("/internal/v1/agent/task/finalize", json=body).status_code == 400

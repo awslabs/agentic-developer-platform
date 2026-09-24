@@ -113,7 +113,10 @@ def running(store, req):
 def final_body(identity):
     return {
         "schema_version": "1.0",
-        "attempt": {key: getattr(identity, key) for key in ("task_id", "invocation_id", "generation", "runtime_attempt_id")},
+        "attempt": {
+            "run": {key: getattr(identity, key) for key in ("task_id", "invocation_id", "generation")},
+            "runtime_attempt_id": identity.runtime_attempt_id,
+        },
         "final_report_id": str(uuid.uuid4()),
         "child_exit": {"confirmed": True, "exit_code": 0, "signal": None, "stopped_at": "2026-09-24T12:00:00Z"},
         "outcome": "completed",

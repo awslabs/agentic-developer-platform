@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -19,12 +20,31 @@ UUID = Annotated[str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89a
 TASK = Annotated[str, Field(pattern=r"^tsk_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")]
 ARTIFACT = Annotated[str, Field(pattern=r"^art_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")]
 CURSOR = Annotated[str, Field(pattern=r"^tsk_[0-9a-f-]+:[1-9][0-9]*$")]
-Timestamp = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")]
+
+
+def valid_timestamp(value: str) -> str:
+    datetime.fromisoformat(value)
+    return value
+
+
+Timestamp = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"), AfterValidator(valid_timestamp)]
 Text = Annotated[str, Field(min_length=1, max_length=1000)]
 
 
 class Closed(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def closed_scalar_types(cls, values):
+        if isinstance(values, dict):
+            nullable = {"result", "error", "signal", "exit_code", "last_receipt_cursor", "total_usd"}
+            for key, value in values.items():
+                if value is None and key not in nullable:
+                    raise ValueError(f"{key} cannot be explicitly null")
+                if key in {"confirmed", "process_exit_validated"} and type(value) is not bool:
+                    raise ValueError(f"{key} must be boolean")
+        return values
 
 
 class Message(Closed):
@@ -40,10 +60,14 @@ class Cancel(Closed):
     reason: str = Field(default="", max_length=1000)
 
 
-class Attempt(Closed):
+class Run(Closed):
     task_id: TASK
     invocation_id: UUID
     generation: int = Field(ge=1)
+
+
+class Attempt(Closed):
+    run: Run
     runtime_attempt_id: UUID
 
 
@@ -58,12 +82,6 @@ class ChildExit(Closed):
     exit_code: int | None
     signal: str | None
     stopped_at: Timestamp
-
-    @model_validator(mode="after")
-    def evidence(self):
-        if self.exit_code is None and self.signal is None:
-            raise ValueError("process exit requires a code or signal")
-        return self
 
 
 class Finding(Closed):
@@ -145,7 +163,9 @@ class Finalize(Closed):
         if self.error:
             if self.outcome == "cancelled" and (self.error.child_exit_confirmed is not True or self.error.recovery_required is not False):
                 raise ValueError("cancelled finalization requires confirmed exit")
-            if self.error.code == "model_outcome_unknown" and self.error.total_usd is not None:
+            if self.error.code == "model_outcome_unknown" and (
+                self.error.total_usd is not None or self.error.provider_outcome not in {None, "unknown"}
+            ):
                 raise ValueError("unknown model cost must remain unknown")
         return self
 
@@ -153,7 +173,7 @@ class Finalize(Closed):
 class Workload(Closed):
     pod_uid: UUID
     namespace: str = Field(min_length=1, max_length=63)
-    pod_name: str | None = None
+    pod_name: str | None = Field(default=None, max_length=253)
     job_uid: UUID | None = None
 
 
@@ -227,7 +247,9 @@ async def cancel(task_id: str, request: Request, db: AsyncSession = Depends(get_
 
 
 def bind(body: Attempt, identity):
-    if body.model_dump() != {key: getattr(identity, key) for key in ("task_id", "invocation_id", "generation", "runtime_attempt_id")}:
+    if {**body.run.model_dump(), "runtime_attempt_id": body.runtime_attempt_id} != {
+        key: getattr(identity, key) for key in ("task_id", "invocation_id", "generation", "runtime_attempt_id")
+    }:
         raise errors.not_found()
 
 
