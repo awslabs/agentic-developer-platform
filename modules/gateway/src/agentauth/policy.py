@@ -90,9 +90,7 @@ logger = logging.getLogger("bedrockgateway.agentauth.policy")
 #
 # STEER stays out. It has no revalidation branch and no worker verb, so an
 # authorized STEER still lands on the 501 in ``require_supported``.
-SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset(
-    {AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT}
-)
+SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT})
 
 # Status codes this policy produces. Named so the adapters cannot drift.
 REFUSED_STATUS = 404

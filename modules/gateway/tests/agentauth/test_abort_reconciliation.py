@@ -451,10 +451,13 @@ class TestItSurvivesRunningTwiceAndRunningBadly:
 def test_repair_removes_dead_worker_control_registration(client):
     # Seed the public transport fields independently of the implementation list.
     fields = {
-        "control_version": {"N": "1"}, "control_address": {"S": "10.0.0.42"},
-        "control_port": {"N": "8770"}, "control_token": {"S": "old-secret"},
+        "control_version": {"N": "1"},
+        "control_address": {"S": "10.0.0.42"},
+        "control_port": {"N": "8770"},
+        "control_token": {"S": "old-secret"},
         "control_token_expires_at": {"S": "2026-09-25T00:00:00Z"},
-        "control_registered_at": {"S": ARRIVED}, "control_credential_epoch": {"N": "1"},
+        "control_registered_at": {"S": ARRIVED},
+        "control_credential_epoch": {"N": "1"},
     }
     put_event(client, **fields)
     assert repair(client, execution()).repaired

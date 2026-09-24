@@ -416,6 +416,8 @@ jobs:
             test_run_services.py test_artifact_service.py \
             test_task_delivery.py test_task_routes.py \
             test_abort_receipt.py test_abort_redelivery_refusal.py \
+            test_abort_intent_store.py test_abort_reconciliation.py \
+            test_exit_retention.py test_retained_abort_recovery.py \
             test_knowledge_service.py test_knowledge_service_postgres.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
@@ -445,6 +447,24 @@ jobs:
       # story exists to establish. `--cov-branch` is required: the interesting
       # failures here are all one-sided branches (a tenant check that only ever
       # sees the matching tenant is 100% line-covered and unproven).
+      - name: Enforce abort recovery coverage per module
+        working-directory: modules/gateway
+        run: |
+          pytest tests/agentauth/test_exit_retention.py tests/agentauth/test_retained_abort_recovery.py \
+            tests/agentauth/test_abort_reconciliation.py \
+            --cov=src.agentauth.exit_retention --cov=src.agentauth.retained_abort_recovery \
+            --cov=src.agentauth.abort_reconciliation --cov-branch \
+            --cov-report=json:abort-recovery-coverage.json --timeout=120
+          python - <<'PYCODE'
+          import json
+          report = json.load(open("abort-recovery-coverage.json"))
+          for name in ("exit_retention", "retained_abort_recovery", "abort_reconciliation"):
+              summary = report["files"][f"src/agentauth/{name}.py"]["summary"]
+              for covered, total in (("covered_lines", "num_statements"), ("covered_branches", "num_branches")):
+                  assert summary[total] > 0, f"{name}: no {total} measured"
+                  assert summary[covered] / summary[total] >= 0.85, f"{name}: {covered} below 85%"
+          PYCODE
+
       - name: Enforce control-module coverage (>=85% line and branch)
         working-directory: modules/gateway
         # `--cov=src.activity.control_service` (dotted module), NOT

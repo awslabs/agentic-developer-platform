@@ -367,7 +367,7 @@ class TestSupportedVerbBoundary:
         assert state.capabilities.pause is True
         assert state.capabilities.resume is True
         assert state.capabilities.steer is False
-        assert state.capabilities.abort is False
+        assert state.capabilities.abort is True
 
     @pytest.mark.parametrize("key_ids", [None, [], ["retired-key"], "test-control-key", [1], ["test-control-key"] * 9])
     def test_unverifiable_worker_never_advertises_controls(self, key_ids):

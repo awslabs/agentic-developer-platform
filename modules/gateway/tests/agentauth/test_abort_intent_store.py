@@ -100,8 +100,12 @@ class TestRecordAbortIntent:
     def test_records_the_marker_for_the_running_attempt(self, store, client):
         put_execution(client)
         marker = store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=NOW,
         )
         assert marker == {
             "command_id": COMMAND,
@@ -125,8 +129,12 @@ class TestRecordAbortIntent:
         put_execution(client)
         before = read_execution(client)
         store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=NOW,
         )
         after = read_execution(client)
         for preserved in (
@@ -148,12 +156,20 @@ class TestRecordAbortIntent:
         """
         put_execution(client)
         first = store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=NOW,
         )
         second = store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=LATER,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=LATER,
         )
         assert second == first
         assert read_execution(client)["abort_requested_at"] == {"S": "2026-09-24T12:00:00Z"}
@@ -162,13 +178,21 @@ class TestRecordAbortIntent:
         """The first accepted abort is the one that stopped the run."""
         put_execution(client)
         store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=NOW,
         )
         with pytest.raises(AbortIntentConflictError):
             store.record_abort_intent(
-                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-                command_id="cmd-abort-0002", body_digest="b" * 64, now=LATER,
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+                attempt=1,
+                command_id="cmd-abort-0002",
+                body_digest="b" * 64,
+                now=LATER,
             )
         item = read_execution(client)
         assert item["abort_command_id"] == {"S": COMMAND}
@@ -178,13 +202,21 @@ class TestRecordAbortIntent:
         """A digest is the binding to the operator's words; it cannot be swapped."""
         put_execution(client)
         store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=NOW,
         )
         with pytest.raises(AbortIntentConflictError):
             store.record_abort_intent(
-                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-                command_id=COMMAND, body_digest="c" * 64, now=LATER,
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+                attempt=1,
+                command_id=COMMAND,
+                body_digest="c" * 64,
+                now=LATER,
             )
 
     def test_acceptance_for_a_superseded_attempt_is_refused(self, store, client):
@@ -192,8 +224,12 @@ class TestRecordAbortIntent:
         put_execution(client, attempt=3)
         with pytest.raises(AbortIntentConflictError):
             store.record_abort_intent(
-                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-                command_id=COMMAND, body_digest=DIGEST, now=NOW,
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+                attempt=1,
+                command_id=COMMAND,
+                body_digest=DIGEST,
+                now=NOW,
             )
         assert "abort_command_id" not in read_execution(client)
 
@@ -203,24 +239,36 @@ class TestRecordAbortIntent:
         put_execution(client)
         if existing_marker:
             store.record_abort_intent(
-                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-                command_id=COMMAND, body_digest=DIGEST, now=NOW,
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+                attempt=1,
+                command_id=COMMAND,
+                body_digest=DIGEST,
+                now=NOW,
             )
         row = read_execution(client)
         row["status"] = {"S": status}
         client.put_item(TableName=TABLE, Item=row)
         with pytest.raises(AbortIntentConflictError):
             store.record_abort_intent(
-                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-                command_id=COMMAND, body_digest=DIGEST, now=LATER,
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+                attempt=1,
+                command_id=COMMAND,
+                body_digest=DIGEST,
+                now=LATER,
             )
         assert read_execution(client) == row
 
     def test_missing_execution_is_refused(self, store):
         with pytest.raises(AbortIntentConflictError):
             store.record_abort_intent(
-                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-                command_id=COMMAND, body_digest=DIGEST, now=NOW,
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+                attempt=1,
+                command_id=COMMAND,
+                body_digest=DIGEST,
+                now=NOW,
             )
 
     @pytest.mark.parametrize(
@@ -244,8 +292,12 @@ class TestRecordAbortIntent:
         """
         put_execution(client)
         call = {
-            "invocation_id": INVOCATION, "tenant_id": TENANT, "attempt": 1,
-            "command_id": COMMAND, "body_digest": DIGEST, "now": NOW,
+            "invocation_id": INVOCATION,
+            "tenant_id": TENANT,
+            "attempt": 1,
+            "command_id": COMMAND,
+            "body_digest": DIGEST,
+            "now": NOW,
         }
         call.update(kwargs)
         with pytest.raises(AuthorityStoreError):
@@ -264,8 +316,12 @@ class TestAbortIntent:
     def test_reads_back_the_recorded_marker(self, store, client):
         put_execution(client)
         store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=NOW,
         )
         assert store.abort_intent(invocation_id=INVOCATION, tenant_id=TENANT) == {
             "command_id": COMMAND,
@@ -293,8 +349,12 @@ class TestAbortIntent:
         """
         put_execution(client)
         store.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id=COMMAND,
+            body_digest=DIGEST,
+            now=NOW,
         )
         client.update_item(
             TableName=TABLE,

@@ -428,9 +428,7 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
                     # anything a retry cannot fix — an unset table name or a tenant
                     # disagreement, both of which could persist for weeks — falls through
                     # and releases instead of wedging the lane indefinitely.
-                    logger.warning(
-                        "holding work claim to retry an aborted run's terminal repair invocation=%s", row.active_run_id
-                    )
+                    logger.warning("holding work claim to retry an aborted run's terminal repair invocation=%s", row.active_run_id)
                     continue
         else:
             continue
@@ -488,7 +486,8 @@ async def maintain_work_claims() -> None:
 
                 runtime = get_agent_runtime()
                 _, retained_cursor = await run_in_threadpool(
-                    recover_retained_abort_pods, store=runtime.store,
+                    recover_retained_abort_pods,
+                    store=runtime.store,
                     workloads=runtime.workloads,
                     events_table=os.environ.get(WEBHOOK_EVENTS_TABLE_ENV, ""),
                     cursor=retained_cursor,

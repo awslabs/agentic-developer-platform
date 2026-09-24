@@ -129,8 +129,10 @@ async def abort_context(queued_context, abort_supported, tmp_path):
 
     ctx.retention_client = httpx.Client(base_url="https://kubernetes.default.svc", transport=httpx.MockTransport(kubernetes))
     ctx.runtime.workloads.exit_retention = PodExitRetention(
-        client=ctx.retention_client, namespace=target_pod.namespace,
-        service_account=target_pod.service_account, token_path=token_path,
+        client=ctx.retention_client,
+        namespace=target_pod.namespace,
+        service_account=target_pod.service_account,
+        token_path=token_path,
     )
     grant = ctx.store._read("TENANT#tenant", f"GRANT#{ctx.child.invocation}#1")
     grant["allowed_actions"]["SS"].append("abort")

@@ -533,16 +533,13 @@ class AgentAuthorityStore:
                 TableName=self._table_name,
                 Key=key,
                 UpdateExpression=(
-                    "SET abort_command_id = :command, abort_body_digest = :digest, "
-                    "abort_requested_at = :now, abort_requested_attempt = :attempt"
+                    "SET abort_command_id = :command, abort_body_digest = :digest, abort_requested_at = :now, abort_requested_attempt = :attempt"
                 ),
                 # Only for the attempt that is actually running, and only once. The
                 # attempt check stops a stale acceptance from marking a newer attempt
                 # it never authorized; `attribute_not_exists` makes the first accepted
                 # abort the durable one.
-                ConditionExpression=(
-                    "current_attempt = :attempt AND #status = :active AND attribute_not_exists(abort_command_id)"
-                ),
+                ConditionExpression=("current_attempt = :attempt AND #status = :active AND attribute_not_exists(abort_command_id)"),
                 ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
                     ":active": {"S": "active"},

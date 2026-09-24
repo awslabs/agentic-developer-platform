@@ -312,8 +312,10 @@ class TestTheAbortedRunDoesNotStartAgain:
             # Real policy, run credential, workload binding and transactional
             # writer. Only the destination table fails; authorization stays live.
             service = AgentRegistrationService(
-                policy=ctx.runtime.dispatcher.policy, authority_table=ctx.store.table,
-                events_table="events-that-does-not-exist", dynamodb_client=ctx.store.client,
+                policy=ctx.runtime.dispatcher.policy,
+                authority_table=ctx.store.table,
+                events_table="events-that-does-not-exist",
+                dynamodb_client=ctx.store.client,
                 env=ctx.runtime.env,
             )
             registration = registration_routes.RegistrationRuntime(service=service, runtime=ctx.runtime)
@@ -326,8 +328,7 @@ class TestTheAbortedRunDoesNotStartAgain:
             monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
             monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://gateway.test/internal/v1/agent")
             monkeypatch.setattr(status_client, "read_workload_token", lambda: ctx.target_headers[WORKLOAD_HEADER])
-            monkeypatch.setattr("adp_trigger.transport_identity.worker_credentials",
-                                lambda _: Credentials("AKIAEXAMPLE", "secret", "token"))
+            monkeypatch.setattr("adp_trigger.transport_identity.worker_credentials", lambda _: Credentials("AKIAEXAMPLE", "secret", "token"))
             loop = asyncio.get_running_loop()
 
             class ProtectedTransport:
@@ -341,17 +342,23 @@ class TestTheAbortedRunDoesNotStartAgain:
                     assert url == "https://gateway.test/internal/v1/agent/self/status"
                     assert "Authorization" in headers
                     assert headers[status_client.CREDENTIAL_HEADER] == ctx.target_headers[status_client.CREDENTIAL_HEADER]
-                    response = asyncio.run_coroutine_threadsafe(ctx.client.post(
-                        "/internal/v1/agent/self/status", content=data,
-                        headers={**headers, "X-Caller-Identity": "shared-role"},
-                    ), loop).result(timeout=10)
+                    response = asyncio.run_coroutine_threadsafe(
+                        ctx.client.post(
+                            "/internal/v1/agent/self/status",
+                            content=data,
+                            headers={**headers, "X-Caller-Identity": "shared-role"},
+                        ),
+                        loop,
+                    ).result(timeout=10)
                     responses.append(response)
                     from types import SimpleNamespace
 
-                    return nullcontext(SimpleNamespace(
-                        status_code=response.status_code,
-                        raw=SimpleNamespace(read=lambda size, **_: response.content[:size]),
-                    ))
+                    return nullcontext(
+                        SimpleNamespace(
+                            status_code=response.status_code,
+                            raw=SimpleNamespace(read=lambda size, **_: response.content[:size]),
+                        )
+                    )
 
             monkeypatch.setattr(status_client.requests, "Session", ProtectedTransport)
             # Positive control: the identical authenticated path writes while
@@ -363,15 +370,20 @@ class TestTheAbortedRunDoesNotStartAgain:
             responses.clear()
             service._events_table = "events-that-does-not-exist"
 
-        exit_code, terminal_persisted, write_attempts = await asyncio.to_thread(partial(
-            run_worker_abort_finalization, worker, ctx, monkeypatch,
-            "broken-" + receipt_handle[:20], events_table="events-that-does-not-exist",
-            protected=protected,
-        ))
+        exit_code, terminal_persisted, write_attempts = await asyncio.to_thread(
+            partial(
+                run_worker_abort_finalization,
+                worker,
+                ctx,
+                monkeypatch,
+                "broken-" + receipt_handle[:20],
+                events_table="events-that-does-not-exist",
+                protected=protected,
+            )
+        )
         if protected:
             assert len(responses) == worker.ABORT_TERMINAL_WRITE_ATTEMPTS
             assert all(response.status_code == 503 for response in responses)
-
 
         # The write was attempted, on production's own bound, and observed to fail.
         # This is the assertion the previous revision of this test could not make,
@@ -415,8 +427,9 @@ class TestTheAbortedRunDoesNotStartAgain:
         loop = asyncio.get_running_loop()
         responses = []
         original_verify = ctx.runtime.workloads.verify
-        monkeypatch.setattr(ctx.runtime.workloads, "verify", lambda token:
-            pod("replacement-pod") if token == "replacement-proof" else original_verify(token))
+        monkeypatch.setattr(
+            ctx.runtime.workloads, "verify", lambda token: pod("replacement-pod") if token == "replacement-proof" else original_verify(token)
+        )
 
         class Transport:
             def __enter__(self):
@@ -430,10 +443,14 @@ class TestTheAbortedRunDoesNotStartAgain:
                 assert headers[WORKLOAD_HEADER] == "replacement-proof"
                 assert "Authorization" in headers
                 # API Gateway supplies this verified transport identity.
-                response = asyncio.run_coroutine_threadsafe(ctx.client.post(
-                    "/internal/v1/agent/bootstrap", content=data,
-                    headers={**headers, "X-Caller-Identity": "shared-role"},
-                ), loop).result(timeout=10)
+                response = asyncio.run_coroutine_threadsafe(
+                    ctx.client.post(
+                        "/internal/v1/agent/bootstrap",
+                        content=data,
+                        headers={**headers, "X-Caller-Identity": "shared-role"},
+                    ),
+                    loop,
+                ).result(timeout=10)
                 responses.append(response)
                 return nullcontext(response)
 
@@ -444,8 +461,7 @@ class TestTheAbortedRunDoesNotStartAgain:
         monkeypatch.setattr(worker, "BootstrapLogger", Mock())
         monkeypatch.setattr(run_identity.requests, "Session", Transport)
         monkeypatch.setattr(run_identity, "read_workload_token", lambda: "replacement-proof")
-        monkeypatch.setattr("adp_trigger.transport_identity.worker_credentials",
-                            lambda _: Credentials("AKIAEXAMPLE", "secret", "token"))
+        monkeypatch.setattr("adp_trigger.transport_identity.worker_credentials", lambda _: Credentials("AKIAEXAMPLE", "secret", "token"))
         launch = Mock(side_effect=AssertionError("refused worker launched a subprocess"))
         monkeypatch.setattr(worker.subprocess, "run", launch)
         monkeypatch.setattr(worker.subprocess, "Popen", launch)
@@ -607,6 +623,7 @@ class TestTheAbortedRunDoesNotStartAgain:
         assert response.status_code == 404, response.text
         # No credential was issued, so nothing the task needs to run exists.
         assert "credential" not in response.json()
+
 
 class TestTheAbortingRunItselfIsNotStopped:
     """Quiescence before terminal — instruction 5808383984.

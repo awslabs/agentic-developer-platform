@@ -71,8 +71,10 @@ class KubernetesWorkloadVerifier:
         from src.agentauth.exit_retention import PodExitRetention
 
         return PodExitRetention(
-            client=self._client, namespace=self._namespace,
-            service_account=self._service_account, token_path=self._gateway_token_path,
+            client=self._client,
+            namespace=self._namespace,
+            service_account=self._service_account,
+            token_path=self._gateway_token_path,
         )
 
     @classmethod

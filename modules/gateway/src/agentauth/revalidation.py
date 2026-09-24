@@ -83,8 +83,10 @@ async def _accept_abort(runtime, body, *, target, pod, generation, raw: bytes) -
     try:
         await run_in_threadpool(
             runtime.workloads.exit_retention.retain,
-            name=pod.name, uid=pod.uid,
-            invocation_id=target.invocation_id, tenant_id=target.tenant_id,
+            name=pod.name,
+            uid=pod.uid,
+            invocation_id=target.invocation_id,
+            tenant_id=target.tenant_id,
         )
     except ExitRetentionError as exc:
         raise AuthorityStoreError("abort exit evidence could not be retained") from exc

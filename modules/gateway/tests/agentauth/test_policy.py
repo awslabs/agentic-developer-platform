@@ -269,9 +269,7 @@ class TestLegitimateFlowStillWorks:
         """
         from src.agentauth.policy import SUPPORTED_AGENT_ACTIONS
 
-        assert SUPPORTED_AGENT_ACTIONS == frozenset(
-            {AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT}
-        )
+        assert SUPPORTED_AGENT_ACTIONS == frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT})
         assert AgentAction.STEER not in SUPPORTED_AGENT_ACTIONS
 
 

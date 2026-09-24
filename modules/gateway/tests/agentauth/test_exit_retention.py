@@ -1,4 +1,5 @@
 """Exact-object retention through the actual HTTP/JSON-patch boundary."""
+
 import copy
 import json
 
@@ -13,8 +14,14 @@ def retention(tmp_path):
     token = tmp_path / "token"
     token.write_text("gateway-token")
     state = {
-        "metadata": {"name": "worker", "uid": "uid-1", "resourceVersion": "10",
-                     "finalizers": ["other.example/retain"], "annotations": {"keep": "annotation"}, "labels": {"keep": "label"}},
+        "metadata": {
+            "name": "worker",
+            "uid": "uid-1",
+            "resourceVersion": "10",
+            "finalizers": ["other.example/retain"],
+            "annotations": {"keep": "annotation"},
+            "labels": {"keep": "label"},
+        },
         "spec": {"serviceAccountName": "agent-authority-worker-sa"},
     }
     writes = []
@@ -115,10 +122,16 @@ def test_release_refuses_a_different_run(retention):
 def test_discovery_is_paged_and_includes_terminating_retained_pods(tmp_path):
     token = tmp_path / "token"
     token.write_text("gateway-token")
-    pod = {"metadata": {"name": "worker", "uid": "uid-1", "finalizers": [FINALIZER],
-                        "deletionTimestamp": "2026-09-24T10:00:00Z",
-                        "annotations": {INVOCATION: "run-1", TENANT: "tenant-1"}},
-           "spec": {"serviceAccountName": "agent-authority-worker-sa"}}
+    pod = {
+        "metadata": {
+            "name": "worker",
+            "uid": "uid-1",
+            "finalizers": [FINALIZER],
+            "deletionTimestamp": "2026-09-24T10:00:00Z",
+            "annotations": {INVOCATION: "run-1", TENANT: "tenant-1"},
+        },
+        "spec": {"serviceAccountName": "agent-authority-worker-sa"},
+    }
     foreign = copy.deepcopy(pod)
     foreign["spec"]["serviceAccountName"] = "other-sa"
     unretained = copy.deepcopy(pod)
@@ -136,3 +149,27 @@ def test_discovery_is_paged_and_includes_terminating_retained_pods(tmp_path):
         hints, cursor = control.discover(cursor="previous-page")
     assert hints == [args()]
     assert cursor == "next-page"
+
+
+@pytest.mark.parametrize("fault", ["unavailable", "malformed-cursor"])
+def test_discovery_failure_does_not_report_an_empty_success(tmp_path, fault):
+    token = tmp_path / "token"
+    token.write_text("gateway-token")
+
+    def transport(request):
+        if fault == "unavailable":
+            return httpx.Response(503)
+        return httpx.Response(200, json={"items": [], "metadata": {"continue": 123}})
+
+    with httpx.Client(base_url="https://kubernetes.default.svc", transport=httpx.MockTransport(transport)) as client:
+        control = PodExitRetention(client=client, namespace="adp-agents", service_account="worker-sa", token_path=token)
+        with pytest.raises(ExitRetentionError):
+            control.discover()
+
+
+@pytest.mark.parametrize("override", [{"name": "../pods/other"}, {"uid": ""}, {"invocation_id": ""}, {"tenant_id": ""}])
+def test_invalid_retention_identity_is_refused_without_mutation(retention, override):
+    control, _, writes = retention
+    with pytest.raises(ExitRetentionError):
+        control.retain(**args(**override))
+    assert not writes

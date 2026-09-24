@@ -1,4 +1,5 @@
 """Recovery across outages and restarts, using real DynamoDB transactions in moto."""
+
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -152,9 +153,14 @@ def test_finalizer_failure_retries_without_double_releasing_reservation(recovery
         ("RESV#grant", {"in_flight": {"N": "2"}}),
         ("RESV#grant#reservation", {"state": {"S": "held"}, "grant_id": {"S": "grant"}, "reservation_id": {"S": "reservation"}}),
     ]:
-        ctx.store.client.put_item(TableName=AUTHORITY, Item={
-            "pk": {"S": f"TENANT#{TENANT}"}, "sk": {"S": suffix}, **attributes,
-        })
+        ctx.store.client.put_item(
+            TableName=AUTHORITY,
+            Item={
+                "pk": {"S": f"TENANT#{TENANT}"},
+                "sk": {"S": suffix},
+                **attributes,
+            },
+        )
     ctx.retention.release.side_effect = ExitRetentionError("conflict")
     assert recover(ctx)[0] == 0
     assert ctx.store._read(f"TENANT#{TENANT}", "RESV#grant")["in_flight"] == {"N": "1"}
@@ -199,8 +205,11 @@ def test_interrupted_acceptance_transaction_loses_to_concurrent_winner(recovery,
     def concurrent(**kwargs):
         if winner == "abort":
             ctx.store.authority.record_abort_intent(
-                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-                command_id="winning-abort", body_digest="a" * 64,
+                invocation_id=INVOCATION,
+                tenant_id=TENANT,
+                attempt=1,
+                command_id="winning-abort",
+                body_digest="a" * 64,
             )
         else:
             put_event(ctx.store.client, status="complete")
@@ -226,8 +235,11 @@ def test_interrupted_acceptance_retirement_refuses_a_late_abort_marker(recovery)
     assert recover(ctx)[0] == 1
     with pytest.raises(AbortIntentConflictError):
         ctx.store.authority.record_abort_intent(
-            invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
-            command_id="too-late", body_digest="a" * 64,
+            invocation_id=INVOCATION,
+            tenant_id=TENANT,
+            attempt=1,
+            command_id="too-late",
+            body_digest="a" * 64,
         )
     assert read_event(ctx.store.client)["status"] == {"S": "failed"}
 
@@ -249,16 +261,21 @@ def test_composed_kubernetes_retention_survives_deletion_and_reporting_outage(re
     token.write_text("gateway-token")
     pod = {
         "metadata": {
-            "name": "worker-1", "uid": "pod-uid-1", "resourceVersion": "10",
+            "name": "worker-1",
+            "uid": "pod-uid-1",
+            "resourceVersion": "10",
             "deletionTimestamp": "2026-09-24T10:00:00Z",
             "finalizers": ["other.example/keep", FINALIZER],
             "labels": {LABEL: "true"},
             "annotations": {INVOCATION_ANNOTATION: INVOCATION, TENANT_ANNOTATION: TENANT},
         },
         "spec": {"serviceAccountName": "agent-authority-worker-sa"},
-        "status": {"phase": "Succeeded" if terminated else "Running", "containerStatuses": [
-            {"name": "agent-worker", "state": {"terminated": {"exitCode": 0}} if terminated else {"running": {}}},
-        ]},
+        "status": {
+            "phase": "Succeeded" if terminated else "Running",
+            "containerStatuses": [
+                {"name": "agent-worker", "state": {"terminated": {"exitCode": 0}} if terminated else {"running": {}}},
+            ],
+        },
     }
     patches = []
 
@@ -284,10 +301,14 @@ def test_composed_kubernetes_retention_survives_deletion_and_reporting_outage(re
         return httpx.Response(200, json=copy.deepcopy(pod))
 
     with httpx.Client(base_url="https://kubernetes.default.svc", transport=httpx.MockTransport(transport)) as client:
+
         def fresh_workloads():
             return KubernetesWorkloadVerifier(
-                client=client, image_digests=frozenset({"sha256:" + "a" * 64}),
-                namespace="adp-agents", service_account="agent-authority-worker-sa", gateway_token_path=token,
+                client=client,
+                image_digests=frozenset({"sha256:" + "a" * 64}),
+                namespace="adp-agents",
+                service_account="agent-authority-worker-sa",
+                gateway_token_path=token,
             )
 
         ctx.workloads = fresh_workloads()
@@ -304,3 +325,35 @@ def test_composed_kubernetes_retention_survives_deletion_and_reporting_outage(re
         assert FINALIZER in pod["metadata"]["finalizers"]
         assert not patches
         assert read_event(ctx.store.client)["status"] == {"S": "in_progress"}
+
+
+@pytest.mark.parametrize("defect", ["missing-key", "wrong-tenant", "pending-authority", "retired-without-report", "missing-status"])
+def test_interrupted_acceptance_keeps_unresolved_evidence(recovery, defect):
+    ctx = recovery
+    del ctx.raw["abort_command_id"]
+    if defect == "missing-key":
+        del ctx.raw["arrived_at"]
+    elif defect == "pending-authority":
+        ctx.raw["status"] = {"S": "pending"}
+    elif defect == "retired-without-report":
+        ctx.raw["status"] = {"S": "completed"}
+    ctx.store.client.put_item(TableName=AUTHORITY, Item=ctx.raw)
+    if defect == "wrong-tenant":
+        put_event(ctx.store.client, tenant="other-tenant")
+    elif defect == "missing-status":
+        row = read_event(ctx.store.client)
+        del row["status"]
+        ctx.store.client.put_item(TableName=EVENTS, Item=row)
+    assert recover(ctx)[0] == int(defect == "missing-status")
+    if defect != "missing-status":
+        ctx.retention.release.assert_not_called()
+    else:
+        assert read_event(ctx.store.client)["status"] == {"S": "failed"}
+
+
+def test_incomplete_reservation_binding_keeps_exit_evidence(recovery):
+    ctx = recovery
+    ctx.raw["parent_grant_id"] = {"S": "grant"}
+    ctx.store.client.put_item(TableName=AUTHORITY, Item=ctx.raw)
+    assert recover(ctx)[0] == 0
+    ctx.retention.release.assert_not_called()

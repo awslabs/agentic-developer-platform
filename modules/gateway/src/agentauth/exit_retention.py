@@ -5,6 +5,7 @@ still verify container termination and commit the terminal result before release
 The annotations are discovery hints, never authority: reconciliation must compare
 them with the protected execution's tenant, invocation, and workload binding.
 """
+
 from __future__ import annotations
 
 import re
@@ -43,11 +44,7 @@ class PodExitRetention:
         response.raise_for_status()
         pod = response.json()
         metadata = pod["metadata"]
-        if (
-            metadata.get("uid") != uid
-            or not metadata.get("resourceVersion")
-            or pod.get("spec", {}).get("serviceAccountName") != self.service_account
-        ):
+        if metadata.get("uid") != uid or not metadata.get("resourceVersion") or pod.get("spec", {}).get("serviceAccountName") != self.service_account:
             raise ExitRetentionError("worker identity changed")
         return path, pod, metadata
 
@@ -59,9 +56,7 @@ class PodExitRetention:
             {"op": "test", "path": "/metadata/resourceVersion", "value": metadata["resourceVersion"]},
             *changes,
         ]
-        response = self.client.patch(
-            path, headers={**self._headers(), "Content-Type": "application/json-patch+json"}, json=patch
-        )
+        response = self.client.patch(path, headers={**self._headers(), "Content-Type": "application/json-patch+json"}, json=patch)
         response.raise_for_status()
 
     def discover(self, *, cursor: str = "") -> tuple[list[dict], str]:
@@ -86,13 +81,19 @@ class PodExitRetention:
                 if (
                     pod.get("spec", {}).get("serviceAccountName") == self.service_account
                     and FINALIZER in (metadata.get("finalizers") or [])
-                    and all(isinstance(value, str) and value for value in (
-                        metadata.get("name"), metadata.get("uid"),
-                        annotations.get(INVOCATION), annotations.get(TENANT),
-                    ))
+                    and all(
+                        isinstance(value, str) and value
+                        for value in (
+                            metadata.get("name"),
+                            metadata.get("uid"),
+                            annotations.get(INVOCATION),
+                            annotations.get(TENANT),
+                        )
+                    )
                 ):
-                    hints.append({"name": metadata["name"], "uid": metadata["uid"],
-                                  "invocation_id": annotations[INVOCATION], "tenant_id": annotations[TENANT]})
+                    hints.append(
+                        {"name": metadata["name"], "uid": metadata["uid"], "invocation_id": annotations[INVOCATION], "tenant_id": annotations[TENANT]}
+                    )
             cursor = page.get("metadata", {}).get("continue", "")
             if not isinstance(cursor, str):
                 raise ValueError("invalid page cursor")
@@ -120,11 +121,15 @@ class PodExitRetention:
             finalizers.append(FINALIZER)
             annotations.update(binding)
             labels[LABEL] = "true"
-            self._patch(path, metadata, [
-                {"op": "add", "path": "/metadata/finalizers", "value": finalizers},
-                {"op": "add", "path": "/metadata/annotations", "value": annotations},
-                {"op": "add", "path": "/metadata/labels", "value": labels},
-            ])
+            self._patch(
+                path,
+                metadata,
+                [
+                    {"op": "add", "path": "/metadata/finalizers", "value": finalizers},
+                    {"op": "add", "path": "/metadata/annotations", "value": annotations},
+                    {"op": "add", "path": "/metadata/labels", "value": labels},
+                ],
+            )
         except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError) as exc:
             raise ExitRetentionError("could not retain worker exit evidence") from exc
 
@@ -143,10 +148,14 @@ class PodExitRetention:
             annotations.pop(INVOCATION)
             annotations.pop(TENANT)
             labels.pop(LABEL, None)
-            self._patch(path, metadata, [
-                {"op": "add", "path": "/metadata/finalizers", "value": finalizers},
-                {"op": "add", "path": "/metadata/annotations", "value": annotations},
-                {"op": "add", "path": "/metadata/labels", "value": labels},
-            ])
+            self._patch(
+                path,
+                metadata,
+                [
+                    {"op": "add", "path": "/metadata/finalizers", "value": finalizers},
+                    {"op": "add", "path": "/metadata/annotations", "value": annotations},
+                    {"op": "add", "path": "/metadata/labels", "value": labels},
+                ],
+            )
         except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError) as exc:
             raise ExitRetentionError("could not release worker exit evidence") from exc

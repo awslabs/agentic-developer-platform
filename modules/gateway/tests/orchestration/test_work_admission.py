@@ -414,9 +414,7 @@ class TestAbortedRunsAreReportedOnlyAfterTheyStop:
         await start(session, run="still-running")
         workloads = SimpleNamespace(has_exited=Mock(return_value=False))
 
-        report = await recover_exited_claims(
-            session, store=self.store_for(self.aborted_execution()), workloads=workloads
-        )
+        report = await recover_exited_claims(session, store=self.store_for(self.aborted_execution()), workloads=workloads)
 
         assert report.aborts_repaired == 0
         assert report.released == 0
@@ -475,9 +473,7 @@ class TestAbortedRunsAreReportedOnlyAfterTheyStop:
         events, arrived, run = "events", "2026-09-24T11:59:00Z", "dead-abort"
         receipt = await start(session, run=run)
         with mock_aws():
-            client = boto3.client(
-                "dynamodb", region_name="us-east-1", aws_access_key_id="testing", aws_secret_access_key="testing"
-            )
+            client = boto3.client("dynamodb", region_name="us-east-1", aws_access_key_id="testing", aws_secret_access_key="testing")
             client.create_table(
                 TableName=events,
                 KeySchema=[
@@ -549,9 +545,7 @@ class TestAbortedRunsAreReportedOnlyAfterTheyStop:
         events, arrived, run = "events-late", "2026-09-24T11:59:00Z", "outage-abort"
         receipt = await start(session, run=run)
         with mock_aws():
-            client = boto3.client(
-                "dynamodb", region_name="us-east-1", aws_access_key_id="testing", aws_secret_access_key="testing"
-            )
+            client = boto3.client("dynamodb", region_name="us-east-1", aws_access_key_id="testing", aws_secret_access_key="testing")
             monkeypatch.setenv(WEBHOOK_EVENTS_TABLE_ENV, events)
             store = self.store_for(self.aborted_execution(), client=client)
             workloads = SimpleNamespace(has_exited=Mock(return_value=True))
@@ -564,8 +558,7 @@ class TestAbortedRunsAreReportedOnlyAfterTheyStop:
             assert first.released == 0, "releasing here is what would lose the retry"
             claim = await session.get(OrchestrationWorkClaim, receipt["claim_id"])
             assert claim.state == ClaimState.HELD.value, (
-                "the claim must stay held, because this query is the only thing that will "
-                "ever reconsider this run"
+                "the claim must stay held, because this query is the only thing that will ever reconsider this run"
             )
 
             # The outage ends. Nothing else changes — no new state, no attempt counter.
@@ -625,9 +618,7 @@ class TestAbortedRunsAreReportedOnlyAfterTheyStop:
 
         receipt = await start(session, run="misconfigured")
         with mock_aws():
-            client = boto3.client(
-                "dynamodb", region_name="us-east-1", aws_access_key_id="testing", aws_secret_access_key="testing"
-            )
+            client = boto3.client("dynamodb", region_name="us-east-1", aws_access_key_id="testing", aws_secret_access_key="testing")
             monkeypatch.delenv(WEBHOOK_EVENTS_TABLE_ENV, raising=False)
             store = self.store_for(self.aborted_execution(), client=client)
             workloads = SimpleNamespace(has_exited=Mock(return_value=True))
