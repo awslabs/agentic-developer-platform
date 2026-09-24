@@ -37,12 +37,22 @@ knowing before you start:
 The two secrets are different values, so a header minted by one edge is **rejected**
 by the other gateway. Isolation runs in both directions.
 
-**Prerequisite owned by the #3968 fixture tooling, not by this component:** the
-fixture gateway Deployment/Service and its **own internal ALB** (via a fixture
-Ingress) must already exist. On this EKS Auto Mode cluster a second Ingress cannot
-join an existing ALB, so the fixture ALB is necessarily a new one — that is a real
-per-run cost and the reason this component takes the ALB as an input rather than
-creating it.
+**Prerequisites, and who owns each.** An earlier revision of this runbook said
+#3968 creates the fixture's internal ALB. That was **wrong** — its renderer emits a
+Deployment, a ClusterIP Service and NetworkPolicies and **no Ingress** — which left a
+circular prerequisite where neither side created the ALB this edge forwards to.
+
+| Thing | Owner | How |
+|---|---|---|
+| fixture Deployment + Service | #3968 | `10-create-fixture.sh` |
+| fixture **internal ALB** | **this component** | `scripts/create-fixture-alb.sh` (step 1b) |
+| the trusted edge | this component | `scripts/fixture-lifecycle.sh` |
+| ledger + teardown of k8s objects | #3968 | `ownership.py` / `90-cleanup-ledger.sh` |
+
+On this EKS Auto Mode cluster one Ingress is one ALB and changing IngressGroup
+identity *replaces* the ALB, so a dedicated fixture Ingress is the only way to give
+the fixture its own balancer without disturbing the live one. That is a real per-run
+cost, and it is why the ALB is created by an explicit step rather than conjured.
 
 ---
 
@@ -56,25 +66,24 @@ Run these with the `adp-embark1` credential.
 aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 # EXPECT Account = 879318057152. If it is anything else, STOP.
 
-# 1b. The fixture's OWN internal ALB (created by the #3968 fixture tooling).
-#     Replace the name filter with the fixture Ingress's ALB.
-aws elbv2 describe-load-balancers --region us-east-1 \
-  --query 'LoadBalancers[?contains(LoadBalancerName, `w2-fixture`)].{Name:LoadBalancerName,Arn:LoadBalancerArn,DNS:DNSName,Scheme:Scheme}' \
-  --output table
-# EXPECT exactly one, Scheme = internal.
-# Take LoadBalancerArn -> fixture_alb_arn  (a LOAD BALANCER arn, never a listener arn)
-# Take DNSName         -> fixture_alb_dns
+# 1b. The reused VPC link, and the security groups it may EGRESS to.
+#     The link's SG does not have open egress: in dev sg-013f2ce2bcaf1642c permits
+#     tcp/80 to three specific groups only. A fixture ALB outside that set would
+#     pass every other check and then time out on every request.
+aws apigatewayv2 get-vpc-links --region us-east-1 \
+  --query 'Items[].{Id:VpcLinkId,Name:Name,Status:VpcLinkStatus,SGs:SecurityGroupIds}' --output table
+# EXPECT bedrockgw-dev-vpc-link-v2 AVAILABLE -> vpc_link_id  (dev: qmovr6)
+
+aws ec2 describe-security-groups --group-ids <link-sg-id> --region us-east-1 \
+  --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId' --output text
+# -> vpc_link_egress_target_security_group_ids (and the group the ALB must reuse)
 
 # 1c. The ORDINARY internal-plane ALB, recorded so the config can refuse to target it.
-aws elbv2 describe-load-balancers --region us-east-1 \
-  --query 'LoadBalancers[?contains(LoadBalancerName, `bedrockg`)].{Name:LoadBalancerName,Arn:LoadBalancerArn}' \
-  --output table
-# Take the internal-plane one -> ordinary_internal_plane_alb_arn
-
-# 1d. The existing VPC link, reused rather than duplicated.
-aws apigatewayv2 get-vpc-links --region us-east-1 \
-  --query 'Items[].{Id:VpcLinkId,Name:Name,Status:VpcLinkStatus}' --output table
-# EXPECT bedrockgw-dev-vpc-link-v2 AVAILABLE -> vpc_link_id  (dev: qmovr6)
+#     BOTH values are required — an absent one is not a passed check.
+aws ssm get-parameter --name /adp/dev/gateway/internal-plane-alb-arn \
+  --query Parameter.Value --output text   # -> ordinary_internal_plane_alb_arn
+aws ssm get-parameter --name /adp/dev/gateway/internal-plane-alb-dns \
+  --query Parameter.Value --output text   # -> ordinary_internal_plane_alb_dns
 
 # 1e. The protected worker role that will call the fixture edge.
 aws iam get-role --role-name adp-dev-agent-authority-worker-role \
@@ -89,41 +98,89 @@ combination at plan time, but only if you supply this value.
 
 ---
 
-## 2. Isolated state, and the run nonce
+## 1.5 Create the fixture's own internal ALB
 
-Use the **#3968 run nonce** so the edge is bound to the same run as the rest of the
-fixture, and an isolated backend key so this can never touch ordinary gateway state.
+**This mutates the cluster.** Run it after #3968's `10-create-fixture.sh` has created
+the fixture Deployment and Service, and before the Terraform steps — the edge reads
+this ALB, so it must exist first.
+
+```bash
+./scripts/create-fixture-alb.sh \
+  --run-id "<#3968 run id>" --run-nonce "$FIXTURE_NONCE" \
+  --ledger "<#3968 ledger.json>" \
+  --namespace adp-gateway --service "<fixture Service name>" \
+  --alb-security-groups "<from 1b>"
+```
+
+`--check-only` renders and server-side dry-runs it, creating nothing.
+
+It uses `kubectl create` (never `apply`, which would **adopt** a same-named object
+and let the ledger authorise deleting something this run did not create), records the
+server-assigned uid via #3968's `ownership.py record-k8s`, waits for the ALB, then
+verifies on the **live** resource that the scheme really is `internal` and the
+`AdpFixtureRun` tag really is this nonce — the tag the Terraform gate refuses to plan
+without. It prints `fixture_alb_arn` and `expected_vpc_id` for step 3.
+
+No file under `platform/scripts/operator/wave2/` is modified. An Ingress is an
+ordinary uid-bearing Kubernetes object, so #3968's existing `k8s` ledger bucket and
+uid-gated delete path already cover its teardown; no new ledger type was needed.
+
+---
+
+## 2. Isolated state, bound to an explicit account and run
+
+Every step below is run through `scripts/fixture-lifecycle.sh`, which refuses to
+guess any of the bindings. The prose version of this procedure was not executable —
+that is what this script fixes.
 
 ```bash
 cd modules/gateway/infra/fixture-edge
 
-# Use the SAME nonce the #3968 ownership ledger generated for this run.
+# The SAME nonce the #3968 ownership ledger generated for this run.
 export FIXTURE_NONCE="<nonce from platform/scripts/operator/wave2 lib/ownership.py>"
 
-terraform init -input=false \
-  -backend-config="bucket=<terraform state bucket>" \
-  -backend-config="key=fixture-edge/dev/${FIXTURE_NONCE}/terraform.tfstate" \
-  -backend-config="region=us-east-1" \
-  -backend-config="encrypt=true"
+./scripts/fixture-lifecycle.sh init \
+  --nonce "$FIXTURE_NONCE" --account-id 879318057152 \
+  --region us-east-1 --environment dev \
+  --profile adp-embark1 --state-bucket <terraform state bucket>
 ```
 
-A per-nonce key means two concurrent fixture runs cannot corrupt each other, and
-destroying one run's edge cannot affect another's.
+It asserts the live credential really resolves to `879318057152` before doing
+anything, binds every AWS call to `--profile`, and uses a state key that carries
+**both** the account and the nonce:
 
-> Local-only alternative if you prefer no remote state for a disposable resource:
-> omit the `-backend-config` flags and keep `terraform.tfstate` locally. **Do not
-> commit it** — it contains the provenance secret in plain text. This is exactly why
-> the secret is not a Terraform output.
+```
+fixture-edge/dev/879318057152/<nonce>/terraform.tfstate
+```
+
+Two concurrent runs cannot corrupt each other, and a mistyped bucket belonging to
+another account cannot collide with that account's fixture state.
+
+> **There is no "just keep state locally" alternative.** An earlier revision of this
+> step said you could omit the `-backend-config` flags and keep state locally. That
+> is false, and was reproduced as false on Terraform 1.15.3: with a `backend "s3"`
+> block declared, omitting them **fails** init —
+> `Error: Missing Required Value — The attribute "key" is required by the backend.`
+>
+> The only two modes are the real run above, and **checks only**:
+> `terraform init -backend=false` (supports `fmt`/`validate`/`test`, **not**
+> `plan`/`apply`). If truly local state were ever wanted the backend block would have
+> to be deleted, not under-configured — and that local file would hold the provenance
+> secret in plain text, which is a further reason the secret is not a Terraform output.
 
 ---
 
-## 3. Retained inputs
+## 3. Retained inputs, in a private directory
 
-Write the reviewed inputs to a file rather than passing them ad hoc, so what was
-applied is auditable. Values come from step 1.
+The script keeps run artifacts in `.fixture-run-<nonce>/`, created **700** and
+verified to be 700 (a pre-existing loose directory is normalised, not accepted).
+Write the reviewed inputs there, so what was applied is auditable:
 
 ```bash
-cat > "fixture-${FIXTURE_NONCE}.tfvars" <<EOF
+ART=".fixture-run-${FIXTURE_NONCE}"
+mkdir -p "$ART" && chmod 700 "$ART"
+
+cat > "$ART/fixture.tfvars" <<EOF
 fixture_edge_enabled = true
 
 run_nonce           = "${FIXTURE_NONCE}"
@@ -131,81 +188,108 @@ expected_account_id = "879318057152"
 aws_region          = "us-east-1"
 environment         = "dev"
 
-fixture_alb_arn = "<from 1b LoadBalancerArn>"
-fixture_alb_dns = "<from 1b DNSName>"
+# From step 1b — the script prints these two for you.
+fixture_alb_arn = "<create-fixture-alb.sh output>"
+expected_vpc_id = "<create-fixture-alb.sh output>"
 
+# From step 1c/1d. Both REQUIRED: a skipped isolation check is not a passed one.
 ordinary_internal_plane_alb_arn = "<from 1c>"
+ordinary_internal_plane_alb_dns = "<from 1c>"
 
-vpc_link_id = "qmovr6"
+vpc_link_id                               = "qmovr6"
+vpc_link_egress_target_security_group_ids = ["<from 1d>"]
 
 allowed_caller_role_arns = ["arn:aws:iam::879318057152:role/adp-dev-agent-authority-worker-role"]
 EOF
 ```
 
-This file contains no secrets. The provenance proof is generated by Terraform and
-never appears in inputs, outputs or logs.
+Note there is **no `fixture_alb_dns` input**: the DNS name is read from the load
+balancer named by `fixture_alb_arn`, so the two cannot disagree. This file contains
+no secrets — the provenance proof is generated by Terraform and never appears in
+inputs, outputs or logs.
 
 ---
 
-## 4. Plan, then apply
+## 4. Plan, review, then apply the reviewed plan
 
 ```bash
-terraform plan -input=false -var-file="fixture-${FIXTURE_NONCE}.tfvars" -out=fixture.plan
+./scripts/fixture-lifecycle.sh plan \
+  --nonce "$FIXTURE_NONCE" --account-id 879318057152 --profile adp-embark1
 ```
 
-**Review the plan for exactly these 6 resources**, all name-bound to the nonce:
+The plan is machine-reviewed before you see it: any change to a resource type
+outside this component's expected set **stops the run**. That should be impossible
+(separate state, separate API), so it means the wrong backend or directory.
+
+**Expect exactly these**, all name-bound to the nonce:
 
 | Resource | Purpose |
 |---|---|
+| `terraform_data.run_binding_gate[0]` | blocking isolation preconditions |
 | `aws_api_gateway_rest_api.fixture[0]` | the fixture edge |
-| `aws_api_gateway_rest_api_policy.fixture[0]` | wrong-role refusal |
+| `aws_api_gateway_rest_api_policy.fixture[0]` | wrong-role refusal on `/internal` |
 | `aws_api_gateway_deployment.fixture[0]` | |
 | `aws_api_gateway_stage.fixture[0]` | stage `dev` |
 | `aws_cloudwatch_log_group.fixture[0]` | 7-day access logs |
 | `aws_ssm_parameter.fixture_provenance_secret[0]` | SecureString handoff |
 | `random_password.fixture_edge_provenance[0]` | (no cloud resource) |
 
-If the plan shows **any** resource outside this directory, or any change to
-`bedrockgw-dev-api`, the ordinary ALBs, IAM, or the ordinary provenance parameter —
-**STOP**. It should be impossible (separate state, separate API), and a plan that
-shows otherwise means the wrong backend or directory.
-
-A plan-time refusal here is the config working as intended. `run_binding` fails if
-the caller's real account is not 879318057152, the region disagrees, or
-`fixture_alb_arn` is the ordinary internal-plane ALB.
+A plan-time **refusal** here is the gate working. `terraform_data.run_binding_gate`
+fails the plan — exit code 1, not a warning — if the caller's real account or region
+disagrees, or if the fixture ALB is public, in another VPC, not tagged for this run,
+unreachable from the reused VPC Link, or is the ordinary internal-plane ALB.
 
 ```bash
-terraform apply -input=false fixture.plan
+./scripts/fixture-lifecycle.sh apply \
+  --nonce "$FIXTURE_NONCE" --account-id 879318057152 --profile adp-embark1 \
+  --plan-file ".fixture-run-${FIXTURE_NONCE}/fixture.plan"
 ```
 
-Record the outputs. `worker_control_endpoint` and `ssm_provenance_parameter_name` are
-the two the fixture tooling needs; **`terraform output` never prints the secret.**
+`apply` takes a **reviewed plan file only**; it will not generate a fresh plan. It
+writes an ownership receipt to the artifact directory afterwards.
 
 ---
 
-## 5. Hand the fixture gateway its matching secret
-
-The fixture pod must validate against the **same** value this edge injects, or every
-internal call returns 403. Fetch it directly into the fixture's own Secret — never
-via an intermediate file, an issue comment, or a workflow log.
+## 5. Hand the fixture gateway its secret — and actually attach it
 
 ```bash
-# Read the per-run secret (decrypted) and place it in the FIXTURE's secret only.
-aws ssm get-parameter \
-  --name "$(terraform output -raw ssm_provenance_parameter_name)" \
-  --with-decryption --query 'Parameter.Value' --output text \
-| kubectl create secret generic "w2-fixture-provenance-${FIXTURE_NONCE}" \
-    --namespace adp-gateway \
-    --from-file=BG_APIGW_PROVENANCE_SECRET=/dev/stdin
+./scripts/fixture-lifecycle.sh handoff \
+  --nonce "$FIXTURE_NONCE" --account-id 879318057152 --profile adp-embark1 \
+  --ledger <#3968 ledger.json> \
+  --namespace adp-gateway \
+  --fixture-deployment w2-fixture-gateway-<run-id>
 ```
 
-The fixture gateway also needs `BG_TRUST_APIGW_HEADERS: "true"`, which is the claim
-that a header-blanking edge fronts it. That is true for the fixture **only because
-this component blanks both headers on its auth-NONE route** — so set it on the
-fixture's own ConfigMap, and nowhere else.
+**Why `--fixture-deployment` is mandatory.** An earlier revision created the Secret
+and stopped. That changed nothing: the fixture pod kept reading the **ordinary**
+gateway's `bedrockgateway-secrets/apigw-provenance-secret`, so it validated against
+production's value. The Secret alone is inert. This step:
 
-> Add this Secret to the #3968 cleanup ledger's `k8s` rows so teardown removes it.
-> Do **not** set either value on the ordinary gateway's ConfigMap or Secret.
+1. reads the per-run SSM parameter and **refuses** any path that is not
+   `.../fixture/<nonce>/...`, so the two edges cannot share one trust root;
+2. pipes the value SSM → `kubectl` stdin — never a file, variable, log or argv — and
+   checks the **SSM exit status separately** from `kubectl`'s, because a Secret built
+   from a failed read would hold an error string and surface much later as an
+   unexplained 403;
+3. refuses to adopt an existing Secret, and records the server-assigned uid in the
+   #3968 ledger, failing loudly (with the manual `kubectl delete` to run) if that
+   record cannot be written;
+4. **attaches** it with a strategic-merge patch that repoints
+   `BG_APIGW_PROVENANCE_SECRET` and sets `BG_TRUST_APIGW_HEADERS=true` on the fixture
+   Deployment, and then **verifies** all nine secret-backed env refs survived.
+   `container.env` merges by name, so the eight refs #3968's renderer deliberately
+   carried over are preserved; a json-merge patch would replace the whole list and
+   silently drop them.
+
+`BG_TRUST_APIGW_HEADERS=true` is defensible on the fixture **only because this
+component blanks both trusted headers on its auth-NONE route**. Never set it on the
+ordinary gateway.
+
+The pod must roll for any of this to take effect:
+
+```bash
+kubectl rollout status deployment/w2-fixture-gateway-<run-id> -n adp-gateway
+```
 
 ---
 
@@ -238,29 +322,59 @@ aws elbv2 describe-target-health \
 # Cross-check against: kubectl get pods -n adp-gateway -l <fixture selector> -o wide
 ```
 
-**6c. The three refusals.** Each must be observed, not assumed. These are the
-acceptance evidence for "spoofed, unsigned and wrong-role calls refused".
+**6c. The refusals — and a positive control.** Each must be observed, not assumed,
+and each must be attributed to **the layer that actually refused it**. A 403 proves
+nothing if you cannot say which component produced it; three different mechanisms are
+involved here and only one of them is this component's resource policy.
+
+| # | Request | Expected | **Which layer refuses, and why** |
+|---|---|---|---|
+| 1 | unsigned, on `/internal` | 403 | **API Gateway `AWS_IAM`** — no valid SigV4, rejected before any policy or pod is consulted |
+| 2 | unsigned + forged trusted headers | 403 | **Same as #1.** The forged headers are irrelevant: the request never reaches the pod, and the edge would overwrite both anyway |
+| 3 | correctly signed, role NOT allow-listed | 403 | **This component's resource policy** — the explicit `Deny` on `/internal`, matched by `aws:PrincipalArn` |
+| 4 | forged provenance header that *did* reach the pod | 403 | **The gateway pod** — `src/auth/caller_provenance.py` constant-time compare against the per-run secret |
+| 5 | **human bearer session on a non-`/internal` route** | **NOT 403** | **Positive control.** Must succeed; see below |
 
 ```bash
-# UNSIGNED -> 403 from API Gateway ("Missing Authentication Token"/"not authorized").
-# It never reaches the pod, so it cannot acquire a provenance header.
+# 1. UNSIGNED -> refused by API Gateway's AWS_IAM, before the policy or the pod.
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$ENDPOINT/bootstrap"
 
-# SPOOFED headers, unsigned -> still 403 at the edge. The edge OVERWRITES both
-# headers, so a client-supplied pair cannot survive even if signing succeeded.
+# 2. SPOOFED headers, unsigned -> same layer as #1; the edge also OVERWRITES both.
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$ENDPOINT/bootstrap" \
   -H 'X-Caller-Identity: arn:aws:iam::879318057152:role/anything' \
   -H 'X-Adp-Edge-Provenance: forged'
 
-# WRONG ROLE, correctly signed -> 403 from the resource policy's explicit Deny.
-# Use any signed identity NOT in allowed_caller_role_arns (e.g. your own session).
-# awscurl or a SigV4 signer; do NOT use the worker role here.
+# 3. WRONG ROLE, correctly signed -> refused by THIS component's resource policy.
+#    Use a signed identity NOT in allowed_caller_role_arns. Do NOT use the worker role.
 awscurl --service execute-api --region us-east-1 -X POST "$ENDPOINT/bootstrap" -d '{}'
 ```
 
-Expected: **403 for all three.** Capture each status code as evidence. A `200` or a
-`5xx` on any of them means STOP and investigate — a 5xx can indicate the request
-reached a backend, which the first two must never do.
+Confirm #3 was the *policy* and not something else, by reading the access log rather
+than inferring it from the status code:
+
+```bash
+aws logs tail "/aws/api-gateway/bedrockgw-dev-w2fx-${FIXTURE_NONCE}" --since 5m
+```
+
+**5 — the positive human control, and why it must be run.** The previous revision's
+resource policy denied everything under `execution_arn/*`, including the auth-`NONE`
+human routes. An unsigned human request carries no `aws:PrincipalArn`, so it matched
+the `Deny` and was refused **at the edge, before the gateway could authenticate the
+JWT at all**. The policy is now scoped to `/internal` only, and this control is what
+proves it: a human bearer-token request on a non-`/internal` route must be handled by
+the gateway (200/401/403 *from the application*), **not** refused by the edge.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "https://${API_ID}.execute-api.us-east-1.amazonaws.com/dev/api/health"
+# EXPECT a normal application response, NOT an edge refusal. If this is refused by
+# API Gateway, the Deny has regressed to API-wide and human sign-in is broken.
+```
+
+Expected: **403 for 1–4, and a normal application response for 5.** Capture each
+status code plus its attributed layer as evidence. A `200` on 1–4, or an edge refusal
+on 5, means STOP. A `5xx` on 1 or 2 also means STOP: it can indicate the request
+reached a backend, which those two must never do.
 
 ---
 
@@ -269,7 +383,7 @@ reached a backend, which the first two must never do.
 Set on the **fixture worker Job only**:
 
 ```
-ADP_AGENT_CONTROL_ENDPOINT = <worker_control_endpoint from step 4>
+ADP_AGENT_CONTROL_ENDPOINT = <worker_control_endpoint, from step 4's outputs>
 ```
 
 The worker appends `/bootstrap` itself and rejects any endpoint that is not HTTPS
@@ -289,65 +403,73 @@ fabricated headers anywhere in the path.**
 
 ---
 
-## 8. Teardown, with proof
+## 8. Teardown, in dependency order, with proof
 
-Exact and observable, per #5836.
+**Ordering is load-bearing, and it is the opposite of the intuitive one.** `main.tf`
+reads the fixture ALB (`data.aws_lb.fixture`) to derive its DNS name, and Terraform
+re-reads data sources during `destroy`. So deleting the fixture Ingress first makes
+the destroy **unplannable** — reproduced on Terraform 1.15.3:
 
-```bash
-cd modules/gateway/infra/fixture-edge
-terraform destroy -input=false -var-file="fixture-${FIXTURE_NONCE}.tfvars"
+```
+Error: ... data source error — the object cannot be read
 ```
 
-Then **prove** removal rather than trusting the destroy summary:
+Therefore: **destroy the edge first** (which stops the listeners and routes), **then**
+delete the Ingress and its ALB.
 
 ```bash
-# 8a. The REST API is gone.
-aws apigateway get-rest-api --rest-api-id "$API_ID" 2>&1 | grep -q 'NotFoundException' \
-  && echo "OK: fixture API deleted" || echo "STILL PRESENT"
+# Review first — this deletes nothing.
+./scripts/fixture-lifecycle.sh destroy \
+  --nonce "$FIXTURE_NONCE" --account-id 879318057152 --profile adp-embark1 --dry-run
 
-# 8b. No fixture edge survives under this nonce (catches a partial destroy).
-aws apigateway get-rest-apis --region us-east-1 \
-  --query "items[?contains(name, '${FIXTURE_NONCE}')].{id:id,name:name}" --output table
-# EXPECT empty.
-
-# 8c. The per-run secret is gone.
-aws ssm get-parameter --name "/adp/dev/gateway/fixture/${FIXTURE_NONCE}/apigw-provenance-secret" 2>&1 \
-  | grep -q 'ParameterNotFound' && echo "OK: secret deleted" || echo "STILL PRESENT"
-
-# 8d. The log group is gone.
-aws logs describe-log-groups \
-  --log-group-name-prefix "/aws/api-gateway/bedrockgw-dev-w2fx-${FIXTURE_NONCE}" \
-  --query 'logGroups[].logGroupName' --output table
-# EXPECT empty.
-
-# 8e. The ORDINARY edge is untouched — the most important post-check.
-aws apigateway get-rest-api --rest-api-id 59o2rakc50 --query 'name' --output text
-# EXPECT bedrockgw-dev-api
-aws ssm get-parameter --name /adp/dev/gateway/apigw-provenance-secret \
-  --query 'Parameter.Name' --output text
-# EXPECT the parameter still present (value not printed).
+# Then for real.
+./scripts/fixture-lifecycle.sh destroy \
+  --nonce "$FIXTURE_NONCE" --account-id 879318057152 --profile adp-embark1
 ```
 
-Also delete the fixture Secret from step 5 (via the #3968 ledger), and the
-`fixture-<nonce>.tfvars` and any local state file.
+What it does, and what it refuses:
 
-**Ownership note.** The `ownership` Terraform output enumerates all three deletable
-resources with a re-verification command each, for the #3968 ledger. Teardown there
-deletes only when the server-side identity still matches what creation recorded — so
-a same-named replacement created by someone else is left alone rather than destroyed.
-A name prefix alone is not ownership.
+1. **Plans the destroy from exact state** and prints the precise list of objects
+   state owns. A plan that would also *create* or *update* anything stops the run.
+2. **Refuses to run without the reviewed `fixture.tfvars`.** It will not fall back to
+   deleting by name prefix or tag: a name prefix is not ownership, and a same-named
+   replacement created by someone else would be destroyed instead. This is why
+   replacement-safe teardown needs exact state, not a post-hoc sweep.
+3. **Destroys the edge**, then **verifies absence** rather than trusting the summary —
+   the REST API and the per-run secret must be gone, and the **ordinary** provenance
+   parameter must still be present. Any unverified absence fails the command, so
+   cleanup is never reported as complete on an unproven teardown.
 
-### If destroy fails partway
-
-State is isolated per nonce, so re-running `terraform destroy` is safe and
-idempotent. If state is lost, delete by nonce using 8b/8c/8d to locate resources,
-verifying the `AdpFixtureRun` tag matches your nonce before each delete:
+If the ALB was already deleted out of order, the destroy plan cannot be read. Use:
 
 ```bash
-aws apigateway get-rest-api --rest-api-id <id> --query 'tags.AdpFixtureRun' --output text
+./scripts/fixture-lifecycle.sh destroy ... --recover   # adds -refresh=false
 ```
 
----
+That path was verified to complete. It is a recovery, not the normal route.
+
+**Then, and only then, the Kubernetes objects:**
+
+```bash
+# #3968's ledger deletes the fixture Ingress (this is what removes the ALB) and the
+# fixture Secret, both uid-gated.
+platform/scripts/operator/wave2/90-cleanup-ledger.sh --ledger <ledger.json>
+```
+
+Finally remove the private artifact directory `.fixture-run-<nonce>/`, which holds the
+reviewed inputs and plan files.
+
+**Ownership model, and its honest boundary.** The fixture Ingress and Secret are in
+#3968's ledger with their server-assigned uids, so its cleanup deletes them only when
+the live object is still the one this run created. The **Terraform-owned** resources
+(REST API, policy, deployment, stage, log group, SSM parameter) are owned by the
+isolated per-run **state file**, which is a stronger record than either a name prefix
+or a ledger row — and they are removed by the reviewed destroy plan above. The
+`ownership` output and the receipt in the artifact directory exist so a human reading
+the ledger can see these resources and how they are torn down; they are *not* the
+delete authority. #3968's `cleanup_ok` stays `None` for a dry run and `False` on any
+unverified absence, so do not record success for this component until both the destroy
+verification and `90-cleanup-ledger.sh` report verified absence.
 
 ## Boundaries
 

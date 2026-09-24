@@ -37,6 +37,25 @@ mock_provider "aws" {
     }
   }
 
+  # These two also have server-assigned ids, and the ownership receipt now
+  # enumerates them (it previously under-counted, omitting the policy that IS the
+  # wrong-role refusal). Without stand-ins the receipt is UNKNOWN at plan time,
+  # and an unknown poisons any expression built from it — `try()` recovers from
+  # errors, not from unknowns — so the "no output contains the secret" assertion
+  # below becomes unevaluable rather than false. That failure mode is worth
+  # naming: it means a weaker version of that assertion (one that skipped the
+  # receipt) would have passed while leaving the largest output unchecked.
+  mock_resource "aws_api_gateway_rest_api_policy" {
+    defaults = {
+      id = "fx1234abcd"
+    }
+  }
+  mock_resource "aws_api_gateway_deployment" {
+    defaults = {
+      id = "dep1234abcd"
+    }
+  }
+
   # The fixture ALB is now DISCOVERED rather than described by input strings, so
   # the mock has to supply the facts the blocking gate reads. The happy-path
   # defaults describe a correctly-built fixture ALB: internal, in the expected
@@ -574,19 +593,59 @@ run "resources_are_bound_to_run_account_and_region" {
     error_message = "The fixture edge must be marked disposable."
   }
 
-  # The ownership output is what the #3968 ledger consumes, and each row must
-  # carry a re-verifiable identity: a name prefix alone is not ownership.
+  # The ownership output is an INVENTORY RECEIPT, not a delete authority. The
+  # previous revision enumerated three resources with name/tag-derived `verify`
+  # commands and a `delete = true` flag, which read as "look this up by name and
+  # delete it". That is not replacement-safe: a name or tag cannot distinguish the
+  # object this run created from a later same-named one. These assertions pin the
+  # corrected shape.
   assert {
-    condition     = length(output.ownership.resources) == 3
-    error_message = "Ownership must enumerate all three created resources (api, ssm parameter, log group) so bounded cleanup can reach each one."
+    # Every EVALUATED resource must appear. The old count of 3 silently omitted the
+    # resource policy (the wrong-role refusal), the deployment and the stage, so an
+    # inventory built from it could not show the refusal was removed with the API.
+    condition     = length(output.ownership.resources) == 6
+    error_message = "Ownership must enumerate all six Terraform-owned resources (api, policy, deployment, stage, ssm parameter, log group). The previous revision listed 3 and omitted the resource policy, so the inventory could not account for the wrong-role refusal."
   }
 
   assert {
     condition = alltrue([
-      for r in output.ownership.resources :
-      r.run_tag == var.run_nonce && r.delete == true && r.verify != ""
+      for r in output.ownership.resources : r.verify != "" && r.kind != ""
     ])
-    error_message = "Every ownership row must carry the run tag, a delete flag and a re-verification command."
+    error_message = "Every ownership row must name its kind and how to probe for its ABSENCE after teardown."
+  }
+
+  assert {
+    # The receipt must state the real mechanism, so it cannot be misread as
+    # authorising a name-prefix sweep.
+    condition = (
+      strcontains(output.ownership.teardown.mechanism, "terraform destroy") &&
+      strcontains(output.ownership.teardown.state_key, var.run_nonce) &&
+      strcontains(output.ownership.teardown.state_key, var.expected_account_id)
+    )
+    error_message = "The teardown receipt must name terraform-destroy-against-per-run-state as the mechanism, with a state key bound to both the account and the nonce."
+  }
+
+  assert {
+    # Ordering is load-bearing: main.tf READS the fixture ALB, and Terraform
+    # re-reads data sources during destroy, so deleting the ALB first makes the
+    # destroy unplannable (reproduced on Terraform 1.15.3).
+    condition     = strcontains(output.ownership.teardown.must_run_before, "Ingress")
+    error_message = "The receipt must record that this edge is destroyed BEFORE the fixture Ingress/ALB, because destroying it re-reads that ALB."
+  }
+
+  assert {
+    condition     = strcontains(output.ownership.teardown.not_supported, "name")
+    error_message = "The receipt must explicitly rule out name/tag-prefix deletion, which cannot distinguish this run's object from a later same-named replacement."
+  }
+
+  assert {
+    # The two Kubernetes objects are uid-gated in #3968's EXISTING k8s bucket, so
+    # no new cleanup type was needed and none of its files were edited.
+    condition = length(output.ownership.ledger_owned_k8s) == 2 && alltrue([
+      for r in output.ownership.ledger_owned_k8s :
+      strcontains(r.recorded, "--uid") && strcontains(r.delete_by, "uid-gated")
+    ])
+    error_message = "The Ingress and Secret must be recorded as uid-gated ledger objects — a uid is what makes their deletion replacement-safe."
   }
 
   assert {
