@@ -36,10 +36,11 @@ python3 examples/task-api/client.py artifact tsk_REPLACE art_REPLACE result.txt
 {"schema_version":"1.0","persona":"agent-task-investigator","instructions":"Explain the errors using only this evidence.","inputs":{"logs":"14:10 pool exhausted; checkout returned503"}}
 ```
 
-To supply uploaded artifacts, use the immutable artifact reference fields from
-`upload.json` in the submit contract's `artifacts` array; see the frozen
+To supply uploaded artifacts, put their returned `artifact_id` strings in the
+submit body's `artifact_ids` array; see the frozen
 [`submit-request-full.json`](../../docs/task-api/contracts/v1/fixtures/valid/submit-request-full.json).
-The upload response's expiry/request ID are not submit artifact fields.
+The server resolves and freezes artifact metadata; upload expiry/request ID and
+storage metadata are not submit fields.
 A snapshot includes terminal result/error evidence; there is no separate invented
 `/result` endpoint. Artifact downloads verify the returned content SHA-256.
 
