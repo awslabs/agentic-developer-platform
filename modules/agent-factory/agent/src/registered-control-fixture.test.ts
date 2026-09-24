@@ -96,6 +96,27 @@ describe('registered control fixture with the real runtime and substituted SDK t
     expect(await runRegisteredControlFixture()).toBe(0);
     expect(interrupt).not.toHaveBeenCalled();
   });
+  it('rejects successful SDK completion without tool execution and retains only safe authored text', async () => {
+    process.env.ADP_CONTROL_FIXTURE_MODE = 'registered-control';
+    (resilientQuery as jest.Mock).mockImplementation(async function* (args) {
+      await args.onAttemptHandle({ attemptNumber: 1, session: { interrupt, close } });
+      yield { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'private reasoning must not be retained' },
+        { type: 'text', text: 'I finished without executing the requested tools.' },
+      ] } };
+      yield { type: 'assistant', message: { content: [{ type: 'text', text: process.env.ADP_CONTROL_TOKEN }] } };
+      yield { type: 'result', subtype: 'success', is_error: false };
+    });
+    expect(await runRegisteredControlFixture()).toBe(1);
+    const raw = readFileSync(join(dir, 'runtime.json'), 'utf8');
+    const report = JSON.parse(raw);
+    expect(report.result_seen).toBe(true);
+    expect(report.counters).toMatchObject({ sdk_queries: 1, tool_starts: 0 });
+    expect(report.events.some((event: { type: string }) => event.type === 'fixture_no_tool_execution')).toBe(true);
+    expect(report.authored_explanations[0].payload.text).toContain('without executing');
+    expect(raw).not.toContain('private reasoning must not be retained');
+    expect(raw).not.toContain(process.env.ADP_CONTROL_TOKEN);
+  });
   it('retains a transport failure and disposes the runtime', async () => {
     transport(true, true);
     expect(await runRegisteredControlFixture()).toBe(1);
