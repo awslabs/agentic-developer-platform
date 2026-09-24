@@ -188,6 +188,133 @@ WAVE2_REQUIRED_CI_GATES: tuple[str, ...] = (
 # against `contained_in`.
 WAVE2_DEPLOYED_COMPONENTS: tuple[str, ...] = ("worker", "gateway")
 
+# Wave 4's deployed surface is wave 2's plus the SPA. The frontend is a third
+# separately-deployed artifact, and it is the one the browser checks actually
+# exercise: a stale bundle in front of a current gateway is the normal
+# half-deployment, and it is invisible to any check that reads only the two
+# container images. It is a static asset rather than an image, so it carries a
+# revision and an asset digest instead of an `image_digest` — see
+# `WAVE4_FRONTEND_KEYS`.
+WAVE4_DEPLOYED_COMPONENTS: tuple[str, ...] = WAVE2_DEPLOYED_COMPONENTS
+
+# Wave 4's own frontend deployed identity. Separate from DEPLOYED_COMPONENT_KEYS
+# because an SPA bundle has no registry digest: what identifies it is the revision
+# it was built from and the digest of the asset actually being SERVED, which is what
+# the browser capture independently reports as `bundle_revision`. Requiring both
+# means the preflight and the capture have to agree about which bundle was under
+# test, and a disagreement names a half-deployment rather than passing quietly.
+WAVE4_FRONTEND_KEYS: tuple[str, ...] = (
+    "revision",
+    "asset_digest",
+    "served_asset_evidence",
+)
+
+# The dashboard story's own gates, by the name CI defines. Wave 4's row demands
+# "current green Vitest/typecheck/build and control CI" — the first three are the
+# frontend's, and the last is wave 2's harness gate set, which W4-01 requires on top
+# of these rather than instead of them.
+#
+# By name for the same reason as WAVE2_REQUIRED_CI_GATES: any nonempty map of
+# "passed" values checks the operator's spelling, not the build.
+WAVE4_REQUIRED_CI_GATES: tuple[str, ...] = (
+    "Frontend unit tests",
+    "Frontend typecheck",
+    "Frontend build",
+)
+
+# Wave 4's own required stories. S7 is the dashboard this wave evaluates; the
+# consolidating checks additionally need the stories whose criteria they repeat, and
+# those are named per-check in WAVE4_CONSOLIDATED_SOURCES rather than here, because
+# W4-01 must be able to fail on "the dashboard is not deployed" distinctly from
+# "wave 3's abort evidence is stale".
+WAVE4_REQUIRED_STORIES: dict[str, str] = {
+    "S7": "3966 — dashboard live run controls (W4-02, W4-04, W4-07, W4-08)",
+}
+
+# The waves whose acceptance wave 4 consolidates, and the evaluation that accepted
+# each. Wave 4 is the LAST evaluation: its row says "all four evaluations may close
+# only with this evidence", so every earlier wave has to be accepted before this one
+# can be complete.
+#
+# Wave 3 is in this tuple even though this revision may carry no wave-3 manifest.
+# That is the point rather than an oversight: if wave 3 is unregistered, wave 4
+# cannot be complete, and the honest way to say so is a named refusal from the check
+# that depends on it — not a quietly shorter prerequisite list.
+WAVE4_PRIOR_WAVES: tuple[int, ...] = (1, 2, 3)
+
+# Keys a prior wave's acceptance record must carry. Each is a separate way for
+# "wave N was accepted" to be false while looking true:
+#
+#   evaluation  — accepted on the right issue, not attached to a different one
+#   run_id      — the run whose report a reviewer can retrieve and re-read
+#   revision    — the exact 40-char commit it was accepted on
+#   passed/required — the counts, which distinguish a full acceptance from a partial
+#   cleanup_ok  — an accepted wave whose fixture was left enabled is the DP-INV-1
+#                 state, so its environment is not a usable baseline
+#
+# Deliberately NOT a key: `compatible`. Compatibility is the conclusion these
+# checks exist to reach, so reading it from the record would make the check restate
+# its own subject. It is computed from the commit graph — see
+# `_assert_prior_wave_accepted`.
+PRIOR_WAVE_ACCEPTANCE_KEYS: tuple[str, ...] = (
+    "evaluation",
+    "run_id",
+    "revision",
+    "passed",
+    "required",
+    "cleanup_ok",
+)
+
+# What each consolidating wave-4 check repeats, and from where. Keyed by check ID so
+# a not_run or a failure can name the owner AND the prior evidence it needed, which
+# are different things to go and fix.
+#
+# `wave` is which earlier wave last evidenced these criteria; `surfaces` are the
+# source paths whose modification invalidates that evidence. The second is what
+# makes "rerun any stale/touched criterion" checkable rather than advisory: if a
+# surface changed after the evidence was taken, the evidence describes code that is
+# no longer running, and the criterion has to be rerun.
+WAVE4_CONSOLIDATED_SOURCES: dict[str, dict] = {
+    "W4-03": {
+        "wave": 3,
+        "artifact": "wave4_steering_evidence",
+        "surfaces": (
+            "modules/agent-factory/agent/src/control-state.ts",
+            "modules/agent-factory/agent/src/control-revalidation.ts",
+            "modules/gateway/src/activity/control_service.py",
+            "modules/gateway/frontend/src/services/agentControl.ts",
+        ),
+    },
+    "W4-05": {
+        "wave": 3,
+        "artifact": "wave4_abort_evidence",
+        "surfaces": (
+            "modules/agent-factory/agent/src/control-state.ts",
+            "modules/gateway/src/activity/control_service.py",
+            "modules/gateway/src/activity/stats_service.py",
+            "modules/gateway/frontend/src/components/InvocationChain.tsx",
+        ),
+    },
+    "W4-06": {
+        "wave": 3,
+        "artifact": "wave4_security_matrix",
+        "surfaces": (
+            "modules/gateway/src/activity/routes.py",
+            "modules/gateway/src/activity/control_service.py",
+            "modules/gateway/frontend/src/services/agentControl.ts",
+        ),
+    },
+    "W4-09": {
+        "wave": 2,
+        "artifact": "wave4_runtime_comparison",
+        "surfaces": (
+            "modules/agent-factory/agent/src/control-state.ts",
+            "modules/gateway/src/activity/stats_schemas.py",
+            "modules/gateway/src/activity/control_schemas.py",
+        ),
+    },
+}
+
 # Per-component deployed-identity keys. `source_revision` is what the image was
 # BUILT FROM, which is what ties a running digest back to reviewed source; without
 # it a digest pair only establishes that two recorded strings match each other.
@@ -819,6 +946,53 @@ CHECK_ACCEPTANCE_IDS: dict[str, tuple[str, ...]] = {
     spec.check_id: spec.acceptance_ids for spec in ALL_CHECK_SPECS
 }
 
+# Rows that carry no acceptance criterion of their own. "Gate/regression" is the
+# evaluation tables' marker for a check that establishes whether the OTHER checks are
+# describing the right build — a preflight, a schema gate, a consolidation. It is not
+# an acceptance ID and must not be counted as one.
+_NON_ACCEPTANCE_ROW_LABELS: frozenset[str] = frozenset({"Gate/regression"})
+
+
+def all_acceptance_ids() -> tuple[str, ...]:
+    """Every real acceptance criterion across every registered wave, sorted.
+
+    Computed from the manifests rather than written down as a list of 37 strings.
+    That is the whole reliability argument for W4-10: the wave-4 row requires the
+    evidence index to contain "exactly all 37 acceptance IDs", and a hardcoded
+    expectation would be satisfiable by editing the constant to match whatever the
+    index happened to contain. Derived from the same CheckSpec rows the checks
+    themselves are driven by, the set can only change by changing a wave's manifest.
+
+    Sorted numerically within each family, so AC-A2 precedes AC-A10 rather than
+    following it. Purely presentational — the comparisons are set-based — but the
+    failure messages list these IDs, and a reader scanning for a missing one in a
+    lexicographic list reads AC-A10 as the second entry.
+    """
+    ids = {
+        acceptance_id
+        for spec in ALL_CHECK_SPECS
+        for acceptance_id in spec.acceptance_ids
+        if acceptance_id not in _NON_ACCEPTANCE_ROW_LABELS
+    }
+
+    def sort_key(value: str) -> tuple[str, int, str]:
+        match = re.match(r"^(AC-[A-Z]+)(\d+)$", value)
+        if match:
+            return (match.group(1), int(match.group(2)), "")
+        # Anything unparseable sorts last under its own name rather than crashing:
+        # an unexpected row label is W4-10's business to report, not this helper's
+        # to raise on.
+        return ("zz", 0, value)
+
+    return tuple(sorted(ids, key=sort_key))
+
+
+# The count wave 4's row names. Asserted rather than assumed: if a wave's manifest
+# changes the criterion set, this module fails to import with a message naming the
+# discrepancy, instead of W4-10 quietly consolidating a different number than the
+# evaluation asked for.
+WAVE4_TOTAL_ACCEPTANCE_IDS = 37
+
 REQUIRED_CONFIG_FIELDS: tuple[str, ...] = (
     "account_id",
     "environment",
@@ -1076,7 +1250,170 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
         "request_bodies_contain_token",
         "spoofed_identity_rejected",
     ),
+    # W4-01 / Gate-regression. Wave 4's own preflight. Wave 2's analogue plus the
+    # two things wave 4 adds: the prior waves' ACCEPTANCE records, and the frontend
+    # as a third deployed component.
+    #
+    # `prior_waves` is a map keyed by wave number rather than a single
+    # `waves_1_3_accepted` boolean, for the reason that boolean would be useless:
+    # wave 3 being unaccepted and wave 1 being stale have different owners and
+    # different fixes, and a collapsed flag names neither. Each entry's
+    # compatibility is COMPUTED from the commit graph, never read — see
+    # PRIOR_WAVE_ACCEPTANCE_KEYS.
+    #
+    # `browser_identity` is here rather than in the browser capture because it is a
+    # statement about the fixture's authorization, not about the DOM: the identity
+    # the browser drove must be the run's owner, and ordinary users must still be
+    # gated. A capture cannot establish the second half at all — it only ever drove
+    # one identity.
+    "wave4_preflight": (
+        "prior_waves",
+        "merged_revisions",
+        "deployed_components",
+        "frontend",
+        "ci_gates",
+        "browser_identity",
+        "ordinary_users_gated",
+        "ordinary_flags_off",
+        "fixture_identity",
+    ),
+    # W4-03 / AC-T1..T8, AC-S8. The steering half wave 4 repeats from wave 3.
+    #
+    # `criteria` is the per-AC evidence map, and `evidenced_at`/`evidenced_revision`
+    # are what make staleness checkable: an AC evidenced before a surface it covers
+    # was last modified describes code that is no longer running. The FIFO, retry,
+    # cap and SDK proofs are named individually rather than rolled into a
+    # `steering_proven` boolean, because W4-03's row lists them separately and a
+    # collapsed flag cannot say which one was never made.
+    "wave4_steering_evidence": (
+        "wave",
+        "evaluation",
+        "criteria",
+        "evidenced_revision",
+        "evidenced_at",
+        "fifo_order_proven",
+        "retry_delivery_proven",
+        "pending_cap_proven",
+        "sdk_bound_text_proven",
+        "fixture_pivot",
+        "merged_test_pr",
+        "fixture_identity",
+    ),
+    # W4-05 / AC-A1..A12. The abort half, from wave 3.
+    #
+    # `completed_at_observed` is a read of the ACTUAL row rather than a claim about
+    # it: W4-05's row demands "the actual row has completed_at", which is the
+    # difference between a UI that renders a terminal state and a record that is one.
+    "wave4_abort_evidence": (
+        "wave",
+        "evaluation",
+        "criteria",
+        "evidenced_revision",
+        "evidenced_at",
+        "cancel_left_run_untouched",
+        "confirmed_abort_terminal",
+        "finalized_comment_count",
+        "aborted_renderers",
+        "repeat_and_double_abort",
+        "completed_at_observed",
+        "stats_writer_assertions",
+        "fixture_identity",
+    ),
+    # W4-06 / AC-S1..S7. The deployed security matrix, repeated at wave 4's
+    # revisions, plus the browser-destination capture that is wave 4's own addition.
+    #
+    # `bundle_scan_supplemental` is required to be an explicit acknowledgement rather
+    # than absent: the row says the bundle scan is supplemental ONLY, and a matrix
+    # whose evidence is a static scan of the bundle has not probed a deployment.
+    "wave4_security_matrix": (
+        "wave",
+        "evaluation",
+        "criteria",
+        "evidenced_revision",
+        "evidenced_at",
+        "non_gateway_probe_blocked",
+        "bundle_scan_supplemental",
+        "fixture_identity",
+    ),
+    # W4-09 / AC-F1, AC-F2. The flag-off/flag-on runtime comparison rerun with final
+    # code, and the live stats provenance.
+    #
+    # `stats_response_keys` and `stats_source` are separate because the row asks two
+    # different questions: does the live schema match the CURRENT RunStatsResponse
+    # (parity), and did these numbers come from the live endpoint rather than a mock
+    # (provenance). A schema can match perfectly on fabricated data.
+    "wave4_runtime_comparison": (
+        "wave",
+        "evaluation",
+        "criteria",
+        "evidenced_revision",
+        "evidenced_at",
+        "flag_off_events_digest",
+        "flag_on_events_digest",
+        "differing_fields",
+        "ordinary_flags_off",
+        "stats_response_keys",
+        "stats_source",
+        "fixture_identity",
+    ),
+    # W4-10 / Gate-regression. The 37-criterion consolidation index.
+    #
+    # `criteria` must cover EXACTLY the 37 IDs the four waves' manifests declare —
+    # computed from those manifests, so the number cannot drift by editing a
+    # constant. Each entry names its owner, the evaluation that evidenced it, the
+    # revision that evidence was taken at, and whether it was a LIVE observation:
+    # the row forbids a unit mock standing in for a named live SDK/API/browser check,
+    # and that is only checkable if the record says which it was.
+    "wave4_evidence_index": (
+        "criteria",
+        "evaluations",
+        "compiled_at",
+        "compiled_revision",
+        "fixture_identity",
+    ),
 }
+
+# Per-criterion keys in the wave-4 evidence index. Each is a separate way for a
+# green index row to be worthless:
+#
+#   owner      — who produced it, so a reviewer can go to them
+#   evaluation — which wave evidenced it (an AC claimed by no evaluation is unowned)
+#   revision   — the commit it was evidenced at, for the containment check
+#   evidence   — the artifact path or observation reference, nonempty
+#   live       — whether it was a live observation or a mocked/unit result. W4-10's
+#                row forbids a unit mock replacing a named live check, so this has to
+#                be recorded rather than assumed.
+EVIDENCE_INDEX_ENTRY_KEYS: tuple[str, ...] = (
+    "owner",
+    "evaluation",
+    "revision",
+    "evidence",
+    "live",
+)
+
+# Acceptance IDs whose rows name a live SDK, API or browser observation, so a
+# mocked or unit-test result cannot satisfy them. Derived from the wave-4 table's
+# own wording: every AC carried by a browser check (AC-F3, the pause and steer
+# families) or by the deployed security matrix.
+#
+# Not "every AC": some criteria are genuinely provable by a contract suite — AC-T7's
+# harness neutrality is asserted against two adapter fixtures by design — and
+# demanding a live browser for those would be a requirement the specification does
+# not make.
+LIVE_EVIDENCE_REQUIRED_IDS: frozenset[str] = frozenset(
+    {
+        # AC-F3 and the pause family are observed in a browser against a deployment.
+        "AC-F3",
+        "AC-P1", "AC-P2", "AC-P3", "AC-P4", "AC-P5", "AC-P6",
+        # The steering family is a live delivery to a real SDK attempt.
+        "AC-T1", "AC-T2", "AC-T3", "AC-T4", "AC-T5", "AC-T6", "AC-T8",
+        # The abort family transitions a real row to terminal.
+        "AC-A1", "AC-A2", "AC-A3", "AC-A4", "AC-A5", "AC-A6",
+        "AC-A7", "AC-A8", "AC-A9",
+        # The security matrix is a probe of a deployment, not a bundle scan.
+        "AC-S1", "AC-S2", "AC-S3", "AC-S4", "AC-S5", "AC-S6", "AC-S7", "AC-S8",
+    }
+)
 
 # Keys of the neutral_contract artifact that carry data rather than a proof
 # boolean. Listed explicitly so the boolean loop cannot accidentally demand
@@ -2908,6 +3245,301 @@ class Driver:
                     "evaluation"
                 )
         return str(identity["run_id"])
+
+    # ---- wave 4 shared helpers -----------------------------------------
+
+    def _assert_prior_wave_accepted(
+        self, wave: int, record: object, *, deployed_revisions: dict
+    ) -> None:
+        """One earlier wave's acceptance, as evidence rather than as a claim.
+
+        Wave 4 is the last evaluation and its row says all four may close only with
+        its evidence, so every earlier wave has to be accepted first. The failure this
+        exists to prevent is the cheapest one available: an operator writing
+        ``"accepted": true`` and the evaluator believing it.
+
+        Four things are required, and each is a distinct way for a recorded acceptance
+        to be false while looking true:
+
+        1. **The evaluation it was accepted on.** Evidence attached to a different
+           issue is not this wave's acceptance.
+        2. **The counts.** A wave accepted at 9/10 is not accepted, and the word
+           "accepted" alone cannot tell the two apart. Compared against the wave's
+           OWN manifest length, so it tracks the manifest rather than a constant.
+        3. **Cleanup.** An accepted wave whose fixture was left with the control
+           listener enabled is the DP-INV-1 state; that environment is not a usable
+           baseline for the next wave regardless of how its checks went.
+        4. **Containment, computed.** The accepted revision must be an ancestor of
+           every revision running now. This is the one that catches accepted-but-stale
+           evidence, which is the subtle case: it was a TRUE observation, of a build
+           this one has since changed. Asking git is what makes it evidence — a
+           recorded ``compatible: true`` is the conclusion this method exists to
+           reach.
+
+        A wave with no manifest in this revision is a refusal, not a pass. Wave 3 is
+        owned by another story and may legitimately not be registered yet; when it is
+        not, wave 4 cannot be complete, and the honest way to say so is to name the
+        missing manifest.
+        """
+        specs = WAVE_CHECKS.get(wave)
+        if not specs:
+            raise PrerequisiteMissingError(
+                f"wave {wave} has no manifest in this revision, so its acceptance cannot be established "
+                f"and wave 4 cannot consolidate it. Wave 4's evidence closes all four evaluations, so a "
+                f"wave that does not yet exist as a manifest is a genuine blocker rather than a gap to "
+                f"skip past. Registered waves: {sorted(WAVE_CHECKS)}"
+            )
+        if not isinstance(record, dict):
+            raise AssertionError(
+                f"'prior_waves.{wave}' must be an object recording that wave's acceptance, got {record!r}. "
+                f"A bare boolean cannot carry the run, revision and counts that distinguish an acceptance "
+                f"from an assertion of one"
+            )
+        missing = [key for key in PRIOR_WAVE_ACCEPTANCE_KEYS if key not in record]
+        if missing:
+            raise AssertionError(
+                f"wave {wave}'s acceptance record is missing {sorted(missing)}; without all of "
+                f"{list(PRIOR_WAVE_ACCEPTANCE_KEYS)} the record cannot be checked against the evaluation "
+                f"that produced it"
+            )
+        if record.get("accepted") is not True:
+            raise AssertionError(
+                f"wave {wave} is not recorded as accepted ({record.get('accepted')!r}). Wave 4 "
+                f"consolidates every earlier wave's criteria, so an unaccepted prior wave means this "
+                f"wave's consolidation has nothing established to rest on"
+            )
+        expected_evaluation = WAVE_EVALUATIONS.get(wave)
+        if expected_evaluation and str(record.get("evaluation") or "") != expected_evaluation:
+            raise AssertionError(
+                f"wave {wave}'s acceptance names evaluation {record.get('evaluation')!r}, expected "
+                f"{expected_evaluation!r}. Evidence attached to a different evaluation is not this wave's "
+                f"acceptance"
+            )
+        if not record.get("run_id"):
+            raise AssertionError(
+                f"wave {wave}'s acceptance records no 'run_id'. A revision says which build was "
+                f"evaluated; the run identity is what lets a reviewer retrieve that report and confirm "
+                f"this summary of it rather than take it on trust"
+            )
+        passed, required = record.get("passed"), record.get("required")
+        if required != len(specs) or passed != required:
+            raise AssertionError(
+                f"wave {wave} is recorded as {passed!r}/{required!r}, but its manifest has "
+                f"{len(specs)} checks and acceptance means all of them passed. A partial prior wave is "
+                f"not an accepted baseline, and 'accepted' alone cannot distinguish the two"
+            )
+        if record.get("cleanup_ok") is not True:
+            raise AssertionError(
+                f"wave {wave}'s recorded run did not complete cleanup. An accepted wave whose fixture was "
+                f"left with the control listener enabled is the state DP-INV-1 forbids, so that "
+                f"environment is not a baseline this wave may build on"
+            )
+        revision = record.get("revision")
+        if not isinstance(revision, str) or not _GIT_REVISION_RE.match(revision):
+            raise AssertionError(
+                f"wave {wave}'s accepted revision is {revision!r}, which is not a full 40-character git "
+                f"SHA. A branch name or short SHA names whatever that ref happened to point at, which is "
+                f"the ambiguity this field exists to remove"
+            )
+        # Compatibility as containment, computed here. See `_assert_contained_in`:
+        # the artifact's own compatibility flag is the conclusion under test.
+        self._assert_contained_in(
+            revision,
+            subject=f"wave {wave}'s accepted revision {revision}",
+            deployed_revisions=deployed_revisions,
+            hint=(
+                "Accepted-but-stale prior-wave evidence is the case to watch: it was a true observation "
+                "of a build this one has since changed, so it cannot carry forward unchecked"
+            ),
+        )
+
+    def _surface_last_modified(self, path: str) -> datetime | None:
+        """When a source surface was last changed, from the commit graph.
+
+        First-hand, like the ancestry answers, and for the same reason: "has this
+        criterion gone stale?" is answerable from the repository the harness is
+        already running out of, so asking the operator for it would be asking them to
+        supply the conclusion.
+
+        ``None`` means git could not answer — a shallow clone, a path that does not
+        exist at HEAD, no git at all. The caller turns that into ``not_run`` rather
+        than into a pass: an unanswerable staleness question is a gap in the
+        evidence-gathering environment, and treating it as "not stale" would let a
+        broken checkout certify evidence it never checked.
+        """
+        runner = self._git_runner or _default_git_runner
+        argv = [
+            "git",
+            "-C",
+            str(self._repo_root),
+            "log",
+            "-1",
+            "--format=%cI",
+            "--",
+            path,
+        ]
+        try:
+            result = runner(argv)
+        except Exception:  # noqa: BLE001 - an unavailable git is not_run, never a pass
+            return None
+        if getattr(result, "returncode", 1) != 0:
+            return None
+        return _parse_timestamp((getattr(result, "stdout", "") or "").strip())
+
+    def _assert_evidence_not_stale(
+        self, payload: dict, check_id: str, *, deployed_revisions: dict
+    ) -> None:
+        """A consolidated criterion's evidence must postdate the code it describes.
+
+        This is what makes "rerun any stale/touched criterion" a check rather than an
+        instruction. The evidence for, say, the abort family was taken at some
+        revision and some instant; if a surface those criteria cover has been modified
+        since, the evidence describes code that is no longer running. It was a true
+        observation and it is now the wrong one, which is exactly the case that a
+        status field reading ``passed`` cannot distinguish.
+
+        Two independent conditions, because either alone is insufficient:
+
+        * The evidence's revision must be contained in what is deployed. Evidence from
+          a branch that was never merged describes a build nobody is running.
+        * The evidence's timestamp must be at or after the last modification of every
+          surface it covers. A revision can be an ancestor of the deployment and still
+          predate a later change to the very file the criterion is about.
+        """
+        source = WAVE4_CONSOLIDATED_SOURCES[check_id]
+        recorded_wave = payload.get("wave")
+        if recorded_wave != source["wave"]:
+            raise AssertionError(
+                f"{check_id}: this evidence records wave {recorded_wave!r} but the criteria it carries "
+                f"were evidenced by wave {source['wave']}. Evidence filed under the wrong wave cannot be "
+                f"reconciled against that wave's acceptance"
+            )
+        revision = payload.get("evidenced_revision")
+        if not isinstance(revision, str) or not _GIT_REVISION_RE.match(revision):
+            raise AssertionError(
+                f"{check_id}: 'evidenced_revision' is {revision!r}, which is not a full 40-character git "
+                f"SHA. Which build these observations were made against is part of the observation"
+            )
+        self._assert_contained_in(
+            revision,
+            subject=f"{check_id}'s evidence revision {revision}",
+            deployed_revisions=deployed_revisions,
+            hint="Evidence from a revision the deployment does not contain describes a build nobody runs.",
+        )
+        evidenced_at = _parse_timestamp(payload.get("evidenced_at"))
+        if evidenced_at is None:
+            raise AssertionError(
+                f"{check_id}: 'evidenced_at' is {payload.get('evidenced_at')!r}, which is not an ISO-8601 "
+                f"instant. Without an orderable time the evidence cannot be shown to postdate the code it "
+                f"describes, so staleness is unanswerable"
+            )
+        for path in source["surfaces"]:
+            changed = self._surface_last_modified(path)
+            if changed is None:
+                raise PrerequisiteMissingError(
+                    f"{check_id}: the harness could not read the last modification of {path} from the "
+                    f"commit graph, so it cannot establish whether this evidence has gone stale. Fetch "
+                    f"full history and re-run — an unanswerable staleness question is not a pass"
+                )
+            self._ancestry.append(
+                {
+                    "subject": f"{check_id} staleness vs {path}",
+                    "surface": path,
+                    "surface_last_modified": changed.isoformat(),
+                    "evidenced_at": evidenced_at.isoformat(),
+                    "stale": evidenced_at < changed,
+                }
+            )
+            if evidenced_at < changed:
+                raise AssertionError(
+                    f"{check_id}: the evidence was taken at {evidenced_at.isoformat()} but {path} was "
+                    f"last modified at {changed.isoformat()}. The criteria this check consolidates cover "
+                    f"that surface, so the evidence describes code that has since changed and must be "
+                    f"rerun. Stale-but-passing is the failure mode here: it was a true observation of a "
+                    f"build that is no longer deployed"
+                )
+
+    def _assert_criteria_cover(
+        self, payload: dict, check_id: str, expected: tuple[str, ...]
+    ) -> dict:
+        """The per-criterion map must cover exactly this check's acceptance IDs.
+
+        Exactly, in both directions, and the two failures are different:
+
+        * A MISSING ID is a criterion nobody evidenced, which is the whole thing the
+          evaluation is counting.
+        * An UNKNOWN ID is evidence filed against a criterion this check does not
+          carry. That sounds harmless and is not: it inflates the apparent coverage
+          of the index W4-10 reconciles, so an unknown ID can hide a missing one.
+
+        Each entry must also carry a status and nonempty evidence. A status string
+        with no evidence behind it is exactly what the evaluation's "a status string
+        without the specified evidence is insufficient" sentence refuses.
+        """
+        criteria = payload.get("criteria")
+        if not isinstance(criteria, dict):
+            raise AssertionError(
+                f"{check_id}: 'criteria' must be an object keyed by acceptance ID, got {criteria!r}"
+            )
+        recorded = {str(key) for key in criteria}
+        wanted = set(expected)
+        missing = sorted(wanted - recorded)
+        unknown = sorted(recorded - wanted)
+        if missing:
+            raise AssertionError(
+                f"{check_id}: no evidence recorded for {missing}. These are criteria this check carries, "
+                f"so an absent entry is an unevidenced criterion rather than an omission from a summary"
+            )
+        if unknown:
+            raise AssertionError(
+                f"{check_id}: evidence recorded for {unknown}, which this check does not carry. Evidence "
+                f"filed against the wrong criterion inflates apparent coverage, so an unknown ID can "
+                f"conceal a missing one"
+            )
+        for acceptance_id in expected:
+            entry = criteria[acceptance_id]
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"{check_id}: criterion {acceptance_id} is {entry!r}; it must be an object carrying a "
+                    f"status and the evidence behind it. A bare boolean is a verdict where an observation "
+                    f"belongs"
+                )
+            if entry.get("status") != STATUS_PASSED:
+                raise AssertionError(
+                    f"{check_id}: criterion {acceptance_id} is {entry.get('status')!r}, not "
+                    f"{STATUS_PASSED!r}. Wave 4 may only close with every criterion passing, so anything "
+                    f"else — including not_run — keeps this check failed"
+                )
+            evidence = entry.get("evidence")
+            if not evidence or (isinstance(evidence, (list, str)) and len(evidence) == 0):
+                raise AssertionError(
+                    f"{check_id}: criterion {acceptance_id} records status {STATUS_PASSED!r} with no "
+                    f"evidence. A status string without the observation behind it is the substitute for "
+                    f"evidence this evaluation exists to refuse"
+                )
+        return criteria
+
+    @staticmethod
+    def _assert_named_proofs(payload: dict, check_id: str, keys: tuple[str, ...]) -> None:
+        """Each named proof in a row must be an observed ``True``.
+
+        Named individually rather than rolled into one flag because the evaluation
+        table names them individually. The row for steering, for instance, demands
+        FIFO order, retry delivery, the pending cap and the SDK-bound text; a single
+        ``steering_proven`` boolean cannot say which of the four was never made, and
+        those have different owners.
+
+        ``True`` exactly, not truthy: a string like ``"yes"`` or a nonzero count would
+        satisfy a truthiness test while recording something other than the observation
+        asked for.
+        """
+        for key in keys:
+            if payload.get(key) is not True:
+                raise AssertionError(
+                    f"{check_id}: '{key}' is {payload.get(key)!r}, expected an observed True. This is one "
+                    f"of the proofs the wave-4 row names separately, so it cannot be satisfied by another "
+                    f"proof in the same artifact passing"
+                )
 
     # ---- W1-01 ---------------------------------------------------------
 

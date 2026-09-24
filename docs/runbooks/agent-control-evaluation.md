@@ -174,7 +174,13 @@ generation and digests with your fixture's actual ones.
     "wave2_preflight": "artifacts/wave2_preflight.json",
     "security_capture": "artifacts/security_capture.json",
     "teardown_verification": "artifacts/teardown_verification.json",
-    "browser_control_run": "artifacts/browser_control_run.json"
+    "browser_control_run": "artifacts/browser_control_run.json",
+    "wave4_preflight": "artifacts/wave4_preflight.json",
+    "wave4_steering_evidence": "artifacts/wave4_steering_evidence.json",
+    "wave4_abort_evidence": "artifacts/wave4_abort_evidence.json",
+    "wave4_security_matrix": "artifacts/wave4_security_matrix.json",
+    "wave4_runtime_comparison": "artifacts/wave4_runtime_comparison.json",
+    "wave4_evidence_index": "artifacts/wave4_evidence_index.json"
   },
 
   "resource_teardown": [
