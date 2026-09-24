@@ -1,0 +1,16 @@
+{
+  "$fixture": {
+    "description": "FIFO publish attributes: group by tenant+task hash so one task's messages stay ordered, dedup by the stable dispatch UUID so a retried publication is not a second task.",
+    "schema": "envelope.schema.json#/$defs/sqs_publish_attributes",
+    "expect": "valid",
+    "owner": "T3",
+    "criteria": [
+      "T0-AC02",
+      "T3-AC01",
+      "V0-02",
+      "V0-03"
+    ]
+  },
+  "MessageGroupId": "3c5e7a9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a55",
+  "MessageDeduplicationId": "b5e9835b-fc24-4231-96f2-e8b8ca3681be"
+}

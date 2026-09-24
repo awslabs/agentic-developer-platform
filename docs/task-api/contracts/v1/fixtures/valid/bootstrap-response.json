@@ -1,0 +1,64 @@
+{
+  "$fixture": {
+    "description": "Gateway bootstrap response: task-scoped run credential expiry, the immutable pinned input, the resolved model binding with its policy and shape versions, and the run's hard limits. Only implemented capabilities are advertised.",
+    "schema": "bootstrap.schema.json#/$defs/bootstrap_response",
+    "expect": "valid",
+    "owner": "T3",
+    "criteria": [
+      "T0-AC02",
+      "T3-AC03",
+      "T5-AC04",
+      "V0-03"
+    ]
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "generation": 1,
+  "persona": "agent-task-investigator",
+  "run_credential": "fixture:non-secret:task-run-credential",
+  "run_credential_expires_at": "2026-09-24T15:12:03Z",
+  "deadline_at": "2026-09-24T15:12:03Z",
+  "input": {
+    "instructions": "Investigate why checkout requests began returning 503 at 14:10 UTC. Use only the supplied logs and configuration.",
+    "inputs": {
+      "incident_window": "2026-09-24T14:05:00Z/2026-09-24T14:40:00Z",
+      "affected_service": "checkout-api"
+    },
+    "acceptance_criteria": [
+      "Name the most likely cause.",
+      "Cite the log lines supporting it."
+    ],
+    "artifacts": [
+      {
+        "artifact_id": "art_6f1b9c22-4a7d-4f1e-8b3a-2c9d5e7f1a04",
+        "version": 1,
+        "content_sha256": "2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b44",
+        "content_type": "text/plain"
+      }
+    ],
+    "input_digest": "1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1133"
+  },
+  "model_binding": {
+    "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "transport": "anthropic_messages",
+    "model_policy_version": "mp-2026-09-18-004",
+    "request_shape_version": "rs-2026-08-02-011",
+    "pricing_evidence_version": "pe-2026-09-23-001",
+    "invocability_verified": true
+  },
+  "limits": {
+    "max_turns": 8,
+    "max_output_tokens_per_turn": 4096,
+    "max_usd": 1,
+    "max_provider_operation_seconds": 120,
+    "max_events": 10000,
+    "max_result_artifact_bytes": 1048576,
+    "heartbeat_interval_seconds": 30,
+    "deadline_at": "2026-09-24T15:12:03Z"
+  },
+  "capabilities": [
+    "input",
+    "cancel"
+  ]
+}
