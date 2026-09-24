@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import unicodedata
 from urllib.parse import quote
 
 from harness_jobs.identity import OperationRefused
@@ -30,19 +31,26 @@ def result_text(message):
         raise OperationRefused("batch result document is invalid") from None
     # Same best-effort presentation rule as log windows. Images must not publish
     # credentials; redaction cannot classify arbitrary secrets in user output.
+    redacted = re.sub(r"(?i)\bBearer[ \t]+[^\s,}\"']+", "Bearer [REDACTED]", text)
     redacted = re.sub(
         r"-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-\n]*PRIVATE KEY-----|$)",
         "[REDACTED]",
-        text,
+        redacted,
     )
     redacted = re.sub(
-        r"""(?i)(["']?(?:token|password|secret|api[_-]?key|authorization)["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,}]+)""",
+        r"""(?i)(["']?(?:token|password|secret|api[_-]?key|access[_-]?token|auth[_-]?token|authorization)["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,}]+)""",
         r"\1[REDACTED]",
         redacted,
     )
-    redacted = re.sub(r"(?i)\bBearer\s+[^\s,}]+", "Bearer [REDACTED]", redacted)
     redacted = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED]", redacted)
-    redacted = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", redacted)
+    redacted = re.sub(
+        r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b", "[REDACTED]", redacted
+    )
+    redacted = "".join(
+        char
+        for char in redacted
+        if char in "\n\t" or unicodedata.category(char) not in {"Cc", "Cf"}
+    )
     return redacted, redacted != text
 
 

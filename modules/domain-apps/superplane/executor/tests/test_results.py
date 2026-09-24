@@ -39,3 +39,25 @@ def test_result_is_plain_text_with_secret_patterns_redacted():
         and "truncated-key" not in content
     )
     assert result_text("") is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "authorization: Bearer sensitive-value",
+        '"authorization": "Bearer sensitive-value"',
+        "access_token=sensitive-value",
+        "Bearer sensitive-value",
+    ],
+)
+def test_bearer_value_cannot_survive_header_prefix_redaction(text):
+    content, changed = result_text(
+        json.dumps({"superplane_result_version": 1, "text": text})
+    )
+    assert changed and "sensitive-value" not in content
+
+
+def test_bidi_controls_are_removed_without_destroying_line_breaks():
+    assert result_text(
+        json.dumps({"superplane_result_version": 1, "text": "value\u202e\n\t0.95"})
+    ) == ("value\n\t0.95", True)
