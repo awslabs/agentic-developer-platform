@@ -1104,7 +1104,7 @@ class TestNamespaceResolver:
             resolve_workspace_namespace(self._workspace(bad))
 
     @pytest.mark.parametrize("blank", [None, "", "   "])
-    def test_a_blank_namespace_resolves_to_the_derived_name(self, blank):
+    def test_a_blank_namespace_requires_ownership_reconciliation(self, blank):
         """Whitespace is treated as absent, so it cannot resolve to an empty target."""
         from app.services.workspace_namespace import resolve_workspace_namespace
 
@@ -1127,6 +1127,6 @@ class TestNamespaceResolver:
 
         migration = (
             Path(__file__).parents[1]
-            / "alembic/versions/022_deployment_namespace_quota.py"
+            / "alembic/versions/028_deployment_namespace_quota.py"
         )
         assert "UPDATE workspaces" not in migration.read_text()
