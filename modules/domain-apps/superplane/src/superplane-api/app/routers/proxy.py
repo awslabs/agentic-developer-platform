@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.routing import APIRoute
 from harness_jobs.identity import OperationRefused
 from sqlalchemy import select
@@ -384,6 +384,7 @@ async def observe_batch(
     workspace_id: uuid.UUID,
     job_id: uuid.UUID,
     request: Request,
+    response: Response,
     logs: bool = False,
     pod_uid: str | None = Query(
         default=None, min_length=1, max_length=255, pattern="^[a-zA-Z0-9-]+$"
@@ -393,6 +394,7 @@ async def observe_batch(
 ):
     from app.services.workload_observations import observe
 
+    response.headers["Cache-Control"] = "no-store"
     return await observe(
         request,
         db,
@@ -410,6 +412,7 @@ async def observe_serving(
     workspace_id: uuid.UUID,
     dep_id: uuid.UUID,
     request: Request,
+    response: Response,
     logs: bool = False,
     pod_uid: str | None = Query(
         default=None, min_length=1, max_length=255, pattern="^[a-zA-Z0-9-]+$"
@@ -419,6 +422,7 @@ async def observe_serving(
 ):
     from app.services.workload_observations import observe
 
+    response.headers["Cache-Control"] = "no-store"
     return await observe(
         request,
         db,
