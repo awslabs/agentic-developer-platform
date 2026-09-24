@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 class CreateWorkspaceRequest(BaseModel):
     """POST /workspaces — create a new workspace."""
 
+    operation_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     name: str = Field(..., min_length=1, max_length=255)
     isolation_mode: str = Field(
         default="dedicated", pattern="^(dedicated|namespace|research)$"

@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -73,12 +74,21 @@ async def test_management_admin_can_read_but_cannot_trigger_workspace_execution(
 
 async def test_management_startup_never_starts_legacy_reconcilers(monkeypatch):
     from app import installation, main
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
     monkeypatch.setenv("SUPERPLANE_MANAGEMENT_ONLY", "true")
     monkeypatch.setattr(app.state, "domain_policy", object())
-    # Must be the alembic head: `main.lifespan` refuses to start a management service
-    # whose schema revision does not match the image. Advances with the chain — A15
-    # (#5671) adds 018 for the `deployments.namespace` column.
-    monkeypatch.setattr(installation, "database_check", AsyncMock(return_value={"revision": "018_deployment_namespace_and_workspace_backfill"}))
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    config.set_main_option(
+        "script_location", str(Path(__file__).resolve().parents[1] / "alembic")
+    )
+    current_head = ScriptDirectory.from_config(config).get_current_head()
+    monkeypatch.setattr(
+        installation,
+        "database_check",
+        AsyncMock(return_value={"revision": current_head}),
+    )
     workspace_start, vault_start = AsyncMock(), AsyncMock()
     monkeypatch.setattr(main.workspace_reconciler, "start", workspace_start)
     monkeypatch.setattr(main.vault_sync_reconciler, "start", vault_start)

@@ -723,8 +723,9 @@ data "aws_iam_policy_document" "api_gateway_assume_role" {
 }
 
 resource "aws_iam_role" "api_gateway_cloudwatch" {
-  name               = "${var.name_prefix}-api-gateway-cloudwatch"
-  assume_role_policy = data.aws_iam_policy_document.api_gateway_assume_role.json
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-api-gateway-cloudwatch"
+  assume_role_policy   = data.aws_iam_policy_document.api_gateway_assume_role.json
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-api-gateway-cloudwatch-role"

@@ -379,7 +379,15 @@ When the delivery-planning gate receives an "approve" answer:
    the five technical sections, acceptance IDs and phase owners; linked as
    native GitHub sub-issues of the EPIC)
 3. Execute the **loop-proposal** stage:
-   a. Derive waves from the delivery plan (skill Step 7a)
+   a. Derive waves from the delivery plan (skill Step 7a). Give every wave a
+      capability display name and a description of its work and evaluation.
+      Also emit `epic_metadata` with a capability title and a few short paragraphs
+      explaining what the epic delivers, why it is being built and its boundaries.
+      Infer the wording from the plan; do not ask the user to name waves. Keep
+      technical meaning while making the capability and purpose easy to understand.
+      Carry them in `proposal.json` as `wave_metadata` keyed by stable
+      `(epic_ref, wave_ref)` (skill Step 7e), and use the same text in the wave
+      map and gate brief. Preserve those refs when revising display wording
    b. Compose orchestrator + evaluation issue BODIES as branch artifacts under
       `aidlc/spaces/issue-<N>/construction/loop-proposal/`:
       - `wave-map.md` — wave assignment table (wave → story issues)
@@ -391,7 +399,8 @@ When the delivery-planning gate receives an "approve" answer:
       code and tests. The every-wave-gate transform is OFF by default, so an
       ungated plan runs every wave after acceptance with no human stop — declare
       the gates the plan needs rather than relying on a default
-   e. Commit the drafts to the work branch
+   e. Emit and validate `proposal.json` (skill Step 7e), including wave metadata,
+      then commit the drafts to the work branch
 4. Post the `loop-proposal` gate comment:
    - First line: `<!-- aidlc-gate:loop-proposal -->`
    - Use the Gate Brief layout, adding these tables under **Validation and

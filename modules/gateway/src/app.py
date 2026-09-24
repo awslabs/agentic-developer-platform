@@ -61,6 +61,7 @@ UNIT_MODULES = [
     "src.agentauth.knowledge_service",
     "src.agentauth.task_routes",
     "src.agentauth.artifact_service",
+    "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",
     # #5223: mediated GitHub operations. A separate module from
     # registration_routes even though it shares the /self prefix, because this is

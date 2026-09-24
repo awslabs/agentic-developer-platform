@@ -155,7 +155,7 @@ def test_workflow_uses_guard_before_all_mutating_jobs():
     assert changes["outputs"]["code"] == "${{ steps.filter.outputs.code }}"
     assert jobs["package"]["needs"] == "changes"
     assert jobs["package"]["if"] == (
-        "needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true'"
+        "github.ref == 'refs/heads/main' && (needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true')"
     )
     for job in ("deploy-infra", "update-code"):
         assert "package" in jobs[job]["needs"]

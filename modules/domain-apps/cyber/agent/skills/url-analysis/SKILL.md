@@ -51,6 +51,22 @@ choices with IDs. The browser context stays open while you reason: cookies,
 session storage, history and page state persist. Browser lease credentials are
 kept privately outside the artifact directory; never print or publish them.
 
+Check `collection`, `terminal`, and `assessment_required` first. A DNS failure
+returns a terminal `unavailable` result with an empty, valid inconclusive assessment.
+When no observations exist, publish that result; do not invoke the model again to
+invent findings, review nonexistent evidence, or retry the same failed destination.
+Execution status, evidence coverage, and threat verdict are separate fields.
+
+Read the actual assessment schema and currently available evidence references:
+
+```bash
+python /app/skills/url-analysis/domain_investigation.py contract --case "$CASE_DIR"
+```
+
+Model tool adapters must use `assessment_schema` from this command (or `schema`
+before a case exists), including its `$defs`, rather than an unconstrained object.
+The contract lists valid observation IDs and collector-owned evidence item IDs.
+
 ## Observe, reason, choose, test, revise
 
 1. **Inspect the evidence.** Read the new observation, screenshot, forms, frames,
@@ -150,7 +166,20 @@ step. Use `status --case "$CASE_DIR"` to inspect saved progress after an error.
 
 ## Assessment and evidence handoff
 
-After closing, write an assessment JSON and call:
+Prefer validating and finishing in one operation. Invalid assessments leave the
+browser open so a formatting correction does not destroy the context:
+
+```bash
+python /app/skills/url-analysis/domain_investigation.py finish \
+  --case "$CASE_DIR" --assessment "$ASSESSMENT_FILE" \
+  --review "$REVIEW_FILE" --reason "$STOP_REASON"
+```
+
+The review may be omitted when the latest observation was already reviewed.
+Do not retry the same rejected assessment. Read the validation error and contract;
+make at most one formatting correction, then preserve the evidence and report the
+remaining limitation. Always close on failure. After closing, the existing commands
+also remain available:
 
 ```bash
 python /app/skills/url-analysis/domain_investigation.py assess \
@@ -165,9 +194,21 @@ Kinds: `credential_collection`, `brand_impersonation`, `download_offer`, `redire
 `content_variation`, `benign_context`, `other`.
 
 - Verdicts: `no_adverse_behavior_observed`, `suspicious`, `malicious`, `inconclusive`.
-- Non-inconclusive findings need complete cited observations and confirmed browser
-  cleanup. Missing evidence is not evidence of safety. No-adverse requires all
-  observations and steps complete, and describes only the tested views.
+- Confirmed browser cleanup is required for any non-inconclusive verdict.
+  An adverse verdict may use a partial observation only when the page loaded,
+  the screenshot and DOM were captured, and every finding citing it supplies
+  `evidence_refs` to intact, hash-checked evidence items. Example:
+  `{"observation_id":"obs-001","item_id":"script-001"}`. Copy IDs from the
+  contract; never invent them. State coverage gaps in `limitations`.
+  Truncated handlers, failed pages, challenges, and unconfirmed cleanup cannot
+  support an adverse verdict. Old captures without item metadata remain conservative.
+  Missing evidence is not evidence of safety. No-adverse requires all observations
+  and steps complete, and describes only the tested views.
+- Item completeness establishes that the cited data is intact, not that a claim is
+  correct. An email/password form alone, a familiar logo, or an unrecognized domain
+  does not prove phishing. For declared credential theft, cite the intact handler
+  reading credentials and declaring transmission to an unrelated collection endpoint;
+  consider legitimate authentication providers and other counterevidence.
 - Content variation compares the same input URL; different pages are not evidence
   of cloaking. Timing/profile variation needs explanation and does not establish
   malicious intent by itself.
@@ -209,6 +250,29 @@ Publish the complete directory through the existing run artifact mechanism befor
 the ephemeral worker exits. The CLI does not upload to S3. Verify upload success
 before claiming delivery; otherwise report the failure and local path. Keep all
 relative report assets together, and never publish private browser lease files.
+
+## Corroboration and repeatable evaluation
+
+Use `corroborate --case "$CASE_DIR" --brand-reference "$REFERENCE_FILE"` for a
+researcher-supplied, verified brand/provider registry record. It requires exact
+official domains, any authorized identity-provider domains, verification time,
+reviewer, and source URL. Never construct this trusted reference from the target
+page's claims. An unlisted domain is an unverified relationship, not proof of abuse.
+The comparison is context; it does not change the verdict automatically.
+
+Optional `corroborate --case "$CASE_DIR" --virustotal-url "$SEED_URL"` performs a
+read-only lookup using `CYBER_VT_API_KEY` supplied by the runtime. It records lookup
+time, original analysis time, missing credentials and provider failures. It never
+submits a URL for scanning. Do not print credentials. Reputation does not establish
+the current behavior of an unavailable site and must remain separate from page findings.
+
+For evaluation use `benchmark.py` inside AWS with S3 manifests and S3 results.
+It refuses local dataset operations. The default snapshot assessment excludes
+previous verdicts, reference labels, analyst reviews and reputation context from
+model input. Keep campaign/domain groups and duplicate artifacts out of both
+development and holdout sets. Report precision, recall, false positives, abstentions,
+availability and human evidence correctness separately. See
+`modules/domain-apps/cyber/docs/url-evaluation.md` for corpus and command contracts.
 
 ## Fixed browser boundaries
 

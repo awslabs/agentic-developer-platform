@@ -17,7 +17,8 @@ data "archive_file" "pre_token_generation" {
 
 # IAM Role for the Lambda function
 resource "aws_iam_role" "pre_token_generation" {
-  name = "${var.name_prefix}-pre-token-generation-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-pre-token-generation-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

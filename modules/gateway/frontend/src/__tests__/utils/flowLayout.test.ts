@@ -133,3 +133,16 @@ describe('blockingPredecessors', () => {
     expect(blockingPredecessors(graph([solo]), solo)).toEqual([]);
   });
 });
+
+
+it('matches display metadata by epic and wave without changing layout', () => {
+  const g = graph([node({ node_ref: 'a' }), node({ node_ref: 'b', epic_ref: 'epic-2' })]);
+  g.wave_metadata = [
+    { epic_ref: 'epic-1', wave_ref: 'wave-1', title: 'Contracts', description: 'Freeze contracts.' },
+    { epic_ref: 'epic-2', wave_ref: 'wave-1', title: 'Release', description: 'Qualify release.' },
+  ];
+  const groups = groupIntoEpics(g);
+  expect(groups.map((e) => e.waves[0].title)).toEqual(['Contracts', 'Release']);
+  expect(groups.map((e) => e.waves[0].description)).toEqual(['Freeze contracts.', 'Qualify release.']);
+  expect(groups.map((e) => e.waves[0].waveRef)).toEqual(['wave-1', 'wave-1']);
+});

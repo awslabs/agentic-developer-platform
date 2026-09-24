@@ -21,23 +21,14 @@ runs:
       PYENV
   - name: Load deployment config
     uses: ./.github/actions/load-deploy-config
-  - name: Install AWS CLI + Terraform
+  - name: Verify reviewed runner tools
     run: |
-      set -e
-      if ! command -v aws >/dev/null 2>&1; then
-        curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-        unzip -q /tmp/awscli.zip -d /tmp
-        sudo /tmp/aws/install
-        rm -rf /tmp/awscli.zip /tmp/aws
-      fi
-      if ! command -v terraform >/dev/null 2>&1; then
-        curl -sL "https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip" -o /tmp/tf.zip
-        unzip -q /tmp/tf.zip -d /usr/local/bin/
-        rm -f /tmp/tf.zip
-      fi
-      aws --version
-      terraform --version
-    shell: bash -e {0}
+      set -euo pipefail
+      for tool in aws terraform kubectl jq python3 psql; do
+        command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+      done
+      python3 -c 'import yaml'
+    shell: bash
   - name: Stage build inputs
     run: |
       BUILD_DATE=$(date -u +%Y-%m-%d)
@@ -58,7 +49,7 @@ runs:
       aws s3 cp modules/domain-apps/cyber/image-builder/windows/build-pipeline.sh \
         "s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/build-pipeline.sh" --region "${AWS_REGION}"
       echo "Build inputs staged to S3."
-    shell: bash -e {0}
+    shell: bash
   - name: Terraform apply (build host ON)
     working-directory: ${{ env.TF_DIR }}
     run: |
@@ -74,7 +65,7 @@ runs:
         -var="build_host_enabled=true" \
         -var="account_id=${ACCOUNT_ID}" \
         -var="idle_period_seconds=21600"
-    shell: bash -e {0}
+    shell: bash
   - name: Wait for build output in S3
     run: |
       BUILD_DATE=$(date -u +%Y-%m-%d)
@@ -118,7 +109,7 @@ runs:
         echo "ERROR: Build timed out after 96 minutes. No qcow2 in S3."
         exit 1
       fi
-    shell: bash -e {0}
+    shell: bash
   - name: Verify output
     run: |
       BUILD_DATE=$(date -u +%Y-%m-%d)
@@ -139,7 +130,7 @@ runs:
         --region "${AWS_REGION}" || echo "WARNING: Latest pointer not updated"
 
       echo "Build artifact verified in S3."
-    shell: bash -e {0}
+    shell: bash
   - name: Register VM on CAPE host
     run: |
       BUILD_DATE=$(date -u +%Y-%m-%d)
@@ -150,13 +141,13 @@ runs:
       REG_CMD_ID=$(aws ssm send-command \
         --instance-ids "${{ env.CAPE_HOST_ID }}" \
         --document-name "AWS-RunShellScript" \
-        --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${AWS_REGION} && chmod +x /tmp/register-cape-vm.sh && sudo bash /tmp/register-cape-vm.sh ${BUILD_DATE}\"]" \
+        --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${AWS_REGION} && chmod +x /tmp/register-cape-vm.sh && bash /tmp/register-cape-vm.sh ${BUILD_DATE}\"]" \
         --timeout-seconds 600 \
         --region "${AWS_REGION}" \
         --query 'Command.CommandId' --output text)
       echo "Registration command: $REG_CMD_ID"
 
-      for i in $(seq 1 40); do
+      for _ in $(seq 1 40); do
         STATUS=$(aws ssm get-command-invocation \
           --command-id "$REG_CMD_ID" \
           --instance-id "${{ env.CAPE_HOST_ID }}" \
@@ -176,7 +167,7 @@ runs:
           *) sleep 15 ;;
         esac
       done
-    shell: bash -e {0}
+    shell: bash
   - name: Terraform apply (build host OFF)
     if: always()
     working-directory: ${{ env.TF_DIR }}
@@ -192,15 +183,17 @@ runs:
         -var="build_host_enabled=false" \
         -var="account_id=${ACCOUNT_ID}" \
         -var="idle_period_seconds=21600"
-    shell: bash -e {0}
+    shell: bash
   - name: Summary
     if: success()
     run: |
       BUILD_DATE=$(date -u +%Y-%m-%d)
-      echo "## Windows 11 CAPE Image Build" >> "$GITHUB_STEP_SUMMARY"
-      echo "- **Date**: ${BUILD_DATE}" >> "$GITHUB_STEP_SUMMARY"
-      echo "- **Image**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2" >> "$GITHUB_STEP_SUMMARY"
-      echo "- **Latest**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-latest.qcow2" >> "$GITHUB_STEP_SUMMARY"
-      echo "- **CAPE Host**: ${{ env.CAPE_HOST_ID }}" >> "$GITHUB_STEP_SUMMARY"
-      echo "- **VM Name**: win11-cape-${BUILD_DATE}" >> "$GITHUB_STEP_SUMMARY"
-    shell: bash -e {0}
+      {
+        echo "## Windows 11 CAPE Image Build"
+        echo "- **Date**: ${BUILD_DATE}"
+        echo "- **Image**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2"
+        echo "- **Latest**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-latest.qcow2"
+        echo "- **CAPE Host**: ${{ env.CAPE_HOST_ID }}"
+        echo "- **VM Name**: win11-cape-${BUILD_DATE}"
+      } >> "$GITHUB_STEP_SUMMARY"
+    shell: bash

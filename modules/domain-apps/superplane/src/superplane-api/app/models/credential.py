@@ -6,7 +6,7 @@ import urllib.parse
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
@@ -458,6 +458,13 @@ class CredentialRegistry(Base):
     """
 
     __tablename__ = "credential_registry"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "adp_credential_id",
+            name="uq_credential_registry_org_adp_credential",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

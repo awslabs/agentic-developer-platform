@@ -537,11 +537,8 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     # Deliberately the literal head rather than `release[...]["head"]`: this is the one
     # assertion that pins WHICH chain a receipt claims to have migrated, and deriving it
     # from the same lock the receipt is built from would pass for any value at all.
-    # Advanced to 017 by w6-10 (#5533), to 018 by A15 (#5671).
-    assert (
-        installer.receipt["migration"]["schema"]
-        == "018_deployment_namespace_and_workspace_backfill"
-    )
+    # Advanced to 017 by w6-10 (#5533).
+    assert installer.receipt["migration"]["schema"] == "022_deployment_namespace_quota"
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}

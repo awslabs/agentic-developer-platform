@@ -79,7 +79,16 @@ SECRET_KEYS = re.compile(
 # Keys that legitimately contain a matched word but name an ENDPOINT or an ARN
 # reference rather than carrying a credential value. Everything else matching
 # SECRET_KEYS is refused outright.
-SECRET_KEY_ALLOWED = frozenset({"secrets_endpoint", "credential_secret_name"})
+SECRET_KEY_ALLOWED = frozenset(
+    {
+        "secrets_endpoint",
+        "credential_secret_name",
+        # #5637. A Secrets Manager NAME carrying E18's separately onboarded
+        # ordinary session. The inherited run session is the administrator;
+        # `validate()` additionally refuses an ARN, URL or inline value here.
+        "ordinary_session_secret_name",
+    }
+)
 
 REQUIRED = (
     "gateway_url",
@@ -422,6 +431,45 @@ def validate(config):
         )
     result["deployments"] = deployments
 
+    # #5637: the Superplane domain fixture E18 runs against. Absent means E18
+    # BLOCKS, which is the honest state until a domain service is actually deployed
+    # behind the gateway in a reachable environment.
+    #
+    # The inherited run session is the already-verified administrator. E18 needs
+    # a separately onboarded ordinary session because quota-setting is admin work,
+    # and using one identity for both cannot prove the ordinary-user negative path.
+    superplane = result.get("superplane") or {}
+    require(isinstance(superplane, dict), "superplane must be an object")
+    if superplane:
+        for key in (
+            "base_path",
+            "ordinary_session_secret_name",
+            "model_name",
+            "aws_connection_id",
+        ):
+            value = superplane.get(key)
+            require(
+                isinstance(value, str) and value,
+                f"superplane.{key} must be a non-empty string",
+            )
+        require(
+            superplane["base_path"].startswith("/"),
+            "superplane.base_path must be the gateway-relative API base, for "
+            "example /superplane/v1",
+        )
+        secret = superplane["ordinary_session_secret_name"]
+        require(
+            not secret.startswith("arn:") and "://" not in secret,
+            "superplane.ordinary_session_secret_name must be a Secrets Manager "
+            "secret NAME, not an ARN, a URL or a credential value",
+        )
+        connection_id = superplane["aws_connection_id"]
+        require(
+            not connection_id.startswith("arn:") and "://" not in connection_id,
+            "superplane.aws_connection_id must be an opaque ADP credential ID, not an ARN or URL",
+        )
+    result["superplane"] = superplane
+
     return result
 
 
@@ -645,4 +693,19 @@ def fixture_classes(config):
     # here means three genuinely distinct deployments were configured.
     if len(config.get("deployments") or []) >= REQUIRED_DEPLOYMENTS:
         available.add(cases.THREE_DEPLOYMENTS)
+    # #5637. Configured is not the same as reachable here either, and preflight
+    # discards this class again if the domain does not answer through the gateway —
+    # a 404 from the proxy means nothing is mounted behind the allowlist, which
+    # must block E18 before it mutates anything rather than fail mid-journey.
+    superplane = config.get("superplane") or {}
+    if all(
+        superplane.get(key)
+        for key in (
+            "base_path",
+            "ordinary_session_secret_name",
+            "model_name",
+            "aws_connection_id",
+        )
+    ):
+        available.add(cases.SUPERPLANE_DOMAIN)
     return available

@@ -4,6 +4,8 @@ import { toDisplayState } from './nodeState';
 
 export interface WaveGroup {
   waveRef: string;
+  title?: string;
+  description?: string | null;
   nodes: GraphNode[];
   /** Each group is an antichain: no dependency path connects its members. */
   stages: GraphNode[][];
@@ -14,6 +16,8 @@ export interface WaveGroup {
 
 export interface EpicGroup {
   epicRef: string;
+  title?: string;
+  description?: string;
   waves: WaveGroup[];
 }
 
@@ -59,6 +63,8 @@ function dependencyStages(nodes: GraphNode[], graph: FlowGraph): Pick<WaveGroup,
 
 /** Preserve the plan's wave order; sort steps by dependency, not creation time. */
 export function groupIntoEpics(graph: FlowGraph): EpicGroup[] {
+  const epicMetadata = new Map((graph.epic_metadata ?? []).map((epic) => [epic.epic_ref, epic]));
+  const metadata = new Map((graph.wave_metadata ?? []).map((wave) => [JSON.stringify([wave.epic_ref, wave.wave_ref]), wave]));
   const epics = new Map<string, Map<string, GraphNode[]>>();
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   for (const node of graph.nodes) {
@@ -73,6 +79,8 @@ export function groupIntoEpics(graph: FlowGraph): EpicGroup[] {
   }
   return [...epics.entries()].map(([epicRef, waves]) => ({
     epicRef,
+    title: epicMetadata.get(epicRef)?.title,
+    description: epicMetadata.get(epicRef)?.description,
     waves: [...waves.entries()].map(([waveRef, nodes]) => {
       const ids = new Set(nodes.map((node) => node.id));
       const external = new Map<string, { epicRef: string; waveRef: string }>();
@@ -81,7 +89,8 @@ export function groupIntoEpics(graph: FlowGraph): EpicGroup[] {
         const from = byId.get(edge.from_node_id);
         if (from) external.set(JSON.stringify([from.epic_ref, from.wave_ref]), { epicRef: from.epic_ref, waveRef: from.wave_ref });
       }
-      return { waveRef, nodes, ...dependencyStages(nodes, graph), dependsOn: [...external.values()] };
+      const display = metadata.get(JSON.stringify([epicRef, waveRef]));
+      return { waveRef, title: display?.title, description: display?.description, nodes, ...dependencyStages(nodes, graph), dependsOn: [...external.values()] };
     }),
   }));
 }

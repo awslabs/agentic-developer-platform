@@ -332,7 +332,8 @@ resource "aws_lambda_event_source_mapping" "session_sweeper" {
 # =============================================================================
 
 resource "aws_iam_role" "session_sweeper" {
-  name = "adp-${var.environment}-chat-session-sweeper-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "adp-${var.environment}-chat-session-sweeper-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

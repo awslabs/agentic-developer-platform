@@ -253,7 +253,6 @@ async def test_a_released_reservation_frees_headroom_for_a_concurrent_retry(
     happens, this one proves what it releases is genuinely available again under real
     locking rather than left invisibly held by an uncommitted transaction.
     """
-    from app.services.quota import release_deployment_reservation
 
     await _seed(session_factory)
 
@@ -265,7 +264,9 @@ async def test_a_released_reservation_frees_headroom_for_a_concurrent_retry(
 
     async with session_factory() as session:
         held = await session.get(Deployment, first.id)
-        await release_deployment_reservation(held, session)
+        # The deletion lifecycle publishes this only after absence is confirmed.
+        held.status = "Deleted"
+        await session.commit()
 
     retry = await _reserve(session_factory, "retry", BUDGET_GPUS)
     assert isinstance(retry, Deployment), f"released capacity was not reusable: {retry}"

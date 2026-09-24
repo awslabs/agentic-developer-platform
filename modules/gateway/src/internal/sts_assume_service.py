@@ -34,6 +34,7 @@ class AssumeRoleResult:
     expiration: str  # ISO 8601
     region: str
     profile_name: str
+    assumed_role_arn: str | None = None
 
 
 class STSAssumeError(Exception):
@@ -154,4 +155,5 @@ def assume_role(
         expiration=expiration_str,
         region=default_region,
         profile_name=profile_name,
+        assumed_role_arn=response.get("AssumedRoleUser", {}).get("Arn"),
     )

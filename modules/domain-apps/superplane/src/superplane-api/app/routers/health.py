@@ -8,15 +8,29 @@ from app.config import settings
 from app.database import get_session
 from app.management import management_only
 from app.schemas.health import HealthResponse
+from app.services.provisioning import get_operation_facade
 
 router = APIRouter()
+
+
+@router.get("/capabilities")
+async def capabilities():
+    return {
+        "version": 1,
+        "features": ["create-operation-id-v1"]
+        if get_operation_facade() is not None
+        else [],
+    }
 
 
 @router.get("/readyz")
 async def readiness(request: Request, db: AsyncSession = Depends(get_session)):
     try:
         await db.execute(text("SELECT 1"))
-        if management_only() and getattr(request.app.state, "domain_policy", None) is None:
+        if (
+            management_only()
+            and getattr(request.app.state, "domain_policy", None) is None
+        ):
             raise ValueError("strict authorization unavailable")
     except Exception:
         raise HTTPException(503, "Management service is not ready") from None

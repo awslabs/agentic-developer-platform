@@ -31,7 +31,9 @@ against a real server.
 """
 
 import inspect
+from copy import deepcopy
 import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -233,6 +235,7 @@ class _FakeAppsApi:
         existing_owner=None,
         create_error: Exception | None = None,
     ):
+        self.objects = {}
         self.created: list[tuple[str, dict]] = []
         self.replaced: list[tuple[str, str]] = []
         self.deleted: list[tuple[str, str]] = []
@@ -246,6 +249,8 @@ class _FakeAppsApi:
     # -- reads --
     def read_namespaced_deployment(self, name, namespace):
         self.reads.append((namespace, name))
+        if (namespace, name) in self.objects:
+            return deepcopy(self.objects[(namespace, name)])
         if self._existing_owner is None:
             raise ApiException(status=404, reason="Not Found")
         if self._existing_owner is _UNLABELLED:
@@ -265,15 +270,21 @@ class _FakeAppsApi:
         if self._conflict_owner is not None:
             raise ApiException(status=409, reason="Conflict")
         self.created.append((namespace, body))
-        return _apply_result(
-            body["metadata"]["name"], namespace, body["spec"]["replicas"]
-        )
+        result = deepcopy(body)
+        result["metadata"].update(uid="test-provider-uid", generation=1)
+        self.objects[(namespace, body["metadata"]["name"])] = deepcopy(result)
+        return result
 
     def replace_namespaced_deployment(self, name, namespace, body):
         self.replaced.append((namespace, name))
         return _apply_result(name, namespace, body["spec"]["replicas"])
 
-    def delete_namespaced_deployment(self, name, namespace):
+    def delete_namespaced_deployment(self, name, namespace, body=None):
+        obj = self.objects.get((namespace, name))
+        if obj is None:
+            raise ApiException(status=404)
+        assert body["preconditions"]["uid"] == obj["metadata"]["uid"]
+        del self.objects[(namespace, name)]
         self.deleted.append((namespace, name))
 
     @property
@@ -391,24 +402,21 @@ class TestDeploymentGpuQuota:
         assert len(apps.created) == 2, "more capacity was provisioned than the budget"
 
     @pytest.mark.asyncio
-    async def test_existing_node_capacity_counts_against_the_same_budget(self, client):
-        """Node GPUs and deployment GPUs share one budget, not one each.
-
-        ``budget_max_gpus`` is a single figure for the workspace's GPU footprint, so a
-        workspace already holding 3 node GPUs has 1 left, not 4.
-        """
-        await _seed(ws_a_max_gpus=4, node_gpus=3)
+    async def test_deploying_on_existing_nodes_does_not_double_charge_gpus(
+        self, client
+    ):
+        # The model's requested GPUs run on the provisioned nodes. Charging both
+        # would refuse every deployment once nodes reach the physical GPU budget.
+        await _seed(ws_a_max_gpus=4, node_gpus=4)
         apps = _FakeAppsApi()
-
         with _patch_clients(apps):
             response = await client.post(
                 f"/workspaces/{WS_A}/deployments",
-                json=_body(replicas=2, gpu_per_replica=1),  # 3 + 2 > 4
+                json=_body(replicas=4),
                 headers=_auth(),
             )
-
-        assert response.status_code == 429, response.text
-        assert apps.mutations == []
+        assert response.status_code == 201, response.text
+        assert len(apps.created) == 1
 
     @pytest.mark.asyncio
     async def test_a_workspace_with_no_recorded_budget_is_not_unlimited(self, client):
@@ -476,6 +484,35 @@ class TestDeploymentGpuQuota:
         )
         assert len(apps.created) == 1
 
+    @pytest.mark.asyncio
+    async def test_finalizers_keep_capacity_reserved_until_absence(self, client):
+        await _seed(ws_a_max_gpus=4)
+        apps = _FakeAppsApi()
+        with _patch_clients(apps):
+            created = await client.post(
+                f"/workspaces/{WS_A}/deployments",
+                json=_body(name="terminating", replicas=4), headers=_auth(),
+            )
+            assert created.status_code == 201, created.text
+            target = f"/workspaces/{WS_A}/deployments/{created.json()['deployment_id']}"
+            with patch.object(apps, "delete_namespaced_deployment", return_value=None):
+                deleted = await client.delete(target, headers=_auth())
+            assert deleted.status_code == 200, deleted.text
+            assert deleted.json()["status"] == "Deleting"
+            blocked = await client.post(
+                f"/workspaces/{WS_A}/deployments",
+                json=_body(name="too-soon"), headers=_auth(),
+            )
+            assert blocked.status_code == 429, blocked.text
+            apps.objects.clear()  # finalizers have completed
+            confirmed = await client.delete(target, headers=_auth())
+            assert confirmed.json()["status"] == "Deleted"
+            accepted = await client.post(
+                f"/workspaces/{WS_A}/deployments",
+                json=_body(name="after-delete", replicas=4), headers=_auth(),
+            )
+            assert accepted.status_code == 201, accepted.text
+
     def test_the_reservation_locks_the_workspace_row(self):
         """The reservation's workspace read must be ``FOR UPDATE``.
 
@@ -494,73 +531,57 @@ class TestDeploymentGpuQuota:
         )
 
     @pytest.mark.asyncio
-    async def test_a_failed_cluster_write_releases_the_reservation(self, client):
-        """A failed apply must not leave capacity held.
-
-        Otherwise the tenant is throttled below their real entitlement by a deployment
-        that does not exist — and a retry of the very same request is refused.
-        """
+    async def test_an_uncertain_cluster_write_retains_the_reservation(self, client):
         await _seed(ws_a_max_gpus=4)
-
         failing = _FakeAppsApi(
-            create_error=ApiException(status=500, reason="Internal Server Error")
+            create_error=ApiException(status=504, reason="lost reply")
         )
         with _patch_clients(failing):
             attempt = await client.post(
                 f"/workspaces/{WS_A}/deployments",
-                json=_body(name="doomed", replicas=4, gpu_per_replica=1),
+                json=_body(name="uncertain", replicas=4),
                 headers=_auth(),
             )
-        assert attempt.status_code >= 500, attempt.text
-
-        # The full budget must be available again.
+        assert attempt.status_code == 502, attempt.text
         working = _FakeAppsApi()
         with _patch_clients(working):
             retry = await client.post(
                 f"/workspaces/{WS_A}/deployments",
-                json=_body(name="retry", replicas=4, gpu_per_replica=1),
+                json=_body(name="another", replicas=4),
                 headers=_auth(),
             )
-
-        assert retry.status_code == 201, (
-            "reserved capacity leaked after a failed cluster write: " + retry.text
-        )
+        assert retry.status_code == 429, retry.text
+        assert working.mutations == []
 
     @pytest.mark.asyncio
     async def test_a_deleted_deployment_returns_its_capacity(self, client):
-        """Capacity held by a deleted deployment is released, not held forever."""
         await _seed(ws_a_max_gpus=4)
-        dep_id = uuid.uuid4()
-        await _seed_deployment(
-            dep_id, workspace_id=WS_A, name="old", namespace=NS_A, gpus=4
-        )
-
-        blocked = _FakeAppsApi()
-        with _patch_clients(blocked):
-            refused = await client.post(
+        apps = _FakeAppsApi()
+        with _patch_clients(apps):
+            created = await client.post(
                 f"/workspaces/{WS_A}/deployments",
-                json=_body(name="new", replicas=1, gpu_per_replica=1),
+                json=_body(name="full", replicas=4),
                 headers=_auth(),
             )
-        assert refused.status_code == 429, refused.text
-
-        deleting = _FakeAppsApi(existing_owner=str(WS_A))
-        with _patch_clients(deleting):
+            assert created.status_code == 201, created.text
+            blocked = await client.post(
+                f"/workspaces/{WS_A}/deployments",
+                json=_body(name="another"),
+                headers=_auth(),
+            )
+            assert blocked.status_code == 429
             removed = await client.delete(
-                f"/workspaces/{WS_A}/deployments/{dep_id}", headers=_auth()
-            )
-        assert removed.status_code == 200, removed.text
-
-        after = _FakeAppsApi()
-        with _patch_clients(after):
-            allowed = await client.post(
-                f"/workspaces/{WS_A}/deployments",
-                json=_body(name="new", replicas=1, gpu_per_replica=1),
+                f"/workspaces/{WS_A}/deployments/{created.json()['deployment_id']}",
                 headers=_auth(),
             )
-        assert allowed.status_code == 201, (
-            "a deleted deployment still holds capacity: " + allowed.text
-        )
+            assert removed.status_code == 200, removed.text
+            accepted = await client.post(
+                f"/workspaces/{WS_A}/deployments",
+                json=_body(name="next", replicas=4),
+                headers=_auth(),
+            )
+            assert accepted.status_code == 201, accepted.text
+        assert apps.deleted == [(NS_A, "full")]
 
     @pytest.mark.asyncio
     async def test_each_workspace_has_its_own_budget_on_a_shared_cluster(self, client):
@@ -792,17 +813,15 @@ class TestNamespaceConfinement:
                 f"/workspaces/{WS_A}/deployments", json=_body(), headers=_auth()
             )
 
-        assert response.status_code == 500, response.text
+        assert response.status_code == 409, response.text
         assert apps.mutations == []
-        assert "kube-system" in response.text, (
-            "the refusal does not name the namespace an operator has to fix"
-        )
+        assert "Workspace namespace ownership is unresolved" in response.text
 
     @pytest.mark.asyncio
     async def test_a_workspace_with_no_recorded_namespace_never_uses_default(
         self, client
     ):
-        """A legacy row with no namespace gets its derived one, not ``default``.
+        """A legacy row with no namespace refuses deployment until reconciled.
 
         Failing closed must not strand rows written before the namespace was recorded,
         and the fallback must not be the shared namespace every tenant can reach.
@@ -815,8 +834,8 @@ class TestNamespaceConfinement:
                 f"/workspaces/{WS_A}/deployments", json=_body(), headers=_auth()
             )
 
-        assert response.status_code == 201, response.text
-        assert [namespace for namespace, _ in apps.created] == [f"ws-{WS_A}"]
+        assert response.status_code == 409
+        assert apps.mutations == []
 
     @pytest.mark.asyncio
     async def test_created_objects_carry_the_workspace_ownership_label(self, client):
@@ -877,21 +896,19 @@ class TestDeletionConfinement:
 
     @pytest.mark.asyncio
     async def test_delete_uses_the_namespace_recorded_at_creation(self, client):
-        """Delete targets where the object is, not where current config would put it."""
         await _seed()
-        dep_id = uuid.uuid4()
-        await _seed_deployment(
-            dep_id, workspace_id=WS_A, name="a-workload", namespace=NS_A
-        )
-
-        apps = _FakeAppsApi(existing_owner=str(WS_A))
+        apps = _FakeAppsApi()
         with _patch_clients(apps):
-            response = await client.delete(
-                f"/workspaces/{WS_A}/deployments/{dep_id}", headers=_auth()
+            created = await client.post(
+                f"/workspaces/{WS_A}/deployments", json=_body(), headers=_auth()
             )
-
-        assert response.status_code == 200, response.text
-        assert apps.deleted == [(NS_A, "a-workload")]
+            assert created.status_code == 201, created.text
+            removed = await client.delete(
+                f"/workspaces/{WS_A}/deployments/{created.json()['deployment_id']}",
+                headers=_auth(),
+            )
+        assert removed.status_code == 200, removed.text
+        assert apps.deleted == [(NS_A, "llama-8b")]
 
     @pytest.mark.asyncio
     async def test_an_object_owned_by_another_workspace_is_not_deleted(self, client):
@@ -958,7 +975,9 @@ class TestReplaceConfinement:
         assert apps.replaced == [], "overwrote another workspace's workload"
 
     @pytest.mark.asyncio
-    async def test_a_conflict_with_the_workspace_s_own_object_is_replaced(self, client):
+    async def test_a_conflict_with_the_workspace_s_own_object_is_not_replaced(
+        self, client
+    ):
         """Re-applying your own deployment still works — the fix is not a lockout."""
         await _seed()
         apps = _FakeAppsApi(conflict_owner=str(WS_A))
@@ -970,8 +989,8 @@ class TestReplaceConfinement:
                 headers=_auth(),
             )
 
-        assert response.status_code == 201, response.text
-        assert apps.replaced == [(NS_A, "mine")]
+        assert response.status_code == 409, response.text
+        assert apps.replaced == []
 
     @pytest.mark.asyncio
     async def test_an_unlabelled_object_is_not_replaced(self, client):
@@ -991,6 +1010,32 @@ class TestReplaceConfinement:
 
 class TestListingConfinement:
     """Listing is scoped to the workspace's own namespace and ownership label."""
+
+    @pytest.mark.asyncio
+    async def test_list_returns_the_owned_durable_id_only_for_the_observed_uid(self, client):
+        await _seed()
+        apps = _FakeAppsApi()
+        with _patch_clients(apps):
+            created = await client.post(
+                f"/workspaces/{WS_A}/deployments", json=_body(name="listed"), headers=_auth(),
+            )
+            assert created.status_code == 201, created.text
+            observed = MagicMock()
+            observed.metadata.name = "listed"
+            observed.metadata.namespace = NS_A
+            observed.metadata.uid = "test-provider-uid"
+            observed.metadata.labels = {OWNER_LABEL: str(WS_A)}
+            observed.metadata.creation_timestamp = None
+            observed.spec.replicas = 1
+            observed.status.ready_replicas = 1
+            observed.status.available_replicas = 1
+            with patch.object(apps, "list_namespaced_deployment", return_value=SimpleNamespace(items=[observed])):
+                listed = await client.get(f"/workspaces/{WS_A}/deployments", headers=_auth())
+                assert listed.status_code == 200, listed.text
+                assert listed.json()["deployments"][0]["deployment_id"] == created.json()["deployment_id"]
+                observed.metadata.uid = "replacement-uid"
+                changed = await client.get(f"/workspaces/{WS_A}/deployments", headers=_auth())
+                assert changed.json()["deployments"][0]["deployment_id"] is None
 
     @pytest.mark.asyncio
     async def test_listing_cannot_be_pointed_at_another_namespace(self, client):
@@ -1063,24 +1108,25 @@ class TestNamespaceResolver:
         """Whitespace is treated as absent, so it cannot resolve to an empty target."""
         from app.services.workspace_namespace import resolve_workspace_namespace
 
-        assert resolve_workspace_namespace(self._workspace(blank)) == f"ws-{WS_A}"
+        from app.services.workspace_namespace import NamespaceResolutionError
+
+        with pytest.raises(NamespaceResolutionError):
+            resolve_workspace_namespace(self._workspace(blank))
 
     def test_resolution_is_deterministic(self):
         """A create and a later delete must resolve to the same place."""
         from app.services.workspace_namespace import resolve_workspace_namespace
 
-        workspace = self._workspace(None)
+        workspace = self._workspace(NS_A)
         assert resolve_workspace_namespace(workspace) == resolve_workspace_namespace(
             workspace
         )
 
-    def test_the_derived_name_matches_the_migration_backfill_rule(self):
-        """The resolver and migration 018 must agree, or runtime and data diverge.
+    def test_a_legacy_namespace_is_not_invented_by_migration(self):
+        from pathlib import Path
 
-        Migration 018 backfills ``'ws-' || id``. If this helper's rule changed without
-        the migration, already-backfilled workspaces would resolve to a namespace their
-        workloads are not in, and deletes would silently miss.
-        """
-        from app.services.workspace_namespace import derive_namespace_name
-
-        assert derive_namespace_name(WS_A) == f"ws-{WS_A}"
+        migration = (
+            Path(__file__).parents[1]
+            / "alembic/versions/022_deployment_namespace_quota.py"
+        )
+        assert "UPDATE workspaces" not in migration.read_text()

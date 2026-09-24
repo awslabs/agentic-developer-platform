@@ -566,3 +566,17 @@ class TestRegisterLoopProposalRaises:
 
         with patch("lib.engine_registration.urlopen", side_effect=error), pytest.raises(EngineRegistrationError):
             register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+
+
+def test_agent_authored_wave_metadata_survives_registration_transport(tmp_path):
+    document = valid_document()
+    document["wave_metadata"] = [{"epic_ref": "epic-1", "wave_ref": "wave-1", "title": "API and persistence", "description": "Build durable APIs."}]
+    document["epic_metadata"] = [{"epic_ref": "epic-1", "title": "External tasks", "description": "Services need durable tasks without GitHub."}]
+    write_proposal(tmp_path, document)
+    with patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))) as urlopen:
+        register_loop_proposal(work_dir=tmp_path, issue=ISSUE)
+    sent = json.loads(urlopen.call_args.args[0].data)
+    assert sent["wave_metadata"] == document["wave_metadata"]
+    assert sent["epic_metadata"] == document["epic_metadata"]
+    assert sent["org_id"] == TENANT
+    assert sent["nodes"] == document["nodes"]

@@ -129,7 +129,7 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
 ```
 
 Suites: `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
-`github`, `parity`, `harness`, `multi-deployment`, `full`.
+`github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
 
 **E16/E17 model execution is currently disabled**, even with reachable gateways.
 The `multi_deployment_model_limits` requirement blocks both cases until hard
@@ -195,6 +195,75 @@ an E16/E17 acceptance case and cannot establish model routing or spend. Native
 platform-admin sessions may legitimately have an empty organization ID; usage
 queries must preserve that value and the gateway-reported user ID. Provision
 approved routing fixtures separately before attempting the model scenarios.
+
+### The `superplane` suite (E18, #5637)
+
+**E18 is blocked in code until durable mutation recovery is implemented.** An
+E18-only run stops during preflight before allocating an EC2 instance. A full run
+keeps E18 blocked while other eligible cases proceed. A direct dispatch also
+refuses before loading a session or running the CLI; configuration cannot enable
+the missing recovery capability.
+
+E18 is intended to drive the served CLI's `adp superplane` commands from the
+disposable EC2 instance through the gateway to the Superplane domain service.
+It is the live half of #5637: the offline contract suite
+(`modules/gateway/tests/cli/test_superplane_contract.py`) proves every emitted
+method, path and body matches the gateway's forwarding allowlist and the domain's
+own request models. Live acceptance remains incomplete until the guarded journey
+can safely run and establish that the deployed service accepts those requests.
+
+The blocker is concrete: `remote/superplane_domain.py` currently receives resource
+IDs after CLI output arrives, stores recovery receipts in temporary homes, and
+publishes cleanup resources only after the journey returns. The instance can read
+its S3 bundle but cannot synchronously publish mutation intent to durable recovery
+storage. A lost response or terminated instance can therefore leave a resource
+without a recoverable ID. The orchestrator also lacks cleanup sessions bound to
+E18's separate ordinary principal. Registering the five Superplane resource kinds
+now preserves historical manifest entries, but their live deleters explicitly
+refuse and leave them outstanding; they do not guess ownership or delete by name.
+
+Before removing the guards in `preflight.py` and `remote/superplane_domain.py`,
+implement and verify all of the following on disposable EC2 and remote CI:
+
+- Persist the CLI's original operation ID, immutable create request, deployment,
+  tenant and principal before each mutation; require durable acknowledgement
+  before POST. Include the failed-provider compensation path and account handoff.
+- Recover lost replies through the same operation identity and preserve receipts
+  until resource absence is verified, including after runner and instance loss.
+- Supply cleanup with the correct ordinary or administrator identity, and delete
+  only proven run-owned resource IDs. Deployment recovery needs its workspace ID
+  as well. Confirm provider and vault absence separately and wait for workspace
+  teardown to finish.
+- Publish resources, removal evidence and unresolved operations incrementally and
+  on every failure. Prove interruption, failed cleanup and expired-session cases
+  cannot report acceptance or silently clear a recovery obligation.
+
+Its fixture cannot be created from this workflow either. It needs a Superplane
+domain service actually deployed behind the gateway, plus a separate onboarded
+ordinary-user session, supplied in the config's `superplane` object:
+
+```json
+{"base_path": "/superplane/v1", "ordinary_session_secret_name": "adp/…/superplane-ordinary-session", "model_name": "approved/bounded-test-model", "aws_connection_id": "verified-adp-connection-id"}
+```
+
+The inherited E02 session is the verified administrator. The additional secret
+contains a current token trio plus `client_id`, `user_pool_id`, `region`, and
+`expires_at` for a separately onboarded non-admin identity. The intended journey
+refreshes through the gateway and requires distinct ordinary/admin principals in
+the same tenant.
+`model_name` must identify the fixture's approved one-GPU test model.
+`aws_connection_id` must name a verified AWS connection owned by the inherited
+administrator in the same tenant and matching `destination_account`; it is an
+opaque ADP ID, not a secret ARN. The planned account flow registers, reads, retries
+and deletes its own binding while preserving the source connection. The planned
+workload uses a one-node, one-GPU, $5/day workspace quota and verifies deployment
+and workspace removal.
+
+An unauthenticated 401 or 403 proves only that authentication answered; it does
+not prove that the domain is deployed. Preflight now reports
+`superplane_durable_recovery_unimplemented` without probing the gateway. A
+configured domain cannot override this code blocker. E18 has not established live
+acceptance and `full_acceptance` remains false.
 
 ### Watch it
 

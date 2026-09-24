@@ -39,11 +39,10 @@ from __future__ import annotations
 import pytest
 
 from .postgres_support import (
-    chain_revision_ids,
+    migration_directory,
     render_migration_ddl,
     require_asyncpg,
     require_pgserver,
-    revision_module,
     _Loop,
 )
 
@@ -139,23 +138,22 @@ def migrated(server, loop, request):
 # --- the revision is part of the chain -------------------------------------------
 
 
-def test_this_storys_migration_is_reached_by_the_single_headed_chain():
+def test_this_storys_migration_is_reachable_from_the_single_head():
     """An orphan revision creates nothing, and every offline assertion about it passes.
 
-    `render_migration_ddl` walks the chain Alembic resolves; a revision the walk does not
-    reach — or a chain with two heads — means `alembic upgrade head` either skips this
-    table or refuses to run at all. Checked without a database, so it runs in the offline
-    lane too.
-
-    Reachability, not "is the newest revision in the repository". The original form
-    asserted this revision was the head, which made every later story's migration fail
-    this test (#5671's 018 did). What this story needs is that the chain reaches its
-    revision and still resolves to one head; what comes after it is not its business.
+    Later migrations may extend or merge this branch without changing its bytes.
+    What matters is that `upgrade head` still reaches this revision, with its
+    original parent, and that there remains one unambiguous target.
     """
-    chain = chain_revision_ids()
-
-    assert REVISION in chain, f"{REVISION} is not reached by the chain: {chain}"
-    assert revision_module(REVISION).down_revision == "016_add_organization_grants"
+    directory = migration_directory()
+    heads = directory.get_heads()
+    assert len(heads) == 1, f"the migration chain must have one head; found {heads}"
+    ancestors = {
+        revision.revision: revision
+        for revision in directory.iterate_revisions(heads[0], "base")
+    }
+    assert REVISION in ancestors
+    assert ancestors[REVISION].down_revision == "016_add_organization_grants"
 
 
 def test_the_chain_renders_the_reservations_table_as_postgresql_ddl():
@@ -356,10 +354,12 @@ def test_the_downgrade_removes_the_table_and_its_indexes(migrated):
     dropped by a name that does not match the one created — which renders perfectly and
     fails only against a database that has the index.
     """
-    # Names the revision explicitly: this used to take the chain's last revision, which
-    # stopped being this story's the moment another was appended (#5671's 018).
-    _, downgrade = render_migration_ddl(upgrade_only=False, downgrade_revision=REVISION)
+    _, downgrade = render_migration_ddl(downgrade_revision=REVISION)
     migrated.execute(*_insert())
+    deployment_columns = migrated.fetch(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'deployments' ORDER BY ordinal_position"
+    )
 
     migrated.execute(downgrade)
 
@@ -370,4 +370,12 @@ def test_the_downgrade_removes_the_table_and_its_indexes(migrated):
     assert (
         migrated.fetch("SELECT indexname FROM pg_indexes WHERE tablename = $1", TABLE)
         == []
+    )
+    # This tests 017's own downgrade body, not a later revision's reverse step.
+    assert (
+        migrated.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'deployments' ORDER BY ordinal_position"
+        )
+        == deployment_columns
     )

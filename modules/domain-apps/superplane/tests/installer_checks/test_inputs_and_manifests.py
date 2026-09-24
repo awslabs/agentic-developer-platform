@@ -259,7 +259,7 @@ def test_reject_stale_image_provenance_and_schema(environment, release):
         validate(environment, stale)
     stale = copy.deepcopy(release)
     stale["schema"]["observed"]["head"] = "013_add_provider_operations"
-    with pytest.raises(Refusal, match="014"):
+    with pytest.raises(Refusal, match="release schema"):
         validate(environment, stale)
 
 

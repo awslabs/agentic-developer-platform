@@ -33,12 +33,19 @@ phases:
 
   build:
     commands:
-      - cd modules/domain-apps/cyber/workers
-      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      - cd modules/domain-apps/cyber
+      - docker build --target runtime --build-arg IMAGE_TAG="$IMAGE_TAG" -f workers/Dockerfile --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
       - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"
 
   post_build:
     commands:
+      - |
+        set -euo pipefail
+        test "$CODEBUILD_BUILD_SUCCEEDING" = 1
+        docker run --rm --network none --entrypoint cat "$REGISTRY/$ECR_REPO:$IMAGE_TAG" /opt/worker-manifest.json > /tmp/worker-manifest.json
+        python3 -c "import json; json.load(open('/tmp/worker-manifest.json'))"
+        aws s3 cp /tmp/worker-manifest.json "s3://adp-${ENVIRONMENT}-cape-assets/worker-manifests/by-tag/${IMAGE_TAG}.json" --region "$AWS_REGION"
+        aws s3 cp /tmp/worker-manifest.json "s3://adp-${ENVIRONMENT}-cape-assets/worker-manifests/latest.json" --region "$AWS_REGION"
       - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"

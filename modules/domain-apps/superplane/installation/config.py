@@ -358,12 +358,10 @@ def validate(
         # the API image and then asserts the reported revision equals this one
         # (`runner.py`), so an unrecognized head is as much a refusal as a stale one.
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
-        # same way U11c advanced it to 013, U7b to 014 and U23 to 015. A15 (#5671)
-        # advances it to 018 for `deployments.namespace` and its backfill.
+        # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         require(
-            head == "018_deployment_namespace_and_workspace_backfill",
-            "release schema must include U11c013, U7b014, the U23 identity binding, the"
-            " w6-10 bootstrap reservations table and the A15 deployment namespace",
+            head == "022_deployment_namespace_quota",
+            "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})
         base = load(MODULE / "releases/superplane.lock.yaml")

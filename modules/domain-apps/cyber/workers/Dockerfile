@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # System tools for triage + static analysis
 RUN apt-get update && apt-get install -y --no-install-recommends \
       file \
+      libseccomp2 \
       binutils \
       yara \
       libyara-dev \
@@ -28,13 +29,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY workers/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY entrypoint.py ./entrypoint.py
-COPY triage/ ./triage/
-COPY static/ ./static/
-COPY scripts/ ./scripts/
+COPY workers/entrypoint.py ./entrypoint.py
+COPY workers/sample_access.py ./sample_access.py
+COPY workers/script_guard.py ./script_guard.py
+COPY workers/isolation.py workers/analyze.py workers/job_delivery.py ./
+COPY workers/triage/ ./triage/
+COPY workers/static/ ./static/
+COPY workers/scripts/ ./scripts/
+
+# Issue #5616: the worker enforces Mode B script validation itself, so the
+# validator must be in the image. It is copied from the Stage-3 skill rather
+# than vendored here so the agent-side pre-upload check and the worker-side
+# enforcement cannot drift into two different rule sets. This is why the build
+# context is the cyber module root rather than workers/.
+COPY agent/skills/stage-3-static/validate_script.py ./skills/stage-3-static/validate_script.py
 
 ARG IMAGE_TAG=dev
 ENV IMAGE_TAG=${IMAGE_TAG}
@@ -45,7 +56,27 @@ RUN python3 /app/scripts/generate_manifest.py > /opt/worker-manifest.json \
     && python3 -c "import json; json.load(open('/opt/worker-manifest.json'))"
 
 # Non-root user (reduces blast radius when static-analysis parsers get fed nasty input)
-RUN useradd -m -s /bin/bash -u 1001 worker && chown -R worker:worker /app
+RUN useradd -m -s /bin/bash -u 61161 worker \
+    && chmod -R go-w /app /opt/worker-manifest.json
 USER worker
 
 ENTRYPOINT ["python", "entrypoint.py"]
+
+# Exact runtime filesystem/kernel tests, built only by security contract CI.
+FROM base AS security-test
+USER root
+RUN pip install pytest==8.3.5
+COPY workers/tests/test_isolation.py /app/tests/test_isolation.py
+USER worker
+ENTRYPOINT ["python", "-m", "pytest", "-q", "/app/tests/test_isolation.py"]
+
+# The managed CodeBuild host does not expose Landlock. Boot the same exported
+# worker filesystem under Debian's supported kernel, entirely inside this job.
+FROM public.ecr.aws/docker/library/debian:trixie-slim AS kernel-test-tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      qemu-system-x86 e2fsprogs linux-image-cloud-amd64 initramfs-tools \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY workers/tests/vm_init.py workers/tests/run_image_vm.sh /test-tools/
+ENTRYPOINT ["bash", "/test-tools/run_image_vm.sh"]
+
+FROM base AS runtime

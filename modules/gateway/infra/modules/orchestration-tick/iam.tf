@@ -12,7 +12,8 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 resource "aws_iam_role" "tick" {
-  name = "${local.tick_name}-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.tick_name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

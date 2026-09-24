@@ -9,10 +9,11 @@ from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from evidence_items import checked_item, partial_evidence_usable
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "url-research/1"
-COLLECTOR_VERSION = "1.1.0"
+COLLECTOR_VERSION = "1.2.0"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
@@ -62,6 +63,13 @@ class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EvidenceReference(Contract):
+    observation_id: str = Field(pattern=r"^obs-[0-9]{3}$")
+    item_id: str = Field(
+        pattern=r"^(text|form|script|network|redirect|download|screenshot)-[0-9]{3}$"
+    )
+
+
 class Finding(Contract):
     kind: Literal[
         "credential_collection",
@@ -75,6 +83,7 @@ class Finding(Contract):
     statement: str = Field(min_length=1, max_length=2000)
     basis: Literal["observation", "hypothesis"]
     evidence_ids: list[str] = Field(min_length=1, max_length=10)
+    evidence_refs: list[EvidenceReference] = Field(default_factory=list, max_length=30)
 
 
 class Assessment(Contract):
@@ -93,6 +102,12 @@ class Assessment(Contract):
             if not set(finding.evidence_ids) <= by_id.keys():
                 raise ValueError("Finding cites an unknown observation")
             cited_observations = [by_id[i] for i in finding.evidence_ids]
+            for ref in finding.evidence_refs:
+                if ref.observation_id not in finding.evidence_ids:
+                    raise ValueError(
+                        "Item references must belong to cited observations"
+                    )
+                checked_item(by_id[ref.observation_id], ref.item_id)
             if finding.kind == "redirect" and not any(
                 r.get("kind") in {"http", "navigation"}
                 for o in cited_observations
@@ -125,11 +140,56 @@ class Assessment(Contract):
         if self.verdict != "inconclusive":
             if not any(f.basis == "observation" for f in self.findings):
                 raise ValueError("An assessment requires evidence-linked findings")
-            cited = {i for f in self.findings for i in f.evidence_ids}
-            if any(by_id[i]["status"] != "complete" for i in cited):
-                raise ValueError(
-                    "Incomplete collection supports only an inconclusive assessment"
-                )
+            for finding in self.findings:
+                for observation_id in finding.evidence_ids:
+                    observation = by_id[observation_id]
+                    if observation["status"] == "complete":
+                        continue
+                    if (
+                        self.verdict == "no_adverse_behavior_observed"
+                        or not partial_evidence_usable(observation)
+                    ):
+                        raise ValueError(
+                            "Incomplete collection supports only an inconclusive assessment"
+                        )
+                    refs = [
+                        r
+                        for r in finding.evidence_refs
+                        if r.observation_id == observation_id
+                    ]
+                    if not refs:
+                        raise ValueError(
+                            "Partial observations require intact, specific evidence_refs"
+                        )
+                    kinds = {checked_item(observation, r.item_id)["kind"] for r in refs}
+                    if finding.kind == "credential_collection" and not kinds & {
+                        "form",
+                        "script",
+                        "network",
+                    }:
+                        raise ValueError(
+                            "Credential findings require form, script, or network evidence"
+                        )
+                    if finding.kind == "brand_impersonation" and not kinds & {
+                        "text",
+                        "screenshot",
+                    }:
+                        raise ValueError(
+                            "Brand findings require captured text or screenshot evidence"
+                        )
+                    if finding.kind in {"redirect", "download_offer"} and (
+                        {"redirect": "redirect", "download_offer": "download"}[
+                            finding.kind
+                        ]
+                        not in kinds
+                    ):
+                        raise ValueError(
+                            "Cite the specific redirect or download evidence item"
+                        )
+                    if not self.limitations:
+                        raise ValueError(
+                            "An adverse verdict with partial coverage must state limitations"
+                        )
         if self.verdict == "no_adverse_behavior_observed" and (
             not observations or any(o["status"] != "complete" for o in observations)
         ):

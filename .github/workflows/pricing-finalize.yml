@@ -38,13 +38,31 @@ env:
 
 jobs:
   finalize:
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main'
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
     permissions:
+      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release_sha }}
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
@@ -56,11 +74,9 @@ jobs:
       - name: Install kubectl
         run: |
           set -euo pipefail
-          if ! command -v kubectl >/dev/null; then
-            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
-          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Verify release pricing and activate its schedule
         env:
           PRICING_RELEASE_SHA: ${{ inputs.release_sha }}

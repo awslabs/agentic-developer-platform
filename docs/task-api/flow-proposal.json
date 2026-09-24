@@ -1,0 +1,390 @@
+{
+  "title": "Task API #5792 — external invocation and independent task agents (wave plan)",
+  "org_id": "aws-e",
+  "flow_slug": "task-api-5792",
+  "intent_ref": "5792",
+  "description": "Six waves with issue-backed V0–V5 evaluations. Preserve all 84 original criteria; add eight V0 checks. V0 gates implementation start, then independent work may proceed in parallel. Each wave owns its test tooling; V1–V3 do not wait for T8. Criteria, evidence and failure behavior: docs/task-api/waves.md and GitHub #5792. Runtime runner/fixture bindings remain implementation work. Keep the existing acceptance gate unanswered, execution paused and policy unaccepted.",
+  "spec_revision": "a412def21751b4669485d9b0693bc9e4c9f5f092",
+  "design_history": null,
+  "execution_policy": null,
+  "proposed_execution_policy": {
+    "limits": {
+      "max_spend_usd": "250",
+      "max_attempts_per_node": 3,
+      "max_concurrent_actions": 1,
+      "max_wall_clock_seconds": 86400
+    },
+    "org_id": "aws-e",
+    "team_ids": [],
+    "policy_id": null,
+    "expires_at": "2026-09-24T19:53:41Z",
+    "human_gates": [],
+    "policy_hash": null,
+    "principal_id": null,
+    "repository_ids": [
+      "aws-e/adp"
+    ],
+    "schema_version": 1,
+    "allowed_actions": [
+      "develop",
+      "review",
+      "repair",
+      "merge"
+    ],
+    "evaluation_acceptance": {
+      "task-api-5792/epic-5792/component-delivery/v0": "machine",
+      "task-api-5792/epic-5792/validation-v1/v1": "machine",
+      "task-api-5792/epic-5792/validation-v2/v2": "machine",
+      "task-api-5792/epic-5792/validation-v3/v3": "machine",
+      "task-api-5792/epic-5792/validation-v4/v4": "machine",
+      "task-api-5792/epic-5792/validation-v5/v5": "machine"
+    },
+    "environment_connection_ids": []
+  },
+  "nodes": [
+    {
+      "kind": "story",
+      "title": "Task API T0: Freeze v1 contracts and close implementation design decisions",
+      "address": "task-api-5792/epic-5792/component-delivery/t0",
+      "issue_ref": "5793",
+      "evaluation": null
+    },
+    {
+      "address": "task-api-5792/epic-5792/component-delivery/v0",
+      "kind": "eval",
+      "title": "Task API V0: Contract baseline and evaluation readiness",
+      "issue_ref": "5821",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T1: Add task persistence and idempotency to the existing request table",
+      "address": "task-api-5792/epic-5792/validation-v1/t1",
+      "issue_ref": "5794",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T2: Add authenticated task submission to the existing API Gateway and Lambda",
+      "address": "task-api-5792/epic-5792/validation-v1/t2",
+      "issue_ref": "5795",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T3: Implement recoverable SQS dispatch and task execution authority",
+      "address": "task-api-5792/epic-5792/validation-v1/t3",
+      "issue_ref": "5796",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T6: Add task status, result reporting and durable SSE progress to the gateway",
+      "address": "task-api-5792/epic-5792/validation-v1/t6",
+      "issue_ref": "5799",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "Task API V1: Contract, authorization and storage qualification",
+      "address": "task-api-5792/epic-5792/validation-v1/v1",
+      "issue_ref": "5802",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T4: Add a separate task flow to the existing Python worker entrypoint",
+      "address": "task-api-5792/epic-5792/validation-v2/t4",
+      "issue_ref": "5797",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T5: Build the first independent task agent in the existing worker image",
+      "address": "task-api-5792/epic-5792/validation-v2/t5",
+      "issue_ref": "5798",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "Task API V2: Worker independence and existing-path regression",
+      "address": "task-api-5792/epic-5792/validation-v2/v2",
+      "issue_ref": "5803",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T7: Deliver durable follow-up input and cancellation to running tasks",
+      "address": "task-api-5792/epic-5792/validation-v3/t7",
+      "issue_ref": "5800",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "Task API V3: Failure recovery, streaming and control qualification",
+      "address": "task-api-5792/epic-5792/validation-v3/v3",
+      "issue_ref": "5804",
+      "evaluation": null
+    },
+    {
+      "kind": "story",
+      "title": "Task API T8: Provide the external client example and safe rollout/qualification tooling",
+      "address": "task-api-5792/epic-5792/validation-v4/t8",
+      "issue_ref": "5801",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "Task API V4: Live external integration and coexistence evaluation",
+      "address": "task-api-5792/epic-5792/validation-v4/v4",
+      "issue_ref": "5805",
+      "evaluation": null
+    },
+    {
+      "kind": "eval",
+      "title": "Task API V5: Rollout, rollback and operational acceptance",
+      "address": "task-api-5792/epic-5792/validation-v5/v5",
+      "issue_ref": "5806",
+      "evaluation": null
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/component-delivery/v0"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t1"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t2"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t6"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v2/t4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v2/t5"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v3/t7"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v4/t8"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/t0",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t1"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t2"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v1/t6"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v2/t4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v2/t5"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v3/t7"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/component-delivery/v0",
+      "to_address": "task-api-5792/epic-5792/validation-v4/t8"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t1",
+      "to_address": "task-api-5792/epic-5792/validation-v1/v1"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t1",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t1",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t2",
+      "to_address": "task-api-5792/epic-5792/validation-v1/v1"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t2",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t2",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t3",
+      "to_address": "task-api-5792/epic-5792/validation-v1/v1"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t3",
+      "to_address": "task-api-5792/epic-5792/validation-v2/v2"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t3",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t3",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t6",
+      "to_address": "task-api-5792/epic-5792/validation-v1/v1"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t6",
+      "to_address": "task-api-5792/epic-5792/validation-v2/v2"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t6",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/t6",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/v1",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v1/v1",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/t4",
+      "to_address": "task-api-5792/epic-5792/validation-v2/v2"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/t4",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/t4",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/t5",
+      "to_address": "task-api-5792/epic-5792/validation-v2/v2"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/t5",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/t5",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/v2",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v2/v2",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v3/t7",
+      "to_address": "task-api-5792/epic-5792/validation-v3/v3"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v3/t7",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v3/v3",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v4/t8",
+      "to_address": "task-api-5792/epic-5792/validation-v4/v4"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v4/t8",
+      "to_address": "task-api-5792/epic-5792/validation-v5/v5"
+    },
+    {
+      "from_address": "task-api-5792/epic-5792/validation-v4/v4",
+      "to_address": "task-api-5792/epic-5792/validation-v5/v5"
+    }
+  ],
+  "wave_metadata": [
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "component-delivery",
+      "title": "Contracts and design",
+      "description": "Freeze the task API, lifecycle and data contracts, resolve implementation decisions, and establish the fixtures and evaluation manifest. V0 verifies the contract baseline."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v1",
+      "title": "API and persistence",
+      "description": "Build durable task storage, authenticated submission, recoverable dispatch, and status/progress reporting. V1 qualifies contracts, authorization and storage."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v2",
+      "title": "Worker execution",
+      "description": "Implement the task worker entrypoint and independent task agent in the existing worker image. V2 verifies task isolation and compatibility with the existing worker path."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v3",
+      "title": "Interaction and recovery",
+      "description": "Deliver follow-up input and cancellation to running tasks. V3 qualifies failure recovery, durable streaming and control behavior across the integrated components."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v4",
+      "title": "External integration",
+      "description": "Provide the external client example and bounded qualification tooling. V4 verifies live integration and coexistence with the existing platform."
+    },
+    {
+      "epic_ref": "epic-5792",
+      "wave_ref": "validation-v5",
+      "title": "Release acceptance",
+      "description": "Qualify rollout, rollback, cleanup and operational readiness using the integrated implementation and V4 evidence. V5 records release acceptance."
+    }
+  ],
+  "epic_metadata": [
+    {
+      "epic_ref": "epic-5792",
+      "title": "Task API: external invocation and independent task agents",
+      "description": "External applications need to give ADP useful work and follow it through to a result without turning every request into a GitHub issue. This epic adds a Task API so a service can submit work, receive a stable task handle, observe live progress, provide follow-up input, request cancellation and retrieve the result. It must work for tenants with no GitHub integration.\n\nTasks will run through the existing ADP API Gateway, ingress Lambda, queue and worker infrastructure, using a separate task agent inside the existing worker image. Durable acceptance, idempotency, recoverable dispatch and retained progress let clients reconnect without losing accepted work or its history. Authentication, tenant isolation, model, budget and credential policies remain authoritative.\n\nThe delivery covers contracts, storage and APIs, worker execution, interaction and recovery, external integration, and release qualification. Each wave has an independent evaluation. Rollout must preserve accepted tasks and existing GitHub, Claude and Codex paths; retiring those paths is outside this epic."
+    }
+  ]
+}

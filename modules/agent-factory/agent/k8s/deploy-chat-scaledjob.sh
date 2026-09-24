@@ -6,7 +6,7 @@
 # Required env:
 #   AWS_PROFILE         (e.g. embark2)
 #   ENVIRONMENT         (e.g. dev)
-#   AGENT_IMAGE         (e.g. <acct>.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway:<tag>)
+#   AGENT_IMAGE         (e.g. <acct>.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent:<tag>)
 #
 # Optional env:
 #   NAMESPACE           (default: adp-gateway-agents)

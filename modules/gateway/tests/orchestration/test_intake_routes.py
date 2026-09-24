@@ -84,6 +84,25 @@ def a_row(
     return row
 
 
+def a_live_row(**overrides: Any) -> dict[str, Any]:
+    """`a_row` for a conversation that is active NOW rather than in 2023.
+
+    `a_row`'s fixed timestamp is what most of these tests want: a stable row whose
+    exact age is irrelevant to the ownership, authorization and shape assertions they
+    make. It is wrong for the few that resolve a repository and expect a proposed
+    grant back, because a proposed grant's expiry is anchored to last activity
+    (#5331) and a 2023 conversation is correctly refused as too idle to carry one.
+
+    A helper rather than a changed default: making every row live would hide that
+    distinction, and the idleness refusal is a behaviour some tests here need to
+    exercise deliberately.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    overrides.setdefault("updated_at", int((datetime.now(tz=UTC) - timedelta(minutes=5)).timestamp()))
+    return a_row(**overrides)
+
+
 class StubStore:
     """A sessions table over fixed rows, filtering queries as the real GSI does."""
 
@@ -909,6 +928,22 @@ class TestDerivingAPlanFromARefinedIntent:
         # The user's own words, echoed, so an operator can see the stories were not invented.
         assert body["derived_from_outcomes"] == ["p95 under 400ms", "No conversion regression"]
 
+    def test_model_chosen_display_text_reaches_plan_without_an_extra_question(self, monkeypatch):
+        epic = {"title": "Checkout performance", "description": "Slow checkout costs orders. Reduce latency while preserving conversion."}
+        wave = {"title": "Latency and conversion", "description": "Reduce p95 latency and evaluate conversion impact."}
+        http, _ = self._client(monkeypatch, rows=[a_row()], drafts=self._draft(epicDisplay=epic, waveDisplay=wave))
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+        assert response.status_code == 200, response.text
+        proposal = response.json()["proposal"]
+        assert proposal["epic_metadata"] == [{**epic, "epic_ref": "epic-1"}]
+        assert proposal["wave_metadata"] == [{**wave, "epic_ref": "epic-1", "wave_ref": "wave-1"}]
+        assert proposal["execution_policy"] is None
+
+    @pytest.mark.parametrize("field", ["waveDisplay", "epicDisplay"])
+    def test_invalid_model_display_text_is_rejected_before_plan_creation(self, monkeypatch, field):
+        http, _ = self._client(monkeypatch, rows=[a_row()], drafts=self._draft(**{field: {"title": " ", "description": "Something"}}))
+        assert http.post(f"{SESSIONS}/{SESSION}/plan", json={}).status_code == 422
+
     def test_the_tenant_on_the_document_is_the_authenticated_one(self, monkeypatch):
         """`compile_proposal` checks `org_id` against server-resolved context.
 
@@ -970,8 +1005,15 @@ class TestDerivingAPlanFromARefinedIntent:
 
         Echoing what the caller TYPED would hand a human a string to authorize that
         differs from the one admission later compares.
+
+        `a_row`'s default `updated_at` is a fixed 2023 timestamp, which the idleness
+        refusal (#5331) now declines for any request that resolves a repository. That
+        timestamp is incidental to this test's subject, so it is given a live
+        conversation rather than having the refusal relaxed — this is the only test in
+        the class that both resolves a repository AND expects success, which is why it
+        is the only one affected.
         """
-        http, _ = self._client(monkeypatch, rows=[a_row()], drafts=self._draft(), installations=[(11, ["acme/web"], True)])
+        http, _ = self._client(monkeypatch, rows=[a_live_row()], drafts=self._draft(), installations=[(11, ["acme/web"], True)])
 
         body = http.post(f"{SESSIONS}/{SESSION}/plan", json={"repository": "ACME/Web"}).json()
 
@@ -1100,3 +1142,48 @@ class TestDerivingAPlanFromARefinedIntent:
         assert body["proposal"].get("proposed_execution_policy") is None
         assert body["wrote_nothing"] is True
         assert body["execution_is_unbounded"] is True
+
+    def test_a_resumed_conversations_grant_is_clocked_from_its_last_activity(self, monkeypatch):
+        """The route must anchor the proposed expiry to activity, not to creation (#5331).
+
+        This is the route's half of the resume defect, and only the route can get it
+        wrong: `plan_from_draft` is handed one epoch and honours it, so which stored
+        field the route reads is the whole bug. Reading `created_at` spent the grant's
+        24 hours on the user's thinking time — and spent them entirely for the
+        disconnect-and-return the story requires — producing bounds already expired at
+        the moment the human was asked to approve them.
+
+        Asserted against a clock rather than a fixed timestamp because a fixed one
+        cannot see this: the row is given a creation two days before its last activity,
+        which is exactly the shape a resumed conversation has, and the two anchors give
+        opposite answers for it.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(tz=UTC)
+        row = a_live_row(created_at=Decimal(int((now - timedelta(days=2)).timestamp())))
+        http, _ = self._client(monkeypatch, rows=[row], drafts=self._draft(), installations=[(11, ["acme/web"], True)])
+
+        body = http.post(f"{SESSIONS}/{SESSION}/plan", json={"repository": "acme/web"}).json()
+
+        expires_at = datetime.fromisoformat(body["proposal"]["proposed_execution_policy"]["expires_at"])
+        assert expires_at - now > timedelta(hours=23), "a resumed conversation was handed an already-spent grant"
+
+    def test_a_long_idle_conversation_is_refused_rather_than_handed_dead_bounds(self, monkeypatch):
+        """409 and the action that resolves it, in the voice the other 409 here uses.
+
+        There is no recent activity to anchor to, so the honest answer is to send the
+        user back to their conversation rather than to emit bounds that cannot
+        authorize anything. Same status as "no outcomes yet" for the same reason:
+        nothing is wrong with the request, and retrying it changes nothing until the
+        conversation does.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        row = a_row(updated_at=int((datetime.now(tz=UTC) - timedelta(days=3)).timestamp()))
+        http, _ = self._client(monkeypatch, rows=[row], drafts=self._draft(), installations=[(11, ["acme/web"], True)])
+
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={"repository": "acme/web"})
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "planning_session_idle"

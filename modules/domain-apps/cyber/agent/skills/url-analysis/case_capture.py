@@ -19,6 +19,7 @@ from case_contract import (
     utcnow,
 )
 from denylist import DenylistResult
+from evidence_items import build_evidence_items, inventory_digest
 
 MAX_EVENTS = 200
 PROFILES = {
@@ -36,6 +37,22 @@ PROFILES = {
 
 # Fixed code owned by the collector. The caller cannot supply JavaScript.
 PAGE_DATA = """() => {
+ // Inspect existing inline source only. Never fetch or execute agent-supplied code.
+ // Relevant handlers get priority over analytics/bootstrap scripts in a fixed budget.
+ let remainingScriptChars = 131072;
+ const candidates = Array.from(document.scripts).map((s, index) => ({
+   s, index, relevant: !s.src && /password|submit|FormData|fetch\\s*\\(|XMLHttpRequest|sendBeacon/i.test(s.textContent || '')
+ }));
+ const scripts = candidates.sort((a, b) => Number(b.relevant) - Number(a.relevant) || a.index - b.index)
+   .slice(0, 20).map(({s, index, relevant}) => {
+     const source = s.src ? '' : (s.textContent || '');
+     const budget = Math.min(relevant ? 32768 : 1200, remainingScriptChars);
+     const inline = source.slice(0, budget);
+     remainingScriptChars -= inline.length;
+     return {src: s.src, inline, document_index: index, relevant,
+       original_chars: source.length, captured_chars: inline.length,
+       truncated: source.length > inline.length};
+   });
  const root = document.documentElement.cloneNode(true);
  root.querySelectorAll('script,style,noscript').forEach(e => e.remove());
  root.querySelectorAll('input,textarea,select').forEach(e => {
@@ -54,21 +71,22 @@ PAGE_DATA = """() => {
   visible_text: (document.body?.innerText || '').slice(0, 20000),
   dom_snapshot: root.outerHTML.slice(0, 100000),
   forms: Array.from(document.forms).slice(0, 30).map(f => ({
-    action: f.action, method: f.method, fields: Array.from(f.querySelectorAll('input,select,textarea'))
+    action: f.action, method: f.method,
+    fields_truncated: f.querySelectorAll('input,select,textarea').length > 50,
+    fields: Array.from(f.querySelectorAll('input,select,textarea'))
       .slice(0, 50).map(i => ({name: i.name, type: i.type, hidden: i.type === 'hidden'}))
   })),
   orphan_inputs: Array.from(document.querySelectorAll('input[type=password],input[type=email]'))
     .filter(i => !i.closest('form')).slice(0, 30).map(i => ({name: i.name, type: i.type})),
   links: Array.from(document.querySelectorAll('a[href]')).slice(0, 50)
     .map(a => ({url: a.href, text: a.innerText.slice(0, 150)})),
-  scripts: Array.from(document.scripts).slice(0, 20)
-    .map(s => ({src: s.src, inline: s.src ? '' : (s.textContent || '').slice(0, 1200)})),
+  scripts,
   counts: {forms: document.forms.length, links: document.querySelectorAll('a[href]').length,
     scripts: document.scripts.length, text_chars: document.body?.innerText.length || 0,
     dom_chars: root.outerHTML.length},
   nested_capture_truncated: document.title.length > 500 ||
     Array.from(document.forms).some(f => f.querySelectorAll('input,select,textarea').length > 50) ||
-    Array.from(document.scripts).some(s => !s.src && (s.textContent || '').length > 1200) ||
+    scripts.some(s => s.truncated) ||
     Array.from(document.querySelectorAll('a[href]')).some(a => a.innerText.length > 150) ||
     Array.from(document.querySelectorAll('input[type=password],input[type=email]'))
       .filter(i => !i.closest('form')).length > 30,
@@ -208,6 +226,8 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             append("timeline", timeline, {"event": "navigation", "url": frame.url})
             if frame.url != previous_url:
                 kind = "navigation"
+                if not frame.url.startswith(("https://", "http://")):
+                    kind = "browser_internal"
                 if manual_navigation and (
                     manual_navigation == "back" or frame.url == manual_navigation
                 ):
@@ -330,6 +350,8 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         ) or any(c.get("nested_capture_truncated") for c in [o, *o["frames"]]):
             o["status"] = "partial"
             o["errors"].append("page_capture_truncated")
+        o["evidence_items"] = build_evidence_items(o)
+        o["evidence_sha256"] = inventory_digest(o)
         o["content_sha256"] = content_digest(o)
         result["observations"].append(o)
         subjects_by_url[session.url] = subject

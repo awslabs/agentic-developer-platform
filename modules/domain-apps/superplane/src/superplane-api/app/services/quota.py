@@ -37,7 +37,7 @@ RELEASED_DEPLOYMENT_STATUSES = ("Deleted", "Failed")
 
 # Statuses a deployment row can hold while its cluster write is still in flight.
 # `reserve_deployment_gpus` writes this, and it counts toward the workspace total.
-DEPLOYMENT_STATUS_RESERVED = "Reserving"
+DEPLOYMENT_STATUS_RESERVED = "Pending"
 
 # Default plan-based quotas (fallback when no explicit quota is set)
 PLAN_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -191,17 +191,10 @@ async def count_workspace_nodes(workspace: Workspace, db: AsyncSession) -> int:
 
 
 async def count_workspace_gpus(workspace: Workspace, db: AsyncSession) -> int:
-    """Count active GPUs for a workspace: cluster nodes plus model deployments.
+    """Count physical GPUs provisioned for the workspace's cluster.
 
-    Issue #5671 (A15) added the deployment half. Counting only nodes made the
-    deployment quota check vacuous in the case it exists for: a workspace could hold
-    any number of GPU-consuming model deployments and this returned the node total,
-    unchanged, so "current usage" never reflected the thing being limited and the
-    check compared a request against a number that never grew.
-
-    Nodes and deployments are summed together because the recorded limit
-    (``budget_max_gpus``) is a single figure for the workspace's GPU footprint, not a
-    per-kind allowance.
+    Model allocations use ``count_workspace_deployment_gpus`` separately: a GPU
+    allocated to a model on an existing node must not be charged twice.
     """
     node_total = 0
     if workspace.cluster_id:
@@ -214,7 +207,7 @@ async def count_workspace_gpus(workspace: Workspace, db: AsyncSession) -> int:
         )
         node_total = int(result.scalar() or 0)
 
-    return node_total + await count_workspace_deployment_gpus(workspace.id, db)
+    return node_total
 
 
 async def count_workspace_deployment_gpus(
@@ -505,7 +498,7 @@ async def reserve_deployment_gpus(
 ) -> Deployment:
     """Atomically check the workspace's GPU/spend budget and reserve the capacity.
 
-    Issue #5671 (A15). Returns a persisted ``Deployment`` row in state ``Reserving``,
+    Issue #5671 (A15). Returns a persisted ``Deployment`` row in state ``Pending``,
     which counts toward the workspace's committed GPUs from the moment it is written.
 
     WHY THE ROW *IS* THE RESERVATION
@@ -525,8 +518,8 @@ async def reserve_deployment_gpus(
     both read the same pre-request total, both pass, and the workspace ends up over
     budget with neither request at fault.
 
-    The caller must call :func:`release_deployment_reservation` if the cluster write
-    fails, or the capacity stays held.
+    Uncertain provider writes retain capacity. The durable operation lifecycle
+    releases it only after a confirmed terminal failure or confirmed deletion.
 
     Raises:
         HTTPException 429 if the GPU or daily-spend quota would be exceeded.
@@ -559,7 +552,7 @@ async def reserve_deployment_gpus(
     _assert_deployment_within_quota(
         workspace_id,
         ws_quotas,
-        current_gpus=await count_workspace_gpus(workspace, db),
+        current_gpus=await count_workspace_deployment_gpus(workspace.id, db),
         total_gpus_requested=total_gpus_requested,
     )
     await _assert_daily_spend_within_budget(workspace, ws_quotas, db)
@@ -576,27 +569,3 @@ async def reserve_deployment_gpus(
     await db.commit()
     await db.refresh(deployment)
     return deployment
-
-
-async def release_deployment_reservation(
-    deployment: Deployment, db: AsyncSession
-) -> None:
-    """Release a reservation whose provisioning did not complete.
-
-    Marks the row ``Failed``, which :func:`count_workspace_deployment_gpus` excludes,
-    so the capacity returns to the workspace's headroom. Without this a failed cluster
-    write would hold GPUs forever and throttle the tenant below their entitlement.
-
-    Best-effort by design: this runs while another failure is already being handled, so
-    it must not replace that error with one of its own.
-    """
-    try:
-        deployment.status = "Failed"
-        await db.commit()
-    except Exception:  # pragma: no cover - defensive
-        logger.exception(
-            "Failed to release GPU reservation for deployment %s; capacity may stay "
-            "held until reconciliation",
-            deployment.id,
-        )
-        await db.rollback()

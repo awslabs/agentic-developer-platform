@@ -8,14 +8,47 @@ name: Cyber Infra Plan
     - modules/domain-apps/cyber/ci/cyber-infra-plan/**
     branches:
     - main
+  workflow_dispatch: null
 jobs:
   plan:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch')
     name: Terraform Plan
-    runs-on: arc-runner-org
+    environment: adp-deploy-dev
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
     permissions:
+      id-token: write
       contents: read
       pull-requests: write
     steps:
     - uses: actions/checkout@v7
+    - name: Verify source belongs to reviewed main history
+      shell: bash
+      run: |
+        set -euo pipefail
+        git fetch --no-tags origin "$GITHUB_SHA"
+        git merge-base --is-ancestor HEAD FETCH_HEAD
+    - name: Establish trusted deployment identity
+      uses: ./.github/actions/trusted-deployment
+      with:
+        role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+        region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
     - name: Run cyber app automation
       uses: ./modules/domain-apps/cyber/ci/cyber-infra-plan
+  validate-pr-config:
+    name: Terraform PR Configuration
+    if: github.event_name == 'pull_request'
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v7
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.14.2
+    - name: Validate without state or deployment credentials
+      working-directory: modules/domain-apps/cyber/infra
+      run: |
+        terraform init -backend=false -input=false
+        terraform validate -no-color

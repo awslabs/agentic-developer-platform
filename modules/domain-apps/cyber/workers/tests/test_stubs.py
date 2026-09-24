@@ -11,6 +11,11 @@ import json
 import os
 import subprocess
 import sys
+import time
+import hashlib
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import boto3
 import pytest
@@ -20,9 +25,15 @@ WORKERS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 EICAR_BYTES = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 
+# Issue #5616: jobs carry the requester's identity and samples are addressed
+# inside that identity's own prefix. The layout matches the ingest gateway's
+# upload key builder (o/<org>/t/<team>/u/<user>/s/<session>/<task>/in/<file>).
+JOB_IDENTITY = {"org_id": "org-1", "team_id": "team-a", "user_id": "user-1"}
+SAMPLE_KEY = "o/org-1/t/team-a/u/user-1/s/sess-1/task-1/in/test.bin"
+
 
 @pytest.fixture()
-def aws_env():
+def aws_env(monkeypatch):
     """Set up mocked AWS resources: 2 SQS queues + 1 DynamoDB table + S3."""
     with mock_aws():
         region = "us-east-1"
@@ -58,9 +69,11 @@ def aws_env():
             BillingMode="PAY_PER_REQUEST",
         )
 
-        # Create S3 bucket with test sample
+        # Create S3 bucket with test sample. Issue #5616: the sample lives under
+        # the requester's own tenant prefix, because that is the only place a
+        # worker is now allowed to read from.
         s3.create_bucket(Bucket="test-samples")
-        s3.put_object(Bucket="test-samples", Key="samples/test.bin", Body=EICAR_BYTES)
+        s3.put_object(Bucket="test-samples", Key=SAMPLE_KEY, Body=EICAR_BYTES)
 
         # Set env vars the handlers expect
         os.environ["INPUT_QUEUE_URL"] = input_url
@@ -68,7 +81,14 @@ def aws_env():
         os.environ["RESULTS_TABLE"] = "cyber-results"
         os.environ["IMAGE_TAG"] = "test-sha"
         os.environ["AWS_DEFAULT_REGION"] = region
+        # Issue #5616: workers deny all reads unless the bucket is allowlisted.
+        os.environ["CYBER_ALLOWED_BUCKETS"] = "test-samples"
 
+        for stage in ("triage", "static"):
+            import importlib
+            handler = importlib.import_module(stage + ".handler")
+            monkeypatch.setattr(handler, "download_sample", lambda body, ref, dest: dest.write_bytes(EICAR_BYTES))
+            monkeypatch.setattr(handler, "run_isolated", lambda *a, **k: {"hashes": {"sha256": hashlib.sha256(EICAR_BYTES).hexdigest()}, "mode": "rule-driven", "file_type": "fixture", "sections": [], "imports": [], "yara_hits": [], "candidate_iocs": {}})
         yield {
             "sqs": sqs,
             "s3": s3,
@@ -79,13 +99,16 @@ def aws_env():
         }
 
 
-def _send_sample_message(sqs_client, queue_url: str, artifact_id: str) -> None:
+def _send_sample_message(sqs_client, queue_url: str, artifact_id: str, stage="triage") -> None:
     """Send a sample message to the input queue (uses real handler format)."""
     sqs_client.send_message(
         QueueUrl=queue_url,
         MessageBody=json.dumps({
             "artifact_id": artifact_id,
-            "sample_s3_uri": "s3://test-samples/samples/test.bin",
+            "registration_version": 1, "stage": stage,
+            "issued_at": int(time.time()), "expires_at": int(time.time()) + 900,
+            "sample_s3_uri": f"s3://test-samples/{SAMPLE_KEY}",
+            **JOB_IDENTITY,
         }),
     )
 
@@ -93,7 +116,7 @@ def _send_sample_message(sqs_client, queue_url: str, artifact_id: str) -> None:
 class TestTriageHandler:
     def test_processes_message_and_writes_ddb(self, aws_env):
         """Triage handler reads SQS, writes DDB row, sends response, deletes receipt."""
-        _send_sample_message(aws_env["sqs"], aws_env["input_url"], "art-001")
+        _send_sample_message(aws_env["sqs"], aws_env["input_url"], "cyber-" + "a"*32 + "-" + "b"*32)
 
         from triage.handler import run
 
@@ -102,7 +125,7 @@ class TestTriageHandler:
         # Verify DDB row
         table = aws_env["ddb"].Table("cyber-results")
         items = table.scan(
-            FilterExpression=boto3.dynamodb.conditions.Attr("artifact_id").eq("art-001")
+            FilterExpression=boto3.dynamodb.conditions.Attr("artifact_id").eq("cyber-" + "a"*32 + "-" + "b"*32)
         )["Items"]
         assert len(items) == 1
         assert items[0]["stage"] == "triage"
@@ -120,7 +143,7 @@ class TestTriageHandler:
         )
         assert len(resp_msgs.get("Messages", [])) == 1
         resp_body = json.loads(resp_msgs["Messages"][0]["Body"])
-        assert resp_body["artifact_id"] == "art-001"
+        assert resp_body["artifact_id"] == "cyber-" + "a"*32 + "-" + "b"*32
         assert resp_body["stage"] == 1
         assert resp_body["stage_name"] == "triage"
 
@@ -145,7 +168,7 @@ class TestTriageHandler:
 class TestStaticHandler:
     def test_processes_message_and_writes_ddb(self, aws_env):
         """Static handler reads SQS, writes DDB row with stage=static."""
-        _send_sample_message(aws_env["sqs"], aws_env["input_url"], "art-002")
+        _send_sample_message(aws_env["sqs"], aws_env["input_url"], "cyber-" + "a"*32 + "-" + "c"*32, stage="static")
 
         from static.handler import run
 
@@ -153,7 +176,7 @@ class TestStaticHandler:
 
         table = aws_env["ddb"].Table("cyber-results")
         items = table.scan(
-            FilterExpression=boto3.dynamodb.conditions.Attr("artifact_id").eq("art-002")
+            FilterExpression=boto3.dynamodb.conditions.Attr("artifact_id").eq("cyber-" + "a"*32 + "-" + "c"*32)
         )["Items"]
         assert len(items) == 1
         assert items[0]["stage"] == "static"
