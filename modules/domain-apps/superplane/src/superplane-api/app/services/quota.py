@@ -99,7 +99,12 @@ async def get_org_quotas(
             status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found"
         )
 
-    quotas = parse_quotas(org.quotas_json, org.billing_plan)
+    # Persisted quotas are overrides. Empty/partial records must not erase a
+    # plan's GPU or spend ceiling; null also means inherit, as on updates.
+    quotas = merge_quotas(
+        parse_quotas(None, org.billing_plan),
+        parse_quotas(org.quotas_json, org.billing_plan),
+    )
     return org, quotas
 
 
