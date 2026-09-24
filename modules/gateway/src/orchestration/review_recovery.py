@@ -42,10 +42,12 @@ class ReviewRecoveryRequest(BaseModel):
 
 
 async def exited_run(run_id, org_id, resolver=None):
-    from .controls import get_run_binding_resolver
     from .work_claims import compute_liveness
 
-    resolver = resolver or await get_run_binding_resolver()
+    if resolver is None:
+        from .controls import get_run_binding_resolver
+
+        resolver = await get_run_binding_resolver()
     # Lifecycle is mutable; the budget resolver's day-long identity cache cannot
     # establish a current exit. Read the registry consistently at acceptance.
     run = await resolver.read_current(run_id)
