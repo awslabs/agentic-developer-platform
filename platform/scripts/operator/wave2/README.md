@@ -491,3 +491,18 @@ digest, command/browser captures and fixture ledger alongside these reports. Use
 the existing ledger cleanup only after worker drain and evidence collection;
 verify the exact owned resources are absent. LF-01/03/04 have local production-path
 regressions; LF-02/03/05 still require the maintainer's actual live observations.
+
+### Control transport CIDRs
+
+Before enabling fixture controls, pass `--cluster-pod-cidrs` to
+`10-create-fixture.sh` using verified private pod ranges from the target cluster.
+The renderer can also retain an explicit inline
+`AGENT_CONTROL_CLUSTER_POD_CIDRS` on the source Deployment. An `envFrom` reference
+alone cannot establish that this setting exists; missing or invalid ranges stop
+rendering. Empty configuration makes the gateway refuse live control transport
+with HTTP 409 even when registration and capability flags succeed.
+
+For maintenance of an existing isolated fixture, an observed owned worker IP as
+`/32` is sufficient for that worker. Verify its pod UID before applying the
+fixture-only setting, and update it for subsequent workers. This setting does
+not replace the fixture NetworkPolicies or authorize changes to ordinary controls.

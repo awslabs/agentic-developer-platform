@@ -75,6 +75,7 @@ def live_deployment() -> dict:
         for name, (secret, key) in render_fixture.EXPECTED_SECRET_ENV.items()
     ]
     env.append({"name": "AGENT_CONTROL_PORT", "value": render_fixture.CONTROL_PORT})
+    env.append({"name": "AGENT_CONTROL_CLUSTER_POD_CIDRS", "value": "10.0.0.0/16"})
     env.append({"name": "BG_DATABASE_URL",
                 "valueFrom": {"secretKeyRef": {"name": "bedrockgateway-secrets",
                                                "key": "database-url"}}})
