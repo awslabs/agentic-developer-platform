@@ -1661,6 +1661,8 @@ Follow autonomous delivery (AI-DLC flows):
                           Answer a decision the engine is waiting on
     flow create --file plan.json
                           Submit a prepared plan for approval
+    flow draft preview|save FLOW_ID --file plan.json
+                          Revise an unapproved draft using explicit version/hash bindings
 
   Administration:
     admin login           Sign in with a Cognito administrator account

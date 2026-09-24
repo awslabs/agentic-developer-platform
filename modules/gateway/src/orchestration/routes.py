@@ -89,6 +89,7 @@ from src.orchestration.dispatch_pass import (
     routing_blocker_for_node,
 )
 from src.orchestration.display_state import FlowStatus
+from src.orchestration.draft_revision_routes import router as draft_revision_router
 from src.orchestration.evaluation_acceptance_routes import router as evaluation_acceptance_router
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
@@ -1911,3 +1912,5 @@ router.include_router(shared_concurrency_router)
 router.include_router(shared_retry_router)
 router.include_router(shared_window_router)
 router.include_router(evaluation_acceptance_router)
+
+router.include_router(draft_revision_router)

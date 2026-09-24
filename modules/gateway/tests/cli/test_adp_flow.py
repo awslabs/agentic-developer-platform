@@ -2482,3 +2482,119 @@ def test_interactive_start_prompts_for_an_outcome(monkeypatch, server):
     assert code == 0
     opening = next(body for method, path, body in server.received if method == "POST" and path.endswith("/sessions"))
     assert opening["message"] == "Make checkout faster"
+
+
+@pytest.fixture
+def draft_args(tmp_path):
+    path = tmp_path / "proposal.json"
+    path.write_text(json.dumps({"flow_slug": "test", "nodes": []}))
+    return [FLOW_ID, "--file", str(path), "--expect-plan-version", "1", "--expect-plan-hash", CURRENT_HASH, "--json"]
+
+
+@pytest.mark.parametrize("action", ["preview", "save"])
+def test_draft_revision_uses_only_bound_inert_endpoint(server, draft_args, action):
+    engine_on(server)
+    endpoint = "preview" if action == "preview" else "revise"
+    response = {
+        "flow_id": FLOW_ID,
+        "execution_authorized": False,
+        "proposal_hash": STALE_HASH,
+        "plan_version": 2,
+        "already_revised": True,
+        "execution_paused": True,
+    }
+    route(server, "POST", f"/api/orchestration/flows/{FLOW_ID}/draft/{endpoint}", response)
+    args = ["draft", action, *draft_args]
+    if action == "save":
+        args += ["--expect-proposal-hash", STALE_HASH]
+    code, result = run_cli(args)
+    assert code == 0 and result["detail"] == response
+    posts = [entry for entry in server.received if entry[0] == "POST"]
+    assert len(posts) == 1 and posts[0][1].endswith(f"/draft/{endpoint}")
+    assert posts[0][2]["expected_plan_version"] == 1
+    assert posts[0][2]["expected_plan_hash"] == CURRENT_HASH
+    if action == "save":
+        assert posts[0][2]["expected_proposal_hash"] == STALE_HASH
+        assert "No execution was approved" in result["next_action"]
+    else:
+        assert "Saving does not approve execution" in result["next_action"]
+
+
+@pytest.mark.parametrize(
+    "status,payload,code",
+    [
+        (404, {"detail": "Not Found"}, "draft_revision_unavailable"),
+        (404, {"detail": {"error": "flow_not_found", "message": "No flow"}}, "flow_not_found"),
+        (409, {"detail": {"error": "stale_draft_revision", "message": "Changed"}}, "stale_draft_revision"),
+        (422, {"detail": {"error": "invalid_draft_revision", "message": "Invalid graph"}}, "invalid_draft_revision"),
+    ],
+)
+def test_draft_revision_refusals_never_fall_back(server, draft_args, status, payload, code):
+    engine_on(server)
+    endpoint = f"/api/orchestration/flows/{FLOW_ID}/draft/revise"
+    route(server, "POST", endpoint, payload, status=status)
+    exit_code, result = run_cli(["draft", "save", *draft_args, "--expect-proposal-hash", STALE_HASH])
+    assert exit_code != 0 and result["error"]["code"] == code
+    assert [p for method, p, _ in server.received if method == "POST"] == [endpoint]
+
+
+@pytest.mark.parametrize("field", ["--expect-plan-version", "--expect-plan-hash", "--expect-proposal-hash"])
+def test_draft_save_missing_binding_sends_nothing(server, draft_args, field):
+    args = ["draft", "save", *draft_args, "--expect-proposal-hash", STALE_HASH]
+    index = args.index(field)
+    del args[index : index + 2]
+    assert run_cli(args)[0] != 0
+    assert server.received == []
+
+
+def test_draft_save_invalid_hash_sends_nothing(server, draft_args):
+    code, _ = run_cli(["draft", "save", *draft_args, "--expect-proposal-hash", "bad"])
+    assert code == 1 and server.received == []
+
+
+def test_draft_revision_refuses_unexpected_authority_response(server, draft_args):
+    engine_on(server)
+    route(server, "POST", f"/api/orchestration/flows/{FLOW_ID}/draft/revise", {"flow_id": FLOW_ID, "execution_authorized": True})
+    code, result = run_cli(["draft", "save", *draft_args, "--expect-proposal-hash", STALE_HASH])
+    assert code == 5 and result["error"]["code"] == "invalid_draft_response"
+    assert len([e for e in server.received if e[0] == "POST"]) == 1
+
+
+@pytest.mark.parametrize("approver", [None, "service", "human"])
+def test_plan_drafted_attribution_is_not_itself_approval(server, approver):
+    engine_on(server)
+    route(
+        server,
+        "GET",
+        f"/api/orchestration/flows/{FLOW_ID}/plans",
+        [
+            {"version": 2, "plan_hash": CURRENT_HASH, "accepted_by_decision_id": "draft", "superseded_at": None},
+        ],
+    )
+    decisions = [{"id": "draft", "kind": "plan_drafted", "actor_kind": "human"}]
+    if approver:
+        decisions.append({"id": "gate-answer", "kind": "gate_approved", "actor_kind": approver})
+    route(server, "GET", f"/api/orchestration/flows/{FLOW_ID}/decisions", decisions)
+    code, result = run_cli(["plans", FLOW_ID])
+    assert code == 0
+    if approver == "human":
+        assert result["detail"]["accepted_version"] == 2 and result["detail"]["proposed_version"] is None
+    else:
+        assert result["detail"]["accepted_version"] is None and result["detail"]["proposed_version"] == 2
+        assert "not accepted" in result["next_action"]
+
+
+def test_plan_with_missing_attribution_does_not_claim_acceptance(server):
+    engine_on(server)
+    route(
+        server,
+        "GET",
+        f"/api/orchestration/flows/{FLOW_ID}/plans",
+        [
+            {"version": 1, "plan_hash": CURRENT_HASH, "accepted_by_decision_id": "missing", "superseded_at": None},
+        ],
+    )
+    route(server, "GET", f"/api/orchestration/flows/{FLOW_ID}/decisions", [])
+    code, result = run_cli(["plans", FLOW_ID])
+    assert code == 0 and result["detail"]["accepted_version"] is None
+    assert result["detail"]["acceptance_status"] == "unknown"

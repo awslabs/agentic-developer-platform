@@ -227,6 +227,8 @@ adp flow list                    # your flows, worst news first
 adp flow show FLOW_ID            # progress, blockers, gates, next eligible work
 adp flow watch FLOW_ID           # follow it; Ctrl-C detaches, it does NOT cancel
 adp flow plans FLOW_ID           # plan versions, and which revision is proposed
+adp flow draft preview --help    # preview a revision of an existing unapproved draft
+adp flow draft save --help       # save the reviewed revision without approving execution
 adp flow gate approve GATE_ID --expect-plan-hash HASH
 ```
 

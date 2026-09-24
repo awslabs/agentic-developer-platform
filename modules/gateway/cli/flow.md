@@ -82,6 +82,42 @@ service decided.
 
 ## Submitting a plan you already have
 
+### Revising an existing unapproved draft
+
+Read the existing flow's version and hash with `adp flow plans FLOW_ID`. Prepare
+an authored proposal for the same flow, omitting the server-inserted acceptance
+gate, then preview it:
+
+```sh
+adp flow draft preview FLOW_ID --file proposal.json \
+  --expect-plan-version 1 --expect-plan-hash BASE_HASH --json
+adp flow draft save FLOW_ID --file proposal.json \
+  --expect-plan-version 1 --expect-plan-hash BASE_HASH \
+  --expect-proposal-hash PREVIEW_HASH --json
+```
+
+Use the preview's `proposal_hash` for `PREVIEW_HASH`, after reviewing its complete
+effective proposal, proposed policy and node/edge changes. This hash binds the
+entire draft, including descriptions; it is distinct from the execution plan
+hash. Save appends a draft revision to the same flow, preserves its original
+gate and pause setting, and retains removed nodes as superseded history.
+Submitted execution policy remains proposed. Neither command approves a gate,
+activates policy or dispatches work. Successful preview/save exits 0, even though
+the flow remains unapproved; `--yes` is neither needed nor supported.
+
+Saving requires the same base version/hash and reviewed file. A stale request
+exits 4; read the plan again and preview the new revision. Retrying a successful
+save with the same actor and exact bindings replays that revision without another
+write. A gateway lacking this capability reports an upgrade requirement and
+performs no fallback. These operations require a human account with `PLAN_APPROVE`.
+
+Draft revisions are refused after any approval or execution history. They cannot
+replace the original gate, reuse superseded node addresses, discard existing
+proposed policy, or bind runtime evaluation specifications. Accepted plans use
+the amendment path; implemented evaluators use evaluation acceptance.
+
+### Creating a new flow
+
 `adp flow create --file plan.json` is four steps, and only the last one arms anything:
 
 1. **Dry run.** The document is sent to a preview that computes what registering it
