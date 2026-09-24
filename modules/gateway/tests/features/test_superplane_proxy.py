@@ -179,5 +179,6 @@ async def test_transport_capability_requires_deployed_configuration(route_store,
     result = await proxy.installation_support()
     assert result["version"] == 2 and result["configured"] is True
     assert result["transport"] == "s3-conditional-domain-registration"
+    assert result["features"] == ["account-vault-reference-v1"]
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET")
     assert (await proxy.installation_support())["configured"] is False

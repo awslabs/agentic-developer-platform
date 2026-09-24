@@ -3,7 +3,15 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,6 +20,13 @@ from app.database import Base
 
 class Deployment(Base):
     __tablename__ = "deployments"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "operation_id",
+            name="uq_deployments_org_operation",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -26,6 +41,12 @@ class Deployment(Base):
         UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    operation_request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operation_target_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_revision: Mapped[str | None] = mapped_column(String(100), nullable=True)
     precision: Mapped[str | None] = mapped_column(

@@ -607,6 +607,9 @@ def _journey_payload(cfg, ctx):
         # without them: checking only the CLI consumer would report a pass on a
         # response the UI cannot render, which is the whole property under test.
         "ui_contracts": ctx.get("ui_contracts") or {},
+        # E18 receives references and bounded workload choices only. The admin
+        # password remains in Secrets Manager and is read on the instance.
+        "superplane": cfg.get("superplane") or {},
     }
 
 
@@ -1278,6 +1281,10 @@ def _deleters(aws, cfg, http=None, ssm=None):
             # delete for it. See `delete_destination` — the residual case is a
             # product gap and is reported as an outstanding resource, not swallowed.
             "bedrock_destination": delete_destination(http, session),
+            # Historical E18 evidence remains a real cleanup obligation. The
+            # admin session above is not the ordinary resource owner's session;
+            # never guess ownership or treat an unimplemented delete as success.
+            **{kind: unsupported(kind) for kind in cleanup.SUPERPLANE_KINDS},
             # The ADP account the run registered for its own E02 login. Deleted
             # after the two above, which authenticate as it — see `cleanup.ORDER`.
             "adp_user": delete_adp_user(http, session),

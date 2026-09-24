@@ -117,6 +117,10 @@ jobs:
           bash --noprofile --norc -e -o pipefail {0}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # CLI evaluation guards verify historical release artifacts by Git
+          # object ID, so the default shallow checkout cannot run that suite.
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -130,6 +134,16 @@ jobs:
         # The registration suites import the gateway's feature module, so they need its
         # dependency set. The domain module has none of its own yet.
         run: pip install -e ".[dev]"
+
+      - name: Verify CLI evaluation guards without network access
+        # The CLI dependency changes E18's acceptance and cleanup logic. Exercise
+        # those offline guards in the manual source-only lane as well as PR CI;
+        # the live evaluation workflow deliberately cannot run from a PR branch.
+        run: |
+          python -m pip install pytest-socket
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+          python -m pytest tests/unit/test_cli_uplift.py -q --timeout=60 --disable-socket
 
       - name: Lint the domain module
         run: |

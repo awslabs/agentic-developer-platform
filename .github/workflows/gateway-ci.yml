@@ -1,6 +1,9 @@
 name: Gateway CI
 
 on:
+  # Reviewed source can be validated without removing [skip ci] from commits.
+  # This runs the existing tests and no-push smoke build, never a deployment.
+  workflow_dispatch:
   pull_request:
     paths:
       - 'platform/scripts/adversarial-test-assert.py'

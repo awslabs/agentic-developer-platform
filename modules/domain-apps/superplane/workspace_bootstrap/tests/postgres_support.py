@@ -113,10 +113,22 @@ def require_alembic():
 # --- the migration chain, rendered offline -------------------------------------
 
 
-def render_migration_ddl(*, upgrade_only: bool = True) -> tuple[str, str]:
+def migration_directory():
+    """The maintained revision graph, resolved by Alembic without a database."""
+    alembic = require_alembic()
+    config = alembic.config.Config(str(API_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(API_ROOT / "alembic"))
+    return alembic.script.ScriptDirectory.from_config(config)
+
+
+def render_migration_ddl(*, downgrade_revision: str | None = None) -> tuple[str, str]:
     """Render the alembic chain to PostgreSQL DDL without connecting to anything.
 
-    Returns `(upgrade_ddl_for_the_whole_chain, downgrade_ddl_for_THIS_story's_revision)`.
+    Returns `(upgrade_ddl_for_the_whole_chain, downgrade_ddl_for_the_named_revision)`.
+    The second value is empty unless `downgrade_revision` is supplied. It renders
+    that revision's downgrade body alone, without version-table bookkeeping or
+    downgrading later revisions. Selecting the newest revision would silently
+    change which schema this helper removes whenever another story extends head.
 
     Alembic's offline (`--sql`) mode is used rather than `alembic upgrade head` against a
     live URL, because the rendering must not require a connection: the same function is
@@ -133,9 +145,7 @@ def render_migration_ddl(*, upgrade_only: bool = True) -> tuple[str, str]:
     alembic = require_alembic()
     sa = require_sqlalchemy()
 
-    config = alembic.config.Config(str(API_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(API_ROOT / "alembic"))
-    directory = alembic.script.ScriptDirectory.from_config(config)
+    directory = migration_directory()
     # `walk_revisions` yields newest first; migrations apply oldest first.
     revisions = list(reversed(list(directory.walk_revisions())))
 
@@ -160,25 +170,10 @@ def render_migration_ddl(*, upgrade_only: bool = True) -> tuple[str, str]:
         return buffer.getvalue()
 
     upgrade = render([revision.module.upgrade for revision in revisions])
-    if upgrade_only:
+    if downgrade_revision is None:
         return upgrade, ""
-    return upgrade, render([revisions[-1].module.downgrade])
-
-
-def head_revision_module():
-    """The revision at the head of the chain, as Alembic itself resolves it.
-
-    Used by the schema test to assert that this story's migration IS the head rather than
-    an orphan the chain never reaches — a revision file that exists but is not walked
-    creates no table, and every offline assertion about it would still pass.
-    """
-    alembic = require_alembic()
-    config = alembic.config.Config(str(API_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(API_ROOT / "alembic"))
-    directory = alembic.script.ScriptDirectory.from_config(config)
-    heads = directory.get_heads()
-    assert len(heads) == 1, f"the migration chain must have one head; found {heads}"
-    return directory.get_revision(heads[0])
+    selected = directory.get_revision(downgrade_revision)
+    return upgrade, render([selected.module.downgrade])
 
 
 # --- the event loop, parked on its own thread ----------------------------------

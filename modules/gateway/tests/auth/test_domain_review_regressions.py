@@ -53,7 +53,19 @@ def test_account_type_must_be_explicit_and_recognized(kind):
         request(claims=claims)
 
 
-@pytest.mark.parametrize("path", ["/superplane/v1/workspaces", "/superplane/v1/accounts", "/superplane/v1/providers"])
+# `/events` and `/orgs/cost` join this list because they are org collections, not
+# the workspace-filtered queries the policy once assumed (#5637). `/providers` is
+# gone: it was never a served route. `/vault/credentials` is the real one.
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/superplane/v1/workspaces",
+        "/superplane/v1/accounts",
+        "/superplane/v1/vault/credentials",
+        "/superplane/v1/events",
+        "/superplane/v1/orgs/cost",
+    ],
+)
 def test_workspace_grant_cannot_authorize_org_collections(path):
     from superplane_auth.policy import AuthorizationDeniedError
 
@@ -61,7 +73,15 @@ def test_workspace_grant_cannot_authorize_org_collections(path):
         request(path_template=path)
 
 
-def test_query_scoped_workspace_read_still_has_a_positive_path():
-    principal, grant, headers = request(path_template="/superplane/v1/events")
+def test_a_workspace_scoped_read_still_has_a_positive_path():
+    """The negative cases above must not be the only outcome the policy can reach.
+
+    Per-workspace cost is the positive counterpart: it names a workspace in the
+    path, so a workspace grant does authorize it. `/events` used to serve this
+    role, on the assumption it was a workspace-filtered query; it is an org
+    collection, so it now belongs in the refusal list and cannot demonstrate a
+    success.
+    """
+    principal, grant, headers = request(path_template="/superplane/v1/workspaces/{workspace}/cost")
     assert principal.subject == grant.principal == "user"
     assert headers == {}
