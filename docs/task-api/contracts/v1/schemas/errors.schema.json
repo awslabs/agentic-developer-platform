@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "errors.schema.json",
+  "title": "Task API error contract v1",
+  "description": "Every Task API error body. The code-to-status pairing is constrained here so two independently built components cannot return different codes for the same condition, and so no error can carry a credential or unrestricted task body. Design revision b5761a4a2502aceaa9133afef552b567a19cb46e, design section 5.",
+  "$defs": {
+    "error_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "code", "message", "request_id"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "code": { "$ref": "errors.schema.json#/$defs/error_code" },
+        "message": { "$ref": "common.schema.json#/$defs/safe_message" },
+        "request_id": { "$ref": "common.schema.json#/$defs/request_id" },
+        "retry_after_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Present on 429 and 503. Clients retry with bounded jitter and the original idempotency or command ID."
+        },
+        "http_status": { "$ref": "errors.schema.json#/$defs/http_status" },
+        "details": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Bounded safe context. Never a token, proof, secret or unrestricted task body.",
+          "properties": {
+            "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+            "command_id": { "$ref": "common.schema.json#/$defs/command_id" },
+            "current_status": { "$ref": "common.schema.json#/$defs/task_status" },
+            "oldest_event_cursor": { "$ref": "common.schema.json#/$defs/nullable_event_cursor" },
+            "latest_event_cursor": { "$ref": "common.schema.json#/$defs/nullable_event_cursor" },
+            "limit_name": { "type": "string", "maxLength": 64 },
+            "limit_value": { "type": ["integer", "number", "string"] }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "description": "Code and HTTP status must agree. A component cannot return 404 for a conflict or 200 for a denial.",
+          "if": { "required": ["http_status"] },
+          "then": {
+            "anyOf": [
+              { "properties": { "http_status": { "const": 400 }, "code": { "enum": ["invalid_request", "invalid_cursor"] } } },
+              { "properties": { "http_status": { "const": 401 }, "code": { "const": "invalid_credential" } } },
+              { "properties": { "http_status": { "const": 403 }, "code": { "enum": ["disallowed_scope", "disallowed_persona"] } } },
+              { "properties": { "http_status": { "const": 404 }, "code": { "const": "not_found" } } },
+              { "properties": { "http_status": { "const": 409 }, "code": { "enum": ["idempotency_conflict", "command_conflict", "state_conflict"] } } },
+              { "properties": { "http_status": { "const": 410 }, "code": { "const": "history_expired" } } },
+              { "properties": { "http_status": { "const": 413 }, "code": { "const": "payload_too_large" } } },
+              { "properties": { "http_status": { "const": 429 }, "code": { "enum": ["rate_limited", "queue_full"] } } },
+              { "properties": { "http_status": { "const": 503 }, "code": { "const": "prerequisite_unavailable" } } }
+            ]
+          }
+        }
+      ]
+    },
+
+    "error_code": {
+      "enum": [
+        "invalid_request",
+        "invalid_cursor",
+        "invalid_credential",
+        "disallowed_scope",
+        "disallowed_persona",
+        "not_found",
+        "idempotency_conflict",
+        "command_conflict",
+        "state_conflict",
+        "history_expired",
+        "payload_too_large",
+        "rate_limited",
+        "queue_full",
+        "prerequisite_unavailable"
+      ]
+    },
+
+    "http_status": {
+      "enum": [400, 401, 403, 404, 409, 410, 413, 429, 503]
+    },
+
+    "history_expired_response": {
+      "type": "object",
+      "description": "410 history_expired carries the current snapshot cursors and an explicit gap before SSE opens, so a consumer can deliberately reconnect from the oldest retained cursor.",
+      "additionalProperties": false,
+      "required": ["schema_version", "code", "message", "request_id", "details"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "code": { "const": "history_expired" },
+        "message": { "$ref": "common.schema.json#/$defs/safe_message" },
+        "request_id": { "$ref": "common.schema.json#/$defs/request_id" },
+        "http_status": { "const": 410 },
+        "details": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["task_id", "current_status", "oldest_event_cursor", "latest_event_cursor", "history_gap"],
+          "properties": {
+            "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+            "current_status": { "$ref": "common.schema.json#/$defs/task_status" },
+            "oldest_event_cursor": { "$ref": "common.schema.json#/$defs/event_cursor" },
+            "latest_event_cursor": { "$ref": "common.schema.json#/$defs/event_cursor" },
+            "history_gap": { "const": true }
+          }
+        }
+      }
+    }
+  }
+}

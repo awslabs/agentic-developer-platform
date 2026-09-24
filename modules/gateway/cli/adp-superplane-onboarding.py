@@ -511,7 +511,7 @@ def same_scope(left, right):
     return left.get("deployment_id") == right.get("deployment_id") and left.get("org_id") == right.get("org_id")
 
 
-TERMINAL_STATES = ("succeeded", "failed")
+TERMINAL_STATES = ("succeeded", "failed", "cancelled")
 
 # The busy message for the receipt lock. Names what is being protected, because
 # "a lock is held" tells the operator nothing about whether it is safe to wait.
@@ -1364,7 +1364,7 @@ def lifecycle_observation(command, intent, receipt, observed, workspace_id):
         key: observed.get(key) for key in ("request_id", "workspace_id", "provisioning_operation_id", "state", "phase", "observed_at", "retryable")
     }
     state = observed.get("state")
-    if state not in ("accepted", "running", "succeeded", "failed"):
+    if state not in ("accepted", "running", "succeeded", "failed", "cancelled"):
         state = "unknown"
     saved = record_observation(intent, receipt, state, observed["provisioning_operation_id"], workspace_id)
     return common.envelope(
@@ -1714,7 +1714,7 @@ def observed_state(raw):
 def submission_result(intent, receipt, result):
     """Record what the reply established, and report it without overstating it."""
     state = result.get("operation_state", observed_state(result)) if isinstance(result, dict) else "unknown"
-    if state not in ("accepted", "running", "succeeded", "failed", "unknown"):
+    if state not in ("accepted", "running", "succeeded", "failed", "cancelled", "unknown"):
         state = "unknown"
     updated = record_observation(
         intent,
@@ -1886,7 +1886,7 @@ def operation_command(args, api):
         raise CliError("The response names a different request. The receipt was retained.", "invalid_response", 4)
     if match:
         state = observed.get("state")
-        if state not in ("accepted", "running", "succeeded", "failed"):
+        if state not in ("accepted", "running", "succeeded", "failed", "cancelled"):
             state = "unknown"
         key = next(key for key, receipt in receipts.items() if receipt is match)
         prefix = receipt_key(scope, "")

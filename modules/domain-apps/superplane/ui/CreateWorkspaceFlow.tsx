@@ -704,12 +704,13 @@ function Row({ label, value }: { label: string; value: string }) {
  */
 function Receipt({ receipt }: { receipt: StoredReceipt }) {
   const unknown = receipt.state === 'unknown';
+  const cancelled = receipt.state === 'cancelled';
   // Accepted and still building is the ordinary outcome of a create, not an edge
   // case: the server returns 201 with `status: "Provisioning"`. Rendering that as
   // a plain success told the user their workspace was ready while it was still
   // being built, and while it could still fail.
   const running = !unknown && !isTerminal(receipt.state);
-  const title = unknown
+  const title = cancelled ? 'Operation cancelled' : unknown
     ? 'Outcome not confirmed'
     : running
       ? 'Accepted — still being provisioned'
@@ -719,10 +720,10 @@ function Receipt({ receipt }: { receipt: StoredReceipt }) {
   return (
     <div className="mt-4" role="status">
       <Alert
-        variant={unknown || running ? 'warning' : receipt.state === 'failed' ? 'error' : 'success'}
+        variant={unknown || running || cancelled ? 'warning' : receipt.state === 'failed' ? 'error' : 'success'}
         title={title}
       >
-        {unknown
+        {cancelled ? 'The server confirmed cancellation. Resource cleanup is checked separately.' : unknown
           ? 'The submission was sent but no usable reply was seen, so its outcome is ' +
             'not known. The operation identity below is preserved — retrying these ' +
             'same inputs reuses it and cannot create a second workspace.'

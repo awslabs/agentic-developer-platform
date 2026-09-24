@@ -1,0 +1,19 @@
+{
+  "$fixture": {
+    "description": "429 with retry_after_ms. The client retries with bounded jitter and the original idempotency key; a timeout is not permission to create a fresh intent.",
+    "schema": "errors.schema.json#/$defs/error_response",
+    "expect": "valid",
+    "owner": "T2",
+    "criteria": ["T0-AC03", "V0-02", "V1-04"]
+  },
+  "schema_version": "1.0",
+  "code": "rate_limited",
+  "message": "Submit rate limit reached for this principal.",
+  "request_id": "req-01JC9KAV2G5H",
+  "http_status": 429,
+  "retry_after_ms": 6000,
+  "details": {
+    "limit_name": "submit_rate_and_capacity.max_new_tasks_per_minute_per_principal",
+    "limit_value": 10
+  }
+}

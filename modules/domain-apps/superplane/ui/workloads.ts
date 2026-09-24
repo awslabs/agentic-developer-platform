@@ -29,7 +29,7 @@ export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; ca
 export interface ServingDeployment {
   deploymentId: string | null;
   operationId: string | null;
-  operationState: ReturnType<typeof parseOperationState> | 'cancelled';
+  operationState: ReturnType<typeof parseOperationState>;
   name: string;
   status: string;
   providerUid: string | null;
@@ -135,7 +135,7 @@ export function parseDeployment(raw: unknown): ServingDeployment | null {
   if (!record(raw) || !id(raw.name) || !id(raw.status)) return null;
   return {
     deploymentId: text(raw.deployment_id), operationId: text(raw.operation_id),
-    operationState: raw.operation_state === 'cancelled' ? 'cancelled' : parseOperationState(raw.operation_state), name: raw.name,
+    operationState: parseOperationState(raw.operation_state), name: raw.name,
     status: raw.status, providerUid: text(raw.provider_uid),
     cancellationRequested: raw.cancellation_requested === true,
     cleanupStatus: raw.cleanup_status === 'confirmed' || raw.cleanup_status === 'not-required' ? raw.cleanup_status : 'unconfirmed',

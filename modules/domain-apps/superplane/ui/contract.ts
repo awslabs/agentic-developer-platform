@@ -574,6 +574,7 @@ export type OperationState =
   | 'running'
   | 'succeeded'
   | 'failed'
+  | 'cancelled'
   | 'unknown';
 
 /**

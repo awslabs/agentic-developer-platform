@@ -1,0 +1,13 @@
+{
+  "$fixture": {
+    "description": "A bootstrap request identifying the workload by pod name alone. Pod names are reusable and guessable; the design requires the pod UID because only the UID distinguishes this pod from a previous pod that held the same name.",
+    "schema": "bootstrap.schema.json#/$defs/workload_identity",
+    "expect": "invalid",
+    "reason": "pod_uid is required; pod_name is diagnostic only and is not an identity",
+    "violates": ["bootstrap.schema.json#/$defs/workload_identity", "decisions.json#/O5"],
+    "owner": "T4",
+    "criteria": ["T0-AC02", "V0-03", "V2-02"]
+  },
+  "pod_name": "agent-worker-7f4c9d",
+  "namespace": "adp-agents"
+}
