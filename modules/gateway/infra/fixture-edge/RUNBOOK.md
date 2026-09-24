@@ -304,6 +304,31 @@ unreachable from the reused VPC Link, or is the ordinary internal-plane ALB.
 `apply` takes a **reviewed plan file only**; it will not generate a fresh plan. It
 writes an ownership receipt to the artifact directory afterwards.
 
+### "A plan file" is not "the plan you reviewed"
+
+`plan` writes `fixture.plan.receipt.json` next to the plan, and `apply` recomputes it
+and refuses any difference, naming the field. This is not belt-and-braces: a saved
+plan file records no run nonce, no account, no backend and no trace of the variables
+it was built from, so `--plan-file <path>` alone could not distinguish
+
+| What you might hand it | Caught by |
+|---|---|
+| another run's `fixture.plan` (two runs sharing one `--artifact-dir`) | `run_nonce` |
+| a plan built while pointed at another account/region/environment | `account_id`, `region`, `environment` |
+| a plan built against another state bucket, key or credential | `state_bucket`, `state_key`, `state_profile` |
+| `fixture.tfvars` edited after review | `tfvars_sha256` |
+| the plan file itself modified after review | `plan_sha256` |
+
+Both halves are load-bearing: the digest alone proves only that *a* file is
+unmodified, and the binding alone is satisfied by any plan for the same run.
+Terraform will happily apply a saved plan whose var-file has since changed — the plan
+carries its own values — so `tfvars_sha256` is what makes "reviewed" mean the inputs
+too. `--dry-run` runs the same check, so a dry run cannot report "would apply" for a
+plan the real apply would refuse.
+
+If you genuinely need to change something, re-run `plan` and review what it writes.
+Do not edit the receipt; it is the record of what was reviewed, not a config file.
+
 ---
 
 ## 5. Hand the fixture gateway its secret — and actually attach it
@@ -487,14 +512,52 @@ What it does, and what it refuses:
 
 1. **Plans the destroy from exact state** and prints the precise list of objects
    state owns. A plan that would also *create* or *update* anything stops the run.
-2. **Refuses to run without the reviewed `fixture.tfvars`.** It will not fall back to
+2. **Checks that plan against the owned set** — see below. A delete-only plan is not
+   a plan that deletes only *your* resources.
+3. **Refuses to run without the reviewed `fixture.tfvars`.** It will not fall back to
    deleting by name prefix or tag: a name prefix is not ownership, and a same-named
    replacement created by someone else would be destroyed instead. This is why
    replacement-safe teardown needs exact state, not a post-hoc sweep.
-3. **Destroys the edge**, then **verifies absence** rather than trusting the summary —
+4. **Destroys the edge**, then **verifies absence** rather than trusting the summary —
    the REST API and the per-run secret must be gone, and the **ordinary** provenance
    parameter must still be present. Any unverified absence fails the command, so
    cleanup is never reported as complete on an unproven teardown.
+
+### A delete-only plan is not a plan that deletes only *your* resources
+
+"The plan contains no creates or updates" is a claim about the **actions**. It says
+nothing about the **objects**, and every state file this credential can reach produces
+a delete-only plan:
+
+* state that was pulled, copied, or re-initialised under this run's key — it carries
+  the *other* run's resource ids;
+* state with a resource **imported** into it. One `terraform import` is enough to make
+  the ordinary API Gateway, or any log group, a delete-only line in your plan;
+* state for the right run in the wrong account.
+
+So the plan is checked against the **owned set**: the `ownership` receipt read back
+from state (itself validated against this command's nonce, account, region and
+environment *before* any id is taken from it) plus the `AdpFixtureRun` tag the provider
+stamped on each object. Two independent facts — the id says state claims the object,
+the tag says the object was stamped for this run at creation. An imported resource has
+the first and not the second.
+
+Both directions are refused:
+
+* **`NOT OWNED` / `NOT TAGGED FOR THIS RUN`** — the plan would delete something this
+  run does not own. Nothing is deleted. Do not work around it by deleting by name;
+  reconcile the state against the receipt.
+* **`LEAVES BEHIND`** — the plan omits a resource this run *does* own. That would apply
+  cleanly and report a completed teardown while the object keeps running and costing.
+  It is caught here, before the state that names the object is emptied; afterwards
+  there is no record left to reconcile against. Usually a `state rm` or an earlier
+  interrupted destroy.
+
+`random_password` and `terraform_data` are exempt because they have no cloud object at
+all. They are enumerated, not inferred, so a newly-added resource type is refused until
+someone decides which it is — an unsatisfiable gate is a gate that gets bypassed.
+
+`--dry-run` runs this check too.
 
 If the ALB was already deleted out of order, the destroy plan cannot be read. Use:
 

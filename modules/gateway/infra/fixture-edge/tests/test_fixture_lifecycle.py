@@ -47,6 +47,11 @@ PARAM = f"/adp/dev/gateway/fixture/{NONCE}/apigw-provenance-secret"
 BUCKET = "tf-state-bucket"
 PROFILE = "adp-embark1"
 
+# #3968's LEDGER_VERSION (lib/ownership.py). Its load_ledger refuses any other
+# value, because a v1 row carries `run_bound: true` and no server-assigned uid and
+# therefore cannot prove ownership.
+LEDGER_VERSION = 2
+
 # #3968's ACTUAL fixture labels (lib/render_fixture.py, branch agent/issue-3968).
 # Named here so a drift in that renderer breaks these tests loudly instead of
 # silently making the ownership checks vacuous again.
@@ -425,10 +430,46 @@ if args[:1] == ["init"]:
         sys.stderr.write("Error: Missing Required Value\n"); sys.exit(1)
     sys.exit(0)
 
+def owned_receipt():
+    """The `ownership` output as outputs.tf emits it: run binding + resource ids.
+
+    destroy checks its plan against THIS, so the default must be the consistent
+    case (every planned deletion is an owned id carrying this run's tag) and tests
+    perturb one side or the other.
+    """
+    if os.environ.get("FAKE_OWNERSHIP_JSON"):
+        return json.loads(os.environ["FAKE_OWNERSHIP_JSON"])
+    nonce = os.environ["FAKE_NONCE"]
+    return {
+        "run_nonce": nonce,
+        "account_id": os.environ["FAKE_ACCOUNT"],
+        "region": os.environ.get("FAKE_REGION", "us-east-1"),
+        "environment": os.environ.get("FAKE_ENVIRONMENT", "dev"),
+        "rest_api_id": os.environ.get("FAKE_API_ID") or "fixapi123",
+        "resources": [
+            {"kind": "apigateway-rest-api",
+             # `or`, not a default: FAKE_API_ID="" models an unreadable
+             # `output rest_api_id`, and the API still exists with its real id.
+             "id": os.environ.get("FAKE_API_ID") or "fixapi123",
+             "name": "w2-fixture-edge-" + nonce},
+            {"kind": "ssm-parameter", "id": os.environ["FAKE_PARAM"],
+             "name": os.environ["FAKE_PARAM"]},
+        ],
+    }
+
+
+def owned_tags():
+    return {"AdpFixtureRun": os.environ["FAKE_NONCE"],
+            "AdpFixtureAccount": os.environ["FAKE_ACCOUNT"],
+            "Disposable": "true"}
+
+
 if args[:1] == ["output"]:
     what = args[-1]
     if what == "ownership":
-        print(json.dumps({"run_nonce": os.environ["FAKE_NONCE"]})); sys.exit(0)
+        if os.environ.get("FAKE_OWNERSHIP_UNREADABLE") == "1":
+            sys.stderr.write("Error: Output \"ownership\" not found\n"); sys.exit(1)
+        print(json.dumps(owned_receipt())); sys.exit(0)
     if what == "ssm_provenance_parameter_name":
         print(os.environ.get("FAKE_PARAM", "")); sys.exit(0)
     if what == "rest_api_id":
@@ -459,9 +500,21 @@ if args[:1] == ["plan"]:
         {"address": "aws_api_gateway_rest_api.fixture[0]",
          "type": "aws_api_gateway_rest_api", "change": {"actions": ["create"]}}]
     if "-destroy" in args:
+        # The default destroy plan deletes EXACTLY the owned set, each line carrying
+        # the recorded id and the run ownership tag — which is what a real plan
+        # carries in `change.before` and what destroy now checks against.
         changes = json.loads(os.environ.get("FAKE_DESTROY_CHANGES", "null")) or [
             {"address": "aws_api_gateway_rest_api.fixture[0]",
-             "type": "aws_api_gateway_rest_api", "change": {"actions": ["delete"]}}]
+             "type": "aws_api_gateway_rest_api",
+             "change": {"actions": ["delete"],
+                        "before": {"id": os.environ.get("FAKE_API_ID") or "fixapi123",
+                                   "tags": owned_tags()}}},
+            {"address": "aws_ssm_parameter.fixture_provenance_secret[0]",
+             "type": "aws_ssm_parameter",
+             "change": {"actions": ["delete"],
+                        "before": {"id": os.environ["FAKE_PARAM"], "tags": owned_tags()}}},
+            {"address": "random_password.fixture_edge_provenance[0]",
+             "type": "random_password", "change": {"actions": ["delete"]}}]
         if os.environ.get("FAKE_DESTROY_PLAN_FAIL") == "1" and "-refresh=false" not in args:
             sys.stderr.write("Error: Reading ... data source error\n"); sys.exit(1)
     pathlib.Path(p).write_text(json.dumps({"resource_changes": changes}))
@@ -543,19 +596,33 @@ def _deployment_doc(uid=DEPLOY_UID, labels=None):
                 {"name": "bedrockgateway", "env": env}]}}}}
 
 
-def _ledger_doc(rows=None, run_id=RUN_ID, nonce=NONCE):
-    """#3968's ledger as this component reads it.
+def _ledger_doc(rows=None, run_id=RUN_ID, nonce=NONCE, account=ACCOUNT,
+                region="us-east-1", version=LEDGER_VERSION):
+    """#3968's ledger AS ITS OWN init_ledger WRITES IT.
 
-    Two fields matter and both were previously unmodelled: `run_id` (which the
-    script must READ rather than invent) and the `k8s` rows that vouch for the
-    Deployment by its server-assigned uid.
+    Traced from lib/ownership.py on branch agent/issue-3968, not invented. That
+    matters because the previous version of this helper modelled only `run_id` and
+    `k8s`, which let this component read a ledger shape #3968 never produces --
+    the same class of defect as the guessed label keys.
+
+    Its `init_ledger` ALWAYS writes ledger_version, run_id, run_nonce, account_id,
+    region and the three buckets, and its `load_ledger` REFUSES a mismatch on
+    run_id, account_id or ledger_version. So every one of those is a precondition
+    this component must check BEFORE it creates anything: record-k8s would
+    otherwise refuse after the object already exists.
     """
     if rows is None:
         rows = [{"kind": "Deployment", "name": DEPLOY, "namespace": NAMESPACE,
-                 "uid": DEPLOY_UID}]
-    doc = {"run_id": run_id, "k8s": rows}
+                 "uid": DEPLOY_UID, "delete": True, "created_by_this_run": True}]
+    doc = {"run_id": run_id, "k8s": rows, "synthetic_rows": [], "queues": []}
+    if version is not None:
+        doc["ledger_version"] = version
     if nonce is not None:
         doc["run_nonce"] = nonce
+    if account is not None:
+        doc["account_id"] = account
+    if region is not None:
+        doc["region"] = region
     return doc
 
 
@@ -1460,6 +1527,132 @@ def test_ambient_static_keys_cannot_outrank_the_named_profile(harness):
                 f"provider would have used the ambient credential: {env}")
 
 
+# --- 3c. `apply --plan-file` applies THE REVIEWED PLAN, not any plan --------
+#
+# `--plan-file is required` was already enforced, and it was not the same property.
+# The script checked that the path existed and applied it. A saved plan file records
+# no run nonce, no account, no backend and no trace of the variables it was built
+# from, so nothing distinguished the plan this run reviewed from another run's plan,
+# a plan built against another backend, an edited tfvars, or an edited plan file.
+#
+# `plan` now writes a receipt (run/account/region/environment/state key/bucket/
+# profile + tfvars and plan digests) and `apply` recomputes it through the SAME
+# function and refuses any difference, naming the field.
+
+
+def _plan_then(harness, **kw):
+    """Run `plan` (which writes the receipt) and return the saved plan's path."""
+    r = harness.run("plan", **kw)
+    assert r.returncode == 0, r.stderr
+    plan = harness.artifacts / "fixture.plan"
+    assert plan.is_file(), "plan did not save a plan file"
+    assert (harness.artifacts / "fixture.plan.receipt.json").is_file(), (
+        "plan saved no receipt, so apply has nothing to verify against")
+    return plan
+
+
+def test_apply_accepts_the_plan_this_run_reviewed(harness):
+    """The positive case, asserted so the refusals below cannot be a blanket 'no'.
+
+    A check that rejects correct input as well is worse than none: it teaches the
+    operator to bypass it.
+    """
+    plan = _plan_then(harness)
+    r = harness.run("apply", args=["--plan-file", str(plan)])
+    assert r.returncode == 0, r.stderr
+    assert "plan verified as this run's reviewed plan" in r.stdout
+    assert "terraform apply" in harness.log.read_text()
+
+
+def test_apply_refuses_a_plan_file_whose_bytes_are_not_the_reviewed_ones(harness):
+    """Another run's plan file, or an edited one, reaches apply as the same thing:
+    a file at a path. The digest is what separates them."""
+    plan = _plan_then(harness)
+    plan.write_bytes(plan.read_bytes() + b"\n# edited after review\n")
+    r = harness.run("apply", args=["--plan-file", str(plan)])
+    assert r.returncode != 0, "apply applied a plan file that was not the reviewed one"
+    assert "not the plan this run reviewed" in r.stderr
+    assert "plan_sha256" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_apply_refuses_a_plan_reviewed_by_another_run(harness):
+    """The receipt records the RUN, so a plan reviewed under another nonce is refused
+    by name rather than only by digest.
+
+    This is reachable in one command: --artifact-dir is operator-supplied, so two
+    runs can be pointed at one directory, and then `apply --nonce B` finds run A's
+    reviewed plan sitting exactly where it expects its own.
+    """
+    plan = _plan_then(harness)
+    receipt = harness.artifacts / "fixture.plan.receipt.json"
+    doc = json.loads(receipt.read_text())
+    doc["run_nonce"] = "ffffffffffffffff"
+    receipt.write_text(json.dumps(doc))
+    r = harness.run("apply", args=["--plan-file", str(plan)])
+    assert r.returncode != 0
+    assert "run_nonce" in r.stderr
+    assert "ffffffffffffffff" in r.stderr and NONCE in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_apply_refuses_a_plan_built_against_another_backend(harness):
+    """A plan built while the run pointed at another state bucket/profile/key is a
+    plan about other resources. The plan file itself records none of that, which is
+    why the digest alone cannot answer it."""
+    plan = _plan_then(harness)
+    receipt = harness.artifacts / "fixture.plan.receipt.json"
+    doc = json.loads(receipt.read_text())
+    doc["state_bucket"] = "someone-elses-state"
+    doc["state_profile"] = "some-other-profile"
+    receipt.write_text(json.dumps(doc))
+    r = harness.run("apply", args=["--plan-file", str(plan)])
+    assert r.returncode != 0
+    assert "state_bucket" in r.stderr and "state_profile" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_apply_refuses_inputs_edited_after_the_plan_was_reviewed(harness):
+    """The reviewed artifact is the plan AND the variables it was built from.
+
+    Terraform will happily apply a saved plan whose var-file has since changed — the
+    plan carries its own values — so the applied change matches the plan while the
+    file a reviewer was shown no longer describes the run. Editing the inputs after
+    review is an unreviewed change either way.
+    """
+    plan = _plan_then(harness)
+    (harness.artifacts / "fixture.tfvars").write_text(
+        'fixture_edge_enabled = true\nallowed_caller_role_arns = ["arn:aws:iam::1:role/x"]\n')
+    r = harness.run("apply", args=["--plan-file", str(plan)], with_tfvars=False)
+    assert r.returncode != 0
+    assert "tfvars_sha256" in r.stderr
+    assert "edited after review" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_apply_refuses_when_nothing_recorded_what_was_reviewed(harness):
+    """No receipt is not 'nothing to check'. It means this run cannot show the file
+    it was handed is the plan it reviewed, which is the whole property."""
+    plan = _plan_then(harness)
+    (harness.artifacts / "fixture.plan.receipt.json").unlink()
+    r = harness.run("apply", args=["--plan-file", str(plan)])
+    assert r.returncode != 0
+    assert "no plan receipt" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_apply_dry_run_verifies_the_plan_before_reporting_it_would_apply(harness):
+    """--dry-run is the reviewable path, so it must run the same check. A dry-run that
+    reports "would apply" for a plan the real apply would refuse is a rehearsal of a
+    different command."""
+    plan = _plan_then(harness)
+    plan.write_bytes(b"not the reviewed plan")
+    r = harness.run("apply", args=["--plan-file", str(plan), "--dry-run"])
+    assert r.returncode != 0
+    assert "not the plan this run reviewed" in r.stderr
+    assert "would apply" not in r.stdout
+
+
 # --- 4. Foreign / replaced Deployment refusal ------------------------------
 def test_handoff_refuses_a_deployment_the_ledger_does_not_vouch_for(harness):
     """EXISTENCE IS NOT OWNERSHIP.
@@ -1802,6 +1995,85 @@ def test_handoff_refuses_a_ledger_with_no_run_id(harness):
     assert "Refusing to invent" in r.stderr
 
 
+# --- 4b. The ledger preconditions #3968's own interface enforces -----------
+# Every check below is one lib/ownership.py ALREADY makes at record time. The
+# point of making them here is WHEN they fire: record-k8s runs AFTER the Secret
+# has been created in the cluster, so a ledger it refuses leaves a live object
+# that nothing can look up. Refusing before creation is the difference between an
+# aborted run and an orphan.
+def test_handoff_refuses_a_ledger_with_no_run_nonce(harness):
+    """ABSENT was previously treated as a PASS.
+
+    The check read `if led_nonce and led_nonce != nonce`, so a ledger with no nonce
+    at all sailed through — and a ledger that cannot be shown to be this run's is
+    exactly the one whose cleanup deletes on a different schedule. #3968's
+    init_ledger always writes run_nonce, so its absence means this is not a ledger
+    it opened.
+    """
+    harness.ledger.write_text(json.dumps(_ledger_doc(nonce=None)))
+    r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+    assert r.returncode != 0, "a ledger with no run_nonce was accepted"
+    assert "NO run_nonce" in r.stderr
+    assert recorded_rows(harness) == []
+    assert not harness.secret_payload.exists(), (
+        "the Secret was created before the ledger was found unusable")
+
+
+def test_handoff_refuses_a_ledger_with_no_account_id(harness):
+    """record-k8s requires --account-id and refuses a ledger whose account differs.
+    Unchecked here, that refusal lands after the Secret exists."""
+    harness.ledger.write_text(json.dumps(_ledger_doc(account=None)))
+    r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+    assert r.returncode != 0
+    assert "NO account_id" in r.stderr
+    assert not harness.secret_payload.exists()
+
+
+def test_handoff_refuses_a_ledger_opened_against_another_account(harness):
+    """"The same resource name in two accounts is two different resources" —
+    ownership.py's own words. A ledger from another account cannot vouch for
+    anything in this one."""
+    harness.ledger.write_text(json.dumps(_ledger_doc(account="111111111111")))
+    r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+    assert r.returncode != 0
+    assert "111111111111" in r.stderr and ACCOUNT in r.stderr
+    assert not harness.secret_payload.exists()
+
+
+@pytest.mark.parametrize("version", [1, None, "2"])
+def test_handoff_refuses_a_ledger_that_is_not_the_v2_interface(harness, version):
+    """A v1 row carries `run_bound: true` and NO server-assigned uid, so it cannot
+    prove ownership and must not drive a teardown. `None` is an unversioned file and
+    the string "2" is not the integer load_ledger compares against — both are
+    refused by #3968's own check, so both must be refused here."""
+    harness.ledger.write_text(json.dumps(_ledger_doc(version=version)))
+    r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+    assert r.returncode != 0, f"ledger_version={version!r} was accepted"
+    assert "version" in r.stderr
+    assert not harness.secret_payload.exists()
+
+
+def test_the_ledger_shape_the_tests_use_is_the_one_3968_writes(harness):
+    """THE GATE ON THIS WHOLE GROUP.
+
+    These checks are only meaningful if the ledger modelled here is the one #3968
+    actually produces — the guessed-label defect in a different costume. So the
+    fields are enumerated against init_ledger's literal output, and the positive
+    path must PASS with exactly that document and nothing added.
+    """
+    doc = _ledger_doc()
+    assert set(doc) == {"ledger_version", "run_id", "run_nonce", "account_id",
+                        "region", "synthetic_rows", "k8s", "queues"}, (
+        "drifted from lib/ownership.py init_ledger; re-read it on branch "
+        "agent/issue-3968 before changing this")
+    assert doc["ledger_version"] == 2
+    harness.ledger.write_text(json.dumps(doc))
+    r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+    assert r.returncode == 0, (
+        f"the real ledger shape was REFUSED, so these gates are refusing "
+        f"legitimate runs:\n{r.stderr}")
+
+
 # --- 5. AWS unknown != absent ---------------------------------------------
 # Root EXECUTED the previous destroy verification with the fake returning
 # AccessDeniedException instead of NotFound: it exited 0 and printed "teardown
@@ -1846,6 +2118,184 @@ def test_destroy_fails_rather_than_skipping_the_api_probe_when_the_id_is_unreada
     assert "could not read rest_api_id from state" in r.stderr
     assert "not the same as it being gone" in r.stderr
     assert "teardown verified" not in r.stdout
+
+
+# --- 5b. A delete-only plan is not a plan that deletes only OUR resources ---
+#
+# The destroy gate was a check on the plan's ACTIONS ("no creates or updates"), which
+# says nothing about the OBJECTS. Any state this credential can reach yields a
+# delete-only plan — state copied or re-initialised under this run's key, state with a
+# resource `terraform import`ed into it, state for the right run in the wrong account.
+# In all of those the run printed "deletes exactly these, from state" and destroyed
+# resources it never created.
+#
+# So the plan is now checked against the OWNED SET: the ownership receipt in state
+# (bound to nonce/account/region/environment) plus the per-run ownership tag the
+# provider stamped on each object. Two independent facts — the id says state claims
+# it, the tag says the object was stamped for this run at creation.
+
+
+def _receipt_with(harness, **overrides):
+    """The ownership receipt the fake emits, with fields replaced."""
+    doc = {
+        "run_nonce": NONCE, "account_id": ACCOUNT, "region": "us-east-1",
+        "environment": "dev", "rest_api_id": "fixapi123",
+        "resources": [
+            {"kind": "apigateway-rest-api", "id": "fixapi123",
+             "name": f"w2-fixture-edge-{NONCE}"},
+            {"kind": "ssm-parameter", "id": PARAM, "name": PARAM},
+        ],
+    }
+    doc.update(overrides)
+    return {"FAKE_OWNERSHIP_JSON": json.dumps(doc)}
+
+
+def _owned_tags():
+    return {"AdpFixtureRun": NONCE, "AdpFixtureAccount": ACCOUNT, "Disposable": "true"}
+
+
+def _delete_change(address, rtype, rid, tags="owned"):
+    before = {"id": rid}
+    if tags == "owned":
+        before["tags"] = _owned_tags()
+    elif isinstance(tags, dict):
+        before["tags"] = tags
+    return {"address": address, "type": rtype,
+            "change": {"actions": ["delete"], "before": before}}
+
+
+def _owned_plan():
+    return [
+        _delete_change("aws_api_gateway_rest_api.fixture[0]",
+                       "aws_api_gateway_rest_api", "fixapi123"),
+        _delete_change("aws_ssm_parameter.fixture_provenance_secret[0]",
+                       "aws_ssm_parameter", PARAM),
+    ]
+
+
+def test_destroy_refuses_to_delete_a_resource_state_does_not_record_as_ours(harness):
+    """THE DEFECT: `terraform import aws_api_gateway_rest_api.x <ordinary api id>` is
+    enough to make the ORDINARY edge a delete-only line in this plan.
+
+    Nothing in the previous gate looked at which object a deletion referred to, so a
+    destroy-only plan containing the production API passed review and was applied.
+    """
+    plan = _owned_plan() + [
+        _delete_change("aws_api_gateway_rest_api.imported",
+                       "aws_api_gateway_rest_api", "ordinaryapi9", tags=None)]
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0, "a foreign resource in a delete-only plan was destroyed"
+    assert "NOT OWNED" in r.stderr
+    assert "ordinaryapi9" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_refuses_a_deletion_of_an_object_not_stamped_for_this_run(harness):
+    """The id and the TAG are independent facts, and an imported resource has the
+    first without the second: `state rm` + `import` under one of this component's own
+    addresses makes the id match while the live object was never stamped for this run.
+
+    Tag mismatch is therefore its own refusal, not a note.
+    """
+    plan = [
+        _delete_change("aws_api_gateway_rest_api.fixture[0]",
+                       "aws_api_gateway_rest_api", "fixapi123",
+                       tags={"AdpFixtureRun": "ffffffffffffffff"}),
+        _delete_change("aws_ssm_parameter.fixture_provenance_secret[0]",
+                       "aws_ssm_parameter", PARAM),
+    ]
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0
+    assert "NOT TAGGED FOR THIS RUN" in r.stderr
+    assert "ffffffffffffffff" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_refuses_a_deletion_with_no_recorded_id(harness):
+    """No id means nothing identifies the object being deleted — the same defect as
+    deleting by name, reached from the other direction."""
+    plan = _owned_plan() + [
+        {"address": "aws_cloudwatch_log_group.mystery", "type": "aws_cloudwatch_log_group",
+         "change": {"actions": ["delete"], "before": {}}}]
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0
+    assert "records NO id" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_refuses_an_ownership_receipt_from_another_run_or_account(harness):
+    """The receipt is what authorises the deletions, so it is validated BEFORE any id
+    is taken from it. A receipt for another run would otherwise supply the very list
+    used to permit the deletion."""
+    for field, value in (("run_nonce", "ffffffffffffffff"),
+                         ("account_id", "111111111111"),
+                         ("region", "eu-west-1"),
+                         ("environment", "prod")):
+        r = harness.run("destroy", _receipt_with(harness, **{field: value}))
+        assert r.returncode != 0, f"a receipt with a foreign {field} authorised a destroy"
+        assert field in r.stderr and str(value) in r.stderr
+        assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_refuses_when_state_records_no_owned_resources_at_all(harness):
+    """An empty owned set means there is nothing to check the plan against. That is
+    unverifiable, which is not the same as authorised."""
+    r = harness.run("destroy", _receipt_with(harness, resources=[]))
+    assert r.returncode != 0
+    assert "NO resource ids" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_refuses_when_the_ownership_receipt_cannot_be_read(harness):
+    """Unreadable is not 'skip the check'. Without the receipt the plan cannot be
+    shown to delete only this run's resources."""
+    r = harness.run("destroy", {"FAKE_OWNERSHIP_UNREADABLE": "1"})
+    assert r.returncode != 0
+    assert "ownership receipt" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_refuses_a_plan_that_silently_leaves_an_owned_resource_behind(harness):
+    """The other direction, and it is the one absence-verification catches too late.
+
+    A plan missing an owned resource applies cleanly and reports a completed
+    teardown while the object keeps running and costing. Catching it here means it is
+    caught BEFORE the state that names the object is emptied — afterwards there is no
+    record left to reconcile against.
+    """
+    plan = [_delete_change("aws_api_gateway_rest_api.fixture[0]",
+                           "aws_api_gateway_rest_api", "fixapi123")]
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0
+    assert "LEAVES BEHIND" in r.stderr
+    assert PARAM in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_does_not_demand_a_cloud_id_for_resources_that_have_none(harness):
+    """random_password and terraform_data exist only in state.
+
+    A gate that required an id or a tag for them would be unsatisfiable, and an
+    unsatisfiable gate gets bypassed — so they are enumerated as local-only rather
+    than inferred, and the positive path must still pass with them in the plan.
+    """
+    r = harness.run("destroy")
+    assert r.returncode == 0, r.stderr
+    assert "every deletion is in this run's owned set" in r.stdout
+    assert "random_password" not in r.stderr
+
+
+def test_destroy_dry_run_checks_the_owned_set_before_reporting(harness):
+    """--dry-run is the reviewable path: it must run the same gate, or it rehearses a
+    command the real destroy would refuse."""
+    plan = _owned_plan() + [
+        _delete_change("aws_api_gateway_rest_api.imported",
+                       "aws_api_gateway_rest_api", "ordinaryapi9", tags=None)]
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)},
+                    args=["--dry-run"])
+    assert r.returncode != 0
+    assert "NOT OWNED" in r.stderr
+    assert "stopping before any deletion" not in r.stdout
 
 
 # --- 6. A failed HTTP security check is never exit 0 ----------------------

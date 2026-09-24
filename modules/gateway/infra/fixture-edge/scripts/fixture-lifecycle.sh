@@ -365,9 +365,9 @@ ledger_run_id() {
   [ -s "$LEDGER" ] || fail "ledger $LEDGER is missing or empty. #3968's session must have
      opened this run before the fixture edge records anything into it."
   local rid
-  rid="$(python3 - "$LEDGER" "$NONCE" <<'PY'
+  rid="$(python3 - "$LEDGER" "$NONCE" "$ACCOUNT" "$REGION" <<'PY'
 import json, sys
-path, nonce = sys.argv[1], sys.argv[2]
+path, nonce, account, region = sys.argv[1:5]
 try:
     doc = json.load(open(path))
 except Exception as exc:                      # noqa: BLE001 - reported, not swallowed
@@ -377,11 +377,72 @@ if not isinstance(doc, dict):
 rid = doc.get("run_id") or doc.get("runId")
 if not rid:
     sys.exit("ledger has no run_id field; #3968 must open the run first")
-# The ledger must be THIS run's. Recording into another run's ledger would hand
-# this fixture's objects to a cleanup that deletes on a different schedule.
+
+# ---------------------------------------------------------------------------
+# run_nonce and account_id are MANDATORY, and the version must be the one whose
+# rows can prove ownership. All three were previously optional-or-absent here,
+# and each omission has a distinct consequence.
+#
+# Traced from #3968's lib/ownership.py (branch agent/issue-3968) rather than
+# assumed -- its own `load_ledger` raises on exactly these, and `init_ledger`
+# always writes all three. So a ledger missing one is not a tolerable older
+# shape; it is not a ledger #3968 wrote.
+#
+#   run_nonce   `if led_nonce and led_nonce != nonce` treated ABSENT as a pass.
+#               A ledger with no nonce cannot be shown to be this run's at all,
+#               so this run's objects would be recorded into a run whose cleanup
+#               deletes on a different schedule -- either orphaning them or
+#               deleting them early, under someone else's teardown.
+#
+#   account_id  Never checked. The same object name in two accounts is two
+#               different objects (ownership.py says so in those words), and
+#               record-k8s will itself refuse at record time -- AFTER the object
+#               exists. Checking here moves the refusal before creation.
+#
+#   version     v1 rows carry `run_bound: true` and NO server-assigned uid, so
+#               they cannot prove ownership and must not drive a teardown.
+#               record-k8s refuses a v1 ledger outright, which again would land
+#               after the object was created.
+# ---------------------------------------------------------------------------
 led_nonce = doc.get("run_nonce") or doc.get("nonce")
-if led_nonce and led_nonce != nonce:
+if not led_nonce:
+    sys.exit(
+        f"ledger {path} records NO run_nonce. #3968's init_ledger always writes one, so "
+        "this is not a ledger it opened -- and without it there is nothing to show this "
+        "ledger is THIS run's. Refusing: recording here would hand this fixture's objects "
+        "to a cleanup that deletes on a different schedule."
+    )
+if led_nonce != nonce:
     sys.exit(f"ledger is for run nonce {led_nonce}, not {nonce}; refusing to record")
+
+led_account = doc.get("account_id")
+if not led_account:
+    sys.exit(
+        f"ledger {path} records NO account_id. record-k8s requires one and would refuse "
+        "AFTER the object was created; refusing now, before anything exists."
+    )
+if str(led_account) != account:
+    sys.exit(
+        f"ledger {path} was opened against account {led_account}, but this run is bound to "
+        f"{account}. The same object name in two accounts is two different objects, so "
+        "recording across that boundary makes the ledger claim something it cannot verify."
+    )
+
+# Not fatal on its own (the region is not part of a k8s object's identity) but a
+# mismatch means the ledger and this run disagree about where the run is, which is
+# worth surfacing before a mutation.
+led_region = doc.get("region")
+if led_region and str(led_region) != region:
+    print(f"  [note] ledger region {led_region} != --region {region}", file=sys.stderr)
+
+version = doc.get("ledger_version")
+if version != 2:
+    sys.exit(
+        f"ledger {path} is version {version!r}; this component records through #3968's v2 "
+        "interface. A v1 ledger's rows carry `run_bound: true` and no server-assigned uid, "
+        "so they cannot prove ownership and must not drive a teardown -- record-k8s refuses "
+        "such a ledger, and it would do so only after the object existed."
+    )
 print(rid)
 PY
   )" || fail "could not resolve the #3968 run id from $LEDGER: see the error above.
@@ -627,7 +688,68 @@ if bad:
     )
 print(f"  [ ok ] plan touches only this component ({len(plan.get('resource_changes', []))} changes)")
 PY
+
+  # -------------------------------------------------------------------------
+  # THE PLAN RECEIPT. Written here so `apply` can prove the file it was handed is
+  # the plan THIS run reviewed, rather than a file that happens to exist.
+  #
+  # A plan file alone does not carry the things that decide whether applying it is
+  # safe: it records no backend, no bucket and no profile, so `apply --plan-file X`
+  # could not tell run A's reviewed plan from run B's, nor a plan built against
+  # another account's state from one built against this run's. `-detailed-exitcode`
+  # does not help; neither does re-reading the plan, because the plan is the thing
+  # in question.
+  #
+  # So the receipt records the binding, and the plan's own DIGEST binds the receipt
+  # to the exact bytes. Both halves are needed: the digest without the binding
+  # proves only that a file is unmodified, and the binding without the digest can
+  # be satisfied by any plan for the same run.
+  # -------------------------------------------------------------------------
+  plan_receipt "$out" "$tfvars" > "$dir/fixture.plan.receipt.json"
   ok "plan written to $out (review it, then: apply --plan-file $out)"
+  note "receipt: $dir/fixture.plan.receipt.json — apply verifies the plan against it"
+}
+
+# ---------------------------------------------------------------------------
+# The run/backend/input binding of a saved plan, as JSON on stdout.
+#
+# Emitted by `plan` and RECOMPUTED by `apply`, which compares the two. Keeping it
+# one function means the two sides cannot drift into computing different things --
+# a comparison of two slightly different summaries is worse than none, because it
+# fails on correct input and teaches the operator to bypass it.
+# ---------------------------------------------------------------------------
+plan_receipt() {   # <plan-file> <tfvars-file>
+  local plan_file="$1" tfvars_file="$2"
+  state_key
+  python3 - "$plan_file" "$tfvars_file" "$NONCE" "$ACCOUNT" "$REGION" \
+           "$ENVIRONMENT" "$STATE_KEY" "${BUCKET:-}" "${PROFILE:-}" <<'PY'
+import hashlib, json, sys
+plan_file, tfvars_file = sys.argv[1], sys.argv[2]
+nonce, account, region, environment, state_key, bucket, profile = sys.argv[3:10]
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+print(json.dumps({
+    "run_nonce": nonce,
+    "account_id": account,
+    "region": region,
+    "environment": environment,
+    # The backend the plan was built against. Not in the plan file itself, which is
+    # why a digest alone cannot answer "is this state the state I reviewed".
+    "state_key": state_key,
+    "state_bucket": bucket,
+    "state_profile": profile,
+    # The INPUTS. A plan is only reviewable with respect to the variables it was
+    # built from; an edited tfvars after review is an unreviewed change.
+    "tfvars_sha256": digest(tfvars_file),
+    "plan_sha256": digest(plan_file),
+}, indent=2, sort_keys=True))
+PY
 }
 
 # ===========================================================================
@@ -640,6 +762,78 @@ cmd_apply() {
   [ -f "$PLAN_FILE" ] || fail "plan file not found: $PLAN_FILE"
   assert_live_account
   assert_backend_binding
+
+  # -------------------------------------------------------------------------
+  # "--plan-file is required" IS NOT THE SAME AS "the reviewed plan".
+  #
+  # The previous revision checked only that the path existed, then applied it. A
+  # plan file carries no run nonce, no account, no backend and no record of the
+  # variables it was built from, so nothing distinguished:
+  #
+  #   * another RUN's plan (a stale .fixture-run-<other nonce>/fixture.plan, or a
+  #     copied path) -- applied into THIS run's state, so both runs then believe
+  #     they own the same objects;
+  #   * a plan built against another ACCOUNT or BACKEND;
+  #   * a plan whose INPUTS were edited after review -- the reviewed artifact and
+  #     the applied artifact are then different things;
+  #   * a plan file MODIFIED after it was reviewed.
+  #
+  # The receipt `plan` wrote records the first three; the digest catches the fourth.
+  # Recomputed through the SAME function that wrote it, so the two sides cannot
+  # drift into comparing different summaries.
+  # -------------------------------------------------------------------------
+  local dir; dir="$(artifact_dir)"
+  local receipt="$dir/fixture.plan.receipt.json"
+  local tfvars="$dir/fixture.tfvars"
+  [ -f "$receipt" ] || fail "no plan receipt at $receipt.
+     A plan file on its own does not record which run, account, backend or inputs it
+     was built from, so it cannot be shown to be the plan THIS run reviewed. Re-run
+     'plan' with these arguments; it writes the receipt alongside the plan."
+  [ -f "$tfvars" ] || fail "reviewed inputs not found at $tfvars; re-run 'plan'"
+
+  step "verify the plan file is the one this run reviewed"
+  plan_receipt "$PLAN_FILE" "$tfvars" > "$dir/fixture.plan.receipt.actual.json"
+  python3 - "$receipt" "$dir/fixture.plan.receipt.actual.json" "$PLAN_FILE" <<'PY' \
+    || fail "the plan file does not match this run's reviewed plan; refusing to apply."
+import json, sys
+want = json.load(open(sys.argv[1]))
+have = json.load(open(sys.argv[2]))
+plan_file = sys.argv[3]
+
+# Reported in one pass rather than on the first mismatch: an operator fixing these
+# one at a time re-runs a mutating command repeatedly, and the second difference is
+# often the one that explains the first.
+labels = {
+    "run_nonce": "the run this plan belongs to",
+    "account_id": "the account it was planned against",
+    "region": "the region",
+    "environment": "the environment",
+    "state_key": "the per-run state key",
+    "state_bucket": "the state bucket",
+    "state_profile": "the credential the state is read through",
+    "tfvars_sha256": "the reviewed INPUTS (fixture.tfvars was edited after review)",
+    "plan_sha256": "the plan file's CONTENT (this is not the reviewed plan file)",
+}
+bad = [(k, want.get(k), have.get(k)) for k in labels if want.get(k) != have.get(k)]
+if bad:
+    lines = [f"REFUSING to apply {plan_file}: it is not the plan this run reviewed.", ""]
+    for key, w, h in bad:
+        lines.append(f"  {key} ({labels[key]})")
+        lines.append(f"      reviewed : {w}")
+        lines.append(f"      supplied : {h}")
+    lines += [
+        "",
+        "Applying a plan from another run, account or backend makes two runs believe",
+        "they own the same objects, and either teardown then destroys the other's",
+        "edge. Applying an edited plan or edited inputs means the artifact reviewed",
+        "and the artifact applied are different things.",
+        "",
+        "Re-run 'plan' with these arguments and review the plan it writes.",
+    ]
+    sys.exit("\n".join(lines))
+print(f"  [ ok ] plan verified as this run's reviewed plan "
+      f"(sha256 {have['plan_sha256'][:16]}…, inputs {have['tfvars_sha256'][:16]}…)")
+PY
 
   if [ "$DRY_RUN" = 1 ]; then
     note "dry-run: would apply $PLAN_FILE"; return 0
@@ -1295,6 +1489,157 @@ PY
   note "Re-run 'handoff' to attach it, or tear down if you are abandoning this run."
 }
 
+# ---------------------------------------------------------------------------
+# A DELETE-ONLY PLAN IS NOT A PLAN THAT DELETES ONLY THIS RUN'S RESOURCES.
+#
+# The previous revision's whole destroy gate was "the plan contains no create or
+# update". That is a check on the ACTIONS, and it says nothing about the OBJECTS:
+# any state file whose resources this credential can reach produces a delete-only
+# plan, including
+#
+#   * state for ANOTHER RUN (an artifact directory or a backend key that resolves
+#     elsewhere -- the key check catches the mismatch it can see, but a state file
+#     that was pulled, copied or re-initialised under this run's key carries the
+#     other run's resource ids);
+#   * state containing IMPORTED resources -- `terraform import` is enough to make
+#     the ordinary API Gateway, or any log group, a delete-only line in this plan;
+#   * state for the right run in the WRONG ACCOUNT.
+#
+# In every one of those the run reports "deletes exactly these, from state" and
+# destroys resources it did not create. So the plan is checked against the OWNED
+# SET: the ownership receipt in state (bound to run nonce, account, region and
+# environment) plus the per-run ownership TAG the provider recorded on each object.
+# Both directions are checked -- nothing outside the owned set may be deleted, and
+# nothing in the owned set may be left out, because a destroy that silently omits a
+# resource reports a complete teardown while the object keeps running and costing.
+# ---------------------------------------------------------------------------
+assert_destroy_deletes_only_owned() {   # <artifact-dir>
+  local dir="$1"
+  local owned="$dir/owned-set.json"
+  # From STATE, not from a file this run's own apply left behind: an artifact
+  # directory is operator-supplied, and the question is what state says it owns.
+  terraform_ output -json ownership > "$owned" \
+    || fail "could not read the ownership receipt from state, so the destroy plan cannot be
+     checked against the set of resources this run actually owns. REFUSING: a
+     delete-only plan on its own does not show WHOSE resources it deletes. If state
+     genuinely predates the receipt, resolve that before destroying anything."
+
+  step "check the destroy plan against the owned set (ids and run tags)"
+  python3 - "$owned" "$dir/destroy.plan.json" "$NONCE" "$ACCOUNT" "$REGION" "$ENVIRONMENT" \
+    <<'PY' || fail "the destroy plan does not match this run's owned set; nothing was deleted."
+import json, sys
+owned_path, plan_path, nonce, account, region, environment = sys.argv[1:7]
+
+OWNERSHIP_TAG = "AdpFixtureRun"          # locals.ownership_tag_key in main.tf
+ACCOUNT_TAG = "AdpFixtureAccount"
+
+# Types with no cloud object at all: a local value and a null_resource-equivalent.
+# Destroying them touches nothing outside state, so they cannot be checked against
+# an id or a tag -- and demanding one would make the gate unsatisfiable. Enumerated
+# rather than inferred, so a new type is refused until someone decides which it is.
+LOCAL_ONLY = {"random_password", "terraform_data"}
+
+owned = json.load(open(owned_path))
+# `terraform output -json` wraps a value; `-json <name>` emits the bare value.
+if isinstance(owned, dict) and "value" in owned and "resources" not in owned:
+    owned = owned["value"]
+
+# --- the receipt must belong to THIS run, account, region and environment -----
+# Checked before anything is derived from it: a receipt from another run would
+# otherwise supply the very id list used to authorise the deletions.
+for field, want in (("run_nonce", nonce), ("account_id", account),
+                    ("region", region), ("environment", environment)):
+    got = owned.get(field)
+    if got != want:
+        sys.exit(
+            f"STOP: the ownership receipt in state records {field}={got!r}, but this command "
+            f"is for {want!r}.\nThis state does not describe this run's resources, so its "
+            "resource ids cannot authorise a deletion. Re-run 'init' with the arguments the "
+            "state was created for, or investigate how the two came to be crossed."
+        )
+
+owned_ids = {r.get("id") for r in owned.get("resources") or [] if r.get("id")}
+by_id = {r["id"]: r for r in owned.get("resources") or [] if r.get("id")}
+if not owned_ids:
+    sys.exit(
+        "STOP: the ownership receipt lists NO resource ids, so there is nothing to check the "
+        "destroy plan against. An unverifiable destroy is not an authorised one."
+    )
+
+plan = json.load(open(plan_path))
+foreign, untagged, planned_ids = [], [], set()
+for change in plan.get("resource_changes", []):
+    actions = set(change.get("change", {}).get("actions", []))
+    if "delete" not in actions:
+        continue
+    address, rtype = change.get("address", "?"), change.get("type", "?")
+    if rtype in LOCAL_ONLY:
+        continue
+    before = change.get("change", {}).get("before") or {}
+    rid = before.get("id") or ""
+    if not rid:
+        # No recorded id means nothing identifies the object being deleted. That is
+        # the same defect as deleting by name, arrived at from the other direction.
+        foreign.append(f"{address} ({rtype}) — state records NO id for it")
+        continue
+    planned_ids.add(rid)
+    if rid not in owned_ids:
+        foreign.append(f"{address} ({rtype}) id={rid} — NOT in this run's owned set")
+        continue
+    # The provider-recorded TAG, where the type carries tags. A second, independent
+    # fact: the id says state claims it, the tag says the object itself was stamped
+    # for this run at creation. An imported resource has the id and not the tag.
+    tags = before.get("tags")
+    if isinstance(tags, dict):
+        if tags.get(OWNERSHIP_TAG) != nonce:
+            untagged.append(
+                f"{address} id={rid} — {OWNERSHIP_TAG}={tags.get(OWNERSHIP_TAG)!r}, "
+                f"expected {nonce!r}")
+        elif tags.get(ACCOUNT_TAG) not in (None, account):
+            untagged.append(
+                f"{address} id={rid} — {ACCOUNT_TAG}={tags.get(ACCOUNT_TAG)!r}, "
+                f"expected {account!r}")
+
+if foreign or untagged:
+    lines = ["STOP: the destroy plan would delete resources this run does not own.", ""]
+    for entry in foreign:
+        lines.append(f"  NOT OWNED : {entry}")
+    for entry in untagged:
+        lines.append(f"  NOT TAGGED FOR THIS RUN : {entry}")
+    lines += [
+        "",
+        "A delete-only plan proves only that nothing is being created. It does not show",
+        "whose resources are being deleted: state that was copied, re-initialised under",
+        "this run's key, or had a resource IMPORTED into it produces exactly this shape.",
+        "",
+        "Nothing was deleted. Do NOT work around this by deleting by name or tag prefix.",
+        "Reconcile the state against the ownership receipt first.",
+    ]
+    sys.exit("\n".join(lines))
+
+# --- and nothing OWNED may be silently left behind ---------------------------
+missing = sorted(owned_ids - planned_ids)
+if missing:
+    lines = ["STOP: the destroy plan LEAVES BEHIND resources this run owns:", ""]
+    for rid in missing:
+        entry = by_id[rid]
+        lines.append(f"  - {entry.get('kind', '?')} {entry.get('name') or rid} (id={rid})")
+    lines += [
+        "",
+        "Destroying this plan would report a completed teardown while these keep running",
+        "and costing. That is the failure mode absence-verification exists to catch, and",
+        "catching it here means it is caught BEFORE the state that names them is emptied.",
+        "",
+        "Usually this means the state was partially emptied (a `state rm`, or an earlier",
+        "interrupted destroy). Reconcile before continuing.",
+    ]
+    sys.exit("\n".join(lines))
+
+print(f"  [ ok ] every deletion is in this run's owned set, by id and by run tag "
+      f"({len(planned_ids)} resources, nonce {nonce})")
+PY
+}
+
 # ===========================================================================
 # destroy — dependency-ordered, against exact owned state
 # ===========================================================================
@@ -1343,6 +1688,9 @@ print("  [ ok ] destroy plan deletes exactly these, from state:")
 for a in deleting:
     print(f"         - {a}")
 PY
+
+  # DELETE-ONLY IS NOT THE SAME AS DELETES-ONLY-OURS. See the function.
+  assert_destroy_deletes_only_owned "$dir"
 
   if [ "$DRY_RUN" = 1 ]; then
     note "dry-run: stopping before any deletion. Reviewed plan: $dir/destroy.plan"
