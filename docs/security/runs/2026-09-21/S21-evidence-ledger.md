@@ -19,8 +19,31 @@ be read as a clean result.
 - **Repository revision read:** `9afe1423b57318f1eda9d2ee0c44aeb25cac8417` (`main` at snapshot time)
 - **Scan inventory read from:** `3193c78b167f583eed5026c582ab58794c88c34e`
   (`docs/security/runs/2026-09-21/findings.json`, generated `2026-09-21T00:34:56Z`)
-- **AWS plan read from:** `d6091ba4d`
+- **AWS plan read from:** `7b0004eda47a82c0d33a5f78f699ca83fe5053c2`
   (`doc/ai-dlc-engine/security-agent-35547077368/work-packages.json`)
+
+### Revised 2026-09-24 after independent review
+
+The first revision of this ledger created **false evidence blockers** and omitted the required
+per-finding joins. This revision corrects that against an independent review of
+`0e7144b3`. Each correction is stated inline where the wrong claim was, rather than silently
+overwritten, so the error cannot be reintroduced from an older copy:
+
+| Corrected | Was | Is |
+|---|---|---|
+| 13 suppressed records | "null file, line and justification"; needed raw-SARIF recovery | **All 13 have file and line** (§8.D); only the justification is absent |
+| 8 CVSS disagreements | "`vulnerability_id` is null in every record" | **All 8 have advisory IDs** in the `advisory` field (§8.E); the earlier check read a field that does not exist |
+| S02 rebuilt-image/SBOM | "not satisfied" | **Satisfied** 2026-09-23, with a registry-verified digest (§3.1) — scoped to one advisory, not whole-image, not deployed |
+| S03 PR #5724 | "Doc-only PR" | **13 files including a +400-line build recipe and +433 lines of tests**; it correctly touched no lock/manifest/infra file |
+| S03 runtime | "Live startup/persistence unverified" | **Verified** locally — startup, auth, controller-client and restart persistence (§3.2); not a cluster deploy |
+| S03 integration | implied a single propagating lock edit | **Five coupled prerequisites**, publication first; a digest-only swap would record false provenance (§3) |
+| Bandit tooling | "pinned bandit and `.banditrc` absent" | **Both present**; the real defect is `--ini` against a YAML config, which silently drops `skips` (§5.1) |
+| cfn-nag | "not PR-triggered" → missing coverage | The scan is **dispatch-only by design** and cfn-nag runs in it; the real defect is **parse aborts reporting success** (§5.1) |
+| Checkov allowlist | "inert because of `--directory .`" | **Not supported** — `--directory .` does not disable `skip-check` or the baseline (§5.1) |
+| Counts | "six daily" (five listed); "18 of 24 merged" | **Five** daily (5 + 6 = 11); **17 of 24** closed |
+
+Two further records the review did not ask for, found while checking its points: the Bandit
+config defect above, and that **#4729/#4730 remain OPEN under a CLOSED owner** (S17 #5616).
 
 ### The four states this ledger keeps apart
 
@@ -111,7 +134,8 @@ Three further qualifications:
   368 medium, 184 low, 303 none, 1 info.
 - The **13 explicitly suppressed critical/high Semgrep records are excluded from the 860**
   by design, and were retained as historical dispositions rather than reclassified. They are
-  *not* dispositioned anywhere in this snapshot (see §5).
+  *not* dispositioned anywhere in this snapshot — but their **file and line are published**, so
+  they are actionable now; only the suppression justification is missing (§5, enumerated in §8.D).
 - The 33 and the 47 partially describe the same code. The AWS plan links packages back to
   earlier nightly issues via `earlier_nightly_issues`, which is the join to use — not
   severity or file matching.
@@ -737,8 +761,33 @@ it fixed, so these need a rating decision by S21 rather than automatic escalatio
 
 ## Provenance of this ledger
 
-Produced under the read-only parallel assignment on #5620. Sources: live `gh` queries against
-issues and pull requests; `findings.json` at `3193c78b`; `work-packages.json` at `d6091ba4d`;
-committed dispositions under `docs/security/runs/2026-09-21/`; and the working tree at
-`9afe1423`. No file outside this document was modified; no scan, build, merge, deployment,
-IAM or configuration change, secret access or agent dispatch was performed.
+Produced under the read-only parallel assignment on #5620, and revised on 2026-09-24 under the
+repair assignment against the independent review of `0e7144b3`. Sources: live `gh` queries against
+issues and pull requests; `findings.json` at `3193c78b`; `work-packages.json` at `7b0004ed`;
+committed dispositions and evidence under `docs/security/runs/2026-09-21/`;
+`.github/workflows/security-scan.yml`, `.github/security/` and `.grype.yaml` at `9afe1423`; and
+`superplane.lock.yaml` on `main`. No file outside this document was modified; no scan, build,
+merge, deployment, IAM or configuration change, secret access or agent dispatch was performed.
+
+**This document does not complete S21.** Its integration work — publishing and pinning the
+images, reconciling the shared baseline, and running the final one-off confirmation scan — remains
+blocked on the five open predecessors and is unstarted. Nothing here is a clean result, and no
+issue is closed by it.
+
+### Verification of this revision
+
+Claims were re-derived from source records, not from the previous revision's prose:
+
+- The three required joins are generated from `findings.json` and `work-packages.json` with
+  **assertions on coverage and uniqueness** — 47 rows / 47 unique finding IDs, 33 rows / 33 unique
+  selectors, 16 rows / 16 tickets. A dropped or duplicated record fails the generator.
+- Issue and PR states were re-queried live on 2026-09-24: daily **12 closed / 9 open**, AWS
+  **17 closed / 7 open**, and all **16** older tickets individually re-checked as still OPEN.
+- Scanner claims were checked against the workflow and config files themselves, and the Bandit
+  `--ini`-versus-`-c` behaviour was **reproduced** against `bandit[sarif]==1.7.9` rather than
+  inferred from the flag name.
+- S03's file list came from `gh pr view 5724 --json files`; its runtime evidence from
+  `S03-disposition.md:152-183` and `evidence/S03-derived-image-provenance.json`.
+- **Not verified:** whether S03's or S01's images have been published out-of-band since
+  2026-09-22. No registry was queried and no credentialed access was attempted, so publication
+  state is recorded as unknown rather than absent.
