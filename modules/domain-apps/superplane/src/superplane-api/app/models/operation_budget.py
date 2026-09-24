@@ -86,8 +86,13 @@ class OperationBudgetReservation(Base):
             "AND max_cost_micros >= 0",
             name="ck_operation_budget_reservations_envelope_non_negative",
         ),
+        # `reserved` and `confirmed` are both exempt: the `BudgetLedger` Protocol
+        # gives a reason only to `release` and `retain`, so there is none to write at
+        # confirm. See migration 018 for why exempting only `reserved` made every
+        # confirm violate this check and report as `BudgetUnavailable`.
         CheckConstraint(
-            "state = 'reserved' OR (reason IS NOT NULL AND reason !~ '^[[:space:]]*$')",
+            "state IN ('reserved', 'confirmed') "
+            "OR (reason IS NOT NULL AND reason !~ '^[[:space:]]*$')",
             name="ck_operation_budget_reservations_reason_when_settled",
         ),
         Index(

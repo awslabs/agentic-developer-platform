@@ -51,10 +51,13 @@ retry arrives.
 - `org_id`, `workspace_id` — the tenant. NOT NULL and constrained non-blank so an
   unattributable reservation cannot exist; a reservation nobody can attribute is a
   reservation no limit applies to.
-- `reason` — why a reservation left `reserved`. Nullable only while `reserved`,
-  required otherwise, enforced by `ck_..._reason_when_settled` below. `release` and
-  `retain` both take a `reason` in the Protocol, and a settled row without one is a
-  row whose settlement nobody can explain.
+- `reason` — why a reservation stopped being claimable. Required for `released` and
+  `retained`, and NULL for `reserved` and `confirmed`, enforced by
+  `ck_..._reason_when_settled` below. The split follows the Protocol exactly:
+  `release` and `retain` each take a `reason`, `confirm` takes only an envelope, so
+  `confirmed` has no reason to record and demanding one would force the adapter to
+  invent it. `released` and `retained` are the two states an operator finds later
+  and needs explained.
 - `created_at`, `updated_at` — for the operator diagnosing a stranded reservation.
   Deliberately not used to expire anything: age cannot distinguish a dead attempt
   from a slow one, and a time-based auto-release would free budget for work that is
@@ -163,10 +166,28 @@ def upgrade():
             "AND max_cost_micros >= 0",
             name=_ENVELOPE_CHECK,
         ),
-        # A settled reservation must say why. Stated as an implication rather than a
-        # plain NOT NULL because `reserved` legitimately has no reason yet.
+        # A reservation SETTLED BY A COMPENSATION must say why. Stated as an
+        # implication rather than a plain NOT NULL because neither `reserved` nor
+        # `confirmed` has a reason to give.
+        #
+        # `confirmed` is in the exempt list deliberately, and getting that wrong is
+        # how this constraint made `confirm` impossible: the `BudgetLedger` Protocol
+        # gives `release` and `retain` a `reason` parameter and gives `confirm` only
+        # an envelope, so there is no reason to write at confirm — the adapter's
+        # UPDATE sets state and the approved envelope and nothing else. An earlier
+        # revision of this migration exempted only `reserved`, which meant every
+        # confirm violated the check and was reported as `BudgetUnavailable`. That is
+        # the worst available failure: the harness's `_confirm` RETAINS on
+        # unavailable, so every admitted operation would have held its budget
+        # forever while the readout said the database was unwell.
+        #
+        # The narrower reading is also the correct one. A reason explains why a
+        # reservation stopped being claimable, and `confirmed` is not that — it is
+        # the reservation being honoured. `released` and `retained` are the two
+        # states an operator finds later and needs explained.
         sa.CheckConstraint(
-            "state = 'reserved' OR (reason IS NOT NULL AND reason !~ '^[[:space:]]*$')",
+            "state IN ('reserved', 'confirmed') "
+            "OR (reason IS NOT NULL AND reason !~ '^[[:space:]]*$')",
             name=_REASON_CHECK,
         ),
     )

@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -165,85 +166,77 @@ class OperationBudgetLedger:
         requested = _envelope_values(envelope)
         reservation_id = _reservation_id(job_id, attempt_id)
 
-        async with self._acquire() as connection:
-            async with _transaction(connection):
-                existing = await self._fetch_locked(connection, job_id, attempt_id)
+        async with self._session() as connection:
+            existing = await self._fetch_locked(connection, job_id, attempt_id)
 
-                if existing is None:
-                    await self._check_limits(
-                        connection,
-                        org_id=org_id,
-                        workspace_id=workspace_id,
-                        requested=requested,
-                    )
-                    inserted = await self._insert(
-                        connection,
-                        reservation_id=reservation_id,
-                        job_id=job_id,
-                        attempt_id=attempt_id,
-                        org_id=org_id,
-                        workspace_id=workspace_id,
-                        requested=requested,
-                    )
-                    if inserted is None:
-                        # Lost the insert race under the unique constraint. The
-                        # winner's row is authoritative; re-read and fall through
-                        # to the same comparison a sequential retry would make.
-                        existing = await self._fetch_locked(
-                            connection, job_id, attempt_id
-                        )
-                    else:
-                        return Reservation(
-                            reservation_id=inserted["reservation_id"],
-                            job_id=job_id,
-                            attempt_id=attempt_id,
-                        )
-
-                if existing is None:  # pragma: no cover - defensive
-                    raise _unavailable(
-                        "the budget reservation could not be established"
-                    )
-
-                if (
-                    existing["org_id"] != org_id
-                    or existing["workspace_id"] != workspace_id
-                ):
-                    # Deliberately does not echo the stored tenant: the caller
-                    # supplied one identity and is being told it does not match,
-                    # and naming the other one would disclose which tenant holds
-                    # this attempt key.
-                    raise BudgetDenied(
-                        "this attempt is already reserved for a different tenant"
-                    )
-
-                stored = (
-                    existing["max_resource_units"],
-                    existing["max_runtime_seconds"],
-                    existing["max_cost_micros"],
+            if existing is None:
+                await self._check_limits(
+                    connection,
+                    org_id=org_id,
+                    workspace_id=workspace_id,
+                    requested=requested,
                 )
-                if stored != requested:
-                    raise BudgetDenied(
-                        "this attempt is already reserved with a different spend "
-                        "envelope; a retry may not change the envelope it was "
-                        "admitted under"
-                    )
-
-                if existing["state"] == STATE_RELEASED:
-                    # Released means established absence — the work did not happen
-                    # and the budget was genuinely returned. Re-reserving under the
-                    # same key would spend it a second time, so this is a denial
-                    # and not a fresh reservation. A new attempt needs a new
-                    # attempt id, which is what makes the spend visible.
-                    raise BudgetDenied(
-                        "this attempt's reservation was released; a new attempt "
-                        "identity is required to reserve again"
-                    )
-
-                return Reservation(
-                    reservation_id=existing["reservation_id"],
+                inserted = await self._insert(
+                    connection,
+                    reservation_id=reservation_id,
                     job_id=job_id,
                     attempt_id=attempt_id,
+                    org_id=org_id,
+                    workspace_id=workspace_id,
+                    requested=requested,
                 )
+                if inserted is None:
+                    # Lost the insert race under the unique constraint. The
+                    # winner's row is authoritative; re-read and fall through
+                    # to the same comparison a sequential retry would make.
+                    existing = await self._fetch_locked(connection, job_id, attempt_id)
+                else:
+                    return Reservation(
+                        reservation_id=inserted["reservation_id"],
+                        job_id=job_id,
+                        attempt_id=attempt_id,
+                    )
+
+            if existing is None:  # pragma: no cover - defensive
+                raise _unavailable("the budget reservation could not be established")
+
+            if existing["org_id"] != org_id or existing["workspace_id"] != workspace_id:
+                # Deliberately does not echo the stored tenant: the caller
+                # supplied one identity and is being told it does not match,
+                # and naming the other one would disclose which tenant holds
+                # this attempt key.
+                raise BudgetDenied(
+                    "this attempt is already reserved for a different tenant"
+                )
+
+            stored = (
+                existing["max_resource_units"],
+                existing["max_runtime_seconds"],
+                existing["max_cost_micros"],
+            )
+            if stored != requested:
+                raise BudgetDenied(
+                    "this attempt is already reserved with a different spend "
+                    "envelope; a retry may not change the envelope it was "
+                    "admitted under"
+                )
+
+            if existing["state"] == STATE_RELEASED:
+                # Released means established absence — the work did not happen
+                # and the budget was genuinely returned. Re-reserving under the
+                # same key would spend it a second time, so this is a denial
+                # and not a fresh reservation. A new attempt needs a new
+                # attempt id, which is what makes the spend visible.
+                raise BudgetDenied(
+                    "this attempt's reservation was released; a new attempt "
+                    "identity is required to reserve again"
+                )
+
+            return Reservation(
+                reservation_id=existing["reservation_id"],
+                job_id=job_id,
+                attempt_id=attempt_id,
+            )
 
     async def confirm(self, *, reservation: Any, envelope: Any) -> None:
         """Bind the approved envelope to this attempt. Idempotent on the same key.
@@ -261,50 +254,49 @@ class OperationBudgetLedger:
 
         approved = _envelope_values(envelope)
 
-        async with self._acquire() as connection:
-            async with _transaction(connection):
-                existing = await self._fetch_locked(
-                    connection, reservation.job_id, reservation.attempt_id
+        async with self._session() as connection:
+            existing = await self._fetch_locked(
+                connection, reservation.job_id, reservation.attempt_id
+            )
+            if existing is None:
+                # Confirming something that was never reserved. A denial, not
+                # an unavailable: the store answered, and the answer is that
+                # this attempt holds nothing.
+                raise BudgetDenied(
+                    "no budget reservation exists for this attempt to confirm"
                 )
-                if existing is None:
-                    # Confirming something that was never reserved. A denial, not
-                    # an unavailable: the store answered, and the answer is that
-                    # this attempt holds nothing.
-                    raise BudgetDenied(
-                        "no budget reservation exists for this attempt to confirm"
-                    )
 
-                if existing["state"] == STATE_CONFIRMED:
-                    stored = (
-                        existing["max_resource_units"],
-                        existing["max_runtime_seconds"],
-                        existing["max_cost_micros"],
-                    )
-                    if stored != approved:
-                        raise BudgetDenied(
-                            "this attempt is already confirmed with a different "
-                            "spend envelope"
-                        )
-                    return
-
-                if existing["state"] in (STATE_RELEASED, STATE_RETAINED):
-                    raise BudgetDenied(
-                        "this attempt's reservation is already settled and cannot "
-                        "be confirmed"
-                    )
-
-                await self._execute(
-                    connection,
-                    f"UPDATE {_TABLE} SET state=$1, max_resource_units=$2, "
-                    "max_runtime_seconds=$3, max_cost_micros=$4, updated_at=now() "
-                    "WHERE job_id=$5 AND attempt_id=$6",
-                    STATE_CONFIRMED,
-                    approved[0],
-                    approved[1],
-                    approved[2],
-                    reservation.job_id,
-                    reservation.attempt_id,
+            if existing["state"] == STATE_CONFIRMED:
+                stored = (
+                    existing["max_resource_units"],
+                    existing["max_runtime_seconds"],
+                    existing["max_cost_micros"],
                 )
+                if stored != approved:
+                    raise BudgetDenied(
+                        "this attempt is already confirmed with a different "
+                        "spend envelope"
+                    )
+                return
+
+            if existing["state"] in (STATE_RELEASED, STATE_RETAINED):
+                raise BudgetDenied(
+                    "this attempt's reservation is already settled and cannot "
+                    "be confirmed"
+                )
+
+            await self._execute(
+                connection,
+                f"UPDATE {_TABLE} SET state=$1, max_resource_units=$2, "
+                "max_runtime_seconds=$3, max_cost_micros=$4, updated_at=now() "
+                "WHERE job_id=$5 AND attempt_id=$6",
+                STATE_CONFIRMED,
+                approved[0],
+                approved[1],
+                approved[2],
+                reservation.job_id,
+                reservation.attempt_id,
+            )
 
     async def release(self, *, reservation: Any, reason: str) -> None:
         """Return a reservation as unused. Only with established absence.
@@ -344,33 +336,32 @@ class OperationBudgetLedger:
             # the caller's mistake instead of surfacing a constraint violation.
             raise BudgetDenied("settling a reservation requires a reason")
 
-        async with self._acquire() as connection:
-            async with _transaction(connection):
-                existing = await self._fetch_locked(
-                    connection, reservation.job_id, reservation.attempt_id
+        async with self._session() as connection:
+            existing = await self._fetch_locked(
+                connection, reservation.job_id, reservation.attempt_id
+            )
+            if existing is None:
+                raise BudgetDenied(
+                    "no budget reservation exists for this attempt to settle"
                 )
-                if existing is None:
-                    raise BudgetDenied(
-                        "no budget reservation exists for this attempt to settle"
-                    )
-                if existing["state"] == state:
-                    return
-                if existing["state"] == STATE_RETAINED and state == STATE_RELEASED:
-                    raise BudgetDenied(
-                        "a retained reservation is held pending reconciliation and "
-                        "may not be released without establishing absence"
-                    )
-                if existing["state"] == STATE_RELEASED:
-                    raise BudgetDenied("this attempt's reservation is already released")
-                await self._execute(
-                    connection,
-                    f"UPDATE {_TABLE} SET state=$1, reason=$2, updated_at=now() "
-                    "WHERE job_id=$3 AND attempt_id=$4",
-                    state,
-                    text[:1000],
-                    reservation.job_id,
-                    reservation.attempt_id,
+            if existing["state"] == state:
+                return
+            if existing["state"] == STATE_RETAINED and state == STATE_RELEASED:
+                raise BudgetDenied(
+                    "a retained reservation is held pending reconciliation and "
+                    "may not be released without establishing absence"
                 )
+            if existing["state"] == STATE_RELEASED:
+                raise BudgetDenied("this attempt's reservation is already released")
+            await self._execute(
+                connection,
+                f"UPDATE {_TABLE} SET state=$1, reason=$2, updated_at=now() "
+                "WHERE job_id=$3 AND attempt_id=$4",
+                state,
+                text[:1000],
+                reservation.job_id,
+                reservation.attempt_id,
+            )
 
     async def _check_limits(
         self,
@@ -476,11 +467,38 @@ class OperationBudgetLedger:
             attempt_id,
         )
 
-    def _acquire(self) -> Any:
+    @asynccontextmanager
+    async def _session(self) -> Any:
+        """One connection and one transaction, with every failure classified.
+
+        Wrapping BOTH is what makes the availability/denial split hold at the
+        transport. `_acquire` alone covered only the synchronous ``self._connect()``
+        call, which is almost none of what can fail: the pool is entered on
+        ``__aenter__``, so a closed or unreachable pool raises *after* that try
+        block, and a transaction's COMMIT happens on ``__aexit__``, after the last
+        statement this class runs. Both escaped as themselves —
+        `HarnessDatabaseUnavailable`, or an `asyncpg` error at commit.
+
+        Which would be silent, and is the reason this is a context manager rather
+        than a comment. The harness's `_confirm` catches `BudgetUnavailable` to
+        RETAIN the reservation and `BudgetDenied` to RELEASE it; an exception that
+        is neither matches no branch, so it propagates past the compensation logic
+        entirely and the reservation is left in `reserved` with nothing recording
+        why. A database restart between reserve and confirm is enough to reach it.
+
+        `BudgetDenied` passes through untouched: a denial raised inside the
+        transaction is this ledger's own durable answer, and translating it to
+        unavailable would invite an endless retry of something already refused.
+        """
+        from harness_jobs.admission import BudgetDenied
+
         try:
-            return self._connect()
+            async with self._connect() as connection, _transaction(connection):
+                yield connection
+        except BudgetDenied:
+            raise
         except Exception as error:
-            raise _unavailable("the budget ledger is not reachable") from error
+            raise _translate(error) from error
 
     async def _execute(self, connection: Any, query: str, *args: object) -> Any:
         try:
