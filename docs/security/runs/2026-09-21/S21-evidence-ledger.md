@@ -645,11 +645,11 @@ Checked programmatically: 33 rows, 33 unique selectors, matching the published 1
 | 22 | code | critical | `tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf` | `modules/agent-factory/codex-reviewer/src/github.ts:114` | - | S05 | #5604 | CLOSED |
 | 23 | code | high | `B324` | `modules/gateway/src/orchestration/deployment_workflow_provider.py:162` | - | S08 | #5607 | CLOSED |
 | 24 | code | high | `tmp.gitlab.bandit.B102` | `docs/analysis/cli-uplift-rework/probe_historical_failures.py:34` | - | S09 | #5608 | CLOSED |
-| 25 | npm | high | `brace-expansion` | `modules/agent-factory/agent range <=1.1.17 || 2.0.0 - 2.1.3` | yes | S06 | #5605 | CLOSED |
+| 25 | npm | high | `brace-expansion` | `modules/agent-factory/agent range <=1.1.17 \|\| 2.0.0 - 2.1.3` | yes | S06 | #5605 | CLOSED |
 | 26 | npm | high | `fast-uri` | `modules/agent-factory/agent range 3.0.0 - 3.1.5` | yes | S06 | #5605 | CLOSED |
 | 27 | npm | high | `ip-address` | `modules/agent-factory/agent range <=10.3.0` | yes | S06 | #5605 | CLOSED |
 | 28 | npm | high | `js-yaml` | `modules/agent-factory/agent range 3.0.0 - 3.15.1` | yes | S06 | #5605 | CLOSED |
-| 29 | npm | high | `brace-expansion` | `modules/gateway/frontend range <=1.1.17 || 2.0.0 - 2.1.3` | yes | S07 | #5606 | CLOSED |
+| 29 | npm | high | `brace-expansion` | `modules/gateway/frontend range <=1.1.17 \|\| 2.0.0 - 2.1.3` | yes | S07 | #5606 | CLOSED |
 | 30 | npm | high | `browserslist` | `modules/gateway/frontend range <=4.28.6` | yes | S07 | #5606 | CLOSED |
 | 31 | npm | high | `js-yaml` | `modules/gateway/frontend range 4.0.0 - 4.3.1` | yes | S07 | #5606 | CLOSED |
 | 32 | npm | high | `nanoid` | `modules/gateway/frontend range <3.3.18` | yes | S07 | #5606 | CLOSED |
@@ -659,39 +659,39 @@ Selectors in full (same order) so each row is machine-reselectable:
 
 | # | Selector |
 |---|---|
-| 1 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=1` |
-| 2 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=22` |
-| 3 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=25` |
-| 4 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=26` |
-| 5 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=47` |
-| 6 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=53` |
-| 7 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=54` |
-| 8 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=55` |
-| 9 | `grype|superplane/grype/modules-domain-apps-superplane-src-superplane-api.sarif|ri=94` |
-| 10 | `grype|superplane/grype/superplane-skypilot-api.sarif|ri=104` |
-| 11 | `grype|superplane/grype/superplane-skypilot-api.sarif|ri=440` |
-| 12 | `grype|superplane/grype/superplane-skypilot-api.sarif|ri=442` |
-| 13 | `grype|superplane/grype/superplane-skypilot-api.sarif|ri=444` |
-| 14 | `grype|superplane/grype/superplane-skypilot-api.sarif|ri=448` |
-| 15 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2066` |
-| 16 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2178` |
-| 17 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2180` |
-| 18 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2243` |
-| 19 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2245` |
-| 20 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2347` |
-| 21 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2348` |
-| 22 | `semgrep|original/semgrep/semgrep-results.sarif|ri=2418` |
-| 23 | `bandit|original/bandit/bandit-results.sarif|ri=8712` |
-| 24 | `semgrep|original/semgrep/semgrep-results.sarif|ri=758` |
-| 25 | `npm-audit|modules/agent-factory/agent|brace-expansion` |
-| 26 | `npm-audit|modules/agent-factory/agent|fast-uri` |
-| 27 | `npm-audit|modules/agent-factory/agent|ip-address` |
-| 28 | `npm-audit|modules/agent-factory/agent|js-yaml` |
-| 29 | `npm-audit|modules/gateway/frontend|brace-expansion` |
-| 30 | `npm-audit|modules/gateway/frontend|browserslist` |
-| 31 | `npm-audit|modules/gateway/frontend|js-yaml` |
-| 32 | `npm-audit|modules/gateway/frontend|nanoid` |
-| 33 | `npm-audit|modules/gateway/frontend|undici` |
+| 1 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=1` |
+| 2 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=22` |
+| 3 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=25` |
+| 4 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=26` |
+| 5 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=47` |
+| 6 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=53` |
+| 7 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=54` |
+| 8 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif\|ri=55` |
+| 9 | `grype\|superplane/grype/modules-domain-apps-superplane-src-superplane-api.sarif\|ri=94` |
+| 10 | `grype\|superplane/grype/superplane-skypilot-api.sarif\|ri=104` |
+| 11 | `grype\|superplane/grype/superplane-skypilot-api.sarif\|ri=440` |
+| 12 | `grype\|superplane/grype/superplane-skypilot-api.sarif\|ri=442` |
+| 13 | `grype\|superplane/grype/superplane-skypilot-api.sarif\|ri=444` |
+| 14 | `grype\|superplane/grype/superplane-skypilot-api.sarif\|ri=448` |
+| 15 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2066` |
+| 16 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2178` |
+| 17 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2180` |
+| 18 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2243` |
+| 19 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2245` |
+| 20 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2347` |
+| 21 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2348` |
+| 22 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=2418` |
+| 23 | `bandit\|original/bandit/bandit-results.sarif\|ri=8712` |
+| 24 | `semgrep\|original/semgrep/semgrep-results.sarif\|ri=758` |
+| 25 | `npm-audit\|modules/agent-factory/agent\|brace-expansion` |
+| 26 | `npm-audit\|modules/agent-factory/agent\|fast-uri` |
+| 27 | `npm-audit\|modules/agent-factory/agent\|ip-address` |
+| 28 | `npm-audit\|modules/agent-factory/agent\|js-yaml` |
+| 29 | `npm-audit\|modules/gateway/frontend\|brace-expansion` |
+| 30 | `npm-audit\|modules/gateway/frontend\|browserslist` |
+| 31 | `npm-audit\|modules/gateway/frontend\|js-yaml` |
+| 32 | `npm-audit\|modules/gateway/frontend\|nanoid` |
+| 33 | `npm-audit\|modules/gateway/frontend\|undici` |
 
 ### C. All 16 older primary tickets → current owner
 
