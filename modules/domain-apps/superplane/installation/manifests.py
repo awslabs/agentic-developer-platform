@@ -214,6 +214,21 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         ),
         variable("CORS_ORIGINS", json.dumps([env["origin"]])),
         variable("LEGACY_HEARTBEAT_ENABLED", "false"),
+        # Audit read coverage (issue #5673, A17). Rendered EXPLICITLY, and set to the same
+        # value as the code default, because the two say different things: the code default
+        # is what an unconfigured process does, and this line is the deployment's recorded
+        # decision. The A17 finding is a case of a deployment silently disagreeing with a
+        # code default (`DOMAIN_AUTH_ENFORCED` is true here and false in `app/config.py`,
+        # which is why the audit path recorded nothing), so leaving this one to be inherited
+        # would repeat the shape of the defect being fixed.
+        #
+        # "false" means reads are not audited. Mutating requests are audited regardless of
+        # this flag -- it does not gate the audit trail, only its read coverage. Off here
+        # because enabling it puts a database write on the hot path of every GET and
+        # multiplies row volume; that is a per-environment call to make once the volume of
+        # the now-recorded denials has been observed for a day, which the issue's rollout
+        # step asks for.
+        variable("AUDIT_READ_COVERAGE", "false"),
         variable("SUPERPLANE_DB_SCHEMA", env["database"]["schema"]),
         variable("SUPERPLANE_INSTALLATION_REQUIRED", "true"),
         secret("DATABASE_URL", "superplane-db", "runtime-url"),
@@ -235,6 +250,14 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         # than starting with the variable unset and refusing every login.
         secret("JWT_SECRET_KEY", "superplane-observation", "jwt-signing-key"),
         secret("OBSERVATION_SUBMITTERS", "superplane-observation", "submitters"),
+        variable(
+            "CONTROLLER_STATUS_URL", f"http://superplane-controller.{ns}.svc:8081"
+        ),
+        secret(
+            "CONTROLLER_REGISTRY_CREDENTIAL",
+            "superplane-observation",
+            "controller-credential",
+        ),
         secret(
             "CONTROLLER_OBSERVATION_SUBMITTER_ID",
             "superplane-observation",

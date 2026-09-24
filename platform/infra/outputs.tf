@@ -111,9 +111,9 @@ output "gateway_service_irsa_role_name" {
 # CodeBuild outputs
 # ---------------------------------------------------------------------------
 
-output "codebuild_role_arn" {
-  description = "ARN of the shared CodeBuild IAM role"
-  value       = module.codebuild.codebuild_role_arn
+output "agent_context_codebuild_role_arns" {
+  description = "Map of agent-context image key to its dedicated CodeBuild role ARN"
+  value       = module.codebuild.agent_context_project_role_arns
 }
 
 output "codebuild_project_names" {

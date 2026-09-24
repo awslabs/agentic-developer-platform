@@ -7,8 +7,9 @@ variable "persona_model_probe_destination_enabled" {
 }
 
 resource "aws_iam_role" "persona_model_probe_destination" {
-  count = var.persona_model_probe_destination_enabled ? 1 : 0
-  name  = "ADP-Agent-${var.environment}-pmm-platform-probe"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  count                = var.persona_model_probe_destination_enabled ? 1 : 0
+  name                 = "ADP-Agent-${var.environment}-pmm-platform-probe"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

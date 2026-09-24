@@ -240,6 +240,10 @@ class ValidationAuthorization:
     # this run may place into" are different facts, and only the second one is a missing
     # check. Collapsing them would let an unauthorized placement read as a verified pass.
     permitted_organizational_units: frozenset[str] | None = None
+    # Domain organization on the original shared operation. AWS Organization
+    # identity above remains the provider target and must never replace this ID.
+    # Legacy same-namespace callers can omit it; domain composition supplies it.
+    operation_org_id: str | None = None
 
     @classmethod
     def from_operation_binding(
@@ -251,6 +255,7 @@ class ValidationAuthorization:
         permitted_modes: frozenset[OwnershipMode] | None = None,
         permitted_target_accounts: frozenset[str] | None = None,
         permitted_organizational_units: frozenset[str] | None = None,
+        aws_organization_id: str | None = None,
     ) -> ValidationAuthorization:
         """Derive authorization from a provisioning `OperationBinding`.
 
@@ -279,13 +284,14 @@ class ValidationAuthorization:
                 "organization"
             )
         return cls(
-            organization_id=str(organization_id),
+            organization_id=aws_organization_id or str(organization_id),
             management_account_id=management_account_id,
             management_cluster=management_cluster,
             permitted_modes=permitted_modes,
             workspace_id=str(workspace_id),
             permitted_target_accounts=permitted_target_accounts,
             permitted_organizational_units=permitted_organizational_units,
+            operation_org_id=str(organization_id),
         )
 
 

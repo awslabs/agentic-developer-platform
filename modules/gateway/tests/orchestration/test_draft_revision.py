@@ -452,3 +452,35 @@ async def test_http_refusal_contracts(client, draft, session, case, status, code
     response = await http.post(f"/orchestration/flows/{flow_id}/draft/preview", json=body)
     assert response.status_code == status, response.text
     assert response.json()["detail"]["error"] == code
+
+
+async def test_wave_display_edit_preserves_execution_and_replays(session, draft, operator):
+    from src.orchestration.proposal import EpicMetadata, WaveMetadata
+
+    before = await reg.nodes_by_ref(session)
+    snapshot = {ref: (node.id, node.state, node.attempts) for ref, node in before.items()}
+    authored = draft[1]
+    _, epic, wave, _ = authored.nodes[0].address.split("/")
+    metadata = [WaveMetadata(epic_ref=epic, wave_ref=wave, title="Contracts and design", description="Freeze and verify contracts.")]
+    epic_metadata = [EpicMetadata(epic_ref=epic, title="Task APIs", description="Services need a dependable task lifecycle.")]
+    proposal = authored.model_copy(update={"wave_metadata": metadata, "epic_metadata": epic_metadata})
+    request = request_for(draft, proposal=proposal)
+    result, write = await save(session, draft, operator, request)
+    assert result["plan_version"] == 2
+    assert result["plan_hash"] == draft[0].plan_hash
+    assert result["execution_authorized"] is False
+    after = await reg.nodes_by_ref(session)
+    assert {ref: (node.id, node.state, node.attempts) for ref, node in after.items()} == snapshot
+    plans, _ = await records(session, draft[0].flow_id)
+    assert len(plans) == 2
+    assert plans[-1].plan_document["wave_metadata"] == [item.model_dump(mode="json") for item in metadata]
+    assert plans[-1].plan_document["epic_metadata"] == [item.model_dump(mode="json") for item in epic_metadata]
+    assert plans[-1].plan_document["execution_policy"] is None
+    assert plans[-1].plan_document["nodes"] == plans[0].plan_document["nodes"]
+    assert plans[-1].plan_document["edges"] == plans[0].plan_document["edges"]
+    assert plans[-1].plan_document["proposed_execution_policy"] == plans[0].plan_document["proposed_execution_policy"]
+    assert (await session.get(OrchestrationFlow, draft[0].flow_id)).execution_paused is True
+    replay = await revision.save_draft_revision(session, draft[0].flow_id, write, operator)
+    assert replay["already_revised"] is True
+    changed = proposal.model_copy(update={"wave_metadata": [metadata[0].model_copy(update={"title": "Changed wording"})]})
+    assert revision.draft_hash(changed) != revision.draft_hash(proposal)

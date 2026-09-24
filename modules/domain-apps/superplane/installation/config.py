@@ -360,9 +360,8 @@ def validate(
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         require(
-            head == "017_add_workspace_bootstrap_reservations",
-            "release schema must include U11c013, U7b014, the U23 identity binding and"
-            " the w6-10 bootstrap reservations table",
+            head == "029_add_event_principal_outcome",
+            "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})
         base = load(MODULE / "releases/superplane.lock.yaml")

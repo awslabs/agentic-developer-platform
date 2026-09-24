@@ -928,6 +928,22 @@ class TestDerivingAPlanFromARefinedIntent:
         # The user's own words, echoed, so an operator can see the stories were not invented.
         assert body["derived_from_outcomes"] == ["p95 under 400ms", "No conversion regression"]
 
+    def test_model_chosen_display_text_reaches_plan_without_an_extra_question(self, monkeypatch):
+        epic = {"title": "Checkout performance", "description": "Slow checkout costs orders. Reduce latency while preserving conversion."}
+        wave = {"title": "Latency and conversion", "description": "Reduce p95 latency and evaluate conversion impact."}
+        http, _ = self._client(monkeypatch, rows=[a_row()], drafts=self._draft(epicDisplay=epic, waveDisplay=wave))
+        response = http.post(f"{SESSIONS}/{SESSION}/plan", json={})
+        assert response.status_code == 200, response.text
+        proposal = response.json()["proposal"]
+        assert proposal["epic_metadata"] == [{**epic, "epic_ref": "epic-1"}]
+        assert proposal["wave_metadata"] == [{**wave, "epic_ref": "epic-1", "wave_ref": "wave-1"}]
+        assert proposal["execution_policy"] is None
+
+    @pytest.mark.parametrize("field", ["waveDisplay", "epicDisplay"])
+    def test_invalid_model_display_text_is_rejected_before_plan_creation(self, monkeypatch, field):
+        http, _ = self._client(monkeypatch, rows=[a_row()], drafts=self._draft(**{field: {"title": " ", "description": "Something"}}))
+        assert http.post(f"{SESSIONS}/{SESSION}/plan", json={}).status_code == 422
+
     def test_the_tenant_on_the_document_is_the_authenticated_one(self, monkeypatch):
         """`compile_proposal` checks `org_id` against server-resolved context.
 

@@ -25,6 +25,7 @@ from app.routers import health
 from app.routers.accounts import router as accounts_router
 from app.routers.auth import router as auth_router
 from app.routers.controller_management import router as controller_management_router
+from app.routers.bootstrap_observation import router as bootstrap_observation_router
 from app.routers.cost import router as cost_router
 from app.routers.events import router as events_router
 from app.routers.heartbeat import router as heartbeat_router
@@ -145,16 +146,22 @@ async def lifespan(app: FastAPI):
         from app.installation import database_check
 
         if getattr(app.state, "domain_policy", None) is None:
-            raise RuntimeError("Management service requires strict domain authorization")
+            raise RuntimeError(
+                "Management service requires strict domain authorization"
+            )
         try:
             observed = await database_check(verify_role_default=True)
         except Exception:
             raise RuntimeError("Management database boundary check failed") from None
         config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-        config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "alembic"))
+        config.set_main_option(
+            "script_location", str(Path(__file__).resolve().parents[1] / "alembic")
+        )
         if [observed["revision"]] != ScriptDirectory.from_config(config).get_heads():
             raise RuntimeError("Management database schema does not match the image")
-        logger.info("Starting authenticated management service; workspace execution unavailable")
+        logger.info(
+            "Starting authenticated management service; workspace execution unavailable"
+        )
         yield
         return
     if os.environ.get("SUPERPLANE_INSTALLATION_REQUIRED") == "true":
@@ -165,7 +172,9 @@ async def lifespan(app: FastAPI):
         # and requiring it to refuse an unauthorized probe rather than by testing
         # that the name is bound. Same refusal, better evidenced.
         if not all((await capabilities_async()).values()):
-            raise RuntimeError("Production Superplane trust adapters are not composed in this image")
+            raise RuntimeError(
+                "Production Superplane trust adapters are not composed in this image"
+            )
     logger.info("Starting VaultSyncReconciler background task")
     await vault_sync_reconciler.start()
     logger.info("Starting WorkspaceReconciler background task")
@@ -191,7 +200,10 @@ app = FastAPI(
     # invisible and ships reachable). See app/domain_guard.py for why this cannot
     # be a Starlette middleware: middleware runs before routing, so it cannot
     # identify the route it is protecting.
-    dependencies=[Depends(enforce_domain_authorization), Depends(enforce_management_surface)],
+    dependencies=[
+        Depends(enforce_domain_authorization),
+        Depends(enforce_management_surface),
+    ],
 )
 
 # The token policy is built once, at import, and held on app.state. Building it
@@ -201,6 +213,7 @@ app = FastAPI(
 # serving while admitting every app client in the user pool.
 app.state.domain_policy = build_domain_policy()
 app.include_router(controller_management_router)
+app.include_router(bootstrap_observation_router)
 
 # Validate the browser origin allowlist at import, before serving requests.
 # Preserve the existing credentialed CORS contract for explicitly reviewed origins;
@@ -213,9 +226,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Audit logging middleware (logs mutating API calls to events table)
-app.add_middleware(AuditMiddleware)
-
 # Quota enforcement middleware (adds headers + logging for quota 429s)
 app.add_middleware(QuotaEnforcementMiddleware)
 
@@ -225,6 +235,23 @@ app.add_middleware(
     requests_per_minute=settings.rate_limit_per_minute,
     window_seconds=60,
 )
+
+# Audit logging middleware. Issue #5673 (A17).
+#
+# ADDED LAST ON PURPOSE, AND THE ORDER IS THE FIX. `add_middleware` PREPENDS, so the
+# middleware added last is the OUTERMOST one and wraps every middleware added before it.
+#
+# This block used to sit above the two below, which made the rate limiter outermost and
+# the audit middleware inner. The rate limiter answers a 429 by returning a response
+# WITHOUT calling the rest of the stack, so those rejections never reached the audit layer
+# at all: a caller could stay entirely out of the audit trail by tripping the rate limit,
+# which is precisely the traffic pattern most worth recording. Outermost means a
+# short-circuit rejection from any inner middleware is still recorded.
+#
+# Verified by `tests/test_audit_middleware.py::TestMiddlewareOrdering`, which asserts the
+# position structurally so a future edit that moves this call fails a test rather than
+# silently reopening the hole.
+app.add_middleware(AuditMiddleware)
 
 
 @app.exception_handler(RequestValidationError)

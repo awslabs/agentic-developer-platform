@@ -122,7 +122,7 @@ def test_an_org_mate_with_no_grant_is_refused_a_kubeconfig(model):
     Scope note: this asserts the *decision*. The endpoint that must start
     honouring it is upstream (U14); see this module's docstring.
     """
-    permission = required_permission("GET", "/superplane/v1/workspaces/{workspace}/kubeconfig")
+    permission = required_permission("POST", "/superplane/v1/workspaces/{workspace}/kubeconfig")
     assert permission is Permission.PROVISION
 
     with pytest.raises(AuthorizationDeniedError):
@@ -276,7 +276,7 @@ def test_credential_renewal_is_checked_at_the_renewal(model):
     """
     model.record_grant(WorkspaceGrant(WORKSPACE, ORG, "user-renewer", expand_permissions([Permission.RENEW_CREDENTIAL])))
     caller = principal("user-renewer")
-    permission = required_permission("POST", "/superplane/v1/providers")
+    permission = required_permission("POST", "/superplane/v1/vault/credentials")
 
     assert model.authorize(caller, WORKSPACE, permission, workspace_org_id=ORG)
 

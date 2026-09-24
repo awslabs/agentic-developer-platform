@@ -11,7 +11,8 @@ data "aws_partition" "current" {}
 # =============================================================================
 
 resource "aws_iam_role" "usage_tracker" {
-  name = "${var.name_prefix}-budget-usage-tracker-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-budget-usage-tracker-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -116,7 +117,8 @@ resource "aws_iam_role_policy" "usage_tracker" {
 # =============================================================================
 
 resource "aws_iam_role" "pricing_refresh" {
-  name = "${var.name_prefix}-pricing-refresh-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-pricing-refresh-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

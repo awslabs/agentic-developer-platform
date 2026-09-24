@@ -24,11 +24,18 @@ or Codex.
 | `adp-aws.py` | Personal AWS account connection — `adp aws` ([guide](aws.md)) |
 | `adp-github.py` | Connect a repository you have access to — `adp github` ([guide](github.md)) |
 | `adp-github-admin.py` | GitHub App registration and status for administrators — `adp admin github` ([guide](github-admin.md)) |
-| `adp-superplane.py` | Provider configuration — `adp superplane` |
+| `adp-superplane.py` | Workspaces, GPU deployments, cloud accounts and provider credentials — `adp superplane` ([guide](../../../docs/adp-cli/superplane.md)) |
+| `adp-superplane-onboarding.py` | Workspace and provider onboarding — `adp superplane onboarding`: capability and readiness reporting, plan review, credential-reference binding, durable operation receipts |
 | `adp-flow.py` | Follow and control AI-DLC delivery flows — `adp flow` ([guide](flow.md)) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
+
+Superplane workspace and deployment creates keep their private operation receipts
+after success, so an identical invocation reconciles the same resource even when
+the earlier command's output was lost. Failed or deleted operations retain their
+receipts and block identical creates. See the [Superplane guide](../../../docs/adp-cli/superplane.md)
+before starting a separate create with a different name.
 
 ## Quick Start (New Machine)
 

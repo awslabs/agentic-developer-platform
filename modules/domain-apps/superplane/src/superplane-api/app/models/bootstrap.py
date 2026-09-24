@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Index,
     String,
+    BigInteger,
     Text,
     false,
     func,
@@ -72,3 +73,18 @@ class WorkspaceBootstrapAuthority(Base):
     plan_json = Column(Text, nullable=False)
     progress_json = Column(Text, nullable=False)
     revoked = Column(Boolean, nullable=False, server_default=false())
+
+
+class WorkspaceBootstrapReadToken(Base):
+    """One replaceable, hashed read capability for an actual reservation."""
+
+    __tablename__ = "workspace_bootstrap_read_tokens"
+    workspace_id = Column(String(255), primary_key=True)
+    org_id = Column(String(255), nullable=False)
+    operation_id = Column(String(255), nullable=False)
+    registration_claim = Column(String(64), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    lease_holder = Column(String(255), nullable=False)
+    lease_attempt_id = Column(String(255), nullable=False)
+    lease_fence_token = Column(BigInteger, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)

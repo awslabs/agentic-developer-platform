@@ -116,13 +116,13 @@ function railDescription(flow: FlowSummary): string {
   // server. Deliberately not parsed out of the ref: nothing constrains `wave_ref`
   // to `wave-<n>` (`wave-as` is legal), so "wave 10 of 14" cannot come from the
   // name.
-  const index = flow.waves.findIndex((wave) => wave.wave_ref === flow.current_wave_ref);
+  const index = flow.waves.findIndex((wave) => wave.wave_ref === flow.current_wave_ref && !isFinished(wave));
   if (flow.current_wave_ref === null || index < 0) {
     return `All ${flow.wave_count} ${flow.wave_count === 1 ? 'wave' : 'waves'} complete.`;
   }
 
   const wave = flow.waves[index];
-  return `Now on ${wave.wave_ref} — wave ${index + 1} of ${flow.wave_count}, ${wave.done} of ${wave.total} steps done.`;
+  return `Now on ${wave.title || wave.wave_ref} — wave ${index + 1} of ${flow.wave_count}, ${wave.done} of ${wave.total} steps done.`;
 }
 
 /**
@@ -135,6 +135,7 @@ function railDescription(flow: FlowSummary): string {
  */
 function WaveRail({ flow }: { flow: FlowSummary }) {
   const description = railDescription(flow);
+  const currentWave = flow.waves.find((wave) => wave.wave_ref === flow.current_wave_ref && !isFinished(wave));
 
   return (
     <div className="space-y-1">
@@ -151,7 +152,7 @@ function WaveRail({ flow }: { flow: FlowSummary }) {
         className={`flex ${WAVE_RAIL_HEIGHT_CLASS} w-full items-end gap-0.5`}
       >
         {flow.waves.map((wave) => {
-          const current = wave.wave_ref === flow.current_wave_ref;
+          const current = wave === currentWave;
           const finished = isFinished(wave);
           return (
             <div
@@ -159,7 +160,7 @@ function WaveRail({ flow }: { flow: FlowSummary }) {
               data-testid={`wave-segment-${wave.epic_ref}-${wave.wave_ref}`}
               data-current={current ? 'true' : 'false'}
               aria-hidden="true"
-              title={`${wave.epic_ref} · ${wave.wave_ref} — ${wave.done} of ${wave.total} done`}
+              title={`${wave.epic_ref} · ${wave.title || wave.wave_ref} — ${wave.done} of ${wave.total} done${wave.description ? '. ' + wave.description : ''}`}
               // Width flexes, height does not: `flex-1` narrows segments as waves
               // multiply, which is what keeps 20 waves the same height as 3.
               className={`flex-1 rounded-sm ${
@@ -180,6 +181,7 @@ function WaveRail({ flow }: { flow: FlowSummary }) {
       <p className="text-xs text-gray-600 dark:text-gray-400" data-testid="wave-rail-caption">
         {description}
       </p>
+      {currentWave?.description && <p className="text-sm text-gray-600 dark:text-gray-400">{currentWave.description}</p>}
     </div>
   );
 }

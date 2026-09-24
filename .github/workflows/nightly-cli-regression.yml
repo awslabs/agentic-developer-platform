@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       ec2_scope:
-        description: 'login = nightly key scenarios; full = all 17 acceptance cases (requires additional fixtures)'
+        description: 'login = nightly key scenarios; full = all 18 acceptance cases (requires additional fixtures)'
         type: choice
         options: [login, full]
         default: login

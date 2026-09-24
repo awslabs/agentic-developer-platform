@@ -100,6 +100,7 @@ run_eval() {
     HOME="$RUN_DIR/home" \
     ENVIRONMENT=dev \
     AWS_REGION=us-east-1 \
+    ADP_DB_USER=eval_test_user \
     EVAL_RUN_ID="test-$n" \
     EVAL_WORKDIR="$RUN_DIR/work" \
     GITHUB_STEP_SUMMARY="$RUN_DIR/summary.md" \
@@ -277,7 +278,7 @@ name "fixture drift FAILS loudly and is not reported as a routing regression"
 new_env drift
 env -i \
   PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  HOME="$RUN_DIR/home" ENVIRONMENT=dev AWS_REGION=us-east-1 \
+  HOME="$RUN_DIR/home" ENVIRONMENT=dev AWS_REGION=us-east-1 ADP_DB_USER=eval_test_user \
   EVAL_RUN_ID="test-drift" EVAL_WORKDIR="$RUN_DIR/work" \
   EVAL_STUB_DRIFT_EXTERNAL_ID=1 \
   bash "$EVAL_SCRIPT" --dry-run --phases 0 > "$RUN_DIR/out.log" 2>&1
@@ -387,7 +388,7 @@ run_eval cleanonly --cleanup-only; OUT="$RUN_OUT"
 assert_contains "$OUT" "cleanup" "runs cleanup on its own"
 assert_eq "$RUN_RC" "0" "exits 0 with nothing to clean up"
 if env -i PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-     HOME="$RUN_DIR/home" ENVIRONMENT=dev AWS_REGION=us-east-1 \
+     HOME="$RUN_DIR/home" ENVIRONMENT=dev AWS_REGION=us-east-1 ADP_DB_USER=eval_test_user \
      EVAL_WORKDIR="$RUN_DIR/work" bash "$EVAL_SCRIPT" --dry-run --cleanup-only \
      > "$RUN_DIR/cleanup2.log" 2>&1; then
   assert_contains "$(cat "$RUN_DIR/cleanup2.log")" "cleanup" \

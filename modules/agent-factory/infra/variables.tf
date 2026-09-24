@@ -131,3 +131,15 @@ variable "disable_execute_api_endpoint" {
   description = "Disable the AWS-assigned execute-api hostname on the chat WebSocket API so it answers only on its published custom domain. A WEBSOCKET API supports neither a resource policy nor a WAF web ACL, so that hostname carries no network-layer restriction at all. Default false (the AWS default); set true wherever a custom domain such as ws.<zone> is in use."
   default     = false
 }
+
+variable "runner_transport_secret_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact existing GitHub engine transport secret ARNs retained during the separately authorized cutover; validated by runner IAM."
+}
+
+variable "runner_gateway_execution_arns" {
+  type        = list(string)
+  default     = null
+  description = "Reviewed exact gateway routes. Null derives the existing environment's API/stage from its operator-owned SSM endpoint when gateway_deployed; [] disables transport."
+}

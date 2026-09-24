@@ -21,10 +21,12 @@ clean stop.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -99,23 +101,49 @@ def test_the_rejection_happens_before_any_network_call(monkeypatch) -> None:
 
 
 def test_a_provider_value_is_never_placed_in_a_request_query(private_home, monkeypatch) -> None:
-    """The value goes in the POST body to the vault, never into a URL."""
+    """The value goes in the idempotent PUT body, never into a query string."""
     monkeypatch.setattr(cli, "read_provider_value", lambda from_stdin, prompt: SECRET)
     sent: list[tuple[str, str, object]] = []
 
     class RecordingApi:
+        base = "https://gateway.example.test/api"
+
         def request(self, method, path, body=None, **kwargs):
             sent.append((method, path, body))
-            return {"id": "cred-1"} if path == cli.VAULT_CREDENTIALS else {}
+            if method == "PUT":
+                return {
+                    "id": path.rsplit("/", 1)[-1],
+                    "service": body["service"],
+                    "label": body["label"],
+                    "credential_type": body["credential_type"],
+                    "scope": "user",
+                }
+            return {
+                "id": "11111111-2222-4333-8444-555555555555",
+                "adp_credential_id": credential_id,
+                "name": "n",
+                "provider": "nebius",
+                "credential_type": "api_key",
+            }
 
-    cli.run(cli.parser().parse_args(["provider", "add", "--name", "n", "--provider", "nebius"]), RecordingApi())
+    credential_id = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+    claims = {"sub": "user", "custom:org_id": "org"}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    monkeypatch.setattr(cli.common, "access_token", lambda: f"header.{payload}.signature")
+    monkeypatch.setattr(cli.common, "deployment_stamp", lambda: {"deployment_id": "test", "deployment": "test"})
+    monkeypatch.setattr(cli.common, "gateway_url", lambda: "https://gateway.example.test/api")
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: uuid.UUID(credential_id))
+    cli.run(cli.parser().parse_args(["provider", "add", "--name", "n", "--provider", "nebius", "--yes"]), RecordingApi())
 
     assert all(SECRET not in path for _, path, _ in sent)
-    vault_calls = [body for _, path, body in sent if path == cli.VAULT_CREDENTIALS]
+    vault_calls = [body for method, path, body in sent if method == "PUT" and path == f"{cli.VAULT_CREDENTIALS}/{credential_id}"]
     assert vault_calls and vault_calls[0]["value"] == SECRET
-    # Only the returned id crosses into domain metadata.
+    # Only the returned id crosses into domain metadata, under the field name the
+    # domain actually declares. `credential_id` was this helper's own invention and
+    # is not a field of RegisterCredentialRequest, so the registration it named was
+    # a 422 (#5637); the field is `adp_credential_id`.
     domain_calls = [body for _, path, body in sent if path.startswith(cli.API_BASE)]
-    assert domain_calls and domain_calls[0]["credential_id"] == "cred-1"
+    assert domain_calls and domain_calls[0]["adp_credential_id"] == credential_id
     assert all(SECRET not in json.dumps(body) for body in domain_calls)
 
 

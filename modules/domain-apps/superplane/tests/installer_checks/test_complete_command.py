@@ -538,10 +538,7 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     # assertion that pins WHICH chain a receipt claims to have migrated, and deriving it
     # from the same lock the receipt is built from would pass for any value at all.
     # Advanced to 017 by w6-10 (#5533).
-    assert (
-        installer.receipt["migration"]["schema"]
-        == "017_add_workspace_bootstrap_reservations"
-    )
+    assert installer.receipt["migration"]["schema"] == "029_add_event_principal_outcome"
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}

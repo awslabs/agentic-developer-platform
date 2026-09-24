@@ -51,6 +51,11 @@ import { createClaudePauseHooks, ClaudeBackgroundWorkObserver, ClaudeControlAdap
 import { PauseGate } from './pause-gate';
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore, serializeToolResponse } from './utils/spill';
+// #5840: the expiry half of W2-05. Kept in its own file so this one stays the
+// pause/resume experiment it was, and so the honesty rules live in a module
+// ordinary CI can actually run.
+import { runTimeoutExperiments, assemblePauseExpiryArtifact } from './control-runtime-timeout.integration';
+import type { HeldHookTimeoutObservations } from './control-runtime-timeout';
 
 /** Recorded outcome of one experiment. `null` anywhere means "not observed". */
 interface ExperimentReport {
@@ -61,6 +66,18 @@ interface ExperimentReport {
 }
 
 const SETTLE_MS = 2_000;
+/**
+ * #5840: the two W2-05 measurements this file already takes.
+ *
+ * Recorded as named observations so the pause_expiry producer derives the artifact
+ * fields from them, rather than either file hand-assembling a block the evaluator
+ * reads. `null`/`undefined` until the owning experiment has actually run, so an
+ * experiment that was skipped or that threw leaves its field missing rather than
+ * passing — the same rule the producer follows.
+ */
+let heldHookTimeoutObservations: HeldHookTimeoutObservations | undefined;
+let spillOutputPreservedObservation: boolean | undefined;
+
 const observedModels = new Set<string>();
 function observeModel(message: Record<string, unknown>): void {
   if (message.type === 'system' && message.subtype === 'init' && typeof message.model === 'string') observedModels.add(message.model);
@@ -574,6 +591,11 @@ async function experimentProductionSpill(): Promise<ExperimentReport> {
     const durableMatch = locator !== null && persistedPayload !== null && readFileSync(locator, 'utf8') === persistedPayload;
     const locatorReceivedByModel = locator !== null && existsSync(target) && readFileSync(target, 'utf8').trim() === locator;
     const ok = locatorReceivedByModel && (responseBytes ?? 0) > 20_000 && mergedLocator && reminderPreserved && durableMatch && settled && heldWithoutWrite && phaseDuringHold === 'paused' && existsSync(target);
+    // #5840: W2-05's `spill_output_preserved`. The claim is that the locator
+    // survived the pause, so it is the measured pair — the locator the model
+    // actually received, and a pause that provably held — never `ok`, which also
+    // folds in the checkpoint reminder this field says nothing about.
+    spillOutputPreservedObservation = locatorReceivedByModel && durableMatch && heldWithoutWrite && phaseDuringHold === 'paused';
     return { name: 'production spill/checkpoint/pause composition', ok,
       detail: `bytes=${responseBytes} locator=${mergedLocator} modelReceivedLocator=${locatorReceivedByModel} reminder=${reminderPreserved} durable=${durableMatch} settled=${settled} held=${heldWithoutWrite} phase=${phaseDuringHold}`,
       artifact: { production_hook_factory: 'createWorkerToolHooks', real_tool: 'Read', response_bytes: responseBytes,
@@ -590,7 +612,10 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
   const { query } = await loadSdk();
   const dir = mkdtempSync(join(tmpdir(), 'adp-sdk-timeout-'));
   const target = join(dir, 'timeout.txt');
-  const events: Array<{ type: string; failure?: string }> = [];
+  // `reason` is recorded alongside the failure because W2-05 requires a non-empty
+  // cause for a lapsed pause: "pause did not take" with no reason leaves an
+  // operator nothing to act on.
+  const events: Array<{ type: string; failure?: string; reason?: string }> = [];
   const observer = new ClaudeBackgroundWorkObserver();
   const gate = new PauseGate({ defaultTimeoutMs: 120_000, backgroundWorkProbe: () => observer.count(), onEvent: (event) => events.push(event) });
   const pauseHooks = createClaudePauseHooks(gate, observer);
@@ -627,12 +652,24 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
     const phase = gate.currentPhase();
     const retry = await gate.requestPause();
     const ok = reached && signalAborted === true && !safetyRelease && !!failure && phase !== 'paused' && retry.outcome === 'unavailable';
+    // #5840: the same facts, named, so the pause_expiry producer derives
+    // `held_hook_timeout` from them instead of this file hand-building the block.
+    heldHookTimeoutObservations = {
+      signalAborted,
+      safetyReleaseUsed: safetyRelease,
+      phaseAfterTimeout: phase,
+      unavailableReason: failure?.reason ?? null,
+      hookTimeoutSeconds: pauseHooks.preToolUseTimeoutSeconds,
+      pauseBudgetSeconds: Math.round(gate.maxParkDurationMs() / 1000),
+      forcedTimeoutSeconds: timeoutSeconds,
+    };
     return { name: 'real SDK hook timeout reports unavailable', ok,
       detail: `reached=${reached} aborted=${signalAborted} elapsed=${callbackElapsedMs} safetyRelease=${safetyRelease} unavailable=${!!failure} phase=${phase} retry=${retry.outcome}`,
       artifact: { production_hook_factory: 'createWorkerToolHooks', fault: 'CLI matcher timeout shortened to one second',
         matcher_timeout_seconds: timeoutSeconds, production_matcher_timeout_seconds: pauseHooks.preToolUseTimeoutSeconds,
         callback_elapsed_ms: callbackElapsedMs, sdk_signal_aborted: signalAborted, safety_release_used: safetyRelease,
-        unavailable_event_observed: !!failure, phase_after_timeout: phase, repeated_pause_outcome: retry.outcome,
+        unavailable_event_observed: !!failure, unavailable_reason: failure?.reason ?? null,
+        phase_after_timeout: phase, repeated_pause_outcome: retry.outcome,
         fixture_write_after_timeout: existsSync(target), events },
     };
   } finally { gate.cancel(); await controller; rmSync(dir, { recursive: true, force: true }); }
@@ -788,9 +825,29 @@ async function main(): Promise<number> {
     }
   }
 
+  // #5840: the expiry experiments run after these, so the two measurements above
+  // are already recorded and the assembled artifact carries all of W2-05's
+  // in-process fields. Anything still unmeasured stays `null` plus a named gap in
+  // `missing_launcher_inputs` — this run never fills a field it did not observe.
+  const timeout = await runTimeoutExperiments();
+  reports.push(...timeout.reports);
+  const pauseExpiry = assemblePauseExpiryArtifact({
+    parts: timeout.parts,
+    preserved: {
+      ...(heldHookTimeoutObservations ? { heldHookTimeout: heldHookTimeoutObservations } : {}),
+      ...(spillOutputPreservedObservation === undefined
+        ? {}
+        : { spillOutputPreserved: spillOutputPreservedObservation }),
+    },
+  });
+
   if (jsonPath) {
-    writeFileSync(jsonPath, `${JSON.stringify({ sdk_version: CLAUDE_SDK_VERSION, observed_models: [...observedModels], reports }, null, 2)}\n`);
+    writeFileSync(jsonPath, `${JSON.stringify({ sdk_version: CLAUDE_SDK_VERSION, observed_models: [...observedModels], reports, pause_expiry: pauseExpiry }, null, 2)}\n`);
     console.log(`wrote ${jsonPath}`);
+  }
+  if (pauseExpiry.missing_launcher_inputs.length > 0) {
+    console.log('pause_expiry fields this process cannot observe — the launcher must supply them:');
+    for (const entry of pauseExpiry.missing_launcher_inputs) console.log(`  - ${entry.field}: ${entry.collect}\n`);
   }
 
   const failed = reports.filter((r) => !r.ok);

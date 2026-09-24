@@ -942,6 +942,9 @@ def preview_text(preview):
             "    ^ this plan declares NO execution policy, which means legacy UNBOUNDED semantics: "
             "no repository restriction, no action allowlist, no spend ceiling and no expiry."
         )
+    for epic in preview.get("epic_metadata") or []:
+        lines.append(f"  {epic.get('title') or epic.get('epic_ref')} ({epic.get('epic_ref')}):")
+        lines.append(f"    {epic.get('description') or ''}")
     lines += wave_lines(preview.get("waves") or [])
     lines += conclusion_lines(preview.get("nodes") or [])
     lines.append(f"  cost so far: {graph.get('cost')}")
@@ -965,18 +968,24 @@ def wave_lines(waves):
     if not waves:
         return []
     lines = ["  execution order (waves at the same stage run concurrently):"]
+
+    def label(wave):
+        ref = f"{wave.get('epic_ref')}/{wave.get('wave_ref')}"
+        return f"{wave['title']} ({ref})" if wave.get("title") else ref
+
     by_stage = {}
     for wave in waves:
         by_stage.setdefault(wave.get("stage"), []).append(wave)
     staged = [stage for stage in by_stage if stage is not None]
     for stage in sorted(staged):
-        labels = ", ".join(f"{wave.get('epic_ref')}/{wave.get('wave_ref')}" for wave in by_stage[stage])
+        labels = ", ".join(label(wave) for wave in by_stage[stage])
         concurrent = " (concurrent)" if len(by_stage[stage]) > 1 else ""
         lines.append(f"    stage {stage}{concurrent}: {labels}")
     for wave in by_stage.get(None, []):
-        lines.append(
-            f"    stage unknown: {wave.get('epic_ref')}/{wave.get('wave_ref')} — its wave dependencies form a cycle, so ADP cannot say when it runs."
-        )
+        lines.append(f"    stage unknown: {label(wave)} — its wave dependencies form a cycle, so ADP cannot say when it runs.")
+    for wave in waves:
+        if wave.get("description"):
+            lines.append(f"    {label(wave)}: {wave['description']}")
     return lines
 
 

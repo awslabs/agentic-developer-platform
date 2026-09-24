@@ -39,33 +39,62 @@ env:
 jobs:
   seed:
     name: Seed tenant in Postgres
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main'
+    env:
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install psql + jq
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client jq
-
-      - name: Validate inputs
+      - name: Verify source belongs to reviewed main history
+        shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "${{ inputs.tenant_id }}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Install psql + jq
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+      - name: Validate inputs
+        env:
+          ADP_INPUT_A199BE1663: ${{ inputs.tenant_id }}
+          ADP_INPUT_34D45E6745: ${{ inputs.installation_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${ADP_INPUT_A199BE1663}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
             echo "::error::tenant_id must be lowercase-hyphenated"
             exit 1
           fi
-          if [[ ! "${{ inputs.installation_id }}" =~ ^[0-9]+$ ]]; then
+          if [[ ! "${ADP_INPUT_34D45E6745}" =~ ^[0-9]+$ ]]; then
             echo "::error::installation_id must be a positive integer"
             exit 1
           fi
-
       - name: Build seed SQL
+        env:
+          ADP_INPUT_A199BE1663: ${{ inputs.tenant_id }}
+          ADP_INPUT_7C89F1E8DC: ${{ inputs.org_name }}
+          ADP_INPUT_34D45E6745: ${{ inputs.installation_id }}
         run: |
           set -euo pipefail
-          TENANT_ID='${{ inputs.tenant_id }}'
-          ORG_NAME='${{ inputs.org_name }}'
-          INSTALLATION_ID='${{ inputs.installation_id }}'
+          TENANT_ID='${ADP_INPUT_A199BE1663}'
+          ORG_NAME='${ADP_INPUT_7C89F1E8DC}'
+          INSTALLATION_ID='${ADP_INPUT_34D45E6745}'
           DEPT_ID="${TENANT_ID}-dept-default"
           TEAM_ID="${TENANT_ID}-team-default"
 
@@ -99,7 +128,6 @@ jobs:
 
           echo "=== Planned SQL ==="
           cat /tmp/seed.sql
-
       # The gateway RDS master user is IAM-auth-only (BG_RDS_IAM_AUTH=true) —
       # password authentication is disabled in-database, so the secret's
       # .password is dead and reading it yields "PAM authentication failed".
@@ -125,18 +153,7 @@ jobs:
           fi
 
           # The rds!db-* secret is read for the username only — never the password.
-          SECRET_ARN=$(aws secretsmanager list-secrets \
-            --region "$AWS_REGION" \
-            --filters Key=name,Values="rds!db-" \
-            --query 'SecretList[0].ARN' --output text)
-          if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
-            echo "::error::Could not find the rds!db-* secret"
-            exit 1
-          fi
-          PGUSER=$(aws secretsmanager get-secret-value \
-            --secret-id "$SECRET_ARN" \
-            --region "$AWS_REGION" \
-            --query SecretString --output text | jq -r .username)
+          PGUSER="${ADP_DB_USER:?Configure the reviewed database username in the protected deployment environment}"
 
           PGPASSWORD=$(aws rds generate-db-auth-token \
             --hostname "$PGHOST" --port 5432 \

@@ -107,6 +107,7 @@ run_eval() {
     "${UNCONTAMINATE[@]}" \
     ENVIRONMENT=dev \
     AWS_REGION=us-east-1 \
+    ADP_DB_USER=eval_test_user \
     EVAL_RUN_ID="test-$n" \
     EVAL_WORKDIR="$RUN_DIR/work" \
     EVAL_STUB_KUBECTL_LOG="$RUN_DIR/kubectl.log" \
@@ -558,7 +559,7 @@ name "--cleanup-only is standalone and idempotent"
 run_eval cleanonly --cleanup-only; OUT="$RUN_OUT"
 assert_contains "$OUT" "Cleanup" "runs cleanup on its own"
 assert_eq "$RUN_RC" "0" "exits 0 with nothing to clean up"
-if env -i PATH="$PATH" HOME="$RUN_DIR/home" ENVIRONMENT=dev AWS_REGION=us-east-1 \
+if env -i PATH="$PATH" HOME="$RUN_DIR/home" ENVIRONMENT=dev AWS_REGION=us-east-1 ADP_DB_USER=eval_test_user \
      EVAL_WORKDIR="$RUN_DIR/work" bash "$EVAL_SCRIPT" --dry-run --cleanup-only \
      > "$RUN_DIR/cleanup2.log" 2>&1; then
   assert_contains "$(cat "$RUN_DIR/cleanup2.log")" "Cleanup" \

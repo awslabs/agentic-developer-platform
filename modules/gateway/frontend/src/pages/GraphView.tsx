@@ -195,9 +195,10 @@ export function GraphView() {
           aria-labelledby={`epic-heading-${epic.epicRef}`}
           className="min-w-0 space-y-3"
         >
-          <h2 id={`epic-heading-${epic.epicRef}`} className="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            {epic.epicRef}
+          <h2 id={`epic-heading-${epic.epicRef}`} className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            {epic.title || epic.epicRef}
           </h2>
+          {epic.description && <p className="max-w-4xl whitespace-pre-line text-sm leading-relaxed text-gray-600 dark:text-gray-300">{epic.description}</p>}
           {epic.waves.map((wave) => {
             const key = waveKey(epic.epicRef, wave.waveRef);
             const needsAttention = wave.nodes.some((node) => ['running', 'awaiting_merge', 'awaiting_gate', 'rejected_at_gate', 'failed', 'halted'].includes(node.state) || node.stalled);

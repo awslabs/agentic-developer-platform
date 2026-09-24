@@ -117,6 +117,22 @@ on:
       # is breaking one of those callers, not breaking control.
       - 'modules/agent-factory/agent/src/control-runtime.ts'
       - 'modules/agent-factory/agent/src/control-runtime.test.ts'
+      # The W2-05 pause_expiry producer (#5840). The `.integration.ts` half is
+      # listed too: jest cannot collect it, but `tsc --noEmit` in this workflow is
+      # the only thing that checks it at all, and it is the file that has to stay
+      # in step with the PauseGate/adapter seams it measures through.
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.integration.ts'
+      # The shared heartbeat / exit-watchdog emitter (#5840). One production copy,
+      # started by both `agent-worker.ts` and the live pause runner, so an edit here
+      # changes what an operator sees during a real paused run AND what the W2-05
+      # visibility fields measure. Listed as its own path because a change confined
+      # to this module matches none of the names above.
+      - 'modules/agent-factory/agent/src/run-heartbeat.ts'
+      - 'modules/agent-factory/agent/src/run-heartbeat.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.assembly.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.test.ts'
@@ -191,20 +207,141 @@ on:
     branches:
       - main
 
+  # Manual entry point, for gating a revision the `paths` filters above never ran.
+  #
+  # The filters are correct for their purpose — they keep this workflow off PRs that
+  # cannot affect the control path — but they mean a deployed revision may have no run
+  # of these three jobs at all. Evaluation #3967's W2-01 requires each required gate to
+  # have passed ON a deployed revision, so without a way to run them against an
+  # arbitrary commit that requirement is unsatisfiable for exactly the revisions it
+  # matters for.
+  #
+  # `source_sha` is required and must be a full 40-character SHA. It is validated in
+  # `resolve-source` BEFORE any checkout, because the value is used as a git ref: a
+  # partial SHA or a branch name would resolve to whatever it happened to point at,
+  # which is the opposite of naming one revision. Every test job then checks that ref
+  # out and VERIFIES `git rev-parse HEAD` equals it, and archives what it actually got
+  # — see the `checked-out-revision` artifacts. A manual run's `github.sha` names the
+  # ref this workflow FILE was loaded from, not the revision under test, so it must
+  # never be recorded as the tested source.
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Full 40-character commit SHA to test (not a branch or short SHA)'
+        required: true
+        type: string
+
 concurrency:
-  group: agent-control-ci-${{ github.event.pull_request.number || github.sha }}
+  # The dispatched SHA is part of the group so two manual runs against different
+  # revisions do not cancel each other: on a workflow_dispatch `github.sha` is the
+  # workflow ref, which would be identical for both.
+  group: agent-control-ci-${{ github.event.pull_request.number || inputs.source_sha || github.sha }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  # Validate the dispatch input before anything uses it as a ref, and hand the test
+  # jobs the ref to check out. On a `pull_request` run this resolves to the empty
+  # string, which is `actions/checkout`'s default — so the PR path is unchanged.
+  #
+  # This job is deliberately NOT one of the three required checks. Its name is not part
+  # of the AC-S7 contract, and adding a fourth required check would silently change the
+  # merge gate for every PR.
+  resolve-source:
+    name: Resolve source revision
+    runs-on: arc-runner-org
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      expected: ${{ steps.resolve.outputs.expected }}
+    steps:
+      - name: Validate and resolve the requested revision
+        id: resolve
+        shell: bash
+        env:
+          # Through the environment rather than interpolated into the script: the input
+          # is attacker-influencable text and must never be expanded into a shell body.
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo "expected=" >> "$GITHUB_OUTPUT"
+            echo "Triggered by $EVENT_NAME; checking out the triggering ref as usual."
+            exit 0
+          fi
+          # Whole-VALUE validation, not line-based. An earlier revision used
+          # `grep -Eq '^[0-9a-f]{40}$'`, which matches a LINE: root executed this block
+          # with a 40-hex SHA followed by a newline, `ref=main` and another `expected=`
+          # line, and it exited 0 and appended those attacker-chosen lines to
+          # $GITHUB_OUTPUT — where the LAST value of a key wins, so the jobs would have
+          # checked out `main` while reporting a different expected SHA. The length test
+          # rejects a trailing CR or any extra line, and bash's `=~` anchors at the ends
+          # of the whole string rather than of a line, so the two together accept
+          # exactly 40 lowercase hex characters and nothing else.
+          if [ "${#SOURCE_SHA}" -ne 40 ] || ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be exactly 40 lowercase hexadecimal" \
+                 "characters and nothing else; got a value of length" \
+                 "${#SOURCE_SHA}. A branch name or abbreviated SHA names whatever a" \
+                 "ref currently points at, so it cannot identify the revision a gate" \
+                 "tested, and a value carrying a newline or carriage return is" \
+                 "rejected outright rather than truncated to its first line."
+            exit 1
+          fi
+          echo "ref=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "expected=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Manual run against $SOURCE_SHA." >> "$GITHUB_STEP_SUMMARY"
+
   agent-control-tests:
     # AC-S7 required-check name. Do not rename.
     name: Agent control tests
     runs-on: arc-runner-org
+    needs: resolve-source
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined rather than factored into a local composite action, deliberately: a
+      # `uses: ./...` step resolves from the CHECKED-OUT tree, so a dispatch against a
+      # revision that predates the action would fail to find it — and the whole point
+      # of the manual path is gating revisions other than this one.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: agent-control-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          # `workflow_ref_sha` is recorded ALONGSIDE the checked-out SHA, never as it:
+          # on a manual run github.sha names the ref this workflow file came from, not
+          # the revision under test. Evaluation #3967 reads `checked_out_revision`.
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-agent-control-tests
+          path: ${{ runner.temp }}/checked-out-revision/agent-control-tests.json
+          if-no-files-found: error
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -415,8 +552,45 @@ jobs:
     # AC-S7 required-check name. Do not rename.
     name: Worker control tests
     runs-on: arc-runner-org
+    needs: resolve-source
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined for the same reason as in `agent-control-tests`: a local composite
+      # action would have to exist in the revision being dispatched against.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: worker-control-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-worker-control-tests
+          path: ${{ runner.temp }}/checked-out-revision/worker-control-tests.json
+          if-no-files-found: error
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -470,6 +644,48 @@ jobs:
         # required workflow, so a change re-enabling the refresh path for a
         # mediated run — handing back the exact credential mediation exists to
         # withhold — could merge green.
+        #
+        # control-runtime-timeout.test.ts is pinned here (#5840) because it is the
+        # ONLY automated check on the W2-05 pause_expiry producer. The measurement
+        # half of that producer lives in a `.integration.ts` file that jest cannot
+        # collect and that needs a real model, so nothing in CI will ever run it.
+        # What CI can run — and what this suite covers — is the honesty logic: that
+        # an unobserved field stays null rather than defaulting to a value the
+        # evaluator accepts, that auto-resume is not claimed from an explicit
+        # resume, that "no extra turn" comes from the live stream rather than the
+        # transport flag, and that a run which held no work cannot satisfy the
+        # cancellation fields vacuously. Unpinned, a change that turned any of
+        # those into a passing default would merge green and the evaluation would
+        # then read a fabricated pass as live evidence.
+        #
+        # run-heartbeat.test.ts is pinned alongside it (#5840) because that module is
+        # the only production copy of the heartbeat and the post-completion exit
+        # watchdog, and it has two distinct consumers: `agent-worker.ts` runs it on
+        # every real run, and the live pause runner starts it to measure the W2-05
+        # visibility fields. Two properties there are load-bearing and silent when
+        # broken. The watchdog must stand down while a pause is in force — unguarded
+        # it cannot tell a hung stream from a tool parked at the barrier, so an
+        # operator pausing a run to look at something would come back to a killed pod,
+        # and nothing else in CI asserts that. And the heartbeat must keep logging
+        # *and say it is paused*: a silent log is indistinguishable from a crash, so
+        # the suite pins the wording and fields literally rather than paraphrasing
+        # them. Suppression is also asserted to be a deferral rather than an amnesty,
+        # so removing the bound cannot pass as fixing the kill.
+        #
+        # control-runtime-timeout.assembly.test.ts is pinned for a third reason (#5840):
+        # the two suites above cover the producer's *decisions*, and two real defects
+        # still got past them because both were in how the live runner **composes**
+        # those decisions — a spread that dropped one experiment's pod observations
+        # before the field-wise merge could see them, and a force-exit callback that
+        # recorded a verdict it had no way to attribute, so the required after-release
+        # firing was reported as a firing during the pause. Unit-green pieces say
+        # nothing about their assembly, so this suite calls the runner's real exported
+        # assembly and folds a real tick sequence from the real PauseGate through it.
+        # It imports `control-runtime-timeout.integration.ts` on purpose and that is
+        # safe: the only SDK-backed dependency there is behind a lazy `await import`
+        # inside the run function, so importing the module evaluates no SDK, starts no
+        # subprocess and spends nothing. The `.integration.ts` file itself still cannot
+        # be collected by jest, which is what keeps the live experiments out of CI.
         run: |
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
@@ -478,6 +694,8 @@ jobs:
             src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
             src/pause-attempt-fencing.test.ts \
             src/pause-output-race.test.ts src/control-deadline.test.ts \
+            src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
+            src/control-runtime-timeout.assembly.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -491,6 +709,8 @@ jobs:
             --collectCoverageFrom='src/control-command-apply.ts' \
             --collectCoverageFrom='src/harnesses/claude-control.ts' \
             --collectCoverageFrom='src/utils/resilientQuery.ts' \
+            --collectCoverageFrom='src/control-runtime-timeout.ts' \
+            --collectCoverageFrom='src/run-heartbeat.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
             --ci --verbose
 
@@ -783,8 +1003,44 @@ jobs:
     # AC-S7 required-check name. Do not rename.
     name: Control evaluation harness tests
     runs-on: arc-runner-org
+    needs: resolve-source
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined for the same reason as in the two jobs above.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: control-evaluation-harness-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-control-evaluation-harness-tests
+          path: ${{ runner.temp }}/checked-out-revision/control-evaluation-harness-tests.json
+          if-no-files-found: error
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -798,7 +1054,16 @@ jobs:
         # drive the published end-to-end command cannot run — and because they are
         # the ones covering `main`, their absence showed up as a coverage drop
         # (83%) rather than as an obviously missing dependency.
-        run: pip install pytest pytest-cov pytest-timeout 'boto3>=1.34' 'httpx>=0.28'
+        #
+        # pyyaml is REQUIRED, not optional. The tests that cover the `resolve-source`
+        # step do not describe it, they EXECUTE it: they parse this workflow file to
+        # extract that step's real script and run it under bash. Without a YAML reader
+        # all seventeen fail on import — which is how they failed in run 35956224007,
+        # on a missing dependency rather than on any behaviour of the thing they gate.
+        # They are the only check that the dispatch input is validated as a whole value
+        # rather than line-by-line, so a job that cannot run them is a job that gates
+        # nothing here.
+        run: pip install pytest pytest-cov pytest-timeout 'boto3>=1.34' 'httpx>=0.28' pyyaml
 
       - name: Run evaluation harness tests
         # The harness itself never runs in CI — it requires an operator-created

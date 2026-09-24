@@ -3,8 +3,7 @@
 import uuid
 from typing import Any
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, ConfigDict, Field
 
 # --- Node schemas ---
 
@@ -37,6 +36,7 @@ class NodeListResponse(BaseModel):
 class CreateDeploymentRequest(BaseModel):
     """POST /workspaces/{id}/deployments — create a model deployment."""
 
+    operation_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     name: str = Field(
         ..., min_length=1, max_length=255, pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$"
     )
@@ -49,10 +49,22 @@ class CreateDeploymentRequest(BaseModel):
     gpu_per_replica: int = Field(default=1, ge=1, le=8)
     tensor_parallel_size: int = Field(default=1, ge=1, le=8)
     max_model_len: int | None = Field(default=None, ge=256, le=1048576)
-    namespace: str = Field(default="default", max_length=63)
+
+    # `namespace` was REMOVED, not ignored (issue #5671, A15). It used to select the
+    # Kubernetes namespace the deployment was created in, so on a cluster shared by
+    # several workspaces a caller could place — or overwrite — a workload in a
+    # neighbour's namespace. The namespace is now resolved server-side from the
+    # workspace record (`app.services.workspace_namespace`).
+    #
+    # Removing the field rather than accepting-and-discarding it is deliberate: a
+    # silently ignored field leaves automation believing it still chooses the
+    # namespace, and the request keeps looking like it worked as intended. `extra`
+    # below makes supplying it an explicit 422 instead.
+    model_config = ConfigDict(extra="forbid")
 
 
 class DeploymentInfo(BaseModel):
+    deployment_id: uuid.UUID | None = None
     """Single deployment info."""
 
     name: str

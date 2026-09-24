@@ -120,6 +120,7 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/internal/installation"),
         ("POST", "/internal/controller/reconcile"),
+        ("GET", "/api/v1/workspaces/{workspace_id}/bootstrap-observation"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
         ("POST", "/internal/workspaces/{workspace_id}/reconcile"),
@@ -173,6 +174,7 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #   * Deleting a provider credential is RENEW_CREDENTIAL, matching the policy's
 #     grouping of credential lifecycle operations.
 DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
+    ("GET", "/capabilities"): (Scope.ORGANIZATION, Permission.READ),
     # -- Workspace lifecycle -------------------------------------------------
     # Create/list are ORGANIZATION-scoped: on create there is no workspace yet,
     # and list is a collection across the org. The policy's `authorize_request`

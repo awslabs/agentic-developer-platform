@@ -8,64 +8,56 @@ runs:
     env:
       AWS_REGION: us-east-1
       EKS_CLUSTER: adp-dev-cyber-eks
-    run: |
-      python3 - <<'PYENV'
-      import os, uuid
-      with open(os.environ["GITHUB_ENV"], "a") as stream:
-          for key in ['AWS_REGION', 'EKS_CLUSTER']:
-              marker = uuid.uuid4().hex
-              stream.write(f"{key}<<{marker}\n{os.environ[key]}\n{marker}\n")
-      PYENV
-  - name: Install AWS CLI + kubectl
-    run: |
-      set -e
-      if ! command -v aws >/dev/null 2>&1; then
-        curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-        unzip -q /tmp/awscli.zip -d /tmp
-        sudo /tmp/aws/install
-        rm -rf /tmp/awscli.zip /tmp/aws
-      fi
-      if ! command -v kubectl >/dev/null 2>&1; then
-        curl -sL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-        sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-      fi
-      aws --version
-      kubectl version --client
-    shell: bash -e {0}
+    run: "python3 - <<'PYENV'\nimport os, uuid\nwith open(os.environ[\"GITHUB_ENV\"], \"a\") as stream:\n    for key in ['AWS_REGION',\
+      \ 'EKS_CLUSTER']:\n        marker = uuid.uuid4().hex\n        stream.write(f\"{key}<<{marker}\\n{os.environ[key]}\\\
+      n{marker}\\n\")\nPYENV\n"
+  - name: Verify reviewed runner tools
+    run: "set -euo pipefail\nfor tool in aws terraform kubectl jq python3 psql; do\n  command -v \"$tool\" >/dev/null || {\
+      \ echo \"::error::Reviewed runner image is missing $tool\"; exit 1; }\ndone\npython3 -c 'import yaml'\n"
+    shell: bash
   - name: Configure kubectl for cyber EKS
-    run: |
-      aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "${{ env.EKS_CLUSTER }}"
+    run: 'aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "${{ env.EKS_CLUSTER }}"
+
       kubectl cluster-info
-    shell: bash -e {0}
+
+      '
+    shell: bash
   - name: Resolve deployment variables
     id: vars
-    run: |
-      ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-      REGION="${{ env.AWS_REGION }}"
-      echo "account_id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
-      echo "ecr_image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/adp-cyber-worker:latest" >> "$GITHUB_OUTPUT"
-      echo "triage_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-tasks.fifo" >> "$GITHUB_OUTPUT"
-      echo "triage_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-responses.fifo" >> "$GITHUB_OUTPUT"
-      echo "static_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-tasks.fifo" >> "$GITHUB_OUTPUT"
-      echo "static_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-responses.fifo" >> "$GITHUB_OUTPUT"
-    shell: bash -e {0}
+    run: "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)\nREGION=\"${{ env.AWS_REGION }}\"\n{\n \
+      \ echo \"account_id=${ACCOUNT_ID}\"\n  echo \"ecr_image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/adp-cyber-worker:latest\"\
+      \n  echo \"triage_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-tasks.fifo\"\n\
+      \  echo \"triage_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-responses.fifo\"\
+      \n  echo \"static_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-tasks.fifo\"\n\
+      \  echo \"static_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-responses.fifo\"\
+      \n} >> \"$GITHUB_OUTPUT\"\n\n# Issue #5616: buckets the workers may read samples from. The workers\n# deny every read\
+      \ whose bucket is not in this set, so this list is the\n# allowlist, not a hint. Keep it as narrow as the pipeline needs.\n\
+      ALLOWED_BUCKETS=\"${CONFIGURED_SAMPLE_BUCKETS:-adp-dev-chat-artifacts-${ACCOUNT_ID}}\"\n[[ \"$ALLOWED_BUCKETS\" =~ ^[a-z0-9][a-z0-9.,-]*[a-z0-9]$\
+      \ ]] || { echo \"Invalid sample bucket allowlist\" >&2; exit 1; }\necho \"allowed_sample_buckets=$ALLOWED_BUCKETS\"\
+      \ >> \"$GITHUB_OUTPUT\"\n"
+    shell: bash
+    env:
+      CONFIGURED_SAMPLE_BUCKETS: ${{ vars.CYBER_ALLOWED_BUCKETS }}
+  - name: Verify no placeholders survived substitution
+    run: "set -euo pipefail\nMISSED=0\nfor f in modules/domain-apps/cyber/k8s/*.yaml; do\n  RENDERED=$(sed \\\n    -e \"s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{\
+      \ steps.vars.outputs.ecr_image }}|g\" \\\n    -e \"s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{ steps.vars.outputs.triage_tasks_queue\
+      \ }}|g\" \\\n    -e \"s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g\"\
+      \ \\\n    -e \"s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g\" \\\n    -e \"\
+      s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g\" \\\n    -e \"s|REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS|${{\
+      \ steps.vars.outputs.allowed_sample_buckets }}|g\" \\\n    \"$f\")\n  if echo \"$RENDERED\" | grep -n \"REPLACE_WITH_\"\
+      ; then\n    echo \"::error file=$f::unsubstituted placeholder(s) in $f\"\n    MISSED=1\n  fi\ndone\n[ \"$MISSED\" -eq\
+      \ 0 ] || exit 1\necho \"All placeholders substituted.\"\n"
+    shell: bash
   - name: Apply cyber-workers manifests
-    run: |
-      for f in modules/domain-apps/cyber/k8s/*.yaml; do
-        echo "=== Applying $f ==="
-        sed \
-          -e "s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{ steps.vars.outputs.ecr_image }}|g" \
-          -e "s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{ steps.vars.outputs.triage_tasks_queue }}|g" \
-          -e "s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g" \
-          -e "s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g" \
-          -e "s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g" \
-          "$f" | kubectl apply -f -
-      done
-    shell: bash -e {0}
+    run: "set -euo pipefail\nfor f in modules/domain-apps/cyber/k8s/*.yaml; do\n  echo \"=== Applying $f ===\"\n  sed \\\n\
+      \    -e \"s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{ steps.vars.outputs.ecr_image }}|g\" \\\n    -e \"s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{\
+      \ steps.vars.outputs.triage_tasks_queue }}|g\" \\\n    -e \"s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue\
+      \ }}|g\" \\\n    -e \"s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g\" \\\n  \
+      \  -e \"s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g\" \\\n    -e \"\
+      s|REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS|${{ steps.vars.outputs.allowed_sample_buckets }}|g\" \\\n    \"$f\" | kubectl\
+      \ apply -f -\ndone\n"
+    shell: bash
   - name: Summary
-    run: |
-      echo "## Cyber K8s deploy — applied" >> "$GITHUB_STEP_SUMMARY"
-      for f in modules/domain-apps/cyber/k8s/*.yaml; do
-        echo "- \`$f\`" >> "$GITHUB_STEP_SUMMARY"
-      done
-    shell: bash -e {0}
+    run: "echo \"## Cyber K8s deploy \u2014 applied\" >> \"$GITHUB_STEP_SUMMARY\"\nfor f in modules/domain-apps/cyber/k8s/*.yaml;\
+      \ do\n  echo \"- \\`$f\\`\" >> \"$GITHUB_STEP_SUMMARY\"\ndone\n"
+    shell: bash

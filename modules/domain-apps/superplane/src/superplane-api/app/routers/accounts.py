@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
@@ -50,8 +51,6 @@ def _account_to_response(acct: CloudAccount) -> AccountResponse:
         name=acct.friendly_name,
         provider=acct.provider,
         account_id=acct.account_identifier,
-        role_arn=acct.cross_account_role_arn,
-        external_id=acct.external_id,
         status=acct.status,
         adp_credential_ids=adp_credential_ids,
         irsa_role_arns=irsa_role_arns,
@@ -78,6 +77,44 @@ def _credential_to_response(cred: CredentialRegistry) -> CredentialResponse:
 # ── Account Endpoints ──
 
 
+async def _registered_account_for_request(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    body: RegisterAccountRequest,
+) -> CloudAccount | None:
+    existing = await db.scalar(
+        select(CloudAccount).where(
+            CloudAccount.org_id == org_id,
+            CloudAccount.account_identifier == body.account_id,
+        )
+    )
+    if existing is None:
+        return None
+    adp_credential_ids = (
+        json.loads(existing.adp_credential_ids_json)
+        if existing.adp_credential_ids_json
+        else []
+    )
+    irsa_role_arns = (
+        json.loads(existing.irsa_role_arns_json) if existing.irsa_role_arns_json else []
+    )
+    if (
+        existing.status == "Active"
+        and existing.provider == body.provider
+        and existing.friendly_name == body.name
+        and existing.cross_account_role_arn == body.role_arn
+        and existing.external_id == body.external_id
+        and existing.ingest_role_arn == body.ingest_role_arn
+        and adp_credential_ids == body.adp_credential_ids
+        and irsa_role_arns == body.irsa_role_arns
+    ):
+        return existing
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Account is already registered with different connection metadata",
+    )
+
+
 @router.post(
     "/accounts", response_model=AccountResponse, status_code=status.HTTP_201_CREATED
 )
@@ -88,22 +125,13 @@ async def register_account(
 ) -> AccountResponse:
     """Register a BYOA cloud account.
 
-    The CLI creates IAM roles + secrets in the user's AWS account, then calls
-    this endpoint to register the ARNs with Superplane. Validates uniqueness
-    of (org_id, account_identifier).
+    ADP resolves an authorized vault reference into the role metadata before this
+    endpoint. Identical retries converge on one account record; conflicting
+    metadata for the same tenant and account remains a conflict.
     """
-    # Check for duplicate
-    existing = await db.execute(
-        select(CloudAccount).where(
-            CloudAccount.org_id == org_id,
-            CloudAccount.account_identifier == body.account_id,
-        )
-    )
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Account {body.account_id} is already registered for this organization",
-        )
+    existing = await _registered_account_for_request(db, org_id, body)
+    if existing is not None:
+        return _account_to_response(existing)
 
     account = CloudAccount(
         org_id=org_id,
@@ -123,7 +151,14 @@ async def register_account(
         status="Active",
     )
     db.add(account)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await _registered_account_for_request(db, org_id, body)
+        if existing is None:
+            raise
+        return _account_to_response(existing)
     await db.refresh(account)
 
     logger.info(
@@ -186,6 +221,33 @@ async def delete_account(
 # ── Vault Credential Endpoints ──
 
 
+async def _registered_credential_for_reference(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    body: RegisterCredentialRequest,
+) -> CredentialRegistry | None:
+    result = await db.execute(
+        select(CredentialRegistry).where(
+            CredentialRegistry.org_id == org_id,
+            CredentialRegistry.adp_credential_id == body.adp_credential_id,
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing is None:
+        return None
+    if (
+        existing.status == "Active"
+        and existing.provider == body.provider
+        and existing.friendly_name == body.name
+        and existing.credential_type == body.credential_type
+    ):
+        return existing
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Credential reference is already registered with different metadata",
+    )
+
+
 @router.post(
     "/vault/credentials",
     response_model=CredentialResponse,
@@ -208,6 +270,10 @@ async def register_credential(
     account and KMS permissions is verified by the audited vault-owned migration and the
     ADP-side client contract (U7), not here.
     """
+    existing = await _registered_credential_for_reference(db, org_id, body)
+    if existing is not None:
+        return _credential_to_response(existing)
+
     credential = CredentialRegistry(
         org_id=org_id,
         provider=body.provider,
@@ -217,7 +283,14 @@ async def register_credential(
         status="Active",
     )
     db.add(credential)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await _registered_credential_for_reference(db, org_id, body)
+        if existing is not None:
+            return _credential_to_response(existing)
+        raise
     await db.refresh(credential)
 
     logger.info(

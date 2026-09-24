@@ -255,6 +255,7 @@ class WorkspaceReconciler:
         stmt = select(Workspace).where(
             Workspace.status == STATUS_FAILED,
             Workspace.bootstrap_retry_count < self._max_retries,
+            Workspace.teardown_operation_id.is_(None),
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
@@ -295,6 +296,12 @@ class WorkspaceReconciler:
             return "skipped"
 
         try:
+            await session.refresh(workspace, with_for_update=True)
+            if workspace.status != STATUS_FAILED or (
+                isinstance(workspace.teardown_operation_id, str)
+                and workspace.teardown_operation_id
+            ):
+                return "skipped"
             # Begin bootstrap under an authorized operation. Issue #5058 (U17b)
             # replaced a GitHub Actions workflow_dispatch call here — this retry
             # path kept the foreign-repo dispatch and its personal access token
@@ -305,6 +312,7 @@ class WorkspaceReconciler:
             # request, and the authoritative principal is resolved by the facade.
             from app.services.provisioning import (
                 ProvisioningError,
+                observe,
                 start_provision,
                 summarize,
             )
@@ -312,12 +320,35 @@ class WorkspaceReconciler:
             triggered = True
             failure_reason = ""
             try:
-                progress = await start_provision(
-                    workspace_id=str(workspace.id),
-                    org_id=str(workspace.org_id),
-                    workspace_name=workspace.name,
-                    isolation_mode=workspace.isolation_mode,
+                request = (
+                    json.loads(workspace.operation_request_json)
+                    if isinstance(workspace.operation_request_json, str)
+                    else {}
                 )
+                if (
+                    isinstance(workspace.provisioning_operation_id, str)
+                    and workspace.provisioning_operation_id
+                ):
+                    progress = await observe(workspace.provisioning_operation_id)
+                else:
+                    progress = await start_provision(
+                        operation_id=str(
+                            workspace.operation_id
+                            if isinstance(workspace.operation_id, uuid.UUID)
+                            else uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                f"adp:superplane:{workspace.org_id}:workspace:{workspace.id}:reconcile",
+                            )
+                        ),
+                        workspace_id=str(workspace.id),
+                        org_id=str(workspace.org_id),
+                        workspace_name=request.get("name", workspace.name),
+                        isolation_mode=request.get(
+                            "isolation_mode", workspace.isolation_mode
+                        ),
+                        account=str(request.get("account") or ""),
+                    )
+                workspace.provisioning_operation_id = progress.operation_id
             except ProvisioningError as exc:
                 # Recorded as a failed attempt rather than raised: this is a
                 # background retry loop, and an unavailable facade must consume a
@@ -625,6 +656,7 @@ class WorkspaceReconciler:
         """Emit a platform event."""
         event = Event(
             org_id=org_id,
+            action="updated",
             resource_type="Workspace",
             resource_id=resource_id,
             event_type=event_type,
@@ -680,6 +712,11 @@ class WorkspaceReconciler:
     async def _release_lock(self, session: AsyncSession, lock_key: str) -> None:
         """Release a reconcile lock."""
         try:
+            # A failed flush (for example, an audit insert) leaves the session
+            # unusable until rollback. The lock may already have committed with
+            # the workspace update, so it still needs an explicit release.
+            if not session.is_active:
+                await session.rollback()
             await session.execute(
                 delete(ReconcileLock).where(
                     ReconcileLock.resource_type == "workspace_reconciler",

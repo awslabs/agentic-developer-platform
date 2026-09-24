@@ -18,7 +18,7 @@ IMAGES = {
     'gateway': ('adp-gateway', 'gateway-build', ''),
     'agent-runtime': ('adp-agent-runtime', 'agent-runtime', ''),
     'agent-gateway': ('adp-agent-gateway', 'agent-gateway', ''),
-    'chat-agent': ('adp-agent-gateway', 'chat-agent', '-chat'),
+    'chat-agent': ('adp-chat-agent', 'chat-agent', '-chat'),
 }
 # Terraform module directory, resource name, deployed function-name template.
 LAMBDAS = {

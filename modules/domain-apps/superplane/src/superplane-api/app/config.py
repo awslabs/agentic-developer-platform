@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     superplane_db_schema: str = ""
     # Trusted identity that may advance controller liveness; no reporter-name trust.
     controller_observation_submitter_id: str = ""
+    controller_status_url: str = ""
+    controller_registry_credential: str = ""
 
     # AWS
     aws_region: str = "us-east-1"
@@ -58,6 +60,20 @@ class Settings(BaseSettings):
     # inference that criterion forbids. Asserted by the deployment, reported by
     # GET /health so a reader can observe it rather than assume it.
     cognito_enabled: bool = False
+
+    # Audit read coverage (issue #5673, A17).
+    #
+    # Mutating requests are ALWAYS audited and this flag does not affect them. It controls
+    # only whether reads of tenant data are recorded too.
+    #
+    # OFF by default, deliberately. Reads are the bulk of traffic, so enabling this
+    # multiplies audit row volume and puts a database write on the hot path of every GET;
+    # that is a storage and latency decision each environment should make explicitly
+    # rather than inherit from a code default. It also bounds an amplification risk: now
+    # that refused attempts are recorded, a caller able to generate rejected reads can
+    # drive audit writes, and a per-environment switch is what allows shedding that volume
+    # without a code change.
+    audit_read_coverage: bool = False
 
     # JWT Auth
     #

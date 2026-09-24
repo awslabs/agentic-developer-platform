@@ -89,7 +89,7 @@ from src.orchestration.planning import (
     resolve_repository,
     slugify,
 )
-from src.orchestration.proposal import LoopProposal
+from src.orchestration.proposal import EpicDisplay, LoopProposal, WaveDisplay
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
@@ -587,6 +587,8 @@ def _planning_refusal(exc: PlanningError) -> HTTPException:
         "draft_not_ready": 409,
         "planning_session_idle": 409,
         "too_many_outcomes": 422,
+        "invalid_wave_display": 422,
+        "invalid_epic_display": 422,
         "malformed_repository": 422,
         "malformed_issue_ref": 422,
         "repository_not_connected": 403,
@@ -729,11 +731,25 @@ async def plan_from_session(
         # client-supplied number would let a retry with a different argument re-bind a
         # plan to an issue the conversation never touched.
         issue_ref = resolve_issue_ref(session.requested_issue or session.issue_ref or request.issue)
+        epic_display = None
+        if session.draft.get("epicDisplay") is not None:
+            try:
+                epic_display = EpicDisplay.model_validate(session.draft["epicDisplay"])
+            except ValueError as exc:
+                raise PlanningError("invalid_epic_display", "The planning agent produced invalid epic display text. Regenerate the draft.") from exc
+        wave_display = None
+        if session.draft.get("waveDisplay") is not None:
+            try:
+                wave_display = WaveDisplay.model_validate(session.draft["waveDisplay"])
+            except ValueError as exc:
+                raise PlanningError("invalid_wave_display", "The planning agent produced invalid wave display text. Regenerate the draft.") from exc
         proposal = plan_from_draft(
             PlanningInputs(
                 flow_slug=slugify(request.flow_slug, fallback="intake") if request.flow_slug else f"intake-{session_id.removeprefix('sess-')}",
                 title=title[:512],
                 outcomes=outcomes,
+                wave_display=wave_display,
+                epic_display=epic_display,
                 repository=repository,
                 # LAST activity, not creation. A proposed grant's 24 hours are measured
                 # from here, so passing `created_at` spent them on the user's thinking

@@ -34,11 +34,12 @@ module "gateway_sessions" {
 # the API GW being created first, which is the correct ordering.
 
 module "gateway_lambda" {
-  source                        = "./modules/lambda-gateway"
-  model_policy_enabled          = var.chat_model_policy_enabled
-  persona_model_mapping_enabled = var.persona_model_mapping_enabled && var.gateway_deployed
-  model_control_endpoint        = local.persona_model_control_endpoint
-  model_root_admission_arn      = local.persona_model_root_admission_arn
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/lambda-gateway"
+  model_policy_enabled                = var.chat_model_policy_enabled
+  persona_model_mapping_enabled       = var.persona_model_mapping_enabled && var.gateway_deployed
+  model_control_endpoint              = local.persona_model_control_endpoint
+  model_root_admission_arn            = local.persona_model_root_admission_arn
 
   webhook_events_table_name  = local.chat_webhook_events_table
   webhook_events_table_arn   = local.chat_webhook_events_table == "" ? "" : "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.chat_webhook_events_table}"
@@ -269,7 +270,8 @@ resource "aws_ssm_parameter" "gateway_ws_endpoint" {
 # =============================================================================
 
 resource "aws_iam_role" "gateway_agent" {
-  name = "adp-${var.environment}-gateway-agent-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "adp-${var.environment}-gateway-agent-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

@@ -23,6 +23,15 @@ export interface DraftToolsScope {
 /** Cap list fields so a runaway model cannot write an unbounded DDB row. */
 const MAX_LIST_ITEMS = 20;
 const MAX_FIELD_CHARS = 2000;
+const waveDisplaySchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  description: z.string().trim().min(1).max(500),
+}).strict();
+
+const epicDisplaySchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(3000),
+}).strict();
 
 function clampText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -59,6 +68,14 @@ export function draftToolsForTurn(store: DraftStore, scope: DraftToolsScope): Ag
         'firms up a field; the user is watching the panel fill in. Leave fields out when ' +
         'you genuinely do not know them yet — do not invent content to look thorough.',
       inputSchema: {
+        epic_display: epicDisplaySchema.optional().describe(
+          'Draft an epic title and a clear explanation of what is being built, why it matters and its key boundaries. ' +
+          'Use the intent, motivation and requirements, retaining useful technical detail. Choose the wording yourself; do not ask the user to write it.',
+        ),
+        wave_display: waveDisplaySchema.optional().describe(
+          'Choose a capability name and a description of the work and evaluation from the intent and outcomes. ' +
+          'Preserve useful technical detail. Do not ask the user to supply names or descriptions. This is display text only.',
+        ),
         intent: z
           .string()
           .optional()
@@ -81,7 +98,17 @@ export function draftToolsForTurn(store: DraftStore, scope: DraftToolsScope): Ag
           .describe('What you still need to know, or decisions the user has deferred.'),
       },
       handler: async (input: Record<string, unknown>): Promise<AgentToolResult> => {
+        const display = waveDisplaySchema.optional().safeParse(input.wave_display);
+        if (!display.success) {
+          return { isError: true, content: [{ type: 'text', text: 'Revise wave_display: title must be 1–120 characters and description 1–500, both nonblank.' }] };
+        }
+        const epic = epicDisplaySchema.optional().safeParse(input.epic_display);
+        if (!epic.success) {
+          return { isError: true, content: [{ type: 'text', text: 'Revise epic_display: title must be 1–200 characters and description 1–3000, both nonblank.' }] };
+        }
         const draft: IntentDraft = {
+          waveDisplay: display.data,
+          epicDisplay: epic.data,
           intent: clampText(input.intent),
           motivation: clampText(input.motivation),
           outcomes: clampList(input.outcomes),
