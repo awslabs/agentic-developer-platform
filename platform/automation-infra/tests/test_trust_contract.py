@@ -277,4 +277,5 @@ def test_ordinary_cloud_operations_match_reviewed_inventory():
                 'secretsmanager get-secret-value',  # exact retained GitHub transport inputs
                 'sts get-caller-identity', 's3 cp',  # isolated gateway PR source
                 'codebuild batch-get-builds', 'codebuild batch-get-projects', 'codebuild start-build',
+                'codebuild stop-build',  # same exact gateway project; failed dispatch cleanup
             }, job

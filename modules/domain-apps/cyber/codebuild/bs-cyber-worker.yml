@@ -33,8 +33,8 @@ phases:
 
   build:
     commands:
-      - cd modules/domain-apps/cyber/workers
-      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      - cd modules/domain-apps/cyber
+      - docker build --target runtime --build-arg IMAGE_TAG="$IMAGE_TAG" -f workers/Dockerfile --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
       - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"

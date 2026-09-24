@@ -47,6 +47,16 @@
       "ssm put-parameter"
     ]
   },
+  "cyber-security-ci.yml/production-image": {
+    "authority": "runtime",
+    "operations": [
+      "codebuild batch-get-builds",
+      "codebuild start-build",
+      "codebuild stop-build",
+      "s3 cp",
+      "sts get-caller-identity"
+    ]
+  },
   "e2e-chat-playwright.yml/e2e-chat": {
     "authority": "existing-oidc",
     "operations": [

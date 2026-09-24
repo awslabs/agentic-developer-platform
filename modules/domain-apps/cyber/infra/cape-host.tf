@@ -81,11 +81,11 @@ resource "aws_iam_role_policy" "cape_minimal" {
     Version = "2012-10-17"
     Statement = [
       {
+        # CAPE receives samples as uploads; no tenant bucket grant is needed.
         Sid    = "S3ReadSamples"
         Effect = "Allow"
         Action = ["s3:GetObject"]
         Resource = [
-          "arn:aws:s3:::${var.sample_bucket_name}-*/o/*/in/*",
           "arn:aws:s3:::adp-${var.environment}-cape-assets/smoke-test/*"
         ]
       },

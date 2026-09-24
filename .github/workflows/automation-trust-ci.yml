@@ -4,6 +4,7 @@ on:
     paths:
       - .github/workflows/**
       - .github/actions/trusted-*/**
+      - .github/actions/codebuild-run/**
       - modules/agent-factory/infra/**
       - modules/agent-factory/runner-infra/**
       - platform/automation-infra/**
@@ -34,7 +35,7 @@ jobs:
         run: |
           python -m venv /tmp/automation-contracts
           /tmp/automation-contracts/bin/pip install pytest==8.3.5 PyYAML==6.0.2
-          /tmp/automation-contracts/bin/python -m pytest -q platform/automation-infra/tests
+          /tmp/automation-contracts/bin/python -m pytest -q platform/automation-infra/tests platform/infra/modules/codebuild/tests
       - name: Verify rendered IAM policies using mocked AWS providers
         run: |
           set -euo pipefail
