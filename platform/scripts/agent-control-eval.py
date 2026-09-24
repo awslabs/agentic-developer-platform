@@ -210,18 +210,49 @@ WAVE4_FRONTEND_KEYS: tuple[str, ...] = (
     "served_asset_evidence",
 )
 
-# The dashboard story's own gates, by the name CI defines. Wave 4's row demands
-# "current green Vitest/typecheck/build and control CI" — the first three are the
-# frontend's, and the last is wave 2's harness gate set, which W4-01 requires on top
-# of these rather than instead of them.
+# The dashboard story's own gates, by the name CI defines — read off
+# `.github/workflows/gateway-ci.yml`'s `jobs.*.name`, and pinned against that file by
+# a test so a rename there becomes a harness test to update rather than an evaluation
+# that requires a gate nobody runs.
 #
-# By name for the same reason as WAVE2_REQUIRED_CI_GATES: any nonempty map of
-# "passed" values checks the operator's spelling, not the build.
+# Wave 4's row asks for "current green Vitest/typecheck/build". That is three
+# activities across TWO jobs, which is worth stating rather than smoothing over:
+# `Frontend Unit Tests` runs `npx vitest run` and then `npx tsc --noEmit` in the same
+# job, so Vitest and typecheck share a gate and cannot be reported separately. Naming
+# a third "Frontend typecheck" gate would have been an invented name — unsatisfiable
+# by any real run, which is the "requirement no operator could fix" failure mode, and
+# strictly worse than a gate that is honestly coarser than the row's phrasing.
+#
+# `Build Container` is the build half. It smoke-builds the gateway image through
+# CodeBuild, which is what "build" means on this deployment path.
 WAVE4_REQUIRED_CI_GATES: tuple[str, ...] = (
-    "Frontend unit tests",
-    "Frontend typecheck",
-    "Frontend build",
+    "Frontend Unit Tests",
+    "Build Container",
 )
+
+# The control-path gates are deliberately NOT repeated in W4-01.
+#
+# W2-01 already validates them at full strength — archived run document parsed at its
+# field locations, plus the job's own uploaded checkout artifact bound to the run,
+# attempt and trigger. W4-01 requires wave 2 to be ACCEPTED, which means W2-01 passed,
+# which means those gates were validated to that standard on a revision contained in
+# what is deployed.
+#
+# Re-checking them here would put two implementations of one claim in one report, free
+# to disagree — and the second implementation would necessarily be the weaker one,
+# because it would be written to a schema chosen for the frontend gates. The first
+# draft of this check did exactly that, and the weaker copy would have been the one an
+# operator could satisfy. Prior-wave acceptance is the stronger link, so it is the one
+# used.
+#
+# Why the frontend gates cannot reach that standard: `gateway-ci.yml` publishes no
+# `checked-out-revision-*` artifact, so there is nothing to bind a checkout to. That
+# is a gap in the workflow rather than in this check, and closing it means adding the
+# archive step to `gateway-ci.yml` — another story's file. Until then W4-01 validates
+# frontend gates against the archived RUN document (which does carry the conclusion,
+# the named job and the head revision) and says so, rather than requiring an artifact
+# that does not exist or pretending the binding is as tight as wave 2's.
+WAVE4_FRONTEND_GATE_RAW_DOCUMENTS: tuple[str, ...] = ("run",)
 
 # Wave 4's own required stories. S7 is the dashboard this wave evaluates; the
 # consolidating checks additionally need the stories whose criteria they repeat, and
@@ -6170,36 +6201,90 @@ class Driver:
                 hint="A merged dashboard story that is not in the served bundle is not deployed.",
             )
 
-        # (4) Gates, by name, on the revision they tested.
+        # (4) The frontend's gates, read out of their archived run documents.
+        #
+        # The control-path gates are NOT rechecked here — see the comment on
+        # WAVE4_FRONTEND_GATE_RAW_DOCUMENTS. Wave 2's acceptance, asserted above, is
+        # what carries them, and it carries them to a stricter standard than a second
+        # implementation in this check could.
         gates = preflight["ci_gates"]
         if not isinstance(gates, dict):
             raise AssertionError(f"'ci_gates' must be an object keyed by gate name, got {gates!r}")
-        # Wave 4's row asks for the frontend's three gates AND the control CI set, so
-        # both are required. Wave 2's set is not replaced by wave 4's: a green Vitest
-        # over a build whose harness tests never ran is not "current green CI".
-        for gate in (*WAVE4_REQUIRED_CI_GATES, *WAVE2_REQUIRED_CI_GATES):
-            entry = gates.get(gate)
+        absent = sorted(set(WAVE4_REQUIRED_CI_GATES) - set(gates))
+        if absent:
+            raise AssertionError(
+                f"no result recorded for the required frontend gate(s) {absent}. The required set is "
+                f"{list(WAVE4_REQUIRED_CI_GATES)}, named as `.github/workflows/gateway-ci.yml` names "
+                "them; a gate absent from the record is indistinguishable from one that was never "
+                "required, and any nonempty map of 'passed' values would otherwise demonstrate the "
+                "operator's spelling rather than the build's gates"
+            )
+        for gate in WAVE4_REQUIRED_CI_GATES:
+            entry = gates[gate]
             if not isinstance(entry, dict):
                 raise AssertionError(
-                    f"no result recorded for the {gate!r} gate ({entry!r}). Required gates are checked by "
-                    "the name CI defines, because any nonempty map of 'passed' values demonstrates the "
-                    "operator's spelling rather than the build's gates"
+                    f"the {gate!r} gate is recorded as {entry!r}; it must be an object carrying its "
+                    "status, run identity, tested revision and the archived run document"
                 )
-            if entry.get("status") != STATUS_PASSED:
+            for key in ("status", "run_id", "run_url", "tested_revision", "raw"):
+                if not entry.get(key):
+                    raise AssertionError(
+                        f"the {gate!r} gate is missing {key!r}. A bare pass/fail cannot say WHICH run "
+                        "produced it or WHAT revision it tested, and both are required for it to be "
+                        "evidence about this deployment"
+                    )
+            if entry["status"] != STATUS_PASSED:
                 raise AssertionError(
-                    f"the {gate!r} gate is {entry.get('status')!r}, not {STATUS_PASSED!r}"
+                    f"the {gate!r} gate is recorded as {entry['status']!r} rather than {STATUS_PASSED!r} "
+                    f"(run {entry['run_id']!r}); a merge with red required checks is a merge, not a "
+                    "verified revision"
                 )
-            if not entry.get("run_id"):
-                raise AssertionError(
-                    f"the {gate!r} gate records no 'run_id'. A gate result a reviewer cannot retrieve is "
-                    "a summary of a gate rather than the gate"
-                )
-            tested = entry.get("revision")
+            tested = entry["tested_revision"]
             if not isinstance(tested, str) or not _GIT_REVISION_RE.match(tested):
                 raise AssertionError(
-                    f"the {gate!r} gate records revision {tested!r}, which is not a full 40-character git "
-                    "SHA. Which commit a gate tested is the whole of what makes it relevant"
+                    f"the {gate!r} gate records tested revision {tested!r}, which is not a full "
+                    "40-character git SHA. Which commit a gate tested is the whole of what makes it "
+                    "relevant"
                 )
+            # The archive, PARSED — not searched and not trusted. This is W2-01's
+            # correction applied here rather than re-derived: a substring scan over a
+            # dumped body finds the run id, the revision and the job name in a RED
+            # document exactly as readily as in a green one, so the conclusion has to be
+            # read at its location and the named job's own conclusion with it.
+            raw = self._assert_raw_metadata(
+                entry["raw"],
+                subject=f"the {gate!r} gate",
+                expected=WAVE4_FRONTEND_GATE_RAW_DOCUMENTS,
+            )
+            try:
+                run = parse_github_run(raw["run"]["body"], required_job=gate)
+            except ProvenanceParseError as error:
+                raise AssertionError(
+                    f"the {gate!r} gate: the archived run document (retrieved by "
+                    f"{raw['run']['command']!r}) does not establish a passing run of that job: {error}"
+                ) from error
+            if run["run_id"] != str(entry["run_id"]):
+                raise AssertionError(
+                    f"the {gate!r} gate records run_id {entry['run_id']!r}, but the archived run document "
+                    f"reports databaseId {run['run_id']!r}. The recorded field is a summary of that "
+                    "response, so a disagreement means the summary describes a different run than the "
+                    "one archived"
+                )
+            # `gateway-ci.yml` uploads no checkout artifact, so the run's head is the
+            # only available statement of what it tested. Containment rather than
+            # equality, for the reason W2-01 established: a `pull_request` job builds a
+            # merge of the head into its base, and that merge CONTAINS the head. This is
+            # honestly looser than wave 2's artifact binding, which is why the constant
+            # above says so instead of implying otherwise.
+            self._assert_contained_in(
+                run["head_revision"],
+                subject=f"the {gate!r} gate's archived head revision {run['head_revision']}",
+                deployed_revisions={"tested_revision": tested},
+                hint=(
+                    "The gate's recorded subject must contain the run that produced it; a head the "
+                    "tested revision does not contain means the record and the run disagree."
+                ),
+            )
             # A green gate on a revision the deployment does not contain tested
             # different code. This is the "merge went green, then something else
             # shipped" case.

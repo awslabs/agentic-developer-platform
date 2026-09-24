@@ -1536,6 +1536,58 @@ class TestCheckIdsMatchTheEvaluationFile:
         for method_name in _mod.WAVE4_PREDICATES.values():
             assert hasattr(_mod.Driver, method_name), method_name
 
+    def test_the_wave_four_gate_names_are_the_names_gateway_ci_defines(self):
+        """An invented gate name is a requirement no operator could ever satisfy.
+
+        This is the mirror of the false pass and just as harmful: W4-01 requires each
+        named gate to have passed, so a name CI does not define makes wave 4
+        permanently unsatisfiable, and the only way around it is to hand-write a
+        record for a job that never ran.
+
+        The first draft of W4-01 named three gates — "Frontend unit tests",
+        "Frontend typecheck", "Frontend build" — and NONE of them existed:
+        `gateway-ci.yml` defines `Frontend Unit Tests` (which runs Vitest and then
+        `tsc --noEmit` in the same job, so typecheck has no separate gate) and
+        `Build Container`. Asserted against the workflow text so the next rename is a
+        failing test here rather than a stuck evaluation.
+        """
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "gateway-ci.yml"
+        ).read_text(encoding="utf-8")
+
+        for gate in _mod.WAVE4_REQUIRED_CI_GATES:
+            assert f"name: {gate}" in workflow, gate
+
+        # And the coarseness is deliberate, not an omission: typecheck runs inside the
+        # Vitest job, so there is no third gate to require.
+        assert "npx tsc --noEmit" in workflow
+        assert "Frontend typecheck" not in workflow
+
+    def test_wave_four_does_not_reimplement_the_control_gate_checks(self):
+        """W2-01 validates the control gates; W4-01 must not validate them again.
+
+        Two implementations of one claim in one report are free to disagree, and the
+        second one would necessarily be the weaker: it would be written to the schema
+        the FRONTEND gates can satisfy, and `gateway-ci.yml` publishes no
+        `checked-out-revision-*` artifact, so it could not bind a checkout to a run at
+        all. The weaker copy is then the one an operator satisfies.
+
+        Prior-wave acceptance is the stronger link — W4-01 requires wave 2 accepted,
+        which means W2-01 passed with the full archived-run-plus-checkout binding on a
+        revision contained in what is deployed.
+        """
+        source = (
+            REPO_ROOT / "platform" / "scripts" / "agent-control-eval.py"
+        ).read_text(encoding="utf-8")
+        start = source.index("    def check_w4_01(")
+        end = source.index("    # ---- wave 4 (#3966)", start)
+        body = source[start:end]
+
+        assert "WAVE4_REQUIRED_CI_GATES" in body
+        assert "WAVE2_REQUIRED_CI_GATES" not in body
+        # The prerequisite that actually carries them.
+        assert "_assert_prior_wave_accepted" in body
+
     def test_wave_four_records_its_evaluation_and_revision(self):
         """#3970 reads wave 4, under revision revival-2026-09-12.
 
