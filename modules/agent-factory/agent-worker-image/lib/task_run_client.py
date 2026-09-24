@@ -11,6 +11,7 @@ import botocore.auth
 import botocore.awsrequest
 import botocore.session
 import requests
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from lib.run_identity import CONTROL_ENDPOINT_ENV, WORKLOAD_HEADER, read_workload_token
 
@@ -33,6 +34,10 @@ _ACTIONS = frozenset(
 
 class TaskRunClientError(Exception):
     """A task-scoped operation was unavailable or refused."""
+
+
+class TaskRunClientUnavailable(TaskRunClientError):
+    """Transport failure with an unknown durable operation outcome."""
 
 
 def _decode_segment(value: str) -> dict:
@@ -139,6 +144,8 @@ class TaskRunClient:
                     allow_redirects=False,
                     stream=True,
                 ) as response:
+                    if response.status_code >= 500:
+                        raise TaskRunClientUnavailable("task service outcome unavailable")
                     if response.status_code != 200:
                         raise TaskRunClientError("task service refused operation")
                     raw = response.raw.read(_MAX_RESPONSE_BYTES + 1, decode_content=True)
@@ -152,12 +159,13 @@ class TaskRunClient:
             raise
         except (
             requests.RequestException,
+            Urllib3HTTPError,
             UnicodeDecodeError,
             ValueError,
             OSError,
             json.JSONDecodeError,
         ):
-            raise TaskRunClientError("task service unavailable") from None
+            raise TaskRunClientUnavailable("task service unavailable") from None
 
     def bootstrap(self, body: dict) -> dict:
         token = read_workload_token()

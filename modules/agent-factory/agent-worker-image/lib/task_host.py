@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import selectors
 import shutil
 import signal
@@ -33,13 +34,15 @@ from lib.task_protocol import (
     validate_bootstrap,
     validate_child_frame,
 )
-from lib.task_run_client import TaskRunClient, TaskRunClientError, workload_identity
+from lib.task_run_client import TaskRunClient, TaskRunClientError, TaskRunClientUnavailable, workload_identity
 
 logger = logging.getLogger(__name__)
 TASK_EXIT_RETRYABLE = 75
 TASK_EXIT_FAILED = 1
 _MIN_PROGRESS_MARKERS = 2
 _CONTROL_POLL_SECONDS = 1.0
+_MODEL_POLL_SECONDS = 1.0
+_MODEL_RECEIPT_SECONDS = 150.0
 _TERM_AFTER_SECONDS = 20.0
 _KILL_AFTER_SECONDS = 30.0
 _REPORT_BUFFER_MAX_REPORTS = 128
@@ -302,7 +305,7 @@ class TaskHost:
         )
         self._pending_turn_id = turn_id
 
-    def _model(self, assignment, attempt: dict, frame: dict, max_tokens: int) -> dict:
+    def _model_request(self, assignment, attempt: dict, frame: dict, max_tokens: int) -> dict:
         if self._pending_turn_id is not None and frame["turn_id"] != self._pending_turn_id:
             raise TaskProtocolError("child model request skipped its assigned input turn")
         turn = self._turn(assignment, attempt, frame["turn_id"])
@@ -316,15 +319,18 @@ class TaskHost:
         if "system" in frame:
             request["system"] = frame["system"]
         request_digest = _canonical_digest(request)
-        response = self.client.model(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "attempt": attempt,
-                "turn_id": frame["turn_id"],
-                "request_digest": request_digest,
-                **request,
-            }
-        )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "attempt": attempt,
+            "turn_id": frame["turn_id"],
+            "request_digest": request_digest,
+            **request,
+        }
+
+    def _model(self, assignment, attempt: dict, frame: dict, max_tokens: int, *, prepared: dict | None = None) -> dict:
+        prepared = prepared if prepared is not None else self._model_request(assignment, attempt, frame, max_tokens)
+        request_digest = prepared["request_digest"]
+        response = self.client.model(prepared)
         if (
             response.get("task_id") != assignment.task_id
             or response.get("turn_id") != frame["turn_id"]
@@ -604,7 +610,9 @@ class TaskHost:
                     "old_attempt_invalidated": True,
                 }
             )
-            if attempt_response.get("operation_status") not in {"confirmed", "pending"}:
+            if (not isinstance(attempt_response, dict) or attempt_response.get("schema_version") != SCHEMA_VERSION
+                    or attempt_response.get("operation_status") != "confirmed"
+                    or attempt_response.get("request_id") != runtime_attempt_id):
                 raise TaskRunClientError("task attempt was not registered")
             artifacts = self._input_artifacts(assignment, bootstrap)
             command = self.command_resolver(bootstrap["persona"])
@@ -670,14 +678,31 @@ class TaskHost:
             next_report_retry = 0.0
             deferred_model: dict | None = None
 
+            model_job = None
+
+            def launch_model_call(job):
+                def call():
+                    try:
+                        value = self._model(assignment, attempt, job["frame"],
+                            bootstrap["limits"]["max_output_tokens_per_turn"], prepared=job["body"])
+                    except Exception as exc:
+                        value = exc
+                    job["responses"].put(value)
+                job["inflight"] = True
+                threading.Thread(target=call, daemon=True, name="task-model-receipt").start()
+
             def deliver_model(model_frame: dict) -> None:
+                nonlocal model_job
+                if model_job is not None:
+                    raise TaskProtocolError("task child emitted concurrent model requests")
+                body = self._model_request(assignment, attempt, model_frame,
+                    bootstrap["limits"]["max_output_tokens_per_turn"])
+                model_job = {"frame": model_frame, "body": body, "responses": queue.Queue(maxsize=1),
+                    "inflight": False, "started": time.monotonic(), "next_poll": 0.0}
+                launch_model_call(model_job)
+
+            def finish_model(model_result: dict) -> None:
                 nonlocal cancel_started, cancel_command_id
-                model_result = self._model(
-                    assignment,
-                    attempt,
-                    model_frame,
-                    bootstrap["limits"]["max_output_tokens_per_turn"],
-                )
                 # Input arriving during the provider call must reach the
                 # child before it can finish from the returned answer.
                 control = self._control(assignment, attempt, cursor)
@@ -796,6 +821,31 @@ class TaskHost:
                             os.killpg(process.pid, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
+                if model_job is not None and process.poll() is None and cancel_started is None:
+                    if now - model_job["started"] >= _MODEL_RECEIPT_SECONDS:
+                        raise TaskHostError("Model receipt remained unavailable", code="model_outcome_unknown")
+                    if model_job["inflight"]:
+                        try:
+                            response = model_job["responses"].get_nowait()
+                        except queue.Empty:
+                            pass
+                        else:
+                            model_job["inflight"] = False
+                            if isinstance(response, TaskRunClientUnavailable):
+                                # Same immutable turn+digest only: gateway's durable
+                                # claim returns the existing operation, never re-infers.
+                                model_job["next_poll"] = now + _MODEL_POLL_SECONDS
+                            elif isinstance(response, Exception):
+                                raise response
+                            elif response["operation_status"] == "pending":
+                                # A pending receipt is not a child result. Keep control
+                                # polling and wait for actual durable provider evidence.
+                                model_job["next_poll"] = now + _MODEL_POLL_SECONDS
+                            else:
+                                finish_model(response)
+                                model_job = None
+                    if model_job is not None and not model_job["inflight"] and now >= model_job["next_poll"]:
+                        launch_model_call(model_job)
                 events = selector.select(timeout=0.1)
                 for key, _ in events:
                     chunk = os.read(key.fileobj.fileno(), MAX_FRAME_BYTES + 1)

@@ -73,7 +73,7 @@ class FakeClient:
     def attempt(self, body):
         self.events.append("attempt")
         self.attempt_body = copy.deepcopy(body)
-        return {"operation_status": "confirmed"}
+        return {"schema_version": "1.0", "operation_status": "confirmed", "request_id": body["runtime_attempt_id"]}
 
     def control(self, body):
         return {
@@ -477,7 +477,8 @@ def test_model_admission_waits_for_report_storage_recovery(
         "schema_version": "1.0",
         "task_id": assignment.task_id,
         "turn_id": "placeholder",
-        "operation_status": "pending",
+        "operation_status": "confirmed", "handoff": "confirmed",
+        "content": [{"type": "text", "text": "Done"}], "stop_reason": "end_turn",
     }
 
     def model(body):
@@ -1128,8 +1129,8 @@ def test_cancel_during_model_precedes_response_after_normal_or_deferred_delivery
         """seen = []
 while True:
     frame = json.loads(sys.stdin.readline()); seen.append(frame['type'])
-    if frame['type'] == 'model.result': break
-assert 'cancel' in seen, seen
+    if frame['type'] == 'cancel': break
+assert 'model.result' not in seen, seen
 """,
     )
     executable.write_text(source)
@@ -1144,3 +1145,130 @@ assert 'cancel' in seen, seen
     assert client.finalize_body["child_exit"]["exit_code"] == 0
     if report_outage:
         assert report_ids[0] == report_ids[1]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_delayed_http_model_keeps_control_live_and_polls_exact_request(
+    tmp_path, monkeypatch, assignment_and_bootstrap, cancel
+):
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import requests
+    from lib.task_run_client import TaskRunClientUnavailable
+
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events, bodies = [], []
+    state = {"started": None, "provider_calls": 0, "control_while_pending": 0}
+
+    class Gateway(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            bodies.append(body)
+            if state["started"] is None:
+                state["started"] = time.monotonic()
+                state["provider_calls"] += 1
+                time.sleep(0.35)  # First HTTP response exceeds the worker read timeout.
+            confirmed = time.monotonic() - state["started"] >= 0.3
+            receipt = {"schema_version": "1.0", "task_id": assignment.task_id, "turn_id": body["turn_id"],
+                "request_digest": body["request_digest"], "automatic_replay_permitted": False,
+                "operation_status": "confirmed" if confirmed else "pending", "handoff": "confirmed" if confirmed else "prepared"}
+            if confirmed:
+                receipt.update(content=[{"type": "text", "text": "Actual provider result"}], stop_reason="end_turn")
+            encoded = json.dumps(receipt).encode()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = FakeClient(bootstrap, events)
+    original_control = client.control
+
+    def control(body):
+        if state["started"] is not None:
+            state["control_while_pending"] += 1
+            client.cancel = cancel
+        return original_control(body)
+
+    def model(body):
+        try:
+            return requests.post(f"http://127.0.0.1:{server.server_port}/model", json=body, timeout=0.06).json()
+        except requests.RequestException:
+            raise TaskRunClientUnavailable("HTTP outcome unknown") from None
+
+    client.control, client.model = control, model
+    executable = child_script(tmp_path, model=True)
+    script = executable.read_text().replace("send(model); sys.stdin.readline()", """send(model)
+answer = json.loads(sys.stdin.readline())
+if answer['type'] == 'cancel':
+    stopped = base('cancelled'); stopped['command_id'] = answer['command_id']; send(stopped); sys.exit(0)
+assert answer['type'] == 'model.result' and answer['operation_status'] == 'confirmed'
+assert answer['content'][0]['text'] == 'Actual provider result'
+""")
+    executable.write_text(script)
+    monkeypatch.setattr("lib.task_host._CONTROL_POLL_SECONDS", 0.02)
+    monkeypatch.setattr("lib.task_host._MODEL_POLL_SECONDS", 0.02)
+    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {
+        "pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda persona: [sys.executable, str(executable)])
+    try:
+        result = host.run(assignment, envelope, heartbeat=FakeHeartbeat(events), acknowledge=lambda: events.append("ack"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+    assert result == (TASK_EXIT_FAILED if cancel else 0)
+    assert client.finalize_body["outcome"] == ("cancelled" if cancel else "completed")
+    assert state["provider_calls"] == 1
+    assert state["control_while_pending"] >= 1
+    assert all(body == bodies[0] for body in bodies)
+    if not cancel:
+        assert len(bodies) >= 2  # Lost first response was followed by durable receipt lookups.
+        assert state["control_while_pending"] >= 2
+    assert events.index("finalize:" + client.finalize_body["outcome"]) < events.index("ack")
+
+
+@pytest.mark.parametrize("status", ["pending", "unknown", "rejected"])
+def test_unconfirmed_attempt_never_starts_child(tmp_path, monkeypatch, assignment_and_bootstrap, status):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events)
+    client.attempt = lambda body: {"schema_version": "1.0", "operation_status": status, "request_id": body["runtime_attempt_id"]}
+    spawned = []
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda persona: spawned.append(persona))
+    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {
+        "pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    assert host.run(assignment, envelope, heartbeat=FakeHeartbeat(events), acknowledge=lambda: events.append("ack")) != 0
+    assert not spawned and "ack" not in events
+
+
+def test_pending_model_receipt_wait_is_bounded_and_never_becomes_fake_success(tmp_path, monkeypatch, assignment_and_bootstrap):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events, bodies = [], []
+    client = FakeClient(bootstrap, events)
+    def pending(body):
+        bodies.append(copy.deepcopy(body))
+        return {"schema_version": "1.0", "task_id": assignment.task_id, "turn_id": body["turn_id"],
+            "request_digest": body["request_digest"], "automatic_replay_permitted": False,
+            "operation_status": "pending", "handoff": "prepared"}
+    client.model = pending
+    executable = child_script(tmp_path, model=True)
+    monkeypatch.setattr("lib.task_host._MODEL_RECEIPT_SECONDS", 0.25)
+    monkeypatch.setattr("lib.task_host._MODEL_POLL_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {
+        "pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda persona: [sys.executable, str(executable)])
+    assert host.run(assignment, envelope, heartbeat=FakeHeartbeat(events), acknowledge=lambda: events.append("ack")) == TASK_EXIT_FAILED
+    assert client.finalize_body["error"]["code"] == "model_outcome_unknown"
+    assert client.finalize_body["error"]["total_usd"] is None
+    assert len(bodies) >= 2 and all(body == bodies[0] for body in bodies)
