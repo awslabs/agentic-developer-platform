@@ -33,9 +33,11 @@ Collapsing these into "done" is the specific failure this document exists to pre
 | **Deployed protection** | The control is running in a named environment. |
 | **Acceptance resolved** | The scan day's acceptance for that finding is signed off. |
 
-Across this whole snapshot, **no finding reaches "deployed protection" or "acceptance
-resolved"** on retrievable evidence. The AWS epic itself records "Code delivery does not
-imply live rollout", and its execution constraints authorise "merge only; no deployment".
+Across this whole snapshot, **exactly one package reaches "deployed protection"** on
+retrievable evidence (AWS A01 #5653, where the auth rollout was applied to the dev gateway
+and rejection responses were captured). **No package reaches "acceptance resolved."** The AWS
+epic itself records "Code delivery does not imply live rollout", and its execution constraints
+authorise "merge only; no deployment".
 
 ---
 
@@ -52,6 +54,18 @@ Re-checked directly rather than carried over from the issue text.
 
 Of S21's 17 named blockers, **12 are closed and 5 remain open**. The five open ones are the
 live gate on S21's integration work.
+
+The 12/21 figure was independently recounted issue-by-issue across #5600–#5620 (12 CLOSED,
+9 OPEN). An intermediate check during this exercise suggested 15/21; that was wrong and is
+recorded here so it is not propagated.
+
+**Eleven packages were never dispatched at all.** Six daily packages (S10 #5609, S11 #5610,
+S12 #5611, S13 #5612, S18 #5617) and six AWS packages (A03 #5655, A09 #5663, A11 #5666,
+A12 #5668, A13 #5669, A14 #5670) have **zero comments** — confirmed not-started rather than
+merely unlinked. Three of these are hard S21 gates (S12, S18, plus S14/S15/S16 which are in
+flight). On the AWS side the untouched set is dependency-critical: A03 is the deepest node
+(depends on A02, A06, A12, A14) and the A10→A11→A12/A13→A14→A03 chain is stalled behind a
+draft PR.
 
 **A closed package is not a fixed vulnerability.** The AWS plan states this as a constraint
 ("A closed issue is not evidence that a vulnerability was fixed"), and two closures in this
@@ -204,6 +218,7 @@ Five predecessors remain OPEN: **S12 #5611, S14 #5613, S15 #5614, S16 #5615, S18
 | 13 suppressed critical/high Semgrep records | **No disposition exists.** The inventory carries `suppression.kind: inSource` but **null file, line and justification** — so no location-specific evidence is available from it. S21's acceptance requires per-location evidence for a false positive; that evidence must be recovered from source, not from this inventory. |
 | 8 Grype CVSS disagreements | Enumerated (native low/medium vs CVSS 7.5–9.1: helm 9.1, certifi 7.5, protobuf 7.5, openssh-client/server/sftp 7.8, jsonwebtoken 7.5 ×2) but **`vulnerability_id` is null in every record** — the advisory IDs must be recovered from the source SARIF before they can be dispositioned. |
 | 335 of 860 S20 records verdicted `needs-followon` | **No follow-on issues appear to have been filed.** A search for the 11 proposed follow-on packages (FOLLOWON-A…I) returned no matching issues. The largest, FOLLOWON-E, covers 244 k8s pod-hardening records. **These 335 records currently have no GitHub owner.** |
+| Scanner tooling gaps flagged *to* S21 by owners | **Open.** S09 flagged that the pinned `bandit[sarif]==1.7.9` and `.banditrc` are absent from the checkout. A18 found the checkov allowlist is **inert** because the workflow passes `--directory .`. A24 found cfn-nag is not PR-triggered. All three affect whether S21's final scan is trustworthy, and all three are scanner-configuration matters in S21's lane. |
 | `.grype.yaml` review date | **Lapsed.** The file's own header sets "Next review: 2026-08-22"; it is 2026-09-24 and 189 ignore entries are in force. Each entry removes findings from SARIF output entirely, so a lapsed review silently suppresses. S21 owns this. |
 | 16 older primary tickets | All 16 re-checked live and **all still OPEN** (#4701–#4730). None closed by this scan day. |
 
@@ -249,9 +264,81 @@ authorisation to run it.
 
 ## 7. Per-package evidence detail
 
-See the ledger tables below for the per-issue pull-request and validation mapping.
+Every pull-request number below was resolved from `--head agent/issue-<n>` and confirmed with
+`gh pr view`; none was inferred from prose. "Validated" reports what the owner recorded, not
+an independent re-run by me.
 
-<!-- PER-PACKAGE TABLES -->
+### 7.1 Daily packages S01–S21
+
+| Pkg | Issue | State | PR | Merge | Validated | Deployed | Notes |
+|---|---|---|---|---|---|---|---|
+| S01 | 5600 | CLOSED | 5725 | `76c91c24` | partial | no | Owner disclosed Docker/Syft/Grype unavailable — "the analysis predicts what a scan will report; it is not a scan". Controller image *was* later built (digest in `S01-image-evidence.json`) but the lock still says "no build has run yet". |
+| S02 | 5601 | CLOSED | 5783 | `27a5b943` | yes | no | API suite 1203 passed / 25 skipped. Rebuilt-image scan + SBOM criterion **not satisfied**. |
+| S03 | 5602 | CLOSED | 5724 | `c742c087` | yes | no | **Doc-only PR** — touched no lock/manifest/infra file. Re-pin "handed over as data" to S21. Live startup/persistence unverified. |
+| S04 | 5603 | CLOSED | 5774 | `ebde4b40` | yes | no | 2060/2067 jest pass, 7 failures pre-existing; 30 new tests. |
+| S05 | 5604 | CLOSED | 5704 | `9614f881` | yes | n/a | Validated-as-by-design: the 3 Semgrep hits persist by rule design; per-location disposition, no rule suppressed. |
+| S06 | 5605 | CLOSED | 5701 | `ccff2bea` | yes | no | `npm audit --include=dev` high 4→0. Reviewer approval hit a GitHub 422 self-review limit; published as COMMENTED. |
+| S07 | 5606 | CLOSED | 5706 | `32c06c1a` | yes | no | 5 high → 0 critical/0 high across 582 deps; `tsc --noEmit` clean. |
+| S08 | 5607 | CLOSED | 5753 | `4275564c` | yes | n/a | Reproduced with the pinned Bandit 1.7.9 + repo `.banditrc`; `nosec skipped: 0`. No suppression added. |
+| S09 | 5608 | CLOSED | 5765 | `c2553b5f` | yes | no | `bandit -t B102` 1 → 0 results. Flagged to S21: pinned `bandit[sarif]==1.7.9` and `.banditrc` absent from checkout. |
+| S10 | 5609 | **OPEN** | none | — | no | no | **Zero comments — never dispatched.** Identity gate cited by S15 and by AWS A01/A03/A05. |
+| S11 | 5610 | **OPEN** | none | — | no | no | **Zero comments — never dispatched.** |
+| S12 | 5611 | **OPEN** | none | — | no | no | **Zero comments — never dispatched. Hard S21 gate.** Also owns 27 S20 records. |
+| S13 | 5612 | **OPEN** | none | — | no | no | **Zero comments — never dispatched.** |
+| S14 | 5613 | **OPEN** | **5850 open** | — | yes | no | CI clean (3 success / 2 skipped), **no review submitted**. Owner: "none of the narrowed IAM has been applied to any account". Owns 27 S20 records. **S21 gate.** |
+| S15 | 5614 | **OPEN** | **5851 open** | — | yes | no | CI green (3 success) but **CHANGES_REQUESTED** by the operator — the blocker is the review verdict, not CI. Owner: "code awaiting review — not merged, not deployed, not verified in a cluster". Egress containment currently unowned. **S21 gate.** |
+| S16 | 5615 | **OPEN** | **5857 open** | — | yes | no | **CI red: 2 FAILURE (Lint, Test)**, 7 success, 5 skipped. Owner: "nothing closed … pending review and live acceptance". **S21 gate.** |
+| S17 | 5616 | CLOSED | 5758 | `eed0fbe7` | yes | no | 143 passed / 7 pre-existing `libmagic` ImportErrors verified identical on clean main. gVisor, image build and CI wiring disclosed as **open prerequisites**. |
+| S18 | 5617 | **OPEN** | none | — | no | no | **Zero comments — never dispatched. Hard S21 gate.** |
+| S19 | 5618 | CLOSED | 5756 | `42fbe6cd` | yes | n/a | 1258 + 19 + 98 tests pass. Corrected tooling is the precondition for S21's final scan. |
+| S20 | 5619 | CLOSED | 5702 | `956a60da` | partial | n/a | Doc-only; no module linters apply. 860 records dispositioned; 74 IAM-wildcard records **routed, not resolved**, to S14/S12/S17; accepted-risk and needs-followon verdicts left **for S21 to confirm or overturn**. |
+| S21 | 5620 | **OPEN** | none | — | — | — | No implementation PR. This ledger is read-only preparation only. |
+
+### 7.2 AWS packages A01–A24
+
+18 of 24 merged. Every merged package explicitly disclaims live deployment.
+
+| Pkg | Issue | State | PR | Merge | Validated | Notes |
+|---|---|---|---|---|---|---|
+| A01 | 5653 | CLOSED | 5737 | `6455f8b5` | yes | **The one package with real live evidence** — the auth rollout was applied to the dev gateway (acct 879318057152) and forged-identity 403 / direct 401 captured across replicas. |
+| A02 | 5682 | CLOSED | 5786 | `3cb303b0` | yes | 1202 passed / 25 skipped. NetworkPolicy portion blocked on #4999. |
+| A03 | 5655 | **OPEN** | none | — | no | **Zero comments — never dispatched.** Deepest node: depends on A02, A06, A12, A14. |
+| A04 | 5683 | CLOSED | 5739 | `a5f3570c` | yes | 4018 passed / 11 skipped module-wide. No live secret rotated. |
+| A05 | 5656 | CLOSED | 5787 | `058745bc` | yes | 1558 passed / 67 skipped. Owner states **live acceptance is PENDING**. |
+| A06 | 5658 | CLOSED | 5790 | `e6e8f322` | yes | 2089 passed. IAM read-prefix narrowing is **code only, not applied**. |
+| A07 | 5660 | CLOSED | 5742 | `a38cecbc` | yes | 350 chat + 106 Lambda ownership tests, TS build, CI green. |
+| A08 | 5662 | CLOSED | 5721 | `1786f856` | yes | 143 tests pass. Finding `f-a7de2523-…` **should stay open** pending a deployed-agent E2E check. |
+| A09 | 5663 | **OPEN** | none | — | no | **Zero comments — never dispatched.** |
+| A10 | 5664 | **OPEN** | **5848 draft** | — | partial | **Draft PR**, cannot merge as-is; no submitted review. Blocks A11→A12/A13→A14→A03. |
+| A11 | 5666 | **OPEN** | none | — | no | **Zero comments — never dispatched.** |
+| A12 | 5668 | **OPEN** | none | — | no | **Zero comments — never dispatched.** Feeds A03. |
+| A13 | 5669 | **OPEN** | none | — | no | **Zero comments — never dispatched.** |
+| A14 | 5670 | **OPEN** | none | — | no | **Zero comments — never dispatched.** Feeds A03. |
+| A15 | 5671 | CLOSED | 5826 | `20612976` | yes | 1342 passed; 6 failures reproduced identically on main. "No deployment contribution." |
+| A16 | 5672 | CLOSED | 5762 | `69bd15f4` | yes | 969 tests; terraform fmt/validate clean. Captured logs not yet triaged. |
+| A17 | 5673 | CLOSED | 5824 | `c4635f45` | partial | No headline pass count; local skips had masked 2 failures until a py3.11 CI re-run. Live/E2E unrun; `events` table has **no retention policy** now that denials are recorded too. |
+| A18 | 5674 | CLOSED | 5767 | `d2646593` | yes | 69 guard tests, mutation-checked. Live acceptance open. Design item 6 (checkov allowlist) deliberately not implemented — **the allowlist is inert because the workflow passes `--directory .`**. |
+| A19 | 5684 | CLOSED | 5741 | `aacfabfa` | yes | 28 RBAC manifest tests + 4038 module-wide; guards mutation-tested. |
+| A20 | 5675 | CLOSED | 5768 | `70c8d6b4` | partial | **Weakest merged validation** — only 30 infra tests; image/cluster checks disclosed un-runnable. "PR open for review, not deployed." |
+| A21 | 5685 | CLOSED | 5755 | `a6fcb67e` | yes | terraform fmt/validate pass; live deployment out of scope. |
+| A22 | 5676 | CLOSED | 5785 | `8d9e767e` | yes | 4641 + 1207 + 41 tests pass. **Every environment needs its CA bundle provisioned *before* the TLS default flips**, or the service refuses to start. |
+| A23 | 5686 | CLOSED | 5726 | `e9ef11f3` | yes | 15868 gateway tests pass. Guard stays **inert for users until the CLI artifacts are next published**. |
+| A24 | 5687 | CLOSED | 5708 | `4457a3b4` | yes | 85 unit tests, cfn-lint and ruff clean. **cfn-nag never ran** (not PR-triggered). Found `budgets:DeleteBudget` is not a real IAM action, so a copied `Deny` silently failed open. |
+
+### 7.3 Rollout blockers that must not be lost at closure
+
+These are recorded by their owners and would silently disappear if closure were inferred from
+merge status:
+
+- **A23** — guard inert until `bg-gateway-proxy` CLI artifacts are republished.
+- **A22** — CA bundle must be provisioned per environment *before* the TLS default flips.
+- **A08** — finding `f-a7de2523-ae6a-4230-8ed7-cf4380d30ade` stays open pending a deployed-agent check.
+- **A18** — checkov allowlist inert due to `--directory .`; design item 6 unimplemented.
+- **A24** — cfn-nag is not PR-triggered, so CFN linting rests on local cfn-lint alone.
+- **A17** — `events` table has no retention policy.
+- **S17** — gVisor, image build and CI wiring remain open prerequisites on a *closed* issue.
+- **S14** — no narrowed IAM has been applied to any account.
+- **S02** — rebuilt-image scan and SBOM criterion unsatisfied on a *closed* issue.
 
 ---
 
