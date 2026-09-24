@@ -314,6 +314,223 @@ def test_publishes_liveness_as_an_exact_path_for_the_human_positive_control(harn
     assert paths.get("/ready") == "Exact", sorted(paths)
 
 
+# =============================================================================
+# The ACCEPTANCE endpoints, read from the code that calls them
+# =============================================================================
+# The published set was previously argued from `/me/budget` alone, and it was
+# incomplete: the merged #5825 evaluator and #3968's seed-and-count call
+# agent-control and stats endpoints that had no rule here, so each reached the
+# ALB's default action and returned 404. A 404 is not a soft failure for those
+# collectors -- it is recorded as a failed control-plane probe, so the acceptance
+# evidence this component exists to make obtainable was unobtainable.
+#
+# These tests derive the required paths from the CALLERS' own source rather than
+# restating them, so a rename on either side fails here instead of surfacing as an
+# unexplained 404 during a live run. Where a caller file is absent (a different
+# checkout state) the test SKIPS with the reason rather than passing quietly -- a
+# silent pass is how the original omission survived.
+
+GATEWAY_SRC = COMPONENT.parent.parent / "src"
+REPO_ROOT = COMPONENT.parents[3]
+EVALUATOR = REPO_ROOT / "platform" / "scripts" / "agent-control-eval.py"
+SEED_AND_COUNT = (
+    REPO_ROOT / "platform" / "scripts" / "operator" / "wave2" / "31-seed-and-count.py"
+)
+
+
+def _source(path: Path) -> str:
+    if not path.exists():
+        pytest.skip(f"{path} is not present in this checkout — cannot trace its callers")
+    return path.read_text()
+
+
+def _matches(path: Path, pattern: str) -> set[str]:
+    return set(re.findall(pattern, _source(path)))
+
+
+def _covers(paths: dict, request_path: str) -> bool:
+    """Whether the published rule set would route `request_path`, by ALB semantics.
+
+    Exact matches the whole path; Prefix matches on SEGMENT boundaries (so /me does
+    not match /membership). Implemented here rather than assumed because the whole
+    point of these tests is that a rule which does not actually cover the requested
+    path is a 404.
+    """
+    for rule, kind in paths.items():
+        if kind == "Exact" and request_path == rule:
+            return True
+        if kind == "Prefix" and (request_path == rule
+                                 or request_path.startswith(rule.rstrip("/") + "/")):
+            return True
+    return False
+
+
+def test_publishes_every_control_path_the_merged_evaluator_calls(harness):
+    """#5825's evaluator declares BOTH HTTP adapters onto the one control service
+    (platform/scripts/agent-control-eval.py, ADAPTERS) and six of its checks iterate
+    `ADAPTERS.items()`.
+
+    So publishing only `/activity/...` would leave half of every one of those checks
+    404ing -- and since the pairing exists precisely to prove "the two HTTP edges did
+    not drift", a 404 on one side does not weaken the check, it voids it.
+    """
+    templates = _matches(EVALUATOR, r'"(/(?:activity|orchestration)/[^"]*)"')
+    assert templates, (
+        "no control path templates found in the evaluator — the pattern this test "
+        "traces with has drifted from its source")
+
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+
+    for template in sorted(templates):
+        # Substitute the evaluator's own placeholders with values of the shape it
+        # sends, so what is checked is a REQUEST PATH and not a template string.
+        request = (template
+                   .replace("{run_id}", "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")
+                   .replace("{verb}", "pause"))
+        assert _covers(paths, request), (
+            f"{request} (from the evaluator's {template}) is not routed by "
+            f"{sorted(paths)} — it would hit the ALB default action and 404, and the "
+            f"evaluator records that as a failed control-plane probe")
+
+
+def test_publishes_both_control_adapters_and_not_just_the_activity_one(harness):
+    """Stated separately and by name: the original omission was not 'a path was
+    missed' but 'only one adapter was considered', and a set-equality test elsewhere
+    would not say which half is missing."""
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+    run = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+    for request in (f"/activity/invocations/{run}/agent/ping",
+                    f"/activity/invocations/{run}/agent/state",
+                    f"/activity/invocations/{run}/agent/pause",
+                    f"/orchestration/runs/{run}/ping",
+                    f"/orchestration/runs/{run}/state",
+                    f"/orchestration/runs/{run}/pause"):
+        assert _covers(paths, request), f"{request} is not routed by {sorted(paths)}"
+
+
+# The path #3968's 31-seed-and-count.py:166 requests, recorded here as a constant.
+#
+# It is a constant rather than only a grep because that script lives on #3968's
+# branch and is absent from this checkout, so a test that could only read the file
+# would SKIP here and in CI -- and a skipped requirement is indistinguishable from a
+# met one, which is how the original omission survived review. The requirement is
+# therefore asserted unconditionally below, and the grep is a SEPARATE cross-check
+# that runs when the file is present.
+SEED_AND_COUNT_READBACK = "/admin/agent-run-stats"
+
+
+def test_publishes_the_stats_endpoint_3968_reads_its_seeded_counts_back_through(harness):
+    """#3968's 31-seed-and-count.py reads its seeded counts back through
+    /admin/agent-run-stats (line 166, with ?days=..&tenant_id=..). A 404 there makes
+    the seeded count unverifiable rather than wrong -- the run produces no usable
+    evidence and the cause is on this side of the boundary.
+
+    Unconditional: this must hold whether or not their branch is checked out here.
+    """
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+    assert _covers(paths, SEED_AND_COUNT_READBACK), (
+        f"{SEED_AND_COUNT_READBACK} is not routed by {sorted(paths)}")
+    # The query string must not be part of the rule: ALB path matching is on the path
+    # only, so a rule carrying `?days=` would never match the request it was written
+    # for.
+    assert not any("?" in rule for rule in paths), sorted(paths)
+
+
+def test_the_recorded_stats_path_still_matches_3968s_script_when_present(harness):
+    """The cross-check for the constant above. Skips only when their branch is not
+    checked out, and the requirement it guards is already asserted unconditionally --
+    so a skip here loses a drift alarm, never the requirement itself.
+    """
+    urls = _matches(SEED_AND_COUNT, r'\{GATEWAY_URL\}(/[A-Za-z0-9/_.-]+)')
+    assert urls, "no gateway URL found in 31-seed-and-count.py — the trace pattern drifted"
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+    for url in sorted(urls):
+        assert _covers(paths, url), (
+            f"{url} (requested by 31-seed-and-count.py) is not routed by "
+            f"{sorted(paths)} — their script now reads back through a path this ALB "
+            f"does not publish")
+
+
+def test_the_control_and_stats_paths_exist_on_the_pods_own_routers(harness):
+    """The other direction: a rule for a path the pod does not serve would 404 too,
+    just from the application instead of the ALB. Checked against the routers'
+    declarations, since a rule invented from a caller's expectation is still a guess.
+
+    src/activity/routes.py is PREFIX-LESS (APIRouter(tags=["activity"])), so its
+    decorator paths are the full paths; src/orchestration/controls.py declares
+    prefix="/orchestration", so its "/runs/..." decorators mount under that.
+    """
+    activity = _source(GATEWAY_SRC / "activity" / "routes.py")
+    controls = _source(GATEWAY_SRC / "orchestration" / "controls.py")
+
+    assert 'APIRouter(tags=["activity"])' in activity, (
+        "src/activity/routes.py is no longer prefix-less — every path published for "
+        "it must be re-derived")
+    assert 'prefix="/orchestration"' in controls, (
+        "src/orchestration/controls.py no longer declares prefix=/orchestration")
+
+    for decorator in ('"/activity/invocations/{invocation_id}/agent/ping"',
+                      '"/activity/invocations/{invocation_id}/agent/state"',
+                      '"/activity/invocations/{invocation_id}/agent/{action}"',
+                      '"/admin/agent-run-stats"'):
+        assert decorator in activity, f"{decorator} is no longer served by the pod"
+    for decorator in ('"/runs/{run_id}/ping"', '"/runs/{run_id}/state"',
+                      '"/runs/{run_id}/pause"'):
+        assert decorator in controls, f"/orchestration{decorator} is no longer served"
+
+
+def test_admin_is_published_as_one_exact_path_not_as_a_prefix(harness):
+    """`/admin` as a Prefix would publish every admin router the pod mounts --
+    identity recovery, persona-model defaults and posture, bedrock routing,
+    access-request approve/deny, member budgets -- none of which any acceptance step
+    calls. Only the one stats path is needed, so only it is published.
+
+    Same reasoning for `/orchestration`: scoped to `/orchestration/runs` so approval
+    gates and node resume/recovery stay unpublished.
+    """
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+    assert "/admin" not in paths, (
+        "a bare /admin prefix publishes every admin router on the fixture")
+    assert paths.get("/admin/agent-run-stats") == "Exact", sorted(paths)
+    assert "/orchestration" not in paths, (
+        "a bare /orchestration prefix publishes approval gates and node resume")
+    run = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+    for unwanted in ("/admin/identity/recovery", "/admin/persona-models/default",
+                     f"/orchestration/gates/{run}/approve",
+                     f"/orchestration/nodes/{run}/resume"):
+        assert not _covers(paths, unwanted), (
+            f"{unwanted} is reachable on the fixture ALB but no acceptance step "
+            f"calls it — that is surface for no gain")
+
+
+def test_the_new_paths_do_not_widen_the_signed_internal_plane(harness):
+    """Publishing human-plane paths must not make them addressable through the
+    AWS_IAM route. It does not, and the reason is structural rather than a policy:
+    the edge's internal integration forwards to `/internal/{proxy}` -- it PREPENDS
+    the prefix -- so a signed caller's path always lands under /internal.
+
+    Asserted against ../main.tf because it is the property that makes publishing
+    these paths safe; if that integration ever changed to strip a prefix instead
+    (which is what the ORDINARY edge's /agent/{proxy+} route does), this set would
+    need re-reviewing before it stays as is.
+    """
+    main_tf = _source(COMPONENT / "main.tf")
+    assert 'fixture_internal_forward_uri = "http://${local.fixture_alb_dns_discovered}/internal/{proxy}"' in main_tf, (
+        "the internal integration no longer prepends /internal — a signed caller may "
+        "now be able to address the human-plane paths published here, so the "
+        "published set must be re-reviewed")
+
+
 def test_never_publishes_a_catch_all_that_would_strip_sigv4_from_internal(harness):
     """The isolation argument is that /internal is reachable ONLY via the AWS_IAM
     route. A `/` Prefix rule here would forward every path the pod serves --
@@ -341,6 +558,9 @@ def test_publishes_exactly_the_reviewed_path_set_and_nothing_else(harness):
         "/internal": "Prefix",
         "/me": "Prefix",
         "/auth": "Prefix",
+        "/activity/invocations": "Prefix",
+        "/orchestration/runs": "Prefix",
+        "/admin/agent-run-stats": "Exact",
         "/health": "Exact",
         "/ready": "Exact",
     }

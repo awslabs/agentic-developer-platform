@@ -501,7 +501,35 @@ is traced to the router that actually mounts it:
 | `/internal` | Prefix | the trusted plane — reachable **only** through the `AWS_IAM` route |
 | `/me` | Prefix | `/me/budget`, #3968's session probe endpoint. Mounted on a **prefix-less** `APIRouter` in `src/budget/me_routes.py`, so `/me` is the prefix to publish |
 | `/auth` | Prefix | `src/auth/routes.py` (`APIRouter(prefix="/auth")`), including `/auth/me` |
+| `/activity/invocations` | Prefix | the agent-control endpoints `#5825`'s merged evaluator calls: `.../{id}/agent/{ping,state,<verb>}` (`src/activity/routes.py:817,837,857` on a **prefix-less** router) |
+| `/orchestration/runs` | Prefix | the **second** control adapter the same evaluator calls: `.../{id}/{ping,state,<verb>}` (`src/orchestration/controls.py`, `prefix="/orchestration"`) |
+| `/admin/agent-run-stats` | Exact | the endpoint `#3968`'s `31-seed-and-count.py:166` reads its seeded counts back through |
 | `/health`, `/ready` | Exact | liveness, registered at the app root in `src/app.py` |
+
+The last three were **missing**, and their absence did not degrade the evidence — it
+made it unobtainable. Each request reached the listener's default action and returned
+404, which those collectors record as a failed control-plane probe. Two details of
+how they are now published are deliberate:
+
+* **Both control adapters, not just `/activity`.** `agent-control-eval.py`'s
+  `ADAPTERS` declares two HTTP edges onto the one control service and six of its
+  checks iterate both. That pairing exists precisely to show the two edges have not
+  drifted, so a 404 on one side does not half-pass the check — it voids it.
+* **Scoped to the route space, not to its first segment.** A bare `/admin` Prefix
+  would publish every admin router the pod mounts (identity recovery, persona-model
+  defaults and posture, bedrock routing, access-request approve/deny, member
+  budgets); a bare `/orchestration` Prefix would publish approval gates and node
+  resume/recovery. No acceptance step calls any of them, and a fixture exposing more
+  surface than its evidence needs is a wider blast radius for nothing.
+
+Publishing them does **not** widen the signed plane. The edge's `AWS_IAM` integration
+forwards to `/internal/{proxy}` — it *prepends* the prefix — so a signed caller cannot
+address these paths through it at all. (Note this differs from the **ordinary** edge,
+whose `/agent/{proxy+}` route *strips* its prefix; if this component's integration ever
+changed to match, the published set would need re-reviewing. There is a test asserting
+it has not.) All seven human-plane routes authenticate on the pod's JWT — verified
+against `get_current_user` on each, with the four `POST` verbs additionally refusing a
+non-human principal in `authorize_human_session`.
 
 `verify` refuses an unpublished `--human-probe-path` **before** sending anything,
 reading the permitted set out of the template rather than a second hardcoded list

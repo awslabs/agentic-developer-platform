@@ -3029,6 +3029,47 @@ def test_verify_accepts_a_path_below_a_published_prefix(harness):
     assert "app-layer auth decided" in r.stdout
 
 
+@pytest.mark.parametrize("probe", [
+    # The endpoints acceptance actually calls, which the ALB template now publishes.
+    # Parametrized over both control adapters because #5825's evaluator iterates
+    # both (platform/scripts/agent-control-eval.py ADAPTERS), and over the stats path
+    # #3968's 31-seed-and-count.py reads its seeded counts back through.
+    "/activity/invocations/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/agent/ping",
+    "/activity/invocations/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/agent/state",
+    "/orchestration/runs/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/ping",
+    "/orchestration/runs/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0/state",
+    "/admin/agent-run-stats",
+])
+def test_verify_accepts_the_acceptance_endpoints_as_human_probe_paths(harness, probe):
+    """The gate reads the published set out of the template, so publishing these
+    paths must ALSO make them usable as the positive control — otherwise an operator
+    probing the very endpoint acceptance depends on would be refused by this script
+    while the ALB serves it, which is the mirror image of the 404 the gate exists to
+    pre-empt.
+
+    This is what makes the two sides one fact rather than two lists.
+    """
+    env = dict(VERIFY_OK_ENV); env["FAKE_HUMAN_CODE"] = "401"
+    r = harness.run("verify", env,
+                    args=["--wrong-role-profile", "wrongrole",
+                          "--human-probe-path", probe])
+    assert r.returncode == 0, r.stderr
+    assert "app-layer auth decided" in r.stdout
+
+
+def test_verify_still_refuses_admin_paths_outside_the_one_published_endpoint(harness):
+    """`/admin/agent-run-stats` is published as Exact, deliberately: a `/admin`
+    Prefix would publish every admin router the pod mounts. So a sibling admin path
+    must still be refused — if this starts passing, the rule has been widened."""
+    for probe in ("/admin/identity/recovery", "/admin/persona-models/default",
+                  "/admin"):
+        r = harness.run("verify", VERIFY_OK_ENV,
+                        args=["--wrong-role-profile", "wrongrole",
+                              "--human-probe-path", probe])
+        assert r.returncode != 0, f"{probe} was accepted — /admin is no longer Exact"
+        assert "not published by the fixture ALB" in r.stderr
+
+
 def test_verify_does_not_treat_a_prefix_as_a_bare_string_match(harness):
     """`/members` starts with `/me` but is NOT matched by a `/me` Prefix rule:
     Ingress prefix matching is segment-wise. A startswith() check would admit it and

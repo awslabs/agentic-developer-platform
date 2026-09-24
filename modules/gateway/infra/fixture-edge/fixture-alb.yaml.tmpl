@@ -139,6 +139,12 @@ spec:
           # `/me` prefix is what makes their executable session check reach this
           # fixture at all rather than measuring the ordinary deployment.
           #
+          # `/me/budget` is NOT the whole acceptance surface, though, and treating it
+          # as if it were is what left the set below incomplete for two revisions:
+          # the merged #5825 evaluator and #3968's seed-and-count read agent-control
+          # and stats endpoints that had no rule here and therefore 404ed. Those are
+          # published further down, each traced to the line that calls it.
+          #
           # The set is deliberately an ENUMERATION of prefixes, not `/`. A
           # catch-all would forward every path the pod serves -- including
           # /internal itself -- to a target group reachable without SigV4, so the
@@ -177,6 +183,72 @@ spec:
                   number: __PORT__
           - path: /auth
             pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # --- the agent-control endpoints ACCEPTANCE actually calls -----------
+          # These were missing, and their absence made the acceptance evidence
+          # unobtainable rather than merely inconvenient: every one of them reached
+          # the ALB's default action and returned 404, which the collectors record
+          # as a failed control-plane probe.
+          #
+          # Traced to the callers, not guessed:
+          #   * platform/scripts/agent-control-eval.py (#5825, merged) ADAPTERS at
+          #     line 146 declares BOTH HTTP adapters onto the one control service,
+          #     and six checks iterate `ADAPTERS.items()`. So the evaluator calls
+          #     /activity/invocations/{id}/agent/{ping,state,<verb>} AND
+          #     /orchestration/runs/{id}/{ping,state,<verb>}. Publishing only the
+          #     first would leave half of every check 404ing -- and "the two HTTP
+          #     edges did not drift" is precisely what that pairing exists to prove,
+          #     so a 404 on one side is not a partial result, it voids the check.
+          #   * platform/scripts/operator/wave2/31-seed-and-count.py:166 (#3968)
+          #     requests /admin/agent-run-stats?days=..&tenant_id=.. -- its seeded
+          #     counts are read back through that endpoint.
+          #
+          # SCOPED TO THE ROUTE SPACE, NOT TO ITS FIRST SEGMENT. `/admin` as a
+          # Prefix would publish every admin router the pod mounts (identity
+          # recovery, persona-model defaults and posture, bedrock routing,
+          # access-request approve/deny, member budgets); `/orchestration` as a
+          # Prefix would publish approval gates and node resume/recovery. None of
+          # that is needed to obtain this evidence, and a fixture that exposes more
+          # surface than the evidence requires is a wider blast radius for no gain.
+          # So: the exact stats path, and the two control spaces at the segment
+          # where the run id begins.
+          #
+          # These are JWT-authenticated at the pod. Checked rather than assumed:
+          # all six control routes and the stats route depend on
+          # get_current_user (src/activity/routes.py:817,837,857;
+          # src/orchestration/controls.py:1095-1166 via _run_control;
+          # src/activity/routes.py:123) with no router-level dependency override,
+          # and get_current_user only consults an edge-injected X-Caller-Identity
+          # when one is asserted -- which on these paths the edge BLANKS
+          # (../main.tf local.fixture_blank_caller_identity). The four POST verbs
+          # additionally refuse a non-human principal in authorize_human_session
+          # (src/agentauth/human_control.py:50).
+          #
+          # Publishing them here does NOT widen the internal plane. The edge's
+          # AWS_IAM route forwards to `/internal/{proxy}` -- it PREPENDS the
+          # prefix (../main.tf local.fixture_internal_forward_uri), so a signed
+          # caller cannot address these paths through it at all.
+          - path: /activity/invocations
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /orchestration/runs
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /admin/agent-run-stats
+            pathType: Exact
             backend:
               service:
                 name: __SERVICE__
