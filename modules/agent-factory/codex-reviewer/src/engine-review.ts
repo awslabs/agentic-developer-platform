@@ -271,7 +271,10 @@ async function runEngineReviewPass(
       // handles that deletion without trying to add the ignored path anew.
       await git(["add", "--update", "--", "."]);
       if (newFiles.length) await git(["add", "--", ...newFiles]);
-      await git(["diff", "--cached", "--check"]);
+      // A prepared base merge can include existing whitespace in unrelated
+      // upstream fixtures. Check the reviewed PR delta, not everything added
+      // since the stale feature head; keep rejecting new repair whitespace.
+      await git(["diff", "--cached", "--check", baseSha]);
       const reviewedTree = await git(["write-tree"]);
       if (mergeBase && await git(["rev-parse", "MERGE_HEAD"]) !== mergeBase) throw new Error("Protected merge base changed before commit");
       await git(["-c", "core.hooksPath=/dev/null", "commit", "-m", `fix(review): address story #${envelope.issue_number}`]);

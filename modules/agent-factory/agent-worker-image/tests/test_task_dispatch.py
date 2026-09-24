@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -88,7 +89,7 @@ def test_message_id_is_the_invocation_not_a_transport_identifier(task_envelope):
 def test_assignment_is_immutable(task_envelope):
     """A mutable identity is how a superseded generation presents itself as live."""
     assignment = parse_task_envelope(task_envelope)
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         assignment.generation = 99  # type: ignore[misc]
 
 

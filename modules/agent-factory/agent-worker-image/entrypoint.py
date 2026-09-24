@@ -614,6 +614,7 @@ def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
 # heartbeats frees the message (safety margin = 300 - 120 = 180s).
 HEARTBEAT_INTERVAL = int(os.environ.get("HEARTBEAT_INTERVAL", "120"))
 HEARTBEAT_EXTEND = int(os.environ.get("HEARTBEAT_EXTEND", "300"))
+TASK_HEARTBEAT_INTERVAL = 30
 
 
 class VisibilityHeartbeat:
@@ -630,10 +631,18 @@ class VisibilityHeartbeat:
         hb.stop()  # blocks until thread exits
     """
 
-    def __init__(self, queue_url: str, region: str, receipt_handle: str) -> None:
+    def __init__(
+        self,
+        queue_url: str,
+        region: str,
+        receipt_handle: str,
+        *,
+        interval: float | None = None,
+    ) -> None:
         self._queue_url = queue_url
         self._region = region
         self._receipt_handle = receipt_handle
+        self._interval = HEARTBEAT_INTERVAL if interval is None else interval
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._extensions = 0
@@ -647,7 +656,7 @@ class VisibilityHeartbeat:
         self._thread.start()
         logger.info(
             "Heartbeat started (interval=%ds, extend=%ds)",
-            HEARTBEAT_INTERVAL,
+            self._interval,
             HEARTBEAT_EXTEND,
         )
 
@@ -659,7 +668,7 @@ class VisibilityHeartbeat:
         """
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=HEARTBEAT_INTERVAL + 5)
+            self._thread.join(timeout=self._interval + 5)
         logger.info("Heartbeat stopped (total extensions=%d)", self._extensions)
 
     def _run(self) -> None:
@@ -682,7 +691,7 @@ class VisibilityHeartbeat:
         except Exception as exc:
             logger.warning("Heartbeat: failed to create SQS client: %s", exc)
             return
-        while not self._stop_event.wait(timeout=HEARTBEAT_INTERVAL):
+        while not self._stop_event.wait(timeout=self._interval):
             try:
                 extend()
                 self._extensions += 1
@@ -1430,7 +1439,12 @@ def main() -> int:
     if authority_enabled():
         # Lease starts at task assignment, before clone/bootstrap/model startup.
         # Always stop it on early refusal as well as normal harness termination.
-        heartbeat = VisibilityHeartbeat("", os.environ.get("AWS_REGION", "us-east-1"), "")
+        heartbeat = VisibilityHeartbeat(
+            "",
+            os.environ.get("AWS_REGION", "us-east-1"),
+            "",
+            interval=TASK_HEARTBEAT_INTERVAL,
+        )
         try:
             return _main(task_heartbeat=heartbeat)
         finally:
@@ -1477,6 +1491,54 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         region=region,
         message_id=_msg_id_pre,
     )
+
+    # Task API assignments share the protected queue but not the GitHub host
+    # lifecycle. The gateway authenticated and bound this pod before returning
+    # the body; branch here before parse_envelope, installation guards, token
+    # minting, checkout, persona staging, or legacy finalization.
+    from lib.task_dispatch import (
+        TaskDispatchError,
+        is_task_envelope,
+        parse_task_envelope,
+        reject_task_persona_on_legacy_path,
+    )
+
+    if is_task_envelope(_pre):
+        bootstrap_log.step_start(1, "parse_task_envelope", message_id=_msg_id_pre)
+        try:
+            if not authority_enabled() or task_heartbeat is None:
+                raise TaskDispatchError("task assignment requires authenticated acquisition")
+            assignment = parse_task_envelope(_pre)
+        except TaskDispatchError as exc:
+            bootstrap_log.step_error(1, "parse_task_envelope", exc)
+            bootstrap_log.close()
+            logger.error("Task assignment refused: %s", exc)
+            return AGENT_EXIT_RETRYABLE
+        bootstrap_log.step_success(
+            1,
+            "parse_task_envelope",
+            message_id=assignment.message_id,
+            persona=assignment.persona,
+        )
+        bootstrap_log.close()
+        from lib.task_flow import run_task_assignment
+
+        return run_task_assignment(
+            assignment,
+            _pre,
+            heartbeat=task_heartbeat,
+            acknowledge=lambda: _delete_message(queue_url, region, receipt_handle),
+        )
+
+    # A task persona without the discriminator is malformed task work, not a
+    # legacy persona. Refuse before parse_envelope can reach GitHub setup.
+    try:
+        reject_task_persona_on_legacy_path(_pre)
+    except TaskDispatchError as exc:
+        bootstrap_log.step_error(1, "parse_task_envelope", exc)
+        bootstrap_log.close()
+        logger.error("Task assignment refused: %s", exc)
+        return AGENT_EXIT_RETRYABLE
 
     # Step 1: Parse envelope
     bootstrap_log.step_start(1, "parse_envelope", message_id=_msg_id_pre)
