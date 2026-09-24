@@ -11,6 +11,7 @@ import hashlib
 import json
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from worker_observation import observe_worker_pod
@@ -39,6 +40,39 @@ def validate_inputs(envelope, ledger, identity, bundle):
     if request['source_revision'] not in [line.split()[0] for line in heads.splitlines()]:
         raise ValueError('requested source revision is not a bundle head')
     return expected, request
+
+
+
+def observe_termination(command, expected, output, *, timeout=180, clock=time.monotonic, sleep=time.sleep):
+    """Preserve the owned pod's actual exit before its Job TTL removes evidence."""
+    deadline = clock() + timeout
+    path = output / 'pod-termination-observations.jsonl'
+    with path.open('x') as stream:
+        path.chmod(0o600)
+        while clock() < deadline:
+            raw = command('get', 'pod', expected['pod_name'], '--ignore-not-found', '-o', 'json')
+            observation = {'observed_at': datetime.now(timezone.utc).isoformat(),
+                           'pod_uid': expected['pod_uid']}
+            if not raw.strip():
+                observation['absent'] = True
+                stream.write(json.dumps(observation) + '\n'); stream.flush()
+                raise RuntimeError('owned pod disappeared before termination was observed')
+            pod = json.loads(raw)
+            metadata = pod.get('metadata', {})
+            if (metadata.get('uid') != expected['pod_uid'] or metadata.get('name') != expected['pod_name']
+                    or metadata.get('namespace') != expected['namespace']):
+                raise ValueError('termination observation encountered a replacement or foreign pod')
+            observation['status'] = pod.get('status', {})
+            stream.write(json.dumps(observation) + '\n'); stream.flush()
+            if pod.get('status', {}).get('phase') in ('Succeeded', 'Failed'):
+                workers = [c for c in pod['status'].get('containerStatuses', []) if c.get('name') == 'agent-worker']
+                if len(workers) != 1 or type(workers[0].get('state', {}).get('terminated', {}).get('exitCode')) is not int:
+                    raise ValueError('terminal pod is missing its worker exit evidence')
+                (output / 'pod-terminal.json').write_text(json.dumps(pod, indent=2))
+                (output / 'pod-terminal.json').chmod(0o600)
+                return workers[0]['state']['terminated']['exitCode']
+            sleep(1)
+    raise TimeoutError('owned worker is still active; retain its ledger and resume observation, not dispatch')
 
 
 def main():
@@ -116,6 +150,7 @@ def main():
             raise ValueError('successful experiment has no evidence directory')
     check_pod()
     command('exec', target, '-c', 'agent-worker', '--', 'touch', REMOTE + '/collected')
+    observe_termination(command, expected, args.output)
     return int(result['exit_code'])
 
 

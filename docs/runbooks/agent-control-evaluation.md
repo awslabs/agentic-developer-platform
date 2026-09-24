@@ -125,11 +125,9 @@ generation and digests with your fixture's actual ones.
   "environment": "dev-control-fixture-embark1",
   "fixture_isolated": true,
   "tenant_id": "org-fixture-0001",
-
   "gateway_url": "https://gateway.dev.internal",
   "flag_off_gateway_url": "https://gateway-flagoff.dev.internal",
   "invocation_table": "adp-dev-webhook-events",
-
   "live_run_id": "msg-0000000000000001",
   "arrived_at": "2026-09-12T10:00:00Z",
   "generation": 1,
@@ -137,21 +135,22 @@ generation and digests with your fixture's actual ones.
   "terminal_arrived_at": "2026-09-12T10:05:00Z",
   "unknown_run_id": "msg-does-not-exist-0001",
   "aborted_run_id": "msg-0000000000000003",
-
+  "abort_run_id": "msg-0000000000000004",
   "command_id": "3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b",
   "oversize_bytes": 32768,
   "expected_output_digest": "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
-  "allowed_parity_fields": ["control", "registration", "state"],
-
+  "allowed_parity_fields": [
+    "control",
+    "registration",
+    "state"
+  ],
   "source_digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   "deployed_digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-
   "identity_env": {
     "owner": "CONTROL_EVAL_OWNER_SESSION",
     "nonowner": "CONTROL_EVAL_NONOWNER_SESSION",
     "other_tenant": "CONTROL_EVAL_OTHER_TENANT_SESSION"
   },
-
   "artifacts": {
     "provenance": "artifacts/provenance.json",
     "listener_auth": "artifacts/listener_auth.json",
@@ -174,6 +173,19 @@ generation and digests with your fixture's actual ones.
     "wave2_preflight": "artifacts/wave2_preflight.json",
     "security_capture": "artifacts/security_capture.json",
     "teardown_verification": "artifacts/teardown_verification.json",
+    "wave3_preflight": "artifacts/wave3_preflight.json",
+    "abort_finalization": "artifacts/abort_finalization.json",
+    "abort_acknowledgement": "artifacts/abort_acknowledgement.json",
+    "abort_edge_cases": "artifacts/abort_edge_cases.json",
+    "steer_security_matrix": "artifacts/steer_security_matrix.json",
+    "steer_handoff": "artifacts/steer_handoff.json",
+    "steer_queue_bounds": "artifacts/steer_queue_bounds.json",
+    "steer_trust_boundary": "artifacts/steer_trust_boundary.json",
+    "sdk_input_stream": "artifacts/sdk_input_stream.json",
+    "steer_fixture_pr": "artifacts/steer_fixture_pr.json",
+    "steer_retry": "artifacts/steer_retry.json",
+    "wave3_security_capture": "artifacts/wave3_security_capture.json",
+    "wave3_teardown_verification": "artifacts/wave3_teardown_verification.json",
     "steering_delivery": "artifacts/steering_delivery.json",
     "steering_queue": "artifacts/steering_queue.json",
     "steering_trust_boundary": "artifacts/steering_trust_boundary.json",
@@ -187,18 +199,32 @@ generation and digests with your fixture's actual ones.
     "wave4_runtime_comparison": "artifacts/wave4_runtime_comparison.json",
     "wave4_evidence_index": "artifacts/wave4_evidence_index.json"
   },
-
   "resource_teardown": [
     "/opt/adp/fixtures/teardown-control-fixture.sh",
-    "--env", "dev-control-fixture-embark1"
+    "--env",
+    "dev-control-fixture-embark1"
   ],
   "resource_teardown_timeout_seconds": 600,
-
   "cleanup_items": [
-    {"event_id": "msg-0000000000000001", "arrived_at": "2026-09-12T10:00:00Z"},
-    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"},
-    {"event_id": "msg-0000000000000003", "arrived_at": "2026-09-12T10:10:00Z"}
-  ]
+    {
+      "event_id": "msg-0000000000000001",
+      "arrived_at": "2026-09-12T10:00:00Z"
+    },
+    {
+      "event_id": "msg-0000000000000002",
+      "arrived_at": "2026-09-12T10:05:00Z"
+    },
+    {
+      "event_id": "msg-0000000000000003",
+      "arrived_at": "2026-09-12T10:10:00Z"
+    }
+  ],
+  "authorized_fixture_repo": "YOUR_ORG/DISPOSABLE_FIXTURE_REPO",
+  "authorized_fixture_branch": "fixture/steering-pivot",
+  "authorized_fixture_base": "main",
+  "fixture_target_path": "target.txt",
+  "fixture_expected_content": "steered target\n",
+  "fixture_run_id": "YOUR_LIVE_FIXTURE_RUN_ID"
 }
 ```
 <!-- EXAMPLE-CONFIG-END -->
@@ -1444,6 +1470,32 @@ implements W2-03 through W2-05, S5 (#3964) implements W2-06 through W2-09, and
 | W2-09 | AC-A10 | The live run-stats response carries the aborted counter at every level | **S5** |
 | W2-10 | Gate/regression | Wave-2 cleanup and security recheck | **#5825** (defect on #3968) |
 
+### Wave 3 (evaluation #3969)
+
+Wave 3's manifest is registered in full — all twelve IDs from #3969's acceptance
+table — and the predicates are still landing. The "Owner" column is the story that
+must be merged and deployed before the check can be *answered*, which is not the
+same thing as who implements the predicate: W3-05 through W3-11 describe the `steer`
+verb executing, and steer is not in the runtime's implemented verb set until **S6
+#3965**. Those checks report `not_run` naming that story rather than passing
+vacuously — see *Wave 3 is registered; its predicates are still landing* above for
+why the manifest is not shortened to the answerable subset.
+
+| ID | Acceptance IDs | Subject | Owner |
+|---|---|---|---|
+| W3-01 | Gate/regression | Wave-3 preflight: wave 2 accepted, S4 then S6 merged and contained in both deployed components, green named CI, all four implemented capabilities exercised | **#3969** |
+| W3-02 | AC-A1, AC-A2, AC-A8 | Graceful abort finalization: exactly one final comment, `aborted` with `completed_at`, check conclusion `cancelled`, control record revoked, and no later reclassification | **S4 #3963** |
+| W3-03 | AC-A4, AC-A5 | Once-only acknowledgement and no redelivery: the run's own SQS message correlated to one successful `DeleteMessage`, pod exit 0, measured visibility window, terminal-envelope replay starts nothing | **S4 #3963** |
+| W3-04 | AC-A6, AC-A7 | Abort during pause, tool completion and retry backoff; double and concurrent abort; bounded housekeeping; a failed acknowledgement must not report success | **S4 #3963** |
+| W3-05 | AC-S1, AC-S2, AC-S3, AC-S5, AC-S6, AC-S7 | The wave-1 security matrix re-run now that verbs *execute* — a rejected command must have changed nothing | **S6 #3965** |
+| W3-06 | AC-T2, AC-T4 | Steer during a long tool: `202`/pending, handoff at the next boundary, marker within 35s **of the recorded handoff** (not of submission) | **S6 #3965** |
+| W3-07 | AC-T5, AC-T8 | Bounded FIFO: 10 accepted, the eleventh `429`, exact submission/handoff ID *ordering* compared; abort cancels pending; expiry becomes `unknown` with no replay | **S6 #3965** |
+| W3-08 | AC-S8 | The text **actually bound to the SDK** carries the `wrapUntrusted` delimiters, `origin.kind: human` and `shouldQuery: true`; attacker-supplied actor metadata rejected; instruction never elevated to system text | **S6 #3965** |
+| W3-09 | AC-T6 | The real SDK input stream consumes the initial task plus **at least two** later user messages; generator disposed and Query closed — not a source grep or mocks | **S6 #3965** |
+| W3-10 | AC-T3 | In an authorized disposable fixture repo, a steer changes a deterministic artifact, target tests pass, and the resulting PR is merged — PR URL and merge SHA recorded, no manual pod access | **S6 #3965** |
+| W3-11 | AC-T7 | Forced in-process retry delivers the queued steer **exactly once per command**, never replays confirmed handoffs, preserves the session; ambiguous handoff is `unknown` | **S6 #3965** |
+| W3-12 | Gate/regression | Prior-wave regressions green on current code; evidence collected, then exact rows, workloads and test objects removed — a cleanup failure keeps the gate open | **#3969** |
+
 The full manifest keeps `required` at 10, so no subset of the wave can satisfy
 `passed == required` and `not_run == 0`. That guard is unchanged by W2-01 and
 W2-10 landing: it now bites on missing evidence rather than on missing code.
@@ -1478,6 +1530,47 @@ the first because it is a verdict where an observation belongs, the second
 because a map whose keys you choose can only confirm the resources you chose to
 mention, and the whole point of the ledger is that omitting a leaked resource
 must not pass.
+
+## Wave 3 is registered; its predicates are still landing
+
+`--wave 3` registers all twelve checks from evaluation
+[#3969](https://github.com/aws-e/adp/issues/3969) — the whole acceptance table, not
+just the checks that can be answered today. That is deliberate, and it is the one
+thing about wave 3 worth understanding before you run it.
+
+Six of those twelve (W3-05 through W3-11) are about the **`steer` verb executing**.
+At this revision `steer` is not implemented: it is excluded from
+`IMPLEMENTED_CONTROL_VERBS` in `modules/agent-factory/agent/src/control-runtime.ts`,
+the Claude adapter reports `steer: {supported: false}`, and the gateway's
+`SUPPORTED_ACTIONS` omits it — so an authorized steer returns 501 and there is no
+handoff to observe. Steering is owned by **S6 #3965**, and this harness does not
+implement it.
+
+So the honest report while that story is outstanding is twelve `not_run` checks and
+a nonzero exit, each naming who owes it. The alternative — registering only the
+abort checks — is the dangerous edit: `report_is_passing` divides by the manifest,
+so a wave 3 registered with five checks would be a 5/5 wave that **exits 0**, a
+green report for an evaluation whose steering and retry proof does not exist. A
+short wave whose every present check passes is indistinguishable from a complete
+one, which is why the count stays at twelve.
+
+What this means when you run it:
+
+* A nonzero `--wave 3` is **not** necessarily a defect in the deployment. Read
+  `result.json`'s per-check messages: `not_run` naming an owning story is
+  outstanding implementation, while `not_run` naming a missing artifact or an unset
+  identity variable is evidence you can go and collect.
+* Wave 3 cannot be *accepted* before wave 2 is accepted and S4/S6 are merged and
+  deployed. W3-01 asserts both, and asserts them in order — S6's steering
+  integration is built on S4's abort finalization, because abort has to be able to
+  cancel queued steers, so a steering revision that does not contain the abort
+  revision is an integration nobody reviewed as a whole. That is checked as commit
+  **containment**, not by comparing merge dates: two commits on unrelated branches
+  can carry any timestamps at all.
+* Nothing in wave 3 is runnable from CI, for the same reason as waves 1 and 2 — it
+  needs an operator-created isolated fixture and a real credential.
+
+
 
 ### Wave 4 (evaluation #3970)
 
@@ -1636,6 +1729,8 @@ W4-02 refuses one whose `gateway_url` differs from this config's.
 | `detail_refreshed_after_command` | Whether the invocation detail re-read after a command. |
 | `request_destinations`, `request_bodies_contain_pod_address`, `request_bodies_contain_token` | Every destination the browser addressed, and whether any body carried pod coordinates. |
 | `spoofed_identity_rejected` | Whether a spoofed identity was refused. |
+
+Wave 4 acceptance requires accepted Wave 3 evidence.
 
 #### The five operator-collected wave-4 artifacts
 
@@ -1797,6 +1892,7 @@ Wave 3 is registered now, and `--wave 3` runs — but five of its twelve checks 
 predicates, so it reports 5/12 and is not accepted. That is not an oversight in
 wave 4: several wave-4 checks consolidate wave 3's criteria, so wave 4 cannot be
 complete before wave 3 is accepted at 12/12 with its cleanup confirmed.
+
 
 ## Troubleshooting
 

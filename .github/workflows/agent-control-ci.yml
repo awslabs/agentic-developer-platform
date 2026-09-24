@@ -219,6 +219,7 @@ on:
       # the tests together, because they are a single unit: a library change that
       # breaks a script is only visible when both are exercised.
       - 'platform/scripts/operator/wave2/**'
+      - 'platform/scripts/operator/wave3/**'
       # Wave 4 operator collectors (#3970). Same reasoning as wave 2's glob above,
       # and listed for the reason root's finding 5808491910 named: a package no
       # workflow references has no merge check at all. The wave-4 tests in

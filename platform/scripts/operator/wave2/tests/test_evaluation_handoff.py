@@ -54,3 +54,31 @@ def test_refuses_source_not_advertised_by_bundle(inputs):
     with patch('evaluation_handoff.subprocess.check_output', return_value='b' * 40 + ' HEAD\n'):
         with pytest.raises(ValueError, match='bundle head'):
             validate_inputs(*inputs)
+
+
+def test_observer_preserves_actual_exit_before_ttl(tmp_path):
+    import json
+    from evaluation_handoff import observe_termination
+    expected = {'pod_name': 'worker', 'pod_uid': 'owned', 'namespace': 'agents'}
+    def pod(phase, exit_code=None):
+        return json.dumps({'metadata': {'name': 'worker', 'uid': 'owned', 'namespace': 'agents'},
+                          'status': {'phase': phase, 'containerStatuses': [] if exit_code is None else
+                                     [{'name': 'agent-worker', 'state': {'terminated': {'exitCode': exit_code}}}]}}).encode()
+    from unittest.mock import Mock
+    command = Mock(side_effect=[pod('Running'), pod('Succeeded', 0)])
+    assert observe_termination(command, expected, tmp_path, sleep=lambda _: None) == 0
+    records = [json.loads(line) for line in (tmp_path/'pod-termination-observations.jsonl').read_text().splitlines()]
+    assert [r['status']['phase'] for r in records] == ['Running', 'Succeeded']
+    assert json.loads((tmp_path/'pod-terminal.json').read_text())['status']['containerStatuses'][0]['state']['terminated']['exitCode'] == 0
+
+
+@pytest.mark.parametrize('raw, error', [
+    (b'', RuntimeError),
+    (b'{"metadata":{"uid":"replacement","name":"worker","namespace":"agents"}}', ValueError),
+    (b'{"metadata":{"uid":"owned","name":"worker","namespace":"agents"},"status":{"phase":"Failed"}}', ValueError),
+])
+def test_observer_does_not_infer_exit_from_absence_or_phase(tmp_path, raw, error):
+    from evaluation_handoff import observe_termination
+    with pytest.raises(error):
+        observe_termination(lambda *args: raw, {'pod_name':'worker','pod_uid':'owned','namespace':'agents'}, tmp_path)
+    assert not (tmp_path/'pod-terminal.json').exists()
