@@ -17,7 +17,8 @@ from security_image_targets import SUPERPLANE, discover
 
 
 @pytest.fixture
-def source(tmp_path):
+def source(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECURITY_EXECUTOR_PYTHON_IMAGE", "python:3.12-slim@sha256:" + "b" * 64)
     module = tmp_path / SUPERPLANE
     (module / "releases").mkdir(parents=True)
     shutil.copyfile(ROOT / SUPERPLANE / "releases/superplane.lock.yaml",
@@ -136,7 +137,7 @@ def test_external_image_cannot_fall_back_to_a_tag(source):
 
 
 @pytest.mark.parametrize("tool", ["grype", "syft"])
-@pytest.mark.parametrize("failure", [None, "build", "invalid_output"])
+@pytest.mark.parametrize("failure", [None, "build", "invalid_output", "executor_base"])
 def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source, monkeypatch, tool, failure):
     monkeypatch.chdir(source)
     monkeypatch.setenv("SECURITY_IMAGE_SCOPE", "superplane")
@@ -145,6 +146,8 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
     monkeypatch.setenv("ADP_SOURCE_SHA", "a" * 40)
     monkeypatch.setenv("SECURITY_SCANS_BUCKET", "private-test-bucket")
     monkeypatch.setattr(sys, "argv", ["scan_security_images.py", tool])
+    if failure == "executor_base":
+        monkeypatch.delenv("SECURITY_EXECUTOR_PYTHON_IMAGE")
     calls, reports = [], []
     real_run = subprocess.run
 
@@ -154,6 +157,14 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
             return real_run(args, check=True, **kwargs)
         if args[:2] == ["docker", "build"]:
             context = Path(args[-1])
+            if args[args.index("-f") + 1] == str(SUPERPLANE / "executor/Dockerfile"):
+                assert context == Path(".")
+                assert kwargs["cwd"] == source
+                assert args[args.index("--build-arg") + 1] == (
+                    "PYTHON_IMAGE=python:3.12-slim@sha256:" + "b" * 64
+                )
+                assert (source / "modules/harness/jobs").is_dir()
+                assert (source / SUPERPLANE / "executor/Dockerfile").is_file()
             if context.name == "superplane-api":
                 assert (context / "vendor/superplane-auth/superplane_auth/policy.py").is_file()
                 assert (context / "vendor/superplane-contracts/superplane_contracts/emission.py").is_file()
@@ -185,7 +196,7 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
     assert runner.main() == (0 if failure is None else 1)
     report = reports[0]
     assert report["expected"] == 5
-    assert report["succeeded"] == {None: 5, "build": 4, "invalid_output": 0}[failure]
+    assert report["succeeded"] == {None: 5, "build": 4, "invalid_output": 0, "executor_base": 4}[failure]
     assert any(call[:3] == ["docker", "pull", "--platform"] for call in calls)
     uploads = [call for call in calls if call[:3] == ["aws", "s3", "cp"]]
     assert len(uploads) == report["succeeded"] * 3 + 1
@@ -258,6 +269,7 @@ def test_dispatch_only_scope_and_shared_buildspecs():
         build = next(step for step in job["steps"] if step.get("uses") == "./.github/actions/codebuild-run")
         assert "SECURITY_IMAGE_SCOPE" in build["with"]["environment_variables"]
         assert "SECURITY_SCAN_DATE" in build["with"]["environment_variables"]
+        assert "SECURITY_EXECUTOR_PYTHON_IMAGE" in build["with"]["environment_variables"]
         spec = yaml.safe_load((ROOT / f"codebuild/bs-{tool}-scan.yml").read_text())
         assert spec["phases"]["build"]["commands"] == [f"python3 codebuild/scan_security_images.py {tool}"]
 
@@ -282,3 +294,36 @@ def test_summary_runs_on_dispatch_and_no_automated_baseline_refresh():
     for tool in ("checkov", "semgrep", "detect-secrets", "grype", "bandit", "cfn-nag", "npm-audit", "syft"):
         assert tool in summary["needs"]
     assert workflow["concurrency"]["cancel-in-progress"] == "false"
+
+
+@pytest.mark.parametrize("image", ["", "python:3.12-slim", "python@sha256:" + "0" * 64,
+                                  "python@sha256:" + "g" * 64])
+def test_executor_requires_reviewed_base_before_running_tools(source, monkeypatch, image):
+    monkeypatch.setenv("SECURITY_EXECUTOR_PYTHON_IMAGE", image)
+    target = next(t for t in discover(source) if t["dockerfile"].endswith("executor/Dockerfile"))
+    calls = []
+    monkeypatch.setattr(runner, "command", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(ValueError, match="requires reviewed digest-pinned"):
+        runner.scan(target, "grype", source / "result.sarif", source)
+    assert not calls
+
+
+@pytest.mark.parametrize("image,accepted", [
+    ("", True), ("python:3.12-slim@sha256:" + "b" * 64, True),
+    ("python:latest", False), ('$(touch SHOULD_NOT_EXIST)', False),
+    ('image\" name=OTHER,value=x', False),
+])
+def test_workflow_validates_base_before_legacy_override_transport(tmp_path, image, accepted):
+    workflow = yaml.load((ROOT / ".github/workflows/security-scan.yml").read_text(),
+                         Loader=yaml.BaseLoader)
+    for tool in ("grype", "syft"):
+        steps = workflow["jobs"][tool]["steps"]
+        guard_index = next(i for i, step in enumerate(steps)
+                           if step.get("name") == "Validate executor base before CodeBuild transport")
+        build_index = next(i for i, step in enumerate(steps)
+                           if step.get("uses") == "./.github/actions/codebuild-run")
+        assert guard_index < build_index
+        result = subprocess.run(["bash", "-c", steps[guard_index]["run"]], cwd=tmp_path,
+                                env={"SECURITY_EXECUTOR_PYTHON_IMAGE": image}, capture_output=True)
+        assert (result.returncode == 0) is accepted
+        assert not (tmp_path / "SHOULD_NOT_EXIST").exists()

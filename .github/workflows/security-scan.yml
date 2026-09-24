@@ -48,6 +48,9 @@ env:
   ADP_CORRELATION: ${{ inputs.adp_correlation }}
   AWS_REGION: ${{ inputs.region }}
   SECURITY_IMAGE_SCOPE: ${{ inputs.scan_scope }}
+  # Reviewed Python 3.12 base used by the executor release recipe. Missing or
+  # unpinned values fail that required target; there is no tag fallback.
+  SECURITY_EXECUTOR_PYTHON_IMAGE: ${{ vars.ADP_SECURITY_EXECUTOR_PYTHON_IMAGE }}
   SECURITY_SCANS_BUCKET: adp-dev-security-scans-${{ inputs.expected_account_id }}
   STATE_BUCKET: adp-terraform-state-${{ inputs.expected_account_id }}
   RENDEZVOUS_PREFIX: findings/${{ github.run_id }}/${{ github.run_attempt }}
@@ -501,6 +504,18 @@ jobs:
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
+      - name: Validate executor base before CodeBuild transport
+        shell: bash
+        run: |
+          # codebuild-run parses its legacy overrides with eval. Admit only an
+          # image reference here, before it reaches that transport. Empty is
+          # safe to transport and becomes an explicit failed coverage target.
+          if [[ -n "$SECURITY_EXECUTOR_PYTHON_IMAGE" ]] &&
+             [[ ! "$SECURITY_EXECUTOR_PYTHON_IMAGE" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Executor base must be a reviewed digest-pinned image reference"
+            exit 1
+          fi
+
       - name: Set scan date
         run: echo "SECURITY_SCAN_DATE=$(date -u +%Y/%m/%d)" >> "$GITHUB_ENV"
 
@@ -513,7 +528,7 @@ jobs:
           state_bucket: ${{ env.STATE_BUCKET }}
           source_revision: ${{ inputs.adp_source_revision }}
           child_state_uri: s3://${{ env.STATE_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/children/grype.json
-          environment_variables: '"name=GRYPE_VERSION,value=${{ env.GRYPE_VERSION }},type=PLAINTEXT" "name=SECURITY_IMAGE_SCOPE,value=${{ env.SECURITY_IMAGE_SCOPE }},type=PLAINTEXT" "name=SECURITY_SCAN_DATE,value=${{ env.SECURITY_SCAN_DATE }},type=PLAINTEXT" "name=SECURITY_SCANS_BUCKET,value=${{ env.SECURITY_SCANS_BUCKET }},type=PLAINTEXT" "name=SECURITY_EVIDENCE_PREFIX,value=${{ env.EVIDENCE_PREFIX }}/grype,type=PLAINTEXT"'
+          environment_variables: '"name=GRYPE_VERSION,value=${{ env.GRYPE_VERSION }},type=PLAINTEXT" "name=SECURITY_IMAGE_SCOPE,value=${{ env.SECURITY_IMAGE_SCOPE }},type=PLAINTEXT" "name=SECURITY_EXECUTOR_PYTHON_IMAGE,value=${{ env.SECURITY_EXECUTOR_PYTHON_IMAGE }},type=PLAINTEXT" "name=SECURITY_SCAN_DATE,value=${{ env.SECURITY_SCAN_DATE }},type=PLAINTEXT" "name=SECURITY_SCANS_BUCKET,value=${{ env.SECURITY_SCANS_BUCKET }},type=PLAINTEXT" "name=SECURITY_EVIDENCE_PREFIX,value=${{ env.EVIDENCE_PREFIX }}/grype,type=PLAINTEXT"'
           poll_interval: '30'
 
       - name: Pull SARIFs from S3 for Summary job
@@ -865,6 +880,18 @@ jobs:
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
+      - name: Validate executor base before CodeBuild transport
+        shell: bash
+        run: |
+          # codebuild-run parses its legacy overrides with eval. Admit only an
+          # image reference here, before it reaches that transport. Empty is
+          # safe to transport and becomes an explicit failed coverage target.
+          if [[ -n "$SECURITY_EXECUTOR_PYTHON_IMAGE" ]] &&
+             [[ ! "$SECURITY_EXECUTOR_PYTHON_IMAGE" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Executor base must be a reviewed digest-pinned image reference"
+            exit 1
+          fi
+
       - name: Set scan date
         run: echo "SECURITY_SCAN_DATE=$(date -u +%Y/%m/%d)" >> "$GITHUB_ENV"
 
@@ -877,7 +904,7 @@ jobs:
           state_bucket: ${{ env.STATE_BUCKET }}
           source_revision: ${{ inputs.adp_source_revision }}
           child_state_uri: s3://${{ env.STATE_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/children/syft.json
-          environment_variables: '"name=SYFT_VERSION,value=${{ env.SYFT_VERSION }},type=PLAINTEXT" "name=SECURITY_IMAGE_SCOPE,value=${{ env.SECURITY_IMAGE_SCOPE }},type=PLAINTEXT" "name=SECURITY_SCAN_DATE,value=${{ env.SECURITY_SCAN_DATE }},type=PLAINTEXT" "name=SECURITY_SCANS_BUCKET,value=${{ env.SECURITY_SCANS_BUCKET }},type=PLAINTEXT" "name=SECURITY_EVIDENCE_PREFIX,value=${{ env.EVIDENCE_PREFIX }}/syft,type=PLAINTEXT"'
+          environment_variables: '"name=SYFT_VERSION,value=${{ env.SYFT_VERSION }},type=PLAINTEXT" "name=SECURITY_IMAGE_SCOPE,value=${{ env.SECURITY_IMAGE_SCOPE }},type=PLAINTEXT" "name=SECURITY_EXECUTOR_PYTHON_IMAGE,value=${{ env.SECURITY_EXECUTOR_PYTHON_IMAGE }},type=PLAINTEXT" "name=SECURITY_SCAN_DATE,value=${{ env.SECURITY_SCAN_DATE }},type=PLAINTEXT" "name=SECURITY_SCANS_BUCKET,value=${{ env.SECURITY_SCANS_BUCKET }},type=PLAINTEXT" "name=SECURITY_EVIDENCE_PREFIX,value=${{ env.EVIDENCE_PREFIX }}/syft,type=PLAINTEXT"'
           poll_interval: '30'
 
       - name: Pull SBOMs from S3
