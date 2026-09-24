@@ -159,6 +159,24 @@ def _preserved_pair() -> tuple[dict, dict]:
     return _state(records(0)), _state(records(1), serial=85)
 
 
+def _real_shape_pair() -> tuple[dict, dict]:
+    """Prior and resulting state carrying the metadata shape a REAL plan has.
+
+    Verified against a saved plan Terraform actually wrote: the `tfstate-prev` member
+    carries `lineage: ""` and `serial: 0`, while `tfstate` carries the state's real
+    lineage and serial. Root hit this on the live artifact — the guard compared a real
+    snapshot lineage against that empty string and refused a genuine baseline.
+
+    So an empty lineage is ABSENT METADATA, not a different state. This helper exists
+    so the permitted case is asserted against Terraform's real shape rather than
+    against a synthetic pair where both members happen to record a lineage.
+    """
+    prior, result = _preserved_pair()
+    prior["lineage"] = ""
+    prior["serial"] = 0
+    return prior, result
+
+
 def _write_plan(path: Path, prior: dict, result: dict, *, omit: str = "") -> Path:
     """Build a saved-plan file: a ZIP with `tfstate` and `tfstate-prev` members."""
     with zipfile.ZipFile(path, "w") as archive:
@@ -779,6 +797,113 @@ def test_snapshot_identity_change_is_refused(tmp_path: Path) -> None:
     )
     assert f"{STALE}.id" in outcome.stdout
     assert "lt-original00000000" not in outcome.stdout, (
+        "identity mismatches must name the field, never the value."
+    )
+
+
+def test_real_plan_blank_prior_lineage_with_matching_snapshot_passes(
+    tmp_path: Path,
+) -> None:
+    """THE regression for root's second false refusal on the real artifact.
+
+    The exact shape root reported and this worker reproduced against a plan Terraform
+    really wrote: `tfstate-prev` has lineage "" and serial 0; `tfstate` has the
+    non-empty lineage matching the snapshot and the snapshot's serial (84). Every
+    address and identity field agrees. This MUST pass — it is a correct baseline for a
+    correct migration, and refusing it is refusing the artifact the guard exists to
+    approve.
+
+    The previous logic compared the snapshot's real lineage against the empty one and
+    refused. Empty means not recorded; only two conflicting non-empty values mean the
+    states differ.
+    """
+    prior, result_state = _real_shape_pair()
+    assert prior["lineage"] == "" and prior["serial"] == 0, (
+        "the prior member must carry Terraform's real blank metadata, or this test "
+        "is not reproducing the reported shape."
+    )
+    assert result_state["lineage"] and result_state["lineage"] != prior["lineage"], (
+        "the resulting member must carry the real non-empty lineage."
+    )
+
+    snapshot = _state(
+        json.loads(json.dumps(prior["resources"])),
+        lineage=result_state["lineage"],
+    )
+    assert snapshot["serial"] == 84, "the snapshot carries the real serial root saw."
+    snapshot_path = _write_json(tmp_path / "pre.tfstate", snapshot)
+
+    plan = _write_plan(tmp_path / "realshape.tfplan", prior, result_state)
+    outcome = _run_guard(
+        "--plan-file", str(plan), "--preserved-snapshot", str(snapshot_path),
+        tmp_path=tmp_path, stdout=_no_op_plan_json(),
+    )
+    assert outcome.returncode == 0, (
+        "a real saved plan's blank tfstate-prev lineage must not be read as a "
+        f"lineage mismatch. stdout: {outcome.stdout}"
+    )
+
+
+def test_real_shape_with_a_genuinely_different_lineage_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """Accepting the blank-prior shape must not disable the lineage check.
+
+    Same real shape as above, but the snapshot records a DIFFERENT non-empty lineage
+    from the plan's resulting state. Two conflicting non-empty values cannot describe
+    the same state, so this must still refuse — otherwise the fix for the false
+    refusal would have removed the protection instead of correcting it.
+    """
+    prior, result_state = _real_shape_pair()
+    snapshot = _state(
+        json.loads(json.dumps(prior["resources"])),
+        lineage="11111111-1111-1111-1111-111111111111",
+    )
+    snapshot_path = _write_json(tmp_path / "pre.tfstate", snapshot)
+
+    plan = _write_plan(tmp_path / "foreign.tfplan", prior, result_state)
+    outcome = _run_guard(
+        "--plan-file", str(plan), "--preserved-snapshot", str(snapshot_path),
+        tmp_path=tmp_path, stdout=_no_op_plan_json(),
+    )
+    assert outcome.returncode == 1, (
+        "a snapshot whose non-empty lineage conflicts with the plan's resulting "
+        "state is a foreign baseline and must be refused."
+    )
+    assert "lineage" in outcome.stdout
+
+
+def test_snapshot_identity_mismatch_against_resulting_state_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Identity must be compared against BOTH plan members, not only the prior one.
+
+    The prior member agrees with the snapshot; the resulting member re-points the
+    stale record at a different object. Checking only `tfstate-prev` would pass this
+    and approve a plan that moves state onto another resource — the precise loss this
+    guard exists to stop.
+    """
+    prior, result_state = _real_shape_pair()
+    for resource in result_state["resources"]:
+        if resource["type"] == STALE.split(".", 1)[0]:
+            resource["instances"][0]["attributes"]["id"] = "lt-deadbeefdeadbeef0"
+
+    snapshot = _state(
+        json.loads(json.dumps(prior["resources"])),
+        lineage=result_state["lineage"],
+    )
+    snapshot_path = _write_json(tmp_path / "pre.tfstate", snapshot)
+
+    plan = _write_plan(tmp_path / "repointed.tfplan", prior, result_state)
+    outcome = _run_guard(
+        "--plan-file", str(plan), "--preserved-snapshot", str(snapshot_path),
+        tmp_path=tmp_path, stdout=_no_op_plan_json(),
+    )
+    assert outcome.returncode == 1, (
+        "an identity change visible only in the resulting state must be refused."
+    )
+    assert f"{STALE}.id" in outcome.stdout
+    assert "lt-deadbeefdeadbeef0" not in outcome.stdout, (
         "identity mismatches must name the field, never the value."
     )
 

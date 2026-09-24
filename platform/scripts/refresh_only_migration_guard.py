@@ -83,10 +83,17 @@ no ``|| true``: an *unknown* is a refusal, never a pass.
 6. For each of those addresses, the identity fields ``id``, ``arn`` and ``name``
    are unchanged. A changed ``id`` means state now points at a different object.
 7. When ``--preserved-snapshot`` is given, the pre-migration snapshot's managed
-   addresses are all present in the plan's prior state **with the same identity
-   fields**, and the two share a state ``lineage`` when both record one. Address
-   equality alone would accept a baseline taken from a different state, or one
-   whose ``id`` changed before the plan was generated.
+   addresses are all present in **both** plan state members with the same identity
+   fields, and no two of the three documents record *conflicting non-empty*
+   lineages. Address equality alone would accept a baseline taken from a different
+   state, or one whose ``id`` changed before the plan was generated.
+
+   A real saved plan's ``tfstate-prev`` carries ``lineage: ""`` and ``serial: 0``
+   while its ``tfstate`` carries the state's actual lineage and serial. That is
+   Terraform's own shape, verified against a plan it wrote, not a foreign snapshot
+   -- so an empty lineage is *absent metadata*, and comparing a real lineage
+   against it is invalid. Only two differing non-empty values indicate a genuinely
+   different state.
 
 Limits — read these before relying on it
 ----------------------------------------
@@ -462,15 +469,59 @@ def check_preservation(prior: dict[str, Any], result: dict[str, Any]) -> tuple[i
     return len(before), len(after)
 
 
-def check_snapshot(prior: dict[str, Any], snapshot_path: str) -> int:
-    """Refuse if the pre-migration snapshot and the plan's prior state disagree.
+def lineage_of(document: dict[str, Any]) -> str:
+    """The state lineage a document records, or "" when it records none.
+
+    A saved plan's ``tfstate-prev`` member carries ``lineage: ""`` -- Terraform
+    writes the pre-plan member without lineage metadata. So an empty string means
+    *not recorded*, not *a different lineage*, and must never be compared against a
+    real value. A non-string is also treated as absent rather than as a mismatch;
+    malformed metadata is not evidence that the state differs.
+    """
+    lineage = document.get("lineage")
+    return lineage if isinstance(lineage, str) else ""
+
+
+def check_lineage_agreement(candidates: list[tuple[str, dict[str, Any]]]) -> str:
+    """Refuse if two documents record *conflicting non-empty* lineages.
+
+    Only non-empty values carry information (see ``lineage_of``), so this compares
+    the ones that are recorded and ignores the ones that are not. Returns the agreed
+    lineage, or "" when none of the documents recorded one.
+    """
+    recorded = [(label, lineage_of(document)) for label, document in candidates]
+    present = [(label, value) for label, value in recorded if value]
+    if not present:
+        return ""
+
+    _, agreed = present[0]
+    for label, value in present[1:]:
+        require(
+            value == agreed,
+            f"{label} records a different state lineage than {present[0][0]}. Two "
+            "documents recording conflicting non-empty lineages cannot describe the "
+            "same state, so this snapshot cannot serve as this migration's baseline. "
+            "(An empty lineage is absent metadata and is not compared: a real saved "
+            "plan's tfstate-prev legitimately carries one.)",
+        )
+    return agreed
+
+
+def check_snapshot(
+    prior: dict[str, Any], result: dict[str, Any], snapshot_path: str
+) -> int:
+    """Refuse if the pre-migration snapshot and the plan's own states disagree.
 
     Guards two cases the plan's own members cannot show. A resource dropped before
     the plan was generated is absent from both members, so it passes every leg
-    above. And a snapshot that is not actually this state's baseline -- a different
-    lineage, or the same address already re-pointed at another object -- would make
-    the comparison reassuring but meaningless, so identity and lineage are bound
-    too, not just address names.
+    above. And a snapshot that is not actually this state's baseline -- a
+    conflicting lineage, or the same address already re-pointed at another object --
+    would make the comparison reassuring but meaningless, so identity and lineage
+    are bound too, not just address names.
+
+    Identity is compared against **both** plan members. ``tfstate-prev`` is the
+    state the plan was generated from and ``tfstate`` is what applying it produces;
+    a snapshot that agrees with one but not the other is a real discrepancy.
     """
     try:
         with open(snapshot_path, encoding="utf-8") as handle:
@@ -487,40 +538,42 @@ def check_snapshot(prior: dict[str, Any], snapshot_path: str) -> int:
     context = f"preserved snapshot {snapshot_path}"
     require(isinstance(snapshot, dict), f"{context} is not a JSON object.")
 
-    snapshot_lineage = snapshot.get("lineage")
-    prior_lineage = prior.get("lineage")
-    if isinstance(snapshot_lineage, str) and isinstance(prior_lineage, str):
-        require(
-            snapshot_lineage == prior_lineage,
-            f"{context} records a different state lineage than the plan's prior state. "
-            "It is a snapshot of some other state, so it cannot serve as this "
-            "migration's baseline.",
-        )
+    check_lineage_agreement(
+        [
+            (context, snapshot),
+            ("the plan's prior state (tfstate-prev)", prior),
+            ("the plan's resulting state (tfstate)", result),
+        ]
+    )
 
     recorded = managed_instances(snapshot, context)
-    planned = managed_instances(prior, "the plan's prior state (tfstate-prev)")
+    for label, member in (
+        ("the plan's prior state (tfstate-prev)", prior),
+        ("the plan's resulting state (tfstate)", result),
+    ):
+        planned = managed_instances(member, label)
 
-    missing = sorted(set(recorded) - set(planned))
-    require(
-        not missing,
-        f"{len(missing)} managed resource(s) in the preserved snapshot are absent from "
-        f"the plan's prior state: {'; '.join(missing)}. State changed between the "
-        "snapshot and the plan; re-snapshot and re-review.",
-    )
+        missing = sorted(set(recorded) - set(planned))
+        require(
+            not missing,
+            f"{len(missing)} managed resource(s) in the preserved snapshot are absent "
+            f"from {label}: {'; '.join(missing)}. State changed between the snapshot "
+            "and the plan; re-snapshot and re-review.",
+        )
 
-    changed = []
-    for address, instance in sorted(recorded.items()):
-        was = identity_of(instance)
-        now = identity_of(planned[address])
-        for field, value in was.items():
-            if now.get(field) != value:
-                changed.append(f"{address}.{field}")
-    require(
-        not changed,
-        f"{len(changed)} identity field(s) differ between the preserved snapshot and "
-        f"the plan's prior state: {'; '.join(changed)}. State was re-pointed at a "
-        "different object before this plan was generated; investigate before applying.",
-    )
+        changed = []
+        for address, instance in sorted(recorded.items()):
+            was = identity_of(instance)
+            now = identity_of(planned[address])
+            for field, value in was.items():
+                if now.get(field) != value:
+                    changed.append(f"{address}.{field}")
+        require(
+            not changed,
+            f"{len(changed)} identity field(s) differ between the preserved snapshot "
+            f"and {label}: {'; '.join(changed)}. State was re-pointed at a different "
+            "object; investigate before applying.",
+        )
     return len(recorded)
 
 
@@ -537,8 +590,11 @@ def run(args: argparse.Namespace) -> int:
         before, after = check_preservation(prior, result)
 
         if args.preserved_snapshot:
-            recorded = check_snapshot(prior, args.preserved_snapshot)
-            report.append(f"preserved snapshot managed resources: {recorded}")
+            recorded = check_snapshot(prior, result, args.preserved_snapshot)
+            report.append(
+                f"preserved snapshot managed resources: {recorded}, matched against "
+                "both plan state members"
+            )
 
         if args.expect_resources is not None:
             require(
@@ -581,8 +637,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preserved-snapshot",
         default="",
-        help="Optional pre-migration state snapshot to compare addresses, identities "
-        "and lineage against.",
+        help="Optional pre-migration state snapshot. Its addresses and identity fields "
+        "are compared against both plan state members; lineages are compared only "
+        "where recorded (a real plan's tfstate-prev carries an empty one).",
     )
     parser.add_argument(
         "--expect-resources",

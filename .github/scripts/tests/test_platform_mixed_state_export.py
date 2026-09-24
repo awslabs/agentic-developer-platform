@@ -582,6 +582,132 @@ def test_migration_guard_reads_a_real_saved_plan_and_refuses_its_actions(
     )
 
 
+@terraform_required
+def test_real_saved_plan_prior_state_records_no_lineage(
+    initialised_workdir: Path,
+) -> None:
+    """Pin the metadata shape a REAL saved plan carries, because the guard depends on it.
+
+    Terraform writes `tfstate-prev` with `lineage: ""` and `serial: 0`, while `tfstate`
+    carries the state's actual lineage and serial. Root's second false refusal came
+    from the guard reading that empty string as a *different* lineage and rejecting a
+    genuine baseline.
+
+    The guard now treats an empty lineage as absent metadata, which is only correct if
+    this is really Terraform's shape. Asserting it against a plan Terraform wrote is
+    what makes that assumption checkable: if a future version starts populating
+    `tfstate-prev`'s lineage, this fails loudly instead of the guard silently skipping
+    a comparison it could have made.
+    """
+    _place_state(initialised_workdir, migrate_stale=True)
+    planned = _terraform(
+        initialised_workdir, "plan", "-refresh=false", "-input=false", "-out=shape.tfplan"
+    )
+    assert planned.returncode == 0, f"the plan must succeed: {planned.stderr[-400:]}"
+
+    with zipfile.ZipFile(initialised_workdir / "shape.tfplan") as archive:
+        prior = json.loads(archive.read("tfstate-prev"))
+        result = json.loads(archive.read("tfstate"))
+
+    assert prior.get("lineage") == "", (
+        "a real plan's tfstate-prev is expected to record no lineage. If Terraform now "
+        f"populates it, the guard should compare it. Got {prior.get('lineage')!r}."
+    )
+    assert prior.get("serial") == 0, (
+        f"tfstate-prev is expected to carry serial 0. Got {prior.get('serial')!r}."
+    )
+    assert result.get("lineage"), (
+        "tfstate must carry the real non-empty lineage — it is the only member the "
+        "guard can bind a snapshot's lineage against."
+    )
+
+
+# The no-change plan below uses `terraform_data`, a built-in with no provider and no
+# API calls, rather than the AWS fixture. Two reasons, both necessary:
+#
+# * The AWS fixture cannot produce a real PASS. Its state records an add-on the source
+#   does not declare, so a full plan proposes a delete; and a `-target`ed plan is
+#   marked `complete: false` by Terraform, which the guard correctly refuses. Verified
+#   both ways -- so neither shape can reach the snapshot leg.
+# * `terraform_data` can be applied offline, which is what makes a genuine
+#   `tfstate-prev`/`tfstate` pair -- with Terraform's own blank prior lineage -- exist
+#   to check the guard's PASS path against.
+NO_CHANGE_CONFIG = """\
+terraform {
+  required_providers {}
+}
+
+resource "terraform_data" "alpha" {
+  input = "alpha-value"
+}
+
+resource "terraform_data" "beta" {
+  input = "beta-value"
+}
+"""
+
+
+@terraform_required
+def test_migration_guard_passes_a_real_no_change_plan_against_its_own_state(
+    tmp_path: Path,
+) -> None:
+    """The guard's PASS path, on an artifact Terraform wrote, with a real snapshot.
+
+    The strongest available check on root's second false refusal. Everything here is
+    real: Terraform applies the config, the state file becomes the preserved snapshot,
+    and Terraform writes a saved plan proposing nothing. The blank `tfstate-prev`
+    lineage is therefore genuine rather than synthesised, and a refusal would reproduce
+    root's blocker on a real artifact.
+
+    This is also the only leg in either suite that exercises the guard's PASS with
+    `--preserved-snapshot` against real Terraform output. It does NOT show the platform
+    migration is safe -- different config, no AWS, no refresh-only. It shows the
+    snapshot comparison does not reject a true baseline.
+    """
+    workdir = tmp_path / "nochange"
+    workdir.mkdir()
+    (workdir / "main.tf").write_text(NO_CHANGE_CONFIG)
+
+    initialised = _terraform(workdir, "init", "-input=false")
+    assert initialised.returncode == 0, (
+        "`terraform_data` is built in, so init needs no registry: a failure here is "
+        f"not a network issue. stderr: {initialised.stderr[-400:]}"
+    )
+    applied = _terraform(workdir, "apply", "-auto-approve", "-input=false")
+    assert applied.returncode == 0, f"apply must succeed: {applied.stderr[-400:]}"
+
+    snapshot = workdir / "pre-migration.tfstate"
+    shutil.copyfile(workdir / "terraform.tfstate", snapshot)
+
+    planned = _terraform(
+        workdir, "plan", "-refresh=false", "-input=false", "-out=nochange.tfplan"
+    )
+    assert planned.returncode == 0, f"the plan must succeed: {planned.stderr[-400:]}"
+
+    with zipfile.ZipFile(workdir / "nochange.tfplan") as archive:
+        prior = json.loads(archive.read("tfstate-prev"))
+        result = json.loads(archive.read("tfstate"))
+    assert prior.get("lineage") == "" and result.get("lineage"), (
+        "this leg is only meaningful if the real pair carries the blank-prior/"
+        f"non-empty-result shape. Got {prior.get('lineage')!r} / "
+        f"{result.get('lineage')!r}."
+    )
+
+    outcome = _run_migration_guard(
+        workdir, "nochange.tfplan", "--preserved-snapshot", str(snapshot)
+    )
+
+    assert "lineage" not in outcome.stdout, (
+        "the plan's own originating state must never be refused as a foreign lineage. "
+        "That was root's reported false refusal, reproduced here on a real artifact. "
+        f"stdout: {outcome.stdout[-600:]}"
+    )
+    assert outcome.returncode == 0, (
+        "a real plan proposing no changes, checked against the exact state it was "
+        f"generated from, must pass. stdout: {outcome.stdout[-600:]}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The runbook must carry the sequence. A mechanism nobody can follow is not a fix.
 # ---------------------------------------------------------------------------
@@ -610,3 +736,87 @@ def test_runbook_documents_the_refresh_only_migration_sequence() -> None:
         "the runbook must explicitly distinguish the refresh-only state migration from "
         "an ordinary full apply, which would propose destroying the undeclared add-on."
     )
+
+
+def test_runbook_steps_are_not_invoked_with_a_failure_swallowing_handler() -> None:
+    """No step may be invoked as `step || echo ...`. That does not stop the sequence.
+
+    `||` *handles* the failure, so the compound command succeeds, `set -e` has nothing
+    to act on, and the next line runs — including, eventually, the apply. The runbook
+    previously invoked all six steps this way, so every check in it was advisory while
+    reading as fail-stop. Asserted by content because the defect is invisible: the
+    output says STOP and the script exits 0.
+    """
+    body = RUNBOOK.read_text()
+    offenders = [
+        line.strip()
+        for line in body.splitlines()
+        if re.match(r"^\w+ *\|\| *echo", line.strip())
+    ]
+    assert not offenders, (
+        "these step invocations swallow the failure they claim to report; use "
+        f"`|| exit 1` or the `&&` chain instead: {offenders}"
+    )
+
+
+def test_runbook_orchestration_chain_cannot_reach_a_later_step_after_a_refusal() -> None:
+    """Execute the runbook's chaining pattern and prove a refusal is terminal.
+
+    The content assertion above says the bad pattern is gone; this says the replacement
+    actually works. The runbook chains its steps with `&&` inside one function, so this
+    runs that exact shape with a deliberately failing first step and asserts that
+    neither a later step nor a sentinel standing in for the apply is ever reached.
+
+    Without this, "the sequence stops" is a claim about shell semantics that nobody
+    checked — and the previous version of the runbook is proof that such claims can be
+    wrong.
+    """
+    body = RUNBOOK.read_text()
+    assert re.search(r"review_migration\(\) \{", body), (
+        "the runbook must define a single orchestration function; invoking steps "
+        "line by line is what allowed a handled failure to fall through."
+    )
+
+    script = """
+set -euo pipefail
+confirm_account() { echo "REFUSED-ACCOUNT"; return 1; }
+resolve_backend() { echo "REACHED-RESOLVE"; }
+preserve()        { echo "REACHED-PRESERVE"; }
+plan_migration()  { echo "REACHED-PLAN"; }
+inspect_migration() { echo "REACHED-INSPECT"; }
+
+review_migration() {
+  confirm_account \\
+    && resolve_backend \\
+    && preserve \\
+    && plan_migration \\
+    && inspect_migration
+}
+
+if review_migration; then
+  echo "REACHED-APPLY"
+else
+  echo "STOPPED" >&2
+  exit 1
+fi
+"""
+    outcome = subprocess.run(
+        ["bash"], input=script, text=True, capture_output=True, timeout=60, check=False
+    )
+
+    assert outcome.returncode == 1, (
+        "a refused first step must make the whole sequence exit non-zero. "
+        f"Got {outcome.returncode}; stdout: {outcome.stdout!r}"
+    )
+    assert "REFUSED-ACCOUNT" in outcome.stdout, "the failing step must still report."
+    for unreachable in (
+        "REACHED-RESOLVE",
+        "REACHED-PRESERVE",
+        "REACHED-PLAN",
+        "REACHED-INSPECT",
+        "REACHED-APPLY",
+    ):
+        assert unreachable not in outcome.stdout, (
+            f"{unreachable} was reached after a refusal. The chain does not stop, so "
+            "every check downstream of the refusal is decorative."
+        )

@@ -269,11 +269,25 @@ mode `700` and its files mode `600`; put the snapshot and the plans in that same
 directory. Do not use a predictable world-readable path such as
 `/tmp/migrate.tfplan` — on a shared runner any local user can read it.
 
-**A note on the shell.** Every check below must **stop the sequence** when it
-fails. Run each numbered step as the function given, in one shell, and stop at the
-first non-zero return — do not paste a bare `[ ... ] || return 1` at a top-level
-prompt, where `return` is not valid and the next command runs anyway. If you prefer
-a script, start it with `set -euo pipefail`.
+**A note on the shell — read this before running anything.** Every check below must
+**stop the sequence** when it fails, and two plausible ways of writing that do not.
+
+`|| return 1` inside a function exits *that function only*; it does not stop the
+caller. And `step || echo "STOP"` does not stop anything at all — `||` *handles* the
+failure, so the compound command succeeds and `set -e` has nothing to act on:
+
+```bash
+$ bash -c 'set -euo pipefail; f() { return 1; }; f || echo STOP; echo WOULD_APPLY'
+STOP
+WOULD_APPLY        # <-- reached, and the script exits 0
+```
+
+So each step below is invoked with `|| exit 1`, and the whole sequence must run in a
+**dedicated shell** — a script file, or `bash <<'EOF' ... EOF` — never pasted at your
+own interactive prompt, where `exit` would close your session and where a typo in one
+line still lets the next run. Define the functions, then run the orchestration
+function in step 7, which chains them with `&&` so no later step can be reached after
+an earlier refusal. Start the script with `set -euo pipefail`.
 
 **0. Establish the task directory and confirm the account.** Everything keys off
 the account the active profile resolves, so confirm it before touching the backend
@@ -296,12 +310,15 @@ confirm_account() {
     echo "WRONG ACCOUNT: resolved $caller, intended $ADP_ACCOUNT" >&2
     return 1
   fi
-  # The backend holds the state about to be migrated; confirm this account owns it.
+  # The backend holds the state about to be migrated; confirm this account OWNS it.
+  # --expected-bucket-owner is what makes this an ownership check: without it,
+  # head-object proves only that the key is readable, which a bucket in some other
+  # account could also satisfy. S3 returns 403 when the owner does not match.
   aws s3api head-object --bucket "$STATE_BUCKET" --key "$STATE_KEY" \
+    --expected-bucket-owner "$ADP_ACCOUNT" \
     --query 'LastModified' --output text || return 1
-  echo "account $caller, backend s3://$STATE_BUCKET/$STATE_KEY confirmed"
+  echo "account $caller owns backend s3://$STATE_BUCKET/$STATE_KEY; confirmed"
 }
-confirm_account || echo "STOP: do not continue"
 ```
 
 **1. Initialise the backend, and confirm it is the one just verified.** This comes
@@ -331,7 +348,7 @@ print(f"backend confirmed: s3://{got[0]}/{got[1]}")
 EOF
   terraform version   # confirm the AWS provider is >= 6.42.0
 }
-resolve_backend || echo "STOP: do not continue"
+resolve_backend || exit 1
 ```
 
 **2. Preserve, and retain the inputs.** Now that the backend is the confirmed one,
@@ -348,7 +365,7 @@ preserve() {
   chmod 600 "$TASK_DIR/pre-migration.tfstate" || return 1
   python3 -c "import json,os;s=json.load(open(os.environ['TASK_DIR']+'/pre-migration.tfstate'));print('serial',s['serial'],'lineage',s.get('lineage'),'managed',sum(len(r.get('instances',[])) for r in s['resources'] if r.get('mode')=='managed'))"
 }
-preserve || echo "STOP: do not continue"
+preserve || exit 1
 ```
 
 `prepare` writes `platform.tfvars.json` into `$TASK_DIR`, carrying the retained
@@ -374,7 +391,7 @@ plan_migration() {
     -out="$TASK_DIR/migrate.tfplan" || return 1
   chmod 600 "$TASK_DIR/migrate.tfplan"
 }
-plan_migration || echo "STOP: do not continue"
+plan_migration || exit 1
 ```
 
 There is deliberately no `terraform show` here. Step 4 performs the export itself,
@@ -392,7 +409,7 @@ inspect_migration() {
     --preserved-snapshot "$TASK_DIR/pre-migration.tfstate" \
     --expect-resources 136 || return 1
 }
-inspect_migration || echo "REFUSED: do not apply this plan"
+inspect_migration || exit 1   # REFUSED: do not apply this plan
 ```
 
 The guard takes **only the saved plan**, and runs `terraform show -json` on that
@@ -408,10 +425,21 @@ document that is not a plan export or that Terraform marks errored/incomplete, a
 optional field present with the wrong type, a proposed create/update/delete, a
 drift entry proposing `delete`, a state member with no managed resources or a
 duplicated address, a managed address present before and absent after, a changed
-`id`/`arn`/`name`, a snapshot whose addresses, identities or state `lineage`
-disagree with the plan's prior state, or a managed-resource count other than the
-one asserted. Pass `--expect-resources` with the count established for the state
-under review (136 at the time of writing); omit it rather than guessing.
+`id`/`arn`/`name`, a snapshot whose addresses or identities disagree with **either**
+plan state member, a snapshot whose *non-empty* `lineage` conflicts with a
+*non-empty* one the plan records, or a managed-resource count other than the one
+asserted. Pass `--expect-resources` with the count established for the state under
+review (136 at the time of writing); omit it rather than guessing.
+
+**An empty `lineage` is absent metadata, not a mismatch.** A real saved plan's
+`tfstate-prev` member carries `lineage: ""` and `serial: 0`, while its `tfstate`
+carries the state's actual lineage and serial — verified against plans Terraform
+wrote. An earlier version of the guard compared the snapshot's real lineage against
+that empty string and refused a **genuine** baseline. It now compares only lineages
+that are actually recorded, and binds identity against both members; two
+*conflicting non-empty* values are still a refusal, because those cannot describe the
+same state. Do not work around a lineage refusal by editing a state file or a
+snapshot: if two non-empty lineages disagree, you have the wrong baseline.
 
 **An omitted field is not a failure.** Terraform **leaves `resource_changes` out
 entirely** when a plan proposes no changes — which is what a correct
@@ -428,8 +456,8 @@ compare nothing to nothing and pass. Preservation is instead read from the two
 state documents the saved plan carries internally: `tfstate-prev` (before) and
 `tfstate` (the migration's result). That is the artifact pair in which the real
 migration was observed to preserve all 136 managed resources with `id`/`arn`/`name`
-unchanged. Schema-version differences between them are expected and permitted —
-raising them is the point.
+unchanged, in **both** members. Schema-version differences between them are expected
+and permitted — raising them is the point.
 
 **What the guard does not establish:** it reads a saved plan, so it tells you what
 that plan would do to state. It makes no AWS call and cannot confirm the resources
@@ -461,7 +489,7 @@ plan_scoped() {
   terraform show -json "$TASK_DIR/scoped.tfplan" > "$TASK_DIR/scoped.json" || return 1
   chmod 600 "$TASK_DIR/scoped.json"
 }
-plan_scoped || echo "STOP: the export failed — the schema is not normalised"
+plan_scoped || exit 1   # export failed: the schema is not normalised
 ```
 
 Unlike step 4, the `terraform show` here is written out because the scoped-plan
@@ -472,7 +500,50 @@ not be handed to the next check as though it were complete.
 Then enforce the narrow resource-action scope with
 `.github/scripts/verify_scoped_plan.py` before any apply.
 
-**7. Clean up.** The task directory holds state and plans.
+**7. The orchestration — this is what you actually run.** Defining the functions
+above does not run them, and invoking them line by line reintroduces the failure this
+section opened with: any handled failure lets the next line run. Chain them with
+`&&` in **one** function, in a dedicated shell, so a refusal at any step makes every
+later step unreachable rather than merely un-recommended.
+
+Steps 5 and 6 are deliberately **not** in this chain: step 5 is the state-writing
+apply and is root's decision to make after reading step 4's output, not something to
+trigger automatically off a passing guard.
+
+```bash
+review_migration() {
+  confirm_account \
+    && resolve_backend \
+    && preserve \
+    && plan_migration \
+    && inspect_migration
+}
+
+# In a script (with `set -euo pipefail`) or `bash <<'EOF'` — never at your own prompt.
+if review_migration; then
+  echo "REVIEWED: $TASK_DIR/migrate.tfplan is safe to apply. Apply THAT file only."
+else
+  echo "REFUSED at the first failing step above. Do not apply. Do not edit state." >&2
+  exit 1
+fi
+```
+
+Verify the chain stops before you trust it — with a deliberately failing step, no
+later step may run:
+
+```bash
+bash <<'EOF'
+set -euo pipefail
+confirm_account() { echo "wrong account"; return 1; }
+resolve_backend() { echo "REACHED-RESOLVE"; }     # must NOT appear
+review_migration() { confirm_account && resolve_backend; }
+review_migration || { echo "stopped correctly"; exit 1; }
+echo "REACHED-APPLY"                              # must NOT appear
+EOF
+# expected: "wrong account", "stopped correctly", exit 1 — and neither REACHED- line.
+```
+
+**8. Clean up.** The task directory holds state and plans.
 
 ```bash
 shred -u "$TASK_DIR"/*.tfplan "$TASK_DIR"/*.tfstate "$TASK_DIR"/*.json 2>/dev/null || rm -f "$TASK_DIR"/*
