@@ -18,9 +18,18 @@ data "aws_caller_identity" "current" {}
 # list, so the original subnets can never be dropped by this input, and an empty
 # map (the default) reproduces today's subnet set exactly.
 locals {
+  # Taken from the CHECKED data source, never from the raw variable. That is what
+  # puts the subnet postconditions below UPSTREAM of the cluster: the ids the
+  # cluster is planned with are produced by the read that checks them, so no plan
+  # can reach the cluster while skipping the checks. Consuming
+  # var.additional_private_subnet_ids_by_az here instead would leave both reads
+  # off the cluster's dependency graph, and a plan targeting only the cluster
+  # (which is how this change is rolled out) would prune them and accept an
+  # unchecked subnet in silence. The routing read is bound through the cluster's
+  # depends_on for the same reason.
   additional_private_subnet_ids = [
     for az in sort(keys(var.additional_private_subnet_ids_by_az)) :
-    var.additional_private_subnet_ids_by_az[az]
+    data.aws_subnet.additional_private[az].id
   ]
 
   # Order matters for plan stability, not for behaviour: existing subnets first
@@ -63,6 +72,19 @@ data "aws_subnet" "additional_private" {
       # introducing an unreviewed one.
       condition     = length(var.private_subnet_availability_zones) == 0 || contains(var.private_subnet_availability_zones, self.availability_zone)
       error_message = "additional_private_subnet_ids_by_az names a subnet in an availability zone this cluster has no existing private subnet in."
+    }
+
+    postcondition {
+      # EKS requires at least 6 available addresses in every subnet handed to a
+      # cluster (16 recommended), so a subnet below that is rejected by the API and
+      # would fail the update rather than relieve anything.
+      #
+      # POINT-IN-TIME ONLY. This is read at plan time and free addresses move on
+      # their own as pods come and go, so it catches an obviously unsuitable subnet
+      # -- it does NOT establish that capacity will still be there at apply. Recheck
+      # immediately before rollout: docs/runbooks/eks-pod-ip-exhaustion.md §3.
+      condition     = self.available_ip_address_count >= 6
+      error_message = "additional_private_subnet_ids_by_az names a subnet with fewer than the 6 available IP addresses EKS requires; pick one with comfortable headroom (16+)."
     }
   }
 }
@@ -169,7 +191,12 @@ resource "aws_eks_cluster" "main" {
   # Enable logging
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
-  depends_on = [aws_kms_key.eks_secrets]
+  # The route-table read yields no value the cluster consumes, so unlike the
+  # subnet read it cannot enter the graph through subnet_ids. Without this edge a
+  # plan targeting only the cluster prunes it and applies an internet-gateway-routed
+  # or unrouted subnet unchecked. depends_on is what keeps its postconditions
+  # upstream of the cluster in a targeted plan (#5830).
+  depends_on = [aws_kms_key.eks_secrets, data.aws_route_table.additional_private]
 
   tags = merge(var.common_tags, {
     Name                                                   = "${var.name_prefix}-eks-cluster"

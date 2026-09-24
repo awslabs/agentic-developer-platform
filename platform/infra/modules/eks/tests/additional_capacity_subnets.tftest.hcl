@@ -56,23 +56,32 @@ override_data {
 }
 
 # A valid pair: two already-existing private subnets, one per existing AZ, in
-# this VPC, no public IPs, NAT-routed. Overrides are per-key so a single run can
-# make exactly one property wrong below.
+# this VPC, no public IPs, NAT-routed, with free addresses. Overrides are per-key
+# so a single run can make exactly one property wrong below.
+#
+# `id` is set deliberately: the cluster takes its added subnet ids from this
+# CHECKED read rather than from the raw variable (that is what keeps the checks
+# upstream of the cluster), so a mock without an id would not carry the subnet
+# under test into vpc_config.
 override_data {
   target = data.aws_subnet.additional_private["us-east-1a"]
   values = {
-    vpc_id                  = "vpc-00000000000000000"
-    availability_zone       = "us-east-1a"
-    map_public_ip_on_launch = false
+    id                         = "subnet-0aaaaaaaaaaaaaaa1"
+    vpc_id                     = "vpc-00000000000000000"
+    availability_zone          = "us-east-1a"
+    map_public_ip_on_launch    = false
+    available_ip_address_count = 248
   }
 }
 
 override_data {
   target = data.aws_subnet.additional_private["us-east-1b"]
   values = {
-    vpc_id                  = "vpc-00000000000000000"
-    availability_zone       = "us-east-1b"
-    map_public_ip_on_launch = false
+    id                         = "subnet-0bbbbbbbbbbbbbbb2"
+    vpc_id                     = "vpc-00000000000000000"
+    availability_zone          = "us-east-1b"
+    map_public_ip_on_launch    = false
+    available_ip_address_count = 251
   }
 }
 
@@ -200,9 +209,11 @@ run "subnet_in_another_vpc_is_refused" {
   override_data {
     target = data.aws_subnet.additional_private["us-east-1a"]
     values = {
-      vpc_id                  = "vpc-ffffffffffffffff"
-      availability_zone       = "us-east-1a"
-      map_public_ip_on_launch = false
+      id                         = "subnet-0aaaaaaaaaaaaaaa1"
+      vpc_id                     = "vpc-ffffffffffffffff"
+      availability_zone          = "us-east-1a"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 248
     }
   }
 
@@ -223,9 +234,11 @@ run "subnet_in_a_different_az_than_its_key_is_refused" {
   override_data {
     target = data.aws_subnet.additional_private["us-east-1a"]
     values = {
-      vpc_id                  = "vpc-00000000000000000"
-      availability_zone       = "us-east-1b"
-      map_public_ip_on_launch = false
+      id                         = "subnet-0aaaaaaaaaaaaaaa1"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1b"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 248
     }
   }
 
@@ -244,9 +257,11 @@ run "public_ip_assigning_subnet_is_refused" {
   override_data {
     target = data.aws_subnet.additional_private["us-east-1a"]
     values = {
-      vpc_id                  = "vpc-00000000000000000"
-      availability_zone       = "us-east-1a"
-      map_public_ip_on_launch = true
+      id                         = "subnet-0aaaaaaaaaaaaaaa1"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1a"
+      map_public_ip_on_launch    = true
+      available_ip_address_count = 248
     }
   }
 
@@ -265,9 +280,11 @@ run "subnet_in_an_az_without_existing_capacity_is_refused" {
   override_data {
     target = data.aws_subnet.additional_private["us-east-1c"]
     values = {
-      vpc_id                  = "vpc-00000000000000000"
-      availability_zone       = "us-east-1c"
-      map_public_ip_on_launch = false
+      id                         = "subnet-0ccccccccccccccc3"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1c"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 248
     }
   }
 
@@ -345,4 +362,124 @@ run "the_same_subnet_under_two_azs_is_refused" {
   }
 
   expect_failures = [var.additional_private_subnet_ids_by_az]
+}
+
+# ---------------------------------------------------------------------------
+# Insufficient free capacity
+# ---------------------------------------------------------------------------
+
+run "subnet_below_the_eks_minimum_free_addresses_is_refused" {
+  command = plan
+
+  variables {
+    additional_private_subnet_ids_by_az = {
+      "us-east-1a" = "subnet-0aaaaaaaaaaaaaaa1"
+    }
+  }
+
+  # EKS requires >= 6 available addresses in every subnet handed to a cluster, so
+  # adding this one would fail the cluster update instead of relieving anything.
+  # Point-in-time only — the runbook still rechecks immediately before rollout.
+  override_data {
+    target = data.aws_subnet.additional_private["us-east-1a"]
+    values = {
+      id                         = "subnet-0aaaaaaaaaaaaaaa1"
+      vpc_id                     = "vpc-00000000000000000"
+      availability_zone          = "us-east-1a"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 5
+    }
+  }
+
+  expect_failures = [data.aws_subnet.additional_private]
+}
+
+# ---------------------------------------------------------------------------
+# Targeted plans must refuse too (root's reproduced finding, issue #5830)
+# ---------------------------------------------------------------------------
+#
+# This change is rolled out with a plan TARGETING ONLY THE CLUSTER, and Terraform
+# legitimately prunes work the target does not depend on. So the refusals above,
+# which all plan the whole module, do not by themselves establish that the checks
+# run in the plan that is actually applied: with the cluster consuming the raw
+# input variable, `-target=aws_eks_cluster.main` dropped both reads and reported
+# "Missing expected failure" — an unchecked wrong-VPC subnet was accepted in
+# silence. These two runs pin the dependency fix (subnet ids taken from the
+# checked read; the route table bound through the cluster's depends_on) and fail
+# if either edge is ever removed.
+
+run "wrong_vpc_subnet_is_refused_even_when_the_plan_targets_only_the_cluster" {
+  command = plan
+
+  plan_options {
+    target = [aws_eks_cluster.main]
+  }
+
+  variables {
+    additional_private_subnet_ids_by_az = {
+      "us-east-1a" = "subnet-0aaaaaaaaaaaaaaa1"
+    }
+  }
+
+  override_data {
+    target = data.aws_subnet.additional_private["us-east-1a"]
+    values = {
+      id                         = "subnet-0aaaaaaaaaaaaaaa1"
+      vpc_id                     = "vpc-ffffffffffffffff"
+      availability_zone          = "us-east-1a"
+      map_public_ip_on_launch    = false
+      available_ip_address_count = 248
+    }
+  }
+
+  expect_failures = [data.aws_subnet.additional_private]
+}
+
+run "internet_gateway_routed_subnet_is_refused_even_when_the_plan_targets_only_the_cluster" {
+  command = plan
+
+  plan_options {
+    target = [aws_eks_cluster.main]
+  }
+
+  variables {
+    additional_private_subnet_ids_by_az = {
+      "us-east-1a" = "subnet-0aaaaaaaaaaaaaaa1"
+    }
+  }
+
+  # The route table yields no value the cluster consumes, so only the explicit
+  # depends_on edge keeps this refusal in a targeted plan.
+  override_data {
+    target = data.aws_route_table.additional_private["us-east-1a"]
+    values = {
+      routes = [{ cidr_block = "0.0.0.0/0", nat_gateway_id = "", gateway_id = "igw-00000000000000001" }]
+    }
+  }
+
+  expect_failures = [data.aws_route_table.additional_private]
+}
+
+run "a_targeted_plan_still_adds_the_checked_subnets_to_the_cluster" {
+  command = plan
+
+  plan_options {
+    target = [aws_eks_cluster.main]
+  }
+
+  variables {
+    additional_private_subnet_ids_by_az = {
+      "us-east-1a" = "subnet-0aaaaaaaaaaaaaaa1"
+      "us-east-1b" = "subnet-0bbbbbbbbbbbbbbb2"
+    }
+  }
+
+  # The dependency fix must not have turned the rollout plan into a refusal of
+  # valid input: the targeted plan still produces the widened set, additively.
+  assert {
+    condition = aws_eks_cluster.main.vpc_config[0].subnet_ids == toset(
+      concat(var.private_subnet_ids, ["subnet-0aaaaaaaaaaaaaaa1", "subnet-0bbbbbbbbbbbbbbb2"])
+    )
+    error_message = "A targeted cluster plan must still widen the subnet set to the existing subnets plus the checked additions."
+  }
 }
