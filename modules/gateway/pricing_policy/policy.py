@@ -43,7 +43,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 #: The snapshot new code bootstraps from and the migration seed is frozen against.
-CURRENT_SNAPSHOT_VERSION = "2026-09-24.1"
+CURRENT_SNAPSHOT_VERSION = "2026-09-24.2"
 
 #: The snapshot used to price a legacy OpenAI settlement event that carries no
 #: durable pricing decision. Pinned SEPARATELY from CURRENT_SNAPSHOT_VERSION and
@@ -207,7 +207,7 @@ def is_anthropic_model(model_id: str) -> bool:
 
 def is_v2_priced_model(model_id: str) -> bool:
     """Families eligible for versioned pricing; not proof of a published variant."""
-    return is_openai_model(model_id) or is_anthropic_model(model_id)
+    return is_openai_model(model_id) or is_anthropic_model(model_id) or normalize_billing_model_id(model_id) == "moonshotai.kimi-k3"
 
 
 def canonical_billing_model_id(model_id: str, snapshot=None) -> str:

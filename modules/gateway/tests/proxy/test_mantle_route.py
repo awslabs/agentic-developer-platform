@@ -459,3 +459,25 @@ class TestMantleRoute:
         resp = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "x", "stream": True})
         assert resp.status_code == 200
         assert resp.content == b"".join(chunks)
+
+
+@pytest.mark.parametrize("model", ["global.moonshotai.kimi-k3", "us.moonshotai.kimi-k3"])
+def test_kimi_response_route_preserves_tool_and_reasoning_input(token_context, model):
+    stub = StubMantleService(MantleResponse(status_code=200, content=b'{"output":[]}'))
+    app = build_app(stub, ModelResolver(allowed_models_config={token_context.org_id: [model]}), token_context)
+    body = (
+        b'{"model":"'
+        + model.encode()
+        + b'","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}],"reasoning":{"effort":"low"},"max_output_tokens":256}'
+    )
+    response = TestClient(app).post("/openai/v1/responses", content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 200
+    assert stub.calls[0]["body"] == body
+
+
+def test_kimi_route_does_not_override_tenant_deny(token_context):
+    stub = StubMantleService(MantleResponse(status_code=200, content=b"{}"))
+    app = build_app(stub, ModelResolver(allowed_models_config={token_context.org_id: ["openai.*"]}), token_context)
+    response = TestClient(app).post("/openai/v1/responses", json={"model": "global.moonshotai.kimi-k3", "input": "hello"})
+    assert response.status_code == 403
+    assert stub.calls == []

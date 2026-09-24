@@ -558,3 +558,9 @@ class TestNotCapturedIsNullNotASentinel:
         from src.usage.service import UsageService
 
         assert inspect.signature(UsageService.log_request).parameters["client_tool"].default is None
+
+
+def test_kimi_code_client_attribution():
+    from src.proxy.client_tool import normalize_client_tool
+
+    assert normalize_client_tool("kimi-code/2.1.1") == "kimi_code"

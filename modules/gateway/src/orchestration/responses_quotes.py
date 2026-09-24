@@ -121,7 +121,7 @@ class OpenAIResponsesQuoteAdapter:
 
         document = _parse(request.body)
         billing_model = canonical_billing_model_id(_model_id(document))
-        if not is_openai_model(billing_model):
+        if not (is_openai_model(billing_model) or billing_model == "moonshotai.kimi-k3"):
             # This route serves the OpenAI families only. A non-OpenAI id here has
             # no published Responses rate, so there is nothing to bound it with.
             raise refuse(QuoteReason.UNPUBLISHED_MODEL_PRICE, self.capability, "no published bounded Responses quote for this model")
