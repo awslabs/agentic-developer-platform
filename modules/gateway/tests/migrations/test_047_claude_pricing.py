@@ -78,7 +78,7 @@ def test_seed_keeps_fetched_unknown_and_newer_existing_rows():
 
 
 def test_fresh_chain_seeds_complete_combined_generation_and_retries_are_noop(pg_url, connect):
-    upgrade(pg_url, "head")
+    upgrade(pg_url, REVISION)
     conn = connect()
     state = adapter.read_active(conn)
     assert len(state.rows) == 1336
@@ -160,7 +160,7 @@ def test_policy_one_active_generation_can_publish_policy_two_after_schema_upgrad
     conn.autocommit = False
     rows = tuple(
         replace(row, source="pricing_page" if row.model_id.startswith("anthropic.") else row.source, snapshot_version=None)
-        for row in load_snapshot().rates
+        for row in load_snapshot("2026-09-12.2").rates
     )
     generation, _, candidate = adapter.publish(conn, before.revision, rows, frozenset(row.variant_key for row in rows))
     conn.commit()
