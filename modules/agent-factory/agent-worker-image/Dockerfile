@@ -37,7 +37,27 @@ COPY modules/agent-factory/codex-reviewer/src/ ./src/
 RUN npm run build && npm prune --omit=dev
 
 # -----------------------------------------------------------------------------
-# Stage 3: Stage personas and skills
+# Stage 3: Build the Task API investigator task agent (issue #5798)
+#
+# Its own stage with its own lockfile, mirroring codex-builder. The isolation is
+# the point: this package must not share a dependency tree with the Claude or
+# Codex packages, so legacy execution never initializes task-only dependencies and
+# this build cannot move a version out from under them. `npm ci` (not
+# `npm install`) so the lockfile is authoritative. It declares zero runtime
+# dependencies — only the TypeScript toolchain, needed to compile and then pruned —
+# so the final image copies dist/ and package.json with no node_modules at all.
+# -----------------------------------------------------------------------------
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS task-investigator-builder
+
+WORKDIR /build
+COPY modules/agent-factory/task-agents/investigator/package.json modules/agent-factory/task-agents/investigator/package-lock.json ./
+RUN npm ci --include=dev
+COPY modules/agent-factory/task-agents/investigator/tsconfig.json ./
+COPY modules/agent-factory/task-agents/investigator/src/ ./src/
+RUN npx tsc --project tsconfig.json && npm prune --omit=dev
+
+# -----------------------------------------------------------------------------
+# Stage 4: Stage personas and skills
 # -----------------------------------------------------------------------------
 FROM public.ecr.aws/docker/library/debian:trixie-slim AS stager
 
@@ -56,7 +76,7 @@ COPY modules/domain-apps/ /source/domain-apps/
 RUN /stage/stage-personas.sh /source /stage
 
 # -----------------------------------------------------------------------------
-# Stage 4: Final runtime image
+# Stage 5: Final runtime image
 # -----------------------------------------------------------------------------
 # python:3.13-slim-bookworm includes Python 3.13 + pip, based on Debian 12.
 # Uses deb.debian.org (Fastly CDN) for apt — far more reliable than
@@ -229,6 +249,18 @@ COPY --from=codex-builder --chown=agent:agent /build/dist/ /app/codex-reviewer/d
 COPY --from=codex-builder --chown=agent:agent /build/node_modules/ /app/codex-reviewer/node_modules/
 COPY --from=codex-builder --chown=agent:agent /build/package.json /app/codex-reviewer/package.json
 COPY --chown=agent:agent modules/agent-factory/codex-reviewer/prompts/ /app/codex-reviewer/prompts/
+
+# Task API investigator task agent (issue #5798). Same isolation rationale as
+# codex-reviewer above, taken further: the package declares zero runtime
+# dependencies, so there is no node_modules to copy and nothing it can drag into
+# the image. Additive only — the Claude and Codex packages above are untouched,
+# and nothing on the legacy execution path imports anything under /app/task-agents/.
+#
+# The host command that runs it (registered in entrypoint.py's allowlist by T4,
+# issue #5797) is:
+#     node /app/task-agents/investigator/dist/index.js --embedded
+COPY --from=task-investigator-builder --chown=agent:agent /build/dist/ /app/task-agents/investigator/dist/
+COPY --from=task-investigator-builder --chown=agent:agent /build/package.json /app/task-agents/investigator/package.json
 
 # Copy staged personas and skills
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/
