@@ -440,11 +440,13 @@ async def batch_accounting(
     workspace_id: uuid.UUID,
     job_id: uuid.UUID,
     request: Request,
+    response: Response,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ):
     from app.services.workload_accounting import accounting
 
+    response.headers["Cache-Control"] = "no-store"
     return await accounting(request, db, org_id, workspace_id, job_id, kind="batch")
 
 
@@ -453,9 +455,11 @@ async def serving_accounting(
     workspace_id: uuid.UUID,
     dep_id: uuid.UUID,
     request: Request,
+    response: Response,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ):
     from app.services.workload_accounting import accounting
 
+    response.headers["Cache-Control"] = "no-store"
     return await accounting(request, db, org_id, workspace_id, dep_id, kind="serving")
