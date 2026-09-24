@@ -1244,9 +1244,15 @@ must not pass.
 ### Wave 4 (evaluation #3970)
 
 Wave 4's manifest is registered in full — all ten IDs from #3970's acceptance
-table — and S7 (#3966) implements the four whose subject is the dashboard it
-builds. The other six consolidate criteria other stories own, and report
-`not_run` naming that owner.
+table — and **all ten now have predicates**. S7 (#3966) implemented the four whose
+subject is the dashboard it builds; #3970 implements the six that consolidate
+criteria other stories own.
+
+That changes what a wave-4 `not_run` means, and the difference is worth reading
+carefully before you act on one. It used to say *"nobody has written this check
+yet — wait for the owning story"*. It now says *"this check ran and the evidence
+it needs was not there"*, and names the artifact. The first was someone else's
+work to finish; the second is yours to collect.
 
 | ID | Acceptance IDs | Subject | Owner |
 |---|---|---|---|
@@ -1261,13 +1267,24 @@ builds. The other six consolidate criteria other stories own, and report
 | W4-09 | AC-F1, AC-F2 | Flag-off/flag-on runtime comparison with final code; live stats provenance | S5 #3964 |
 | W4-10 | Gate/regression | Evidence index covering exactly all 37 acceptance IDs | operations |
 
-As with wave 2, the full manifest keeps `required` at 10, so the four implemented
-checks cannot satisfy `passed == required` and `not_run == 0` on their own. **A
-complete wave-4 report is not reachable in this revision**, and that is the
-correct state rather than a gap to work around: W4-03 needs steering to be
-routable (S6 #3965 — the gateway's `SUPPORTED_ACTIONS` excludes `steer` today),
-and W4-01 and W4-10 need waves 1–3 accepted, which is an operations act on a
-deployed environment.
+**A complete wave-4 report is still not reachable in this revision**, and that
+remains the correct state rather than a gap to work around. What blocks it is no
+longer missing code:
+
+- **Wave 3 is unregistered here.** W4-01 needs waves 1–3 accepted and W4-10 needs
+  every wave's criteria in the consolidated set, so both report `not_run` naming
+  wave 3. This is the prerequisite that cannot be satisfied by paperwork: a wave-3
+  `result.json` can exist while its manifest does not, and the evaluator still
+  refuses, because acceptance is a property of a registered evaluation.
+- **W4-03 needs steering to be routable** (S6 #3965 — the gateway's
+  `SUPPORTED_ACTIONS` excludes `steer` today).
+- **The browser capture producer** (#5878) is what W4-02/04/07/08 read. The
+  harness consumes it; it does not make it.
+
+So a run against a correct environment in this revision reports eight passed and
+two `not_run`, and exits nonzero. Do not read the eight as "wave 4 is nearly
+done": the two that are missing are precisely the ones that check whether
+everything else adds up.
 
 #### `browser_control_run` (W4-02, W4-04, W4-07, W4-08, wave 4)
 
@@ -1331,6 +1348,153 @@ W4-02 refuses one whose `gateway_url` differs from this config's.
 | `detail_refreshed_after_command` | Whether the invocation detail re-read after a command. |
 | `request_destinations`, `request_bodies_contain_pod_address`, `request_bodies_contain_token` | Every destination the browser addressed, and whether any body carried pod coordinates. |
 | `spoofed_identity_rejected` | Whether a spoofed identity was refused. |
+
+#### The five operator-collected wave-4 artifacts
+
+These are produced by `platform/scripts/operator-wave4/`, not typed by hand. Each
+module asks the system that holds the answer and **omits** any field it could not
+measure, reporting the reason on stderr.
+
+That omission is the design, and it is worth understanding before you are tempted
+to fill a gap in:
+
+> A field that could not be measured is absent. It is never defaulted to `false`,
+> because `verify()` failing and `verify()` never running must not produce the same
+> value. The first is a deployment defect you should fix; the second is a
+> collection problem, and an artifact that reports the wrong one sends you to the
+> wrong place.
+
+A missing key makes its check **fail**, naming the key. (An entirely missing
+artifact is `not_run` instead — nobody recorded that observation, and the harness
+cannot make it from outside the cluster. A present-but-incomplete artifact is a
+claim without its evidence, so it fails.) Neither is something to work around by
+adding the key with a plausible value: the collector refused it for a reason, and
+the reason is in the run's output.
+
+**`wave4_preflight` (W4-01).** Where each field comes from, chosen so the answer is
+not yours to write:
+
+| Key | Source |
+|---|---|
+| `deployed_components` | `git` + `aws ecr describe-images` + `aws codebuild batch-get-builds` |
+| `frontend` | `git` for the revision, plus the **served** assets fetched from the deployment |
+| `prior_waves` | each earlier wave's own `result.json`, summarised as written |
+| `merged_revisions` | `git rev-parse` + `git merge-base --is-ancestor` — "merged" as a graph relation, not a claim |
+| `ci_gates` | `gh run view --json …`, archived verbatim and parsed per job |
+| `browser_identity` | the gateway's own answer to "who is this token" |
+| `ordinary_users_gated`, `ordinary_flags_off` | the live flag surface, read rather than asserted |
+
+`frontend.served_asset_evidence` is the field most worth defending. "Is the
+deployed bundle the revision we think?" cannot be answered from git — git says what
+a revision *contains*, and the question is what the deployment is *serving*. So the
+collector fetches the SPA entry point, extracts the content-hashed asset names the
+HTML references, and compares them against what a build of the claimed revision
+produces. Content hashing is what makes this a fingerprint rather than a name
+check, which is what catches the real case: a cache still serving the previous
+build while every revision field says the new one.
+
+An error page served at the SPA route is the trap here, and it is handled
+explicitly: a 200 whose body references no hashed assets is a **refusal**, not an
+empty set. An empty set would trivially match another empty set and report success.
+
+**The four consolidated artifacts** — `wave4_steering_evidence` (W4-03),
+`wave4_abort_evidence` (W4-05), `wave4_security_matrix` (W4-06) and
+`wave4_runtime_comparison` (W4-09). Each transcribes the evidence the owning wave
+recorded, plus the metadata that makes its **currency** checkable. Shared keys:
+
+| Key | Meaning |
+|---|---|
+| `wave` | Which wave owns the evidence. Emitted from the harness's own spec, so a document filed under the wrong wave produces a mismatch rather than agreement. |
+| `evaluation` | The evaluation that accepted it. Evidence attached to no evaluation cannot be consolidated into one. |
+| `criteria` | Per-AC entries: `status`, `evidence` (a retrievable reference), and `live` (a boolean — read, never inferred). An entry missing any of these is **dropped**, so the criterion reads as unevidenced instead of evidenced by something nobody recorded. |
+| `evidenced_revision` | Full 40-character SHA the observations were taken at. |
+| `evidenced_at` | ISO-8601 instant. Without it, staleness is *unanswerable* rather than absent. |
+
+Plus the per-check keys. Each proof is named **individually** because the wave-4
+rows name them individually: one proof cannot be satisfied by another in the same
+artifact passing, so there is no combined "steering works" field to record.
+
+| Artifact | Additional required keys |
+|---|---|
+| `wave4_steering_evidence` | `fifo_order_proven`, `retry_delivery_proven`, `pending_cap_proven`, `sdk_bound_text_proven`, `fixture_pivot` (the W3-10 pivot: `executed` and `at`), `merged_test_pr` (`merged` and `url`) |
+| `wave4_abort_evidence` | `cancel_left_run_untouched`, `confirmed_abort_terminal`, `repeat_and_double_abort`, `stats_writer_assertions`, `finalized_comment_count` (a **count**, not a boolean), `aborted_renderers` (per-component), `completed_at_observed` |
+| `wave4_security_matrix` | `non_gateway_probe_blocked`, `bundle_scan_supplemental` |
+| `wave4_runtime_comparison` | `flag_off_events_digest`, `flag_on_events_digest`, `differing_fields`, `ordinary_flags_off`, `stats_source`, `stats_response_keys` |
+
+Three of those are live reads rather than transcriptions, and the collectors take
+them from injected lookups:
+
+- `completed_at_observed` — the aborted run's **actual** row (`run_id`, `status`,
+  `completed_at`), read from DynamoDB. This is the difference between a UI that
+  renders a terminal state and a record that is one. A read that cannot say *which*
+  row it saw is refused: it is indistinguishable from a read of a different run.
+- `stats_source` — the provenance of the live stats read (`live`, `endpoint`,
+  `status`).
+- `stats_response_keys` — the keys that response actually carried. Separate from
+  `stats_source` on purpose: a schema can match perfectly on fabricated data, so the
+  key list is not evidence of a live read and the provenance is not evidence of
+  parity. A non-200 records the status **with no key list**, because the keys of an
+  error body are not the response's keys.
+
+Two behaviours here will look like bugs and are not:
+
+- **A recorded `false` is emitted, not refused.** If the source says
+  `fifo_order_proven: false`, the artifact says so and the check fails on it.
+  Refusing it would omit the key and turn *"we looked and it was not true"* into
+  *"we did not look"* — a softer report of a worse fact.
+- **Containment and staleness are not collected.** The evaluator computes both from
+  the commit graph. A recorded `compatible_with_current_revision: true` **is** the
+  conclusion those checks exist to reach, so the artifact carries the two inputs
+  (`evidenced_revision`, `evidenced_at`) and nothing more.
+
+Staleness is why `evidenced_at` matters: if any source surface the criteria cover
+was modified **after** the evidence was taken, the evidence describes code that is
+no longer deployed, and the criterion must be rerun. On a shallow clone git cannot
+answer when a surface last changed, and that case is `not_run` — never "not stale".
+
+**`wave4_evidence_index` (W4-10)** — `criteria` (all 37 ACs, each with `owner`,
+`evaluation`, `revision`, `evidence`, `live`, `status`), `evaluations` (each prior
+wave's acceptance), `compiled_at`, `compiled_revision`, `fixture_identity`.
+
+This is the artifact most worth forging — 37 rows of `{"status": "passed"}`
+satisfies every structural check about shape — so the compiler is built to be
+unable to type one. Every row is **derived**, from exactly one of two places: a
+consolidated artifact's own `criteria` map, or a prior evaluator report's verdict on
+the browser capture (for the criteria whose evidence *is* the capture, where what
+maps DOM observations onto acceptance IDs is the evaluator's check rather than any
+recorded field). A criterion with neither source gets **no row**, and W4-10 then
+reports it missing.
+
+Compile it **between** two evaluator runs: run the wave, compile from what that run
+observed, re-run so W4-10 can reconcile the index against the run in front of it.
+That is not circular — W4-10 compares the index against **this** run's own results
+and skips wave 4 in its `evaluations` loop, so a flattering index cannot certify the
+run that reads it. A complete index inside a report with `not_run`s is rejected, and
+that combination is the specific forgery the check exists to catch.
+
+#### The AC-to-evidence map: developer proof versus required live execution
+
+Everything in `platform/scripts/tests/test_agent_control_eval.py` is **developer
+proof**. It runs the real collectors and the real evaluator against controlled
+transports — injected `fetch`, `gh run view` and DynamoDB responses, and a modelled
+commit graph. It demonstrates that the producers measure what they claim and refuse
+what they cannot measure. It demonstrates **nothing** about any deployment, and no
+number of passing tests moves any acceptance criterion toward accepted.
+
+What each of the 37 needs for live acceptance:
+
+| Criteria | Live requirement |
+|---|---|
+| AC-F3, AC-P1–P6 | A `CONTROL_E2E_LIVE=1` Playwright capture against the deployed bundle. Mocked mode stubs the gateway and is not valid evidence. |
+| AC-T1–T8, AC-S8 | A real mid-run steer delivered to a live SDK attempt (needs S6 #3965 first). |
+| AC-A1–A12 | A real run aborted, transitioning an actual DynamoDB row to terminal. |
+| AC-S1–S7 | Probes of a deployed gateway. A bundle scan is supplemental, never the evidence. |
+| AC-F1, AC-F2 | Two runtime executions, flag-off and flag-on, compared against final code. |
+| Gate/regression (W4-01, W4-07, W4-08, W4-10) | Green CI on the deployed revision, a live schema read, a timed browser run, and waves 1–3 accepted. |
+
+Every one of these needs a live fixture run and exact cleanup, which are the
+maintainer's. A criterion whose only evidence is a test in this repository is
+`not_run`, and the evaluator is built so you cannot record it as anything else.
 
 Wave 3 remains unregistered and `--wave 3` is still refused outright. That is not
 an oversight in wave 4: several wave-4 checks consolidate wave 3's criteria, so
