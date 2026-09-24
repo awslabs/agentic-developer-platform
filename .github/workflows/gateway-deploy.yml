@@ -1097,6 +1097,10 @@ jobs:
 
   run-migrations:
     name: Run Pending Migrations
+    # A reusable workflow cannot elevate the caller's token permissions.
+    permissions:
+      contents: read
+      id-token: write
     needs: [changes, deploy-backend]
     # Issue #2918: Run migrations when new alembic files detected (push) OR on
     # workflow_dispatch (fresh-account deploys need migrations to run unconditionally).

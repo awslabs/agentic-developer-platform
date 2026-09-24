@@ -1,0 +1,35 @@
+{
+  "$fixture": {
+    "description": "An envelope whose generation field disagrees with the generation encoded in its authority key. The key is what the conditional write is checked against; if the two can differ, a superseded worker could present a stale key alongside a current generation number and be admitted as the live attempt.",
+    "schema": "envelope.schema.json#/$defs/task_dispatch_envelope",
+    "expect": "invalid",
+    "reason": "assignment_ref.generation must equal the GEN segment of assignment_ref.grant_sk",
+    "violates": [
+      "identity-and-lifecycle.json#/lifecycle/invariants/LC-03"
+    ],
+    "owner": "T3",
+    "criteria": [
+      "T0-AC02",
+      "V0-03",
+      "V3-03"
+    ],
+    "checked_by": "cross_component"
+  },
+  "kind": "adp.task",
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "message_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "persona": "agent-task-investigator",
+  "dispatch_id": "b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+  "request_digest": "9c1e3f5a7d40b2c4e6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2",
+  "input_ref": {
+    "record_type": "TASK",
+    "input_digest": "4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c61"
+  },
+  "assignment_ref": {
+    "grant_pk": "TENANT#acme",
+    "grant_sk": "TASK_RUN#3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20#GEN#0000000001",
+    "generation": 2
+  }
+}

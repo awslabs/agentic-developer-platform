@@ -1,0 +1,12 @@
+{
+  "$fixture": {
+    "description": "A submit body with duplicate instructions fields. Duplicate object names are rejected before schema validation so parser choice cannot silently change the accepted request or its digest.",
+    "schema": "public-api.schema.json#/$defs/submit_request",
+    "expect": "invalid",
+    "reason": "duplicate JSON object fields are forbidden by design section 5",
+    "owner": "T2",
+    "criteria": ["T0-AC02", "V0-02", "V1-09"],
+    "validation_stage": "json_decode"
+  },
+  "raw_instance": "{\"schema_version\":\"1.0\",\"persona\":\"agent-task-investigator\",\"instructions\":\"first interpretation\",\"instructions\":\"second interpretation\"}"
+}

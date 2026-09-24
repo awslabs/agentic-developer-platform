@@ -1,0 +1,24 @@
+{
+  "$fixture": {
+    "description": "An immutable conversation turn listing the command IDs consumed into it, each exactly once. Recovery reads an existing turn rather than inserting its commands again.",
+    "schema": "commands.schema.json#/$defs/turn",
+    "expect": "valid",
+    "owner": "T7",
+    "criteria": [
+      "T0-AC02",
+      "T7-AC01",
+      "V0-04",
+      "V3-07"
+    ]
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "turn_number": 2,
+  "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+  "command_ids": [
+    "c3d4e5f6-0718-493a-bc4d-5e6f70819203"
+  ],
+  "transcript_version": 2,
+  "committed_at": "2026-09-24T14:45:41Z",
+  "immutable": true
+}
