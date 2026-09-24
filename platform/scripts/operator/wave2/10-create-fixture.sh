@@ -163,6 +163,7 @@ EDGE_ALB_ARN=""
 REVIEWED_GATEWAY_IMAGE=""
 REVIEWED_WORKER_IMAGE=""
 FIXTURE_APPROVAL_ARGS=()
+CONTROL_CIDR_ARGS=()
 WORKER_READY_TIMEOUT=300
 STAGE="all"
 
@@ -191,6 +192,7 @@ while [ $# -gt 0 ]; do
     # ANY load balancer in the account.
     --edge-alb-arn)            EDGE_ALB_ARN="${2:?}"; shift 2 ;;
     --gateway-image) REVIEWED_GATEWAY_IMAGE="${2:?}"; shift 2 ;;
+    --cluster-pod-cidrs) CONTROL_CIDR_ARGS=(--cluster-pod-cidrs "${2:?}"); shift 2 ;;
     --worker-image) REVIEWED_WORKER_IMAGE="${2:?}"; shift 2 ;;
     --worker-ready-timeout)    WORKER_READY_TIMEOUT="${2:?}"; shift 2 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
@@ -662,7 +664,7 @@ python3 "$RENDER" \
   --live-deployment "$LIVE_DEPLOY_JSON" \
   --run-id "$RUN_ID" --nonce "$NONCE" \
   --name "$GW_NAME" --namespace "$GW_NS" --agent-namespace "$AGENT_NS" \
-  --image "$FIXTURE_IMAGE" --queue-url "$QUEUE_URL" "${FIXTURE_APPROVAL_ARGS[@]}" \
+  --image "$FIXTURE_IMAGE" --queue-url "$QUEUE_URL" "${FIXTURE_APPROVAL_ARGS[@]}" "${CONTROL_CIDR_ARGS[@]}" \
   --policy-name "$POLICY_NAME" --out-dir "$MANIFEST_DIR" \
   || w2_fail "rendering refused (see above). Nothing further was created."
 
@@ -1214,7 +1216,7 @@ print(matches[0].get("image", ""))
     --live-deployment "$LIVE_DEPLOY_JSON" \
     --run-id "$RUN_ID" --nonce "$NONCE" \
     --name "$GW_NAME" --namespace "$GW_NS" --agent-namespace "$AGENT_NS" \
-    --image "$FIXTURE_IMAGE" --queue-url "$QUEUE_URL" "${FIXTURE_APPROVAL_ARGS[@]}" \
+    --image "$FIXTURE_IMAGE" --queue-url "$QUEUE_URL" "${FIXTURE_APPROVAL_ARGS[@]}" "${CONTROL_CIDR_ARGS[@]}" \
     --policy-name "$POLICY_NAME" --out-dir "$MANIFEST_DIR" \
     --worker-template "$LIVE_WORKER_JSON" \
     --worker-name "$JOB_NAME" \

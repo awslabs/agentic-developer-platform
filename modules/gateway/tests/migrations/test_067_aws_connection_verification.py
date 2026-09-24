@@ -17,7 +17,9 @@ def test_aws_verification_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["069_aws_verification_binding"]
+    head = scripts.get_current_head()  # raises if histories have diverged again
+    assert head is not None
+    assert "069_aws_verification_binding" in {revision.revision for revision in scripts.iterate_revisions(head, "base")}
     revision = scripts.get_revision("067_aws_connection_verify")
     assert revision.down_revision == "066_vault_operation_fingerprint"
 

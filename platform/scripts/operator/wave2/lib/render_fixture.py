@@ -82,6 +82,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import ipaddress
 import json
 import re
 import sys
@@ -226,6 +227,7 @@ def render_gateway(
     image: str,
     queue_url: str,
     fixture_worker_digest: str | None = None,
+    cluster_pod_cidrs: str | None = None,
 ) -> tuple[dict, dict, dict]:
     """Return (deployment, service, report) for the fixture gateway.
 
@@ -287,10 +289,25 @@ def render_gateway(
             "must permit; a mismatch would produce a policy that blocks the flow under test."
         )
 
+    # envFrom references do not establish that transport CIDRs are populated.
+    # Require an observed inline value or explicit operator input before rendering.
+    cidrs = cluster_pod_cidrs if cluster_pod_cidrs is not None else inline.get("AGENT_CONTROL_CLUSTER_POD_CIDRS")
+    if not isinstance(cidrs, str) or not cidrs.strip():
+        raise RenderError("AGENT_CONTROL_CLUSTER_POD_CIDRS is missing; supply --cluster-pod-cidrs from verified cluster networking before enabling fixture controls")
+    try:
+        networks = [ipaddress.ip_network(value.strip(), strict=True) for value in cidrs.split(",")]
+        private = [ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")]
+        if any(not any(n.version == p.version and n.subnet_of(p) for p in private) for n in networks):
+            raise ValueError("CIDRs must be contained in private pod address space")
+    except ValueError as exc:
+        raise RenderError("invalid --cluster-pod-cidrs: " + str(exc)) from exc
+    cidrs = ",".join(str(network) for network in networks)
+
     # --- the deliberate overrides -----------------------------------------
     overrides = {
         # The feature under evaluation. Strict reader: only the literal "true".
         "FEATURE_AGENT_CONTROL_ENABLED": "true",
+        "AGENT_CONTROL_CLUSTER_POD_CIDRS": cidrs,
         # Inherited false from the shared ConfigMap. Without this the gateway
         # cannot authenticate the protected worker at all.
         "AGENT_AUTHORITY_ENABLED": "true",
@@ -1033,6 +1050,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--agent-namespace", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--cluster-pod-cidrs", default=None,
+                        help="verified private pod CIDRs, comma-separated; required unless inline on the live Deployment")
     parser.add_argument("--fixture-worker-digest", default=None,
                         help="operator-reviewed digest approved only by this fixture gateway")
     parser.add_argument("--queue-url", required=True)
@@ -1167,6 +1186,7 @@ def main(argv: list[str] | None = None) -> int:
             live, run_id=args.run_id, nonce=args.nonce, name=args.name,
             namespace=args.namespace, image=args.image, queue_url=args.queue_url,
             fixture_worker_digest=args.fixture_worker_digest,
+            cluster_pod_cidrs=args.cluster_pod_cidrs,
         )
         policies = render_policies(
             run_id=args.run_id, nonce=args.nonce, policy_name=args.policy_name,

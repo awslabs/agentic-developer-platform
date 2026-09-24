@@ -1516,3 +1516,31 @@ def _run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+def test_fixture_rendered_cidrs_reach_real_transport_guard(monkeypatch):
+    """The operator renderer must configure what this service actually reads."""
+    import runpy
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[4]
+    operator = root / "platform/scripts/operator/wave2"
+    monkeypatch.syspath_prepend(str(operator / "lib"))
+    import render_fixture
+
+    live = runpy.run_path(str(operator / "tests/conftest.py"))["live_deployment"]()
+    rendered, _, _ = render_fixture.render_gateway(
+        live,
+        run_id="w2-cidrs",
+        nonce="deadbeefcafe0123",
+        name="w2-cidrs",
+        namespace="adp-gateway",
+        image="879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:" + "ab" * 32,
+        queue_url="https://example/fixture.fifo",
+        cluster_pod_cidrs="10.0.11.152/32",
+    )
+    env = {entry["name"]: entry.get("value") for entry in rendered["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert str(validate_control_destination("10.0.11.152", 8770, env=env)) == "10.0.11.152"
+    for address, port in [("10.0.11.153", 8770), ("10.0.11.152", 80), ("169.254.169.254", 8770), ("127.0.0.1", 8770)]:
+        with pytest.raises(ControlError):
+            validate_control_destination(address, port, env=env)
