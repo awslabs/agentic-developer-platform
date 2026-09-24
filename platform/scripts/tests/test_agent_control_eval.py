@@ -13514,3 +13514,20 @@ class TestReportCaptureProvenance:
         assert row["live"] is True
         assert row["capture_artifact"] == str(capture_path)
         assert row["revision"] == FRONTEND_REVISION
+
+
+class TestConsolidatedSourceIdentity:
+    def test_caller_cannot_relabel_another_evaluation(self, tmp_path):
+        config = live_config(tmp_path)
+        artifact = _consolidated.collect_consolidated("W4-03",
+            read_evidence=lambda wave: evidence_document("W4-03", evaluation="3968"),
+            acceptance_ids=_mod.CHECK_ACCEPTANCE_IDS["W4-03"],
+            evaluation="3969", fixture_identity={"run_id": config["live_run_id"]})
+        assert "evaluation" not in artifact.build()
+        assert "source evaluation" in artifact.refusals["evaluation"]
+
+    def test_wrong_source_wave_reaches_evaluator_unchanged(self, tmp_path):
+        run = collect_with_wave_three(tmp_path,
+            documents={"W4-03": evidence_document("W4-03", wave=2)})
+        assert run.results["W4-03"].status == _mod.STATUS_FAILED
+        assert "wave" in run.results["W4-03"].message

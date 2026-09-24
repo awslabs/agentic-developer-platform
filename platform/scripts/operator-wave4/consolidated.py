@@ -171,24 +171,19 @@ def collect_consolidated(
         artifact.update(dict(extra_fields or {}))
         return artifact
 
-    # `wave` is emitted from the SPEC, not copied from the document. The evaluator
-    # cross-checks it against its own `WAVE4_CONSOLIDATED_SOURCES`, so a document
-    # filed under the wrong wave must produce a mismatch there rather than be
-    # laundered into agreement here.
-    artifact.set("wave", wave)
-    artifact.set(
-        "evaluation",
-        evaluation
-        if evaluation is not None
-        else (
-            document.get("evaluation")
-            if document.get("evaluation")
-            else Refused(
-                f"{spec['artifact']}: neither the caller nor wave {wave}'s evidence names the evaluation "
-                "that accepted it, and evidence attached to no evaluation cannot be consolidated into one"
-            )
-        ),
-    )
+    # Preserve the source identity. The caller's expectation must not relabel a
+    # document from another evaluation as the requested wave's evidence.
+    recorded_wave = document.get("wave", wave)
+    artifact.set("wave", recorded_wave)
+    recorded_evaluation = document.get("evaluation")
+    if not recorded_evaluation:
+        artifact.set("evaluation", Refused(f"{spec['artifact']}: source evidence names no evaluation"))
+    elif evaluation is not None and str(recorded_evaluation) != str(evaluation):
+        artifact.set("evaluation", Refused(
+            f"{spec['artifact']}: source evaluation {recorded_evaluation!r} differs from expected {evaluation!r}"
+        ))
+    else:
+        artifact.set("evaluation", str(recorded_evaluation))
     artifact.set("criteria", _criteria_from(document, acceptance_ids, artifact=spec["artifact"]))
 
     revision = document.get("evidenced_revision")
