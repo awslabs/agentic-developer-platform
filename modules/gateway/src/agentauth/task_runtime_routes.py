@@ -53,7 +53,7 @@ class AttemptBody(BaseModel):
 
 def task_runtime(runtime, *, stop_only=False):
     env = os.environ if runtime.env is None else runtime.env
-    if not stop_only and env.get("ADP_RUN_TASKS_ENABLED", "false").lower() != "true":
+    if not stop_only and env.get("ADP_TASK_API_WORKER_ENABLED", "false").lower() != "true":
         raise HTTPException(503, "task runtime unavailable")
     return TaskRuntime(TaskStore(dynamodb_client=runtime.store.client,
         table_name=env.get("WEBHOOK_EVENTS_TABLE"), authority_table_name=runtime.store.table), env=env)

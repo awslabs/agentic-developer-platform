@@ -262,3 +262,28 @@ def test_uncertain_ack_attempt_is_not_rewritten_as_one_clean_delete(tasks, monke
     monkeypatch.setattr(tasks.sqs, "delete_message", delete)
     tasks.delivery.maintain("pod-one", acknowledge=True)
     assert tasks.delivery.read("pod-one")["ack_attempts"] == 2
+
+
+def test_shared_legacy_passthrough_keeps_body_and_no_run_grant(tasks):
+    tasks.sqs.purge_queue(QueueUrl=tasks.queue)
+    body = '{ "version": "1.0", "channel": "github", "tenant_id": "tenant-a", "persona": "agent-reviewer-codex", "source_ref": {"issue": 1} }'
+    sent = tasks.sqs.send_message(QueueUrl=tasks.queue, MessageBody=body)
+    delivery = TaskDelivery(store=tasks.delivery.store, sqs=tasks.sqs, queue_url=tasks.queue,
+                            clock=lambda: tasks.now[0], allow_task_api=True, allow_legacy=False, allow_shared_legacy=True)
+    assert delivery.acquire("shared-pod") == body
+    assert delivery.read("shared-pod")["invocation_id"] == sent["MessageId"]
+    assert tasks.delivery.store._read("INVOCATION#" + sent["MessageId"], "DISPATCH") is None
+    delivery.maintain("shared-pod", acknowledge=False)
+    delivery.maintain("shared-pod", acknowledge=True)
+    assert delivery.read("shared-pod")["state"] == "acknowledged"
+
+
+@pytest.mark.parametrize("kind", ["unknown.task", "adp.task"])
+def test_shared_queue_never_downgrades_a_typed_message(tasks, kind):
+    tasks.sqs.purge_queue(QueueUrl=tasks.queue)
+    tasks.sqs.send_message(QueueUrl=tasks.queue, MessageBody=json.dumps({"kind": kind, "version": "1.0",
+        "channel": "github", "tenant_id": "tenant-a", "persona": "agent-reviewer-codex", "source_ref": {}}))
+    delivery = TaskDelivery(store=tasks.delivery.store, sqs=tasks.sqs, queue_url=tasks.queue,
+                            allow_task_api=True, allow_legacy=False, allow_shared_legacy=True)
+    with pytest.raises(TaskDeliveryError):
+        delivery.acquire("typed-pod")
