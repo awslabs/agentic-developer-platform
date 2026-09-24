@@ -24,14 +24,14 @@ data "aws_caller_identity" "current" {}
 resource "aws_cognito_user_pool" "main" {
   name = "${var.name_prefix}-users"
 
-  # Pre Token Generation Lambda Trigger (V2) - Issue #119
+  # Pre Token Generation Lambda Trigger (V3) - Issue #119
   # Injects custom claims into access tokens for both users and M2M clients
   lambda_config {
     pre_sign_up = aws_lambda_function.pre_signup.arn
 
     pre_token_generation_config {
       lambda_arn     = aws_lambda_function.pre_token_generation.arn
-      lambda_version = "V2_0" # Use V2 trigger for access token customization
+      lambda_version = "V3_0" # V3 also invokes the trigger for client_credentials (M2M).
     }
   }
 
@@ -537,6 +537,28 @@ resource "aws_cognito_resource_server" "gateway" {
   scope {
     scope_name        = "admin"
     scope_description = "Admin API access for management operations"
+  }
+}
+
+# Task scopes are separate from Bedrock model invocation. Defining the resource
+# server does not grant any scope to the existing shared agent client.
+resource "aws_cognito_resource_server" "tasks" {
+  identifier   = "adp-tasks"
+  name         = "ADP Task API"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  dynamic "scope" {
+    for_each = {
+      submit    = "Submit bounded tasks"
+      read      = "Read owned task state and events"
+      input     = "Send follow-up input to owned tasks"
+      cancel    = "Cancel owned tasks"
+      artifacts = "Upload and read owned task artifacts"
+    }
+    content {
+      scope_name        = scope.key
+      scope_description = scope.value
+    }
   }
 }
 
