@@ -226,6 +226,37 @@ variable "github_oauth_client_secret" {
 }
 
 # =============================================================================
+# Task API Submission Route (Issue #5795, T2)
+# =============================================================================
+# The Lambda that serves POST /v1/tasks is owned by
+# modules/agent-factory/webhook-ingress, a separate Terraform state, so its
+# identifiers come in as variables the way internal_alb_arn does.
+#
+# Two independent switches, deliberately: this route can EXIST without
+# ACCEPTING anything. Publishing it is a gateway apply; accepting submissions
+# additionally requires ADP_TASK_API_ADMISSION_ENABLED on the Lambda. So the
+# edge can be in place and verified before any task is admitted, and admission
+# can be withdrawn without a gateway apply.
+
+variable "task_api_lambda_invoke_arn" {
+  type        = string
+  description = "Invoke ARN of the webhook-ingress Lambda serving POST /v1/tasks. Empty publishes no task route."
+  default     = ""
+}
+
+variable "task_api_lambda_function_name" {
+  type        = string
+  description = "Function name of the webhook-ingress Lambda serving POST /v1/tasks (for the scoped aws_lambda_permission)."
+  default     = ""
+}
+
+variable "enable_task_api_route" {
+  type        = bool
+  description = "Publish the explicit POST /v1/tasks route on the main API Gateway. Default off; publishing the route does not admit any task on its own."
+  default     = false
+}
+
+# =============================================================================
 # GitHub Auth Broker Configuration (Issue #520)
 # =============================================================================
 

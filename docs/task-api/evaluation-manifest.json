@@ -492,7 +492,7 @@
         "fixtures/valid/submit-request.json",
         "fixtures/valid/submit-response.json"
       ],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T2-AC02": {
@@ -509,7 +509,7 @@
         "fixtures/invalid/submit-request-nonfinite-number.json",
         "fixtures/valid/error-payload-too-large.json"
       ],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T2-AC03": {
@@ -519,7 +519,7 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T2-AC04": {
@@ -529,8 +529,8 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+      "command_status": "runnable"
     },
     "T2-AC05": {
       "title": "Lambda and gateway agree on principal mapping; the external caller needs no worker/pod credentials",
@@ -539,7 +539,7 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T3-AC01": {

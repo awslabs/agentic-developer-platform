@@ -433,6 +433,12 @@ variable "enable_adversarial_e2e" {
   default     = false
 }
 
+variable "task_api_admission_enabled" {
+  description = "Allow the ingress Lambda to accept POST /v1/tasks after task-capable storage, dispatch, consumers, and gateway authority are ready."
+  type        = bool
+  default     = false
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.

@@ -106,6 +106,7 @@ resource "aws_lambda_function" "github_webhook" {
       ADP_TASK_GATEWAY_ENDPOINT      = data.aws_ssm_parameter.gateway_apigw_invoke_url.value
       ADP_TASK_API_ADMISSION_ENABLED = tostring(var.task_api_admission_enabled)
       ADP_TASK_API_RECOVERY_ENABLED  = tostring(var.task_api_recovery_enabled)
+      ADP_TASK_ADMIT_ENDPOINT        = data.aws_ssm_parameter.gateway_apigw_invoke_url.value
       RATE_LIMITS_TABLE              = aws_dynamodb_table.rate_limits.name
       RATE_LIMIT_PER_WINDOW          = tostring(var.rate_limit_per_window)
       RATE_LIMIT_PER_HOUR            = tostring(var.rate_limit_per_hour)
