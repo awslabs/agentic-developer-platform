@@ -323,3 +323,45 @@ async def test_batch_registration_rejects_changed_quota_kind_or_command(batch_wo
                     )
             finally:
                 await tx.rollback()
+
+
+async def test_replacement_job_with_original_name_is_never_adopted_or_deleted(
+    batch_workload, batch_runtime
+):
+    c, runtime = batch_workload, batch_runtime
+    created = await create(c)
+    original = await runtime.publish(SimpleNamespace(**created))
+    await runtime.execute(original)
+    await assert_completed_worker(runtime, original)
+    path = runtime.kube.path(c.preview.deployment_target, "Job", c.batch_body.name)
+    runtime.kube.stored[path]["metadata"]["uid"] = "replacement-job-uid"
+    stopped = await stop(c, created)
+    retirement = await runtime.publish(SimpleNamespace(**stopped))
+    with pytest.raises(
+        OperationRefused, match="original workload UID evidence unavailable"
+    ):
+        await runtime.execute(retirement)
+    assert runtime.kube.stored[path]["metadata"]["uid"] == "replacement-job-uid"
+    assert all(method != "DELETE" for method, _ in runtime.kube.requests)
+    async with c.sessions() as db:
+        assert await count_workspace_deployment_gpus(c.workload_id, db) == 1
+
+
+async def test_malformed_installed_batch_policy_returns_unavailable_without_admission(
+    batch_workload,
+):
+    c = batch_workload
+    policy = json.loads(c.policy_path.read_text())
+    policy["tenants"][str(c.org_id)]["workspaces"][str(c.workload_id)][
+        "approved-batch"
+    ]["workload"] = None
+    c.policy_path.write_text(compact(policy))
+    with c.actor(workspace_id=c.workload_id):
+        async with c.sessions() as db:
+            result = await proxy.batch_profiles(
+                c.workload_id, c.api_request, c.org_id, db
+            )
+    assert result["profiles"] == [] and not result["can_submit"]
+    assert result["reason"] == "unavailable"
+    async with c.connections.connect() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM harness_operations") == 0
