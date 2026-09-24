@@ -56,6 +56,47 @@ def preserve_access(state, cluster, extra=(), requested_cidrs=()):
             "eks_endpoint_private_access": cluster["resourcesVpcConfig"].get("endpointPrivateAccess", True)}
 
 
+def retain_capacity_subnets(state, cluster, requested=None):
+    """Keep additional existing capacity subnets in the cluster's subnet set (#5830).
+
+    An operator relieves pod-IP exhaustion by adding already-existing private
+    subnets to the cluster's own subnet set, which is what Auto Mode's managed
+    `default` NodeClass reads. Those ids are account-specific, so they are not in
+    the repository. Without rediscovery here, the next routine update would plan
+    the repository's empty default, shrink the subnet set back, and re-break pod
+    scheduling on every node launched afterwards.
+
+    Terraform-owned subnets are excluded: they reach the cluster through
+    private_subnet_ids already, and pinning their ids here would double-list them
+    and freeze ids Terraform may legitimately replace. So an addition is exactly a
+    live cluster subnet that platform Terraform does not manage.
+
+    `requested` is merged in for the same reason the access CIDRs are: the exported
+    tfvars file is applied as a -var-file AFTER the repository overlays, so it
+    overrides TF_VAR_ -- an operator adding a subnet during an update run would
+    otherwise have their export silently dropped.
+    """
+    owned = {attrs["id"] for _, attrs in resources(state, "aws_subnet")}
+    extra = sorted({s for s in cluster["resourcesVpcConfig"].get("subnetIds", []) if s not in owned})
+    zones = {}
+    if extra:
+        for subnet in aws("ec2", "describe-subnets", "--subnet-ids", *extra)["Subnets"]:
+            zones[subnet["SubnetId"]] = subnet["AvailabilityZone"]
+        if [s for s in extra if s not in zones]:
+            # Dropping it would silently shrink the subnet set, so refuse instead.
+            raise ValueError("Cannot recover the availability zone of an existing additional cluster subnet")
+    for zone, subnet in (requested or {}).items():
+        if zones.get(subnet, zone) != zone:
+            raise ValueError("Requested additional subnet is not in the availability zone it is keyed by")
+        zones[subnet] = zone
+    result = {}
+    for subnet, zone in sorted(zones.items()):
+        if result.setdefault(zone, subnet) != subnet:
+            raise ValueError("Two additional cluster subnets share an availability zone "
+                             f"({zone}); this cannot be retained as a zone-keyed map")
+    return result
+
+
 def repository_encryption(state):
     # ECR encryption is immutable. Older repositories can use AWS-managed KMS
     # keys or AES256; selecting the new module key would replace their images.
@@ -298,6 +339,9 @@ def prepare(args):
     platform = preserve_access(states["platform"], cluster,
                                json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested)
     platform.update(environment=args.environment, aws_region=args.region)
+    platform["additional_private_subnet_ids_by_az"] = retain_capacity_subnets(
+        states["platform"], cluster,
+        json.loads(os.environ.get("TF_VAR_additional_private_subnet_ids_by_az", "{}")))
     platform["ecr_repository_encryption"] = repository_encryption(states["platform"])
     platform["retained_upgrade_kms_key_ids"] = [a["id"] for r, a in resources(states["platform"], "aws_kms_key")
                                                if not r.get("module") and r["name"] == "retained_upgrade"]

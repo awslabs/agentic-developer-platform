@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -36,6 +37,58 @@ class PreservationTests(unittest.TestCase):
         result = state.preserve_access({}, {"resourcesVpcConfig": {"endpointPublicAccess": False, "endpointPrivateAccess": True}})
         self.assertFalse(result["eks_endpoint_public_access"])
         self.assertTrue(result["eks_endpoint_private_access"])
+
+    def capacity(self, live, owned=("subnet-0own1", "subnet-0own2"), zones=None, requested=None):
+        # Terraform-owned private subnets plus whatever the live cluster reports.
+        platform = {"resources": [resource("aws_subnet", "private", {"id": i}, "module.networking") for i in owned]}
+        cluster = {"resourcesVpcConfig": {"subnetIds": list(live)}}
+        zones = zones or {"subnet-0extra1": "us-east-1a", "subnet-0extra2": "us-east-1b"}
+
+        def aws(*args):
+            if args[:2] == ("ec2", "describe-subnets"):
+                asked = args[args.index("--subnet-ids") + 1:]
+                return {"Subnets": [{"SubnetId": s, "AvailabilityZone": zones[s]} for s in asked if s in zones]}
+            self.fail(f"Unexpected AWS access: {args[:2]}")
+
+        with patch.object(state, "aws", aws):
+            return state.retain_capacity_subnets(platform, cluster, requested)
+
+    def test_additional_capacity_subnets_survive_a_routine_update(self):
+        # The exhaustion fix is account-specific, so it lives only in live state.
+        # Losing it here would shrink the subnet set and re-break pod scheduling.
+        result = self.capacity(["subnet-0own1", "subnet-0own2", "subnet-0extra1", "subnet-0extra2"])
+        self.assertEqual(result, {"us-east-1a": "subnet-0extra1", "us-east-1b": "subnet-0extra2"})
+
+    def test_cluster_without_additions_exports_no_additional_subnets(self):
+        # Every un-opted-in environment must keep planning the set it has today,
+        # and must not pay for a describe-subnets call it has no reason to make.
+        self.assertEqual(self.capacity(["subnet-0own1", "subnet-0own2"]), {})
+
+    def test_terraform_owned_subnets_are_not_reinterpreted_as_additions(self):
+        # They already arrive via private_subnet_ids. Pinning their ids here would
+        # double-list them and freeze ids Terraform may legitimately replace.
+        result = self.capacity(["subnet-0own1", "subnet-0own2", "subnet-0extra1"],
+                               zones={"subnet-0extra1": "us-east-1a"})
+        self.assertEqual(result, {"us-east-1a": "subnet-0extra1"})
+
+    def test_subnet_added_during_the_update_run_is_not_dropped_by_the_export(self):
+        # The exported tfvars is applied as a -var-file after the repository
+        # overlays, so it overrides TF_VAR_ and must carry the operator's request.
+        result = self.capacity(["subnet-0own1", "subnet-0extra1"],
+                               zones={"subnet-0extra1": "us-east-1a"},
+                               requested={"us-east-1b": "subnet-0extra9"})
+        self.assertEqual(result, {"us-east-1a": "subnet-0extra1", "us-east-1b": "subnet-0extra9"})
+
+    def test_unresolvable_or_conflicting_additional_subnets_refuse(self):
+        # Silently dropping either case would shrink the live subnet set.
+        with self.assertRaisesRegex(ValueError, "availability zone"):
+            self.capacity(["subnet-0extra1", "subnet-0vanished"], zones={"subnet-0extra1": "us-east-1a"})
+        with self.assertRaisesRegex(ValueError, "availability zone"):
+            self.capacity(["subnet-0extra1", "subnet-0extra2"],
+                          zones={"subnet-0extra1": "us-east-1a", "subnet-0extra2": "us-east-1a"})
+        with self.assertRaisesRegex(ValueError, "availability zone"):
+            self.capacity(["subnet-0extra1"], zones={"subnet-0extra1": "us-east-1a"},
+                          requested={"us-east-1b": "subnet-0extra1"})
 
     def test_retains_each_existing_repository_encryption(self):
         old = {"resources": [
@@ -135,6 +188,57 @@ class PreservationTests(unittest.TestCase):
             snapshot = state.integration_snapshot({}, "dev")
         self.assertEqual(snapshot["secrets"], {"app-key": ["version-1"]})
         self.assertEqual(len(calls), 2)
+
+
+class CapacitySubnetExportTests(unittest.TestCase):
+    """The retained subnets have to reach the file the update apply actually reads."""
+    account = "111122223333"
+    region = "us-east-1"
+
+    def exported(self, live, requested=None):
+        platform = {"outputs": {"eks_cluster_name": {"value": "adp-test-eks-cluster"}},
+                    "resources": [resource("aws_eks_cluster", "main", {"name": "adp-test-eks-cluster"}),
+                                  resource("aws_subnet", "private", {"id": "subnet-0own1"}, "module.networking")]}
+        key = "test/platform/terraform.tfstate"
+
+        def aws(*args):
+            if args[:2] == ("sts", "get-caller-identity"):
+                return {"Account": self.account}
+            if args[:2] == ("s3api", "list-objects-v2"):
+                return {"Contents": [{"Key": key}]}
+            if args[:2] == ("s3api", "get-object"):
+                Path(args[-1]).write_text(json.dumps(platform))
+                return {}
+            if args[:2] == ("eks", "describe-cluster"):
+                return {"cluster": {"status": "ACTIVE", "resourcesVpcConfig": {
+                    "endpointPublicAccess": False, "endpointPrivateAccess": True,
+                    "publicAccessCidrs": [], "subnetIds": list(live)}}}
+            if args[:2] == ("ec2", "describe-subnets"):
+                asked = args[args.index("--subnet-ids") + 1:]
+                return {"Subnets": [{"SubnetId": s, "AvailabilityZone": "us-east-1b"} for s in asked]}
+            self.fail(f"Unexpected AWS access: {args[:2]}")
+
+        environ = {} if requested is None else {"TF_VAR_additional_private_subnet_ids_by_az": json.dumps(requested)}
+        with tempfile.TemporaryDirectory() as directory, patch.object(state, "aws", aws), \
+                patch.dict(os.environ, environ, clear=False), \
+                patch.object(state, "integration_snapshot", return_value={"secrets": {}, "mappings": {}}):
+            state.prepare(SimpleNamespace(directory=directory, account=self.account,
+                                          region=self.region, environment="test"))
+            return json.loads((Path(directory) / "platform.tfvars.json").read_text())
+
+    def test_update_run_exports_the_live_additional_capacity_subnets(self):
+        # platform.tfvars.json is appended as a -var-file after the repository
+        # overlays, so what lands here is what the update actually applies.
+        exported = self.exported(["subnet-0own1", "subnet-0extra1"])
+        self.assertEqual(exported["additional_private_subnet_ids_by_az"], {"us-east-1b": "subnet-0extra1"})
+
+    def test_update_run_without_additions_exports_an_empty_map(self):
+        exported = self.exported(["subnet-0own1"])
+        self.assertEqual(exported["additional_private_subnet_ids_by_az"], {})
+
+    def test_operator_supplied_subnet_is_carried_into_the_exported_inputs(self):
+        exported = self.exported(["subnet-0own1"], requested={"us-east-1b": "subnet-0extra7"})
+        self.assertEqual(exported["additional_private_subnet_ids_by_az"], {"us-east-1b": "subnet-0extra7"})
 
 
 class EnginePreservationTests(unittest.TestCase):
