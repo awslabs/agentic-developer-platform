@@ -764,14 +764,24 @@ class TestEntryPointFailsClosed:
     def test_an_unsupported_wave_is_refused_rather_than_passing_empty(
         self, tmp_path: Path
     ):
-        """Waves 2-4 belong to later stories (§7).
+        """Wave 4 belongs to S7 (§7).
 
-        Asking for one must not emit a report with zero required checks, which
+        Asking for it must not emit a report with zero required checks, which
         would satisfy `.passed == .required` at 0 == 0 and read as a clean pass.
+
+        The subject moved from wave 3 to wave 4 when S6 #3965 transcribed #3969's
+        table. That is the second time this test's wave has been consumed by the
+        story that implemented it, so the number is read from the module rather
+        than typed: whatever the first unregistered wave is, that is the one whose
+        refusal this test is about, and it cannot be invalidated again by the next
+        wave landing.
         """
         path = write_config(tmp_path, valid_config())
+        unregistered = max(_mod.SUPPORTED_WAVES) + 1
 
-        assert _mod.main(["--wave", "3", "--config", str(path)]) == _mod.EXIT_CONFIG
+        code = _mod.main(["--wave", str(unregistered), "--config", str(path)])
+
+        assert code == _mod.EXIT_CONFIG
 
     def test_a_credential_failure_is_a_precondition_error_not_a_traceback(
         self, tmp_path: Path
@@ -1352,22 +1362,12 @@ class TestCheckIdsMatchTheEvaluationFile:
         for check_id, method_name in _mod.WAVE1_PREDICATES.items():
             assert hasattr(_mod.Driver, method_name), check_id
 
-    def test_waves_one_two_and_four_are_carried_by_this_revision(self):
-        """S1 delivered wave 1; S3 #3962 added wave 2; S7 #3966 adds wave 4.
-
-        Was `== (1,)`, then `== (1, 2)`. Updated rather than deleted each time,
-        because the property it protects is unchanged: a wave reachable from the
-        CLI must have a real manifest behind it, so `--wave 3` is still a refusal
-        rather than an empty pass.
-
-        Wave 4 landing before wave 3 is deliberate and not an ordering mistake.
-        The waves are owned by different stories (S4/S6 own wave 3) and a story
-        registers its own manifest when it lands; wave 4's own consolidation
-        checks are what refuse to pass while wave 3 is unaccepted, so the gap
-        cannot be used to skip it.
-        """
-        assert _mod.SUPPORTED_WAVES == (1, 2, 4)
-        assert 3 not in _mod.WAVE_CHECKS
+    def test_every_supported_wave_is_carried_by_a_real_manifest(self):
+        """Each registered wave has its full manifest; unsupported waves stay absent."""
+        assert _mod.SUPPORTED_WAVES == (1, 2, 3, 4)
+        assert _mod.SUPPORTED_WAVES == tuple(sorted(_mod.WAVE_CHECKS))
+        assert all(_mod.WAVE_CHECKS.values())
+        assert 5 not in _mod.WAVE_CHECKS
 
     def test_wave_two_carries_the_whole_evaluation_manifest(self):
         """All ten of #3968's IDs, not just the one this story implements.
@@ -1455,27 +1455,16 @@ class TestCheckIdsMatchTheEvaluationFile:
         assert not any(cid.startswith("W2-") for cid in _mod.EXPECTED_CHECK_IDS)
 
     def test_each_wave_reports_its_own_evaluation_issue(self):
-        """#3967 accepted wave 1 and is closed; #3968 owns wave 2.
+        """#3967 accepted wave 1 and is closed; #3968 owns wave 2, #3969 wave 3.
 
         A wave-2 report labelled 3967 would attach evidence to a finished
         evaluation.
         """
         assert _mod.WAVE_EVALUATIONS[1] == "3967"
         assert _mod.WAVE_EVALUATIONS[2] == "3968"
+        assert _mod.WAVE_EVALUATIONS[3] == "3969"
         assert set(_mod.WAVE_EVALUATIONS) == set(_mod.WAVE_CHECKS)
         assert set(_mod.WAVE_REVISIONS) == set(_mod.WAVE_CHECKS)
-
-
-    def test_wave_three_is_still_unregistered_and_wave_four_is_not(self):
-        """S4/S6 extend wave 3; S7 #3966 has now extended wave 4 (§7).
-
-        Wave 3 must stay absent rather than become an empty manifest: `--wave 3`
-        is an honest "this revision carries no checks for that wave" nonzero, and
-        a registered-but-empty wave would divide by zero checks and exit 0.
-        """
-        assert _mod.SUPPORTED_WAVES == (1, 2, 4)
-        assert 3 not in _mod.WAVE_CHECKS
-        assert 4 in _mod.WAVE_CHECKS
 
     def test_wave_four_carries_the_full_ten_check_manifest(self):
         """#3970's whole table, not only the four checks S7 implements.
@@ -1615,10 +1604,11 @@ class TestCheckIdsMatchTheEvaluationFile:
 
 
 class TestTheMirroredControlRuntimeConstants:
-    """The harness mirrors three values from TypeScript. This is the seam.
+    """The harness mirrors four values from TypeScript. This is the seam.
 
-    `CONTROL_PROTOCOL_VERSION`, `CLAUDE_ADAPTER_ID` and
-    `EXPECTED_CLAUDE_SDK_VERSION` are copied rather than imported, deliberately:
+    `CONTROL_PROTOCOL_VERSION`, `CLAUDE_ADAPTER_ID`,
+    `EXPECTED_CLAUDE_SDK_VERSION` and `STEER_QUEUE_CAP` are copied rather than
+    imported, deliberately:
     this script runs standalone against a URL and must not acquire the agent
     module's dependency tree. The cost of copying is drift, and drift here is
     silent in the worst way — the harness would keep accepting evidence recorded
@@ -1630,12 +1620,31 @@ class TestTheMirroredControlRuntimeConstants:
     AGENT_SRC = REPO_ROOT / "modules" / "agent-factory" / "agent" / "src"
     RUNTIME = AGENT_SRC / "control-runtime.ts"
     ADAPTER = AGENT_SRC / "harnesses" / "claude-control.ts"
+    CONTROL_STATE = AGENT_SRC / "control-state.ts"
     PACKAGE_JSON = REPO_ROOT / "modules" / "agent-factory" / "agent" / "package.json"
 
     def test_the_typescript_sources_exist(self):
         """Named deliverables of #3962. A rename must fail here, not silently pass."""
         assert self.RUNTIME.is_file()
         assert self.ADAPTER.is_file()
+
+    def test_the_steering_queue_cap_matches_the_journal(self):
+        """W3-07 asserts an exact accepted count, so a bump must fail here first.
+
+        The cap is the journal's `DEFAULT_MAX_PENDING`. If the worker's default moved
+        to 20 and this copy stayed at 10, W3-07 would fail a correct deployment for
+        accepting twenty — reported as a steering defect, in the one check whose whole
+        subject is the bound. The story requires the cap be configurable, which is
+        exactly what makes the default worth pinning rather than assuming.
+        """
+        assert self.CONTROL_STATE.is_file()
+        match = re.search(
+            r"export const DEFAULT_MAX_PENDING\s*=\s*(\d+)",
+            self.CONTROL_STATE.read_text(encoding="utf-8"),
+        )
+
+        assert match, "DEFAULT_MAX_PENDING not found in control-state.ts"
+        assert int(match.group(1)) == _mod.STEER_QUEUE_CAP
 
     def test_the_protocol_version_matches_the_neutral_contract(self):
         source = self.RUNTIME.read_text(encoding="utf-8")
@@ -3083,15 +3092,28 @@ class TestThePublishedWaveTwoCommand:
     def test_an_undelivered_wave_is_still_refused(self, tmp_path: Path):
         """The guard was narrowed, not removed.
 
-        Wave 3 has no manifest, so it must still refuse *before* loading a config
+        The first wave with no manifest must still refuse *before* loading a config
         and must write no evidence — an empty report for an unwritten wave would
         read as "nothing to prove here".
+
+        Derived from `SUPPORTED_WAVES` rather than named, for the reason the
+        matching guard test in `TestEntryPointFailsClosed` gives: this was wave 3
+        until #3965 registered it, and hardcoding the next number only postpones
+        the same repair.
         """
         config = write_config(tmp_path, live_config(tmp_path))
         evidence = tmp_path / "evidence"
+        undelivered = max(_mod.SUPPORTED_WAVES) + 1
 
         code = _mod.main(
-            ["--wave", "3", "--config", str(config), "--evidence-dir", str(evidence)]
+            [
+                "--wave",
+                str(undelivered),
+                "--config",
+                str(config),
+                "--evidence-dir",
+                str(evidence),
+            ]
         )
 
         assert code == _mod.EXIT_CONFIG
@@ -3223,6 +3245,59 @@ class TestTheDocumentedFixtureConfig:
         # The superseded single artifact must not linger as a fourth capture
         # section: a doc offering both shapes lets the operator pick the broken one.
         assert "### `cleanup_security_recheck`" not in text
+
+    @pytest.mark.parametrize(
+        "artifact",
+        [
+            "steering_delivery",
+            "steering_queue",
+            "steering_trust_boundary",
+            "steering_input_stream",
+            "steering_retry",
+        ],
+    )
+    def test_the_runbook_documents_capturing_the_wave_three_artifacts(self, artifact: str):
+        """Same requirement as wave 2's, and for the same reason.
+
+        None of these five shapes is guessable, and two of them describe an
+        experiment the operator has to run by hand (`steering_input_stream` needs
+        the real SDK; `steering_queue` needs delivery held while eleven commands are
+        submitted). An undocumented artifact is one they omit, and the resulting
+        `not_run` looks exactly like the harness being broken.
+
+        Parametrized per artifact rather than looped, so a missing section names
+        which one instead of failing on whichever came first.
+        """
+        text = self.DOC.read_text(encoding="utf-8")
+
+        assert f"### `{artifact}`" in text
+        for key in _mod.REQUIRED_ARTIFACT_KEYS[artifact]:
+            assert key in text, (artifact, key)
+
+    def test_the_runbook_states_the_marker_bound_is_measured_from_handoff(self):
+        """The one instruction an operator can follow correctly and still be wrong.
+
+        `handoff_at` and `accepted_at` are both in the artifact, both plausible
+        readings of "within 35 seconds", and only one is the rule. An operator who
+        measures from submission records a correct run as a late one — so the doc has
+        to say which, not merely list both fields.
+        """
+        text = " ".join(self.DOC.read_text(encoding="utf-8").split())
+
+        assert "measured from **`handoff_at`**, never from `accepted_at`" in text
+        assert str(_mod.STEER_MARKER_MAX_LATENCY_SECONDS) in text
+
+    def test_the_runbook_says_a_wave_three_run_cannot_yet_exit_zero(self):
+        """Otherwise the nonzero reads as a fixture problem the operator must fix.
+
+        Seven of twelve checks have no predicate, so `--wave 3` is nonzero on a
+        perfect fixture. That is the design, and an operator who does not know it
+        will go looking for the defect in their own environment.
+        """
+        text = " ".join(self.DOC.read_text(encoding="utf-8").split())
+
+        assert "cannot exit 0 yet, and that is deliberate" in text
+        assert "S4 #3963" in text
 
     def test_the_documented_cleanup_record_matches_what_the_harness_writes(self):
         """The `cleanup` block is the evidence a reviewer reads instead of a verdict.
@@ -10442,6 +10517,744 @@ class TestTheDispatchInputIsValidatedAsAWholeValue:
 
 
 # ---------------------------------------------------------------------------
+# Wave 3 — the steering checks S6 #3965 owns: W3-06..W3-09 and W3-11.
+# ---------------------------------------------------------------------------
+
+STEER_IDS: tuple[str, ...] = tuple(
+    f"3f2b9c14-7d51-4e8a-9b02-5c6d7e8f{index:04x}" for index in range(1, 11)
+)
+
+
+def steering_artifact_payloads() -> dict:
+    """A complete, passing artifact set for the five steering checks.
+
+    Kept in its own helper for the reason `pause_artifact_payloads` is: a wave-3
+    field must not be able to perturb wave 2's fixtures, and every negative test
+    below bends exactly one key of this baseline so a failure names one defect.
+
+    The `steering_delivery` instants are deliberately more than three minutes
+    apart at `accepted_at` → `handoff_at` and five seconds apart at `handoff_at` →
+    `marker_at`. That is a PASS, and it is the shape that distinguishes the
+    implemented bound from the one it would be easy to write instead: measured from
+    submission this fixture is 225 seconds late. A baseline with the three instants
+    seconds apart would satisfy both readings and could not tell them apart.
+    """
+    return {
+        "steering_delivery": {
+            "command_id": STEER_IDS[0],
+            "accepted_at": "2026-09-24T14:10:02Z",
+            "handoff_at": "2026-09-24T14:13:47Z",
+            "marker_at": "2026-09-24T14:13:52Z",
+            "state_command_ids": [STEER_IDS[0]],
+            "log_command_ids": [STEER_IDS[0]],
+            "tool_active_at_submission": True,
+            "status_at_submission": "pending",
+            "delivered_at_matches_handoff": True,
+            "model_comprehension_claimed": False,
+        },
+        "steering_queue": {
+            "submission_order": list(STEER_IDS),
+            "handoff_order": list(STEER_IDS),
+            "accepted_count": _mod.STEER_QUEUE_CAP,
+            "overflow_status": 429,
+            "paused_pending_ids": [STEER_IDS[0], STEER_IDS[1]],
+            "paused_delivered_after_resume": [STEER_IDS[0], STEER_IDS[1]],
+            "abort_cancelled_ids": ["9c1e4a77-0b52-4d13-8f6a-2e7b5c8d1a03"],
+            "expiry_outcome": "unknown",
+            "replayed_after_unknown": False,
+            "authority_revalidated_at_handoff": True,
+        },
+        "steering_trust_boundary": {
+            "delimiters_present": True,
+            "instruction_inside_delimiters": True,
+            "actor_attribution": "operator octocat via ADP control (trusted caller)",
+            "origin_kind": "human",
+            "should_query": True,
+            "attacker_actor_metadata_rejected": True,
+            "raw_instruction_in_system_text": False,
+        },
+        "steering_input_stream": {
+            "initial_task_consumed": True,
+            "later_user_messages": 2,
+            "generator_disposed": True,
+            "query_closed": True,
+            "message_count": 3,
+            "turn_count": 4,
+            "observed_by": (
+                "control-runtime.integration.ts experiment 9 against "
+                f"@anthropic-ai/claude-agent-sdk {_mod.EXPECTED_CLAUDE_SDK_VERSION}"
+            ),
+        },
+        "steering_retry": {
+            "queued_command_id": "9c1e4a77-0b52-4d13-8f6a-2e7b5c8d1a03",
+            "deliveries_of_queued_command": 1,
+            "confirmed_handoffs_replayed": 0,
+            "session_preserved": True,
+            "attempt_id_before": "attempt-1",
+            "attempt_id_after": "attempt-2",
+            "ambiguous_handoff_outcome": "unknown",
+            "abort_during_retry_started_next_attempt": False,
+        },
+    }
+
+
+WAVE3_IMPLEMENTED: tuple[str, ...] = ("W3-06", "W3-07", "W3-08", "W3-09", "W3-11")
+
+
+def run_steering(tmp_path: Path, artifact: str | None = None, patch_: dict | None = None) -> dict:
+    """Drive the five implemented wave-3 checks, optionally bending one field.
+
+    Only those five specs are run, rather than the whole wave-3 manifest. The other
+    seven have no predicate by design, so including them would add seven `not_run`
+    results to every assertion here and say nothing about steering — the manifest's
+    completeness is asserted in `TestCheckIdsMatchTheEvaluationFile`, which is where
+    that claim belongs.
+
+    `None` as a patch value deletes the key, which is how the "a missing field must
+    not read as a pass" cases are written.
+    """
+    payloads = steering_artifact_payloads()
+    if artifact is not None:
+        for key, value in (patch_ or {}).items():
+            if value is None:
+                payloads[artifact].pop(key, None)
+            else:
+                payloads[artifact][key] = value
+    config = live_config(tmp_path, artifact_payloads={**artifact_payloads(), **payloads})
+    artifacts = _mod.ArtifactStore(tmp_path, config["artifacts"])
+    driver = _mod.Driver(config, _mod.Probe(config["gateway_url"], gateway_stub()), artifacts)
+    specs = tuple(s for s in _mod.WAVE3_CHECKS if s.check_id in WAVE3_IMPLEMENTED)
+    with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+        results = _mod.run_checks(driver, specs, manifest_ids=WAVE3_IMPLEMENTED)
+    return {result.check_id: result for result in results}
+
+
+class TestWave3SteeringChecks:
+    """The five wave-3 checks S6 (#3965) owns.
+
+    Same posture as `TestWave2PauseChecks`: the harness never runs in CI, so what
+    CI proves is that each check would NOTICE a deployment that steers badly. Every
+    test starts from the passing fixture and bends exactly one thing.
+
+    The bar these enforce is the one the story states first — `delivered` must mean
+    the SDK accepted the input, and must not be claimed before it did — so most are
+    written as "this defect must FAIL the check" rather than as happy paths.
+    """
+
+    def test_a_correct_deployment_passes_all_five(self, tmp_path: Path):
+        """The positive control. Every negative below is vacuous without it."""
+        results = run_steering(tmp_path)
+
+        for check_id in WAVE3_IMPLEMENTED:
+            assert results[check_id].status == _mod.STATUS_PASSED, (
+                check_id,
+                results[check_id].message,
+            )
+
+    @pytest.mark.parametrize(
+        ("artifact", "check_id", "key"),
+        [
+            ("steering_delivery", "W3-06", "status_at_submission"),
+            ("steering_delivery", "W3-06", "handoff_at"),
+            ("steering_queue", "W3-07", "overflow_status"),
+            ("steering_queue", "W3-07", "expiry_outcome"),
+            ("steering_trust_boundary", "W3-08", "instruction_inside_delimiters"),
+            ("steering_input_stream", "W3-09", "later_user_messages"),
+            ("steering_retry", "W3-11", "ambiguous_handoff_outcome"),
+        ],
+    )
+    def test_omitting_an_awkward_key_fails_rather_than_skips(
+        self, tmp_path: Path, artifact: str, check_id: str, key: str
+    ):
+        """A half-filled artifact is a claim without its evidence.
+
+        Stated separately from the per-field tests rather than folded into them as a
+        `None` case, because a DIFFERENT mechanism answers: the artifact store's
+        required-keys guard fires before the predicate reads anything, so the
+        message names the missing key and not the property. Folding it in would have
+        asserted the predicate's wording against a message the predicate never
+        produced.
+
+        The keys chosen are the awkward ones — the status that must be `pending`,
+        the handoff instant, the 429, the expiry outcome, the containment
+        observation, the message count, the ambiguous outcome. Those are exactly the
+        fields an operator under pressure would be tempted to leave out, and
+        treating an omission as `not_run` would make leaving them out the easy path.
+        """
+        results = run_steering(tmp_path, artifact, {key: None})
+
+        assert results[check_id].status == _mod.STATUS_FAILED
+        assert key in results[check_id].message
+        assert "claim without its evidence" in results[check_id].message
+
+    @pytest.mark.parametrize("artifact", sorted(steering_artifact_payloads()))
+    def test_an_absent_artifact_is_not_run_rather_than_passed(
+        self, tmp_path: Path, artifact: str
+    ):
+        """"Could not look" is never a pass, for each of the five separately.
+
+        Parametrized per artifact because the five checks are independent readers:
+        one of them silently defaulting would be invisible in an aggregate.
+        """
+        config = live_config(
+            tmp_path,
+            artifact_payloads={**artifact_payloads(), **steering_artifact_payloads()},
+        )
+        config["artifacts"].pop(artifact)
+        artifacts = _mod.ArtifactStore(tmp_path, config["artifacts"])
+        driver = _mod.Driver(
+            config, _mod.Probe(config["gateway_url"], gateway_stub()), artifacts
+        )
+        specs = tuple(s for s in _mod.WAVE3_CHECKS if s.check_id in WAVE3_IMPLEMENTED)
+        with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+            results = {r.check_id: r for r in _mod.run_checks(driver, specs)}
+
+        owner = {
+            "steering_delivery": "W3-06",
+            "steering_queue": "W3-07",
+            "steering_trust_boundary": "W3-08",
+            "steering_input_stream": "W3-09",
+            "steering_retry": "W3-11",
+        }[artifact]
+        assert results[owner].status == _mod.STATUS_NOT_RUN, results[owner].message
+        assert artifact in results[owner].message
+
+    # ---- W3-06: honest acknowledgement (AC-T2, AC-T4) -------------------
+
+    def test_a_marker_late_after_handoff_fails(self, tmp_path: Path):
+        """The bound itself, over by one second."""
+        results = run_steering(
+            tmp_path, "steering_delivery", {"marker_at": "2026-09-24T14:14:23Z"}
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "after the SDK handoff" in results["W3-06"].message
+
+    def test_the_bound_is_measured_from_handoff_not_submission(self, tmp_path: Path):
+        """The substitution that would fail a correct run, asserted as a PASS.
+
+        This is the load-bearing test of W3-06 and the only one that distinguishes
+        the implemented rule from the plausible wrong one. The baseline's marker is
+        225 seconds after `accepted_at` and 5 seconds after `handoff_at`; a bound
+        measured from submission would fail it. Widening the gap further must still
+        pass, because a steer waiting out a long tool call is correct behaviour.
+        """
+        results = run_steering(
+            tmp_path,
+            "steering_delivery",
+            {"handoff_at": "2026-09-24T15:47:00Z", "marker_at": "2026-09-24T15:47:04Z"},
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_PASSED, results["W3-06"].message
+
+    def test_a_marker_predating_the_handoff_fails(self, tmp_path: Path):
+        """Acknowledging before delivering, which is not read as clock skew."""
+        results = run_steering(
+            tmp_path, "steering_delivery", {"marker_at": "2026-09-24T14:13:40Z"}
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "predates the SDK handoff" in results["W3-06"].message
+
+    def test_a_handoff_before_acceptance_fails(self, tmp_path: Path):
+        """A command delivered before it was received: one instant is mislabelled."""
+        results = run_steering(
+            tmp_path, "steering_delivery", {"handoff_at": "2026-09-24T14:09:00Z"}
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "precedes acceptance" in results["W3-06"].message
+
+    @pytest.mark.parametrize("field", ["accepted_at", "handoff_at", "marker_at"])
+    @pytest.mark.parametrize("value", [None, "", "   ", "not-a-time", 17])
+    def test_an_unusable_instant_fails(self, tmp_path: Path, field: str, value):
+        """A missing instant turns the bound into a different bound."""
+        results = run_steering(tmp_path, "steering_delivery", {field: value})
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert field in results["W3-06"].message
+
+    def test_a_steer_submitted_with_no_tool_running_fails(self, tmp_path: Path):
+        """AC-T2's subject is the mid-tool case; the idle one proves nothing."""
+        results = run_steering(
+            tmp_path, "steering_delivery", {"tool_active_at_submission": False}
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "mid-tool" in results["W3-06"].message
+
+    @pytest.mark.parametrize("status", ["delivered", "applied", ""])
+    def test_a_status_claiming_delivery_mid_tool_fails(self, tmp_path: Path, status):
+        """Mid-tool there is no parked reader, so no handoff can have happened."""
+        results = run_steering(
+            tmp_path, "steering_delivery", {"status_at_submission": status}
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "pending" in results["W3-06"].message
+
+    def test_a_delivered_at_taken_at_enqueue_fails(self, tmp_path: Path):
+        """The dashboard renders that field as the delivery time."""
+        results = run_steering(
+            tmp_path, "steering_delivery", {"delivered_at_matches_handoff": False}
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "delivered_at" in results["W3-06"].message
+
+    @pytest.mark.parametrize("field", ["state_command_ids", "log_command_ids"])
+    def test_a_record_naming_a_different_command_fails(self, tmp_path: Path, field: str):
+        """An operator correlating an acknowledgement needs something to match on."""
+        results = run_steering(tmp_path, "steering_delivery", {field: [STEER_IDS[9]]})
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert field in results["W3-06"].message
+
+    @pytest.mark.parametrize("field", ["state_command_ids", "log_command_ids"])
+    @pytest.mark.parametrize("value", [None, [], "", 17, [None], [""]])
+    def test_an_unusable_id_sequence_fails(self, tmp_path: Path, field: str, value):
+        results = run_steering(tmp_path, "steering_delivery", {field: value})
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert field in results["W3-06"].message
+
+    def test_claiming_the_model_understood_fails(self, tmp_path: Path):
+        """The distinction the whole story is built on.
+
+        `delivered` is a statement about the SDK accepting bytes. An artifact
+        claiming comprehension makes a declined instruction indistinguishable from
+        a delivered one, which is the honesty property AC-T4 protects.
+        """
+        results = run_steering(
+            tmp_path, "steering_delivery", {"model_comprehension_claimed": True}
+        )
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "comprehend" in results["W3-06"].message
+
+    @pytest.mark.parametrize("value", [None, "", "   ", 17])
+    def test_a_missing_command_id_fails(self, tmp_path: Path, value):
+        results = run_steering(tmp_path, "steering_delivery", {"command_id": value})
+
+        assert results["W3-06"].status == _mod.STATUS_FAILED
+        assert "command_id" in results["W3-06"].message
+
+    # ---- W3-07: the bound, the order, the terminal outcomes (AC-T5, AC-T8) ----
+
+    @pytest.mark.parametrize("count", [9, 11])
+    def test_the_wrong_accepted_count_fails(self, tmp_path: Path, count: int):
+        """A cap that admits one more than it declares is not a cap."""
+        results = run_steering(tmp_path, "steering_queue", {"accepted_count": count})
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "accepted_count" in results["W3-07"].message
+
+    @pytest.mark.parametrize("status", [202, 200, 500])
+    def test_an_overflow_that_is_not_429_fails(self, tmp_path: Path, status):
+        """Backpressure the caller cannot see is a silently dropped instruction."""
+        results = run_steering(tmp_path, "steering_queue", {"overflow_status": status})
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "429" in results["W3-07"].message
+
+    def test_a_short_submission_sequence_fails(self, tmp_path: Path):
+        """The overflow case is only exercised once the queue is actually full."""
+        results = run_steering(
+            tmp_path,
+            "steering_queue",
+            {"submission_order": list(STEER_IDS[:3]), "handoff_order": list(STEER_IDS[:3])},
+        )
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "cap" in results["W3-07"].message
+
+    def test_an_inverted_pair_fails_and_names_the_position(self, tmp_path: Path):
+        """A FIFO that inverts one pair satisfies every set-level comparison.
+
+        The message has to name the position, which is the reason these are
+        recorded as sequences rather than as a `fifo_ok` boolean.
+        """
+        swapped = list(STEER_IDS)
+        swapped[3], swapped[4] = swapped[4], swapped[3]
+
+        results = run_steering(tmp_path, "steering_queue", {"handoff_order": swapped})
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "not FIFO" in results["W3-07"].message
+        assert "position 3" in results["W3-07"].message
+
+    def test_an_accepted_command_that_never_reached_the_sdk_fails(self, tmp_path: Path):
+        """A set difference, distinguished from an ordering defect in the message."""
+        dropped = list(STEER_IDS[:9]) + ["7e6d5c4b-3a29-4180-9f7e-6d5c4b3a2918"]
+
+        results = run_steering(tmp_path, "steering_queue", {"handoff_order": dropped})
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "never-delivered" in results["W3-07"].message
+
+    def test_a_repeated_handoff_id_fails(self, tmp_path: Path):
+        """A command ID twice in a handoff order is a replay.
+
+        Deduplicating it before the order comparison would convert this finding
+        into a pass, which is why the sequence reader refuses duplicates itself.
+        """
+        replayed = list(STEER_IDS[:9]) + [STEER_IDS[0]]
+
+        results = run_steering(tmp_path, "steering_queue", {"handoff_order": replayed})
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "repeats" in results["W3-07"].message
+
+    def test_a_pause_that_drops_a_pending_command_fails(self, tmp_path: Path):
+        """A pause is not a discard."""
+        results = run_steering(
+            tmp_path,
+            "steering_queue",
+            {"paused_delivered_after_resume": [STEER_IDS[0]]},
+        )
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "after resume" in results["W3-07"].message
+
+    def test_a_pause_that_reorders_on_release_fails(self, tmp_path: Path):
+        """Same set, wrong order — 'now do X' after 'stop doing Y' is not reversible."""
+        results = run_steering(
+            tmp_path,
+            "steering_queue",
+            {"paused_delivered_after_resume": [STEER_IDS[1], STEER_IDS[0]]},
+        )
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "after resume" in results["W3-07"].message
+
+    def test_an_abort_that_flushes_its_queue_fails(self, tmp_path: Path):
+        """Delivering on the way out runs what the operator aborted to prevent."""
+        results = run_steering(
+            tmp_path, "steering_queue", {"abort_cancelled_ids": [STEER_IDS[2]]}
+        )
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "cancelled by the abort" in results["W3-07"].message
+
+    @pytest.mark.parametrize("outcome", ["delivered", "pending", "applied"])
+    def test_an_expiry_resolved_to_anything_but_unknown_fails(self, tmp_path: Path, outcome):
+        """Both alternatives are dishonest in opposite directions."""
+        results = run_steering(tmp_path, "steering_queue", {"expiry_outcome": outcome})
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "unknown" in results["W3-07"].message
+
+    def test_a_replay_after_unknown_fails(self, tmp_path: Path):
+        """`unknown` exists so an ambiguous handoff is reported, not retried."""
+        results = run_steering(
+            tmp_path, "steering_queue", {"replayed_after_unknown": True}
+        )
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "replayed" in results["W3-07"].message
+
+    def test_authorization_checked_only_at_submission_fails(self, tmp_path: Path):
+        """The #5029 bypass a delayed buffer would open."""
+        results = run_steering(
+            tmp_path, "steering_queue", {"authority_revalidated_at_handoff": False}
+        )
+
+        assert results["W3-07"].status == _mod.STATUS_FAILED
+        assert "revalidated" in results["W3-07"].message
+
+    # ---- W3-08: the trust boundary (AC-S8) ------------------------------
+
+    def test_unwrapped_steering_text_fails(self, tmp_path: Path):
+        results = run_steering(
+            tmp_path, "steering_trust_boundary", {"delimiters_present": False}
+        )
+
+        assert results["W3-08"].status == _mod.STATUS_FAILED
+        assert "delimiters" in results["W3-08"].message
+
+    def test_delimiters_that_do_not_contain_the_instruction_fail(self, tmp_path: Path):
+        """The separate observation, and the one that carries AC-S8.
+
+        A wrapper appended AFTER the raw text satisfies `delimiters_present` while
+        containing nothing, so this must fail with the delimiters still reported
+        present.
+        """
+        results = run_steering(
+            tmp_path, "steering_trust_boundary", {"instruction_inside_delimiters": False}
+        )
+
+        assert results["W3-08"].status == _mod.STATUS_FAILED
+        assert "inside" in results["W3-08"].message
+
+    @pytest.mark.parametrize("value", [None, "", "   ", 17])
+    def test_a_missing_actor_attribution_fails(self, tmp_path: Path, value):
+        results = run_steering(tmp_path, "steering_trust_boundary", {"actor_attribution": value})
+
+        assert results["W3-08"].status == _mod.STATUS_FAILED
+        assert "actor_attribution" in results["W3-08"].message
+
+    @pytest.mark.parametrize("origin", ["system", "agent", "", None])
+    def test_a_non_human_origin_fails(self, tmp_path: Path, origin):
+        results = run_steering(tmp_path, "steering_trust_boundary", {"origin_kind": origin})
+
+        assert results["W3-08"].status == _mod.STATUS_FAILED
+        assert "origin_kind" in results["W3-08"].message
+
+    def test_steering_queued_as_a_non_querying_note_fails(self, tmp_path: Path):
+        """Note semantics, not steering: filed away until something else provokes a turn."""
+        results = run_steering(tmp_path, "steering_trust_boundary", {"should_query": False})
+
+        assert results["W3-08"].status == _mod.STATUS_FAILED
+        assert "should_query" in results["W3-08"].message
+
+    def test_attacker_settable_attribution_fails(self, tmp_path: Path):
+        """If text inside the envelope can set it, the envelope's authority is theirs."""
+        results = run_steering(
+            tmp_path,
+            "steering_trust_boundary",
+            {"attacker_actor_metadata_rejected": False},
+        )
+
+        assert results["W3-08"].status == _mod.STATUS_FAILED
+        assert "attacker" in results["W3-08"].message
+
+    def test_the_raw_instruction_in_system_text_fails(self, tmp_path: Path):
+        """Delimiters elsewhere do not matter if the text is also present unwrapped."""
+        results = run_steering(
+            tmp_path, "steering_trust_boundary", {"raw_instruction_in_system_text": True}
+        )
+
+        assert results["W3-08"].status == _mod.STATUS_FAILED
+        assert "system text" in results["W3-08"].message
+
+    # ---- W3-09: the real input stream (AC-T6) ---------------------------
+
+    def test_a_stream_that_never_carried_the_task_fails(self, tmp_path: Path):
+        """Steering shares the channel the prompt arrives on."""
+        results = run_steering(
+            tmp_path, "steering_input_stream", {"initial_task_consumed": False}
+        )
+
+        assert results["W3-09"].status == _mod.STATUS_FAILED
+        assert "initial task" in results["W3-09"].message
+
+    @pytest.mark.parametrize("count", [0, 1, None, "2"])
+    def test_fewer_than_two_later_messages_fails(self, tmp_path: Path, count):
+        """One is ambiguous: a replayed prompt on a fresh session looks identical."""
+        results = run_steering(
+            tmp_path, "steering_input_stream", {"later_user_messages": count}
+        )
+
+        assert results["W3-09"].status == _mod.STATUS_FAILED
+        assert "later_user_messages" in results["W3-09"].message
+
+    def test_counts_that_contradict_each_other_fail(self, tmp_path: Path):
+        """Two messages after the task cannot fit in a two-message stream."""
+        results = run_steering(tmp_path, "steering_input_stream", {"message_count": 2})
+
+        assert results["W3-09"].status == _mod.STATUS_FAILED
+        assert "message_count" in results["W3-09"].message
+
+    @pytest.mark.parametrize("turns", [0, -1, None])
+    def test_a_stream_that_provoked_no_turn_fails(self, tmp_path: Path, turns):
+        """Indistinguishable from a channel that accepted the messages and dropped them."""
+        results = run_steering(tmp_path, "steering_input_stream", {"turn_count": turns})
+
+        assert results["W3-09"].status == _mod.STATUS_FAILED
+        assert "turn_count" in results["W3-09"].message
+
+    @pytest.mark.parametrize("field", ["generator_disposed", "query_closed"])
+    def test_an_undisposed_attempt_fails(self, tmp_path: Path, field: str):
+        """Each holds an SDK subprocess; the leak only shows up in aggregate."""
+        results = run_steering(tmp_path, "steering_input_stream", {field: False})
+
+        assert results["W3-09"].status == _mod.STATUS_FAILED
+        assert results["W3-09"].message
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "grep of agent-worker.ts",
+            "a mock input channel in the jest suite",
+            "stub adapter",
+            "fake SDK transport",
+            "source read of control-runtime.ts",
+            "code read",
+            "static inspection",
+        ],
+    )
+    def test_a_non_observation_named_as_the_source_fails(self, tmp_path: Path, source: str):
+        """The claim mocks cannot make, refused by name.
+
+        A mock accepts as many messages as it is handed by construction, and a grep
+        establishes that the code intends to push them. Neither is evidence the
+        provider accepted them, and #3969 says so explicitly.
+        """
+        results = run_steering(tmp_path, "steering_input_stream", {"observed_by": source})
+
+        assert results["W3-09"].status == _mod.STATUS_FAILED
+        assert "observed_by" in results["W3-09"].message
+
+    @pytest.mark.parametrize("value", [None, "", "   ", 17])
+    def test_an_unattributed_stream_observation_fails(self, tmp_path: Path, value):
+        results = run_steering(tmp_path, "steering_input_stream", {"observed_by": value})
+
+        assert results["W3-09"].status == _mod.STATUS_FAILED
+        assert "observed_by" in results["W3-09"].message
+
+    # ---- W3-11: the retry (AC-T7) --------------------------------------
+
+    def test_a_stranded_pending_command_fails(self, tmp_path: Path):
+        """Zero deliveries: the operator waits on an instruction that cannot arrive."""
+        results = run_steering(
+            tmp_path, "steering_retry", {"deliveries_of_queued_command": 0}
+        )
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "never delivered" in results["W3-11"].message
+
+    def test_a_duplicated_delivery_fails_differently(self, tmp_path: Path):
+        """The opposite failure, and it must not share a message with the stranded one.
+
+        This is why the field is an integer: 0 and 2 have opposite causes and
+        opposite fixes, and "not 1" would send the reader looking for the wrong one.
+        """
+        results = run_steering(
+            tmp_path, "steering_retry", {"deliveries_of_queued_command": 2}
+        )
+        message = results["W3-11"].message
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "twice" in message
+        assert "never delivered" not in message
+
+    def test_a_replayed_confirmed_handoff_fails(self, tmp_path: Path):
+        """Only PENDING commands cross a retry."""
+        results = run_steering(
+            tmp_path, "steering_retry", {"confirmed_handoffs_replayed": 1}
+        )
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "confirmed_handoffs_replayed" in results["W3-11"].message
+
+    def test_a_lost_session_fails(self, tmp_path: Path):
+        """A correctly reattached command delivered to a run that forgot the context."""
+        results = run_steering(tmp_path, "steering_retry", {"session_preserved": False})
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "session" in results["W3-11"].message
+
+    def test_an_unchanged_attempt_fails(self, tmp_path: Path):
+        """Then no attempt was replaced and the reattachment path never ran.
+
+        This is the test that keeps the check from passing on a run where the retry
+        did not happen — every other field would be satisfied by a single-attempt
+        run that never needed to move anything.
+        """
+        results = run_steering(tmp_path, "steering_retry", {"attempt_id_after": "attempt-1"})
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "did not change" in results["W3-11"].message
+
+    @pytest.mark.parametrize("field", ["attempt_id_before", "attempt_id_after"])
+    @pytest.mark.parametrize("value", [None, "", "   ", 17])
+    def test_a_missing_attempt_identity_fails(self, tmp_path: Path, field: str, value):
+        results = run_steering(tmp_path, "steering_retry", {field: value})
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert field in results["W3-11"].message
+
+    @pytest.mark.parametrize("outcome", ["delivered", "pending"])
+    def test_a_guessed_ambiguous_handoff_fails(self, tmp_path: Path, outcome):
+        """Guessing is worse than reporting, in both directions."""
+        results = run_steering(
+            tmp_path, "steering_retry", {"ambiguous_handoff_outcome": outcome}
+        )
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "unknown" in results["W3-11"].message
+
+    def test_an_attempt_started_after_an_abort_during_backoff_fails(self, tmp_path: Path):
+        """Backoff is not a window in which cancellation is deferred."""
+        results = run_steering(
+            tmp_path,
+            "steering_retry",
+            {"abort_during_retry_started_next_attempt": True},
+        )
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "backoff" in results["W3-11"].message
+
+    @pytest.mark.parametrize("value", [None, "", "   ", 17])
+    def test_a_missing_queued_command_id_fails(self, tmp_path: Path, value):
+        results = run_steering(tmp_path, "steering_retry", {"queued_command_id": value})
+
+        assert results["W3-11"].status == _mod.STATUS_FAILED
+        assert "queued_command_id" in results["W3-11"].message
+
+
+class TestWave3IsHonestlyIncomplete:
+    """Wave 3 must report 5/12, not 5/5, and must not exit 0.
+
+    The load-bearing claim of the partial-wave design, at the wave-3 boundary.
+    Registering only the implemented checks would make `required` five, five would
+    pass, `passed == required` would hold and `--wave 3` would exit 0 — a report
+    indistinguishable from a complete wave-3 pass on a build with no abort
+    evidence whatsoever.
+    """
+
+    def test_the_manifest_is_the_whole_evaluation_not_the_implemented_subset(self):
+        assert len(_mod.WAVE3_CHECKS) == 12
+        assert set(_mod.WAVE3_PREDICATES) == set(WAVE3_IMPLEMENTED)
+        registered = {spec.check_id for spec in _mod.WAVE3_CHECKS}
+        assert set(WAVE3_IMPLEMENTED) < registered
+
+    def test_every_unimplemented_wave3_check_names_its_owner(self):
+        """A not_run has to say who to go to, or it reads as a harness bug."""
+        registered = {spec.check_id for spec in _mod.WAVE3_CHECKS}
+        outstanding = registered - set(_mod.WAVE3_PREDICATES)
+
+        assert outstanding == {"W3-01", "W3-02", "W3-03", "W3-04", "W3-05", "W3-10", "W3-12"}
+        for check_id in outstanding:
+            assert _mod.PENDING_CHECK_OWNERS[check_id].strip()
+
+    def test_the_abort_checks_are_attributed_to_s4(self):
+        """Stated directly because it is the attribution a reader will act on."""
+        for check_id in ("W3-02", "W3-03", "W3-04"):
+            assert "3963" in _mod.PENDING_CHECK_OWNERS[check_id], check_id
+
+    def test_a_full_wave3_run_cannot_pass_on_the_steering_evidence_alone(
+        self, tmp_path: Path
+    ):
+        """Five passed, seven not_run, nonzero — the honest report.
+
+        Driven through `run_checks` over the FULL manifest rather than the
+        implemented subset, because the subset is what would produce the false
+        green and this is the assertion that it does not.
+        """
+        config = live_config(
+            tmp_path,
+            artifact_payloads={**artifact_payloads(), **steering_artifact_payloads()},
+        )
+        artifacts = _mod.ArtifactStore(tmp_path, config["artifacts"])
+        driver = _mod.Driver(
+            config, _mod.Probe(config["gateway_url"], gateway_stub()), artifacts
+        )
+        manifest = tuple(spec.check_id for spec in _mod.WAVE3_CHECKS)
+        with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+            results = _mod.run_checks(driver, _mod.WAVE3_CHECKS, manifest_ids=manifest)
+
+        by_status: dict[str, list[str]] = {}
+        for result in results:
+            by_status.setdefault(result.status, []).append(result.check_id)
+
+        assert sorted(by_status[_mod.STATUS_PASSED]) == sorted(WAVE3_IMPLEMENTED)
+        assert len(by_status[_mod.STATUS_NOT_RUN]) == 7
+        # No unowned check may FAIL: that would be a harness bug reported as a
+        # deployment defect, and it is what run_checks does with an unowned gap.
+        assert _mod.STATUS_FAILED not in by_status, by_status
+
+
 # Wave 4 (#3966): the dashboard's own checks
 #
 # These read a captured browser run, so the thing worth testing is that the

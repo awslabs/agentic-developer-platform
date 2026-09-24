@@ -117,6 +117,13 @@ on:
       # is breaking one of those callers, not breaking control.
       - 'modules/agent-factory/agent/src/control-runtime.ts'
       - 'modules/agent-factory/agent/src/control-runtime.test.ts'
+      # Live steering (#3965): the run-level delivery pump and its suite. Listed
+      # explicitly because a change confined to either file matches none of the
+      # paths above, so the verb gates — which now expect `steer` in
+      # EXPECTED_SUPPORTED on both sides — would not run on exactly the PRs able to
+      # break the delivery path they vouch for.
+      - 'modules/agent-factory/agent/src/steer-queue.ts'
+      - 'modules/agent-factory/agent/src/agent-worker-steer.test.ts'
       # The W2-05 pause_expiry producer (#5840). The `.integration.ts` half is
       # listed too: jest cannot collect it, but `tsc --noEmit` in this workflow is
       # the only thing that checks it at all, and it is the file that has to stay
@@ -132,6 +139,8 @@ on:
       - 'modules/agent-factory/agent/src/run-heartbeat.ts'
       - 'modules/agent-factory/agent/src/run-heartbeat.test.ts'
       - 'modules/agent-factory/agent/src/control-runtime-timeout.assembly.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-fault-probe.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-steering-probe.test.ts'
       - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
@@ -525,8 +534,18 @@ jobs:
 
           # Pause/resume: #3961 admission barrier plus #5222 signed human path.
           # Abort: #3963 cancellation plus the terminal finalization that reports it.
+          # Steer: #3965 — the run-level delivery pump (steer-queue.ts) plus the
+          # observed handoff boundary on the adapter (canAcceptInput /
+          # notifyWhenInputAccepted), which is what the verb was missing. The
+          # streaming input transport and the authority re-check immediately before
+          # the physical handoff already existed; what did not was anything that
+          # *waited* for a boundary, so a command submitted mid-tool was refused.
+          #
+          # This completes the set: all four verbs are now implemented. A fifth verb
+          # still fails the ALL_VERBS pin below.
+          #
           # Keep both language gates, gateway and worker in lockstep.
-          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "abort"}
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "steer", "abort"}
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
           # a truthiness check, so a refactor that drops the constant could report
@@ -775,8 +794,10 @@ jobs:
             src/pause-attempt-fencing.test.ts \
             src/pause-output-race.test.ts src/control-deadline.test.ts \
             src/control-abort-sentinel.test.ts src/agent-worker-abort.test.ts \
+            src/agent-worker-steer.test.ts \
             src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
             src/control-runtime-timeout.assembly.test.ts \
+            src/control-runtime-steering-probe.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -788,6 +809,7 @@ jobs:
             --collectCoverageFrom='src/control-runtime.ts' \
             --collectCoverageFrom='src/pause-gate.ts' \
             --collectCoverageFrom='src/control-command-apply.ts' \
+            --collectCoverageFrom='src/steer-queue.ts' \
             --collectCoverageFrom='src/harnesses/claude-control.ts' \
             --collectCoverageFrom='src/utils/resilientQuery.ts' \
             --collectCoverageFrom='src/control-runtime-timeout.ts' \
@@ -831,10 +853,12 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // #3961 pause barrier plus the #5222 signed human command path, and
-          // #3963's abort (cancellation plus reported terminal finalization).
+          // #3961 pause barrier plus the #5222 signed human command path, #3963's
+          // abort (cancellation plus reported terminal finalization), and #3965's
+          // steering (the run-level delivery pump plus the adapter's observed
+          // handoff boundary).
           // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
-          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'abort']);
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'steer', 'abort']);
 
           const fail = (msg: string): never => {
             console.error(msg);

@@ -12,10 +12,15 @@ mostly about the *seams* rather than about any one mechanism:
 
 ``TestSupportedVerbPath`` used to reach the signing path by patching
 ``SUPPORTED_AGENT_ACTIONS``, which was the only way to cover it while no
-live-control verb was supported. PAUSE has since shipped in the real set (and
-ABORT with #3963), so the patch is gone: the signing tests now run against the
-deployed constant, which is what makes them evidence about this deployment
-rather than about a configuration no environment has.
+live-control verb was supported. PAUSE has since shipped in the real set (ABORT
+with #3963, STEER with #3965), so the patch is gone: the signing tests now run
+against the deployed constant, which is what makes them evidence about this
+deployment rather than about a configuration no environment has.
+
+``TestUnsupportedVerbsStay501`` now runs the other way round, and patches. It has
+to: its subject is a verb the deployment does *not* implement, and there is no
+longer one to borrow. See that class's docstring for why the two directions are
+consistent rather than contradictory.
 """
 
 from __future__ import annotations
@@ -411,19 +416,32 @@ class TestTwoWorkersSharingOneRole:
 
 
 class TestUnsupportedVerbsStay501:
-    """The boundary between "may ask" and "can be done", now that ABORT can be done.
+    """The boundary between "may ask" and "can be done", with no verb left to borrow.
 
-    ABORT was parametrized here alongside STEER until #3963. It moved to
-    ``TestSupportedVerbPath`` rather than being deleted: the boundary this class
-    protects is not about which verb, it is that an authorized request for an
-    unimplemented verb gets an honest 501 instead of an envelope the far end will
-    refuse. STEER still holds that boundary, and it holds it for the same reason
-    ABORT used to — no revalidation branch, no worker verb.
+    ABORT was parametrized here alongside STEER until #3963; STEER carried the
+    class alone until #3965 implemented it. Every live-control verb is now
+    supported, so the two tests below are the first here that have to *withhold*
+    a verb with ``monkeypatch`` — a reversal of the module docstring's rule, and
+    the reason is worth stating.
+
+    That rule exists so the *signing* tests read the deployed constant: a signing
+    test passing only under a patched set would be evidence about a configuration
+    no environment runs. This class asserts the opposite thing — the refusal — and
+    its subject is a verb that by definition is not in the deployed set. Pinning
+    it to whichever verb happens to be unimplemented is what made this class die
+    twice. Patching keeps the mechanism covered continuously, including for
+    whatever verb is added next, and the shipped set is still pinned exactly (once)
+    in ``test_policy.py``.
     """
 
-    def test_an_authorized_live_control_verb_is_501(self):
+    @pytest.mark.parametrize("action", [AgentAction.PAUSE, AgentAction.RESUME, AgentAction.STEER, AgentAction.ABORT])
+    def test_an_authorized_live_control_verb_is_501(self, action, monkeypatch):
         """The hard boundary: authorization ships, behaviour does not."""
-        action = AgentAction.STEER
+        monkeypatch.setattr(
+            policy_module,
+            "SUPPORTED_AGENT_ACTIONS",
+            frozenset(policy_module.SUPPORTED_AGENT_ACTIONS - {action}),
+        )
         adapter, _ = build_adapter(
             grants={"inv-coordinator#1": grant(allowed_actions=frozenset({AgentAction.MONITOR, action}))},
             targets={"run-developer-7": target()},
@@ -453,7 +471,7 @@ class TestUnsupportedVerbsStay501:
 
         assert exc.value.status_code == REFUSED_STATUS
 
-    def test_a_malformed_body_is_still_501_for_an_unbuilt_verb(self):
+    def test_a_malformed_body_is_still_501_for_an_unbuilt_verb(self, monkeypatch):
         """Body checks sit below the 501, so an unbuilt verb never reports body rules.
 
         The inverse of the human path's W1-05 ordering, and deliberately so:
@@ -461,6 +479,11 @@ class TestUnsupportedVerbsStay501:
         body is only ever inspected to bind an envelope, which an unbuilt verb
         never gets.
         """
+        monkeypatch.setattr(
+            policy_module,
+            "SUPPORTED_AGENT_ACTIONS",
+            frozenset(policy_module.SUPPORTED_AGENT_ACTIONS - {AgentAction.STEER}),
+        )
         adapter, _ = build_adapter(
             grants={"inv-coordinator#1": grant(allowed_actions=frozenset({AgentAction.STEER}))},
             targets={"run-developer-7": target()},

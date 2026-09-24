@@ -31,7 +31,9 @@ export async function revalidateQueuedCommand(
 ): Promise<RevalidationOutcome> {
   const started = performance.now();
   try {
-    const result = await postRevalidation({ body: JSON.stringify(proof), started });
+    // Private attribution is not part of the gateway request schema.
+    const { envelope, action, command_id, body_base64 } = proof;
+    const result = await postRevalidation({ body: JSON.stringify({ envelope, action, command_id, body_base64 }), started });
     const allowed = performance.now() - started < MAX_REVALIDATION_MS && result.allowed === true &&
       result.command_id === proof.command_id && result.generation === generation && result.max_round_trip_ms === MAX_REVALIDATION_MS;
     // Only surfaced on an allowed decision. A receipt accompanying a refusal would

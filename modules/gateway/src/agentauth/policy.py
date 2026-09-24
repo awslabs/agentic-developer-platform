@@ -41,11 +41,13 @@ policy.
 ## What this module does not do
 
 It does not implement control behaviour — pause/resume live in
-``activity/control_service.py`` and abort's acceptance in
-``agentauth/revalidation.py``. This module only decides whether a caller may ask.
-An authorized request for a verb this deployment does not implement (STEER)
-returns :data:`UNSUPPORTED_STATUS` (501) *after* authorization, preserving the
-existing ladder. It does not enable any flag: ``FEATURE_AGENT_CONTROL_ENABLED``
+``activity/control_service.py``, abort's acceptance in
+``agentauth/revalidation.py``, and steering's delivery in the worker's
+``steer-queue.ts``. This module only decides whether a caller may ask.
+An authorized request for a verb this deployment does not implement still returns
+:data:`UNSUPPORTED_STATUS` (501) *after* authorization, preserving the existing
+ladder — as of #3965 all four live verbs are implemented, so that rung is reached
+only by a future verb. It does not enable any flag: ``FEATURE_AGENT_CONTROL_ENABLED``
 and ``AGENT_AUTHORITY_ENABLED`` still gate the route regardless of what
 :data:`SUPPORTED_AGENT_ACTIONS` contains.
 """
@@ -88,9 +90,20 @@ logger = logging.getLogger("bedrockgateway.agentauth.policy")
 # already carries ``abort`` for the same reason, so leaving it out here is now
 # the drift rather than the safe default.
 #
-# STEER stays out. It has no revalidation branch and no worker verb, so an
-# authorized STEER still lands on the 501 in ``require_supported``.
-SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT})
+# STEER joins with #3965 (S6), which supplied the worker verb it was missing: a
+# run-level delivery pump that holds an instruction until an authorized, supported
+# handoff boundary, and an adapter that can report when such a boundary exists.
+#
+# It deliberately gets no revalidation branch of its own, unlike ABORT. The
+# branch exists for abort because its decision must be re-presented later, to a
+# different process that has no access to this check — hence the signed receipt.
+# Steering has no such consumer: the worker re-checks authority immediately before
+# the physical handoff and acts on the plain boolean, so ``revalidate_command``'s
+# default ``{"allowed": True, ...}`` return is the whole answer. Adding a branch
+# that minted a receipt nothing reads would be a bearer proof with no verifier.
+SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset(
+    {AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.STEER, AgentAction.ABORT}
+)
 
 # Status codes this policy produces. Named so the adapters cannot drift.
 REFUSED_STATUS = 404
