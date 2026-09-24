@@ -1059,14 +1059,18 @@ async def assert_replaced_workload_cannot_complete(runtime, worker, object_kind)
             != PlanProgress.COMPLETE
         )
         rows = await connection.fetch(
-            "SELECT outcome FROM harness_provider_call_intent WHERE operation_id=$1 "
+            "SELECT stage,outcome FROM harness_provider_call_intent WHERE operation_id=$1 "
             "AND operation_kind='status'",
             worker.operation.grant.lease.operation_id,
         )
-        assert sorted(stored_outcome(row["outcome"]) for row in rows) == [
-            "succeeded",
-            "unknown",
-        ]  # Only the earlier node-join check succeeded.
+        assert len(rows) == 2
+        assert sum(stored_outcome(row["outcome"]) == "succeeded" for row in rows) == 1
+        # Transport uncertainty leaves the intent recoverable, without inventing
+        # a terminal observation of the replacement object.
+        assert (
+            sum(row["stage"] == "intended" and row["outcome"] is None for row in rows)
+            == 1
+        )
     assert all(
         "/secrets/" not in path and "/proxy/" not in path
         for _, path in runtime.kube.requests[before:]
