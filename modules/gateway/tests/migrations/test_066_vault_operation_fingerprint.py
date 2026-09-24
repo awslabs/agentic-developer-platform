@@ -18,7 +18,7 @@ def test_vault_fingerprint_migration_precedes_the_single_head():
     scripts = ScriptDirectory.from_config(config)
 
     # One head, with this migration in its ancestry. Pinning the head's NAME made
-    # every subsequent migration fail this test (#5664 hit it with 070) without
+    # every subsequent migration fail this test (#5664 hit it with its own migration) without
     # testing anything the two assertions below do not already cover.
     heads = scripts.get_heads()
     assert len(heads) == 1, f"expected a single migration head, found {heads}"

@@ -12,7 +12,7 @@ def test_verification_binding_extends_both_preserved_histories():
     config.set_main_option("script_location", str(GATEWAY_ROOT / "alembic"))
     scripts = ScriptDirectory.from_config(config)
     # One head, with this migration in its ancestry. Pinning the head's NAME made
-    # #5664's migration 070 fail a test about 069's own lineage.
+    # #5664's migration fail a test about 069's own lineage.
     heads = scripts.get_heads()
     assert len(heads) == 1, f"expected a single migration head, found {heads}"
     assert "069_aws_verification_binding" in {revision.revision for revision in scripts.walk_revisions("base", heads[0])}

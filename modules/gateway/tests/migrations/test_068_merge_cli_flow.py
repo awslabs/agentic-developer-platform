@@ -14,7 +14,7 @@ def test_merge_retains_both_existing_migration_histories():
     scripts = ScriptDirectory.from_config(config)
     # One head, with the merge in its ancestry — the point of this test is that
     # the two 067 branches stay merged, not what the current head is called
-    # (pinning the name made #5664's 070 fail it).
+    # (pinning the name made #5664's migration fail it).
     heads = scripts.get_heads()
     assert len(heads) == 1, f"expected a single migration head, found {heads}"
     assert "068_merge_cli_flow" in {revision.revision for revision in scripts.walk_revisions("base", heads[0])}

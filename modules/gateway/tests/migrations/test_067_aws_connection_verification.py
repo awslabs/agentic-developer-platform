@@ -19,7 +19,7 @@ def test_aws_verification_migration_is_on_the_single_head_lineage():
 
     # The invariant is "one head, and this migration is in its ancestry", not the
     # head's NAME. Asserting the name made every later migration fail this test
-    # (#5664 hit it with 070) while proving nothing extra: a second head would
+    # (#5664 hit it with its own migration) while proving nothing extra: a second head would
     # still be caught by the length check, and a detached 067 by the ancestry one.
     heads = scripts.get_heads()
     assert len(heads) == 1, f"expected a single migration head, found {heads}"
