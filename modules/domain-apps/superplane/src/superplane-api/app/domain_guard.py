@@ -40,18 +40,69 @@ WHAT IT ENFORCES, IN ORDER
    server-held grant re-read for THIS operation — workspace-scoped against the
    workspace resolved from the path, organization-scoped against the separate
    organization path that a workspace grant deliberately cannot satisfy.
+5. The acting principal is published for the harness trust ports, from the same
+   verified caller the grant check just used.
+
+WHY THIS GUARD ALSO BINDS THE ACTING PRINCIPAL (#5535, W6)
+----------------------------------------------------------
+``harness_jobs``'s ``PrincipalResolver`` receives its ``org_id`` / ``workspace_id``
+arguments as *an assertion to check, not a source of authority*
+(``harness_jobs/facade.py:206``), so the composed resolver must derive the tenant
+from a caller this process authenticated. Nothing did. Measured against real
+PostgreSQL before this step existed, building the real composed facade and calling
+it produced ``ProvisioningRefused: the acting principal could not be resolved from
+the authenticated context`` — so every operation admitted through the
+``operation_facade`` port was refused 100% of the time regardless of grants.
+
+This is the right place for it, and deliberately not the adapter's own job:
+
+* It is the only point that has a caller which has been BOTH admitted by the
+  strict token policy and bound to a domain organization. Binding earlier would
+  publish an unbound ADP org id, and the grant tables key on the domain one.
+* It runs after ``bind_caller`` and after the grant check, so a principal is only
+  ever published for a request that was already authorized for this operation.
+  Publishing before the check would make the facade's view of "who is acting"
+  reachable for callers the guard is about to refuse.
+* A ``yield`` dependency rather than a plain one, so the contextvar is reset in a
+  ``finally``. Stated precisely, because an earlier version of this comment claimed
+  more than the measurement supports: the reset is **defense in depth, not the
+  boundary that separates two tenants**. What separates them today is that
+  ``BaseHTTPMiddleware`` runs the app below it in a child anyio task, which copies
+  the context — so a write here cannot propagate back out to a later request at all.
+  Bisected: with zero such middlewares an unreset write escapes; with one or more it
+  does not, and ``app/main.py`` installs three. The reset is still worth keeping. It
+  holds for in-process callers that are not behind that stack (the harness
+  composition resolves principals outside any request), and it does not depend on a
+  middleware arrangement that a future change could flatten without anyone
+  connecting the two. It must simply not be *relied on* as the isolation guarantee,
+  and tests must not assert it at a point where the middleware already makes a leak
+  unobservable — see ``_GuardRun`` in ``tests/test_auth.py``, which drives this
+  dependency directly for exactly that reason.
+
+NOTHING IS BOUND WHEN ENFORCEMENT IS OFF. With ``domain_policy`` unset this
+function returns at step 4 before reaching the binding, and
+``require_verified_caller`` independently refuses that configuration. So there is
+no path that manufactures an acting principal from the legacy JWT path's weaker
+claims: an unbound context resolves to ``None``, which the harness converts to a
+refusal, and a refusal naming the missing thing is the honest answer.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import AsyncIterator
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import auth as domain_auth
+from app.adapters.operation_authority_source import (
+    ActingPrincipal,
+    reset_acting_principal,
+    set_acting_principal,
+)
 from app.database import get_session
 from app.endpoint_inventory import (
     WORKSPACE_PATH_PARAM,
@@ -71,12 +122,55 @@ async def enforce_domain_authorization(
         domain_auth.domain_bearer
     ),
     db: AsyncSession = Depends(get_session),
-) -> None:
-    """Classify the matched route and enforce what it requires.
+) -> AsyncIterator[None]:
+    """Classify the matched route, enforce what it requires, publish the actor.
 
-    Registered once on the app. Returns ``None`` on success; raises 401/403
-    otherwise. Never returns a partially-authorized state: a caller that reaches
-    a handler has been admitted and granted for that specific operation.
+    Registered once on the app. Yields once on success; raises 401/403 otherwise.
+    Never yields a partially-authorized state: a caller that reaches a handler has
+    been admitted and granted for that specific operation.
+
+    A generator dependency because the acting principal it publishes for the
+    harness trust ports must be unpublished when the request ends — see the module
+    docstring.
+
+    EVERY SUCCESSFUL PATH MUST ``yield`` EXACTLY ONCE, including the paths that
+    authorize nothing. MEASURED: FastAPI drives a generator dependency as an async
+    context manager, so a bare ``return`` before the ``yield`` raises
+    ``RuntimeError: generator didn't yield`` and the request becomes a 500 — which
+    on this function would mean every public and internal route breaking, since
+    those are precisely the early exits. That is why the structure below is a
+    single ``try``/``finally`` around one ``yield`` with the decisions expressed as
+    a helper that returns, rather than the chain of early ``return``s this function
+    used while it was a coroutine.
+    """
+    acting = await _authorize(request, credentials, db)
+    if acting is None:
+        # Authorized, but with no acting principal to publish: a public route, an
+        # internal route, an unmatched path, or enforcement off. Yield anyway.
+        yield
+        return
+
+    token = set_acting_principal(acting)
+    try:
+        yield
+    finally:
+        # Reset on every exit, including a handler that raised. Defense in depth
+        # rather than the tenant boundary itself — the module docstring records what
+        # was measured about which layer actually isolates the context.
+        reset_acting_principal(token)
+
+
+async def _authorize(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    db: AsyncSession,
+) -> ActingPrincipal | None:
+    """Enforce the inventory; return the principal to publish, or ``None``.
+
+    Split out so the enforcement logic keeps its early ``return``s — which are far
+    clearer than nested conditionals — while the generator above keeps its single
+    ``yield``. ``None`` means "authorized, nothing to publish" and is NOT a refusal;
+    refusals are raised as ``HTTPException`` exactly as before.
     """
     # Step 1 — strip client-supplied identity before anything reads it. Done for
     # every request, enforced or not, and published on request.state so handlers
@@ -141,15 +235,39 @@ async def enforce_domain_authorization(
             db, caller, workspace_id, permission
         )
         request.state.grant = grant
-        return None
+        return _acting_for(caller, str(workspace_id))
 
     if scope is Scope.ORGANIZATION:
         await domain_auth.authorize_organization_operation(db, caller, permission)
-        return None
+        # No workspace in the path, and none invented. An organization-scoped route
+        # is exactly the zero-workspace case: `POST /workspaces` has no workspace
+        # id yet because it is creating one. The handler supplies the workspace it
+        # is about to create as the resolver's asserted `workspace_id`, and the
+        # resolver accepts an empty one from the context rather than treating `""`
+        # as a workspace named "".
+        return _acting_for(caller, "")
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="endpoint scope is not recognized",
+    )
+
+
+def _acting_for(caller: domain_auth.VerifiedCaller, workspace_id: str):
+    """The acting principal for the harness ports, from verified claims only.
+
+    Every field comes off ``caller.principal``, which ``DomainPrincipal`` documents
+    as resolved entirely from validated claims — nothing here can be influenced by
+    a request body or a client header. ``org_id`` is the DOMAIN organization,
+    already exchanged for the ADP claim by ``bind_caller``, because that is what
+    the grant tables key on; ``caller.source_org_id`` retains the original and is
+    deliberately not used for authority.
+    """
+    return ActingPrincipal(
+        subject=caller.principal.subject,
+        org_id=caller.principal.org_id,
+        workspace_id=workspace_id,
+        account_type=caller.principal.account_type,
     )
 
 

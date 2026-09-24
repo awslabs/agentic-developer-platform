@@ -129,12 +129,17 @@ from app import auth as domain_auth  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.endpoint_inventory import (  # noqa: E402
     DOMAIN_ROUTES,
+    WORKSPACE_PATH_PARAM,
     all_inventoried,
     classify,
     mounted_operations,
 )
 from app.main import app as fastapi_app  # noqa: E402
 from app.models.organization import Organization  # noqa: E402
+from app.models.organization_grant import (  # noqa: E402
+    ORGANIZATION_ADMINISTER,
+    OrganizationGrantRecord,
+)
 from app.models.research_finding import ResearchFinding  # noqa: E402
 from app.models.research_proposal import ResearchProposal  # noqa: E402
 from app.models.workspace import Workspace  # noqa: E402
@@ -262,6 +267,201 @@ async def _seed_workspace(permissions: str | None, principal="user-abc", org_id=
             )
         await session.commit()
     return org_uuid, workspace_id
+
+
+async def _seed_organization_grant(org_id, principal, permissions):
+    """Create an organization plus one organization-level grant on it.
+
+    Separate from `_seed_workspace` because the case it serves is the absence of a
+    workspace: an organization administrator provisioning the org's FIRST workspace
+    has no workspace row and can have no workspace grant (the grant's
+    `workspace_id` is a foreign key to `workspaces.id`).
+    """
+    from tests.conftest import async_session_test
+
+    async with async_session_test() as session:
+        session.add(
+            Organization(
+                id=org_id, name=f"test-org-{org_id.hex[:8]}", billing_plan="free"
+            )
+        )
+        session.add(
+            OrganizationGrantRecord(
+                org_id=org_id,
+                principal=principal,
+                principal_type="human",
+                permissions=permissions,
+                granted_by="bootstrap",
+            )
+        )
+        await session.commit()
+
+
+class _CapturedActor:
+    """Records the acting principal from inside a request, via a dependency.
+
+    Deliberately NOT by swapping the handler out. The first version of this helper
+    replaced `route.endpoint`, which fails for a different reason than it appears
+    to: FastAPI keeps the route's `response_model`, so a stub returning `{"ok":
+    True}` raises `ResponseValidationError` against `WorkspaceResponse`. Satisfying
+    that schema would mean hand-building a full response body in the test — a
+    fixture that has to be updated whenever the schema changes, for a test that is
+    not about the schema at all.
+
+    An extra dependency appended to the route reads the contextvar at the same
+    point a handler would, leaves the real handler and its response model in place,
+    and needs no knowledge of either. `app/main.py`'s global guard registration is
+    still the thing under test, because the route is the real one on the real app.
+    """
+
+    def __init__(self) -> None:
+        self.acting = None
+        self._route = None
+        self._previous = None
+
+    async def _run(self) -> None:
+        """What the injected dependency does. Overridden to also raise."""
+        from app.adapters.operation_authority_source import acting_principal
+
+        self.acting = acting_principal()
+
+    def attach(self, template: str, method: str = "GET"):
+        """Append the probe to one real route's dependency list."""
+        from fastapi import Depends
+        from fastapi.dependencies.utils import get_parameterless_sub_dependant
+
+        async def _probe():
+            await self._run()
+
+        for route in fastapi_app.routes:
+            if getattr(route, "path", None) == template and method in getattr(
+                route, "methods", set()
+            ):
+                self._route = route
+                # Copied, not aliased: `restore` writes the list back in place, so
+                # holding a reference to the live list would restore it to itself.
+                self._previous = list(route.dependant.dependencies)
+                route.dependant.dependencies.append(
+                    get_parameterless_sub_dependant(
+                        depends=Depends(_probe), path=template
+                    )
+                )
+                return self
+        raise AssertionError(f"no {method} route matching {template!r} on the app")
+
+    def restore(self) -> None:
+        if self._route is not None:
+            self._route.dependant.dependencies[:] = self._previous
+
+
+class _GuardRun:
+    """Drives the real guard dependency directly, so its context writes are visible.
+
+    WHY NOT THROUGH THE HTTP CLIENT. MEASURED, and this helper exists only because
+    of the measurement: on the real app an unreset contextvar write inside a request
+    is invisible BOTH to the test function and to every later request, so no
+    client-driven assertion can distinguish "reset correctly" from "never reset".
+    Bisected to the cause — `BaseHTTPMiddleware` runs the downstream app in a child
+    anyio task, which copies the context, so writes below it cannot propagate back
+    out. `app/main.py` installs three (`AuditMiddleware`,
+    `QuotaEnforcementMiddleware`, `RateLimitMiddleware`); with zero the write escapes,
+    with one or more it does not.
+
+    Two consequences, both load-bearing for how the tests below are written:
+
+    * An earlier version of these tests asserted the absence of a leak from a
+      SUBSEQUENT request. That is exactly what the isolation makes unobservable, so
+      those assertions passed against a guard with its `finally` deleted. Asserting
+      a leak is absent at a point where no leak could ever appear is a test of the
+      middleware stack, not of this guard.
+    * The `finally` in `enforce_domain_authorization` is therefore defense in depth
+      today rather than the only thing standing between two tenants — the middleware
+      stack would contain a leak anyway. It is still worth keeping and worth testing:
+      it holds for direct in-process callers (the harness composition calls the
+      resolver outside any request), and it does not depend on a middleware stack
+      that a future change could flatten. What it must not do is be *claimed* as the
+      isolation boundary.
+
+    So the generator is driven here as FastAPI drives it — `__anext__` then
+    `aclose()` — and the contextvar is read at both points in the same context the
+    guard runs in. Verified to fail against the mutant that deletes the reset.
+    """
+
+    def __init__(self, token: str, path: str, template: str, method: str = "GET"):
+        self._token = token
+        self._path = path
+        self._template = template
+        self._method = method
+        self.inside = None
+        self.after = None
+
+    def _request(self):
+        from fastapi import Request
+
+        route = next(
+            r
+            for r in fastapi_app.routes
+            if getattr(r, "path", None) == self._template
+            and self._method in getattr(r, "methods", set())
+        )
+        # A real Request over a hand-built scope, carrying the two things the guard
+        # reads from the routing layer: the matched route and its parsed path
+        # params. Both are supplied the way Starlette supplies them, which is the
+        # reason `_resolve_workspace_id` can be exercised at all.
+        return Request(
+            {
+                "type": "http",
+                "method": self._method,
+                "path": self._path,
+                "headers": [(b"authorization", f"Bearer {self._token}".encode())],
+                "query_string": b"",
+                "app": fastapi_app,
+                "route": route,
+                "path_params": _path_params_for(self._template, self._path),
+                "state": {},
+            }
+        )
+
+    async def run(self, inside=None):
+        """Enter the guard, observe, then close it and observe again.
+
+        `inside` is an optional coroutine function called while the principal is
+        bound; raising from it exercises the unwind path.
+        """
+        from app.adapters.operation_authority_source import acting_principal
+        from app.domain_guard import enforce_domain_authorization
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        from tests.conftest import async_session_test
+
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials=self._token
+        )
+        async with async_session_test() as db:
+            generator = enforce_domain_authorization(self._request(), credentials, db)
+            try:
+                await generator.__anext__()
+                self.inside = acting_principal()
+                if inside is not None:
+                    await inside()
+            finally:
+                # `aclose()` and not `athrow()`: FastAPI closes the dependency's
+                # context manager on both the success and the failure path, so
+                # closing here reproduces the unwind the server performs.
+                await generator.aclose()
+                self.after = acting_principal()
+        return self
+
+
+def _path_params_for(template: str, path: str) -> dict:
+    """Parse `{name}` segments out of a matched template. No routing guesswork."""
+    params = {}
+    for expected, actual in zip(
+        template.strip("/").split("/"), path.strip("/").split("/"), strict=True
+    ):
+        if expected.startswith("{") and expected.endswith("}"):
+            params[expected[1:-1]] = actual
+    return params
 
 
 async def _seed_two_tenant_research():
@@ -1714,6 +1914,215 @@ class TestUninventoriedRouteFailsClosed:
         """A typo must not be reported as an authorization failure."""
         response = await client.get("/no/such/path")
         assert response.status_code == 404
+
+
+class TestActingPrincipalIsPublishedForTheHarnessPorts:
+    """The guard publishes the actor the `operation_facade` port resolves against.
+
+    Issue #5535 (W6). `harness_jobs`'s `PrincipalResolver` treats its `org_id` /
+    `workspace_id` arguments as an assertion to check rather than a source of
+    authority, so the tenant has to come from a caller this process authenticated.
+    Nothing bound one: measured against real PostgreSQL with the real composed
+    facade, every operation failed with `ProvisioningRefused: the acting principal
+    could not be resolved from the authenticated context` — 100% of requests,
+    whatever the grants said.
+
+    These tests pin the request-boundary half of that repair. The resolver's own
+    behaviour against real grant rows is `tests/test_operation_authority_postgres.py`;
+    what matters here is that a real HTTP request through the real global guard
+    leaves a principal the resolver can use, and leaves nothing behind afterwards.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_scoped_request_publishes_the_verified_caller(
+        self, client, enforcing
+    ):
+        """The actor comes from verified claims, and carries the path's workspace.
+
+        Asserted by reading the contextvar from inside a request rather than by
+        calling `set_acting_principal` in the test: the thing under test is the
+        wiring, and a test that bound the principal itself would pass against a
+        guard that binds nothing.
+        """
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+
+        captured = _CapturedActor().attach(f"/workspaces/{{{WORKSPACE_PATH_PARAM}}}")
+        try:
+            response = await client.get(
+                f"/workspaces/{workspace_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            captured.restore()
+
+        assert response.status_code == 200
+        acting = captured.acting
+        assert acting is not None, (
+            "no acting principal was published, so every harness port resolves to a "
+            "refusal regardless of grants"
+        )
+        assert acting.subject == "user-abc"
+        assert acting.org_id == str(org_id)
+        assert acting.workspace_id == str(workspace_id)
+        assert acting.account_type == "human"
+
+    @pytest.mark.asyncio
+    async def test_an_organization_scoped_request_publishes_no_workspace(
+        self, client, enforcing
+    ):
+        """The zero-workspace case must not invent a workspace id.
+
+        `POST /workspaces` has no workspace in its path because it is creating one.
+        The published workspace is empty and the handler asserts the id it is about
+        to create; a fabricated one here would be an identifier nothing issued.
+        """
+        org_id = uuid.uuid4()
+        await _seed_organization_grant(org_id, "user-abc", ORGANIZATION_ADMINISTER)
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+
+        captured = _CapturedActor().attach("/workspaces", method="POST")
+        try:
+            await client.post(
+                "/workspaces",
+                json={"name": "w", "isolation_mode": "dedicated"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        finally:
+            captured.restore()
+
+        # The response status is deliberately NOT asserted. Provisioning legitimately
+        # refuses here — there is no approval record, which is the honest state this
+        # story preserves rather than papers over — and the property under test is
+        # what the guard published before the handler ran, which is established
+        # whether admission then succeeds or refuses.
+        acting = captured.acting
+        assert acting is not None
+        assert acting.org_id == str(org_id)
+        assert acting.workspace_id == "", (
+            "an organization-scoped request published a workspace id that no "
+            "workspace grant or path parameter established"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_principal_is_unbound_when_the_guard_closes(self, enforcing):
+        """The `finally` actually runs: bound while yielding, gone after closing.
+
+        Driven directly through `_GuardRun` rather than through the HTTP client. The
+        reason is measured and is recorded in full on that helper: the real app's
+        `BaseHTTPMiddleware` layers copy the context, so a stranded principal is
+        invisible to the test function AND to every later request. Two earlier
+        versions of this test — one reading the test's own context, one reading a
+        subsequent request — therefore both passed with the `finally` deleted. Both
+        were vacuous against the single mutation this test names.
+
+        Asserting `inside is not None` first is what stops the post-condition from
+        being trivially true of a guard that binds nothing at all.
+        """
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+
+        run = await _GuardRun(
+            token,
+            f"/workspaces/{workspace_id}",
+            f"/workspaces/{{{WORKSPACE_PATH_PARAM}}}",
+        ).run()
+
+        assert run.inside is not None, "nothing was bound, so nothing can be unbound"
+        assert run.inside.workspace_id == str(workspace_id)
+        assert run.after is None, (
+            "the acting principal outlived the guard — a later in-process caller of "
+            "the harness ports would act as this request's tenant"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_principal_is_reset_even_when_the_request_fails(self, enforcing):
+        """A failure while the principal is bound must not strand it.
+
+        The `finally` and not the happy path: an exception is exactly when cleanup is
+        skipped by code that resets after the `yield` instead of around it. The
+        failure is raised from inside the bound window, which is the window the
+        `finally` covers.
+        """
+        org_id, workspace_id = await _seed_workspace("workspace:read")
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+
+        async def fail():
+            raise RuntimeError("request failed while the principal was bound")
+
+        run = _GuardRun(
+            token,
+            f"/workspaces/{workspace_id}",
+            f"/workspaces/{{{WORKSPACE_PATH_PARAM}}}",
+        )
+        with pytest.raises(RuntimeError):
+            await run.run(inside=fail)
+
+        assert run.inside is not None, (
+            "the principal was never bound, so this test would pass even against a "
+            "guard that publishes nothing"
+        )
+        assert run.after is None, "an actor survived a failed request"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_request_publishes_nothing(self, client, enforcing):
+        """A caller the guard refuses must never become an acting principal.
+
+        The binding happens after the grant check for this reason: publishing before
+        it would give the harness ports a view of "who is acting" for callers that
+        were about to be denied.
+
+        Driven twice, because the two halves are only observable in different places.
+        Through the client, the probe attached to the route establishes that the
+        refused request never reached the handler's dependencies. Through `_GuardRun`,
+        the refusal is observed to leave nothing bound in the guard's own context —
+        which is where a principal published before the check would be visible, and
+        where the HTTP path cannot see.
+        """
+        from fastapi import HTTPException
+
+        org_id, workspace_id = await _seed_workspace(None)
+        token = _mint(enforcing, **{"custom:org_id": str(org_id)})
+        path = f"/workspaces/{workspace_id}"
+        template = f"/workspaces/{{{WORKSPACE_PATH_PARAM}}}"
+
+        probe = _CapturedActor().attach(template)
+        try:
+            response = await client.get(
+                path, headers={"Authorization": f"Bearer {token}"}
+            )
+        finally:
+            probe.restore()
+
+        assert response.status_code == 403
+        assert probe.acting is None
+
+        run = _GuardRun(token, path, template)
+        with pytest.raises(HTTPException) as refusal:
+            await run.run()
+
+        assert refusal.value.status_code == 403
+        assert run.inside is None, (
+            "a caller the guard refused was published as the acting principal"
+        )
+        assert run.after is None, (
+            "a refused caller's identity was published and outlived the refusal"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_public_route_still_answers(self, client):
+        """The guard became a generator dependency; public routes must survive it.
+
+        MEASURED, and the reason this test exists: FastAPI drives a generator
+        dependency as an async context manager, so an early `return` before the
+        `yield` raises `RuntimeError: generator didn't yield` and the request
+        becomes a 500. Public and internal routes are exactly the early exits, so
+        the first draft of this change would have broken every one of them while
+        the authorization tests stayed green.
+        """
+        response = await client.get("/health")
+
+        assert response.status_code == 200
 
 
 class TestRecordedActorComesFromTheCredential:
