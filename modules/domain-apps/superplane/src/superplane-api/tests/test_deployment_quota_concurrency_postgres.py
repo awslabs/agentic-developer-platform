@@ -14,29 +14,29 @@ follows the module's existing convention for tests that need a real server
 (``test_installation_postgres.py``, ``test_controller_management_postgres.py``): skipped
 unless ``SUPERPLANE_TEST_POSTGRES_URL`` or ``pgserver`` is available.
 
-WHERE IT ACTUALLY RUNS TODAY — NOWHERE AUTOMATED, AND THAT IS WORTH KNOWING
---------------------------------------------------------------------------
-``superplane-domain-ci.yml`` installs neither ``pgserver`` nor any PostgreSQL, so this
-file SKIPS in CI exactly as it does on a developer laptop. The sibling files above say
-"installed by domain CI" in their skip reason; that is not true of this module's lane —
-only ``harness-jobs-ci.yml`` installs ``pgserver``, for a different package. The skip
-reason below therefore does not repeat the claim.
+WHERE IT RUNS, AND WHY THAT IS NOT OBVIOUS FROM THE LANE
+-------------------------------------------------------
+It DOES run in ``superplane-domain-ci.yml`` — verified on a real run of that lane, where
+all three tests report PASSED rather than skipped. But nothing in the lane mentions
+``pgserver``: it arrives transitively, because the job's earlier "Install gateway
+dependencies" step installs ``bedrockgateway[dev]``, which depends on it, into the same
+environment the API suite then runs in. That also fixes the interpreter — the lane pins
+Python 3.12, and ``pgserver`` publishes no 3.13 wheel, so a future bump of the lane to
+3.13 would silently turn these three tests into skips.
 
-So the concurrency guarantee is NOT established by any automated lane at present. Run it
-deliberately, either way:
+That is a fragile way to acquire a test dependency and it is worth stating plainly rather
+than relying on: if this file ever starts skipping in CI, the cause is upstream of it, in
+the gateway's dependency set or the lane's Python version, not in anything here. Run it
+deliberately with either:
 
-    pip install pgserver          # needs Python <= 3.12; no 3.13 wheel exists
+    pip install pgserver          # Python <= 3.12; no 3.13 wheel exists
     python -m pytest tests/test_deployment_quota_concurrency_postgres.py
 
-    # or against a disposable server you already have:
     SUPERPLANE_TEST_POSTGRES_URL=postgresql+asyncpg://... python -m pytest ...
 
-The alternative to writing it this way was to write no contended test at all, or to write
-one on SQLite that passes unconditionally. Both are worse: this one fails honestly the
-moment someone runs it against a database, and the source-level lock assertion in
-``test_deployment_quota_and_isolation.py`` catches removal of the lock in the meantime.
-Wiring a pgserver step into the domain lane is a CI-ownership change outside this issue's
-scope (it would need Python pinned <= 3.12 for the whole lane).
+The source-level lock assertion in ``test_deployment_quota_and_isolation.py`` is the
+backstop for the skip case: it fails if ``with_for_update()`` is removed even where no
+database is available to demonstrate the consequence.
 
 The service layer is called directly rather than through HTTP. The contended resource is
 the workspace row, and going through the app would add its own session management between
@@ -62,8 +62,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 pytestmark = pytest.mark.skipif(
     not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL")
     and importlib.util.find_spec("pgserver") is None,
-    reason="requires pgserver (pip install pgserver, Python <= 3.12) or "
-    "SUPERPLANE_TEST_POSTGRES_URL; no CI lane for this module provides either",
+    reason="requires pgserver (arrives transitively via bedrockgateway[dev] in the "
+    "domain CI lane; Python <= 3.12 only) or SUPERPLANE_TEST_POSTGRES_URL",
 )
 
 ORG_ID = uuid.UUID("aaaaaaaa-0000-0000-0000-00000000000a")
