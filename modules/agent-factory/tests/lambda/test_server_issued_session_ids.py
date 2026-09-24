@@ -1263,3 +1263,102 @@ class TestUploadTokenIsNotACreationRoute:
 
         assert reply["statusCode"] == 404
         assert "owner_principal" not in _row(aws["sessions"], "sess-unowned-legacy")
+
+
+# ---------------------------------------------------------------------------
+# 8. What a pre-change client actually gets
+# ---------------------------------------------------------------------------
+
+
+class TestAPreChangeClientIsRefusedNotAccommodated:
+    """The mixed-version behaviour, stated accurately.
+
+    PR #5857 originally claimed an older cached copy of the chat page keeps
+    working against this backend. That is true only for conversations it ALREADY
+    has, and the review was right to reject the general claim. A pre-change page
+    invents its own id for a NEW chat, this backend refuses it, and — because the
+    pre-change hook's frame switch has no `session_invalid` case and no default
+    branch — the recovery frame it is sent is silently dropped. The user sees
+    their message vanish with no error.
+
+    That is the intended trade: accommodating an invented id is exactly the
+    behaviour being removed. The supported rollout is therefore to ship the page
+    and this backend together and have open tabs reload; these tests pin the
+    behaviour so the claim rests on evidence rather than optimism. Nothing here
+    deploys anything or changes any cache.
+    """
+
+    @staticmethod
+    def _connect(handler, claims: dict, connection_id: str) -> None:
+        handler.lambda_handler(
+            {"requestContext": {"routeKey": "$connect", "connectionId": connection_id,
+                                "authorizer": {"claims": claims}}},
+            None,
+        )
+
+    # The literal shape a pre-change page produced:
+    # `sess-${Date.now()}-${Math.random().toString(36).slice(2,9)}`.
+    OLD_STYLE_ID = "sess-1758700000000-k3f9x2q"
+
+    def test_a_new_chat_from_a_pre_change_page_is_refused(self, aws):
+        handler = _import_handler()
+        _direct_response_classifier(handler)
+        self._connect(handler, OWNER, OWNER_CONN)
+
+        reply = _send_message(handler, self.OLD_STYLE_ID, OWNER, OWNER_CONN)
+
+        assert reply["statusCode"] == 404
+        assert not _row(aws["sessions"], self.OLD_STYLE_ID)
+
+    def test_the_recovery_frame_is_sent_even_though_an_old_page_drops_it(self, aws):
+        """The backend does its part; the old page cannot act on it.
+
+        Worth pinning separately: the frame IS emitted, so the silent-loss
+        symptom belongs to the old client's frame handling, not to a backend that
+        fails to say anything.
+        """
+        handler = _import_handler()
+        _direct_response_classifier(handler)
+        self._connect(handler, OWNER, OWNER_CONN)
+        posted: list[dict] = []
+
+        class FakeApiGw:
+            def post_to_connection(self, ConnectionId, Data):
+                posted.append(json.loads(Data))
+
+        with patch.object(handler, "_get_apigw_client", return_value=FakeApiGw()):
+            _send_message(handler, self.OLD_STYLE_ID, OWNER, OWNER_CONN)
+
+        assert [f for f in posted if f.get("type") == "session_invalid"]
+
+    def test_a_conversation_the_old_page_already_had_keeps_working(self, aws):
+        """The part of the compatibility claim that IS true.
+
+        An id minted before this change is a row the store has seen, so it is
+        judged on its recorded owner exactly as before — which is why existing
+        conversations survive the rollout while new ones from a stale page do not.
+        """
+        handler = _import_handler()
+        _direct_response_classifier(handler)
+        self._connect(handler, OWNER, OWNER_CONN)
+        aws["sessions"].put_item(Item={
+            "session_id": self.OLD_STYLE_ID,
+            "owner_principal": json.dumps(
+                [OWNER["custom:tenant_id"], OWNER["custom:org_id"],
+                 OWNER["custom:team_id"], OWNER["sub"], "webchat"],
+                separators=(",", ":"),
+            ),
+            "owner_user_id": OWNER["sub"],
+            "org_id": OWNER["custom:org_id"], "team_id": OWNER["custom:team_id"],
+            "tenant_id": OWNER["custom:tenant_id"],
+            "channel": "webchat",
+            "messages": [{"role": "user", "content": "earlier turn", "ts": 1}],
+            "threads": {}, "created_at": 1, "updated_at": 1,
+            "expires_at": 9_999_999_999,
+        })
+
+        reply = _send_message(handler, self.OLD_STYLE_ID, OWNER, OWNER_CONN)
+
+        assert reply["statusCode"] == 200
+        history = _row(aws["sessions"], self.OLD_STYLE_ID)["messages"]
+        assert any(m["content"] == "earlier turn" for m in history)
