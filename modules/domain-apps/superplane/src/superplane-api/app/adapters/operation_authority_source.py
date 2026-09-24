@@ -277,8 +277,20 @@ class GrantBackedAuthority:
         the parameters are already digest-bound into the approval binding, so a
         changed envelope changes the plan digest and cannot be replayed against an
         existing approval.
+
+        `ApprovalContext` is imported from `harness_jobs.facade`, which is where it
+        is defined — NOT from `harness_jobs.approval`, where this line looked for it
+        until a real end-to-end probe caught the mistake. The bug is worth recording
+        because of how completely it hid: `facade._approval_for` converts any
+        exception from this method into `OperationUnavailable`, so a plain
+        `ImportError` in the import above surfaced to the user as
+        `ProvisioningUnavailable: the approval for this request could not be
+        established` and, through `app/routers/workspaces.py`, as **HTTP 503**. The
+        intended answer is a refusal for want of approval. A wiring error was
+        therefore indistinguishable from an approval store outage, and the one
+        reachable behaviour of this method was never its documented one.
         """
-        from harness_jobs.approval import ApprovalContext
+        from harness_jobs.facade import ApprovalContext
 
         envelope = _requested_envelope(request)
         statuses = await self._approver_statuses(principal)

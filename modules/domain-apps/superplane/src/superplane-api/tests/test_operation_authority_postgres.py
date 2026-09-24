@@ -557,3 +557,244 @@ async def test_a_caller_naming_another_tenant_is_refused(authority):
         )
     finally:
         reset_acting_principal(token)
+
+
+# ----------------------------------------------------------------------
+# 5. The ApprovalSource half of the same adapter
+# ----------------------------------------------------------------------
+#
+# WHY THIS SECTION EXISTS, AND WHAT ITS ABSENCE COST. `approval_for` had NO test
+# of any kind, and the suite was green at 1510 with its only reachable line
+# raising `ImportError` — `ApprovalContext` was imported from
+# `harness_jobs.approval`, where it is not defined (it lives in
+# `harness_jobs.facade`). The defect was invisible from every direction:
+#
+#   * `facade._approval_for` converts ANY exception from this method into
+#     `OperationUnavailable`, so the import error surfaced as
+#     `ProvisioningUnavailable: the approval for this request could not be
+#     established` — a plausible message for a real approval-store outage.
+#   * `app/routers/workspaces.py` maps that to **HTTP 503**, so a self-service
+#     user saw "try again later" for a condition no retry would ever change.
+#   * The module's own docstring described the correct behaviour, so reading the
+#     code agreed with the design while the running code did neither.
+#
+# So a wiring error was indistinguishable from an outage, and the documented
+# answer — a refusal for want of approval — was unreachable. Measured end to end
+# both before and after: before, `start_provision` raised
+# `ProvisioningUnavailable` (503); after, `ProvisioningRefused: no approval record
+# for this request; absence is not permission` (400).
+#
+# These tests therefore assert the CALL SUCCEEDS and returns the harness's real
+# type, which is the part that was broken, before asserting anything about its
+# contents.
+
+
+async def _request(action: str = "provision", **parameters):
+    """A well-formed `OperationRequest`, built by the harness's own validator."""
+    from harness_jobs.identity import OperationRequest
+
+    return OperationRequest(
+        action=action,
+        idempotency_key="idem-" + uuid.uuid4().hex[:12],
+        parameters=parameters or {"workspace_name": "w", "isolation_mode": "shared"},
+    )
+
+
+async def test_approval_for_returns_the_harness_approval_context(authority):
+    """The call completes and returns the real type — the regression that was live.
+
+    `isinstance` against the class imported from `harness_jobs.facade` rather than
+    a duck-typed attribute check: the defect was an import of a name that does not
+    exist in the module it was taken from, and only identity against the real class
+    establishes that the right one is now in hand. A `hasattr` assertion would pass
+    against any object with three attributes.
+    """
+    from harness_jobs.facade import ApprovalContext
+
+    org_id, subject = await authority.organization()
+    workspace_id = uuid.uuid4()
+    principal = await authority.ask(org_id, subject, workspace_id)
+    assert principal is not None, "the fixture must resolve before approval is asked"
+
+    context = await authority.resolver.approval_for(
+        principal=principal, request=await _request()
+    )
+
+    assert isinstance(context, ApprovalContext)
+
+
+async def test_approval_is_refused_for_want_of_a_record_not_reported_unavailable(
+    authority,
+):
+    """`record is None` — absence, which the gate turns into a refusal.
+
+    The distinction this pins is the one the import bug destroyed: `None` here
+    reaches the caller as `ProvisioningRefused` (a durable answer about this
+    request), whereas a raise reaches them as `ProvisioningUnavailable` (an outage,
+    inviting a retry). The domain holds no approval table, so absence is the honest
+    answer, and it must arrive as absence rather than as a failure to answer.
+    """
+    org_id, subject = await authority.organization()
+    principal = await authority.ask(org_id, subject, uuid.uuid4())
+
+    context = await authority.resolver.approval_for(
+        principal=principal, request=await _request()
+    )
+
+    assert context.record is None
+
+
+async def test_the_requested_envelope_is_a_real_spend_envelope(authority):
+    """Derived from the request, in the type the gate's envelope check requires.
+
+    `evaluate_approval` step (8) calls `record.envelope.covers(requested_envelope)`,
+    which is a `SpendEnvelope` method — so a duck-typed stand-in would fail there
+    rather than here, at admission time, on a real provisioning request.
+    """
+    from harness_jobs.approval import SpendEnvelope
+
+    org_id, subject = await authority.organization()
+    principal = await authority.ask(org_id, subject, uuid.uuid4())
+
+    context = await authority.resolver.approval_for(
+        principal=principal, request=await _request()
+    )
+
+    assert isinstance(context.requested_envelope, SpendEnvelope)
+
+
+async def test_a_self_issued_approval_is_refused_even_though_the_requester_may_approve(
+    authority,
+):
+    """The requester DOES carry approval authority, and still cannot approve itself.
+
+    MEASURED, and two earlier versions of this test asserted the opposite. They
+    claimed `may_approve` must be `False` for the requester, on the reasoning that a
+    requester able to approve is self-issued authority. That premise is wrong twice
+    over:
+
+    * `APPROVAL_PERMISSION` is `workspace:administer`, which an organization
+      administrator's closure legitimately contains. Suppressing it here would make
+      the requester's *real* authority invisible to the gate — and step (7) of
+      `evaluate_approval` re-reads exactly that authority for every selected
+      approver, so the same person approving a colleague's request would be refused
+      for want of authority they actually hold.
+    * The no-self-approval rule is enforced on **identity**, not on permission:
+      `requires_distinct_approver` compares `decided_by` against the requester, and
+      step (6) refuses before the envelope is ever considered.
+
+    So the property worth pinning is the end-to-end one, built on this adapter's
+    real `approver_statuses`: a record decided by the requester is refused, while the
+    same record decided by a distinct approver of equal authority is permitted. That
+    contrast is what makes the refusal attributable to self-issuance rather than to
+    some unrelated check failing first.
+    """
+    from datetime import timedelta
+
+    from harness_jobs.approval import (
+        ApprovalBinding,
+        ApprovalRecord,
+        ApprovalResult,
+        ApproverStatus,
+        evaluate_approval,
+    )
+
+    org_id, subject = await authority.organization()
+    principal = await authority.ask(org_id, subject, uuid.uuid4())
+    request = await _request()
+    context = await authority.resolver.approval_for(
+        principal=principal, request=request
+    )
+
+    status = context.approver_statuses.get(subject)
+    assert status is not None, (
+        "the requester's own authority must still be read: a gate that cannot see "
+        "it cannot re-check it for a request this person approves for someone else"
+    )
+    assert status.may_approve, (
+        "an organization administrator's closure contains APPROVAL_PERMISSION; "
+        "hiding it would misreport real authority to the gate"
+    )
+
+    now = datetime.now(timezone.utc)
+    binding = ApprovalBinding.for_request(principal, request)
+    envelope = context.requested_envelope
+
+    def _record(decided_by: str, approval_id: str) -> ApprovalRecord:
+        return ApprovalRecord(
+            approval_id=approval_id,
+            binding=binding,
+            envelope=envelope,
+            result=ApprovalResult.ALLOWED_ONCE,
+            approvers=frozenset({decided_by}),
+            decided_by=decided_by,
+            decided_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+
+    def _decide(record: ApprovalRecord, statuses: dict) -> object:
+        return evaluate_approval(
+            record,
+            principal=principal,
+            request=request,
+            requested_envelope=envelope,
+            approver_statuses=statuses,
+            now=now,
+        )
+
+    self_issued = _decide(_record(subject, "self"), dict(context.approver_statuses))
+    assert not self_issued.permitted
+    assert "its own requester" in self_issued.reason
+
+    # The control. Identical in every respect except who decided, so the refusal
+    # above is attributable to self-issuance and to nothing else.
+    other = "approver-" + uuid.uuid4().hex[:8]
+    statuses = dict(context.approver_statuses)
+    statuses[other] = ApproverStatus(
+        subject=other,
+        is_member=True,
+        permissions=frozenset(status.permissions),
+        revoked=False,
+    )
+    distinct = _decide(_record(other, "distinct"), statuses)
+    assert distinct.permitted, (
+        f"the control was refused for an unrelated reason: {distinct.reason!r} — "
+        "so the refusal above does not establish the no-self-approval rule"
+    )
+
+
+async def test_a_revoked_workspace_grant_reports_revoked_rather_than_absent(authority):
+    """`revoked=True` with `is_member=True`, never omission from the mapping.
+
+    `harness_jobs/approval.py:254-257` names this precisely: modelling revocation as
+    absence reads as "never had authority" when the truth is "had it and lost it",
+    and only the second means a decision already taken under that authority must be
+    re-examined. Pinned against a really-revoked row.
+
+    Read through a workspace the principal is scoped to, because
+    `_approver_statuses` keys its workspace-grant query on
+    `principal.workspace_id` — asking about a different workspace would return no
+    workspace grants at all and the assertion would pass for the wrong reason.
+    """
+    org_id, subject = await authority.organization()
+    workspace_id = await authority.workspace(org_id)
+    revoked_subject = "revoked-" + uuid.uuid4().hex[:8]
+    await authority.grant(
+        org_id, workspace_id, revoked_subject, "workspace:administer", revoked=True
+    )
+    await authority.grant(org_id, workspace_id, subject, "workspace:provision")
+
+    principal = await authority.ask(org_id, subject, workspace_id)
+    assert principal is not None
+    context = await authority.resolver.approval_for(
+        principal=principal, request=await _request()
+    )
+
+    status = context.approver_statuses.get(revoked_subject)
+    assert status is not None, (
+        "a revoked approver was omitted from the mapping, which the gate reads as "
+        "'authority could not be established' rather than as a revocation"
+    )
+    assert status.revoked is True
+    assert status.is_member is True
+    assert not status.may_approve
