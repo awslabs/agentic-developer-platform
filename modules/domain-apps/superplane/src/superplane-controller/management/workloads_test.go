@@ -175,3 +175,18 @@ func TestServingObservationRequiresOriginalDeploymentReplicaSetAndImage(t *testi
 		t.Fatal("changed workload image accepted")
 	}
 }
+
+func TestWorkloadLogRedactsStructuredAndTruncatedSecretValues(t *testing.T) {
+	for _, value := range []string{
+		`{"api_key": "structured-secret", "message": "ready"}`,
+		`{'password': 'multi word secret'}`,
+		`{"Authorization": "Bearer structured-secret"}`,
+		"-----BEGIN PRIVATE KEY-----\ntruncated-secret",
+		`{"access_token": "truncated-secret`,
+	} {
+		redacted := redactWorkloadLog(value)
+		if strings.Contains(redacted, "secret") || strings.Contains(redacted, "PRIVATE KEY") {
+			t.Fatalf("structured secret escaped: %q", redacted)
+		}
+	}
+}
