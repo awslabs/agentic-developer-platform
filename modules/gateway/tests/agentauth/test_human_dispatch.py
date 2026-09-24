@@ -14,6 +14,7 @@ from moto import mock_aws
 
 from src.agentauth.bootstrap import BootstrapStore, envelope_digest
 from src.agentauth.workload import VerifiedPod
+from src.shared.identity.verification import is_proven
 
 _path = Path(__file__).resolve().parents[3] / "agent-factory/webhook-ingress/lambda/common/agent_authority.py"
 _spec = importlib.util.spec_from_file_location("adp_human_dispatch_contract", _path)
@@ -36,11 +37,27 @@ def store(monkeypatch):
         yield BootstrapStore(table_name="authority", dynamodb_client=ddb)
 
 
+def _proven_human(user_id="human", **overrides):
+    """A resolution that legitimately carries provider-confirmed provenance.
+
+    #5664 (A10): `from_verified_webhook` now requires the sender to be PROVEN to
+    control the account, not merely resolvable to it, so these dispatch-writer
+    tests need a resolution that a real OAuth-linked sender would produce. The
+    attribute names and the `identity_proven` derivation mirror
+    `identity_resolver.ResolvedIdentity` — `verification_method` is the stored
+    fact and `identity_proven` is computed from it, so a fixture cannot assert
+    proof that its own method does not support.
+    """
+    fields = {"user_kind": "human", "user_id": user_id, "verification_method": "oauth", "tenant_id": "tenant", "org_id": "tenant"}
+    fields.update(overrides)
+    return SimpleNamespace(identity_proven=is_proven(fields["verification_method"]), **fields)
+
+
 def event():
     return webhook.VerifiedHumanEvent.from_verified_webhook(
         body=b'{"sender":{"type":"User"},"comment":{"id":1}}',
         event_type="issue_comment",
-        resolved=SimpleNamespace(user_kind="human", user_id="human"),
+        resolved=_proven_human(),
         sender={"type": "User"},
         tenant_id="tenant",
         repo="org/repo",
@@ -306,12 +323,37 @@ def test_expired_human_event_cannot_extend_itself_by_redelivery(store):
 
 @pytest.mark.parametrize("user_kind,sender_type", [("bot", "Bot"), ("service", "User"), ("human", "Bot")])
 def test_worker_or_service_claim_cannot_create_human_event(user_kind, sender_type):
+    # Proven provenance is supplied deliberately, so the refusal is attributable to
+    # the kind/sender mismatch this test is about and not to #5664's provenance
+    # gate. Without it the assertion would pass for the wrong reason and stop
+    # covering the worker-claim path at all.
     with pytest.raises(webhook.AuthorityProvisionError):
         webhook.VerifiedHumanEvent.from_verified_webhook(
             body=b"body",
             event_type="issue_comment",
-            resolved=SimpleNamespace(user_kind=user_kind, user_id="claimed-human"),
+            resolved=_proven_human(user_id="claimed-human", user_kind=user_kind),
             sender={"type": sender_type},
+            tenant_id="tenant",
+            repo="org/repo",
+        )
+
+
+@pytest.mark.parametrize("method", ["self_asserted", "channel_placement", "magic_link", ""])
+def test_an_unproven_link_cannot_create_a_human_event(method):
+    """#5664 (A10): the fixture above must not be a way around the provenance gate.
+
+    `_proven_human` derives `identity_proven` from `verification_method`, so this
+    pins that the dispatch writer's own entry point still refuses every unproven
+    method — including the unknown/empty case, which is what a row predating the
+    provenance writers reads as. Paired with the passing tests above, which prove
+    the legitimate OAuth-linked sender is NOT over-refused.
+    """
+    with pytest.raises(webhook.AuthorityProvisionError, match="proven identity link"):
+        webhook.VerifiedHumanEvent.from_verified_webhook(
+            body=b"body",
+            event_type="issue_comment",
+            resolved=_proven_human(verification_method=method),
+            sender={"type": "User"},
             tenant_id="tenant",
             repo="org/repo",
         )
