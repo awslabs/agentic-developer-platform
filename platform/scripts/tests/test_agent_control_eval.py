@@ -13735,3 +13735,98 @@ def test_browser_index_cannot_borrow_capture_from_another_run(tmp_path, recorded
         read_capture=lambda path: capture, expected_run_id=config["live_run_id"])
     assert _collector.is_refused(row)
     assert "run_id" in row.reason
+
+
+class TestScopedPolicyCleanup:
+    @staticmethod
+    def entries():
+        def entry(kind, name, spec=None, labels=None):
+            body = {"kind": kind, "metadata": {"name": name, "uid": name + "-uid", "namespace": "fixture", "labels": labels or {}}}
+            if spec is not None:
+                body["spec"] = spec
+            return {"kind": kind, "name": name, "identity": name + "-uid", "created": True,
+                    "selection_observation": {"command": "kubectl get " + kind + " " + name + " -o json",
+                                              "retrieved_at": "2026-09-24T14:00:00Z", "body": body}}
+        return (entry("NetworkPolicy", "canary-policy", {"podSelector": {"matchLabels": {"canary": "yes"}}}),
+                entry("Pod", "later-worker", labels={"worker": "yes"}))
+
+    def ordered(self, policy, worker):
+        ledger = {e["identity"]: e for e in (policy, worker)}
+        removals = {policy["identity"]: {"removed_at": "2026-09-24T14:30:00Z"},
+                    worker["identity"]: {"removed_at": "2026-09-24T18:00:00Z"}}
+        _mod.Driver._assert_listener_died_before_policies(ledger, removals)
+
+    def test_retired_canary_policy_does_not_constrain_unselected_later_worker(self):
+        self.ordered(*self.entries())
+
+    def test_selected_worker_must_still_exit_before_policy(self):
+        policy, worker = self.entries()
+        worker["selection_observation"]["body"]["metadata"]["labels"] = {"canary": "yes"}
+        with pytest.raises(AssertionError, match="BEFORE"):
+            self.ordered(policy, worker)
+
+    def test_empty_selector_selects_every_pod_in_namespace(self):
+        policy, worker = self.entries()
+        policy["selection_observation"]["body"]["spec"]["podSelector"] = {}
+        with pytest.raises(AssertionError, match="BEFORE"):
+            self.ordered(policy, worker)
+
+    def test_policy_does_not_select_another_namespace(self):
+        policy, worker = self.entries()
+        worker["selection_observation"]["body"]["metadata"].update(namespace="other", labels={"canary": "yes"})
+        self.ordered(policy, worker)
+
+    def test_unscoped_records_preserve_strict_ordering(self):
+        policy, worker = self.entries()
+        del policy["selection_observation"]
+        with pytest.raises(AssertionError, match="BEFORE"):
+            self.ordered(policy, worker)
+
+    @pytest.mark.parametrize("field,value", [("uid", "foreign"), ("name", "foreign"), ("namespace", "")])
+    def test_foreign_or_unbound_object_cannot_exempt_workload(self, field, value):
+        policy, worker = self.entries()
+        worker["selection_observation"]["body"]["metadata"][field] = value
+        with pytest.raises(AssertionError, match="ledger identity"):
+            self.ordered(policy, worker)
+
+    def test_missing_workload_observation_is_not_an_exemption(self):
+        policy, worker = self.entries()
+        del worker["selection_observation"]
+        with pytest.raises(AssertionError):
+            self.ordered(policy, worker)
+
+    @pytest.mark.parametrize("operator,values,labels,selected", [
+        ("In", ["yes"], {"canary": "yes"}, True),
+        ("In", ["yes"], {}, False),
+        ("NotIn", ["yes"], {}, True),
+        ("NotIn", ["yes"], {"canary": "yes"}, False),
+        ("Exists", [], {"canary": "yes"}, True),
+        ("DoesNotExist", [], {"worker": "yes"}, True),
+    ])
+    def test_kubernetes_expression_selection(self, operator, values, labels, selected):
+        policy, worker = self.entries()
+        policy["selection_observation"]["body"]["spec"]["podSelector"] = {
+            "matchExpressions": [{"key": "canary", "operator": operator, "values": values}]}
+        worker["selection_observation"]["body"]["metadata"]["labels"] = labels
+        assert _mod.Driver._policy_selects_workload(policy, worker) is selected
+
+    @pytest.mark.parametrize("selector", [None, {"unexpected": {}}, {"matchExpressions": [{"key": "canary", "operator": "Unknown"}]},
+                                         {"matchExpressions": [{"key": "canary", "operator": "In", "values": []}]}])
+    def test_malformed_scope_cannot_skip_ordering(self, selector):
+        policy, worker = self.entries()
+        policy["selection_observation"]["body"]["spec"]["podSelector"] = selector
+        with pytest.raises(AssertionError):
+            self.ordered(policy, worker)
+
+    def test_deployment_matches_pod_template_labels(self):
+        policy, worker = self.entries()
+        worker["kind"] = worker["selection_observation"]["body"]["kind"] = "Deployment"
+        worker["selection_observation"]["body"]["spec"] = {"template": {"metadata": {"labels": {"canary": "yes"}}}}
+        with pytest.raises(AssertionError, match="BEFORE"):
+            self.ordered(policy, worker)
+
+    def test_missing_deployment_template_is_not_an_exemption(self):
+        policy, worker = self.entries()
+        worker["kind"] = worker["selection_observation"]["body"]["kind"] = "Deployment"
+        with pytest.raises(AssertionError, match="pod template"):
+            self.ordered(policy, worker)

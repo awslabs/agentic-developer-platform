@@ -506,3 +506,22 @@ For maintenance of an existing isolated fixture, an observed owned worker IP as
 `/32` is sufficient for that worker. Verify its pod UID before applying the
 fixture-only setting, and update it for subsequent workers. This setting does
 not replace the fixture NetworkPolicies or authorize changes to ordinary controls.
+
+
+## Cleanup policy scope
+
+When a run includes temporary isolation canaries as well as later workers, retain
+all resources in the creation ledger. An optional `selection_observation` on a
+NetworkPolicy entry records its actual Kubernetes object as `{command,
+retrieved_at, body}`. Supply the same observation on every Pod and Deployment
+entry checked against it. Object kind, name, UID and namespace must match the
+ledger; deployment selection uses pod-template labels. The evaluator applies
+Kubernetes namespace and label-selector semantics before checking that a selected
+workload ended before the policy was removed. Canary policies therefore constrain
+the canary pods they selected, including their required deletion order.
+
+Missing policy scope preserves the previous conservative ordering against every
+workload. Supplying policy scope without workload observations fails; unknown or
+malformed selectors cannot exempt resources. These observations do not establish
+that anything was deleted: independent removal receipts and absence checks remain
+required for every ledger entry, including canaries removed earlier.

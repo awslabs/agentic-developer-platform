@@ -3316,6 +3316,64 @@ class Driver:
         return by_identity
 
     @staticmethod
+    def _policy_selects_workload(policy: dict, workload: dict) -> bool:
+        """Use recorded Kubernetes objects for policy scope; absent scope stays strict."""
+        if "selection_observation" not in policy:
+            return True
+
+        def observed(entry: dict) -> dict:
+            raw = Driver._assert_raw_metadata(
+                {"object": entry.get("selection_observation")},
+                subject="cleanup selection for " + str(entry.get("name")), expected=("object",),
+            )["object"]["body"]
+            if not isinstance(raw, dict):
+                raise AssertionError("cleanup selection must archive a Kubernetes object")
+            metadata = raw.get("metadata", {})
+            if (metadata.get("uid") != entry.get("identity")
+                    or metadata.get("name") != entry.get("name")
+                    or str(raw.get("kind", "")).lower() != str(entry.get("kind", "")).lower()
+                    or not isinstance(metadata.get("namespace"), str) or not metadata["namespace"]):
+                raise AssertionError("cleanup selection object does not match the ledger identity")
+            return raw
+
+        selected_policy, selected_workload = observed(policy), observed(workload)
+        if selected_policy["kind"] != "NetworkPolicy":
+            raise AssertionError("scoped cleanup requires an actual NetworkPolicy")
+        if selected_workload["kind"] == "Pod":
+            labels = selected_workload["metadata"].get("labels", {})
+        elif selected_workload["kind"] == "Deployment":
+            template = selected_workload.get("spec", {}).get("template")
+            if not isinstance(template, dict) or not isinstance(template.get("metadata"), dict):
+                raise AssertionError("cleanup Deployment observation is missing its pod template")
+            labels = template["metadata"].get("labels", {})
+        else:
+            raise AssertionError("scoped cleanup requires a Pod or Deployment observation")
+        selector = selected_policy.get("spec", {}).get("podSelector")
+        if not isinstance(selector, dict) or set(selector) - {"matchLabels", "matchExpressions"}:
+            raise AssertionError("cleanup policy selector is missing or unsupported")
+        match_labels, expressions = selector.get("matchLabels", {}), selector.get("matchExpressions", [])
+        if (not isinstance(labels, dict) or not isinstance(match_labels, dict)
+                or not isinstance(expressions, list)
+                or any(not isinstance(k, str) or not isinstance(v, str) for k, v in {**labels, **match_labels}.items())):
+            raise AssertionError("cleanup policy labels are malformed")
+        matches = all(labels.get(key) == value for key, value in match_labels.items())
+        for expression in expressions:
+            if not isinstance(expression, dict) or set(expression) - {"key", "operator", "values"}:
+                raise AssertionError("cleanup policy expression is malformed")
+            key, operator, values = expression.get("key"), expression.get("operator"), expression.get("values", [])
+            if (not isinstance(key, str) or not key or not isinstance(values, list)
+                    or any(not isinstance(value, str) for value in values)
+                    or operator not in {"In", "NotIn", "Exists", "DoesNotExist"}
+                    or (operator in {"In", "NotIn"} and not values)
+                    or (operator in {"Exists", "DoesNotExist"} and values)):
+                raise AssertionError("cleanup policy expression is unsupported")
+            matches = matches and {"In": key in labels and labels.get(key) in values,
+                                   "NotIn": key not in labels or labels.get(key) not in values,
+                                   "Exists": key in labels, "DoesNotExist": key not in labels}[operator]
+        return (selected_policy["metadata"]["namespace"] == selected_workload["metadata"]["namespace"]
+                and matches)
+
+    @staticmethod
     def _assert_listener_died_before_policies(
         ledger: dict, removals: dict
     ) -> None:
@@ -3359,6 +3417,8 @@ class Driver:
                     "control-enabled pod reachable without its ingress restriction"
                 )
             for listener_identity, listener in listeners:
+                if not Driver._policy_selects_workload(ledger[policy_identity], ledger[listener_identity]):
+                    continue
                 listener_removed = _parse_timestamp(listener.get("removed_at"))
                 if listener_removed is None:
                     raise AssertionError(
