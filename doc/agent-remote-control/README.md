@@ -21,9 +21,10 @@ The target is hosted webhook/SQS/KEDA workers. Claude Agent SDK is the first pro
 | Steering | S6 #3965 source merged in PR #5887; deployment and live acceptance pending | Reuse the bounded queue, readiness-driven handoff and trusted actor attribution. Source availability does not establish operational readiness. |
 | Dashboard controls | S7 #3966 source merged in PR #5870; live acceptance pending | Reuse the dashboard components and gateway contract. Passing mocked Chromium scenarios do not establish live worker behavior. |
 | Dashboard explanations | S8 #4989; evaluation #5827 assigned | Planned follow-up after dashboard acceptance. |
-| Timeout evidence producer | #5841 merged as `f304ac1f14939dc884b07180bd56d1ddce39bbe2` | Test tooling is delivered; W2-05 live acceptance is still outstanding. |
-| Protected evaluation fixture and edge | #5836 edge merged in PR #5838; #3968 fixture tooling remains in PR #5839 | Isolated bootstrap and source handoff have executed. The SDK experiment and complete cleanup gate remain unaccepted. |
-| Browser evidence producer | #5878 in development | The existing Playwright report is not the required measured `browser_control_run` artifact. |
+| Timeout evidence producer | #5841 merged as `f304ac1f14939dc884b07180bd56d1ddce39bbe2` | W2-05 now passes against collected live SDK and Kubernetes evidence; full Wave 2 remains outstanding. |
+| Protected evaluation fixture and edge | #5836 edge merged in PR #5838; #3968 fixture tooling remains in PR #5839 | All 15 SDK experiments completed; four Wave 2 predicates pass. Production API control and complete cleanup remain unaccepted. |
+| Registered runtime fixture | #5891 ADP developer active | Must reuse production registration, listener/runtime composition and terminal reporting; existing SDK fixture skips registration. |
+| Browser evidence producer | #5878 ready for maintainer review in PR #5892 | The existing Playwright report is not the required measured `browser_control_run` artifact. |
 | Wave 3 evaluation tooling | #3969 in development | Live execution follows accepted Wave 2 and compatible abort/steering deployment. |
 | Wave 4 evaluation tooling | #3970 ADP developer active | Completes the ten-check evaluator and 37-criterion consolidation; live acceptance still requires prior waves. |
 | General protected-worker rollout | #5195 open | Ordinary workload enablement remains gated. |
@@ -70,6 +71,7 @@ Keep these identifiers separate:
 - **Invocation/run ID:** the ADP execution being controlled. For these control routes, an orchestration run adapter resolves to the invocation; a node ID or pod name is not interchangeable.
 - **Generation:** identifies the registered worker generation. A stale client response or envelope cannot authorize another generation.
 - **Attempt ID:** opaque, process-local runtime attempt identity. In-process retries replace it. It is not a provider session ID.
+- **Human identity:** Cognito subject and canonical database user ID are different identifiers. Resolve the canonical ID for activity ownership and protected root-human attribution; do not seed those fields from the token subject.
 - **Command ID:** client-generated UUID identifying one intent and its retries.
 - **Pod/Job UID:** Kubernetes object-instance identity used by protected bootstrap and fixture ownership, not a browser control identifier.
 
@@ -212,6 +214,8 @@ flowchart LR
 The edge depends on the gateway Service; the worker depends on the edge. A shared ownership ledger binds account, region, run, nonce and Kubernetes UIDs across stages. Before continuing, verify original resource instances, both gateway and worker policies, edge identity and network reachability. Receipts must match the producer's real output schema and exact API host/region/stage/path. Operator credentials must not enter the worker. Transfer expected identity to the bound worker, execute there, and return artifacts tied to that execution. A local path or an idle Job is not evidence of that handoff.
 
 The edge prerequisite #5836 is merged; the composed fixture lifecycle remains under review in #3968. The isolated fixture has executed protected task acquisition, authenticated bootstrap, exact-source bundle handoff and real SDK experiments. A two-minute pause held a real Write without side effects until automatic expiry, then admitted it without an explicit resume; the production emitter recorded two heartbeats for that same pause gate. Live counter observations also confirmed isolated aborted-count deltas and the four-category total. These are individual observations, not a complete Wave 2 verdict. Native-interruption outcome evidence, the remaining live checks, provenance consolidation and exact cleanup remain required.
+
+The collected run passed all 15 SDK experiments, with one neutral expiry annotation, no extra assistant turn and independently observed pod survival. W2-04, W2-05, W2-07 and W2-08 pass individually. Real fixture sessions and owner/non-owner reads have also been measured. The SDK evaluation branch runs before production control registration, however, so it cannot establish the live API capability checks. #5891 owns a registered production-runtime fixture and the same-invocation native-interruption terminal readback. Those are missing implementation/evidence, not another rerun of the completed SDK experiments.
 
 Wave 2 requires all W2-01 through W2-10 checks and verified cleanup. W2-03/04/05 require real Claude tool-side-effect evidence. The merged timeout producer uses the same production heartbeat emitter and actual pause gate; launcher-scraped heartbeats cannot backfill missing experiment observations. Its bounded watchdog experiment records the injected completion-clock offset, proves suppression during pause and firing after release. Pod/container survival and exit observations still require authoritative launcher evidence.
 
