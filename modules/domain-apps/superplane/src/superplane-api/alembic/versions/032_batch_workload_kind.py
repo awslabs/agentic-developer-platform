@@ -29,6 +29,6 @@ def downgrade():
         IF EXISTS(SELECT 1 FROM deployments WHERE workload_kind='batch') THEN
             RAISE EXCEPTION 'Retained batch records require this schema; preserve them before rollback';
         END IF;
-    END $$""")
+    END; $$""")
     op.drop_constraint("ck_deployments_workload_kind", "deployments", type_="check")
     op.drop_column("deployments", "workload_kind")

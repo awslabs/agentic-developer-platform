@@ -141,8 +141,10 @@ async def serving_catalog(
             settings.superplane_controller_profiles_file, org_id, workspace_id
         )
         for profile_id, profile in sorted(profiles.items()):
-            if not isinstance(profile, dict) or not isinstance(
-                profile.get("model_options"), dict
+            if (
+                not isinstance(profile, dict)
+                or not isinstance(profile.get("model_options"), dict)
+                or not isinstance(profile.get("workload"), dict)
             ):
                 raise ProvisioningUnavailable(
                     "controller deployment policy is unreadable"
