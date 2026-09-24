@@ -39,7 +39,7 @@ overwritten, so the error cannot be reintroduced from an older copy:
 | S03 integration | implied a single propagating lock edit | **Five coupled prerequisites**, publication first; a digest-only swap would record false provenance (§3) |
 | S01 vs S03 images | treated as the same "not in the lock" gap | **Different publication states** — S01's is ECR-resident, S03's is a local layout needing publication first (§3) |
 | Bandit tooling | "pinned bandit and `.banditrc` absent" | **Both present**; the real defect is `--ini` against a YAML config, which silently drops `skips` (§5.1) |
-| cfn-nag | "not PR-triggered" → missing coverage | The scan is **dispatch-only by design** and cfn-nag runs in it; the real defect is **parse aborts reporting success** (§5.1) |
+| cfn-nag | "not PR-triggered" → missing coverage | The scan is **dispatch-only by design** and cfn-nag runs in it; S19 **already fixed** the historical parse-aborts-reporting-success defect (§5.1) |
 | Checkov allowlist | "inert because of `--directory .`" | **Not supported** — `--directory .` does not disable `skip-check` or the baseline (§5.1) |
 | Counts | "six daily" (five listed); "18 of 24 merged" | **Five** daily (5 + 6 = 11); **17 of 24** closed |
 
@@ -59,7 +59,8 @@ Collapsing these into "done" is the specific failure this document exists to pre
 
 Across this whole snapshot, **exactly one package reaches "deployed protection"** on
 retrievable evidence (AWS A01 #5653, where the auth rollout was applied to the dev gateway
-and rejection responses were captured). **No package reaches "acceptance resolved."** The AWS
+and rejection responses were captured). **Final scan-day acceptance reconciliation remains open**;
+this does not negate scoped acceptance such as S02's rebuilt-image advisory result (§3.1). The AWS
 epic itself records "Code delivery does not imply live rollout", and its execution constraints
 authorise "merge only; no deployment".
 
@@ -86,8 +87,8 @@ recorded here so it is not propagated.
 **Eleven packages were never dispatched at all.** **Five** daily packages (S10 #5609, S11 #5610,
 S12 #5611, S13 #5612, S18 #5617) and six AWS packages (A03 #5655, A09 #5663, A11 #5666,
 A12 #5668, A13 #5669, A14 #5670) have **zero comments** — 5 + 6 = 11, confirmed not-started rather than
-merely unlinked. Three of these are hard S21 gates (S12, S18, plus S14/S15/S16 which are in
-flight). On the AWS side the untouched set is dependency-critical: A03 is the deepest node
+merely unlinked. Two of these untouched packages are hard S21 gates (S12 and S18); the other
+three gates, S14/S15/S16, are in flight. On the AWS side the untouched set is dependency-critical: A03 is the deepest node
 (depends on A02, A06, A12, A14) and the A10→A11→A12/A13→A14→A03 chain is stalled behind a
 draft PR.
 
@@ -213,7 +214,11 @@ currently unreconciled:
 
    with build run 35663521595, source build `adp-dev-superplane-controller:9728edb4-…`, a
    SUCCEEDED validation build `…:98144599-…`, `registry_ready: true`, and four runtime checks
-   passing. It states the digest "is available to S21 without requiring a lock-file edit".
+   passing. [Validation run 35669683518](https://github.com/aws-e/adp/actions/runs/35669683518)
+   verified the exact published image and found zero matches for S01's eight primary advisories
+   and three CVSS disagreements. Its full scan still has **1 critical and 28 high** residual
+   matches; see [S01-disposition.md](S01-disposition.md#rebuilt-image-evidence). It states the
+   digest "is available to S21 without requiring a lock-file edit".
    `pending_images.superplane-controller` still reads "no build has run yet" — **stale as a
    description**.
 
@@ -233,7 +238,7 @@ An earlier revision of this ledger recorded S02's rebuilt-image and SBOM criteri
 satisfied**. That was wrong: the acceptance was published on
 [#5601 (2026-09-23)](https://github.com/aws-e/adp/issues/5601#issuecomment-5793303212), a day
 **before** this snapshot, so it was available and simply missed. Recorded here with its exact
-boundaries, because this is the one package in the container set with a registry-verified digest.
+boundaries. S01 also has published, registry-verified image evidence (§3).
 
 | Item | Evidence |
 |---|---|
@@ -257,9 +262,9 @@ row cannot be read as more than it is:
   selector `grype | superplane/grype/modules-domain-apps-superplane-src-superplane-api.sarif |
   ri=94`) — the single container row in §8.B attributed to S02.
 
-This is also the **only** Superplane image in the set with a *published, registry-verified*
-digest. S03's derived image and S01's controller image are built but not published (see below),
-which is why S21's integration cannot simply copy digests into the lock.
+**S01 and S02 both have published, registry-verified image evidence.** S03 has a reproducible
+local OCI artifact awaiting verified publication. S21 must preserve each image's actual
+repository and provenance when promoting the existing digests into the shared release.
 
 ### 3.2 S03's runtime validation — it was run, and what it covered
 
@@ -341,7 +346,7 @@ Five predecessors remain OPEN: **S12 #5611, S14 #5613, S15 #5614, S16 #5615, S18
 | 13 suppressed critical/high Semgrep records | **No disposition exists — but the locations are published.** All 13 records carry `locations[].file` and `.line` in the inventory (enumerated in §8.D below), so each is directly reselectable. What is absent is the **suppression justification**: every record's `suppression` array holds only `{"kind": "inSource"}`, with no `justification` field. So the gap is "why was this suppressed", not "where is it". No raw-SARIF recovery is needed to disposition these. |
 | 8 Grype CVSS disagreements | **Fully identified.** All 8 carry advisory IDs in the inventory's `advisory` field — `CVE-2019-25210` (helm, CVSS 9.1), `GHSA-248v-346w-9cwc` (certifi 7.5), `GHSA-8r3f-844c-mc37` (protobuf 7.5), `CVE-2020-15778` ×3 (openssh-client/server/sftp 7.8), `GHSA-h395-gr6q-cpjc` ×2 (jsonwebtoken 7.5). Each is native low/medium against CVSS ≥7. Enumerated with fix versions in §8.E. **Correction:** an earlier revision of this ledger reported these IDs as null and required raw-SARIF recovery. That was wrong — it read a field named `vulnerability_id`, which does not exist in these records. The data was published all along. |
 | 335 of 860 S20 records verdicted `needs-followon` | **No follow-on issues appear to have been filed.** A search for the 11 proposed follow-on packages (FOLLOWON-A…I) returned no matching issues. The largest, FOLLOWON-E, covers 244 k8s pod-hardening records. **These 335 records currently have no GitHub owner.** |
-| Scanner tooling gaps flagged *to* S21 by owners | **Partly open, and two earlier entries here were wrong — see §5.1 below for the reconciliation against the actual workflow.** The supported limitation is cfn-nag's *parse aborts*, not its triggering. Bandit is pinned and configured in the snapshot workflow; cfn-nag does run in the on-demand scan. |
+| Scanner tooling gaps flagged *to* S21 by owners | **Partly open; see §5.1.** Bandit is pinned, but its YAML configuration is passed through an INI option. cfn-nag runs in the on-demand scan, and S19 already makes parse aborts fail. Its narrower input path is a coverage limitation of that tool, not absence of CloudFormation scanning. |
 | `.grype.yaml` review date | **Lapsed.** The file's own header sets "Next review: 2026-08-22"; it is 2026-09-24 and 189 ignore entries are in force. Each entry removes findings from SARIF output entirely, so a lapsed review silently suppresses. S21 owns this. |
 | 16 older primary tickets | All 16 re-checked live and **all still OPEN** (#4701–#4730). None closed by this scan day. |
 
@@ -367,7 +372,8 @@ requires an INI `[bandit]` section, whereas that file is YAML (its own header sa
 `WARNING Unable to parse config file ... or missing [bandit] section` and then **drops the
 `skips` and `exclude_dirs`**, while `-c` applies them. The warning is non-fatal, so the job
 stays green. Test-directory exclusion is partly recovered by the workflow's separate `-x` flag,
-but `skips: [B101, B311]` is not applied at all.
+but `skips: [B101, B311]` is not applied at all. Ignoring skips and exclusions can add findings
+or scan unintended paths; this behavior does not establish under-reporting of vulnerabilities.
 
 This is a **real** finding of the same class S19 addressed — configuration that looks applied
 and is not — and it is in S21's scanner-configuration lane. It is the opposite of the original
@@ -419,7 +425,9 @@ authorisation to run it.
    revision of this ledger. The 8 CVSS disagreements already carry advisory IDs and the 13
    suppressed records already carry file and line (§8.E, §8.D). What each of the 13 still needs is
    a **per-location justification**, since only `{"kind": "inSource"}` is recorded. Decide the 8 on
-   their merits — native rating versus CVSS — noting 3 have no fix version available.
+   their merits — native rating versus CVSS — noting **four occurrences across two advisory
+   IDs** have no fix version listed. Consume S01's rebuilt-image zero-match evidence and S03's
+   existing OpenSSH/jsonwebtoken dispositions (§8.E) before deciding any remaining gap.
 3. **Publish before pinning, then integrate in one reviewed commit.** For S03, the derived image
    must be **published first** and its registry digest confirmed to equal
    `sha256:f8d893cf…de55ec` (it is currently a local OCI layout under a placeholder repository);
@@ -427,9 +435,10 @@ authorisation to run it.
    `image_sources.skypilot-api.registry`/`.repository`, refresh the provenance comments in
    `k8s/40-skypilot-api.yaml`, swap in the derived `skypilot_image_facts` fixture and update the
    literal guard in `lock_pin.tftest.hcl` (the five coupled steps in §3). Changing only the digest
-   while leaving the Docker Hub provenance would record a false origin. S01's controller image
-   `sha256:d87cf635…ce38ed` needs the same publication check before `superplane-controller` leaves
-   `pending_images`. Re-assert the shape tests (`tests/test_lock.py`, `tests/lock_pin.tftest.hcl`,
+   while leaving the Docker Hub provenance would record a false origin. Promote the already
+   published S01 controller (`sha256:d87cf635…ce38ed`) and S02 API (`sha256:f1897a67…4a9b259`)
+   from `pending_images`, retaining their existing repository/provenance evidence and
+   re-confirming registry digests at integration time. Re-assert the shape tests (`tests/test_lock.py`, `tests/lock_pin.tftest.hcl`,
    `tests/test_skypilot_startup_contract.py`). **No placeholder digest** for the images with no
    build.
 
@@ -437,15 +446,16 @@ authorisation to run it.
 
    | Image | Digest | Registry state | Step needed |
    |---|---|---|---|
-   | `adp-superplane-api` (S02) | `sha256:f1897a67…4a9b259` | **In ECR, Syft/Grype-verified** | Confirm digest; pin if in scope |
+   | `adp-superplane-api` (S02) | `sha256:f1897a67…4a9b259` | **In ECR, Syft/Grype-verified** | Re-confirm digest; promote out of `pending_images` |
    | `adp-superplane-controller` (S01) | `sha256:d87cf635…ce38ed` | **In ECR**, `registry_ready: true` | Re-confirm digest; promote out of `pending_images` |
    | `skypilot-api` derived (S03) | `sha256:f8d893cf…de55ec` | **Local OCI layout only** | **Publish first**, then the five coupled edits |
 4. **Reconcile the shared scanner disposition**: refresh `.grype.yaml`'s lapsed review — starting
    with the **20 package-unscoped entries**, which suppress globally — and decide the 4 S21-owned
    `CKV_AWS_51` records on their merits. Per-location evidence only — no whole-rule suppression, no
-   baselining away unresolved findings. Also fix the Bandit config invocation (`-c`, not `--ini`,
-   for a YAML config) so its `skips` actually apply, and confirm cfn-nag's three templates parse
-   instead of aborting green (§5.1). A final scan on the current invocation would under-report.
+   baselining away unresolved findings. Review Bandit's intended exclusions/skips before
+   correcting its YAML invocation (`-c`, not `--ini`), so enabling previously ignored
+   suppressions does not hide unresolved findings. S19 already makes cfn-nag parse aborts fail;
+   verify successful parsing and expected template coverage in the final scan (§5.1).
 5. **File owners for the 335 orphaned records** (the 11 FOLLOWON packages) so no finding is
    closed by absence of an owner.
 6. **Run the final one-off scan** with S19's corrected inventory and tooling, recording
@@ -465,7 +475,7 @@ an independent re-run by me.
 
 | Pkg | Issue | State | PR | Merge | Validated | Deployed | Notes |
 |---|---|---|---|---|---|---|---|
-| S01 | 5600 | CLOSED | 5725 | `76c91c24` | partial | no | Owner disclosed Docker/Syft/Grype unavailable — "the analysis predicts what a scan will report; it is not a scan". Controller image *was* later built (digest in `S01-image-evidence.json`) but the lock still says "no build has run yet". |
+| S01 | 5600 | CLOSED | 5725 | `76c91c24` | yes | no | Initial source-only analysis was followed by published ECR image and exact-digest validation evidence (§3; `S01-image-evidence.json`). All assigned primary/CVSS advisories have zero matches; full-image residuals remain **1 critical / 28 high**. The lock's "no build has run yet" description is stale. |
 | S02 | 5601 | CLOSED | 5783 | `27a5b943` | yes | no | API suite 1203 passed / 25 skipped. **Rebuilt-image + SBOM criterion IS satisfied** — see §3.1; an earlier revision of this ledger wrongly recorded it as unsatisfied. Scoped to the original advisory only; the image is not globally clean and is not deployed. |
 | S03 | 5602 | CLOSED | 5724 | `c742c087` | yes | no | **Not a doc-only PR** — 13 files incl. `images/skypilot/build_oci.py` (+400) and `tests/test_skypilot_vendored_packages.py` (+433) with its fixture (+471). It correctly touched **no lock/manifest/infra file** — those are S21's by design. Live startup, auth, controller-client and restart-persistence checks **were** run and documented (§3.2). Derived image is built but **not published**. |
 | S04 | 5603 | CLOSED | 5774 | `ebde4b40` | yes | no | 2060/2067 jest pass, 7 failures pre-existing; 30 new tests. |
@@ -473,7 +483,7 @@ an independent re-run by me.
 | S06 | 5605 | CLOSED | 5701 | `ccff2bea` | yes | no | `npm audit --include=dev` high 4→0. Reviewer approval hit a GitHub 422 self-review limit; published as COMMENTED. |
 | S07 | 5606 | CLOSED | 5706 | `32c06c1a` | yes | no | 5 high → 0 critical/0 high across 582 deps; `tsc --noEmit` clean. |
 | S08 | 5607 | CLOSED | 5753 | `4275564c` | yes | n/a | Reproduced with the pinned Bandit 1.7.9 + repo `.banditrc`; `nosec skipped: 0`. No suppression added. |
-| S09 | 5608 | CLOSED | 5765 | `c2553b5f` | yes | no | `bandit -t B102` 1 → 0 results. Flagged to S21: pinned `bandit[sarif]==1.7.9` and `.banditrc` absent from checkout. |
+| S09 | 5608 | CLOSED | 5765 | `c2553b5f` | yes | no | `bandit -t B102` 1 → 0 results. Owner's missing-tool/config observation was reconciled against the pinned workflow: both exist; YAML is passed through the wrong option (§5.1). |
 | S10 | 5609 | **OPEN** | none | — | no | no | **Zero comments — never dispatched.** Identity gate cited by S15 and by AWS A01/A03/A05. |
 | S11 | 5610 | **OPEN** | none | — | no | no | **Zero comments — never dispatched.** |
 | S12 | 5611 | **OPEN** | none | — | no | no | **Zero comments — never dispatched. Hard S21 gate.** Also owns 27 S20 records. |
@@ -490,8 +500,8 @@ an independent re-run by me.
 ### 7.2 AWS packages A01–A24
 
 **17 of 24 closed** (7 open), recounted from live issue state — an earlier revision of this
-ledger said 18, which did not match the 17/24 verified in §1. Every closed package explicitly
-disclaims live deployment.
+ledger said 18, which did not match the 17/24 verified in §1. Package closure does not establish
+live deployment; A01's separately recorded rollout evidence is identified below.
 
 | Pkg | Issue | State | PR | Merge | Validated | Notes |
 |---|---|---|---|---|---|---|
@@ -512,13 +522,13 @@ disclaims live deployment.
 | A15 | 5671 | CLOSED | 5826 | `20612976` | yes | 1342 passed; 6 failures reproduced identically on main. "No deployment contribution." |
 | A16 | 5672 | CLOSED | 5762 | `69bd15f4` | yes | 969 tests; terraform fmt/validate clean. Captured logs not yet triaged. |
 | A17 | 5673 | CLOSED | 5824 | `c4635f45` | partial | No headline pass count; local skips had masked 2 failures until a py3.11 CI re-run. Live/E2E unrun; `events` table has **no retention policy** now that denials are recorded too. |
-| A18 | 5674 | CLOSED | 5767 | `d2646593` | yes | 69 guard tests, mutation-checked. Live acceptance open. Design item 6 (checkov allowlist) deliberately not implemented — **the allowlist is inert because the workflow passes `--directory .`**. |
+| A18 | 5674 | CLOSED | 5767 | `d2646593` | yes | 69 guard tests, mutation-checked. Live acceptance open. Owner left design item 6 (Checkov allowlist) unimplemented. The explanation that `--directory .` disables the shared skip list/baseline is unsupported; see §5.1. |
 | A19 | 5684 | CLOSED | 5741 | `aacfabfa` | yes | 28 RBAC manifest tests + 4038 module-wide; guards mutation-tested. |
 | A20 | 5675 | CLOSED | 5768 | `70c8d6b4` | partial | **Weakest merged validation** — only 30 infra tests; image/cluster checks disclosed un-runnable. "PR open for review, not deployed." |
 | A21 | 5685 | CLOSED | 5755 | `a6fcb67e` | yes | terraform fmt/validate pass; live deployment out of scope. |
 | A22 | 5676 | CLOSED | 5785 | `8d9e767e` | yes | 4641 + 1207 + 41 tests pass. **Every environment needs its CA bundle provisioned *before* the TLS default flips**, or the service refuses to start. |
 | A23 | 5686 | CLOSED | 5726 | `e9ef11f3` | yes | 15868 gateway tests pass. Guard stays **inert for users until the CLI artifacts are next published**. |
-| A24 | 5687 | CLOSED | 5708 | `4457a3b4` | yes | 85 unit tests, cfn-lint and ruff clean. **cfn-nag never ran** (not PR-triggered). Found `budgets:DeleteBudget` is not a real IAM action, so a copied `Deny` silently failed open. |
+| A24 | 5687 | CLOSED | 5708 | `4457a3b4` | yes | 85 unit tests, cfn-lint and ruff clean. No cfn-nag run was recorded in this package's PR validation; the repository does have on-demand cfn-nag coverage (§5.1). Found `budgets:DeleteBudget` is not a real IAM action, so a copied `Deny` silently failed open. |
 
 ### 7.3 Rollout blockers that must not be lost at closure
 
@@ -528,12 +538,15 @@ merge status:
 - **A23** — guard inert until `bg-gateway-proxy` CLI artifacts are republished.
 - **A22** — CA bundle must be provisioned per environment *before* the TLS default flips.
 - **A08** — finding `f-a7de2523-ae6a-4230-8ed7-cf4380d30ade` stays open pending a deployed-agent check.
-- **A18** — checkov allowlist inert due to `--directory .`; design item 6 unimplemented.
-- **A24** — cfn-nag is not PR-triggered, so CFN linting rests on local cfn-lint alone.
+- **A18** — owner left design item 6 unimplemented; reconcile its specific requirement against
+  the effective Checkov configuration. `--directory .` does not disable skips or baseline (§5.1).
+- **A24** — no cfn-nag PR-validation evidence was recorded. Existing on-demand scanning and
+  the tool's narrower template input path must be assessed separately (§5.1).
 - **A17** — `events` table has no retention policy.
 - **S17** — gVisor, image build and CI wiring remain open prerequisites on a *closed* issue.
 - **S14** — no narrowed IAM has been applied to any account.
-- **S02** — rebuilt-image scan and SBOM criterion unsatisfied on a *closed* issue.
+- **S02** — rebuilt-image scan/SBOM acceptance for the assigned advisory is satisfied;
+  shared-lock promotion, whole-image residual reconciliation and deployment remain pending (§3.1).
 
 ---
 
@@ -714,12 +727,13 @@ from title or severity matching.
 | 11 | [#4720](https://github.com/aws-e/adp/issues/4720) | critical | S15/5614 (OPEN) | [Security 2026-08-30] Knowledge ingestion runs build scripts from untrusted  |
 | 12 | [#4722](https://github.com/aws-e/adp/issues/4722) | high | S16/5615 (OPEN) | [Security 2026-08-30] Chat session and artifact identifiers accepted from th |
 | 13 | [#4724](https://github.com/aws-e/adp/issues/4724) | high | S12/5611 (OPEN) | [Security 2026-08-30] Agent worker cloud roles can reach other tenants' secr |
-| 14 | [#4725](https://github.com/aws-e/adp/issues/4725) | high | S13/5612 (OPEN), S14/5613 (OPEN) | [Security 2026-08-30] CI runner role can escalate to full account administra |
+| 14 | [#4725](https://github.com/aws-e/adp/issues/4725) | high | S14/5613 primary (OPEN); S13/5612 audit contributor (OPEN) | [Security 2026-08-30] CI runner role can escalate to full account administra |
 | 15 | [#4729](https://github.com/aws-e/adp/issues/4729) | high | S17/5616 (CLOSED) | [Security 2026-08-30] Cyber worker runs caller-named scripts with no real va |
 | 16 | [#4730](https://github.com/aws-e/adp/issues/4730) | high | S17/5616 (CLOSED) | [Security 2026-08-30] Cyber workers read arbitrary and cross-org stored obje |
 
-**#4725 is a genuine composite** — referenced by both S13 (#5612, Cognito/admin ceilings) and
-S14 (#5613, CI runner IAM). Both contributions are retained; it is not collapsed to one owner.
+**#4725 is a composite with S14 (#5613, CI runner IAM) as its primary coordinator** and
+S13 (#5612) contributing the admin-audit evidence. Both contributions are required; the
+secondary contribution does not replace the canonical primary owner.
 **14 of the 16 have an OPEN owner**, so they cannot yet be resolved. The exception matters:
 **#4729 and #4730 are still OPEN while their owner S17 (#5616) is CLOSED.** S17's own disposition
 records gVisor, image build and CI wiring as open prerequisites, so this is consistent with a
@@ -774,11 +788,17 @@ in the inventory's `advisory` field. Selector: `grype | artifact | result_index`
 | 7 | `GHSA-h395-gr6q-cpjc` | jsonwebtoken | 9.3.1 | medium | **7.5** | 10.3.0 | skypilot-api | 445 |
 | 8 | `GHSA-h395-gr6q-cpjc` | jsonwebtoken | 9.3.1 | medium | **7.5** | 10.3.0 | skypilot-api | 446 |
 
-Three have **no fix version** (`CVE-2019-25210` helm, `CVE-2020-15778` openssh ×3 — the
-openssh entries share one advisory across three packages). `GHSA-h395-gr6q-cpjc` appears twice
-for the same jsonwebtoken 9.3.1 in one image, so the 8 rows are **7 distinct advisories**.
+**Four occurrences across two advisory IDs** have no fix version listed: `CVE-2019-25210`
+(helm) and `CVE-2020-15778` (three OpenSSH packages). `GHSA-h395-gr6q-cpjc` appears twice
+for jsonwebtoken 9.3.1 in one image. The eight rows therefore contain **five distinct advisory IDs**.
 S19 recorded that a raw CVSS score outranking the scanner's own rating was one of the defects
 it fixed, so these need a rating decision by S21 rather than automatic escalation.
+
+Existing remediation evidence must be consumed in that decision. [S01-disposition.md](S01-disposition.md#rebuilt-image-evidence)
+records zero rebuilt-controller matches for all three controller disagreements, including aliases.
+[S03-disposition.md](S03-disposition.md) records the derived image's OpenSSH and jsonwebtoken
+outcomes. These are existing scoped dispositions to reconcile, not missing advisory identities
+or a requirement to restart analysis from scratch.
 
 
 ---
@@ -812,6 +832,7 @@ Claims were re-derived from source records, not from the previous revision's pro
   inferred from the flag name.
 - S03's file list came from `gh pr view 5724 --json files`; its runtime evidence from
   `S03-disposition.md:152-183` and `evidence/S03-derived-image-provenance.json`.
-- **Not verified:** whether S03's or S01's images have been published out-of-band since
-  2026-09-22. No registry was queried and no credentialed access was attempted, so publication
-  state is recorded as unknown rather than absent.
+- S01's committed image evidence and S02's acceptance record establish their published ECR
+  digests. **Not independently re-queried here:** current registry availability or any later
+  S03 publication. No registry or credentialed cloud access was attempted; S03 publication
+  remains unverified in this snapshot.
