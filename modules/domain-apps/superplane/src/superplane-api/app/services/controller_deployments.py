@@ -12,6 +12,7 @@ from pathlib import Path
 from harness_jobs.identity import OperationRefused, decode_payload, payload_digest
 from sqlalchemy import select
 from superplane_executor.deployment_plan import (
+    BATCH_FIELDS,
     build_deployment_preview,
     teardown_request,
     validate_request,
@@ -99,7 +100,9 @@ def profile_for(path, org_id, workspace_id, profile_id):
     return adp_org_id, profiles[profile_id]
 
 
-async def serving_catalog(request, db, org_id, workspace_id):
+async def serving_catalog(
+    request, db, org_id, workspace_id, *, workload_kind="serving"
+):
     """Expose only profiles accepted by the maintained producer for this caller.
 
     Preview validates canonical workspace/account/credential and installed profile
@@ -138,12 +141,21 @@ async def serving_catalog(request, db, org_id, workspace_id):
             settings.superplane_controller_profiles_file, org_id, workspace_id
         )
         for profile_id, profile in sorted(profiles.items()):
-            if not isinstance(profile, dict) or not isinstance(
-                profile.get("model_options"), dict
+            if (
+                not isinstance(profile, dict)
+                or not isinstance(profile.get("model_options"), dict)
+                or not isinstance(profile.get("workload"), dict)
             ):
                 raise ProvisioningUnavailable(
                     "controller deployment policy is unreadable"
                 )
+            if profile.get("workload", {}).get("kind") != workload_kind:
+                continue
+            batch_options = (
+                {key: profile["workload"].get(key) for key in BATCH_FIELDS}
+                if workload_kind == "batch"
+                else None
+            )
             # This identity belongs only to a transient preview; no request is
             # registered and it can never be submitted as the user's operation.
             preview = await preview_controller_deployment(
@@ -155,13 +167,19 @@ async def serving_catalog(request, db, org_id, workspace_id):
                 profile_id=profile_id,
                 name="profile-review",
                 model_options=profile["model_options"],
+                workload_kind=workload_kind,
+                batch_options=batch_options,
             )
             parameters = preview.request.parameters
             plan = json.loads(parameters["controller_plan"])
             result["profiles"].append(
                 {
                     "profile_id": profile_id,
-                    "model_options": dict(profile["model_options"]),
+                    **(
+                        {"batch_options": batch_options}
+                        if workload_kind == "batch"
+                        else {"model_options": dict(profile["model_options"])}
+                    ),
                     "image": plan["workload"]["image"],
                     "max_resource_units": int(parameters["max_resource_units"]),
                     "max_runtime_seconds": int(parameters["max_runtime_seconds"]),
@@ -199,6 +217,8 @@ async def preview_controller_deployment(
     profile_id,
     name,
     model_options,
+    workload_kind="serving",
+    batch_options=None,
 ):
     principal = await GrantBackedAuthority(async_session_factory).resolve(
         org_id=str(org_id),
@@ -263,6 +283,8 @@ async def preview_controller_deployment(
             target=target,
             name=name,
             model_options=model_options,
+            workload_kind=workload_kind,
+            batch_options=batch_options,
         )
     except OperationRefused as error:
         raise ProvisioningRefused(str(error)) from None

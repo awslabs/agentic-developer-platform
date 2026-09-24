@@ -423,7 +423,7 @@ outbox.
 | Store | Owner | Holds | Migration path |
 |---|---|---|---|
 | B's harness store | #4912 / #5525 (w6-02) | job/operation/attempt identity, admission records, outbox rows, leases and fences | B's own, in `modules/harness/jobs/`. **Not this module's, and not reachable from it** |
-| Superplane domain database | this module | `provider_operations` and its conflict/resource children, workspace/org records, observation receipts and leases, provider connections and bindings | [`src/superplane-api/alembic/`](../src/superplane-api/alembic/), sole head `031_controller_deployment_registry` |
+| Superplane domain database | this module | `provider_operations` and its conflict/resource children, workspace/org records, observation receipts and leases, provider connections and bindings | [`src/superplane-api/alembic/`](../src/superplane-api/alembic/), sole head `032_batch_workload_kind` |
 | Gateway vault | #4912 / #5528 (w6-05) | credential material; Secrets Manager reads stay in Gateway | Gateway's own |
 
 `src/superplane-api/alembic/` is the **only** migration directory this module owns.

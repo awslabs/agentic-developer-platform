@@ -17,6 +17,33 @@ from installation.controller_profiles import (
 from installation.manifests import render
 
 
+@pytest.mark.parametrize("invalid", [None, "port", "auth", "model"])
+def test_installed_batch_policy_cannot_expose_serving_or_mutable_model_options(
+    environment, release, invalid
+):
+    profile = selected_profiles(environment)["approved-model"]
+    profile["model_options"] = {}
+    profile["serving_auth_contract"] = None
+    profile["workload"].update(kind="batch", port=None, auth_secret=None)
+    if invalid == "port":
+        profile["workload"]["port"] = 8000
+    elif invalid == "auth":
+        profile["serving_auth_contract"] = "superplane-token-file-header-v1"
+    elif invalid == "model":
+        profile["model_options"] = {"model_name": "unreviewed"}
+    if invalid:
+        with pytest.raises(Refusal):
+            validate(environment, release)
+    else:
+        validate(environment, release)
+        assert (
+            json.loads(policy(environment))["tenants"][environment["org_id"]][
+                "workspaces"
+            ][environment["workspace_id"]]["approved-model"]["workload"]["kind"]
+            == "batch"
+        )
+
+
 @pytest.mark.parametrize(
     "failure", ["missing", "tag", "secret", "tenant", "workspace", "oversize"]
 )
