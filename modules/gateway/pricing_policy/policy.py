@@ -802,10 +802,12 @@ class RoutingEvidence:
         """The confirmed served tier, or None when unconfirmed.
 
         ``default``/``auto`` are explicitly NOT equated with ``standard``: no
-        captured AWS contract for this endpoint says they are, so treating them
-        as standard would present a guess as a verified measurement (design §4.4).
+        captured generic contract says they are. Kimi K3 is an explicit exception:
+        its AWS model card defines returned `default` as Standard pricing.
         """
         raw = (self.served_service_tier_raw or "").strip().lower()
+        if raw == "default" and normalize_billing_model_id(self.billing_model_id) == "moonshotai.kimi-k3":
+            return ServiceTier.STANDARD
         return raw if raw in ServiceTier.ALL else None
 
     def to_dict(self) -> dict[str, Any]:
@@ -1221,7 +1223,7 @@ def _verify_decision_binding(payload: dict[str, Any], *, input_rate: Decimal, re
     key = payload["variant_key"]
     if not isinstance(key, list) or len(key) != 5 or not all(isinstance(value, str) and value for value in key):
         raise InvalidPricingDecisionError("decision variant_key is malformed")
-    supported_model = is_openai_model(key[0]) if payload["decision_version"] == 1 else is_v2_priced_model(key[0])
+    supported_model = (is_openai_model(key[0]) or key[0] == "moonshotai.kimi-k3") if payload["decision_version"] == 1 else is_v2_priced_model(key[0])
     if not supported_model or key[1] not in Geography.ALL or key[2] not in ServiceTier.ALL or key[3] not in ContextTier.ALL:
         raise InvalidPricingDecisionError("decision variant_key contains unsupported dimensions")
 
@@ -1283,6 +1285,11 @@ def _verify_decision_binding(payload: dict[str, Any], *, input_rate: Decimal, re
         raise InvalidPricingDecisionError("decision routing model disagrees with variant_key")
     raw_tier = (routing["served_service_tier_raw"] or "").strip().lower()
     served = raw_tier if raw_tier in ServiceTier.ALL else None
+    if raw_tier == "default" and key[0] == "moonshotai.kimi-k3":
+        # Preserve historical conservative estimates made before the model-specific
+        # tier contract was captured; never reinterpret their embedded rates.
+        if routing["served_service_tier"] is not None:
+            served = ServiceTier.STANDARD
     if routing["served_service_tier"] != served:
         raise InvalidPricingDecisionError("decision served tier disagrees with upstream evidence")
     if served is None and EstimateReason.UNCONFIRMED_SERVICE_TIER not in reasons:

@@ -38,7 +38,7 @@ def test_upgrade_preserves_existing_prices_and_repeated_seed_is_noop(pg_url, con
     upgrade(pg_url, "069_aws_verification_binding")
     conn = connect()
     before = adapter.read_active(conn)
-    upgrade(pg_url, "head")
+    upgrade(pg_url, "070_opus55_pricing")
     after = adapter.read_active(conn)
     assert len(after.rows) == len(before.rows) + 53
     indexed = {r.variant_key: r for r in after.rows}

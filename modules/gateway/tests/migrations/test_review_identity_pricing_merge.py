@@ -21,7 +21,7 @@ def test_both_existing_heads_and_fresh_database_upgrade_without_losing_revocatio
                         "VALUES ('123456', 'retained-owner', '[\"original-installer\"]', '[\"identity_index_denial\"]', NOW())"
                     )
                 )
-        upgrade(pg_url)
+        upgrade(pg_url, "072_merge_identity_pricing")
         with engine.begin() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "072_merge_identity_pricing"
             assert "delivery_method" in {column["name"] for column in inspect(connection).get_columns("magic_link_nonces")}
@@ -62,7 +62,7 @@ def test_both_existing_heads_and_fresh_database_upgrade_without_losing_revocatio
         downgrade(pg_url, "071_installation_revocation")
         with engine.connect() as connection:
             assert tuple(connection.execute(text("SELECT * FROM installation_revocations")).one()) == record_before
-        upgrade(pg_url)
+        upgrade(pg_url, "072_merge_identity_pricing")
         with engine.begin() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "072_merge_identity_pricing"
             assert (

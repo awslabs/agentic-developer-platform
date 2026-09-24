@@ -33,6 +33,8 @@ Standard USD per million tokens:
 | US | 3.30 | 16.50 | 0.33 | 4.125 |
 
 The card publishes Priority at 1.75 times Standard and Flex at 0.5 times Standard.
+K3 reports Standard service as `default`; the gateway applies that documented
+model-specific mapping and preserves historical estimated decisions on replay.
 The daily parser rejects changes to units, table shape or multipliers for review.
 The 1M context ceiling is recorded separately from flat pricing thresholds.
 Policy-governed Responses calls require an explicit output cap and an evidenced
