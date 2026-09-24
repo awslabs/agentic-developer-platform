@@ -82,5 +82,14 @@ Docker target with its actual image tag. `cyber-security-ci.yml` also builds the
 security-test target and runs it with a read-only root, no network, no added
 capabilities and no privilege escalation. It reuses the gateway CodeBuild project
 with the nonpublishing PR role and separate PR source prefix; no extra project is
-created. The CodeBuild host must support the same Landlock ABI; lack of kernel
-support is a failing check, not a skipped isolation test.
+created. The CodeBuild host does not expose the required Landlock ABI. The image gate
+therefore exports the built security-test filesystem and boots it read-only under
+Debian's Landlock-capable kernel in a disposable QEMU guest within the same build.
+Software virtualization needs no KVM device, new AWS infrastructure or cloud
+permissions. The guest has no NIC, shared host filesystem or cloud credentials;
+only its bounded scratch mount is writable. The test supervisor uses UID 61161,
+no capabilities and no-new-privileges. The same mandatory isolation tests must
+pass there, including native parsers, descendant cleanup and negative probes.
+Boot failure, missing ABI support, test failure or timeout fails the gate.
+This proves the image's isolation contract on a compatible kernel; deployment
+still requires the separately documented live-kernel canary.

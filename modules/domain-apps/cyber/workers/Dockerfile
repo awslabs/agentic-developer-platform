@@ -70,4 +70,13 @@ COPY workers/tests/test_isolation.py /app/tests/test_isolation.py
 USER worker
 ENTRYPOINT ["python", "-m", "pytest", "-q", "/app/tests/test_isolation.py"]
 
+# The managed CodeBuild host does not expose Landlock. Boot the same exported
+# worker filesystem under Debian's supported kernel, entirely inside this job.
+FROM public.ecr.aws/docker/library/debian:trixie-slim AS kernel-test-tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      qemu-system-x86 e2fsprogs linux-image-cloud-amd64 initramfs-tools \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY workers/tests/vm_init.py workers/tests/run_image_vm.sh /test-tools/
+ENTRYPOINT ["bash", "/test-tools/run_image_vm.sh"]
+
 FROM base AS runtime
