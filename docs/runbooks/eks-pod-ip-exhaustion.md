@@ -141,9 +141,11 @@ The same resolved value is used for the plan and the apply, so the plan you
 review is the plan that applies.
 
 **A bare `terraform apply` bypasses all of this.** The protection lives in the
-deployment paths, not in the variable's default. On a widened cluster, run the
-resolver and export its output first (§5), or you are planning the additions
-away.
+deployment paths, not in the variable's default. On a widened cluster, follow §5.2
+rather than exporting the variable above and planning — and note that "run the
+resolver, then export the result" is not one command: exporting straight from a
+command substitution reports export's exit status, so it hides the refusal and
+plans the additions away. §5.2 has the checked form.
 
 The map is keyed by the availability zone each subnet is expected to be in. That
 is what makes one-subnet-per-zone structural: a subnet pasted under the wrong
