@@ -81,6 +81,21 @@ export interface UseAgUiEventsOptions {
 
 export interface UseAgUiEventsReturn extends AgentChatState {
   /**
+   * True when the server refused this conversation's identifier (#5615).
+   *
+   * The ordinary cause is benign and expected: the sessions table expires rows
+   * after 24h, and this browser keeps the identifier in localStorage
+   * indefinitely, so an owner returning the next day names a conversation the
+   * server no longer has. The refusal is deliberately the same non-answer given
+   * for somebody else's conversation, so this flag must not be read as "it was
+   * mine and it expired" — only as "this identifier can no longer be used".
+   *
+   * Before this existed, the refusal was the Lambda's return value only, which
+   * API Gateway discards for WebSocket routes: the browser was told nothing and
+   * retried the same dead identifier forever, showing a permanent spinner.
+   */
+  sessionExpired: boolean;
+  /**
    * Send a user message. `persona` (#4208) pins the agent persona for the turn,
    * bypassing the server-side classifier — used by the intent-intake flow. The
    * ingest Lambda validates it against an allowlist and rejects anything else,
@@ -104,6 +119,7 @@ export function useAgUiEvents({
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [isAwaitingReply, setIsAwaitingReply] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | undefined>();
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([]);
 
@@ -141,6 +157,13 @@ export function useAgUiEvents({
       sessionIdRef.current = conversation.id;
     }
   }, [conversation]);
+
+  // A refusal belongs to the identifier that was refused, so switching or
+  // starting a conversation clears it (#5615). Keyed on the id rather than the
+  // object so an unrelated message update does not re-enable a dead send box.
+  useEffect(() => {
+    setSessionExpired(false);
+  }, [conversation?.id]);
 
   // ------------------------------------------------------------------
   // Message mutation helper
@@ -785,6 +808,32 @@ export function useAgUiEvents({
       try {
         const frame = JSON.parse(event.data) as WsFrame;
 
+        // #5615: the ingress refused this conversation's identifier. Stop
+        // waiting for a reply that is never coming and tell the user, rather
+        // than spinning forever — this frame exists because a WebSocket
+        // integration discards the Lambda's HTTP-shaped response.
+        //
+        // The refusal is terminal for this identifier, so there is nothing to
+        // retry: the next message must go to a NEW server-issued one. The page
+        // offers that; we do not silently create it here, because silently
+        // moving a user's typing into a different conversation than the one on
+        // screen is its own bug.
+        if ((frame as { type?: string }).type === 'session_invalid') {
+          setIsAwaitingReply(false);
+          setSessionExpired(true);
+          const notice = (frame as { content?: string }).content
+            || 'That conversation is no longer available. Start a new one to continue.';
+          updateMessages((msgs) =>
+            msgs.some((m) => m.role === 'system' && m.content === notice)
+              ? msgs
+              : [...msgs, {
+                id: generateId(), role: 'system' as const, content: notice,
+                status: 'error' as const, timestamp: Date.now(),
+              }],
+          );
+          return;
+        }
+
         // AG-UI event path
         if (frame.type === 'ag_ui') {
           const agUiFrame = frame as AgUiWsFrame;
@@ -885,6 +934,10 @@ export function useAgUiEvents({
     (text: string, attachments?: string[], persona?: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
       if (!sessionIdRef.current) return;
+      // #5615: the server has already refused this identifier. Re-sending it
+      // would be refused identically and would restart the spinner, so the send
+      // is dropped until the page moves to a new conversation.
+      if (sessionExpired) return;
 
       const userMsg: ChatMessage = {
         id: generateId(),
@@ -918,13 +971,14 @@ export function useAgUiEvents({
       }
       wsRef.current.send(JSON.stringify(payload));
     },
-    [updateMessages],
+    [updateMessages, sessionExpired],
   );
 
   return {
     connectionStatus,
     isAwaitingReply,
     reconnectAttempt,
+    sessionExpired,
     sessionMeta,
     sendMessage,
     activeToolCalls,

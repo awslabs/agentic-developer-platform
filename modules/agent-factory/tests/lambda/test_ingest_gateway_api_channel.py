@@ -32,7 +32,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event, start_webchat_session
 
 HANDLER_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "gateway", "lambdas", "ingest")
 
@@ -200,16 +200,23 @@ class TestTheTrustedEnvelopeIsUnreachableFromABrowser:
         """
         handler = _import_handler(mock_bedrock=MagicMock())
 
+        claims = {"sub": "attacker-user", "email": "a@example.com",
+                  "custom:tenant_id": "org-attacker"}
+        # #5615: webchat ids are server-issued, so the attacker asks for one of
+        # their own. That is the strongest form of this test: the row they are
+        # writing to is legitimately theirs, and the forged `user_id` STILL does
+        # not get attributed to the victim.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-browser")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "sendMessage", "text": "hi", "session_id": SESSION, "user_id": "victim-user", "persona": "intent-refinement"},
+            body={"action": "sendMessage", "text": "hi", "session_id": session_id, "user_id": "victim-user", "persona": "intent-refinement"},
             connection_id="conn-browser",
-            authorizer_claims={"sub": "attacker-user", "email": "a@example.com", "custom:tenant_id": "org-attacker"},
+            authorizer_claims=claims,
         )
         event["source"] = "gateway-api"
         handler.lambda_handler(event, None)
 
-        row = mocked_aws_services["sessions"].get_item(Key={"session_id": SESSION}).get("Item", {})
+        row = mocked_aws_services["sessions"].get_item(Key={"session_id": session_id}).get("Item", {})
         assert row.get("user_workspace", "").startswith("attacker-user#")
         assert "victim-user" not in row.get("user_workspace", "")
 
