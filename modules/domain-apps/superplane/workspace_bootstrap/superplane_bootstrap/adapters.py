@@ -104,13 +104,27 @@ _BOOTSTRAP_TAINT_KEY = "superplane.aws-e/bootstrap"
 _CLUSTER_SCOPED_RESOURCES: frozenset[str] = frozenset(
     {
         "nodes",
+        "namespaces",
         "nodepools.superplane.ai",
-        "superplanenodes.superplane.ai",
     }
 )
 
+# Cluster-scoped resources whose grant is narrowed to named instances, and to WHICH name.
+# `namespaces` is cluster-scoped, so `get namespaces` can only be granted by a
+# ClusterRole -- and an unrestricted one lets the controller read every namespace on the
+# cluster, which on a BYOC cluster means the tenant's own. The manager reads exactly one
+# namespace (`management/target.go` gets `target.Namespace` and requires it Active), so
+# `resourceNames` narrows the grant to that single object. This is the only verb in the
+# required set that needs it: `nodes` and NodePools require collection reads.
+# SuperplaneNodes are namespaced and belong in the namespace Role. Named collection
+# grants would require matching metadata.name field selectors, which these reads do
+# not supply.
+_NAME_SCOPED_CLUSTER_RESOURCES: frozenset[str] = frozenset({"namespaces"})
 
-def _rbac_rules(resources: Sequence[str]) -> list[dict[str, object]]:
+
+def _rbac_rules(
+    resources: Sequence[str], *, resource_names: Mapping[str, str] | None = None
+) -> list[dict[str, object]]:
     """Group `REQUIRED_CONTROLLER_PERMISSIONS` into RBAC rules for these resources.
 
     Derived from the required set rather than restated, which is the same discipline
@@ -118,12 +132,18 @@ def _rbac_rules(resources: Sequence[str]) -> list[dict[str, object]]:
     drift from the set `readiness._rbac_checks` verifies, and the failure would be a
     workspace that installs and then fails its own readiness gate with no explanation.
 
-    The verbs are grouped per resource so the generated Role says `verbs: [create,
-    update]` for leases rather than repeating the resource once per verb — the same rule
-    either way, but the readable form is the one an operator can audit with
-    `kubectl get role -o yaml`.
+    The verbs are grouped per resource, so a resource needing two verbs produces one
+    rule saying `verbs: [get, list]` rather than the resource repeated once per verb —
+    the same grant either way, but the readable form is the one an operator can audit
+    with `kubectl get role -o yaml`.
+
+    `resource_names` narrows a resource's rule to one named object
+    (`_NAME_SCOPED_CLUSTER_RESOURCES`). A resource listed there with no name supplied is
+    a refusal rather than an unrestricted rule: the whole point of the narrowing is that
+    the wide version is the hazard, so falling back to it silently would defeat it.
     """
     wanted = set(resources)
+    names = dict(resource_names or {})
     verbs: dict[str, list[str]] = {}
     for verb, resource in REQUIRED_CONTROLLER_PERMISSIONS:
         if resource in wanted:
@@ -135,13 +155,21 @@ def _rbac_rules(resources: Sequence[str]) -> list[dict[str, object]]:
         # after the first dot; a bare name is core (""). This is the same spelling
         # `kubectl auth can-i` accepts, which is why the set uses it.
         name, _, group = resource.partition(".")
-        rules.append(
-            {
-                "apiGroups": [group],
-                "resources": [name],
-                "verbs": sorted(verbs[resource]),
-            }
-        )
+        rule: dict[str, object] = {
+            "apiGroups": [group],
+            "resources": [name],
+            "verbs": sorted(verbs[resource]),
+        }
+        if resource in _NAME_SCOPED_CLUSTER_RESOURCES:
+            scoped_to = names.get(resource, "")
+            if not scoped_to.strip():
+                raise BootstrapRefused(
+                    f"{resource!r} must be granted for a named object only; an "
+                    "unrestricted cluster-wide rule would let the workspace controller "
+                    "read every namespace on the cluster, a BYOC tenant's included"
+                )
+            rule["resourceNames"] = [scoped_to]
+        rules.append(rule)
     return rules
 
 
@@ -465,6 +493,9 @@ class KubectlClusterAccess:
     request_timeout: str = "30s"
     imds_probe_image: str = ""
     tenant_identity_reader: object = None
+    component_journal: object = field(default=None, repr=False)
+    management_observation: object = field(default=None, repr=False)
+    controller_mode = "management"
 
     def __post_init__(self) -> None:
         import re
@@ -811,9 +842,9 @@ class KubectlClusterAccess:
         """Create the controller's ServiceAccount and its scoped Role/ClusterRole pair.
 
         Five objects, because the required permission set spans both scopes and RBAC
-        cannot express it in fewer: `nodes` and the two CRD-defined types are
-        cluster-scoped, while `pods` and `leases` are namespaced. Granting the whole set
-        via one ClusterRole would hand the controller `watch pods` in EVERY namespace on a
+        cannot express it in fewer: `nodes`, `namespaces` and NodePools
+        are cluster-scoped; `pods` and SuperplaneNodes are namespaced. Granting the whole set via one
+        ClusterRole would hand the controller `watch pods` in EVERY namespace on a
         supplied cluster — a BYOC tenant's namespaces included — which is exactly the
         over-broad credential `FORBIDDEN_CONTROLLER_PERMISSIONS` exists to catch. So the
         namespaced half is bound with a RoleBinding scoped to this namespace.
@@ -840,7 +871,13 @@ class KubectlClusterAccess:
                 if resource not in _CLUSTER_SCOPED_RESOURCES
             ]
         )
-        cluster_rules = _rbac_rules(sorted(_CLUSTER_SCOPED_RESOURCES))
+        cluster_rules = _rbac_rules(
+            sorted(_CLUSTER_SCOPED_RESOURCES),
+            # The one namespace the registration manager reads. Narrowing the rule to it
+            # is what keeps a cluster-scoped `get namespaces` from being a read of every
+            # namespace on the cluster.
+            resource_names={"namespaces": namespace},
+        )
         subject = {
             "kind": "ServiceAccount",
             "name": service_account,
@@ -888,11 +925,17 @@ class KubectlClusterAccess:
             },
         ]
 
-        manifest = json.dumps({"apiVersion": "v1", "kind": "List", "items": objects})
-        _require_success(
-            self._kube("apply", "-f", "-", data=manifest),
-            f"establishing the workspace controller's RBAC in {namespace!r}",
-        )
+        if self.component_journal is not None:
+            for body in objects:
+                self.component_journal.ensure(body)
+        else:
+            manifest = json.dumps(
+                {"apiVersion": "v1", "kind": "List", "items": objects}
+            )
+            _require_success(
+                self._kube("apply", "-f", "-", data=manifest),
+                f"establishing the workspace controller's RBAC in {namespace!r}",
+            )
         return {
             "ServiceAccount": service_account,
             "Role": role_name,
@@ -919,6 +962,10 @@ class KubectlClusterAccess:
         The controller must run before readiness can clear the bootstrap interlock.
         Tolerate only that exact taint; tenant Pods do not receive this toleration.
         """
+        if self.controller_mode == "management":
+            raise BootstrapRefused(
+                "the canonical management controller must not be deployed into a workspace"
+            )
         manifest = json.dumps(
             {
                 "apiVersion": "apps/v1",
@@ -968,10 +1015,13 @@ class KubectlClusterAccess:
                 },
             }
         )
-        _require_success(
-            self._kube("apply", "-f", "-", data=manifest),
-            f"installing the workspace controller {namespace}/{name}",
-        )
+        if self.component_journal is not None:
+            self.component_journal.ensure(json.loads(manifest))
+        else:
+            _require_success(
+                self._kube("apply", "-f", "-", data=manifest),
+                f"installing the workspace controller {namespace}/{name}",
+            )
         observed = self.workload(namespace, name)
         if observed is None:
             raise BootstrapRefused(
@@ -981,6 +1031,33 @@ class KubectlClusterAccess:
                 "check"
             )
         return observed
+
+    def read_component(self, body):
+        from .component_journal import component_key
+
+        component_key(body)
+        metadata = body["metadata"]
+        args = [
+            "get",
+            body["kind"],
+            metadata["name"],
+            "--ignore-not-found",
+            "-o",
+            "json",
+        ]
+        if metadata.get("namespace"):
+            args += ["-n", metadata["namespace"]]
+        result = _require_success(self._kube(*args), "reading bootstrap component")
+        if not result.stdout.strip():
+            return None
+        return _parse_json(result, "bootstrap component")
+
+    def create_component(self, body):
+        result = _require_success(
+            self._kube("create", "-f", "-", "-o", "json", data=json.dumps(body)),
+            "creating bootstrap component",
+        )
+        return _parse_json(result, "created bootstrap component")
 
     def place_system_workloads(
         self, namespace: str, names: Sequence[str]
@@ -1307,7 +1384,19 @@ class KubectlClusterAccess:
         }
 
     def controller_permissions(self, namespace: str) -> Mapping[tuple[str, str], bool]:
-        """Ask RBAC about the service account installed in the workspace namespace."""
+        """Ask RBAC about the service account installed in the workspace namespace.
+
+        A name-scoped grant must be probed with that name. `get namespaces` is granted by
+        a ClusterRole whose `resourceNames` is this one namespace, so an unnamed review
+        asks "may it get ANY namespace" -- which RBAC answers `no`, and the gate would
+        then refuse a correctly installed controller. Passing the name asks the question
+        the grant actually answers, and it is the same question the manager's own read
+        asks.
+
+        `delete namespaces` is deliberately NOT narrowed: the forbidden set is asking
+        whether the credential can delete any namespace at all, and naming one would
+        narrow a check whose breadth is the point.
+        """
         from .tenant_authorization import review
 
         subject = f"system:serviceaccount:{namespace}:{self.controller_service_account}"
@@ -1328,13 +1417,12 @@ class KubectlClusterAccess:
                     groups=groups,
                     verb=verb,
                     resource=resource,
+                    name=namespace
+                    if (verb, resource) == ("get", "namespaces")
+                    else None,
                     namespace=None
                     if resource in _CLUSTER_SCOPED_RESOURCES
-                    or resource
-                    in {
-                        "namespaces",
-                        "clusterrolebindings.rbac.authorization.k8s.io",
-                    }
+                    or resource == "clusterrolebindings.rbac.authorization.k8s.io"
                     else namespace,
                 )
             except BootstrapRefused:

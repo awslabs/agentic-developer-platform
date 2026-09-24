@@ -247,6 +247,35 @@ class DesignHistory(BaseModel):
         return self
 
 
+class EpicDisplay(BaseModel):
+    """Model-authored explanation of the capability, motivation and scope."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=3000)
+
+
+class EpicMetadata(EpicDisplay):
+    epic_ref: str = Field(min_length=1, max_length=128)
+
+
+class WaveDisplay(BaseModel):
+    """Model-authored display text, with no execution or identity fields."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, min_length=1, max_length=DESCRIPTION_MAX_LEN)
+
+
+class WaveMetadata(WaveDisplay):
+    """Display text for a derived wave, keyed by its stable epic and wave refs."""
+
+    epic_ref: str = Field(min_length=1, max_length=128)
+    wave_ref: str = Field(min_length=1, max_length=128)
+
+
 class LoopProposal(BaseModel):
     """A complete plan an authoring agent proposes for approval.
 
@@ -272,6 +301,10 @@ class LoopProposal(BaseModel):
     intent_ref: str | None = None
     nodes: list[ProposedNode] = Field(default_factory=list)
     edges: list[ProposedEdge] = Field(default_factory=list)
+    # Presentation only: refs, nodes and edges remain the execution identities.
+    # Omitted metadata preserves legacy labels and execution hashes.
+    wave_metadata: list[WaveMetadata] = Field(default_factory=list)
+    epic_metadata: list[EpicMetadata] = Field(default_factory=list)
 
     # --- The design loop's story (#4885), both optional -------------------
     # Provenance about how this plan came to be, NOT part of the plan's
@@ -911,6 +944,35 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
     return violations
 
 
+def _check_display_metadata(proposal: LoopProposal) -> list[Violation]:
+    waves = set()
+    for node in proposal.nodes:
+        try:
+            _, epic, wave, _ = split_address(node.address)
+            waves.add((epic, wave))
+        except ValueError:
+            pass  # Address validation reports the malformed node separately.
+    epics = {epic for epic, _ in waves}
+    seen_epics = set()
+    violations = []
+    for metadata in proposal.epic_metadata:
+        if metadata.epic_ref in seen_epics:
+            violations.append(Violation("duplicate_epic_metadata", "Declare display metadata once per epic.", metadata.epic_ref))
+        if metadata.epic_ref not in epics:
+            violations.append(Violation("unknown_epic_metadata", "Display metadata must reference an epic present in the nodes.", metadata.epic_ref))
+        seen_epics.add(metadata.epic_ref)
+    seen = set()
+    for metadata in proposal.wave_metadata:
+        key = (metadata.epic_ref, metadata.wave_ref)
+        where = "/".join(key)
+        if key in seen:
+            violations.append(Violation("duplicate_wave_metadata", "Declare display metadata once per wave.", where))
+        if key not in waves:
+            violations.append(Violation("unknown_wave_metadata", "Display metadata must reference a wave present in the nodes.", where))
+        seen.add(key)
+    return violations
+
+
 def validate_proposal(proposal: LoopProposal) -> list[Violation]:
     """Check a proposal against every rule and return **all** violations.
 
@@ -933,6 +995,7 @@ def validate_proposal(proposal: LoopProposal) -> list[Violation]:
         *_check_declarations(proposal),
         *_check_evaluation_specs(proposal),
         *_check_addresses(proposal),
+        *_check_display_metadata(proposal),
         *_check_kinds(proposal),
         *_check_edges(proposal),
         *_check_wave_evals(proposal),

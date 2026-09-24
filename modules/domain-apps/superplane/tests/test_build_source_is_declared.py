@@ -282,7 +282,10 @@ class TestLockRecordsTheTransferredMechanism:
         """The lock must not point a build anywhere except the tree ADP maintains."""
         lock = self._lock()
         for component, entry in (lock["pending_images"] or {}).items():
-            assert entry["source_path"] == f"src/{component}", (
+            expected = (
+                "executor" if component == "superplane-executor" else f"src/{component}"
+            )
+            assert entry["source_path"] == expected, (
                 f"{component} does not resolve to its maintained directory: {entry!r}"
             )
             assert (MODULE_ROOT / entry["source_path"]).is_dir(), (

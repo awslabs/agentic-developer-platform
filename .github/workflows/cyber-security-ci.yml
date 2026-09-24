@@ -1,0 +1,63 @@
+name: Cyber job security contracts
+on:
+  pull_request:
+    paths:
+      - modules/domain-apps/cyber/**
+      - modules/gateway/src/agentauth/cyber_jobs.py
+      - modules/gateway/tests/agentauth/test_cyber_jobs.py
+      - .github/workflows/cyber-security-ci.yml
+      - .github/actions/codebuild-run/**
+  workflow_dispatch:
+concurrency:
+  group: cyber-security-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  kernel-isolation:
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install native worker test prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential libmagic1 libseccomp2 binutils
+      - name: Install worker dependencies for real Linux probes
+        run: |
+          python -m venv /tmp/cyber-kernel-tests
+          /tmp/cyber-kernel-tests/bin/pip install -r modules/domain-apps/cyber/workers/requirements.txt pytest==8.3.5 'moto[s3,sqs,dynamodb]==5.0.28'
+      - name: Prepare the dedicated worker UID and read-only source
+        run: |
+          sudo useradd --uid 61161 --no-create-home cyber-test
+          sudo cp -a modules/domain-apps/cyber /tmp/cyber-security-source
+          sudo chown -R root:root /tmp/cyber-security-source
+          sudo chmod -R a+rX /tmp/cyber-security-source
+      - name: Exercise full worker suite including actual kernel confinement
+        run: sudo -u cyber-test env LD_LIBRARY_PATH="$pythonLocation/lib" /tmp/cyber-kernel-tests/bin/python -m pytest -q -p no:cacheprovider /tmp/cyber-security-source/workers/tests
+
+  production-image:
+    runs-on: arc-runner-org
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve the existing nonpublishing build identity
+        id: account
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          echo "id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+      - name: Build and exercise the production worker filesystem
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-dev-gateway-build
+          region: us-east-1
+          state_bucket: adp-terraform-state-${{ steps.account.outputs.id }}
+          source_namespace: adp-dev-gateway-build-pr
+          service_role_arn: arn:aws:iam::${{ steps.account.outputs.id }}:role/adp-dev-codebuild-gateway-pr
+          buildspec: modules/domain-apps/cyber/codebuild/bs-cyber-security.yml

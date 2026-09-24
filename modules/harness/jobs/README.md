@@ -332,6 +332,21 @@ Finite by construction, enforced in `OperationRequest.__post_init__`:
 | `MAX_PARAMETER_VALUE_LENGTH` | 2000 |
 | `MAX_TOTAL_PARAMETER_BYTES` | 16384 |
 
+The exact `execution_steps` key may contain a validated ordered JSON plan longer
+than 2,000 characters. Its descriptors and every other parameter together still
+share the 16,384-byte aggregate ceiling. The plan contains at most 64 unique steps,
+with the same four fields (`step_id`, `provider`, `operation_kind`, `target`) and
+2,048-character descriptor values. Unknown or duplicate fields, duplicate step IDs,
+oversized plans and malformed JSON do not qualify for the larger value limit.
+Other scalar parameters keep the 2,000-character limit.
+
+Trusted composers can use `execution_plan.encode_execution_steps` to serialize a
+bounded plan before approval. Admission, execution and recovery preserve the exact
+request digest and sequence. Longer lifecycle plans require this harness revision
+in the admitting and executing/recovering service; older releases refuse them.
+This changes no database schema or worker credential boundary. The worker still
+requests only an admitted step ID, and every mutating call must match the plan.
+
 ## Allocation inventory and cleanup authority (#5529)
 
 `inventory.py` answers two questions the domain cannot answer for itself: **what does

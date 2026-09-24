@@ -364,7 +364,8 @@ resource "aws_cognito_identity_pool" "main" {
 
 # IAM Role for authenticated Cognito users (gateway-caller)
 resource "aws_iam_role" "gateway_caller" {
-  name = "${var.name_prefix}-gateway-caller"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-gateway-caller"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -437,7 +438,8 @@ resource "aws_iam_role_policy" "gateway_caller_session_tags" {
 
 # IAM Role for unauthenticated users (denied access)
 resource "aws_iam_role" "unauthenticated" {
-  name = "${var.name_prefix}-cognito-unauth"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-cognito-unauth"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

@@ -56,3 +56,23 @@ def install_credential_evidence_reader(reader: CredentialEvidenceReader) -> None
     if _reader is not None:
         raise RuntimeError("credential evidence reader is already installed")
     _reader = reader
+
+
+def uninstall_credential_evidence_reader(reader: CredentialEvidenceReader) -> bool:
+    """Remove `reader` if it is the installed one. Returns whether it was.
+
+    Takes the reader to remove rather than clearing unconditionally, and that
+    argument is the whole safety property: shutdown must release only what it
+    installed. A bare `clear()` lets one composition's shutdown uninstall a
+    different composition's live adapter — and since `install_` refuses a second
+    install, the surviving composition could not put its own reader back.
+
+    Returns `False` rather than raising when another reader is installed: a
+    shutdown path that raised would abandon the rest of its cleanup over a
+    condition it is correctly declining to act on.
+    """
+    global _reader
+    if _reader is not reader:
+        return False
+    _reader = None
+    return True

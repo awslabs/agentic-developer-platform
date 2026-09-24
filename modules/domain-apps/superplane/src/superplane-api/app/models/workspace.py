@@ -8,10 +8,11 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
-    Numeric,
     Integer,
+    Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -34,6 +35,13 @@ STATUS_MAX_RETRIES_EXCEEDED = "max_retries_exceeded"
 
 class Workspace(Base):
     __tablename__ = "workspaces"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "operation_id",
+            name="uq_workspaces_org_operation",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -42,6 +50,16 @@ class Workspace(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    operation_request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provisioning_operation_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    teardown_operation_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
     isolation_mode: Mapped[str] = mapped_column(
         String(50), nullable=False
     )  # dedicated, namespace, research

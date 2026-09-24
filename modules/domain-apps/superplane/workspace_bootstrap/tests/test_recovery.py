@@ -1148,12 +1148,12 @@ def test_a_crd_failure_after_namespace_creation_still_produces_a_cleanup_plan(
         "the partial installation was discarded, so the created namespace is invisible"
     )
     assert outcome.cleanup is not None, "the F6 defect: cleanup=None after a mutation"
-    assert outcome.cleanup.remove_namespace == NAMESPACE
-    assert outcome.cleanup.remove_namespace_uid, (
-        "the plan names the namespace without a uid precondition, so executing it could "
-        "delete a different object of the same name"
+    assert outcome.cleanup.remove_namespace == ""
+    assert outcome.cleanup.retained_namespace == NAMESPACE
+    assert outcome.cleanup.retained_namespace_uid, (
+        "the outstanding namespace obligation lost its immutable identity"
     )
-    assert outcome.cleanup.deletes_nothing is False
+    assert any("cascading" in reason for reason in outcome.cleanup.preserved)
 
 
 def test_the_namespace_creation_is_recorded_durably_before_the_next_mutation(
@@ -1271,7 +1271,8 @@ def test_a_failure_after_the_taint_cleared_carries_both_the_plan_and_the_restora
     assert outcome.taint_restored is True
     assert outcome.nodes_left_schedulable is False
     assert outcome.cleanup is not None
-    assert outcome.cleanup.remove_namespace == NAMESPACE
+    assert outcome.cleanup.remove_namespace == ""
+    assert outcome.cleanup.retained_namespace == NAMESPACE
     assert outcome.cleanup.preserves_cluster is True
     assert outcome.inventory is not None, (
         "the plan was built without the prerequisite inventory, so it cannot revoke the "

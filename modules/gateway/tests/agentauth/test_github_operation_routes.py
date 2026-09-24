@@ -31,6 +31,7 @@ from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionRecord, ExecutionStatus
 from src.agentauth.github_operations import OperationAssignment, OperationRefusedError
 from src.agentauth.github_provider import PublishedCommit
+from src.agentauth.grants import AUTHORITY_GATE_DECISION, AuthorityReference
 from src.agentauth.workload import VerifiedPod, WorkloadRefusedError
 
 CREDENTIAL = "adpr1.eyJhIjoxfQ.deadbeef"
@@ -139,7 +140,15 @@ class StubRuntime:
             flow_id="flow-a",
             repo="acme/widgets",
         )
-        return pod, caller, record, SimpleNamespace(tenant_id="org-a")
+        return (
+            pod,
+            caller,
+            record,
+            SimpleNamespace(
+                tenant_id="org-a",
+                authority=AuthorityReference(AUTHORITY_GATE_DECISION, "gate-a", "human-a", "org-a"),
+            ),
+        )
 
     async def validate_flow(self, record, grant):
         # Production passes the ExecutionRecord here, so assert the route does too:

@@ -254,7 +254,11 @@ class DispatchOutbox:
     # ------------------------------------------------------------------
 
     async def claim(
-        self, connection: Connection, *, limit: int = 10
+        self,
+        connection: Connection,
+        *,
+        limit: int = 10,
+        operation_ids: tuple[str, ...] | None = None,
     ) -> tuple[DispatchEnvelope, ...]:
         """Claim up to ``limit`` pending rows for this worker.
 
@@ -289,6 +293,7 @@ class DispatchOutbox:
                    AND o.abandoned_at IS NULL
                    AND (o.claimed_until IS NULL OR o.claimed_until < now())
                    AND o.attempts < $2
+                   AND ($5::text[] IS NULL OR o.operation_id = ANY($5::text[]))
                    AND EXISTS (
                         SELECT 1
                           FROM harness_approval_consumption AS c
@@ -313,6 +318,7 @@ class DispatchOutbox:
             self._max_attempts,
             bounded,
             list(_DELIVERABLE_STATE_VALUES),
+            list(operation_ids) if operation_ids is not None else None,
         )
         return tuple(
             DispatchEnvelope(
@@ -340,6 +346,7 @@ class DispatchOutbox:
         executor: DispatchExecutor,
         *,
         limit: int = 10,
+        operation_ids: tuple[str, ...] | None = None,
     ) -> DeliveryReport:
         """Claim, deliver and settle one batch. Returns what happened.
 
@@ -348,7 +355,9 @@ class DispatchOutbox:
         mid-drain loses only its claims, and those expire. A caller loops on
         `handled` until it reaches zero.
         """
-        envelopes = await self.claim(connection, limit=limit)
+        envelopes = await self.claim(
+            connection, limit=limit, operation_ids=operation_ids
+        )
         delivered = failed = exhausted = 0
         for envelope in envelopes:
             try:

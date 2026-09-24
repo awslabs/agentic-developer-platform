@@ -21,15 +21,16 @@ from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from kubernetes.client import Configuration, ApiClient, CoreV1Api, AppsV1Api
+from kubernetes.client import ApiClient, AppsV1Api, Configuration, CoreV1Api
 from kubernetes.client.rest import ApiException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.cloud_account import CloudAccount
 from app.models.cluster import Cluster
-from app.models.workspace import Workspace
+from app.models.workspace import STATUS_ACTIVE, Workspace
+from app.services.deployment_identity import has_create_binding, matches_create
 from app.services.eks_auth import (
     EksAuthError,
     build_cluster_token,
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 # STS token duration (15 minutes — minimum)
 TOKEN_DURATION_SECONDS = 900
+WORKSPACE_OWNER_LABEL = "superplane.io/workspace"
 
 
 class ProxyError(Exception):
@@ -56,24 +58,31 @@ async def get_workspace_cluster(
     workspace_id: uuid.UUID,
     org_id: uuid.UUID,
     db: AsyncSession,
+    *,
+    for_update: bool = False,
 ) -> tuple[Workspace, Cluster]:
     """Fetch workspace and its associated cluster, validating ownership.
 
     Raises:
         ProxyError: If workspace not found, not active, or no cluster attached.
     """
-    result = await db.execute(
-        select(Workspace).where(
+    query = (
+        select(Workspace)
+        .where(
             Workspace.id == workspace_id,
             Workspace.org_id == org_id,
         )
+        .execution_options(populate_existing=True)
     )
+    if for_update:
+        query = query.with_for_update()
+    result = await db.execute(query)
     workspace = result.scalar_one_or_none()
 
     if workspace is None:
         raise ProxyError("Workspace not found", status_code=404)
 
-    if workspace.status != "Active":
+    if workspace.status not in {STATUS_ACTIVE, "Active"}:
         raise ProxyError(
             f"Workspace is not active (status: {workspace.status}). Proxy requires an active workspace.",
             status_code=400,
@@ -82,9 +91,18 @@ async def get_workspace_cluster(
     if not workspace.cluster_id:
         raise ProxyError("No cluster associated with this workspace", status_code=400)
 
-    cluster_result = await db.execute(
-        select(Cluster).where(Cluster.id == workspace.cluster_id)
+    query = (
+        select(Cluster)
+        .where(
+            Cluster.id == workspace.cluster_id,
+            Cluster.org_id == org_id,
+            or_(Cluster.workspace_id == workspace_id, Cluster.workspace_id.is_(None)),
+        )
+        .execution_options(populate_existing=True)
     )
+    if for_update:
+        query = query.with_for_update()
+    cluster_result = await db.execute(query)
     cluster = cluster_result.scalar_one_or_none()
 
     if cluster is None or not cluster.endpoint:
@@ -366,7 +384,9 @@ def create_deployment_manifest(
     gpu_per_replica: int = 1,
     tensor_parallel_size: int = 1,
     max_model_len: int | None = None,
-    namespace: str = "default",
+    *,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
 ) -> dict[str, Any]:
     """Generate a vLLM/SGLang K8s Deployment manifest.
 
@@ -428,6 +448,7 @@ def create_deployment_manifest(
             "labels": {
                 "app": name,
                 "superplane.io/component": "model-serving",
+                WORKSPACE_OWNER_LABEL: str(workspace_id),
                 "superplane.io/framework": serving_framework,
                 "superplane.io/model": model_name.replace("/", "--"),
             },
@@ -501,63 +522,78 @@ def create_deployment_manifest(
 def apply_deployment_via_k8s(
     apps_api: AppsV1Api,
     manifest: dict[str, Any],
+    *,
+    expected_uid: str | None = None,
 ) -> dict[str, Any]:
-    """Apply a K8s Deployment manifest to the child cluster.
-
-    Returns:
-        Deployment status dict.
-    """
+    """Create once or observe this operation's unchanged result; never replace."""
+    if not has_create_binding(manifest):
+        raise ProxyError(
+            "Deployment create requires a durable operation binding", status_code=409
+        )
     namespace = manifest["metadata"].get("namespace", "default")
     name = manifest["metadata"]["name"]
 
-    try:
-        # Try to create first
-        result = apps_api.create_namespaced_deployment(
-            namespace=namespace,
-            body=manifest,
-        )
+    def observed_result(result):
+        with ApiClient() as serializer:
+            observed = serializer.sanitize_for_serialization(result)
+        if not matches_create(observed, manifest):
+            raise ProxyError(
+                "Deployment name is occupied by a different or changed operation",
+                status_code=409,
+            )
+        if expected_uid is not None and observed["metadata"]["uid"] != expected_uid:
+            raise ProxyError("Deployment immutable UID changed", status_code=409)
         return {
-            "name": result.metadata.name,
-            "namespace": result.metadata.namespace,
-            "replicas": result.spec.replicas,
+            "name": observed["metadata"]["name"],
+            "namespace": observed["metadata"]["namespace"],
+            "replicas": observed["spec"]["replicas"],
             "status": "Created",
+            "provider_uid": observed["metadata"]["uid"],
         }
-    except ApiException as exc:
-        if exc.status == 409:
-            # Already exists — update via replace
-            try:
-                result = apps_api.replace_namespaced_deployment(
-                    name=name,
-                    namespace=namespace,
-                    body=manifest,
-                )
-                return {
-                    "name": result.metadata.name,
-                    "namespace": result.metadata.namespace,
-                    "replicas": result.spec.replicas,
-                    "status": "Updated",
-                }
-            except ApiException as update_exc:
-                logger.error("K8s replace_deployment failed: %s", update_exc)
+
+    try:
+        try:
+            existing = apps_api.read_namespaced_deployment(
+                name=name, namespace=namespace
+            )
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+            if expected_uid is not None:
                 raise ProxyError(
-                    f"Failed to update deployment on child cluster: {update_exc.reason}"
-                ) from update_exc
-        logger.error("K8s create_deployment failed: %s", exc)
+                    "Previously observed deployment is absent; refusing recreation",
+                    status_code=409,
+                ) from exc
+        else:
+            return observed_result(existing)
+        try:
+            result = apps_api.create_namespaced_deployment(
+                namespace=namespace, body=manifest
+            )
+        except ApiException as exc:
+            if exc.status != 409:
+                raise
+            # Another request may have created the name after the absence read.
+            # Ownership and generation are checked exactly as on a restart.
+            result = apps_api.read_namespaced_deployment(name=name, namespace=namespace)
+        return observed_result(result)
+    except ApiException as exc:
         raise ProxyError(
-            f"Failed to create deployment on child cluster: {exc.reason}"
+            "Workspace deployment could not be observed or created",
+            status_code=403 if exc.status in (401, 403) else 502,
         ) from exc
 
 
 def list_deployments_via_k8s(
     apps_api: AppsV1Api,
-    namespace: str = "default",
-    label_selector: str = "superplane.io/component=model-serving",
+    *,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
 ) -> list[dict[str, Any]]:
-    """List deployments from child cluster via K8s API.
-
-    Returns:
-        List of deployment info dicts.
-    """
+    """List only this workspace's model-serving objects in its recorded namespace."""
+    label_selector = (
+        f"superplane.io/component=model-serving,{WORKSPACE_OWNER_LABEL}={workspace_id}"
+    )
     try:
         dep_list = apps_api.list_namespaced_deployment(
             namespace=namespace,
@@ -568,6 +604,7 @@ def list_deployments_via_k8s(
             deployments.append(
                 {
                     "name": dep.metadata.name,
+                    "provider_uid": dep.metadata.uid,
                     "namespace": dep.metadata.namespace,
                     "replicas": dep.spec.replicas,
                     "ready_replicas": dep.status.ready_replicas or 0,
@@ -588,10 +625,37 @@ def list_deployments_via_k8s(
         ) from exc
 
 
+def get_deployment_uid_via_k8s(
+    apps_api: AppsV1Api, manifest: dict[str, Any]
+) -> str | None:
+    """Observe the owned create result so callers can persist its UID before delete."""
+    try:
+        observed = apps_api.read_namespaced_deployment(
+            name=manifest["metadata"]["name"],
+            namespace=manifest["metadata"].get("namespace", "default"),
+        )
+        with ApiClient() as serializer:
+            observed = serializer.sanitize_for_serialization(observed)
+        if not matches_create(observed, manifest):
+            raise ProxyError(
+                "Deployment ownership is unavailable; refusing deletion by name",
+                status_code=409,
+            )
+        return observed["metadata"]["uid"]
+    except ApiException as exc:
+        if exc.status == 404:
+            return None
+        raise ProxyError("Workspace deployment identity could not be observed") from exc
+
+
 def delete_deployment_via_k8s(
     apps_api: AppsV1Api,
     name: str,
     namespace: str = "default",
+    *,
+    expected_uid: str | None = None,
+    expected_manifest: dict | None = None,
+    absent_ok: bool = False,
 ) -> dict[str, str]:
     """Delete a deployment from child cluster via K8s API.
 
@@ -599,13 +663,30 @@ def delete_deployment_via_k8s(
         Deletion status dict.
     """
     try:
-        apps_api.delete_namespaced_deployment(
-            name=name,
-            namespace=namespace,
-        )
-        return {"name": name, "namespace": namespace, "status": "Deleted"}
+        if expected_uid is None and expected_manifest is not None:
+            observed = apps_api.read_namespaced_deployment(
+                name=name, namespace=namespace
+            )
+            with ApiClient() as serializer:
+                observed = serializer.sanitize_for_serialization(observed)
+            if not matches_create(observed, expected_manifest):
+                raise ProxyError(
+                    "Deployment ownership is unavailable; refusing deletion by name",
+                    status_code=409,
+                )
+            expected_uid = observed["metadata"]["uid"]
+        arguments = {"name": name, "namespace": namespace}
+        if expected_uid is not None:
+            arguments["body"] = {"preconditions": {"uid": expected_uid}}
+        apps_api.delete_namespaced_deployment(**arguments)
+        # Kubernetes acknowledges asynchronous deletion before finalizers finish.
+        # Hold the allocation until a read proves the object is absent.
+        apps_api.read_namespaced_deployment(name=name, namespace=namespace)
+        return {"name": name, "namespace": namespace, "status": "Deleting"}
     except ApiException as exc:
         if exc.status == 404:
+            if absent_ok:
+                return {"name": name, "namespace": namespace, "status": "Deleted"}
             raise ProxyError(f"Deployment '{name}' not found", status_code=404) from exc
         logger.error("K8s delete_deployment failed: %s", exc)
         raise ProxyError(

@@ -297,8 +297,9 @@ def _require_authorized_plan(executor: DurableExecutor, plan: BootstrapPlan) -> 
     mismatches = []
     if plan.workspace_id != executor.workspace_id:
         mismatches.append(f"the plan's workspace {plan.workspace_id!r} is not the operation's workspace {executor.workspace_id!r}")
-    if plan.organization_id != executor.org_id:
-        mismatches.append(f"the plan's organization {plan.organization_id!r} is not the operation's organization {executor.org_id!r}")
+    operation_org = plan.operation_org_id or plan.organization_id
+    if operation_org != executor.org_id:
+        mismatches.append(f"the plan's operation organization {operation_org!r} is not the operation's organization {executor.org_id!r}")
     if mismatches:
         raise BootstrapRefused(
             "the supplied bootstrap plan does not belong to this operation: "

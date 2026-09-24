@@ -119,3 +119,13 @@ describe('AI-DLC presentation delivered to hosted workers', () => {
     ]);
   });
 });
+
+
+it('ships model-owned epic and wave authoring guidance with the proposal schema', () => {
+  const proposal = section(emitter, '#### Step 7e:', '#### Step 7f:');
+  expect(proposal).toContain('"epic_metadata"');
+  expect(proposal).toContain('"wave_metadata"');
+  expect(proposal).toContain('what is being built, why it matters');
+  expect(proposal).toContain('Do not ask the user to supply it');
+  expect(persona).toContain('do not ask the user to name waves');
+});

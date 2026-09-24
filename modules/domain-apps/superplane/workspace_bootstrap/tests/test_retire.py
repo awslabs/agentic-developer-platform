@@ -138,18 +138,15 @@ def test_byoc_cleanup_states_that_unrelated_workloads_are_untouched(byoc_target)
     assert any("outside" in entry and NAMESPACE in entry for entry in plan.preserved)
 
 
-def test_byoc_cleanup_still_removes_a_namespace_adp_created_on_a_supplied_cluster(
+def test_byoc_cleanup_retains_an_owned_namespace_without_fenced_content_inventory(
     byoc_target,
 ):
-    """The rule is "what ADP created", not "what mode we are in".
-
-    A supplied cluster on which ADP created the workspace namespace is the common BYOC
-    case, and leaving that namespace behind would make bootstrap non-idempotent.
-    """
+    """Creating a namespace never establishes ownership of every object inside it."""
     plan = _plan(target=byoc_target, installation=_installation(namespace_owned=True))
 
-    assert plan.remove_namespace == NAMESPACE
-    assert plan.remove_namespace_uid == NAMESPACE_UID
+    assert plan.remove_namespace == ""
+    assert plan.retained_namespace == NAMESPACE
+    assert plan.retained_namespace_uid == NAMESPACE_UID
     assert plan.preserves_cluster is True
 
 
@@ -166,15 +163,17 @@ def test_managed_cleanup_leaves_the_cluster_to_terraform(managed_target):
     assert any("Terraform" in entry for entry in plan.preserved)
 
 
-def test_managed_cleanup_removes_the_namespace_it_created_with_a_uid_precondition(
+def test_managed_cleanup_keeps_the_exact_namespace_as_an_outstanding_obligation(
     managed_target,
 ):
     plan = _plan(
         target=managed_target, installation=_installation(namespace_owned=True)
     )
 
-    assert plan.remove_namespace == NAMESPACE
-    assert plan.remove_namespace_uid == NAMESPACE_UID
+    assert plan.remove_namespace == ""
+    assert plan.retained_namespace == NAMESPACE
+    assert plan.retained_namespace_uid == NAMESPACE_UID
+    assert any("cascading" in reason for reason in plan.preserved)
 
 
 def test_the_plan_publishes_the_exact_provider_bound_identities(managed_target):
@@ -205,7 +204,8 @@ def test_crds_are_never_in_a_cleanup_plan(
     plan = _plan(target=target, installation=_installation(namespace_owned=True))
 
     assert "nodepools.superplane.ai" not in str(plan.remove_prerequisites)
-    assert plan.remove_namespace == NAMESPACE
+    assert plan.remove_namespace == ""
+    assert plan.retained_namespace == NAMESPACE
     assert any("nodepools.superplane.ai" in entry for entry in plan.preserved)
 
 

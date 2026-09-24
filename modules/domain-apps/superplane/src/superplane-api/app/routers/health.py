@@ -16,7 +16,10 @@ router = APIRouter()
 async def readiness(request: Request, db: AsyncSession = Depends(get_session)):
     try:
         await db.execute(text("SELECT 1"))
-        if management_only() and getattr(request.app.state, "domain_policy", None) is None:
+        if (
+            management_only()
+            and getattr(request.app.state, "domain_policy", None) is None
+        ):
             raise ValueError("strict authorization unavailable")
     except Exception:
         raise HTTPException(503, "Management service is not ready") from None

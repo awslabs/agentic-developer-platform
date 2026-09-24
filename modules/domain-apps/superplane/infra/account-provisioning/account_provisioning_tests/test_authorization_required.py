@@ -219,8 +219,9 @@ class TestCreationRequiresAuthorization:
         assert executor.dispatches == []
         _nothing_happened(organizations, credentials)
 
+    @pytest.mark.parametrize("operation_org", [FIXTURE_ORG_ID, "565970e4-a29c-469c-8d1b-e6c6b9e11f73"])
     @pytest.mark.asyncio
-    async def test_a_fully_authorized_request_does_reach_the_executor(self) -> None:
+    async def test_a_fully_authorized_request_does_reach_the_executor(self, operation_org) -> None:
         """The positive control, without which every test above could pass vacuously.
 
         A guard that refused everything would satisfy all the refusals and break the
@@ -228,10 +229,11 @@ class TestCreationRequiresAuthorization:
         under the stable key, after the placement read.
         """
         request = new_account_request()
-        authorization = matching_authorization(request)
+        authorization = matching_authorization(request, operation_org_id=operation_org)
         organizations = RecordingOrganizations()
         credentials = RecordingCredentials(organizations=organizations)
         executor = RecordingExecutor(
+            org_id=operation_org,
             outcome=AuthoritativeCallOutcome.SUCCEEDED,
             provider_ref=f"request=car-x account={FIXTURE_CREATED_ACCOUNT}",
         )
@@ -249,6 +251,18 @@ class TestCreationRequiresAuthorization:
             "list_roots",
             "list_organizational_units_for_parent",
         ]
+
+    @pytest.mark.asyncio
+    async def test_provider_organization_cannot_replace_the_original_domain_organization(self):
+        request = new_account_request()
+        authorization = matching_authorization(request, operation_org_id="565970e4-a29c-469c-8d1b-e6c6b9e11f73")
+        organizations = RecordingOrganizations()
+        credentials = RecordingCredentials(organizations=organizations)
+        executor = RecordingExecutor(org_id=request.organization_id)
+        with pytest.raises(CreationRefused, match="does not belong to this operation"):
+            await create_account(executor, credentials, request, authorization=authorization)
+        _nothing_happened(organizations, credentials)
+        assert executor.dispatches == []
 
 
 class TestBootstrapRequiresAnAuthorizedPlan:
@@ -322,8 +336,9 @@ class TestBootstrapRequiresAnAuthorizedPlan:
         assert credentials.child_calls == []
         assert iam.calls == []
 
+    @pytest.mark.parametrize("operation_org", [FIXTURE_ORG_ID, "565970e4-a29c-469c-8d1b-e6c6b9e11f73"])
     @pytest.mark.asyncio
-    async def test_an_authorized_plan_does_reach_the_account(self) -> None:
+    async def test_an_authorized_plan_does_reach_the_account(self, operation_org) -> None:
         """The positive control: an authorized plan reads the account and reuses what exists.
 
         Every role is already present, so the expected behaviour is reads only and no write
@@ -331,7 +346,7 @@ class TestBootstrapRequiresAnAuthorizedPlan:
         reuse-if-present path into a refusal.
         """
         request = new_account_request()
-        plan = bootstrap_plan(request, matching_authorization(request))
+        plan = bootstrap_plan(request, matching_authorization(request, operation_org_id=operation_org))
         iam = RecordingIam(
             present_roles={
                 "AdpAccountBootstrap",
@@ -346,7 +361,7 @@ class TestBootstrapRequiresAnAuthorizedPlan:
             attached_policies=fully_bootstrapped_roles(),
         )
         credentials = RecordingCredentials(iam=iam)
-        executor = RecordingExecutor()
+        executor = RecordingExecutor(org_id=operation_org)
 
         report = await bootstrap_account(
             executor,

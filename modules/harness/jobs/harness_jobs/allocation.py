@@ -69,7 +69,7 @@ from .effects import (
     may_create as may_create,
 )
 from .identity import MAX_ALLOCATION_ID_LENGTH, ContractViolation
-from .store import Connection, _record
+from .store import Connection, _record, stored_outcome
 
 __all__ = [
     "CallEffect",
@@ -297,7 +297,7 @@ async def creating_calls_unaccounted_for(
         stage = str(row["stage"])
         # execution._outcome_detail stores an optional provider explanation after
         # the enum. It must not hide a successful creation from membership checks.
-        outcome = str(row["outcome"] or "").split(":", 1)[0]
+        outcome = stored_outcome(row["outcome"])
         key = str(row["idempotency_key"])
         if stage in ("intended", "unresolved") or outcome == "unknown":
             outstanding.append(f"{key} ({stage}/{outcome or 'no outcome'})")

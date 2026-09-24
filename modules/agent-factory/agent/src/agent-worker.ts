@@ -90,6 +90,9 @@ import { ControlListener } from './control-listener';
 import { revalidateQueuedCommand } from './control-revalidation';
 import { parseVerificationKeys } from './control-envelope';
 import { ControlStateStore, type ControlAction } from './control-state';
+// Issue #5840: the heartbeat/exit-watchdog emitter, shared with the live
+// pause-expiry runner so both describe the same execution and the same gate.
+import { startRunHeartbeat } from './run-heartbeat';
 // Issue #3962: the harness-neutral control contract and its first adapter. The
 // worker composes them; it does not reach past the interface into the SDK.
 import { listenerActionsFor } from './control-runtime';
@@ -1507,11 +1510,6 @@ Now, complete the assigned task.`;
     let queryCompleted = false;          // tracks whether a 'result' message was received
     let queryCompletedTime: number | null = null; // timestamp when query completed
 
-    // Max time (ms) to wait for the stream to close after query completes.
-    // If the SDK iterator doesn't terminate within this window, the heartbeat
-    // will force-exit the process.  10 minutes is generous — in practice the
-    // stream should close within seconds.
-    const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
     // Issue #4369: watch the stream for the stale-token signature. The failing
     // pushes happen inside the SDK subprocess, so this is the only place the
@@ -1569,59 +1567,30 @@ Now, complete the assigned task.`;
     // Heartbeat: log a "still alive" message if no SDK messages arrive for 60s.
     // Also acts as a safety net: if the query already completed but the stream
     // hasn't closed, force-exit after POST_COMPLETION_TIMEOUT_MS.
-    const heartbeat = setInterval(() => {
-      const silentSec = Math.round((Date.now() - lastActivityTime) / 1000);
-      // Issue #3961: a paused run is silent *on purpose*. Every read below is of
-      // the live gate rather than a captured boolean, because a pause can begin
-      // and end between two ticks of this interval.
-      const gate = activeControlRuntime?.gate;
-      const paused = gate?.isPauseActive() === true;
-
-      // Safety net: force exit if stream hangs after query completion.
-      //
-      // Skipped while paused. This watchdog exists to catch a stream that never
-      // closed, and it cannot distinguish that from a run whose last tool is
-      // parked at the admission barrier — so left unguarded it would kill a
-      // healthy paused run within POST_COMPLETION_TIMEOUT_MS, i.e. an operator
-      // pausing to look at something would come back to a dead pod. The pause has
-      // its own bound (the gate's expiry timer, clamped to the pod deadline), so
-      // skipping here defers to a bound rather than removing one. Note the
-      // condition is only about *starting* the exit: once the pause is released,
-      // the elapsed comparison uses the original completion time, so a stream
-      // that really is hung is still caught on the next tick.
-      if (queryCompleted && queryCompletedTime && !paused) {
-        const elapsed = Date.now() - queryCompletedTime;
-        if (elapsed >= POST_COMPLETION_TIMEOUT_MS) {
-          const msg = `⚠️  Force exit — stream did not close ${Math.round(elapsed / 1000)}s after query completed`;
-          console.log(msg);
-          log('WARN', msg, { phase: 'post-completion-timeout', elapsedMs: elapsed });
-          process.exit(0);
-        }
-      }
-
-      // Visibility is preserved through a pause, not suppressed: the heartbeat
-      // keeps logging, and says *why* it is quiet. An operator watching the log
-      // of a paused run must be able to tell "paused, holding N tools" apart from
-      // "stalled", and a silent log is the one thing that makes those identical.
-      if (silentSec >= 60) {
-        const msg = paused
-          ? `💓 Heartbeat — paused by operator, no SDK messages for ${silentSec}s (turn ${turnCount})`
-          : `💓 Heartbeat — no SDK messages for ${silentSec}s (turn ${turnCount})`;
-        console.log(msg);
-        log('INFO', msg, {
-          phase: 'heartbeat',
-          silentSeconds: silentSec,
-          turn: turnCount,
-          ...(paused
-            ? {
-                controlPhase: gate?.currentPhase(),
-                heldTools: gate?.heldCount(),
-                activeTools: gate?.activeToolCount(),
-              }
-            : {}),
-        });
-      }
-    }, 30_000);
+    //
+    // The decision logic lives in `run-heartbeat.ts` (#5840) so that the live
+    // pause-expiry experiment can run the *same* production emitter against the
+    // gate it is actually pausing. While this was inline, the only heartbeat
+    // records in existence described this worker's own gate, so they were evidence
+    // about a different execution than any experiment's — and W2-05's visibility
+    // claims are precisely that a paused run keeps reporting and says it is paused.
+    // Thresholds, wording, `phase` values and the paused-tick fields are unchanged;
+    // `run-heartbeat.test.ts` pins them.
+    //
+    // Every source below is read live rather than captured, as before: a pause can
+    // begin and end between two ticks of this interval (#3961).
+    const heartbeat = startRunHeartbeat(
+      {
+        gate: () => activeControlRuntime?.gate ?? null,
+        lastActivityAt: () => lastActivityTime,
+        turnCount: () => turnCount,
+        queryCompletedAt: () => (queryCompleted ? queryCompletedTime : null),
+        // Exiting stays here rather than moving into the module: the module decides,
+        // the worker acts, which is what keeps the decision unit-testable.
+        onForceExit: () => process.exit(0),
+      },
+      { log, console: (msg) => console.log(msg) },
+    );
 
     try {
       // Issue #3962 left the adapter's three transport hooks (`attemptInputFactory`,
@@ -1865,7 +1834,7 @@ Now, complete the assigned task.`;
         }
       }
     } finally {
-      clearInterval(heartbeat);
+      heartbeat.stop();
       // Stop the Codex event watcher before the streamer so no late poll can
       // forward into a destroyed streamer (issue #2884).
       codexEventWatcher.dispose();

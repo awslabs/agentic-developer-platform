@@ -191,7 +191,7 @@ class CompileResult:
 
 # Fields of `LoopProposal` that describe how the plan came to be rather than what
 # it executes, and are therefore NOT part of its identity. See `plan_hash`.
-HASH_EXCLUDED_FIELDS = frozenset({"description", "design_history"})
+HASH_EXCLUDED_FIELDS = frozenset({"description", "design_history", "wave_metadata", "epic_metadata"})
 
 # Fields whose key is DROPPED from the canonical JSON when their value is absent,
 # rather than serialised as `null`. Distinct from `HASH_EXCLUDED_FIELDS` above: these

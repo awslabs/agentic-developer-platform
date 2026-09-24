@@ -1,16 +1,10 @@
-"""Proxy endpoints — nodes and deployments on child clusters.
+"""Workspace observations and governed controller deployment operations."""
 
-Routes:
-    GET  /workspaces/{id}/nodes                     # List nodes
-    POST /workspaces/{id}/deployments               # Create deployment
-    GET  /workspaces/{id}/deployments               # List deployments
-    DELETE /workspaces/{id}/deployments/{dep_id}     # Delete deployment
-"""
-
-import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.routing import APIRoute
+from harness_jobs.identity import OperationRefused
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +13,7 @@ from app.middleware.auth import get_current_org
 from app.models.deployment import Deployment
 from app.schemas.proxy import (
     CreateDeploymentRequest,
+    DeleteDeploymentRequest,
     DeploymentCreateResponse,
     DeploymentDeleteResponse,
     DeploymentInfo,
@@ -26,27 +21,46 @@ from app.schemas.proxy import (
     NodeInfo,
     NodeListResponse,
 )
+from app.services import deployment_operations
+from app.services.provisioning import ProvisioningRefused, ProvisioningUnavailable
+from app.services.workspace_namespace import (
+    NamespaceResolutionError,
+    resolve_workspace_namespace,
+)
 from app.services.proxy import (
     ProxyError,
-    apply_deployment_via_k8s,
-    create_deployment_manifest,
-    delete_deployment_via_k8s,
     get_k8s_clients,
-    list_deployments_via_k8s,
+    get_workspace_cluster,
     list_nodes_via_k8s,
 )
 
-logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/workspaces", tags=["proxy"])
+class DeploymentRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def governed(request):
+            try:
+                return await handler(request)
+            except (
+                ProvisioningRefused,
+                OperationRefused,
+                NamespaceResolutionError,
+            ) as error:
+                raise HTTPException(409, str(error)) from None
+            except ProvisioningUnavailable as error:
+                raise HTTPException(503, str(error)) from None
+            except ProxyError as error:
+                raise _handle_proxy_error(error) from None
+
+        return governed
 
 
-def _handle_proxy_error(exc: ProxyError) -> HTTPException:
-    """Convert ProxyError to HTTPException."""
+router = APIRouter(prefix="/workspaces", tags=["proxy"], route_class=DeploymentRoute)
+
+
+def _handle_proxy_error(exc):
     return HTTPException(status_code=exc.status_code, detail=exc.message)
-
-
-# --- Node endpoints ---
 
 
 @router.get("/{workspace_id}/nodes", response_model=NodeListResponse)
@@ -74,7 +88,15 @@ async def list_workspace_nodes(
         raise _handle_proxy_error(exc)
 
 
-# --- Deployment endpoints ---
+@router.post("/{workspace_id}/deployments/preview")
+async def preview_deployment(
+    workspace_id: uuid.UUID,
+    body: CreateDeploymentRequest,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_create(db, org_id, workspace_id, body)
+    return review.public(str(workspace_id))
 
 
 @router.post(
@@ -87,141 +109,83 @@ async def create_deployment(
     body: CreateDeploymentRequest,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
-) -> DeploymentCreateResponse:
-    """Create a model deployment on the workspace's child cluster.
-
-    Generates a vLLM/SGLang K8s Deployment manifest and applies it to the child cluster.
-    Also records the deployment in the control plane database.
-    """
-    try:
-        _, apps_api, workspace, cluster = await get_k8s_clients(
-            workspace_id, org_id, db
-        )
-
-        # Generate the K8s manifest
-        manifest = create_deployment_manifest(
-            name=body.name,
-            model_name=body.model_name,
-            precision=body.precision,
-            serving_framework=body.serving_framework,
-            replicas=body.replicas,
-            gpu_per_replica=body.gpu_per_replica,
-            tensor_parallel_size=body.tensor_parallel_size,
-            max_model_len=body.max_model_len,
-            namespace=body.namespace,
-        )
-
-        # Apply to child cluster
-        result = apply_deployment_via_k8s(apps_api, manifest)
-
-        # Record in DB
-        deployment = Deployment(
-            cluster_id=cluster.id,
-            org_id=org_id,
-            workspace_id=workspace_id,
-            name=body.name,
-            model_name=body.model_name,
-            precision=body.precision,
-            serving_framework=body.serving_framework,
-            desired_replicas=body.replicas,
-            gpu_per_replica=body.gpu_per_replica,
-            tensor_parallel_size=body.tensor_parallel_size,
-            max_model_len=body.max_model_len,
-            status=result["status"],
-        )
-        db.add(deployment)
-        await db.commit()
-        await db.refresh(deployment)
-
-        return DeploymentCreateResponse(
-            name=result["name"],
-            namespace=result["namespace"],
-            replicas=result["replicas"],
-            status=result["status"],
-            deployment_id=deployment.id,
-        )
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
+    request: Request = None,
+):
+    result = await deployment_operations.create(request, db, org_id, workspace_id, body)
+    return DeploymentCreateResponse(**result)
 
 
 @router.get("/{workspace_id}/deployments", response_model=DeploymentListResponse)
 async def list_deployments(
     workspace_id: uuid.UUID,
-    namespace: str = "default",
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
-) -> DeploymentListResponse:
-    """List model deployments on the workspace's child cluster."""
-    try:
-        _, apps_api, workspace, cluster = await get_k8s_clients(
-            workspace_id, org_id, db
+    request: Request = None,
+):
+    workspace, _ = await get_workspace_cluster(workspace_id, org_id, db)
+    namespace = resolve_workspace_namespace(workspace)
+    records = (
+        await db.scalars(
+            select(Deployment).where(
+                Deployment.workspace_id == workspace_id,
+                Deployment.org_id == org_id,
+                Deployment.namespace == namespace,
+                Deployment.status != "Deleted",
+            )
         )
-        deployments = list_deployments_via_k8s(apps_api, namespace=namespace)
+    ).all()
+    owner = (
+        deployment_operations.composition(request)
+        if any(row.controller_request_payload for row in records)
+        else None
+    )
+    items = []
+    for row in records:
+        if row.controller_request_payload:
+            value = await deployment_operations.progress(owner, db, row)
+        else:
+            value = {
+                "name": row.name,
+                "namespace": namespace,
+                "deployment_id": row.id,
+                "status": row.status,
+                "replicas": row.desired_replicas,
+                "ready_replicas": row.actual_replicas,
+                "provider_uid": row.provider_uid,
+            }
+        items.append(DeploymentInfo(**value))
+    return DeploymentListResponse(
+        workspace_id=workspace_id, deployments=items, total=len(items)
+    )
 
-        return DeploymentListResponse(
-            workspace_id=workspace_id,
-            deployments=[DeploymentInfo(**d) for d in deployments],
-            total=len(deployments),
-        )
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
+
+@router.post("/{workspace_id}/deployments/{dep_id}/teardown-preview")
+async def preview_deployment_teardown(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_delete(
+        request, db, org_id, workspace_id, dep_id, body
+    )
+    return review.public(str(workspace_id))
 
 
 @router.delete(
-    "/{workspace_id}/deployments/{dep_id}",
-    response_model=DeploymentDeleteResponse,
+    "/{workspace_id}/deployments/{dep_id}", response_model=DeploymentDeleteResponse
 )
 async def delete_deployment(
     workspace_id: uuid.UUID,
-    dep_id: str,
-    namespace: str = "default",
+    dep_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
-) -> DeploymentDeleteResponse:
-    """Delete a deployment from the workspace's child cluster.
-
-    dep_id can be either the deployment name (string) or a UUID from the DB.
-    """
-    try:
-        _, apps_api, workspace, cluster = await get_k8s_clients(
-            workspace_id, org_id, db
-        )
-
-        # Resolve deployment name: could be a UUID (DB record) or a K8s name
-        deployment_name = dep_id
-        try:
-            dep_uuid = uuid.UUID(dep_id)
-            # Look up in DB to get the K8s deployment name
-            dep_result = await db.execute(
-                select(Deployment).where(
-                    Deployment.id == dep_uuid,
-                    Deployment.workspace_id == workspace_id,
-                )
-            )
-            dep_record = dep_result.scalar_one_or_none()
-            if dep_record:
-                deployment_name = dep_record.name
-        except ValueError:
-            # Not a UUID — treat as K8s deployment name directly
-            pass
-
-        # Delete from child cluster
-        result = delete_deployment_via_k8s(
-            apps_api, deployment_name, namespace=namespace
-        )
-
-        # Update DB record if exists
-        dep_result = await db.execute(
-            select(Deployment).where(
-                Deployment.name == deployment_name,
-                Deployment.workspace_id == workspace_id,
-            )
-        )
-        dep_record = dep_result.scalar_one_or_none()
-        if dep_record:
-            dep_record.status = "Deleted"
-            await db.commit()
-
-        return DeploymentDeleteResponse(**result)
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
+):
+    result = await deployment_operations.delete(
+        request, db, org_id, workspace_id, dep_id, body
+    )
+    return DeploymentDeleteResponse(**result)

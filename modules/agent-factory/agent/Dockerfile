@@ -7,7 +7,7 @@
 #
 # Build with:
 #   docker build -f modules/agent-factory/agent/Dockerfile \
-#                -t <registry>/adp-agent-gateway:<tag> \
+#                -t <registry>/adp-chat-agent:<tag> \
 #                modules/agent-factory
 #
 FROM public.ecr.aws/docker/library/node:22-alpine AS builder

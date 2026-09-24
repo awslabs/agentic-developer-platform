@@ -298,6 +298,11 @@ async def _verified_executor(request: Request) -> tuple[str, str]:
     # Local import: `routes` composes the transport, and importing it at module
     # scope would close a cycle through this module's own registration.
     from src.agentauth.routes import get_agent_runtime
+    from src.internal.domain_operation_runtime import maybe_domain_executor
+
+    domain_executor = await maybe_domain_executor(request)
+    if domain_executor is not None:
+        return domain_executor
 
     try:
         runtime = get_agent_runtime()
@@ -479,19 +484,28 @@ async def _executor_credential_request(body, request, db, sm, *, preflight_only)
             provider=body.provider,
             provider_account_id=body.provider_account_id,
         )
-        credential, secret = await deliver_credential(
-            db,
-            sm,
-            binding=binding,
-            credential_id=body.credential_id,
-            service=body.service,
-            label=body.label,
-            recipient=body.recipient,
-            authenticated_recipient=principal,
-            granted_permissions=await run_in_threadpool(_granted_permissions, request),
-            refresh_executor=refresh_executor,
-            preflight_only=preflight_only,
-        )
+        from contextlib import AsyncExitStack
+
+        from src.internal.domain_operation_store import operation_session
+
+        domain_binding = getattr(request.state, "domain_operation_binding", None)
+        async with AsyncExitStack() as stack:
+            operation_db = await stack.enter_async_context(operation_session(domain_binding)) if domain_binding else db
+            credential, secret = await deliver_credential(
+                db,
+                sm,
+                binding=binding,
+                credential_id=body.credential_id,
+                service=body.service,
+                label=body.label,
+                recipient=body.recipient,
+                authenticated_recipient=principal,
+                granted_permissions=await run_in_threadpool(_granted_permissions, request),
+                refresh_executor=refresh_executor,
+                preflight_only=preflight_only,
+                operation_session=operation_db,
+                vault_org_id=domain_binding.adp_org_id if domain_binding else None,
+            )
     except OperationAuthorityUnavailableError:
         raise HTTPException(status_code=503, detail={"error": "unavailable", "message": "operation authority unavailable"}) from None
     except DeliveryRefusedError:

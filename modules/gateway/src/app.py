@@ -40,6 +40,7 @@ UNIT_MODULES = [
     # pod (the shared worker IRSA identity cannot name one executor), and that
     # authorization deserves review on its own terms rather than by inheritance.
     "src.internal.vault_evidence_routes",
+    "src.internal.controller_execution_routes",
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
     "src.internal.task_credentials",  # Existing customer trust principal, restricted task session
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
@@ -61,6 +62,7 @@ UNIT_MODULES = [
     "src.agentauth.knowledge_service",
     "src.agentauth.task_routes",
     "src.agentauth.artifact_service",
+    "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",
     # #5223: mediated GitHub operations. A separate module from
     # registration_routes even though it shares the /self prefix, because this is

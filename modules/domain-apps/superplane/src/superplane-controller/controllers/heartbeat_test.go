@@ -10,12 +10,36 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	superplanev1 "github.com/aws-innovate/AISuperPlane/src/superplane-controller/api/v1"
 )
+
+func TestCollectNativeWorkspaceNodes(t *testing.T) {
+	for _, healthy := range []bool{false, true} {
+		scheme := runtime.NewScheme()
+		_ = corev1.AddToScheme(scheme)
+		condition := corev1.ConditionFalse
+		if healthy {
+			condition = corev1.ConditionTrue
+		}
+		own := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "own", Labels: map[string]string{"superplane.ai/workspace": "workspace-a"}},
+			Spec:       corev1.NodeSpec{ProviderID: "aws:///zone/i-own"},
+			Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: condition}}},
+		}
+		foreign := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Labels: map[string]string{"superplane.ai/workspace": "workspace-b"}}}
+		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(own, foreign).Build()
+		sender := &HeartbeatSender{Client: client, WorkspaceID: "workspace-a", NativeNodes: true, SkyChecker: &fakeSkyChecker{healthy: true}}
+		heartbeat := sender.Collect(context.Background())
+		if heartbeat.NodeSummary.Total != 1 || (heartbeat.Status == "healthy") != healthy {
+			t.Fatalf("native workspace health: %+v", heartbeat)
+		}
+	}
+}
 
 // fakeSkyChecker implements SkyPilotHealthChecker for tests.
 type fakeSkyChecker struct {

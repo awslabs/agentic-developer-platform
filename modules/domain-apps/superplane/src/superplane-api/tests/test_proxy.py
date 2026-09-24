@@ -9,6 +9,10 @@ import pytest
 from app.middleware.auth import create_access_token
 
 
+# Fixed workspace ids so manifest assertions can name an expected owner label.
+_WORKSPACE_A = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
+
 def _auth_header(org_id: uuid.UUID | None = None) -> dict:
     """Create an Authorization header with a valid JWT."""
     if org_id is None:
@@ -27,6 +31,7 @@ class TestProxySchemas:
         from app.schemas.proxy import CreateDeploymentRequest
 
         req = CreateDeploymentRequest(
+            operation_id=uuid.uuid4(),
             name="llama-8b",
             model_name="meta-llama/Llama-3.1-8B-Instruct",
             precision="fp16",
@@ -42,6 +47,7 @@ class TestProxySchemas:
         from app.schemas.proxy import CreateDeploymentRequest
 
         req = CreateDeploymentRequest(
+            operation_id=uuid.uuid4(),
             name="my-model",
             model_name="meta-llama/Llama-3.1-8B-Instruct",
         )
@@ -50,7 +56,20 @@ class TestProxySchemas:
         assert req.replicas == 1
         assert req.gpu_per_replica == 1
         assert req.tensor_parallel_size == 1
-        assert req.namespace == "default"
+        # `namespace` is no longer a field at all (issue #5671, A15) — the server
+        # resolves it from the workspace record. Asserted as absent rather than
+        # deleted from this test, because a default reappearing here is exactly the
+        # regression that would hand namespace selection back to the caller.
+        assert not hasattr(req, "namespace")
+
+    def test_released_deployment_body_gets_a_server_operation_id(self):
+        from app.schemas.proxy import CreateDeploymentRequest
+
+        first = CreateDeploymentRequest(name="my-model", model_name="model")
+        second = CreateDeploymentRequest(name="my-model", model_name="model")
+
+        assert isinstance(first.operation_id, uuid.UUID)
+        assert first.operation_id != second.operation_id
 
     def test_create_deployment_request_invalid_precision(self):
         from pydantic import ValidationError
@@ -59,6 +78,7 @@ class TestProxySchemas:
 
         with pytest.raises(ValidationError):
             CreateDeploymentRequest(
+                operation_id=uuid.uuid4(),
                 name="my-model",
                 model_name="test-model",
                 precision="fp32-invalid",
@@ -71,6 +91,7 @@ class TestProxySchemas:
 
         with pytest.raises(ValidationError):
             CreateDeploymentRequest(
+                operation_id=uuid.uuid4(),
                 name="my-model",
                 model_name="test-model",
                 serving_framework="tgi",  # Only vllm and sglang
@@ -83,6 +104,7 @@ class TestProxySchemas:
 
         with pytest.raises(ValidationError):
             CreateDeploymentRequest(
+                operation_id=uuid.uuid4(),
                 name="Invalid_Name",  # Must be lowercase alphanumeric with dashes
                 model_name="test-model",
             )
@@ -94,6 +116,7 @@ class TestProxySchemas:
 
         with pytest.raises(ValidationError):
             CreateDeploymentRequest(
+                operation_id=uuid.uuid4(),
                 name="my-model",
                 model_name="test-model",
                 replicas=0,  # Must be >= 1
@@ -101,6 +124,7 @@ class TestProxySchemas:
 
         with pytest.raises(ValidationError):
             CreateDeploymentRequest(
+                operation_id=uuid.uuid4(),
                 name="my-model",
                 model_name="test-model",
                 replicas=33,  # Must be <= 32
@@ -173,6 +197,8 @@ class TestProxyService:
             replicas=2,
             gpu_per_replica=1,
             tensor_parallel_size=1,
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         assert manifest["apiVersion"] == "apps/v1"
@@ -209,6 +235,8 @@ class TestProxyService:
             gpu_per_replica=4,
             tensor_parallel_size=4,
             max_model_len=8192,
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
@@ -227,6 +255,8 @@ class TestProxyService:
             name="my-model",
             model_name="test/model",
             max_model_len=4096,
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
@@ -239,6 +269,8 @@ class TestProxyService:
         manifest = create_deployment_manifest(
             name="my-model",
             model_name="test/model",
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         tolerations = manifest["spec"]["template"]["spec"]["tolerations"]
@@ -251,6 +283,8 @@ class TestProxyService:
         manifest = create_deployment_manifest(
             name="my-model",
             model_name="test/model",
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
@@ -514,7 +548,9 @@ class TestProxyTlsRefusal:
         workspace.name = "ws-a"
         workspace.org_id = uuid.uuid4()
         # An ARN supplies the account but the row has no usable name to sign.
-        cluster = _cluster(eks_cluster_arn="arn:aws:eks:eu-west-1:123456789012:", name="")
+        cluster = _cluster(
+            eks_cluster_arn="arn:aws:eks:eu-west-1:123456789012:", name=""
+        )
 
         with patch.object(
             proxy_module, "get_workspace_cluster", return_value=(workspace, cluster)
@@ -560,9 +596,7 @@ class TestProxyTlsRefusal:
             patch.object(
                 proxy_module, "get_workspace_cluster", return_value=(workspace, cluster)
             ),
-            patch.object(
-                proxy_module, "_get_workspace_external_id", return_value=None
-            ),
+            patch.object(proxy_module, "_get_workspace_external_id", return_value=None),
             patch.object(
                 proxy_module,
                 "assume_role_for_cluster",
@@ -631,6 +665,26 @@ class TestDeploymentEndpoints:
             headers=headers,
         )
         assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_deployment_create_requires_governed_composition_before_database_or_provider():
+    from types import SimpleNamespace
+
+    from app.routers import proxy
+    from app.schemas.proxy import CreateDeploymentRequest
+    from app.services.provisioning import ProvisioningUnavailable
+
+    db = AsyncMock()
+    with pytest.raises(ProvisioningUnavailable, match="governed controller"):
+        await proxy.create_deployment(
+            uuid.uuid4(),
+            CreateDeploymentRequest(name="model", model_name="example/model"),
+            uuid.uuid4(),
+            db,
+            request=SimpleNamespace(),
+        )
+    assert db.mock_calls == []
 
 
 class TestHeartbeatEndpoint:

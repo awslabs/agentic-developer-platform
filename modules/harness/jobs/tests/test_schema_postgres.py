@@ -1163,4 +1163,24 @@ async def test_v7_upgrade_recovers_every_interruption_boundary(
         )
         == 1
     )
+    assert await apply(connection) == SCHEMA_VERSION
+    await check_schema_version(connection)
+
+
+@pytest.mark.parametrize("completed_statements", range(len(UPGRADES[8]) + 1))
+async def test_v8_recovery_upgrade_resumes_each_ddl_boundary(
+    connection, completed_statements
+):
+    await downgrade(connection, target=7)
+    for statement in UPGRADES[8][:completed_statements]:
+        await connection.execute(statement)
+    assert await current_version(connection) == 7
+    assert await apply(connection) == SCHEMA_VERSION
+    assert await apply(connection) == SCHEMA_VERSION
+    for table in (
+        "harness_recovery_claim_bindings",
+        "harness_recovery_settlements",
+        "harness_recovery_scan_cursors",
+    ):
+        assert await connection.fetchval("SELECT to_regclass($1) IS NOT NULL", table)
     await check_schema_version(connection)

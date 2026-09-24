@@ -514,3 +514,17 @@ before/after side. Destructive authorization includes these complete relationshi
 lists. An unknown create reference needs typed authenticated configuration; an
 existing target must resolve on its own side. Supplied networking is accepted only
 against the authenticated supplied VPC/subnet inputs.
+
+Owned networking also creates a private STS interface endpoint and permits TCP
+443 only from this cluster's EKS-managed node security group. The endpoint and
+rule precede node-group creation because VPC CNI needs STS for its IRSA role while
+EKS waits for nodes. Supplied networking reads one existing interface endpoint
+with private DNS and one security group; that endpoint remains outside workspace
+ownership. Its operator must provide the node ingress that bootstrap verifies.
+The handover publishes the exact endpoint, VPC and security group identities.
+
+The reviewed estimate includes private endpoint hours per Availability Zone.
+When Terraform leaves subnet IDs unknown, all resulting owned subnets provide a
+conservative AZ ceiling. Endpoint data processing remains explicitly excluded
+from the fixed-cost estimate. Management-to-workspace API routing is an external
+prerequisite; this module does not implicitly create peering or transit routes.

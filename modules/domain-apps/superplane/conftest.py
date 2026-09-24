@@ -23,7 +23,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 #   * the Go lanes for the controller and platform monitor;
 #   * CI path filters that watch src/** (so a change there triggers those lanes).
 # src/TRANSFER-MANIFEST.md records the exact commands.
-collect_ignore = ["src"]
+# The trusted executor uses a separate venv with harness-jobs and real PostgreSQL
+# in the controller-execution-tests job. Its required JUnit gate refuses skips.
+collect_ignore = ["src", "executor/tests"]
 
 
 def pytest_configure(config):

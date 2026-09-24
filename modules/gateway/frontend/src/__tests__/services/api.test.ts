@@ -104,10 +104,44 @@ describe('ApiClient', () => {
         json: () => Promise.resolve({ error: 'Bad Request', message: 'Invalid input' }),
       });
 
+      // `status` accompanies the server's parsed body (#5730). Callers need it to
+      // tell "you are not permitted" from "this is not deployed here" from "retry
+      // shortly" — outcomes that can arrive with an identical body, and which ask
+      // different things of the user. Without it every failure renders the same
+      // generic banner.
       await expect(client.get('/test')).rejects.toEqual({
         error: 'Bad Request',
         message: 'Invalid input',
+        status: 400,
       });
+    });
+
+    it('reports the real status, not one inferred from the body', async () => {
+      // Guards against the status being hardcoded or copied from the payload: a
+      // body claiming one thing and a response saying another must resolve to the
+      // response, which is the authority.
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        json: () => Promise.resolve({ error: 'upstream', message: 'unavailable', status: 200 }),
+      });
+
+      await expect(client.get('/test')).rejects.toMatchObject({ status: 503 });
+    });
+
+    it('attaches the status even when the error body is not JSON', async () => {
+      // A proxy or load balancer failure often returns HTML. The synthesised
+      // fallback body must carry the status too, or those failures are exactly
+      // the ones a caller cannot classify.
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+        statusText: 'Bad Gateway',
+        json: () => Promise.reject(new Error('not json')),
+      });
+
+      await expect(client.get('/test')).rejects.toMatchObject({ status: 502 });
     });
 
     it('handles 401 by clearing token', async () => {

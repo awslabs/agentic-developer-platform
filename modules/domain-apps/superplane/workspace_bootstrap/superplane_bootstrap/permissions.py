@@ -34,12 +34,13 @@ def verify_install_permissions(access, namespace, service_account, controller, c
         ("rolebindings.rbac.authorization.k8s.io", namespace, role),
         ("clusterroles.rbac.authorization.k8s.io", None, cluster_role),
         ("clusterrolebindings.rbac.authorization.k8s.io", None, cluster_role),
-        ("deployments.apps", namespace, controller),
         *(
             ("customresourcedefinitions.apiextensions.k8s.io", None, name)
             for name in crds
         ),
     ]
+    if getattr(access, "controller_mode", None) != "management":
+        objects.append(("deployments.apps", namespace, controller))
     for resource, scope, name in objects:
         require("create", resource, scope)
         require("get", resource, scope, name)

@@ -330,7 +330,7 @@ PRODUCTION_PORTS: tuple[PortContract, ...] = (
     PortContract(
         name="operation_facade",
         owner=PortOwner.HARNESS_JOBS,
-        declared_at="src/superplane-api/app/services/provisioning.py:226",
+        declared_at="src/superplane-api/app/services/provisioning.py:239",
         purpose=(
             "Authorize and open one durable operation, and be the only channel "
             "through which its outcome is learned."

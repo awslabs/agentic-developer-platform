@@ -17,7 +17,7 @@ import json
 import urllib.error
 import urllib.request
 
-from . import cases, config
+from . import cases, cleanup, config
 
 
 class PreflightError(RuntimeError):
@@ -54,6 +54,32 @@ def http_json(url, *, token=None, timeout=60, expect=200):
         return json.loads(body)
     except ValueError:
         raise PreflightError(f"{url} did not return JSON") from None
+
+
+def http_status(url, *, timeout=60):
+    """The status code alone, with no body read and no token sent.
+
+    Separate from `http_json` rather than a mode of it: that function's contract is
+    "the body, having required an exact status", and every caller relies on the
+    require(). A probe that cares only whether a route is mounted needs the
+    opposite — no expected status and no body at all — and expressing it as
+    `expect=None` would make the require() compare against None and fail on every
+    reachable URL.
+    """
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args, **_kwargs):
+            raise PreflightError(f"{url} redirected; refusing to follow")
+
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url), timeout=timeout) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        # An error status IS the answer here: 401 proves the route is mounted.
+        return exc.code
+    except urllib.error.URLError as exc:
+        raise PreflightError(f"{url} is unreachable: {type(exc).__name__}") from None
 
 
 # The document `cli/bg-cognito-auth.sh` actually fetches before it has a token.
@@ -388,8 +414,33 @@ def check_deployment_bindings(cfg, record, *, fetch=None):
     return len(reachable) >= config.REQUIRED_DEPLOYMENTS
 
 
+def check_superplane_domain(cfg, record, *, probe=None):
+    """#5637: keep E18 blocked until durable mutation recovery is implemented.
+
+    There is deliberately no configuration switch that claims this capability.
+    An unauthenticated 401/403 only proves gateway authentication answered; it
+    cannot establish domain readiness or the missing cleanup producer. Keep the
+    existing probe argument for the stage's interface, but do not use network
+    reachability as permission to execute this incomplete journey.
+    """
+    superplane = cfg.get("superplane") or {}
+    base = str(superplane.get("base_path") or "").rstrip("/")
+    record["superplane"] = {
+        "configured": bool(base),
+        "durable_recovery": False,
+        "blocker": "superplane_durable_recovery_unimplemented",
+        "problem": cleanup.SUPERPLANE_RECOVERY_BLOCKER,
+    }
+    return False
+
+
 def evaluate_fixtures(
-    cfg, *, github_available=None, hosted_available=None, deployments_available=None
+    cfg,
+    *,
+    github_available=None,
+    hosted_available=None,
+    deployments_available=None,
+    superplane_available=None,
 ):
     """Decide which fixture classes are genuinely usable for this run.
 
@@ -407,6 +458,7 @@ def evaluate_fixtures(
         ("github_available", github_available),
         ("hosted_available", hosted_available),
         ("deployments_available", deployments_available),
+        ("superplane_available", superplane_available),
     ):
         if callable(value):
             raise PreflightError(
@@ -427,6 +479,9 @@ def evaluate_fixtures(
     # E16/E17 rather than letting them fail inside the journey.
     if cases.THREE_DEPLOYMENTS in available and not deployments_available:
         available.discard(cases.THREE_DEPLOYMENTS)
+    # No supplied boolean can manufacture the missing E18 recovery producer.
+    # Remove this guard only alongside its implemented durable recovery path.
+    available.discard(cases.SUPERPLANE_DOMAIN)
     return available
 
 
@@ -452,6 +507,10 @@ def missing_fixture_report(cfg, available):
             "implementation of hard Codex output limits (at most 256 tokens per "
             "request) and an aggregate 48-request ceiling before inference; "
             "E16/E17 model execution is disabled until these limits are enforced"
+        ),
+        cases.SUPERPLANE_DOMAIN: (
+            cleanup.SUPERPLANE_RECOVERY_BLOCKER
+            + " A deployed domain and an ordinary-session fixture are also required."
         ),
     }
     absent = {}

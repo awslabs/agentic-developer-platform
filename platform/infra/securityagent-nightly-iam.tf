@@ -100,9 +100,10 @@ data "aws_iam_policy_document" "securityagent_nightly_assume" {
 }
 
 resource "aws_iam_role" "securityagent_nightly" {
-  name               = local.securityagent_role_name
-  description        = "Least-privilege service role for the nightly Security Agent code review and pentest jobs (#4443)"
-  assume_role_policy = data.aws_iam_policy_document.securityagent_nightly_assume.json
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = local.securityagent_role_name
+  description          = "Least-privilege service role for the nightly Security Agent code review and pentest jobs (#4443)"
+  assume_role_policy   = data.aws_iam_policy_document.securityagent_nightly_assume.json
 
   tags = merge(local.common_tags, {
     Name    = local.securityagent_role_name

@@ -331,7 +331,23 @@ def test_no_ingress_rule_opens_the_cluster_security_group() -> None:
     enforcement while traffic arrived by another path.
     """
     for path in _tf_files():
-        for t, name, _ in _blocks("resource", path):
+        for t, name, body in _blocks("resource", path):
+            if (
+                t == "aws_vpc_security_group_ingress_rule"
+                and name == "private_sts_nodes"
+            ):
+                assert re.search(
+                    r"security_group_id\s*=\s*aws_security_group\.private_sts\[0\]\.id",
+                    body,
+                )
+                assert re.search(
+                    r"referenced_security_group_id\s*=\s*aws_eks_cluster\.workspace\.vpc_config\[0\]\.cluster_security_group_id",
+                    body,
+                )
+                assert re.search(r"from_port\s*=\s*443", body)
+                assert re.search(r"to_port\s*=\s*443", body)
+                assert '"tcp"' in body and "cidr_ipv" not in body
+                continue
             assert t not in (
                 "aws_vpc_security_group_ingress_rule",
                 "aws_security_group_rule",

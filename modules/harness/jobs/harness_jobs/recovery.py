@@ -67,11 +67,14 @@ from .store import Connection
 
 __all__ = [
     "CancellationRecord",
+    "PendingObservation",
     "RecoveryReport",
+    "SettlementHook",
     "SweepResult",
     "check_cancel_requested",
     "request_cancellation",
     "sweep_expired_leases",
+    "sweep_scoped_expired_leases",
     "sweep_unresolved_calls",
 ]
 
@@ -313,13 +316,40 @@ async def check_cancel_requested(
 # Sweep: expired leases
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True)
+class PendingObservation:
+    """A fresh authenticated read confirms this exact accepted request is pending.
+
+    Only the scoped, claim-aware observer may return this value. Transport errors
+    and missing/ambiguous requests remain UNKNOWN. A pending read preserves the
+    original intent and reference; it cannot settle, retry execution, or release
+    accounting. Its reserved observation delay is retained, while only this
+    successful observation's error-attempt charge is undone.
+    """
+
+    idempotency_key: str
+    provider: str
+    operation_kind: str
+    target: str
+    provider_ref: str
+
+
 # A provider-observer callable: given the idempotency key for a call the sweep found
 # in `intended` state, ask the provider what happened and return a (CallOutcome,
 # detail, provider_ref) triple. The sweep never calls a provider itself; this hook is
 # where the credential boundary is.
 ProviderObserver = Callable[
     [str, str, str, str],  # idempotency_key, provider, operation_kind, target
-    Awaitable[tuple[CallOutcome, str | None, str | None]],
+    Awaitable[tuple[CallOutcome, str | None, str | None] | PendingObservation],
+]
+
+# A domain's own settlement write, executed inside recovery's fenced transaction just
+# before the claim closes. Unlike ProviderObserver it DOES receive the connection: its
+# whole purpose is to share the transaction, so that the domain record and the harness
+# settlement commit together or not at all. Raising aborts the settlement.
+SettlementHook = Callable[
+    [Connection, "ExecutionLease", "SweepResult"], Awaitable[None]
 ]
 
 # A timed-out hook may refuse cancellation. Retain a bounded number of tasks until
@@ -461,6 +491,129 @@ async def sweep_expired_leases(
     )
 
 
+async def sweep_scoped_expired_leases(
+    connection: Connection,
+    *,
+    principal,
+    observe_call: ProviderObserver | None = None,
+    candidates: frozenset[str] | None = None,
+    on_settled: SettlementHook | None = None,
+    observe_claim=None,
+    prepare_settlement=None,
+    max_operations: int = 25,
+    max_reconcile_attempts: int = 3,
+    observation_timeout_seconds: float = 30,
+) -> RecoveryReport:
+    """`sweep_expired_leases` restricted to one tenant, for a domain that holds one.
+
+    `sweep_expired_leases` is deliberately unscoped: an operator reconciling the
+    harness's own obligations is asking about every tenant, and the tenant of a row is
+    part of the answer. A *domain* service is the opposite case -- it holds one tenant's
+    grants, so a sweep it started would act outside them. This entry point exists so
+    such a service does not have to reimplement recovery to get a tenant filter, which
+    is how a second, weaker recovery engine gets written.
+
+    Scope comes from `principal.org_id`/`workspace_id` -- a `ResolvedPrincipal`, which
+    is constructible only from an authenticated context, so the caller cannot supply
+    its own scope. The filter is applied in the database and before `LIMIT`, so the
+    bound is on rows examined rather than on rows returned after an unbounded read.
+
+    `candidates` optionally narrows further to operations the domain can prove are its
+    own (for example, present in its provider journal). It can only ever *reduce* the
+    set: an operation outside the principal's scope is not selected because it was
+    named, and passing an empty set selects nothing rather than everything.
+
+    `on_settled` is an optional domain hook invoked with `(connection, lease, result)`
+    inside the fenced transaction that settles the operation, after `lock_lease` has
+    proved the claim is still held and immediately before the claim is closed. That is
+    the only point at which a domain's own accounting can be written *under the claim
+    that authorized it*: a hook run after the sweep returns would write with no claim at
+    all, and a hook run on a `deferred` result would record an outcome that is not yet
+    settled. It is not called for skipped, deferred or retried operations.
+
+    If it raises, this transaction rolls back: the operation stays unsettled and its
+    claim unclosed, so the next pass recovers it again. A domain whose accounting could
+    not be written therefore never faces a settled operation it has no record of.
+
+    Two constraints on hook implementations:
+
+    * The hook's own writes must be idempotent per operation. A domain whose records
+      live in a *different* database cannot join this transaction, so its write can
+      commit while this one rolls back; the next pass must be able to overwrite it.
+    * The hook must not perform unbounded or external I/O. It runs with a lease lock
+      held, and anything slow here holds the claim.
+
+    Per-operation behaviour, including durable reconciliation attempts with backoff,
+    fenced writes, finalization and claim closure, is `_recover_one` unchanged.
+    """
+    if not isinstance(max_operations, int) or not 1 <= max_operations <= 200:
+        raise ContractViolation("max_operations must be between 1 and 200")
+    if connection.is_in_transaction():
+        raise ContractViolation("Recovery must own its transaction boundaries")
+    if type(max_reconcile_attempts) is not int or not 1 <= max_reconcile_attempts <= 10:
+        raise ContractViolation("max_reconcile_attempts must be between 1 and 10")
+    from .identity import OperationRefused, ResolvedPrincipal
+
+    if (
+        not isinstance(principal, ResolvedPrincipal)
+        or "workspace:recover" not in principal.permissions
+    ):
+        raise OperationRefused("authenticated workspace:recover principal required")
+    _validate_observation_timeout(observation_timeout_seconds)
+    if candidates is not None:
+        if not isinstance(candidates, frozenset | set):
+            raise ContractViolation("candidates must be a set of operation IDs")
+        if not candidates:
+            return RecoveryReport(0, 0, 0, ())
+    expired = await connection.fetch(
+        """
+        SELECT l.operation_id FROM harness_operation_leases l
+         WHERE l.org_id = $1 AND l.workspace_id = $2
+           AND l.holder IS NOT NULL AND l.closed_at IS NULL
+           AND (l.expires_at <= clock_timestamp()
+                    OR l.runtime_deadline <= clock_timestamp())
+           AND ($4::text[] IS NULL OR l.operation_id = ANY($4::text[]))
+         ORDER BY LEAST(l.expires_at, l.runtime_deadline)
+         LIMIT $3
+        """,
+        principal.org_id,
+        principal.workspace_id,
+        max_operations,
+        None if candidates is None else list(candidates),
+    )
+    results: list[SweepResult] = []
+    retried = retained = skipped = deferred = 0
+    for row in expired:
+        result = await _recover_one(
+            connection,
+            operation_id=row["operation_id"],
+            observe_call=observe_call,
+            on_settled=on_settled,
+            observe_claim=observe_claim,
+            prepare_settlement=prepare_settlement,
+            recovery_principal=principal,
+            max_attempts=DEFAULT_MAX_EXECUTION_ATTEMPTS,
+            max_reconcile_attempts=max_reconcile_attempts,
+            observation_timeout_seconds=observation_timeout_seconds,
+        )
+        results.append(result)
+        if result.action == "retried":
+            retried += 1
+        elif result.action == "deferred":
+            deferred += 1
+        elif result.action in ("unknown", "cancelled", "failed", "succeeded"):
+            retained += 1
+        else:
+            skipped += 1
+    return RecoveryReport(
+        retried=retried,
+        retained=retained,
+        skipped=skipped,
+        results=tuple(results),
+        deferred=deferred,
+    )
+
+
 async def _settle_operation(
     connection: Connection,
     *,
@@ -542,13 +695,26 @@ async def _recover_one(
     max_attempts: int,
     max_reconcile_attempts: int,
     observation_timeout_seconds: float,
+    on_settled: SettlementHook | None = None,
+    observe_claim=None,
+    prepare_settlement=None,
+    recovery_principal=None,
 ) -> SweepResult:
     """Hold a finite recovery claim and persist bounded provider observation retries."""
-    takeover = await fence_expired_lease(connection, operation_id=operation_id)
+    takeover = await fence_expired_lease(
+        connection, operation_id=operation_id, recovery_principal=recovery_principal
+    )
     skipped = SweepResult(operation_id, "skipped", "recovery claim absent or lost")
     if takeover is None:
         return skipped
     lease = takeover.lease
+    if observe_claim is not None:
+        # The authenticated observer gets the actual newly acquired claim. A
+        # predecessor's expired execution grant cannot authorize recovery reads.
+        async def bound_observer(*arguments):
+            return await observe_claim(lease, *arguments)
+
+        observe_call = bound_observer
     rows = await connection.fetch(
         "SELECT idempotency_key FROM harness_provider_call_intent "
         "WHERE operation_id=$1 ORDER BY created_at, idempotency_key",
@@ -574,9 +740,10 @@ async def _recover_one(
                 await _recovery_audit(connection, lease, "recovery.observe_started")
             attempt, exhausted = reserved
             outcome, detail, provider_ref = CallOutcome.UNKNOWN, None, None
+            pending = None
             if observe_call is not None and not exhausted:
                 try:
-                    outcome, detail, provider_ref = await _observe_with_deadline(
+                    observed = await _observe_with_deadline(
                         observe_call,
                         call.idempotency_key,
                         call.provider,
@@ -584,8 +751,28 @@ async def _recover_one(
                         call.target,
                         observation_timeout_seconds,
                     )
-                    if not isinstance(outcome, CallOutcome):
-                        raise ContractViolation("Observer must return CallOutcome")
+                    if isinstance(observed, PendingObservation):
+                        if (
+                            observe_claim is None
+                            or recovery_principal is None
+                            or not call.provider_ref
+                            or observed
+                            != PendingObservation(
+                                call.idempotency_key,
+                                call.provider,
+                                call.operation_kind,
+                                call.target,
+                                call.provider_ref,
+                            )
+                        ):
+                            raise ContractViolation(
+                                "Pending observation identity changed"
+                            )
+                        pending = observed
+                    else:
+                        outcome, detail, provider_ref = observed
+                        if not isinstance(outcome, CallOutcome):
+                            raise ContractViolation("Observer must return CallOutcome")
                 except Exception:  # noqa: BLE001
                     outcome, detail, provider_ref = CallOutcome.UNKNOWN, None, None
             async with connection.transaction():
@@ -594,9 +781,36 @@ async def _recover_one(
                         connection, lease, "recovery.lost_claim", False
                     )
                     return skipped
-                if outcome is CallOutcome.UNKNOWN and attempt < max_reconcile_attempts:
+                if pending is not None:
+                    from .recovery_grant import RecoveryGrant, lock_recovery_grant
+
+                    if not await lock_recovery_grant(
+                        connection, RecoveryGrant(recovery_principal, lease)
+                    ):
+                        return skipped
+                    latest = await read_call(connection, idempotency_key=key)
+                    if latest != call:
+                        return skipped
+                    await connection.execute(
+                        "UPDATE harness_provider_call_intent SET reconcile_attempts=$2 "
+                        "WHERE idempotency_key=$1 AND stage='intended' "
+                        "AND reconcile_attempts=$3",
+                        key,
+                        attempt - 1,
+                        attempt,
+                    )
+                    await _recovery_audit(
+                        connection, lease, "recovery.provider_pending"
+                    )
+                elif (
+                    outcome is CallOutcome.UNKNOWN and attempt < max_reconcile_attempts
+                ):
                     await _recovery_audit(connection, lease, "recovery.deferred")
                 else:
+                    # Inconclusive reads cannot erase or replace an already
+                    # accepted request handle, even at the finite error ceiling.
+                    if outcome is CallOutcome.UNKNOWN and call.provider_ref is not None:
+                        provider_ref = call.provider_ref
                     call, disposition = await reconcile(
                         connection,
                         idempotency_key=key,
@@ -615,6 +829,28 @@ async def _recover_one(
     dispositions = tuple((c.idempotency_key, disposition_for(c)) for c in calls)
     kinds = {d.value for _, d in dispositions}
     budget = next(iter(kinds)) if len(kinds) == 1 else "mixed" if kinds else "release"
+    cleanup_complete = False
+    if (
+        calls
+        and prepare_settlement is not None
+        and not any(c.stage is CallStage.INTENDED for c in calls)
+    ):
+        # Provider inventory uses other database connections and must run outside
+        # the settling transaction. Its own writes are fenced; the transaction
+        # below rechecks the claim after all awaited work. Confirmed prefixes must
+        # remain available for bounded continuation rather than being finalized.
+        progress = await confirmed_plan_progress(connection, operation_id)
+        if progress is not PlanProgress.PREFIX:
+            try:
+                cleanup_complete = await prepare_settlement(lease, calls) is True
+            except Exception:
+                return SweepResult(
+                    operation_id,
+                    "deferred",
+                    "allocation finalization pending",
+                    "retain",
+                    dispositions,
+                )
     async with connection.transaction():
         if not await lock_lease(connection, lease):
             await _recovery_audit(connection, lease, "recovery.lost_claim", False)
@@ -642,7 +878,21 @@ async def _recover_one(
                 "retain",
                 dispositions,
             )
-        if operation["cleanup_required"]:
+        if operation["cleanup_required"] and prepare_settlement is not None:
+            if not cleanup_complete:
+                return SweepResult(
+                    operation_id,
+                    "deferred",
+                    "allocation cleanup pending",
+                    "retain",
+                    dispositions,
+                )
+            await connection.execute(
+                "UPDATE harness_operations SET cleanup_required=false "
+                "WHERE operation_id=$1",
+                operation_id,
+            )
+        if operation["cleanup_required"] and not cleanup_complete:
             state = OperationState.UNKNOWN
         elif cancelled:
             state = (
@@ -705,6 +955,15 @@ async def _recover_one(
             connection, operation_id=operation_id, state=state, detail=detail
         )
         await _recovery_audit(connection, lease, "recovery.settled", detail=state.value)
+        if on_settled is not None:
+            # Inside the fenced transaction and before the claim closes: the domain's
+            # own accounting commits with this settlement or neither does. A raise
+            # rolls back both, leaving the operation for the next pass.
+            await on_settled(
+                connection,
+                lease,
+                SweepResult(operation_id, state.value, detail, budget, dispositions),
+            )
         if not await close(
             connection,
             operation_id=operation_id,

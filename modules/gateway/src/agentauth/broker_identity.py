@@ -57,6 +57,10 @@ async def verify_broker_worker(request: Request) -> None:
             request.headers.get(CREDENTIAL_HEADER, ""),
             request.headers.get(WORKLOAD_HEADER, ""),
         )
+        from src.agentauth.grants import AUTHORITY_PAID_DOMAIN_OPERATION
+
+        if context[3].authority.kind == AUTHORITY_PAID_DOMAIN_OPERATION:
+            raise BootstrapRefusedError("paid domain worker has no broker authority")
         await runtime.validate_flow(context[2], context[3])
         caller = context[1]
         if not isinstance(body, dict) or body.get("invocation_id") != caller.invocation_id:

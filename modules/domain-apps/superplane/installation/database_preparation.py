@@ -89,11 +89,7 @@ def observation_secret_value(installer):
         scopes = (
             ["budget_monitor/global"]
             if component == "monitor"
-            else (
-                [f"controller_management/{env['org_id']}"]
-                if installer.control_plane_only
-                else []
-            )
+            else [f"controller_management/{env['org_id']}"]
         )
         grants.append(
             {

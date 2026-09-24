@@ -1,0 +1,16 @@
+[project]
+name = "superplane-executor"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["asyncpg>=0.30.0", "boto3>=1.35", "httpx>=0.27", "PyYAML>=6.0", "harness-jobs", "superplane-contracts"]
+
+[project.scripts]
+superplane-execution-service = "superplane_executor.service:main"
+superplane-paid-worker = "superplane_executor.task_worker:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["superplane_executor*"]

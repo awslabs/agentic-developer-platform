@@ -103,6 +103,40 @@ def test_forward_only_trusted_transport_headers_and_preserve_denial(client, monk
     assert "set-cookie" not in response.headers and "x-org-id" not in response.headers
 
 
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("POST", "workspaces/preview"),
+        ("POST", "workspaces/adopt"),
+        ("GET", "workspaces/ws-1/lifecycle-proposals"),
+        ("POST", "workspaces/ws-1/lifecycle-proposals/artifact-1/preview"),
+        ("POST", "workspaces/ws-1/lifecycle-proposals/artifact-1/continue"),
+        ("GET", "operations/op-1"),
+        ("GET", "operations/by-idempotency/request-1"),
+        ("POST", "operation-approvals"),
+        ("GET", "operation-approvals/approval-1"),
+        ("POST", "operation-approvals/approval-1/decision"),
+    ],
+)
+def test_governed_onboarding_routes_forward_exact_body_and_preserve_denial(client, monkeypatch, method, path):
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(403, json={"detail": "operation authority refused"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    body = {"operation_id": "request-1", "approval_id": "approval-1"}
+    assert client.request(method, "/superplane/v1/" + path).status_code == 401
+    response = client.request(method, "/superplane/v1/" + path, json=body, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == 403
+    assert len(calls) == 1
+    assert calls[0].url.path == "/" + path
+    assert calls[0].method == method
+    assert json.loads(calls[0].content) == body
+
+
 def test_default_has_no_registration_and_no_network(monkeypatch):
     monkeypatch.delenv("BG_ENVIRONMENT", raising=False)
     monkeypatch.setattr(proxy, "_cache", (0, {}))
@@ -179,5 +213,6 @@ async def test_transport_capability_requires_deployed_configuration(route_store,
     result = await proxy.installation_support()
     assert result["version"] == 2 and result["configured"] is True
     assert result["transport"] == "s3-conditional-domain-registration"
+    assert result["features"] == ["account-vault-reference-v1"]
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET")
     assert (await proxy.installation_support())["configured"] is False

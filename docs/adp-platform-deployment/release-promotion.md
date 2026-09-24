@@ -156,7 +156,7 @@ The canonical release store is in integration account `608380991969`, region
 |---|---|
 | Release manifest | `s3://adp-release-artifacts-608380991969/releases/<release-id>/manifest.json` |
 | Packaged files and exported image archives | `s3://adp-release-artifacts-608380991969/objects/sha256/<artifact-sha256>` |
-| Built container images | ECR repositories `adp-gateway`, `adp-agent-runtime` and `adp-agent-gateway` |
+| Built container images | ECR repositories `adp-gateway`, `adp-agent-runtime`, `adp-agent-gateway` and `adp-chat-agent` |
 
 The release bucket is private, encrypted, versioned and protected against object
 overwrite and deletion. Objects are written conditionally, and downloads require
