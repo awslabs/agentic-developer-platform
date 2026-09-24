@@ -80,6 +80,17 @@ export const ABORT_SENTINEL_PATH = '/tmp/adp-abort-sentinel.json';
  */
 export const MAX_SENTINEL_REASON_LENGTH = 200;
 
+/**
+ * Bound on the stored envelope, matching `MAX_ENVELOPE_BYTES` in
+ * `control-envelope.ts` and `_MAX_ENVELOPE_BYTES` in the Python verifier.
+ *
+ * A real envelope is well under this. The cap exists so that the one
+ * caller-supplied field of unbounded length cannot be used to write an arbitrary
+ * payload into the sentinel — which would then be refused by the reader's own
+ * byte ceiling, turning a forged envelope into a *lost* abort.
+ */
+export const MAX_SENTINEL_ENVELOPE_LENGTH = 8192;
+
 /** The persisted payload. Carries no credential and no native session handle. */
 export interface AbortSentinel {
   version: number;
@@ -93,6 +104,27 @@ export interface AbortSentinel {
   requested_at: string;
   /** Bounded operator-facing reason, or null when none was supplied. */
   reason: string | null;
+  /**
+   * The gateway's signed authorization for this abort — Issue #3963.
+   *
+   * The sentinel's own fields are all self-asserted: any code running in this pod
+   * can write a file claiming this run was aborted, and the agent's own tool
+   * surface includes `Bash`. So the file alone cannot establish that an operator
+   * authorized anything, and a reader that trusted it would delete a live run's
+   * queue message on the strength of a document the run wrote about itself.
+   *
+   * This field is the answer. It is the Ed25519 envelope the gateway minted for
+   * this exact command — bound to this run, this generation, the `abort` action,
+   * this `command_id` and the request body's digest — and the signing key exists
+   * only in the gateway. The worker image holds public verification keys and has
+   * no signing path, so this token is the one artifact here that cannot be forged
+   * from inside the pod.
+   *
+   * Optional in the type, because the envelope is only present when the verb
+   * required one. The reader decides what an absent envelope means; it does not
+   * get to assume authorization.
+   */
+  envelope?: string | null;
 }
 
 /** What the reader needs to prove a sentinel belongs to the current run. */
@@ -127,6 +159,8 @@ export function writeAbortSentinel(
     commandId: string;
     reason?: string | null;
     requestedAt?: string;
+    /** The gateway envelope that authorized this abort; see {@link AbortSentinel.envelope}. */
+    envelope?: string | null;
   },
   options: { sentinelPath?: string; log?: (level: string, message: string) => void } = {},
 ): boolean {
@@ -140,6 +174,13 @@ export function writeAbortSentinel(
     command_id: input.commandId,
     requested_at: input.requestedAt ?? new Date().toISOString(),
     reason: boundSentinelReason(input.reason),
+    // Copied verbatim — this is a signature over exact bytes, so any
+    // normalization here would invalidate it. Bounded only in length, since an
+    // over-long value cannot be a real envelope and must not be written to disk.
+    envelope: typeof input.envelope === 'string' && input.envelope.length > 0
+      && input.envelope.length <= MAX_SENTINEL_ENVELOPE_LENGTH
+      ? input.envelope
+      : null,
   };
 
   // An unbound sentinel is worse than none: the reader's run/generation check is
@@ -234,6 +275,7 @@ export function validateAbortSentinel(
   if (generation !== binding.generation) return null;
 
   const reason = candidate.reason;
+  const envelope = candidate.envelope;
   return {
     version: ABORT_SENTINEL_VERSION,
     run_id: runId,
@@ -241,6 +283,20 @@ export function validateAbortSentinel(
     command_id: commandId,
     requested_at: requestedAt,
     reason: typeof reason === 'string' ? boundSentinelReason(reason) : null,
+    // Surfaced, never judged here. This side cannot verify a signature it has no
+    // business verifying: the envelope is checked by whoever *acts* on the
+    // sentinel, which is the Python finalizer. A malformed or absent value
+    // becomes `null` so that "no proof" is a single, unambiguous state rather
+    // than a shape the consumer has to re-test.
+    //
+    // Deliberately not a reason to reject the whole document. The envelope
+    // governs whether the abort is *authorized*, not whether the file parsed, and
+    // conflating the two would make an unauthorized sentinel indistinguishable
+    // from a corrupt one to the caller that must tell them apart.
+    envelope: typeof envelope === 'string' && envelope.length > 0
+      && envelope.length <= MAX_SENTINEL_ENVELOPE_LENGTH
+      ? envelope
+      : null,
   };
 }
 

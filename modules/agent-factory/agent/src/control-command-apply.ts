@@ -23,10 +23,19 @@ import type { ClaudeControlAdapter } from './harnesses/claude-control';
  * (the binding comes from a successful control registration). The caller treats
  * `false` as "stopped but not reported as aborted" rather than assuming success.
  */
-function writeAbortSentinelForRun(input: { commandId: string; reason?: string | null }): boolean {
+function writeAbortSentinelForRun(input: {
+  commandId: string;
+  reason?: string | null;
+  envelope?: string | null;
+}): boolean {
   const binding = abortSentinelBindingFromEnv();
   if (!binding) return false;
-  return writeAbortSentinel({ binding, commandId: input.commandId, reason: input.reason });
+  return writeAbortSentinel({
+    binding,
+    commandId: input.commandId,
+    reason: input.reason,
+    envelope: input.envelope,
+  });
 }
 
 /**
@@ -156,7 +165,7 @@ export async function applyControlCommand(args: {
   action: ControlAction;
   commandId: string;
   adapter: Pick<ClaudeControlAdapter, 'requestPause' | 'resumeFromPause' | 'cancel'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup' | 'annotateDelivered'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup' | 'annotateDelivered' | 'authorizationProof'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
   /**
    * Records the abort so the finalizing Python half can report it — Issue #3963.
@@ -165,7 +174,11 @@ export async function applyControlCommand(args: {
    * writing to a real `/tmp`, and so a test can assert what happens when the
    * record does not land. Defaults to the real writer.
    */
-  recordAbort?: (input: { commandId: string; reason?: string | null }) => boolean;
+  recordAbort?: (input: {
+    commandId: string;
+    reason?: string | null;
+    envelope?: string | null;
+  }) => boolean;
   /** Operator-supplied reason, already bounded by the listener. */
   reason?: string | null;
 }): Promise<void> {
@@ -215,9 +228,18 @@ export async function applyControlCommand(args: {
     // process is heading for teardown and a later write may not get the chance
     // to run. An abort whose record never landed would finalize by exit code —
     // i.e. as a crash — which is the mislabelling this story exists to remove.
+    // The gateway's signature over this exact command, read while the command is
+    // still `delivered` — i.e. before the settlement below. It is copied into the
+    // record so the finalizing process can distinguish an abort the gateway
+    // authorized from a file that merely appeared at the sentinel path: the agent
+    // runs with `Bash`, so it can write that file, but it cannot sign an envelope
+    // — the signing key exists only in the gateway. Without this the record would
+    // be a self-assertion, and honouring it would mean deleting a live run's
+    // queue message on the strength of a claim the run made about itself.
     const recorded = (args.recordAbort ?? writeAbortSentinelForRun)({
       commandId,
       reason: args.reason ?? null,
+      envelope: store.authorizationProof(commandId),
     });
 
     // The phase the dashboard shows while the run winds down. Set before the

@@ -281,6 +281,28 @@ export class ControlStateStore {
     return true;
   }
 
+  /**
+   * The signed envelope that authorized a command, if it carried one — #3963.
+   *
+   * Exposed for exactly one caller: the abort path, which copies the proof into
+   * the terminal record the supervising Python process reads. That process must
+   * be able to tell an abort the gateway authorized from a file any code in this
+   * pod could have written, and the envelope is the only artifact in the pod that
+   * can make that distinction — it is signed with a key no worker holds.
+   *
+   * Returns the token only for a command still `delivered`, i.e. one actually in
+   * flight. A settled command's proof has served its purpose, and handing it back
+   * afterwards would let a later caller present a stale authorization.
+   *
+   * Deliberately *not* part of `CommandRecord`: that record is projected to the
+   * dashboard, and the envelope is a bearer proof for this run's own listener.
+   */
+  authorizationProof(commandId: string): string | null {
+    const entry = this.journal.get(commandId);
+    if (!entry || !entry.authorization || entry.record.status !== 'delivered') return null;
+    return entry.authorization.envelope;
+  }
+
   /** The only delivery path for proof-bearing commands. Approval is never cached. */
   async deliverAuthorized(commandId: string, handoff: () => void): Promise<boolean> {
     const entry = this.journal.get(commandId);
