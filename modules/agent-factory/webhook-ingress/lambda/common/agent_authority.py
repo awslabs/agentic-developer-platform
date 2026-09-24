@@ -41,7 +41,7 @@ class AuthorityProvisionError(Exception):
 # platform-wide. That projection now exists on both identity tables (see
 # `identity_index.update_user_identity_core` /
 # `user_identity_index.put_user_identity` in the gateway), the canonical Postgres
-# lookup supplies provenance directly, and `scripts/backfill-identity-provenance.py`
+# lookup supplies provenance directly, and `scripts/backfill_identity_provenance.py`
 # fills historical rows — so a legitimate proven link has a real route through this
 # gate and denial no longer means an outage.
 #
