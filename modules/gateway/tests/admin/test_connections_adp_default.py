@@ -5,6 +5,9 @@ Issue #466: Personal GitHub accounts land in adp-default with per-user scoping.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -249,16 +252,39 @@ class TestAttachToAdpDefault:
 
 
 class TestInstallCallbackDispatch:
-    """Verify install_callback correctly routes personal accounts to adp-default."""
+    """Verify callback routing with real setup proofs and SQL, and inert external services."""
+
+    @pytest.fixture(autouse=True)
+    def offline_side_effects(self, monkeypatch):
+        from src.admin.connections import service, tenant_secret
+        from src.admin.identity import identity_index_writer
+
+        seed = AsyncMock()
+        index = AsyncMock()
+        bot = AsyncMock()
+        provider = SimpleNamespace(get_slug=MagicMock(return_value="inert-platform-app"))
+        writer = SimpleNamespace(update_user_membership_orgs=AsyncMock(return_value=True))
+        monkeypatch.setattr(tenant_secret, "seed_tenant_github_app_secret", seed)
+        monkeypatch.setattr(service, "_write_installation_identity_index", index)
+        monkeypatch.setattr(service, "get_github_app_provider", lambda: provider)
+        monkeypatch.setattr(service, "seed_bot_identity", bot)
+        # Preserve the membership projection's real SQL/provenance computation;
+        # only its DynamoDB writer is replaced.
+        monkeypatch.setattr(identity_index_writer, "IdentityIndexWriter", lambda: writer)
+        return SimpleNamespace(seed=seed, index=index, bot=bot, provider=provider, writer=writer)
 
     async def _write_nonce(self, db: AsyncSession, jti: str = "test-jti", user_org_id: str = "") -> None:
         from datetime import UTC, datetime, timedelta
 
-        from src.shared.models.organization import User
-        from src.shared.models.vault import MagicLinkNonce
+        from src.admin.connections.service import _setup_context
+        from src.shared.models.organization import Organization, User
+        from src.shared.models.vault import MagicLinkNonce, UserIdentity
 
         # install_callback resolves the caller's org from the users table via the
         # nonce's target_user_id, so seed a matching User row.
+        if user_org_id and await db.get(Organization, user_org_id) is None:
+            db.add(Organization(id=user_org_id, name=user_org_id))
+            await db.flush()
         if user_org_id and await db.get(User, "user-001") is None:
             db.add(
                 User(
@@ -270,11 +296,23 @@ class TestInstallCallbackDispatch:
                 )
             )
             await db.commit()
+        db.add(
+            UserIdentity(
+                user_id="user-001",
+                org_id=user_org_id,
+                team_id="team-001",
+                provider="github",
+                provider_user_id="12345",
+                verification_method="oauth",
+                verified_at=datetime.now(UTC),
+            )
+        )
+        await db.commit()
         nonce = MagicLinkNonce(
             jti=jti,
             provider="github_install",
             provider_user_id="sub-abc",
-            channel_context=None,
+            channel_context=_setup_context(kind="install", org_id=user_org_id),
             target_user_id="user-001",
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
             consumed_at=None,
@@ -282,12 +320,10 @@ class TestInstallCallbackDispatch:
         db.add(nonce)
         await db.commit()
 
-    async def test_personal_account_attaches_to_callers_own_org(self, db_session: AsyncSession, adp_default_org):
+    async def test_personal_account_attaches_to_callers_own_org(self, db_session: AsyncSession, adp_default_org, offline_side_effects):
         """A personal (User) install attaches to the caller's OWN org (named after
         their GitHub login), not the shared adp-default tenant. Row is scoped by
         the GitHub account id and stores the repo names."""
-        from unittest.mock import AsyncMock, MagicMock
-
         from src.admin.connections.github_client import GitHubAppClient
         from src.admin.connections.service import install_callback
 
@@ -295,6 +331,7 @@ class TestInstallCallbackDispatch:
         await self._write_nonce(db_session, jti="personal-jti", user_org_id="pranavsharma1000")
 
         gh = MagicMock(spec=GitHubAppClient)
+        gh.has_org_admin_membership = AsyncMock(return_value=True)
         gh.get_installation = AsyncMock(
             return_value={
                 "id": 999,
@@ -315,6 +352,10 @@ class TestInstallCallbackDispatch:
 
         assert result["success"] is True
         assert result["account_type"] == "User"
+        offline_side_effects.seed.assert_awaited_once_with("pranavsharma1000", 999)
+        offline_side_effects.index.assert_awaited_once_with(installation_id=999, org_id="pranavsharma1000")
+        offline_side_effects.provider.get_slug.assert_called_once()
+        offline_side_effects.bot.assert_awaited_once()
 
         from sqlalchemy import select
 
@@ -328,10 +369,8 @@ class TestInstallCallbackDispatch:
         assert row.install_metadata["repositories"] == ["alice/proj-a", "alice/proj-b"]
         assert row.install_metadata["repository_count"] == 2
 
-    async def test_org_account_does_not_call_adp_default(self, db_session: AsyncSession, adp_default_org):
+    async def test_org_account_does_not_call_adp_default(self, db_session: AsyncSession, adp_default_org, offline_side_effects):
         """install_callback with account_type=Organization uses normal org flow."""
-        from unittest.mock import AsyncMock, MagicMock
-
         from src.admin.connections.github_client import GitHubAppClient
         from src.admin.connections.service import install_callback
 
@@ -349,6 +388,7 @@ class TestInstallCallbackDispatch:
         await self._write_nonce(db_session, jti="org-jti", user_org_id="org-paid-002")
 
         gh = MagicMock(spec=GitHubAppClient)
+        gh.has_org_admin_membership = AsyncMock(return_value=True)
         gh.get_installation = AsyncMock(
             return_value={
                 "id": 888,
@@ -373,6 +413,13 @@ class TestInstallCallbackDispatch:
 
         assert result["success"] is True
         assert result["account_type"] == "Organization"
+        offline_side_effects.seed.assert_awaited_once_with("org-paid-002", 888)
+        offline_side_effects.index.assert_awaited_once_with(installation_id=888, org_id="org-paid-002")
+        offline_side_effects.provider.get_slug.assert_called_once()
+        offline_side_effects.bot.assert_awaited_once()
+        offline_side_effects.writer.update_user_membership_orgs.assert_awaited_once_with(
+            provider_user_id="12345", member_org_ids=["org-paid-002"], provider="github"
+        )
 
         # Verify org mapping was created (not personal mapping)
         from sqlalchemy import select

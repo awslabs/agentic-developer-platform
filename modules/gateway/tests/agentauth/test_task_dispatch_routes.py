@@ -1,502 +1,281 @@
-"""Dispatch and recovery adapters: who may call them, and what the body cannot do.
-
-The central property here is T3-AC04: recovery is independently authenticated and
-cannot be selected by arbitrary public request content. Two tests carry it --
-a publisher-role credential is refused on the recovery route, and an unsigned
-body that merely *claims* recovery gets nowhere.
-
-`verify_producer` is patched at the module boundary rather than mocked out
-wholesale, so the allowlist argument each route passes is observable. That
-argument is the actual authorization decision; a test that stubbed the whole
-function would assert nothing about it.
-"""
-
-from __future__ import annotations
-
+import json
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import boto3
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from moto import mock_aws
 
 from src.agentauth import task_dispatch_routes
-from src.agentauth.bootstrap import BootstrapStore
-from src.agentauth.routes import AgentRuntime, get_agent_runtime
-from src.agentauth.task_dispatch_routes import (
-    DISPATCH_ROLES_ENV,
-    RECOVERY_ROLES_ENV,
-    router,
-)
-from src.agentauth.task_work import TASK_WORK_INDEX, TaskWorkStore, work_shard
+from src.agentauth.routes import get_agent_runtime
+from src.agentauth.task_dispatch_routes import router, work_store
+from src.agentauth.task_work import DUE_ATTRIBUTE, SHARD_ATTRIBUTE, TASK_WORK_INDEX, TaskWorkStore, work_shard
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT / "modules/agent-factory/webhook-ingress/lambda"))
+sys.path.insert(0, str(ROOT / "scripts/task-api"))
+from _schema import Registry, validate  # noqa: E402
+from common import task_dispatch, task_publisher  # noqa: E402
 
 TASK = "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20"
 DISPATCH = "b5e9835b-fc24-4231-96f2-e8b8ca3681be"
+INVOCATION = "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40"
 TENANT = "t-4821"
-PUBLISHER_ROLE = "adp-dev-task-publisher"
-RECOVERY_ROLE = "adp-dev-task-recovery"
-PROOF = "signed-sts-proof"
-START = 1_760_000_000
+NOW = datetime(2026, 9, 24, 14, 42, 3, tzinfo=UTC)
+SCHEMAS = Registry(ROOT / "docs/task-api/contracts/v1/schemas")
+ADAPTER_SCHEMA = SCHEMAS.docs["internal-adapters.schema.json"]
 
-ENV = {
-    "ADP_TASK_API_ADMISSION_ENABLED": "true",
-    "ADP_TASK_API_RECOVERY_ENABLED": "true",
-    DISPATCH_ROLES_ENV: PUBLISHER_ROLE,
-    RECOVERY_ROLES_ENV: RECOVERY_ROLE,
-    "WEBHOOK_EVENTS_TABLE": "events",
-}
+
+def envelope():
+    return {
+        "kind": "adp.task", "schema_version": "1.0", "task_id": TASK,
+        "invocation_id": INVOCATION, "message_id": INVOCATION,
+        "persona": "agent-task-investigator", "dispatch_id": DISPATCH,
+        "request_digest": "9" * 64,
+        "input_ref": {"record_type": "TASK", "input_digest": "1" * 64},
+        "assignment_ref": {
+            "grant_pk": f"TENANT#{TENANT}",
+            "grant_sk": f"TASK_RUN#{INVOCATION}#GEN#0000000001", "generation": 1,
+        },
+    }
+
+
+def scoped(**values):
+    return {
+        **values, "task_id": {"S": TASK}, "invocation_id": {"S": INVOCATION},
+        "generation": {"N": "1"}, "scope": {"M": {"tenant_id": {"S": TENANT}}},
+    }
+
+
+def assert_schema(value, definition):
+    errors = validate(
+        value, ADAPTER_SCHEMA["$defs"][definition], SCHEMAS,
+        "internal-adapters.schema.json",
+    )
+    assert errors == []
 
 
 @pytest.fixture
-def client(monkeypatch):
-    """A live app over moto, with the STS proof check observable.
-
-    The fake verifier enforces the allowlist it is given, so "which allowlist did
-    this route use?" is a real assertion rather than a comment.
-    """
+def seam(monkeypatch):
     with mock_aws():
-        ddb = boto3.client("dynamodb", region_name="us-east-1")
-        ddb.create_table(
-            TableName="events",
-            BillingMode="PAY_PER_REQUEST",
-            KeySchema=[
-                {"AttributeName": "event_id", "KeyType": "HASH"},
-                {"AttributeName": "arrived_at", "KeyType": "RANGE"},
-            ],
+        dynamodb = boto3.client("dynamodb", region_name="us-east-1")
+        dynamodb.create_table(
+            TableName="requests",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
             AttributeDefinitions=[
-                {"AttributeName": "event_id", "AttributeType": "S"},
-                {"AttributeName": "arrived_at", "AttributeType": "S"},
-                {"AttributeName": "task_work_shard", "AttributeType": "S"},
-                {"AttributeName": "task_due", "AttributeType": "S"},
+                {"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"},
+                {"AttributeName": SHARD_ATTRIBUTE, "AttributeType": "S"}, {"AttributeName": DUE_ATTRIBUTE, "AttributeType": "S"},
             ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": TASK_WORK_INDEX,
-                    "KeySchema": [
-                        {"AttributeName": "task_work_shard", "KeyType": "HASH"},
-                        {"AttributeName": "task_due", "KeyType": "RANGE"},
-                    ],
-                    "Projection": {"ProjectionType": "ALL"},
-                }
-            ],
+            GlobalSecondaryIndexes=[{
+                "IndexName": TASK_WORK_INDEX,
+                "KeySchema": [{"AttributeName": SHARD_ATTRIBUTE, "KeyType": "HASH"}, {"AttributeName": DUE_ATTRIBUTE, "KeyType": "RANGE"}],
+                "Projection": {"ProjectionType": "ALL"},
+                "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+            }], ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
         )
-        calls = []
-        presented_role = ["none"]
-
-        async def fake_verify(proof, identity, *, allowed_roles=None):
-            calls.append({"proof": proof, "identity": identity, "allowed": set(allowed_roles or ())})
-            if not proof or presented_role[0] not in (allowed_roles or set()):
-                raise HTTPException(403, "forbidden")
-            return presented_role[0]
-
-        monkeypatch.setattr(task_dispatch_routes, "verify_producer", fake_verify)
-
-        store = BootstrapStore(table_name="events", dynamodb_client=ddb)
-        now = [START]
-        work = TaskWorkStore(dynamodb_client=ddb, table_name="events", clock=lambda: now[0])
-
-        app = FastAPI()
-        app.include_router(router)
-        app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(store=store, workloads=AsyncMock(), env=dict(ENV))
-        # The routes and the test must share one clock. Left alone, the route
-        # builds a store on the real clock while the fixture writes deadlines
-        # against a fixed timestamp, so every claim looks long expired. Overriding
-        # the dependency keeps the flag/allowlist checks in work_store under test
-        # (they run before this returns) while making time controllable.
-        app.dependency_overrides[task_dispatch_routes.work_store] = lambda: work
-        with TestClient(app) as http:
-            yield SimpleNamespace(
-                http=http,
-                work=work,
-                ddb=ddb,
-                calls=calls,
-                role=presented_role,
-                now=now,
-                app=app,
-                store=store,
-            )
-
-
-def accept(ctx, *, dispatch=DISPATCH):
-    from datetime import UTC, datetime
-
-    return ctx.work.put_work(
-        task_id=TASK,
-        kind="dispatch",
-        tenant_id=TENANT,
-        dispatch_id=dispatch,
-        envelope_digest="a" * 64,
-        deadline_at=datetime.fromtimestamp(ctx.now[0] + 3600, tz=UTC),
-    )
-
-
-def claim_body(**overrides):
-    body = {
-        "schema_version": "1.0",
-        "dispatch_id": DISPATCH,
-        "task_id": TASK,
-        "producer_proof": PROOF,
-    }
-    body.update(overrides)
-    return body
-
-
-def recovery_body(**overrides):
-    body = {
-        "schema_version": "1.0",
-        "shard": work_shard(TASK),
-        "cursor": None,
-        "limit": 10,
-        "producer_proof": PROOF,
-    }
-    body.update(overrides)
-    return body
-
-
-# --- T3-AC04: recovery is independently authenticated -----------------------
-
-
-def test_the_publisher_credential_cannot_reach_recovery(client):
-    """The two producers are not interchangeable.
-
-    Recovery can enumerate outstanding work across tenants in a shard. A
-    compromised publisher must not gain that by calling a different route with
-    the credential it already has.
-    """
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-
-    response = client.http.post("/internal/v1/agent/task-dispatch/recovery/claim", json=recovery_body())
-
-    assert response.status_code == 403
-    assert client.calls[-1]["allowed"] == {RECOVERY_ROLE}, "the recovery allowlist applied"
-
-
-def test_the_recovery_credential_is_accepted_on_recovery(client):
-    client.role[0] = RECOVERY_ROLE
-    accept(client)
-
-    response = client.http.post("/internal/v1/agent/task-dispatch/recovery/claim", json=recovery_body())
-
-    assert response.status_code == 200
-    assert [item["dispatch_id"] for item in response.json()["work"]] == [DISPATCH]
-
-
-def test_a_body_claiming_recovery_without_a_proof_is_refused(client):
-    """T3-AC04: request content never selects authority.
-
-    The body is the only thing an unauthenticated caller controls, so an empty
-    proof must fail closed even when every other field is well-formed.
-    """
-    client.role[0] = RECOVERY_ROLE
-    accept(client)
-
-    response = client.http.post(
-        "/internal/v1/agent/task-dispatch/recovery/claim",
-        json=recovery_body(producer_proof=""),
-    )
-
-    assert response.status_code == 422, "an empty proof is not even a valid request"
-
-
-def test_recovery_roles_are_checked_separately_from_dispatch_roles(client):
-    """Each route names its own allowlist; neither inherits the other's."""
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-
-    client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body())
-    dispatch_call = client.calls[-1]
-    client.http.post("/internal/v1/agent/task-dispatch/recovery/claim", json=recovery_body())
-    recovery_call = client.calls[-1]
-
-    assert dispatch_call["allowed"] == {PUBLISHER_ROLE}
-    assert recovery_call["allowed"] == {RECOVERY_ROLE}
-    assert dispatch_call["allowed"] != recovery_call["allowed"]
-
-
-def test_an_unconfigured_allowlist_refuses_rather_than_admitting_everyone(client):
-    """An empty allowlist means "not deployed", never "anyone"."""
-    client.role[0] = RECOVERY_ROLE
-    client.app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
-        store=client.store,
-        workloads=AsyncMock(),
-        env={**ENV, RECOVERY_ROLES_ENV: ""},
-    )
-
-    response = client.http.post("/internal/v1/agent/task-dispatch/recovery/claim", json=recovery_body())
-
-    assert response.status_code == 503
-
-
-def test_the_proof_is_bound_to_the_thing_being_claimed(client):
-    """A proof signed for one dispatch must not claim another.
-
-    The identity passed to verification is the dispatch ID, which is inside the
-    signed headers, so a captured proof cannot be retargeted.
-    """
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-
-    client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body())
-
-    assert client.calls[-1]["identity"] == DISPATCH
-
-
-# --- Rollout flags default off ----------------------------------------------
-
-
-def test_every_route_is_closed_when_the_flags_are_off(client):
-    """Design section 11: default-off, and "off" means 503 rather than a partial path."""
-    client.role[0] = RECOVERY_ROLE
-    client.app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
-        store=client.store, workloads=AsyncMock(), env={DISPATCH_ROLES_ENV: PUBLISHER_ROLE}
-    )
-
-    for path, body in (
-        ("/internal/v1/agent/task-dispatch/claim", claim_body()),
-        ("/internal/v1/agent/task-dispatch/recovery/claim", recovery_body()),
-    ):
-        assert client.http.post(path, json=body).status_code == 503
-
-
-def test_recovery_stays_closed_while_only_admission_is_enabled(client):
-    """The two flags are independent; enabling publish must not enable the sweep."""
-    client.role[0] = RECOVERY_ROLE
-    client.app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
-        store=client.store,
-        workloads=AsyncMock(),
-        env={**ENV, "ADP_TASK_API_RECOVERY_ENABLED": "false"},
-    )
-
-    response = client.http.post("/internal/v1/agent/task-dispatch/recovery/claim", json=recovery_body())
-
-    assert response.status_code == 503
-
-
-def test_a_non_true_flag_value_does_not_enable_the_path(client):
-    """ "1", "yes" and "TRUE " must not be creative synonyms for enabled."""
-    client.role[0] = RECOVERY_ROLE
-    client.app.dependency_overrides[get_agent_runtime] = lambda: AgentRuntime(
-        store=client.store,
-        workloads=AsyncMock(),
-        env={**ENV, "ADP_TASK_API_RECOVERY_ENABLED": "1"},
-    )
-
-    response = client.http.post("/internal/v1/agent/task-dispatch/recovery/claim", json=recovery_body())
-
-    assert response.status_code == 503
-
-
-# --- The body cannot contribute authority -----------------------------------
-
-
-def test_the_claim_returns_the_committed_digest_not_a_caller_supplied_one(client):
-    """The publisher is a courier, not an author.
-
-    If the request could contribute to what gets published, the publisher could
-    rewrite the task it was asked to dispatch.
-    """
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-
-    response = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body())
-
-    assert response.status_code == 200
-    assert response.json()["envelope_digest"] == "a" * 64
-
-
-def test_unknown_body_fields_are_rejected(client):
-    """extra="forbid": a field nobody reads is a field somebody will later trust."""
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-
-    response = client.http.post(
-        "/internal/v1/agent/task-dispatch/claim",
-        json=claim_body(tenant_id="t-other", persona="agent-anything"),
-    )
-
-    assert response.status_code == 422
-
-
-def test_a_shard_outside_the_contract_range_is_refused(client):
-    """`shard` reaches a partition key, so it is pattern-bound to 16 values."""
-    client.role[0] = RECOVERY_ROLE
-
-    for bad in ("v1#16", "v2#01", "v1#1", "", "v1#00 or 1=1"):
-        response = client.http.post(
-            "/internal/v1/agent/task-dispatch/recovery/claim",
-            json=recovery_body(shard=bad),
+        dynamodb.create_table(
+            TableName="authority",
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}],
+            ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
         )
-        assert response.status_code == 422, bad
-
-
-def test_a_limit_beyond_the_invocation_budget_is_refused(client):
-    client.role[0] = RECOVERY_ROLE
-
-    for bad in (0, -1, 101, 10_000):
-        response = client.http.post(
-            "/internal/v1/agent/task-dispatch/recovery/claim",
-            json=recovery_body(limit=bad),
+        clock = [NOW.timestamp()]
+        store = TaskWorkStore(
+            dynamodb_client=dynamodb, table_name="requests", authority_table_name="authority", clock=lambda: clock[0],
         )
-        assert response.status_code == 422, bad
-
-
-def test_malformed_identifiers_are_refused_before_any_store_access(client):
-    client.role[0] = PUBLISHER_ROLE
-
-    for body in (
-        claim_body(task_id="../../etc/passwd"),
-        claim_body(task_id="TASK_WORK#injected"),
-        claim_body(dispatch_id="not-a-uuid"),
-        claim_body(schema_version="2.0"),
-    ):
-        response = client.http.post("/internal/v1/agent/task-dispatch/claim", json=body)
-        assert response.status_code == 422
-    assert client.calls == [], "nothing reached authentication, let alone the store"
-
-
-# --- Settlement outcomes ----------------------------------------------------
-
-
-def test_settling_confirmed_reports_the_queue_acknowledgement(client):
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-    claimed = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body()).json()
-
-    response = client.http.post(
-        "/internal/v1/agent/task-dispatch/settle",
-        json={
-            "schema_version": "1.0",
-            "dispatch_id": DISPATCH,
-            "task_id": TASK,
-            "lease_token": claimed["lease_token"],
-            "publication_outcome": "confirmed",
-            "sqs_message_id": "transport-message-id",
-            "producer_proof": PROOF,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["queue_ack_status"] == "confirmed"
-
-
-def test_confirmed_without_a_transport_id_is_refused(client):
-    """The contract's conditional requirement, enforced server-side."""
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-    claimed = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body()).json()
-
-    response = client.http.post(
-        "/internal/v1/agent/task-dispatch/settle",
-        json={
-            "schema_version": "1.0",
-            "dispatch_id": DISPATCH,
-            "task_id": TASK,
-            "lease_token": claimed["lease_token"],
-            "publication_outcome": "confirmed",
-            "sqs_message_id": None,
-            "producer_proof": PROOF,
-        },
-    )
-
-    assert response.status_code == 409
-    assert "confirmed_without_message_id" in response.json()["detail"]
-
-
-def test_unknown_settlement_is_accepted_and_keeps_the_work_discoverable(client):
-    """T3-AC01: the ambiguous case is a normal answer, not an error."""
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-    claimed = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body()).json()
-
-    settled = client.http.post(
-        "/internal/v1/agent/task-dispatch/settle",
-        json={
-            "schema_version": "1.0",
-            "dispatch_id": DISPATCH,
-            "task_id": TASK,
-            "lease_token": claimed["lease_token"],
-            "publication_outcome": "unknown",
-            "sqs_message_id": None,
-            "producer_proof": PROOF,
-        },
-    )
-
-    assert settled.status_code == 200
-    assert settled.json()["publication_outcome"] == "unknown"
-    client.role[0] = RECOVERY_ROLE
-    still_due = client.http.post("/internal/v1/agent/task-dispatch/recovery/claim", json=recovery_body()).json()
-    assert [item["dispatch_id"] for item in still_due["work"]] == [DISPATCH]
-
-
-def test_a_forged_lease_token_cannot_settle(client):
-    """The lease token is the proof of ownership, and it is compared, not parsed."""
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-    client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body())
-
-    response = client.http.post(
-        "/internal/v1/agent/task-dispatch/settle",
-        json={
-            "schema_version": "1.0",
-            "dispatch_id": DISPATCH,
-            "task_id": TASK,
-            "lease_token": "not-the-lease",
-            "publication_outcome": "confirmed",
-            "sqs_message_id": "transport-message-id",
-            "producer_proof": PROOF,
-        },
-    )
-
-    assert response.status_code == 409
-
-
-def test_claiming_absent_work_is_a_404_not_a_created_record(client):
-    """A claim must never bring work into existence."""
-    client.role[0] = PUBLISHER_ROLE
-
-    response = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body())
-
-    assert response.status_code == 404
-    from src.agentauth.task_work import DISPATCH_SORT_PREFIX
-
-    assert client.work.read(TASK, f"{DISPATCH_SORT_PREFIX}{DISPATCH}") is None
-
-
-def test_a_spent_try_budget_is_retryable_and_says_so(client):
-    """429 rather than 409: the sweep should come back, not give up."""
-    from src.agentauth.task_work import MAX_PUBLICATION_TRIES
-
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
-    for _ in range(MAX_PUBLICATION_TRIES):
-        claimed = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body()).json()
-        client.http.post(
-            "/internal/v1/agent/task-dispatch/settle",
-            json={
-                "schema_version": "1.0",
-                "dispatch_id": DISPATCH,
-                "task_id": TASK,
-                "lease_token": claimed["lease_token"],
-                "publication_outcome": "unknown",
-                "sqs_message_id": None,
-                "producer_proof": PROOF,
+        dynamodb.put_item(TableName="requests", Item=scoped(
+            event_id={"S": f"TASK#{TASK}"}, arrived_at={"S": "META"},
+            status={"S": "accepted"}, version={"S": "task-v1"}, record_type={"S": "TASK"},
+        ))
+        grant_sk = f"TASK_RUN#{INVOCATION}#GEN#0000000001"
+        dynamodb.put_item(
+            TableName="authority",
+            Item=scoped(
+                pk={"S": f"TENANT#{TENANT}"}, sk={"S": grant_sk}, status={"S": "active"},
+                canonical_principal_id={"S": "service-principal-1"},
+                task_policy_sk={"S": "TASK_POLICY#service-principal-1"},
+                task_policy_version={"N": "1"},
+            ),
+        )
+        dynamodb.put_item(
+            TableName="authority",
+            Item=scoped(pk={"S": f"TENANT#{TENANT}"}, sk={"S": f"TASK#{TASK}"}, status={"S": "active"}),
+        )
+        dynamodb.put_item(
+            TableName="authority",
+            Item={
+                "pk": {"S": f"TENANT#{TENANT}"}, "sk": {"S": "TASK_POLICY#service-principal-1"},
+                "record_type": {"S": "TASK_SERVICE_POLICY"}, "status": {"S": "active"},
+                "canonical_principal_id": {"S": "service-principal-1"}, "version": {"N": "1"},
+                "allowed_personas": {"L": [{"S": "agent-task-investigator"}]},
+                "task_scopes": {"L": [{"S": "submit"}, {"S": "read"}]},
+                "scope": {"M": {"tenant_id": {"S": TENANT}}},
             },
         )
-        client.now[0] += 1
+        store.put_work(
+            task_id=TASK, kind="dispatch", tenant_id=TENANT,
+            deadline_at=NOW + timedelta(minutes=30), envelope=envelope(),
+        )
+        env = {
+            "ADP_TASK_API_ADMISSION_ENABLED": "true", "ADP_TASK_API_RECOVERY_ENABLED": "true",
+            "ADP_TASK_DISPATCH_PRODUCER_ROLES": "dispatch-role",
+            "ADP_TASK_RECOVERY_PRODUCER_ROLES": "recovery-role",
+            "WEBHOOK_EVENTS_TABLE": "requests", "AGENT_AUTHORITY_TABLE": "authority",
+        }
+        runtime = SimpleNamespace(env=env, store=SimpleNamespace(client=dynamodb, table="authority"))
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_agent_runtime] = lambda: runtime
+        app.dependency_overrides[work_store] = lambda: store
 
-    response = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body())
+        async def authenticate(proof, identity, *, allowed_roles):
+            assert proof == "fixture-proof"
+            return next(iter(allowed_roles))
 
-    assert response.status_code == 429
+        monkeypatch.setattr(task_dispatch_routes, "verify_producer", authenticate)
+        with TestClient(app) as client:
+            yield SimpleNamespace(client=client, store=store, dynamodb=dynamodb, clock=clock)
 
 
-def test_responses_are_not_cacheable(client):
-    """A lease token in a shared cache is a lease token handed to someone else."""
-    client.role[0] = PUBLISHER_ROLE
-    accept(client)
+def test_closed_routes_reject_caller_task_or_tenant_fields(seam):
+    response = seam.client.post("/internal/v1/tasks/dispatch/claim", json={
+        "schema_version": "1.0", "dispatch_id": DISPATCH,
+        "task_id": TASK, "producer_proof": "fixture-proof",
+    })
+    assert response.status_code == 422
+    assert seam.client.post("/internal/v1/agent/task-dispatch/claim", json={}).status_code == 404
 
-    response = client.http.post("/internal/v1/agent/task-dispatch/claim", json=claim_body())
 
-    assert response.headers["Cache-Control"] == "no-store"
+def test_dispatch_and_recovery_authentication_use_separate_allowlists(seam, monkeypatch):
+    calls = []
+
+    async def authenticate(proof, identity, *, allowed_roles):
+        calls.append((identity, allowed_roles))
+        return "ok"
+
+    monkeypatch.setattr(task_dispatch_routes, "verify_producer", authenticate)
+    dispatch = seam.client.post("/internal/v1/tasks/dispatch/claim", json={
+        "schema_version": "1.0", "dispatch_id": DISPATCH, "producer_proof": "fixture-proof",
+    })
+    assert dispatch.status_code == 200
+    recovery = seam.client.post("/internal/v1/tasks/recovery/claim", json={
+        "schema_version": "1.0", "shard": work_shard(TASK), "cursor": None,
+        "limit": 100, "producer_proof": "fixture-proof",
+    })
+    assert recovery.status_code == 200
+    assert calls == [(DISPATCH, {"dispatch-role"}), (work_shard(TASK), {"recovery-role"})]
+
+
+def install_gateway_seam(monkeypatch, seam, requests_seen):
+    mapping = {
+        "/internal/v1/tasks/dispatch/claim": ("dispatch_claim_request", "dispatch_claim_response"),
+        "/internal/v1/tasks/dispatch/settle": ("dispatch_settle_request", "dispatch_settle_response"),
+        "/internal/v1/tasks/recovery/claim": ("recovery_claim_request", "recovery_claim_response"),
+        "/internal/v1/tasks/recovery/settle": ("recovery_settle_request", "recovery_settle_response"),
+    }
+
+    def bridge(path, body, *, identity):
+        request = {**body, "producer_proof": "fixture-proof"}
+        assert_schema(request, mapping[path][0])
+        requests_seen.append((path, body, identity))
+        response = seam.client.post(path, json=request)
+        if response.status_code != 200:
+            return None
+        value = response.json()
+        assert_schema(value, mapping[path][1])
+        return value
+
+    monkeypatch.setattr(task_dispatch, "_call_gateway", bridge)
+
+
+class Sqs:
+    def __init__(self, outcomes=None):
+        self.calls = []
+        self.outcomes = list(outcomes or ["sqs-message-1"])
+
+    def send_message(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return {"MessageId": outcome}
+
+
+def test_actual_gateway_claim_flows_through_actual_lambda_publisher(seam, monkeypatch):
+    requests_seen = []
+    install_gateway_seam(monkeypatch, seam, requests_seen)
+    sqs = Sqs()
+    monkeypatch.setattr(task_publisher, "_sqs", sqs)
+    monkeypatch.setenv("SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/tasks.fifo")
+
+    result = task_dispatch.publish_dispatch(DISPATCH)
+
+    assert result["publication_outcome"] == "confirmed"
+    assert result["settled"] is True
+    assert seam.store.task_status(TASK) == "queued"
+    assert json.loads(sqs.calls[0]["MessageBody"]) == envelope()
+    assert sqs.calls[0]["MessageDeduplicationId"] == DISPATCH
+    assert sqs.calls[0]["MessageGroupId"] == task_publisher.message_group_id(TENANT, TASK)
+    assert [entry[0] for entry in requests_seen] == [
+        "/internal/v1/tasks/dispatch/claim", "/internal/v1/tasks/dispatch/settle",
+    ]
+
+
+def test_actual_recovery_claim_flows_through_publisher_and_both_settlements(seam, monkeypatch):
+    requests_seen = []
+    install_gateway_seam(monkeypatch, seam, requests_seen)
+    sqs = Sqs()
+    monkeypatch.setattr(task_publisher, "_sqs", sqs)
+    monkeypatch.setenv("SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/tasks.fifo")
+    response = seam.client.post("/internal/v1/tasks/recovery/claim", json={
+        "schema_version": "1.0", "shard": work_shard(TASK), "cursor": None,
+        "limit": 100, "producer_proof": "fixture-proof",
+    })
+    assert response.status_code == 200
+    assert_schema(response.json(), "recovery_claim_response")
+
+    outcome = task_dispatch._recover_one(response.json()["work"][0])
+
+    assert outcome == "confirmed"
+    assert seam.store.task_status(TASK) == "queued"
+    assert [entry[0] for entry in requests_seen] == [
+        "/internal/v1/tasks/dispatch/claim",
+        "/internal/v1/tasks/dispatch/settle",
+        "/internal/v1/tasks/recovery/settle",
+    ]
+
+
+def test_unknown_send_recovery_reuses_exact_body_and_id(seam, monkeypatch):
+    requests_seen = []
+    install_gateway_seam(monkeypatch, seam, requests_seen)
+    sqs = Sqs([TimeoutError("ambiguous"), "sqs-message-retry"])
+    monkeypatch.setattr(task_publisher, "_sqs", sqs)
+    monkeypatch.setenv("SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/tasks.fifo")
+
+    first = task_dispatch.publish_dispatch(DISPATCH)
+    second = task_dispatch.publish_dispatch(DISPATCH)
+
+    assert first["publication_outcome"] == "unknown"
+    assert second["publication_outcome"] == "confirmed"
+    assert [call["MessageBody"] for call in sqs.calls] == [sqs.calls[0]["MessageBody"]] * 2
+    assert [call["MessageDeduplicationId"] for call in sqs.calls] == [DISPATCH, DISPATCH]
+
+
+def test_recovery_settlement_requires_committed_publication_evidence(seam):
+    claim = seam.client.post("/internal/v1/tasks/recovery/claim", json={
+        "schema_version": "1.0", "shard": work_shard(TASK), "cursor": None,
+        "limit": 100, "producer_proof": "fixture-proof",
+    }).json()["work"][0]
+    response = seam.client.post("/internal/v1/tasks/recovery/settle", json={
+        "schema_version": "1.0", "work_id": DISPATCH, "lease_token": claim["lease_token"],
+        "evidence": {"kind": "publication", "observed": True, "observed_at": "2026-09-24T14:42:04Z"},
+        "producer_proof": "fixture-proof",
+    })
+    assert response.status_code == 200
+    assert response.json()["operation_status"] == "rejected"
+    assert response.json()["task_status"] == "accepted"
+    assert_schema(response.json(), "recovery_settle_response")

@@ -528,3 +528,29 @@ When Terraform leaves subnet IDs unknown, all resulting owned subnets provide a
 conservative AZ ceiling. Endpoint data processing remains explicitly excluded
 from the fixed-cost estimate. Management-to-workspace API routing is an external
 prerequisite; this module does not implicitly create peering or transit routes.
+
+
+## Hybrid network ranges
+
+Set `hybrid_networks` in the reviewed workspace variables to configure the EKS
+remote node/pod ranges and an explicit service range:
+
+```hcl
+hybrid_networks = {
+  node_cidr    = "10.100.0.0/24"
+  pod_cidr     = "10.101.0.0/16"
+  service_cidr = "172.20.0.0/16"
+}
+```
+
+The ranges must be canonical RFC1918 IPv4, disjoint from each other and every
+primary/secondary workspace VPC range. Node/pod ranges allow /16 through /28;
+service ranges allow /16 through /24. The default is disabled and leaves native
+workspace configuration unchanged. Changing an existing cluster's service CIDR
+can require replacement; the saved-plan review must handle that explicitly.
+
+This is the EKS-side prerequisite for the SkyPilot/WireGuard flow. It does not
+create a tunnel, permit HYBRID_LINUX access, deliver SSM activation material,
+install Cilium, or make a remote GPU node ready. Those remain separate integration
+work. No private connectivity or mixed-provider execution is claimed from this
+Terraform setting alone.

@@ -181,6 +181,8 @@ def handler(event, context):
     forbidden = {"required_variants", "manifest", "retirements", "retirement_list", "bundled_required", "sources", "source_urls", "rates"}
     if not isinstance(event, dict) or forbidden.intersection(event):
         raise ValueError("invocation payload cannot override trusted pricing coverage or sources")
+    if "report_partial" in event and type(event["report_partial"]) is not bool:
+        raise ValueError("report_partial must be a boolean")
     emit_metrics({"PricingRefreshAttempt": 1})
     try:
         with get_db_connection() as conn:
@@ -219,7 +221,7 @@ def handler(event, context):
             len(candidate.retained_keys),
             failures,
         )
-        if partial:
+        if partial and not event.get("report_partial", False):
             raise PartialRefreshError(
                 f"generation {generation} committed with {len(candidate.retained_keys)} retained variants; failed sources={failures}"
             )
@@ -229,6 +231,11 @@ def handler(event, context):
             "pointer_revision": revision,
             "variants": len(candidate.rows),
             "content_sha256": candidate.content_sha256,
+            "partial": partial,
+            "retained_variants": len(candidate.retained_keys),
+            "fresh_variants": len(candidate.fresh_keys),
+            "failed_sources": list(failures),
+            "retained_models": sorted({key[0] for key in candidate.retained_keys}),
         }
     except RefreshDeferredError as exc:
         emit_metrics({"PricingRefreshDeferred": 1})

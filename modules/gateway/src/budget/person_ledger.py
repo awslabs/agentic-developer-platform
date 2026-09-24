@@ -39,6 +39,7 @@ from src.shared.identity.person_anchor import (
     PERSON_ANCHOR_PROVIDER_PRECEDENCE,
     format_person_anchor,
 )
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.budget import BudgetUsage, PersonBudgetConfig, PersonBudgetDefault
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import TeamMembership, User
@@ -190,6 +191,7 @@ async def resolve_person_anchor_identity(db: AsyncSession, canonical_user_id: st
             select(UserIdentity.provider_user_id)
             .where(
                 UserIdentity.user_id == canonical_user_id,
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
                 UserIdentity.provider == provider,
             )
             .order_by(UserIdentity.is_primary.desc(), UserIdentity.provider_user_id)
@@ -258,6 +260,7 @@ async def resolve_person_identity(db: AsyncSession, canonical_user_id: str) -> t
                     # GitHub's id space would fuse in whichever unrelated person's
                     # `users` rows happen to share the numeric value — spend
                     # attributed across two different humans.
+                    UserIdentity.verification_method.in_(PROVEN_METHODS),
                     UserIdentity.provider == anchor_provider,
                     UserIdentity.provider_user_id == anchor_id,
                 )

@@ -1,58 +1,67 @@
-"""The recovery fault matrix: interrupt at each point, assert nothing is lost.
-
-Structured after the interruption table in the accepted design (section 7). Each
-row there names a point where the process can die and what recovery must then do,
-and each gets a test here that injects the failure and asserts the work is still
-discoverable, still bounded, and still single-owner.
-
-Run against moto rather than mocks: the properties under test ARE the DynamoDB
-condition expressions (version CAS, lease-token equality, attribute_not_exists),
-and a MagicMock would happily accept a condition that real DynamoDB rejects --
-proving only that the test agrees with itself.
-
-Covers T3-AC01 (injected failures recover with no further client request) and
-T3-AC02 (no competing owners; transport IDs never become run IDs).
-"""
-
-from types import SimpleNamespace
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from src.agentauth.task_work import (
     DISPATCH_SORT_PREFIX,
-    MAX_PUBLICATION_TRIES,
-    MAX_WORK_RECORDS_PER_INVOCATION,
-    PUBLICATION_TRY_WINDOW_MINUTES,
+    DUE_ATTRIBUTE,
     SHARD_ATTRIBUTE,
-    SHARD_COUNT,
+    TASK_LOCATOR_PREFIX,
     TASK_WORK_INDEX,
-    WORK_LEASE_SECONDS,
     TaskWorkError,
     TaskWorkStore,
-    decode_cursor,
-    due_key,
-    encode_cursor,
     work_shard,
 )
 
 TASK = "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20"
 DISPATCH = "b5e9835b-fc24-4231-96f2-e8b8ca3681be"
-SECOND_DISPATCH = "c7f0946c-0d35-4342-a703-f9c9db4792cf"
+INVOCATION = "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40"
 TENANT = "t-4821"
-DIGEST = "a" * 64
-START = 1_760_000_000  # Fixed clock: a real clock makes lease tests flaky.
-HOUR = 3600
+REQUEST_TABLE = "requests"
+AUTHORITY_TABLE = "authority"
+NOW = datetime(2026, 9, 24, 14, 42, 3, tzinfo=UTC)
+
+
+def envelope():
+    return {
+        "kind": "adp.task",
+        "schema_version": "1.0",
+        "task_id": TASK,
+        "invocation_id": INVOCATION,
+        "message_id": INVOCATION,
+        "persona": "agent-task-investigator",
+        "dispatch_id": DISPATCH,
+        "request_digest": "9" * 64,
+        "input_ref": {"record_type": "TASK", "input_digest": "1" * 64},
+        "assignment_ref": {
+            "grant_pk": f"TENANT#{TENANT}",
+            "grant_sk": f"TASK_RUN#{INVOCATION}#GEN#0000000001",
+            "generation": 1,
+        },
+    }
+
+
+def scoped(**values):
+    return {
+        **values,
+        "task_id": {"S": TASK},
+        "invocation_id": {"S": INVOCATION},
+        "generation": {"N": "1"},
+        "scope": {"M": {"tenant_id": {"S": TENANT}}},
+    }
 
 
 @pytest.fixture
-def work():
+def repository():
     with mock_aws():
-        ddb = boto3.client("dynamodb", region_name="us-east-1")
-        ddb.create_table(
-            TableName="events",
-            BillingMode="PAY_PER_REQUEST",
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName=REQUEST_TABLE,
             KeySchema=[
                 {"AttributeName": "event_id", "KeyType": "HASH"},
                 {"AttributeName": "arrived_at", "KeyType": "RANGE"},
@@ -60,556 +69,351 @@ def work():
             AttributeDefinitions=[
                 {"AttributeName": "event_id", "AttributeType": "S"},
                 {"AttributeName": "arrived_at", "AttributeType": "S"},
-                {"AttributeName": "task_work_shard", "AttributeType": "S"},
-                {"AttributeName": "task_due", "AttributeType": "S"},
+                {"AttributeName": SHARD_ATTRIBUTE, "AttributeType": "S"},
+                {"AttributeName": DUE_ATTRIBUTE, "AttributeType": "S"},
             ],
-            GlobalSecondaryIndexes=[
-                {
-                    "IndexName": TASK_WORK_INDEX,
-                    "KeySchema": [
-                        {"AttributeName": "task_work_shard", "KeyType": "HASH"},
-                        {"AttributeName": "task_due", "KeyType": "RANGE"},
-                    ],
-                    "Projection": {"ProjectionType": "ALL"},
-                }
-            ],
+            GlobalSecondaryIndexes=[{
+                "IndexName": TASK_WORK_INDEX,
+                "KeySchema": [
+                    {"AttributeName": SHARD_ATTRIBUTE, "KeyType": "HASH"},
+                    {"AttributeName": DUE_ATTRIBUTE, "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+                "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+            }],
+            ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
         )
-        now = [START]
-        store = TaskWorkStore(dynamodb_client=ddb, table_name="events", clock=lambda: now[0])
-        yield SimpleNamespace(store=store, ddb=ddb, now=now)
+        client.create_table(
+            TableName=AUTHORITY_TABLE,
+            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}],
+            ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+        )
+        clock = [NOW.timestamp()]
+        store = TaskWorkStore(
+            dynamodb_client=client,
+            table_name=REQUEST_TABLE,
+            authority_table_name=AUTHORITY_TABLE,
+            clock=lambda: clock[0],
+        )
+        client.put_item(
+            TableName=REQUEST_TABLE,
+            Item=scoped(
+                event_id={"S": f"TASK#{TASK}"}, arrived_at={"S": "META"},
+                record_type={"S": "TASK"}, status={"S": "accepted"}, version={"S": "task-v1"},
+            ),
+        )
+        grant_sk = f"TASK_RUN#{INVOCATION}#GEN#0000000001"
+        client.put_item(
+            TableName=AUTHORITY_TABLE,
+            Item=scoped(
+                pk={"S": f"TENANT#{TENANT}"}, sk={"S": grant_sk}, status={"S": "active"},
+                canonical_principal_id={"S": "service-principal-1"},
+                task_policy_sk={"S": "TASK_POLICY#service-principal-1"},
+                task_policy_version={"N": "1"},
+            ),
+        )
+        client.put_item(
+            TableName=AUTHORITY_TABLE,
+            Item=scoped(pk={"S": f"TENANT#{TENANT}"}, sk={"S": f"TASK#{TASK}"}, status={"S": "active"}),
+        )
+        client.put_item(
+            TableName=AUTHORITY_TABLE,
+            Item={
+                "pk": {"S": f"TENANT#{TENANT}"}, "sk": {"S": "TASK_POLICY#service-principal-1"},
+                "record_type": {"S": "TASK_SERVICE_POLICY"}, "status": {"S": "active"},
+                "canonical_principal_id": {"S": "service-principal-1"}, "version": {"N": "1"},
+                "allowed_personas": {"L": [{"S": "agent-task-investigator"}]},
+                "task_scopes": {"L": [{"S": "submit"}, {"S": "read"}]},
+                "scope": {"M": {"tenant_id": {"S": TENANT}}},
+            },
+        )
+        store.put_work(
+            task_id=TASK, kind="dispatch", tenant_id=TENANT,
+            deadline_at=NOW + timedelta(minutes=30), envelope=envelope(),
+        )
+        yield store, client, clock
 
 
-def _deadline(now: list[int], *, seconds: int = HOUR):
-    from datetime import UTC, datetime
+def test_versioned_storage_fixture_records_frozen_locator_rules():
+    fixture = json.loads((Path(__file__).parent / "fixtures/task-work-storage-v1.json").read_text())
+    assert fixture["fixture_version"] == "1.0"
+    assert fixture["authority_locator"]["pk"] == f"TASK_WORK_ID#{DISPATCH}"
+    assert fixture["request_work"]["publication_and_recovery_leases_are_distinct"] is True
+    assert fixture["replacement_rules"] == {
+        "reconcile_sort_key": "RECONCILE", "new_work_id_required": True,
+        "old_locator_retargeted": False, "old_leases_retained": False,
+    }
 
-    return datetime.fromtimestamp(now[0] + seconds, tz=UTC)
+
+def test_acceptance_commits_full_envelope_and_protected_locator_atomically(repository):
+    store, client, _ = repository
+    bound = store.resolve(DISPATCH)
+    assert bound.envelope == envelope()
+    assert bound.work["arrived_at"] == {"S": f"{DISPATCH_SORT_PREFIX}{DISPATCH}"}
+    locator = client.get_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": f"{TASK_LOCATOR_PREFIX}{DISPATCH}"}, "sk": {"S": "BINDING"}},
+        ConsistentRead=True,
+    )["Item"]
+    assert locator["work_event_id"] == {"S": f"TASK_WORK#{TASK}"}
+    assert locator["work_arrived_at"] == {"S": f"DISPATCH#{DISPATCH}"}
+    assert locator["protected_digest"] == bound.work["envelope_digest"]
 
 
-def accept(work, *, task=TASK, dispatch=DISPATCH):
-    """The acceptance transaction's durable intent, as T1 will write it."""
-    return work.store.put_work(
-        task_id=task,
-        kind="dispatch",
-        tenant_id=TENANT,
-        dispatch_id=dispatch,
-        envelope_digest=DIGEST,
-        deadline_at=_deadline(work.now),
+def test_aborted_acceptance_exposes_neither_work_nor_locator(repository):
+    store, client, _ = repository
+    other = envelope() | {"dispatch_id": "08bc87f5-2f05-41e4-9a92-0a774e41e618"}
+    work_id, items = store.transaction_items(
+        task_id=TASK, kind="dispatch", tenant_id=TENANT,
+        deadline_at=NOW + timedelta(minutes=30), envelope=other,
     )
+    items.append({"ConditionCheck": {
+        "TableName": REQUEST_TABLE,
+        "Key": {"event_id": {"S": "MISSING"}, "arrived_at": {"S": "META"}},
+        "ConditionExpression": "attribute_exists(event_id)",
+    }})
+    with pytest.raises(ClientError):
+        client.transact_write_items(TransactItems=items)
+    assert client.get_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": f"TASK_WORK_ID#{work_id}"}, "sk": {"S": "BINDING"}},
+    ).get("Item") is None
+    assert client.get_item(
+        TableName=REQUEST_TABLE,
+        Key={"event_id": {"S": f"TASK_WORK#{TASK}"}, "arrived_at": {"S": f"DISPATCH#{work_id}"}},
+    ).get("Item") is None
 
 
-def sort_key(dispatch=DISPATCH):
-    return f"{DISPATCH_SORT_PREFIX}{dispatch}"
+def test_duplicate_and_competing_publication_claims_have_one_owner(repository):
+    store, _, _ = repository
+    first = store.claim_publication(DISPATCH)
+    with pytest.raises(TaskWorkError, match="leased"):
+        store.claim_publication(DISPATCH)
+    assert first.envelope["message_id"] == INVOCATION
+    assert first.work["publication_lease_token"]["S"]
 
 
-# --- Interruption: transaction commits, HTTP response lost -------------------
-
-
-def test_accepted_work_is_discoverable_without_another_client_request(work):
-    """T3-AC01: the 202 is lost, nobody retries, the sweep still finds the work."""
-    accept(work)
-
-    found, cursor = work.store.due_work(shard=work_shard(TASK))
-
-    assert [item["dispatch_id"]["S"] for item in found] == [DISPATCH]
-    assert cursor is None
-    assert found[0]["publication_outcome"]["S"] == "pending"
-
-
-def test_replayed_acceptance_cannot_create_a_second_attempt_series(work):
-    """An at-least-once acceptance path must not double-dispatch one task."""
-    accept(work)
-
-    with pytest.raises(TaskWorkError) as raised:
-        accept(work)
-
-    assert raised.value.code == "already_exists"
-
-
-# --- Interruption: SQS send fails or the response is lost --------------------
-
-
-def test_unknown_publication_stays_due_for_the_next_sweep(work):
-    """The send may have landed. The record must neither settle nor be lost.
-
-    This is the row of the design's table that most easily becomes a bug: an
-    ambiguous send recorded as failed authorizes a fresh dispatch, and a fresh
-    dispatch of a message that did land is a second execution.
-    """
-    accept(work)
-    claimed = work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    settled = work.store.settle_publication(
-        task_id=TASK,
-        dispatch_id=DISPATCH,
-        lease_token=claimed["lease_token"]["S"],
-        publication_outcome="unknown",
-    )
-
-    assert settled["publication_outcome"]["S"] == "unknown"
-    assert "settled_at" not in settled
-    assert "lease_token" not in settled, "the lease must be released for the next sweep"
-    found, _ = work.store.due_work(shard=work_shard(TASK))
-    assert len(found) == 1, "unknown work must remain discoverable"
-
-
-def test_crash_after_claim_before_settle_recovers_when_the_lease_expires(work):
-    """A publisher that dies mid-send holds no lock anyone has to clear."""
-    accept(work)
-    work.store.claim(task_id=TASK, sort_key=sort_key())  # Then the process dies.
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-    assert raised.value.code == "leased", "a live lease is respected"
-
-    work.now[0] += WORK_LEASE_SECONDS + 1
-    reclaimed = work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    assert reclaimed["lease_token"]["S"]
-    assert int(reclaimed["tries"]["N"]) == 2, "the retry is counted, not hidden"
-
-
-def test_confirmed_publication_leaves_the_sparse_index(work):
-    """Settled work must stop being rediscovered, or the sweep never drains."""
-    accept(work)
-    claimed = work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    settled = work.store.settle_publication(
-        task_id=TASK,
-        dispatch_id=DISPATCH,
-        lease_token=claimed["lease_token"]["S"],
-        publication_outcome="confirmed",
-        sqs_message_id="transport-message-id",
-    )
-
-    assert settled["settled_at"]["S"]
-    assert settled["queue_ack_status"]["S"] == "confirmed"
-    assert SHARD_ATTRIBUTE not in settled
-    found, _ = work.store.due_work(shard=work_shard(TASK))
-    assert found == [], "confirmed work is gone from the index"
-
-
-def test_confirmed_requires_a_transport_message_id(work):
-    """ "The call returned" is not "the message is on the queue"."""
-    accept(work)
-    claimed = work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.settle_publication(
-            task_id=TASK,
+def test_publication_lease_expiry_reclaims_but_stale_token_cannot_settle(repository):
+    store, _, clock = repository
+    first = store.claim_publication(DISPATCH)
+    clock[0] += 46
+    second = store.claim_publication(DISPATCH)
+    assert second.work["publication_lease_token"] != first.work["publication_lease_token"]
+    with pytest.raises(TaskWorkError, match="stale_lease"):
+        store.settle_publication(
             dispatch_id=DISPATCH,
-            lease_token=claimed["lease_token"]["S"],
+            lease_token=first.work["publication_lease_token"]["S"],
             publication_outcome="confirmed",
-            sqs_message_id=None,
+            sqs_message_id="late-message",
         )
 
-    assert raised.value.code == "confirmed_without_message_id"
 
-
-def test_transport_id_is_stored_for_diagnostics_and_is_not_the_work_identity(work):
-    """T3-AC02: the SQS message ID never replaces the ADP identifiers."""
-    accept(work)
-    claimed = work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    settled = work.store.settle_publication(
-        task_id=TASK,
+def test_unknown_send_retries_identical_envelope_and_dispatch_id(repository):
+    store, _, _ = repository
+    first = store.claim_publication(DISPATCH)
+    store.settle_publication(
         dispatch_id=DISPATCH,
-        lease_token=claimed["lease_token"]["S"],
-        publication_outcome="confirmed",
-        sqs_message_id="transport-message-id",
+        lease_token=first.work["publication_lease_token"]["S"],
+        publication_outcome="unknown",
+        sqs_message_id=None,
     )
-
-    assert settled["sqs_message_id"]["S"] == "transport-message-id"
-    assert settled["work_id"]["S"] == DISPATCH
-    assert settled["task_id"]["S"] == TASK
-    assert settled["event_id"]["S"].endswith(TASK)
+    retry = store.claim_publication(DISPATCH)
+    assert retry.envelope == first.envelope == envelope()
+    assert retry.work["work_id"] == {"S": DISPATCH}
 
 
-# --- Interruption: duplicate delivery while an owner is live -----------------
-
-
-def test_two_publishers_cannot_both_own_one_record(work):
-    """T3-AC02: the second claimant is refused, not merged.
-
-    Both read the same version, so the version CAS decides. Asserted against
-    real DynamoDB because the condition expression IS the mechanism.
-    """
-    accept(work)
-    first = work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    with pytest.raises(TaskWorkError):
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    record = work.store.read(TASK, sort_key())
-    assert record["lease_token"]["S"] == first["lease_token"]["S"]
-
-
-def test_a_stale_claimant_cannot_settle_the_newer_claim(work):
-    """A late observation about an older attempt must not overwrite the new one.
-
-    Otherwise a publisher that stalled past its lease could report `failed` for
-    its own dead attempt and wipe out the successful publication that replaced
-    it -- the task would look unpublished while its message sat on the queue.
-    """
-    accept(work)
-    stale = work.store.claim(task_id=TASK, sort_key=sort_key())["lease_token"]["S"]
-    work.now[0] += WORK_LEASE_SECONDS + 1
-    fresh = work.store.claim(task_id=TASK, sort_key=sort_key())["lease_token"]["S"]
-    assert stale != fresh
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.settle_publication(
-            task_id=TASK,
-            dispatch_id=DISPATCH,
-            lease_token=stale,
-            publication_outcome="failed",
+def test_recovery_claim_is_a_distinct_45_second_lease(repository):
+    store, _, clock = repository
+    publication = store.claim_publication(DISPATCH)
+    claimed, _ = store.claim_recovery(shard=work_shard(TASK), limit=100)
+    assert len(claimed) == 1
+    assert claimed[0].work["recovery_lease_token"]
+    assert claimed[0].work["publication_lease_token"] == publication.work["publication_lease_token"]
+    assert store.claim_recovery(shard=work_shard(TASK), limit=100)[0] == []
+    old_token = claimed[0].work["recovery_lease_token"]["S"]
+    clock[0] += 46
+    reclaimed = store.claim_recovery(shard=work_shard(TASK), limit=100)[0][0]
+    assert reclaimed.work["recovery_lease_token"]["S"] != old_token
+    with pytest.raises(TaskWorkError, match="stale_lease"):
+        store.settle_recovery(
+            work_id=DISPATCH, lease_token=old_token, evidence_kind="publication",
+            observed=False, observed_at=NOW,
         )
 
-    assert raised.value.code == "stale_lease"
-    assert work.store.read(TASK, sort_key())["lease_token"]["S"] == fresh
+
+def test_recovery_boolean_cannot_fabricate_publication(repository):
+    store, _, _ = repository
+    claimed = store.claim_recovery(shard=work_shard(TASK), limit=100)[0][0]
+    status, updated = store.settle_recovery(
+        work_id=DISPATCH,
+        lease_token=claimed.work["recovery_lease_token"]["S"],
+        evidence_kind="publication", observed=True, observed_at=NOW,
+    )
+    assert status == "rejected"
+    assert updated.work["publication_outcome"] == {"S": "pending"}
+    assert store.task_status(TASK) == "accepted"
 
 
-def test_settled_work_cannot_be_claimed_or_resettled(work):
-    """A redelivery observes terminal state and cannot rerun the task."""
-    accept(work)
-    token = work.store.claim(task_id=TASK, sort_key=sort_key())["lease_token"]["S"]
-    work.store.settle_publication(
-        task_id=TASK,
+def test_confirmed_publication_then_recovery_settlement(repository):
+    store, _, _ = repository
+    recovery = store.claim_recovery(shard=work_shard(TASK), limit=100)[0][0]
+    publication = store.claim_publication(DISPATCH)
+    store.settle_publication(
         dispatch_id=DISPATCH,
-        lease_token=token,
-        publication_outcome="confirmed",
-        sqs_message_id="transport-message-id",
+        lease_token=publication.work["publication_lease_token"]["S"],
+        publication_outcome="confirmed", sqs_message_id="sqs-1",
     )
-
-    with pytest.raises(TaskWorkError) as claim_refused:
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-    assert claim_refused.value.code == "already_settled"
-
-    with pytest.raises(TaskWorkError) as settle_refused:
-        work.store.settle_publication(
-            task_id=TASK,
-            dispatch_id=DISPATCH,
-            lease_token=token,
-            publication_outcome="failed",
-        )
-    assert settle_refused.value.code == "stale_lease"
+    status, settled = store.settle_recovery(
+        work_id=DISPATCH,
+        lease_token=recovery.work["recovery_lease_token"]["S"],
+        evidence_kind="publication", observed=True, observed_at=NOW,
+    )
+    assert status == "confirmed"
+    assert SHARD_ATTRIBUTE not in settled.work
+    assert store.task_status(TASK) == "queued"
 
 
-def test_recovery_republish_is_a_new_dispatch_series_for_the_same_task(work):
-    """Recovery keeps the run identity and changes only the dispatch identity."""
-    accept(work)
-    accept(work, dispatch=SECOND_DISPATCH)
-
-    found, _ = work.store.due_work(shard=work_shard(TASK))
-
-    assert sorted(item["dispatch_id"]["S"] for item in found) == sorted([DISPATCH, SECOND_DISPATCH])
-    assert {item["task_id"]["S"] for item in found} == {TASK}
-
-
-# --- Interruption: recovery bound exhausted ---------------------------------
-
-
-def test_the_try_budget_is_throttled_not_abandoned_inside_the_window(work):
-    """Spending the window's tries must not look like giving up.
-
-    `throttled` and `exhausted` are different answers: throttled work is still
-    coming back, exhausted work never is. Reporting exhausted here would abandon
-    a task that still had most of its deadline left.
-    """
-    accept(work)
-    for _ in range(MAX_PUBLICATION_TRIES):
-        token = work.store.claim(task_id=TASK, sort_key=sort_key())["lease_token"]["S"]
-        work.store.settle_publication(
-            task_id=TASK,
-            dispatch_id=DISPATCH,
-            lease_token=token,
-            publication_outcome="unknown",
-        )
-        work.now[0] += 1
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    assert raised.value.code == "throttled"
-    assert int(work.store.read(TASK, sort_key())["tries"]["N"]) == MAX_PUBLICATION_TRIES
+def test_missing_or_mismatched_locator_fails_closed(repository):
+    store, client, _ = repository
+    key = {"pk": {"S": f"TASK_WORK_ID#{DISPATCH}"}, "sk": {"S": "BINDING"}}
+    original = client.get_item(TableName=AUTHORITY_TABLE, Key=key)["Item"]
+    client.delete_item(TableName=AUTHORITY_TABLE, Key=key)
+    with pytest.raises(TaskWorkError, match="not_found"):
+        store.claim_publication(DISPATCH)
+    original["task_id"] = {"S": "tsk_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+    client.put_item(TableName=AUTHORITY_TABLE, Item=original)
+    with pytest.raises(TaskWorkError, match="binding_mismatch"):
+        store.claim_publication(DISPATCH)
 
 
-def test_a_new_try_window_reopens_the_budget(work):
-    """5 tries per 10 minutes is a rate, not a lifetime cap."""
-    accept(work)
-    for _ in range(MAX_PUBLICATION_TRIES):
-        token = work.store.claim(task_id=TASK, sort_key=sort_key())["lease_token"]["S"]
-        work.store.settle_publication(
-            task_id=TASK,
-            dispatch_id=DISPATCH,
-            lease_token=token,
-            publication_outcome="unknown",
-        )
-        work.now[0] += 1
-
-    work.now[0] += PUBLICATION_TRY_WINDOW_MINUTES * 60
-    work.store.reset_try_window(task_id=TASK, sort_key=sort_key())
-    claimed = work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    assert int(claimed["tries"]["N"]) == 1
+def test_stale_generation_is_rejected(repository):
+    store, client, _ = repository
+    client.update_item(
+        TableName=REQUEST_TABLE,
+        Key={"event_id": {"S": f"TASK#{TASK}"}, "arrived_at": {"S": "META"}},
+        UpdateExpression="SET generation = :generation",
+        ExpressionAttributeValues={":generation": {"N": "2"}},
+    )
+    with pytest.raises(TaskWorkError, match="binding_mismatch"):
+        store.claim_publication(DISPATCH)
 
 
-def test_work_past_its_deadline_is_exhausted_and_visibly_so(work):
-    """Never quietly abandon and never invent an exit: the caller must see this."""
-    accept(work)
-    work.now[0] += HOUR + 1
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    assert raised.value.code == "exhausted"
-    record = work.store.read(TASK, sort_key())
-    assert record is not None, "exhausted work is retained for an operator to find"
-    assert record["publication_outcome"]["S"] == "pending"
-
-
-def test_deadline_beats_a_remaining_try_budget(work):
-    """A task past its deadline is exhausted no matter how many tries are left."""
-    accept(work)
-    work.now[0] += HOUR + 1
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    assert raised.value.code == "exhausted", "not 'throttled': no retry is coming"
+def test_recovery_work_revalidates_generation_and_grant(repository):
+    store, client, _ = repository
+    work_id = store.put_work(
+        task_id=TASK, kind="execution", tenant_id=TENANT,
+        deadline_at=NOW + timedelta(minutes=30), invocation_id=INVOCATION, generation=1,
+    )
+    client.update_item(
+        TableName=REQUEST_TABLE,
+        Key={"event_id": {"S": f"TASK#{TASK}"}, "arrived_at": {"S": "META"}},
+        UpdateExpression="SET generation = :generation",
+        ExpressionAttributeValues={":generation": {"N": "2"}},
+    )
+    with pytest.raises(TaskWorkError, match="binding_mismatch"):
+        store.resolve(work_id)
 
 
-def test_counted_tries_with_an_unreadable_window_refuse_rather_than_reset(work):
-    """A missing window start must not hand out an unbounded try budget."""
-    accept(work)
-    work.ddb.update_item(
-        TableName="events",
-        Key={
-            "event_id": {"S": f"TASK_WORK#{TASK}"},
-            "arrived_at": {"S": sort_key()},
+def test_deadline_exhaustion_fails_a_queued_task(repository):
+    store, client, clock = repository
+    client.update_item(
+        TableName=REQUEST_TABLE,
+        Key={"event_id": {"S": f"TASK#{TASK}"}, "arrived_at": {"S": "META"}},
+        UpdateExpression="SET #status = :queued",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":queued": {"S": "queued"}},
+    )
+    clock[0] = (NOW + timedelta(minutes=31)).timestamp()
+    with pytest.raises(TaskWorkError, match="exhausted"):
+        store.claim_publication(DISPATCH)
+    assert store.task_status(TASK) == "failed"
+
+
+def test_terminal_task_cannot_be_published(repository):
+    store, client, _ = repository
+    client.update_item(
+        TableName=REQUEST_TABLE,
+        Key={"event_id": {"S": f"TASK#{TASK}"}, "arrived_at": {"S": "META"}},
+        UpdateExpression="SET #status = :cancelled",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":cancelled": {"S": "cancelled"}},
+    )
+    with pytest.raises(TaskWorkError, match="task_not_publishable"):
+        store.claim_publication(DISPATCH)
+
+
+def test_late_settlement_records_evidence_without_regressing_running(repository):
+    store, client, _ = repository
+    claim = store.claim_publication(DISPATCH)
+    client.update_item(
+        TableName=REQUEST_TABLE,
+        Key={"event_id": {"S": f"TASK#{TASK}"}, "arrived_at": {"S": "META"}},
+        UpdateExpression="SET #status = :running, #version = :version",
+        ExpressionAttributeNames={"#status": "status", "#version": "version"},
+        ExpressionAttributeValues={":running": {"S": "running"}, ":version": {"S": "task-v2"}},
+    )
+    settled = store.settle_publication(
+        dispatch_id=DISPATCH,
+        lease_token=claim.work["publication_lease_token"]["S"],
+        publication_outcome="confirmed", sqs_message_id="sqs-late",
+    )
+    assert settled.work["sqs_message_id"] == {"S": "sqs-late"}
+    assert store.task_status(TASK) == "running"
+
+
+def test_reconcile_replacement_gets_new_identity_and_invalidates_old_locator(repository):
+    store, client, _ = repository
+    old_id = store.put_work(
+        task_id=TASK, kind="execution", tenant_id=TENANT,
+        deadline_at=NOW + timedelta(minutes=30), invocation_id=INVOCATION, generation=1,
+    )
+    old_claim = store.claim_recovery(shard=work_shard(TASK), limit=100)[0]
+    old_recovery = next(item for item in old_claim if item.work_id == old_id)
+    new_id, transaction = store.replacement_transaction_items(
+        previous_work_id=old_id, task_id=TASK, kind="execution", tenant_id=TENANT,
+        deadline_at=NOW + timedelta(minutes=30), invocation_id=INVOCATION, generation=1,
+    )
+    client.transact_write_items(TransactItems=transaction)
+
+    with pytest.raises(TaskWorkError, match="binding_mismatch"):
+        store.resolve(old_id)
+    replacement = store.resolve(new_id)
+    assert replacement.work_id != old_recovery.work_id
+    assert "recovery_lease_token" not in replacement.work
+
+
+def test_revoked_or_mismatched_task_policy_blocks_publication(repository):
+    store, client, _ = repository
+    key = {"pk": {"S": f"TENANT#{TENANT}"}, "sk": {"S": "TASK_POLICY#service-principal-1"}}
+    client.update_item(
+        TableName=AUTHORITY_TABLE, Key=key,
+        UpdateExpression="SET #status = :disabled",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":disabled": {"S": "disabled"}},
+    )
+    with pytest.raises(TaskWorkError, match="authority_refused"):
+        store.claim_publication(DISPATCH)
+    client.update_item(
+        TableName=AUTHORITY_TABLE, Key=key,
+        UpdateExpression="SET #status = :active, allowed_personas = :personas",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":active": {"S": "active"},
+            ":personas": {"L": [{"S": "different-persona"}]},
         },
-        UpdateExpression="SET tries = :tries",
-        ExpressionAttributeValues={":tries": {"N": str(MAX_PUBLICATION_TRIES)}},
     )
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    assert raised.value.code == "throttled"
+    with pytest.raises(TaskWorkError, match="authority_refused"):
+        store.claim_publication(DISPATCH)
 
 
-# --- Bounded discovery ------------------------------------------------------
-
-
-def test_discovery_is_bounded_and_its_continuation_is_retained(work):
-    """Bounded pages with a usable cursor, never a table scan.
-
-    An unbounded sweep would cost in proportion to total task history rather
-    than to outstanding work, and would eventually exceed its own invocation
-    budget and stop making progress at all.
-
-    Three dispatch series on ONE task, so every row is guaranteed to share a
-    shard -- pagination is what is under test here, not the hash distribution.
-    """
-    dispatches = [f"{DISPATCH[:-2]}{n:02d}" for n in range(3)]
-    for dispatch in dispatches:
-        accept(work, dispatch=dispatch)
-        work.now[0] += 1
-
-    seen = []
-    cursor = None
-    cursors = []
-    for _ in dispatches:
-        page, cursor = work.store.due_work(shard=work_shard(TASK), cursor=cursor, limit=1)
-        assert len(page) == 1, "the page limit is honoured"
-        seen.append(page[0]["dispatch_id"]["S"])
-        cursors.append(cursor)
-
-    assert sorted(seen) == sorted(dispatches), "every record is reached exactly once"
-    assert len(set(seen)) == len(seen), "no record is served twice in one sweep"
-    # Exhaustion is signalled by the absent cursor, and that is the sweep's stop
-    # condition. A caller that treated it as "start again" would re-publish the
-    # whole shard every invocation, which is why it must be None and not the
-    # last key.
-    assert cursors[-1] is None
-    assert all(cursors[:-1]), "earlier pages must carry a continuation"
-
-
-def test_the_page_limit_cannot_exceed_the_contract_bound(work):
-    """A caller asking for more than the invocation budget is clamped, not obeyed.
-
-    Asserted on the request sent to DynamoDB: the returned row count would look
-    identical whether the limit was clamped or ignored, so it proves nothing.
-    """
-    accept(work)
-    requests = []
-    original = work.store.client.query
-
-    def recording(**kwargs):
-        requests.append(kwargs)
-        return original(**kwargs)
-
-    work.store.client.query = recording
-    work.store.due_work(shard=work_shard(TASK), limit=MAX_WORK_RECORDS_PER_INVOCATION * 10)
-    work.store.due_work(shard=work_shard(TASK), limit=0)
-
-    assert requests[0]["Limit"] == MAX_WORK_RECORDS_PER_INVOCATION
-    assert requests[1]["Limit"] == 1, "a zero limit would return nothing, forever"
-    assert "ScanIndexForward" not in requests[0] or requests[0]["ScanIndexForward"]
-
-
-def test_an_empty_shard_is_refused_rather_than_queried(work):
-    """An empty partition key would query nothing and report an empty sweep."""
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.due_work(shard="")
-
-    assert raised.value.code == "invalid_shard"
-
-
-def test_work_not_yet_due_is_not_returned(work):
-    """Future-dated work must not be dragged forward by the sweep."""
-    from datetime import UTC, datetime
-
-    work.store.put_work(
-        task_id=TASK,
-        kind="dispatch",
-        tenant_id=TENANT,
-        dispatch_id=DISPATCH,
-        envelope_digest=DIGEST,
-        deadline_at=_deadline(work.now),
-        due_at=datetime.fromtimestamp(work.now[0] + 120, tz=UTC),
+def test_policy_without_submit_scope_blocks_publication(repository):
+    store, client, _ = repository
+    key = {"pk": {"S": f"TENANT#{TENANT}"}, "sk": {"S": "TASK_POLICY#service-principal-1"}}
+    client.update_item(
+        TableName=AUTHORITY_TABLE, Key=key,
+        UpdateExpression="SET task_scopes = :scopes",
+        ExpressionAttributeValues={":scopes": {"L": [{"S": "read"}]}},
     )
-
-    assert work.store.due_work(shard=work_shard(TASK))[0] == []
-
-    work.now[0] += 121
-    assert len(work.store.due_work(shard=work_shard(TASK))[0]) == 1
-
-
-def test_work_due_in_the_current_millisecond_is_included(work):
-    """An exclusive bound would strand work due exactly now until the next sweep."""
-    accept(work)
-
-    found, _ = work.store.due_work(shard=work_shard(TASK))
-
-    assert len(found) == 1
-
-
-def test_a_corrupt_cursor_is_refused_rather_than_silently_restarting(work):
-    """Restarting the page would re-send messages already published."""
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.due_work(shard=work_shard(TASK), cursor="not-base64-at-all!!")
-
-    assert raised.value.code == "invalid_cursor"
-
-
-def test_cursor_round_trips(work):
-    key = {"event_id": {"S": f"TASK_WORK#{TASK}"}, "arrived_at": {"S": sort_key()}}
-
-    assert decode_cursor(encode_cursor(key)) == key
-
-
-# --- Keys and shards --------------------------------------------------------
-
-
-def test_shards_are_stable_and_within_the_contract_range(work):
-    """A record must land in the same shard on every write or it is never found."""
-    assert work_shard(TASK) == work_shard(TASK)
-    shards = {work_shard(f"tsk_{n}") for n in range(200)}
-    assert shards <= {f"v1#{n:02d}" for n in range(SHARD_COUNT)}
-    assert len(shards) > 1, "a single shard would serialize all recovery"
-
-
-def test_due_keys_sort_chronologically_as_strings(work):
-    """Fixed width is load-bearing: unpadded, "9" would sort after "10"."""
-    from datetime import UTC, datetime
-
-    early = due_key(datetime.fromtimestamp(9, tz=UTC), "w")
-    late = due_key(datetime.fromtimestamp(10, tz=UTC), "w")
-
-    assert early < late
-
-
-def test_work_rows_omit_the_legacy_gsi_attributes(work):
-    """Task rows must stay invisible to the legacy Activity indexes.
-
-    The design keeps tenant_id out of the top level for exactly this reason: a
-    top-level tenant_id would project every work record into tenant-index and
-    show internal plumbing as if it were agent activity.
-    """
-    item = accept(work)
-
-    for legacy in ("tenant_id", "user_id", "correlation_id", "root_human_id"):
-        assert legacy not in item
-    assert item["scope"]["M"]["tenant_id"]["S"] == TENANT
-
-
-def test_invalid_work_is_refused_before_it_reaches_the_table(work):
-    with pytest.raises(TaskWorkError) as kind:
-        work.store.put_work(
-            task_id=TASK,
-            kind="not-a-kind",
-            tenant_id=TENANT,
-            deadline_at=_deadline(work.now),
-        )
-    assert kind.value.code == "invalid_work_kind"
-
-    with pytest.raises(TaskWorkError) as dispatch:
-        work.store.put_work(
-            task_id=TASK,
-            kind="dispatch",
-            tenant_id=TENANT,
-            deadline_at=_deadline(work.now),
-        )
-    assert dispatch.value.code == "dispatch_id_required"
-
-    with pytest.raises(TaskWorkError) as scope:
-        work.store.put_work(
-            task_id=TASK,
-            kind="dispatch",
-            tenant_id="",
-            dispatch_id=DISPATCH,
-            deadline_at=_deadline(work.now),
-        )
-    assert scope.value.code == "invalid_scope"
-
-
-def test_an_invalid_outcome_is_refused(work):
-    accept(work)
-    token = work.store.claim(task_id=TASK, sort_key=sort_key())["lease_token"]["S"]
-
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.settle_publication(
-            task_id=TASK,
-            dispatch_id=DISPATCH,
-            lease_token=token,
-            publication_outcome="probably-fine",
-        )
-
-    assert raised.value.code == "invalid_outcome"
-
-
-def test_reads_are_consistent(work, monkeypatch):
-    """The index can lag; an authorization-relevant read cannot.
-
-    A claim that acted on an eventually-consistent read could publish for a task
-    another writer already settled.
-    """
-    calls = []
-    original = work.store.client.get_item
-
-    def recording(**kwargs):
-        calls.append(kwargs)
-        return original(**kwargs)
-
-    monkeypatch.setattr(work.store.client, "get_item", recording)
-    accept(work)
-    work.store.read(TASK, sort_key())
-
-    assert calls and all(call["ConsistentRead"] for call in calls)
-
-
-def test_missing_work_is_distinguishable_from_a_refusal(work):
-    with pytest.raises(TaskWorkError) as raised:
-        work.store.claim(task_id=TASK, sort_key=sort_key())
-
-    assert raised.value.code == "not_found"
+    with pytest.raises(TaskWorkError, match="authority_refused"):
+        store.claim_publication(DISPATCH)

@@ -80,6 +80,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.identity.providers import IdentityProvider
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.organization import User
 
 logger = logging.getLogger("bedrockgateway.identity")
@@ -288,6 +289,7 @@ async def resolve_person_anchor(db: AsyncSession, supplied_anchor: str) -> str:
     linked = await db.scalar(
         select(UserIdentity.id)
         .where(
+            UserIdentity.verification_method.in_(PROVEN_METHODS),
             UserIdentity.provider == namespace,
             UserIdentity.provider_user_id == identifier,
         )
@@ -372,6 +374,7 @@ async def resolve_caller_person_anchor(db: AsyncSession, caller_id: str) -> tupl
             select(UserIdentity.provider_user_id)
             .where(
                 UserIdentity.user_id == user_pk,
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
                 UserIdentity.provider == provider,
             )
             # Deterministic pick (review fix on #4661): (user_id, provider) is not

@@ -16,11 +16,10 @@ has no repo or issue, and grouping by tenant alone would let one stuck task
 block the tenant.
 
 `MessageDeduplicationId` is the stable dispatch UUID and NOT the invocation ID.
-Recovery republishes the same invocation under a NEW dispatch ID on purpose.
-Keying deduplication on the invocation would let SQS's five-minute window
-silently swallow a legitimate recovery republish: no message, no error, and a
-task that stalls until its deadline. The SQS deduplication window is not the
-task's idempotency window -- the idempotency key owns that, durably.
+Recovery republishes the exact same envelope under the same dispatch ID. Keying
+deduplication on the invocation would merge different dispatch generations,
+while changing the dispatch ID on retry would defeat FIFO deduplication. The SQS
+deduplication window is not the task's durable idempotency boundary.
 """
 
 from __future__ import annotations
@@ -120,14 +119,33 @@ def message_group_id(tenant_id: str, task_id: str) -> str:
     return digest_components(tenant_id, task_id)
 
 
-def publish_attributes(envelope: dict, *, tenant_id: str) -> dict:
+def tenant_from_assignment(envelope: dict) -> str:
+    """Extract grouping scope from the gateway-verified assignment reference.
+
+    Parsing is not an authority check; the gateway performed that check before
+    returning the envelope. This helper only prevents a caller-supplied tenant
+    from influencing FIFO grouping.
+    """
+    grant_pk = (envelope.get("assignment_ref") or {}).get("grant_pk", "")
+    if (
+        not isinstance(grant_pk, str)
+        or not grant_pk.startswith("TENANT#")
+        or not grant_pk[7:]
+    ):
+        raise TaskPublicationError("invalid_assignment_scope")
+    return grant_pk[7:]
+
+
+def publish_attributes(envelope: dict) -> dict:
     """The exact FIFO attributes for a task envelope.
 
     Returned as a dict rather than applied inline so a test can assert the
     attributes without a queue, and so the dedup-key rule has one definition.
     """
     return {
-        "MessageGroupId": message_group_id(tenant_id, envelope["task_id"]),
+        "MessageGroupId": message_group_id(
+            tenant_from_assignment(envelope), envelope["task_id"]
+        ),
         "MessageDeduplicationId": envelope["dispatch_id"],
     }
 
@@ -174,7 +192,7 @@ def serialize_envelope(envelope: dict) -> str:
     return body
 
 
-def publish_task_envelope(envelope: dict, *, tenant_id: str, queue_url: str) -> dict:
+def publish_task_envelope(envelope: dict, *, queue_url: str) -> dict:
     """Publish one committed task envelope and report what actually happened.
 
     Returns the publication outcome the gateway settles against:
@@ -193,7 +211,7 @@ def publish_task_envelope(envelope: dict, *, tenant_id: str, queue_url: str) -> 
     if not queue_url:
         raise TaskPublicationError("queue_unavailable", outcome="failed")
     validate_envelope(envelope)
-    attributes = publish_attributes(envelope, tenant_id=tenant_id)
+    attributes = publish_attributes(envelope)
     body = serialize_envelope(envelope)
 
     send_kwargs = {"QueueUrl": queue_url, "MessageBody": body}

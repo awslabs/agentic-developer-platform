@@ -1,48 +1,10 @@
-"""Protected dispatch and recovery adapters: claim, settle, sweep.
-
-These four routes are the only way the publication protocol advances. They are
-internal adapters, not public API: the public Task API (T2) accepts a task and
-returns 202; everything here runs on behalf of the platform's own publisher and
-scheduled reconciler.
-
-## Why recovery has its own allowlist
-
-The publisher and the reconciler are both "producers", but they are not the same
-principal and must not be interchangeable. Recovery is the more powerful of the
-two -- it can discover any tenant's outstanding work in a shard and lease it,
-which is exactly the capability a compromised publisher should not gain. So the
-recovery routes check a separate role allowlist
-(``ADP_TASK_RECOVERY_PRODUCER_ROLES``) rather than the dispatch one, and a caller
-holding only the publisher role is refused with 403 even with a valid STS proof.
-
-That is the gateway half of the recovery-authentication requirement. The other
-half lives in the Lambda: it verifies the alias it was actually invoked through,
-so a request *body* claiming to be recovery is never sufficient. Neither half is
-load-bearing alone -- the body never selects authority, and the identity is
-checked twice by two mechanisms that fail independently.
-
-## Why the shard is validated against a fixed pattern
-
-``shard`` reaches a DynamoDB partition key. It is constrained to the contract's
-16 literal values (``v1#00``..``v1#15``) by pattern, so a caller cannot use it to
-address a partition outside the recovery namespace or to probe for one. The same
-reasoning applies to ``limit``: bounded at the contract's 100 so one request
-cannot consume the whole invocation budget.
-
-## What these routes deliberately do not do
-
-They do not accept a tenant, a task ID, an envelope, a persona or a model from
-the request body. A claim returns the envelope that was committed at acceptance;
-the caller publishes that and nothing else. If the body could contribute to the
-envelope, the publisher could rewrite the task it was asked to dispatch, and the
-digest committed at acceptance would be the only thing standing between that and
-an unauthorized model call.
-"""
+"""Producer-proof-protected task dispatch and recovery adapters."""
 
 from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,50 +12,31 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from src.agentauth.routes import AgentRuntime, get_agent_runtime
-from src.agentauth.task_work import (
-    DISPATCH_SORT_PREFIX,
-    MAX_WORK_RECORDS_PER_INVOCATION,
-    TaskWorkError,
-    TaskWorkStore,
-    TaskWorkUnavailableError,
-)
+from src.agentauth.task_work import MAX_WORK_RECORDS_PER_INVOCATION, TaskWorkError, TaskWorkStore, TaskWorkUnavailableError
 from src.agentauth.work_routes import verify_producer
 
 logger = logging.getLogger(__name__)
-
 SCHEMA_VERSION = "1.0"
-
-# Rollout flags, both default-off (design section 11). Admission gates the
-# publish path; recovery gates the sweep. Separate because recovery must be
-# enableable for reconciliation while admission stays closed.
 ADMISSION_FLAG = "ADP_TASK_API_ADMISSION_ENABLED"
 RECOVERY_FLAG = "ADP_TASK_API_RECOVERY_ENABLED"
-
 DISPATCH_ROLES_ENV = "ADP_TASK_DISPATCH_PRODUCER_ROLES"
 RECOVERY_ROLES_ENV = "ADP_TASK_RECOVERY_PRODUCER_ROLES"
-
 UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-SHARD_PATTERN = r"^v1#(0[0-9]|1[0-5])$"
-TASK_ID_PATTERN = r"^tsk_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+TIMESTAMP = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$"
 
 
 def _flag(env, name: str) -> bool:
-    """Default-off: anything but an explicit "true" leaves the path closed.
-
-    A missing or misspelled value must not enable a path that can spend money.
-    """
     return str(env.get(name, "")).strip().lower() == "true"
 
 
 def _roles(env, name: str) -> set[str]:
-    return {role for role in (r.strip() for r in env.get(name, "").split(",")) if role}
+    return {role.strip() for role in env.get(name, "").split(",") if role.strip()}
 
 
 class DispatchClaimRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: str = Field(pattern=r"^1\.0$")
     dispatch_id: str = Field(pattern=UUID4)
-    task_id: str = Field(pattern=TASK_ID_PATTERN)
     producer_proof: str = Field(min_length=1, max_length=12000)
 
 
@@ -101,31 +44,40 @@ class DispatchSettleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: str = Field(pattern=r"^1\.0$")
     dispatch_id: str = Field(pattern=UUID4)
-    task_id: str = Field(pattern=TASK_ID_PATTERN)
     lease_token: str = Field(min_length=1, max_length=256)
     publication_outcome: str = Field(pattern=r"^(confirmed|unknown|failed)$")
-    sqs_message_id: str | None = Field(default=None, max_length=256)
+    sqs_message_id: str | None = Field(max_length=256)
     producer_proof: str = Field(min_length=1, max_length=12000)
 
 
 class RecoveryClaimRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: str = Field(pattern=r"^1\.0$")
-    shard: str = Field(pattern=SHARD_PATTERN)
-    cursor: str | None = Field(default=None, max_length=4096)
+    shard: str = Field(pattern=r"^v1#(0[0-9]|1[0-5])$")
+    cursor: str | None = Field(max_length=4096)
     limit: int = Field(ge=1, le=MAX_WORK_RECORDS_PER_INVOCATION)
     producer_proof: str = Field(min_length=1, max_length=12000)
 
 
-def require_dispatch_enabled(runtime: AgentRuntime = Depends(get_agent_runtime)) -> None:
-    """Gate every route on a rollout flag being explicitly on.
+class RecoveryEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(pattern=r"^(publication|workload_termination|queue_ack|retention)$")
+    observed: bool
+    observed_at: str = Field(pattern=TIMESTAMP)
 
-    A separate dependency from ``work_store`` on purpose: the flag check is the
-    thing that must not be bypassable, and keeping it out of the store
-    constructor means a test that substitutes the store still runs this.
-    """
+
+class RecoverySettleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: str = Field(pattern=r"^1\.0$")
+    work_id: str = Field(pattern=UUID4)
+    lease_token: str = Field(min_length=1, max_length=256)
+    evidence: RecoveryEvidence
+    producer_proof: str = Field(min_length=1, max_length=12000)
+
+
+def require_adapters_enabled(runtime: AgentRuntime = Depends(get_agent_runtime)) -> None:
     env = os.environ if runtime.env is None else runtime.env
-    if not _flag(env, ADMISSION_FLAG) and not _flag(env, RECOVERY_FLAG):
+    if not (_flag(env, ADMISSION_FLAG) or _flag(env, RECOVERY_FLAG)):
         raise HTTPException(503, "task dispatch unavailable")
 
 
@@ -134,147 +86,90 @@ def work_store(runtime: AgentRuntime = Depends(get_agent_runtime)) -> TaskWorkSt
     return TaskWorkStore(
         dynamodb_client=runtime.store.client,
         table_name=env.get("WEBHOOK_EVENTS_TABLE") or None,
+        authority_table_name=env.get("AGENT_AUTHORITY_TABLE") or runtime.store.table,
     )
 
 
-# Declared after its dependency so the flag gate applies to every route below,
-# including any added later -- a per-route decorator would be easy to forget.
 router = APIRouter(
-    prefix="/internal/v1/agent/task-dispatch",
+    prefix="/internal/v1/tasks",
     tags=["task-dispatch"],
-    dependencies=[Depends(require_dispatch_enabled)],
+    dependencies=[Depends(require_adapters_enabled)],
 )
 
 
 def _refusal(exc: TaskWorkError) -> HTTPException:
-    """Map a refusal to a status the caller can act on without leaking state.
-
-    409 for "someone else owns this or it is already done" -- the caller should
-    move on, not retry. 429 for a spent try budget, which IS retryable later.
-    404 for absent work. The distinction matters because the sweep uses it to
-    decide whether to look at this record again.
-    """
-    if exc.code in ("not_found",):
+    if exc.code == "not_found":
         return HTTPException(404, "not found")
     if exc.code == "throttled":
         return HTTPException(429, "publication try budget spent")
     if exc.code == "exhausted":
         return HTTPException(409, "recovery exhausted")
-    return HTTPException(409, exc.code)
+    return HTTPException(409, "task work refused")
 
 
-async def _authenticate(
-    *,
-    proof: str,
-    identity: str,
-    roles_env: str,
-    runtime: AgentRuntime,
-) -> str:
-    """Verify the caller's STS proof against the allowlist for THIS route.
-
-    `identity` is the value bound into the signed proof, so a proof captured for
-    one dispatch cannot be replayed to claim another.
-    """
+async def _authenticate(*, proof: str, identity: str, roles_env: str, runtime: AgentRuntime) -> str:
     env = os.environ if runtime.env is None else runtime.env
     allowed = _roles(env, roles_env)
     if not allowed:
-        # No configured principal means the path is not deployed. Refusing is the
-        # only safe reading; an empty allowlist must never mean "anyone".
-        raise HTTPException(503, "task dispatch unavailable")
+        raise HTTPException(503, "task adapter unavailable")
     return await verify_producer(proof, identity, allowed_roles=allowed)
 
 
-@router.post("/claim")
+@router.post("/dispatch/claim")
 async def dispatch_claim(
     body: DispatchClaimRequest,
     runtime: AgentRuntime = Depends(get_agent_runtime),
     store: TaskWorkStore = Depends(work_store),
 ) -> JSONResponse:
-    """Lease one committed dispatch and return the envelope to publish.
-
-    The envelope comes from the record committed at acceptance, never from the
-    request: the publisher is a courier, not an author.
-    """
     await _authenticate(
-        proof=body.producer_proof,
-        identity=body.dispatch_id,
-        roles_env=DISPATCH_ROLES_ENV,
-        runtime=runtime,
+        proof=body.producer_proof, identity=body.dispatch_id,
+        roles_env=DISPATCH_ROLES_ENV, runtime=runtime,
     )
-    sort_key = f"{DISPATCH_SORT_PREFIX}{body.dispatch_id}"
     try:
-        claimed = await run_in_threadpool(store.claim, task_id=body.task_id, sort_key=sort_key)
+        claimed = await run_in_threadpool(store.claim_publication, body.dispatch_id)
     except TaskWorkError as exc:
-        logger.info(
-            "task dispatch claim refused task=%s dispatch=%s reason=%s",
-            body.task_id,
-            body.dispatch_id,
-            exc.code,
-        )
+        logger.info("task dispatch claim refused dispatch=%s reason=%s", body.dispatch_id, exc.code)
         raise _refusal(exc) from None
     except TaskWorkUnavailableError:
         raise HTTPException(503, "task dispatch unavailable") from None
-
-    return JSONResponse(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "task_id": body.task_id,
-            "dispatch_id": body.dispatch_id,
-            "envelope_digest": claimed.get("envelope_digest", {}).get("S", ""),
-            "lease_token": claimed["lease_token"]["S"],
-            "lease_expires_at": claimed["lease_expires_at"]["S"],
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    return JSONResponse({
+        "schema_version": SCHEMA_VERSION,
+        "envelope": claimed.envelope,
+        "lease_token": claimed.work["publication_lease_token"]["S"],
+        "lease_expires_at": claimed.work["publication_lease_expires_at"]["S"],
+    }, headers={"Cache-Control": "no-store"})
 
 
-@router.post("/settle")
+@router.post("/dispatch/settle")
 async def dispatch_settle(
     body: DispatchSettleRequest,
     runtime: AgentRuntime = Depends(get_agent_runtime),
     store: TaskWorkStore = Depends(work_store),
 ) -> JSONResponse:
-    """Record the publication outcome the publisher actually observed.
-
-    `unknown` is accepted as a normal answer and leaves the work due. The
-    contract requires a transport ID with `confirmed`; that is enforced in the
-    store so the rule holds for every caller, not just this route.
-    """
     await _authenticate(
-        proof=body.producer_proof,
-        identity=body.dispatch_id,
-        roles_env=DISPATCH_ROLES_ENV,
-        runtime=runtime,
+        proof=body.producer_proof, identity=body.dispatch_id,
+        roles_env=DISPATCH_ROLES_ENV, runtime=runtime,
     )
     try:
         settled = await run_in_threadpool(
             store.settle_publication,
-            task_id=body.task_id,
             dispatch_id=body.dispatch_id,
             lease_token=body.lease_token,
             publication_outcome=body.publication_outcome,
             sqs_message_id=body.sqs_message_id,
         )
+        task_status = await run_in_threadpool(store.task_status, settled.task_id)
     except TaskWorkError as exc:
-        logger.info(
-            "task dispatch settle refused task=%s dispatch=%s reason=%s",
-            body.task_id,
-            body.dispatch_id,
-            exc.code,
-        )
+        logger.info("task dispatch settle refused dispatch=%s reason=%s", body.dispatch_id, exc.code)
         raise _refusal(exc) from None
     except TaskWorkUnavailableError:
         raise HTTPException(503, "task dispatch unavailable") from None
-
-    return JSONResponse(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "dispatch_id": body.dispatch_id,
-            "queue_ack_status": settled.get("queue_ack_status", {}).get("S", "pending"),
-            "publication_outcome": settled["publication_outcome"]["S"],
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    return JSONResponse({
+        "schema_version": SCHEMA_VERSION,
+        "dispatch_id": body.dispatch_id,
+        "queue_ack_status": settled.work.get("queue_ack_status", {}).get("S", "pending"),
+        "task_status": task_status,
+    }, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/recovery/claim")
@@ -283,48 +178,65 @@ async def recovery_claim(
     runtime: AgentRuntime = Depends(get_agent_runtime),
     store: TaskWorkStore = Depends(work_store),
 ) -> JSONResponse:
-    """Return one bounded page of due work for a shard.
-
-    Authenticated against the RECOVERY allowlist, not the dispatch one: this
-    route can enumerate outstanding work across tenants in a shard, so the
-    publisher's credential must not reach it.
-
-    Discovery only. Nothing here is claimed or mutated -- the caller claims each
-    record individually through /claim, where the version CAS applies. Listing
-    and leasing are separate so a sweep that dies mid-page has not leased work it
-    will never touch.
-    """
     env = os.environ if runtime.env is None else runtime.env
     if not _flag(env, RECOVERY_FLAG):
         raise HTTPException(503, "task recovery unavailable")
     await _authenticate(
-        proof=body.producer_proof,
-        identity=body.shard,
-        roles_env=RECOVERY_ROLES_ENV,
-        runtime=runtime,
+        proof=body.producer_proof, identity=body.shard,
+        roles_env=RECOVERY_ROLES_ENV, runtime=runtime,
     )
     try:
-        items, next_cursor = await run_in_threadpool(store.due_work, shard=body.shard, cursor=body.cursor, limit=body.limit)
+        claimed, next_cursor = await run_in_threadpool(
+            store.claim_recovery, shard=body.shard, cursor=body.cursor, limit=body.limit,
+        )
     except TaskWorkError as exc:
         raise _refusal(exc) from None
     except TaskWorkUnavailableError:
         raise HTTPException(503, "task recovery unavailable") from None
+    return JSONResponse({
+        "schema_version": SCHEMA_VERSION,
+        "work": [{
+            "work_id": item.work_id,
+            "task_id": item.task_id,
+            "kind": item.kind,
+            "due_at": item.work["due_at"]["S"],
+            "lease_token": item.work["recovery_lease_token"]["S"],
+            "lease_expires_at": item.work["recovery_lease_expires_at"]["S"],
+        } for item in claimed],
+        "next_cursor": next_cursor,
+    }, headers={"Cache-Control": "no-store"})
 
-    return JSONResponse(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "work": [
-                {
-                    "work_id": item["work_id"]["S"],
-                    "task_id": item["task_id"]["S"],
-                    "kind": item["kind"]["S"],
-                    "dispatch_id": item.get("dispatch_id", {}).get("S"),
-                    "publication_outcome": item.get("publication_outcome", {}).get("S"),
-                    "tries": int(item.get("tries", {}).get("N", "0")),
-                }
-                for item in items
-            ],
-            "next_cursor": next_cursor,
-        },
-        headers={"Cache-Control": "no-store"},
+
+@router.post("/recovery/settle")
+async def recovery_settle(
+    body: RecoverySettleRequest,
+    runtime: AgentRuntime = Depends(get_agent_runtime),
+    store: TaskWorkStore = Depends(work_store),
+) -> JSONResponse:
+    env = os.environ if runtime.env is None else runtime.env
+    if not _flag(env, RECOVERY_FLAG):
+        raise HTTPException(503, "task recovery unavailable")
+    await _authenticate(
+        proof=body.producer_proof, identity=body.work_id,
+        roles_env=RECOVERY_ROLES_ENV, runtime=runtime,
     )
+    try:
+        operation_status, settled = await run_in_threadpool(
+            store.settle_recovery,
+            work_id=body.work_id,
+            lease_token=body.lease_token,
+            evidence_kind=body.evidence.kind,
+            observed=body.evidence.observed,
+            observed_at=datetime.fromisoformat(body.evidence.observed_at.replace("Z", "+00:00")),
+        )
+        task_status = await run_in_threadpool(store.task_status, settled.task_id)
+    except TaskWorkError as exc:
+        raise _refusal(exc) from None
+    except TaskWorkUnavailableError:
+        raise HTTPException(503, "task recovery unavailable") from None
+    return JSONResponse({
+        "schema_version": SCHEMA_VERSION,
+        "work_id": body.work_id,
+        "operation_status": operation_status,
+        "task_status": task_status,
+    }, headers={"Cache-Control": "no-store"})

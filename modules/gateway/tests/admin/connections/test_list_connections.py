@@ -249,7 +249,11 @@ async def test_install_callback_persists_metadata(db_session: AsyncSession):
     from sqlalchemy import select
 
     from src.admin.connections.service import _attach_org_installation
+    from src.shared.models.organization import Organization
     from src.shared.models.vault import ChannelTenantMap
+
+    db_session.add(Organization(id="tenant-test", name="Metadata owner"))
+    await db_session.commit()
 
     await _attach_org_installation(
         installation_id=12345,

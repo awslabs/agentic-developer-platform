@@ -75,6 +75,12 @@ PROFILE_FIELDS = frozenset(
         "serving_auth_contract",
     }
 )
+GPU_PROFILE_FIELDS = (PROFILE_FIELDS - {"instance_type"}) | {
+    "accelerators",
+    "max_gpus_per_node",
+    "cpus",
+    "memory_gb",
+}
 
 
 def compact(value):
@@ -165,7 +171,7 @@ def build_deployment_preview(
     try:
         request_id = str(uuid.UUID(str(request_id)))
         profile = json.loads(compact(profile))
-        if set(profile) != PROFILE_FIELDS or not re.fullmatch(
+        if set(profile) not in (PROFILE_FIELDS, GPU_PROFILE_FIELDS) or not re.fullmatch(
             r"[a-z][a-z0-9-]{0,62}", profile_id
         ):
             raise ValueError("unsupported profile")
@@ -258,7 +264,6 @@ def build_deployment_preview(
                 "provider_account_id",
                 "region",
                 "image_id",
-                "instance_type",
                 "node_count",
                 "disk_size",
                 "instance_profile",
@@ -270,12 +275,18 @@ def build_deployment_preview(
         }
         certificate = data.pop("certificate_authority")
         data.update(
-            version=2,
+            version=3 if "accelerators" in profile else 2,
             workload=workload,
             certificate_authority_sha256=hashlib.sha256(
                 certificate.encode()
             ).hexdigest(),
         )
+        capacity_fields = (
+            ("accelerators", "max_gpus_per_node", "cpus", "memory_gb")
+            if data["version"] == 3
+            else ("instance_type",)
+        )
+        data.update({key: profile[key] for key in capacity_fields})
         document = {"name": name, "profile_id": profile_id, **model_options}
         if workload_kind == "batch":
             document = {

@@ -73,7 +73,7 @@ def test_archival_metadata_is_bounded_sourced_and_redacts_query_secrets():
     assert r["query_id"] == "query-test" and r["bytes_scanned"] == 128
     assert "secret" not in json.dumps(r)
     assert "REDACTED" in r["captures"][0]["url"]
-    assert r["verdict_effect"] == "context_only"
+    assert r["verdict_effect"] == "model_assessed"
     q = client.started[0]
     assert "public.test" not in q["QueryString"]
     assert q["ExecutionParameters"] == [
@@ -176,7 +176,7 @@ def test_preparation_requires_hypothesis_before_browser_and_preserves_archive_on
     saved = json.loads((path / "case.json").read_text())
     assert saved["initial_hypothesis"]["source_ids"] == ["corroboration-001"]
     assert saved["corroboration"][0]["found"] is False
-    assert saved["assessment"]["verdict"] == "inconclusive"
+    assert saved["assessment"]["verdict"] is None
     with pytest.raises(ValueError, match="do not replay"):
         cli.browse(path, request=failure)
 

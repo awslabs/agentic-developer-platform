@@ -1,6 +1,7 @@
 """Deployment-owned lifecycle settings, bound into each approved request."""
 
 from copy import deepcopy
+from ipaddress import IPv4Network
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
@@ -36,6 +37,7 @@ VARIABLES = frozenset(
         "log_retention_days",
         "cost_center",
         "node_image_repository_arns",
+        "hybrid_networks",
     }
 )
 
@@ -91,6 +93,38 @@ def validate_runtime_config(value):
         raise LifecycleRefused(
             "Terraform variables contain a target override or unsupported field"
         )
+    if variables.get("hybrid_networks") is not None:
+        hybrid = variables["hybrid_networks"]
+        try:
+            if not isinstance(hybrid, dict) or set(hybrid) != {
+                "node_cidr",
+                "pod_cidr",
+                "service_cidr",
+            }:
+                raise ValueError("unsupported hybrid network shape")
+            ranges = [IPv4Network(value, strict=True) for value in hybrid.values()]
+            private = [
+                IPv4Network(value)
+                for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+            ]
+            if (
+                IPv4Network(hybrid["service_cidr"]).prefixlen > 24
+                or any(
+                    not 16 <= value.prefixlen <= 28
+                    or not any(value.subnet_of(parent) for parent in private)
+                    for value in ranges
+                )
+                or any(
+                    value.overlaps(other)
+                    for index, value in enumerate(ranges)
+                    for other in ranges[index + 1 :]
+                )
+            ):
+                raise ValueError("hybrid ranges must be private, bounded and disjoint")
+        except (TypeError, ValueError):
+            raise LifecycleRefused(
+                "hybrid networks require disjoint canonical RFC1918 IPv4 ranges: node/pod /16 through /28, service /16 through /24"
+            ) from None
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,9}", str(config["environment"])):
         raise LifecycleRefused("workspace environment is invalid")
     if not re.fullmatch(

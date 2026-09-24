@@ -91,6 +91,7 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
+          "dynamodb:ConditionCheckItem",
           "dynamodb:GetItem",
           "dynamodb:Query",
           "dynamodb:PutItem"
@@ -331,12 +332,25 @@ resource "aws_iam_role_policy" "lambda_agent_authority" {
   role = aws_iam_role.lambda_execution.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "TrustedIngressAuthorityWrites"
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]
-      Resource = [aws_dynamodb_table.agent_authority.arn]
-    }]
+    Statement = [
+      {
+        Sid      = "TrustedIngressAuthorityWrites"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        # Task work locators are gateway-owned. Preserve legacy ingress writes
+        # while preventing this Lambda from becoming a deputy for opaque work IDs.
+        Sid      = "DenyTaskWorkLocatorWrites"
+        Effect   = "Deny"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:TransactWriteItems"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
+        }
+      }
+    ]
   })
 }
 

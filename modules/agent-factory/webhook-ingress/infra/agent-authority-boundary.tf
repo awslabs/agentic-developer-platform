@@ -170,7 +170,7 @@ resource "aws_iam_role_policy" "agent_authority_worker" {
 resource "kubernetes_service_account" "agent_authority_worker" {
   count = local.agent_authority_provisioned ? 1 : 0
   metadata {
-    name        = "agent-authority-worker-sa"
+    name        = local.agent_authority_pod.serviceAccountName
     namespace   = kubernetes_namespace.adp_agents.metadata[0].name
     annotations = { "eks.amazonaws.com/role-arn" = aws_iam_role.agent_authority_worker[0].arn }
   }

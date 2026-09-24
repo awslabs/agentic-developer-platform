@@ -16,10 +16,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 from case_capture import recorded_browser
 from case_contract import redact_url, sanitize
+from runtime_limits import (
+    LEASE_SECONDS,
+    NAVIGATION_SECONDS,
+    STARTUP_SECONDS,
+    ACTION_SECONDS,
+)
 from denylist import DenylistResult, canonical_hostname
 
 MAX_STEPS = 12
-LEASE_SECONDS = 300
 MAX_SESSIONS = 4
 LINK_SELECTOR = "a[href]"
 CONTROL_SELECTOR = 'summary,button[type="button"][aria-expanded],[role="tab"]'
@@ -60,14 +65,14 @@ def validate_start(payload):
     from research_case import _validate_input
 
     _validate_input(url)
-    if payload.get("scope", "host") not in {"host", "observed_external"}:
+    if payload.get("scope", "observed_external") not in {"host", "observed_external"}:
         raise InvestigationError("scope must be host or observed_external")
     if payload.get("profile", "desktop") not in {"desktop", "mobile"}:
         raise InvestigationError("profile must be desktop or mobile")
     return {
         "url": url,
         "profile": payload.get("profile", "desktop"),
-        "scope": payload.get("scope", "host"),
+        "scope": payload.get("scope", "observed_external"),
     }
 
 
@@ -110,7 +115,9 @@ class BrowserInvestigation:
             {
                 **self.request,
                 "wait_seconds": 0,
-                "timeout_ms": 30000,
+                "timeout_ms": NAVIGATION_SECONDS * 1000,
+                "_screenshots": False,
+                "_capture_frames": False,
                 "_navigation_check": self.navigation_check,
                 "_on_observation": checkpoint if on_observation else None,
             },
@@ -202,6 +209,7 @@ class BrowserInvestigation:
             "action",
             "candidate_id",
             "seconds",
+            "url",
         }:
             raise InvestigationError("Unsupported action fields")
         if self.closed or self.steps >= MAX_STEPS:
@@ -209,7 +217,7 @@ class BrowserInvestigation:
         if payload.get("view_id") != self.view_id:
             raise InvestigationError("Stale browser view; do not replay an old action")
         action = payload.get("action")
-        if any(
+        if action != "screenshot" and any(
             {
                 "challenge_or_interstitial",
                 "human_verification_challenge",
@@ -235,13 +243,24 @@ class BrowserInvestigation:
             def perform(session):
                 return session.click_observed(selector, index, expected)
 
-        elif action == "root":
-            target = self.root
+        elif action in {"root", "navigate"}:
+            target = self.root if action == "root" else payload.get("url")
+            if not isinstance(target, str) or not self.navigation_check(target).allowed:
+                raise InvestigationError(
+                    "Navigation URL is invalid or outside the authorized scope"
+                )
 
             def perform(session):
                 return session.goto(
-                    self.root, wait_until="domcontentloaded", timeout=30000
+                    target,
+                    wait_until="domcontentloaded",
+                    timeout=NAVIGATION_SECONDS * 1000,
                 )
+
+        elif action == "screenshot":
+
+            def perform(session):
+                return None
 
         elif action == "back":
 
@@ -263,7 +282,7 @@ class BrowserInvestigation:
 
         else:
             raise InvestigationError(
-                "Action must be follow, expand, root, back, scroll or wait"
+                "Action must be follow, expand, root, navigate, screenshot, back, scroll or wait"
             )
         self.steps += 1
         start = len(self.result["observations"])
@@ -360,7 +379,7 @@ class _Actor:
         except queue.Full:
             raise InvestigationError("A browser action is already pending")
         try:
-            return future.result(timeout=45)
+            return future.result(timeout=ACTION_SECONDS)
         except TimeoutError:
             # Do not replay an uncertain action. Managed service timeout is the
             # backstop if a browser/driver failure prevents prompt cleanup.
@@ -408,7 +427,7 @@ class InvestigationManager:
             packet = actor.initial()
             return {**packet, "session_token": token, "lease_seconds": LEASE_SECONDS}
         try:
-            packet = actor.ready.result(timeout=45)
+            packet = actor.ready.result(timeout=STARTUP_SECONDS)
         except TimeoutError:
             actor.deadline = 0
             raise InvestigationError("Browser startup timed out")

@@ -1,12 +1,12 @@
-# Historical index metadata only. Page content remains in Common Crawl; query
-# output stays in this account and never enters the live browser trust boundary.
+# Athena discovery plus selected archived page reads. Content is saved as inert
+# case evidence and never executed or loaded through the live browser.
 variable "common_crawl_partitions" {
   type        = list(string)
   default     = []
-  description = "One to three existing CC-MAIN-YYYY-WW index partitions. Empty disables Athena discovery until configured."
+  description = "One to twelve existing CC-MAIN-YYYY-WW index partitions. Empty disables Athena discovery until configured."
   validation {
-    condition     = length(var.common_crawl_partitions) <= 3 && alltrue([for p in var.common_crawl_partitions : can(regex("^CC-MAIN-20[0-9]{2}-[0-9]{2}$", p))])
-    error_message = "Supply at most three explicit Common Crawl partition names."
+    condition     = length(var.common_crawl_partitions) <= 12 && alltrue([for p in var.common_crawl_partitions : can(regex("^CC-MAIN-20[0-9]{2}-[0-9]{2}$", p))])
+    error_message = "Supply at most twelve explicit Common Crawl partition names."
   }
 }
 
@@ -154,6 +154,11 @@ resource "aws_iam_role_policy" "worker_common_crawl" {
       {
         Effect   = "Allow", Action = ["s3:GetObject"]
         Resource = ["arn:aws:s3:::commoncrawl/cc-index/table/cc-main/warc/*"]
+      },
+      {
+        Sid      = "ReadSelectedArchivePages"
+        Effect   = "Allow", Action = ["s3:GetObject"]
+        Resource = [for crawl in var.common_crawl_partitions : "arn:aws:s3:::commoncrawl/crawl-data/${crawl}/segments/*/warc/*.warc.gz"]
       },
       {
         Effect    = "Allow", Action = ["s3:ListBucket"]

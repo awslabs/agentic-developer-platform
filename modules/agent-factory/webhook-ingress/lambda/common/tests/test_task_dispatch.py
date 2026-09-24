@@ -81,6 +81,7 @@ def test_a_body_claiming_recovery_cannot_select_recovery(monkeypatch):
     """
     monkeypatch.setattr(task_dispatch, "_call_gateway", lambda *a, **k: None)
     hostile = {
+        "source": "aws.events",
         "detail-type": "Scheduled Event",
         "resources": ["arn:aws:events:us-east-1:123456789012:rule/task-recovery"],
         "adp_task_recovery": True,
@@ -192,10 +193,12 @@ def _in_first_shard_only(body, work_items, cursor=None):
 
 def _dispatch_work(index: int):
     return {
-        "work_id": DISPATCH,
+        "work_id": f"{DISPATCH[:-2]}{index:02d}",
         "task_id": TASK,
         "kind": "dispatch",
-        "dispatch_id": f"{DISPATCH[:-2]}{index:02d}",
+        "due_at": "2026-09-24T14:42:03Z",
+        "lease_token": f"recovery-lease-{index}",
+        "lease_expires_at": "2026-09-24T14:42:48Z",
     }
 
 
@@ -307,134 +310,21 @@ def test_pagination_follows_the_cursor_without_reprocessing(monkeypatch):
 # --- Honest outcomes (T3-AC05) ----------------------------------------------
 
 
-def test_failed_authority_preparation_is_reported_not_guessed_around(monkeypatch):
-    """A claim with no envelope is a failure with a discoverable outcome.
-
-    Inventing a replacement envelope here would mean publishing a task the
-    gateway never authorized.
-    """
-    settled = []
-
-    def gateway(path, body, *, identity):
-        if path.endswith("/recovery/claim"):
-            return _in_first_shard_only(body, [_dispatch_work(0)])
-        if path.endswith("/task-dispatch/claim"):
-            return {"lease_token": "t", "envelope": None, "tenant_id": ""}
-        settled.append(body)
-        return {"queue_ack_status": "pending"}
-
-    monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
-
-    result = sweep(context(), env=ENABLED)
-
-    assert result["outcomes"] == {"failed": 1}
-    assert settled[0]["publication_outcome"] == "failed"
-
-
-def test_an_ambiguous_send_is_settled_as_unknown(monkeypatch):
-    """T3-AC01: the publisher's honest "unknown" is carried through, not squashed."""
-    from common import task_publisher
-
-    settled = []
-
-    def gateway(path, body, *, identity):
-        if path.endswith("/recovery/claim"):
-            return _in_first_shard_only(body, [_dispatch_work(0)])
-        if path.endswith("/task-dispatch/claim"):
-            return {
-                "lease_token": "t",
-                "envelope": {"task_id": TASK, "dispatch_id": DISPATCH},
-                "tenant_id": "t-4821",
-            }
-        settled.append(body)
-        return {"queue_ack_status": "unknown"}
-
-    def ambiguous(envelope, *, tenant_id, queue_url):
-        raise task_publisher.TaskPublicationError("send_ambiguous", outcome="unknown")
-
-    monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
-    monkeypatch.setattr(task_publisher, "publish_task_envelope", ambiguous)
-
-    result = sweep(context(), env=ENABLED)
-
-    assert result["outcomes"] == {"unknown": 1}
-    assert settled[0]["publication_outcome"] == "unknown"
-    assert settled[0]["sqs_message_id"] is None
-
-
-def test_a_confirmed_publication_reports_its_transport_id_at_settlement(monkeypatch):
-    from common import task_publisher
-
-    settled = []
-
-    def gateway(path, body, *, identity):
-        if path.endswith("/recovery/claim"):
-            return _in_first_shard_only(body, [_dispatch_work(0)])
-        if path.endswith("/task-dispatch/claim"):
-            return {
-                "lease_token": "t",
-                "envelope": {"task_id": TASK, "dispatch_id": DISPATCH},
-                "tenant_id": "t-4821",
-            }
-        settled.append(body)
-        return {"queue_ack_status": "confirmed"}
-
-    monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
-    monkeypatch.setattr(
-        task_publisher,
-        "publish_task_envelope",
-        lambda envelope, *, tenant_id, queue_url: {
-            "publication_outcome": "confirmed",
-            "sqs_message_id": "transport-id",
-        },
-    )
-
-    result = sweep(context(), env=ENABLED)
-
-    assert result["outcomes"] == {"confirmed": 1}
-    assert settled[0]["sqs_message_id"] == "transport-id"
-
-
-def test_a_lost_settlement_is_named_rather_than_counted_as_success(monkeypatch):
-    """Published but unsettled: the lease expires and the work becomes due again."""
-    from common import task_publisher
-
-    def gateway(path, body, *, identity):
-        if path.endswith("/recovery/claim"):
-            return _in_first_shard_only(body, [_dispatch_work(0)])
-        if path.endswith("/task-dispatch/claim"):
-            return {
-                "lease_token": "t",
-                "envelope": {"task_id": TASK, "dispatch_id": DISPATCH},
-                "tenant_id": "t-4821",
-            }
-        return None  # The settlement call itself failed.
-
-    monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
-    monkeypatch.setattr(
-        task_publisher,
-        "publish_task_envelope",
-        lambda envelope, *, tenant_id, queue_url: {
-            "publication_outcome": "confirmed",
-            "sqs_message_id": "transport-id",
-        },
-    )
-
-    result = sweep(context(), env=ENABLED)
-
-    assert result["outcomes"] == {"settle_unconfirmed": 1}
-
-
-def test_a_refused_claim_does_not_publish(monkeypatch):
-    """Losing the claim race means another publisher owns it. Do nothing."""
+def test_a_refused_publication_claim_does_not_publish_and_releases_recovery(
+    monkeypatch,
+):
     from common import task_publisher
 
     published = MagicMock()
+    settlements = []
 
     def gateway(path, body, *, identity):
         if path.endswith("/recovery/claim"):
             return _in_first_shard_only(body, [_dispatch_work(0)])
-        return None  # 409: someone else holds the lease.
+        if path.endswith("/dispatch/claim"):
+            return None
+        settlements.append((path, body, identity))
+        return {"operation_status": "rejected"}
 
     monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
     monkeypatch.setattr(task_publisher, "publish_task_envelope", published)
@@ -443,61 +333,70 @@ def test_a_refused_claim_does_not_publish(monkeypatch):
 
     assert result["outcomes"] == {"claim_refused": 1}
     assert not published.called
+    assert settlements[0][0].endswith("/recovery/settle")
+    assert settlements[0][1]["evidence"]["observed"] is True
 
 
-def test_work_kinds_this_story_does_not_own_are_skipped_visibly(monkeypatch):
-    """Not silently dropped: they stay due for the story that owns them."""
+def test_nonpublication_work_is_honestly_released_for_its_evidence_owner(monkeypatch):
+    settlements = []
 
     def gateway(path, body, *, identity):
         if path.endswith("/recovery/claim"):
             return _in_first_shard_only(
                 body,
                 [
-                    {"work_id": "w", "task_id": TASK, "kind": "execution"},
-                    {"work_id": "w", "task_id": TASK, "kind": "queue_ack"},
-                    {"work_id": "w", "task_id": TASK, "kind": "cleanup"},
+                    {
+                        "work_id": DISPATCH,
+                        "task_id": TASK,
+                        "kind": "execution",
+                        "due_at": "2026-09-24T14:42:03Z",
+                        "lease_token": "lease",
+                        "lease_expires_at": "2026-09-24T14:42:48Z",
+                    }
                 ],
             )
-        raise AssertionError("no other call should be made for unowned kinds")
+        settlements.append(body)
+        return {"operation_status": "rejected"}
 
     monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
-
     result = sweep(context(), env=ENABLED)
 
-    assert result["outcomes"] == {
-        "skipped_execution": 1,
-        "skipped_queue_ack": 1,
-        "skipped_cleanup": 1,
+    assert result["outcomes"] == {"pending_execution": 1}
+    assert settlements[0]["evidence"] == {
+        "kind": "workload_termination",
+        "observed": False,
+        "observed_at": settlements[0]["evidence"]["observed_at"],
     }
 
 
-def test_a_dispatch_record_missing_its_dispatch_id_is_skipped_not_guessed(monkeypatch):
-    def gateway(path, body, *, identity):
-        if path.endswith("/recovery/claim"):
-            return _in_first_shard_only(
-                body, [{"work_id": "w", "task_id": TASK, "kind": "dispatch"}]
-            )
-        raise AssertionError("must not claim without a dispatch id")
-
-    monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
-
-    assert sweep(context(), env=ENABLED)["outcomes"] == {"skipped_dispatch": 1}
-
-
-def test_the_proof_identity_is_bound_to_the_specific_work(monkeypatch):
-    """A proof signed for one dispatch must not be reusable for another."""
+def test_proofs_are_bound_to_shard_and_opaque_work_id(monkeypatch):
     identities = []
 
     def gateway(path, body, *, identity):
         identities.append((path, identity))
         if path.endswith("/recovery/claim"):
-            return _page([_dispatch_work(7)])
-        return {"lease_token": "t", "envelope": None, "tenant_id": ""}
+            return _in_first_shard_only(body, [_dispatch_work(7)])
+        return None
 
     monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
     sweep(context(), env=ENABLED)
 
-    claim = next(i for p, i in identities if p.endswith("/task-dispatch/claim"))
-    assert claim == f"{DISPATCH[:-2]}07"
-    sweep_identity = next(i for p, i in identities if p.endswith("/recovery/claim"))
-    assert sweep_identity == "v1#00"
+    assert ("/internal/v1/tasks/recovery/claim", "v1#00") in identities
+    assert ("/internal/v1/tasks/dispatch/claim", f"{DISPATCH[:-2]}07") in identities
+    assert ("/internal/v1/tasks/recovery/settle", f"{DISPATCH[:-2]}07") in identities
+
+
+def test_malformed_recovery_work_is_not_interpreted_as_a_dispatch_id(monkeypatch):
+    calls = []
+
+    def gateway(path, body, *, identity):
+        calls.append(path)
+        if path.endswith("/recovery/claim"):
+            return _in_first_shard_only(
+                body, [{"work_id": DISPATCH, "task_id": TASK, "kind": "dispatch"}]
+            )
+        raise AssertionError("malformed work must not reach publication")
+
+    monkeypatch.setattr(task_dispatch, "_call_gateway", gateway)
+    assert sweep(context(), env=ENABLED)["outcomes"] == {"invalid_work": 1}
+    assert all(not path.endswith("/dispatch/claim") for path in calls)

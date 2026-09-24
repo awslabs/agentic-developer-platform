@@ -14,6 +14,7 @@ from src.admin.persona_models.catalogue import (
     PLATFORM_MODEL_CATALOGUE,
     aliases_for_model,
     catalogue_lookup,
+    compatibility_class_harness_contract_revision,
     resolve_alias,
 )
 from src.admin.persona_models.catalogue_service import build_model_catalogue
@@ -81,14 +82,14 @@ class TestModelCatalogue:
         assert entry.canonical_version == "5"
         assert resolve_alias("sonnet5") == entry.canonical_model_id
 
-    def test_all_entries_are_claude_class(self):
-        """All current catalogue entries are claude-agent-sdk."""
+    def test_models_have_provider_appropriate_harnesses(self):
+        """OpenAI models cannot borrow the Claude execution contract."""
         for model in PLATFORM_MODEL_CATALOGUE:
-            assert model.compatibility_class == "claude-agent-sdk"
+            assert model.compatibility_class == ("codex-sdk" if model.canonical_model_id.startswith("openai.") else "claude-agent-sdk")
 
     def test_all_entries_have_harness_revision(self):
         for model in PLATFORM_MODEL_CATALOGUE:
-            assert model.harness_contract_revision == "0.3.220"
+            assert model.harness_contract_revision == compatibility_class_harness_contract_revision(model.compatibility_class)
 
     def test_all_entries_are_active(self):
         for model in PLATFORM_MODEL_CATALOGUE:
@@ -130,9 +131,67 @@ class TestModelCatalogueRead:
 
     @pytest.mark.asyncio
     async def test_native_codex_persona_never_lists_claude_models(self, session):
-        """A valid class with no catalogue members returns an honest empty list."""
+        """Native Codex personas see only the three GPT-6 variants."""
         models = await build_model_catalogue(
             session,
             persona_key="agent-codex-reviewer",
+            account_id="111111111111",
+            region="us-east-1",
         )
-        assert models == []
+        assert {model.canonical_model_id for model in models} == {"openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna"}
+        assert all(model.compatibility_class == "codex-sdk" for model in models)
+        assert all(not model.selectable for model in models)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", ["astra", "sol", "luna"])
+async def test_gpt6_selection_preserves_harness_and_policy_gates(session, variant):
+    from src.admin.persona_models.catalogue_schemas import SelectionResult
+    from src.admin.persona_models.catalogue_service import validate_selection
+
+    arguments = dict(
+        org_id="org-5911",
+        principal_kind="human",
+        canonical_principal_id="user-5911",
+        persona_key="agent-codex-reviewer",
+        model=f"gpt6-{variant}",
+        require_evidence=False,
+    )
+    result = await validate_selection(session, **arguments)
+    assert isinstance(result, SelectionResult)
+    assert result.canonical_model_id == f"openai.gpt-6-{variant}"
+    assert result.compatibility_class == "codex-sdk"
+    assert (await validate_selection(session, **{**arguments, "persona_key": "developer"})).reason == "harness_incompatible"
+    assert (await validate_selection(session, **arguments, tenant_allowed_patterns=[])).reason == "not_permitted"
+    assert (
+        await validate_selection(
+            session,
+            **{
+                **arguments,
+                "require_evidence": True,
+                "account_id": "111111111111",
+                "region": "us-east-1",
+            },
+        )
+    ).reason == "probing_disabled"
+
+
+@pytest.mark.asyncio
+async def test_opus55_basic_selection_and_claude_catalogue(session):
+    from src.admin.persona_models.catalogue_schemas import SelectionResult
+    from src.admin.persona_models.catalogue_service import validate_selection
+
+    result = await validate_selection(
+        session,
+        org_id="org-5911",
+        principal_kind="human",
+        canonical_principal_id="user-5911",
+        persona_key="developer",
+        model="opus55",
+        require_evidence=False,
+    )
+    assert isinstance(result, SelectionResult)
+    assert result.canonical_model_id == "global.anthropic.claude-opus-5-5"
+    rows = await build_model_catalogue(session, persona_key="developer", require_evidence=False)
+    assert result.canonical_model_id in {row.canonical_model_id for row in rows}
+    assert all(row.compatibility_class == "claude-agent-sdk" for row in rows)

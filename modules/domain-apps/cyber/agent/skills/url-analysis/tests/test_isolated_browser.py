@@ -1,4 +1,3 @@
-import json
 import sys
 import time
 from functools import partial
@@ -145,18 +144,13 @@ def test_real_dom_checkpoint_passes_case_validation_after_screenshot_interruptio
             f"--{mode}-screenshot",
         ],
         stop=lambda sid: stopped,
-        startup_seconds=0.2,
+        startup_seconds=20,
+        action_seconds=0.5,
     )
     try:
-        # Wait for the real DOM checkpoint before forcing the startup deadline;
-        # Chromium launch latency is not what this regression exercises.
-        deadline = time.monotonic() + 20
-        while (
-            not a.checkpoints and not a.ended.is_set() and time.monotonic() < deadline
-        ):
-            time.sleep(0.02)
-        assert a.checkpoints
-        packet = a.initial()
+        initial = a.initial()
+        assert initial["session_open"] and initial["observations"][0]["dom_snapshot"]
+        packet = a.call({"action": "screenshot", "view_id": initial["view_id"]})
         assert packet["session_open"] is False
         assert reason in packet["observations"][0]["errors"]
         assert not packet["observations"][0].get("screenshot_base64")
@@ -174,7 +168,7 @@ def test_real_dom_checkpoint_passes_case_validation_after_screenshot_interruptio
         assert (output / observation["dom_snapshot"]).is_file()
         assert observation["evidence_items"]
         assert observation["status"] == "partial"
-        assert case["assessment"]["verdict"] == "inconclusive"
+        assert case["assessment"]["verdict"] is None
         assert case["sessions"][0]["cleanup_status"] == (
             "stopped" if stopped else "unknown"
         )
@@ -211,7 +205,7 @@ def test_real_chromium_state_and_evidence_survive_process_protocol():
         packet = manager.start({"url": "https://public.test/seed"})
         token = packet["session_token"]
         first = packet["observations"][0]
-        assert first["screenshot_base64"] and first["dom_snapshot"]
+        assert not first["screenshot_base64"] and first["dom_snapshot"]
         assert first["evidence_items"]
         choice = next(c for c in packet["choices"] if "verification" in c["text"])
         second = manager.request(
@@ -226,7 +220,8 @@ def test_real_chromium_state_and_evidence_survive_process_protocol():
         assert (
             "Missing session context" not in second["observations"][0]["visible_text"]
         )
-        assert second["observations"][0]["screenshot_base64"]
+        visual = manager.request({"session_token": token, "action": "screenshot", "view_id": second["view_id"]})
+        assert visual["observations"][0]["screenshot_base64"]
         close = manager.request({"session_token": token, "action": "close"})
         assert close["cleanup_status"] == "stopped"
     finally:

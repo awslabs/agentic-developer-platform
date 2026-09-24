@@ -90,9 +90,10 @@ async def accepted_contract(session, *, node, plan):
         return None
     try:
         data = json.loads(decision.reason)
-        # A plan amendment invalidates the extension; never carry it across a
-        # changed plan implicitly or mistake an older contract for current scope.
-        if (data.get("plan_id"), data.get("plan_version"), data.get("plan_hash")) != (plan.id, plan.version, plan.plan_hash):
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, data, node_id=node.id)
+        if plan is None or data.get("plan_id") != plan.id:
             return None
         base = ExecutionPolicy.model_validate((plan.plan_document or {}).get("execution_policy"))
         address = data["address"]

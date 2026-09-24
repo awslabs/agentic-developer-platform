@@ -672,7 +672,7 @@ async def _continuation_clock(session, candidate):
 
     row = (
         await session.execute(
-            select(OrchestrationRunReport)
+            select(OrchestrationRunReport, OrchestrationExecution, OrchestrationAcceptedPlan)
             .join(OrchestrationWorkClaim, OrchestrationWorkClaim.active_run_id == OrchestrationRunReport.run_id)
             .join(OrchestrationExecution, OrchestrationExecution.claim_id == OrchestrationWorkClaim.id)
             .join(OrchestrationAcceptedPlan, OrchestrationAcceptedPlan.flow_id == OrchestrationExecution.flow_id)
@@ -691,12 +691,16 @@ async def _continuation_clock(session, candidate):
                 OrchestrationExecution.cycle == candidate.attempts,
                 OrchestrationExecution.status.not_in({"concluded", "superseded"}),
                 OrchestrationAcceptedPlan.org_id == candidate.org_id,
-                OrchestrationAcceptedPlan.version == OrchestrationExecution.accepted_plan_version,
                 OrchestrationAcceptedPlan.superseded_at.is_(None),
             )
         )
-    ).scalar_one_or_none()
+    ).one_or_none()
     if row is None:
+        return False, None
+    row, execution, plan = row
+    from .plan_lineage import ancestor_plan
+
+    if await ancestor_plan(session, plan, execution.accepted_plan_version, node_id=candidate.node_id) is None:
         return False, None
     if (row.terminal_receipt or {}).get("outcome") in {"complete", "failed"}:
         return True, None

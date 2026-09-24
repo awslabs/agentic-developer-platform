@@ -495,6 +495,9 @@ class TestOrchestrationRouterIsOperatorPlane:
             ("/orchestration/flows/{flow_id}/evaluation-waiver/accept", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/append/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/append/accept", "POST"): "Permission.PLAN_APPROVE",
+            # Dependency edits read the accepted plan and require its human owner.
+            ("/orchestration/flows/{flow_id}/wave-dependencies/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/wave-dependencies/accept", "POST"): "Permission.PLAN_APPROVE",
             # Financial supplements retain plan approval and additionally require
             # platform administration, budget update and authenticated humanity.
             ("/orchestration/flows/{flow_id}/budget/preview", "POST"): "Permission.PLAN_APPROVE",

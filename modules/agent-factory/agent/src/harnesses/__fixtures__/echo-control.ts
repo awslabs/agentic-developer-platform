@@ -124,6 +124,24 @@ class EchoAttemptEndpoint implements AttemptEndpoint {
     return this.tracked;
   }
 
+  /**
+   * This harness takes input whenever it is live — Issue #3965.
+   *
+   * Deliberately a *different* answer from Claude's, and that difference is the
+   * substitutability evidence. Claude's boundary is a parked stream reader, so it
+   * closes mid-tool; this harness is request/response and has no such state, so
+   * the honest answer is "yes while live". A coordinator that had hard-coded the
+   * streaming notion of a boundary would be wrong here, which is exactly what the
+   * contract suite running against both adapters is for.
+   *
+   * `notifyWhenInputAccepted` is deliberately NOT implemented: it is optional on
+   * the contract, and leaving it out keeps the coordinator's "a missing readiness
+   * edge delays an instruction rather than losing it" fallback under test.
+   */
+  canAcceptInput(): boolean {
+    return this.live;
+  }
+
   /** Test hook: settle tracked work so a pause can confirm. */
   settleWork(): void {
     this.tracked = 0;
@@ -248,6 +266,11 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
 
   async submitInput(input: ControlInput): Promise<InputHandoffResult> {
     return this.registry.deliver(input);
+  }
+
+  /** Issue #3965. Same registry rule as `submitInput`: current attempt at call time. */
+  canAcceptInput(): boolean {
+    return this.registry.canAcceptInput();
   }
 
   /**

@@ -12,6 +12,8 @@ version: 0.2
 #
 # Env vars injected by the caller:
 #   AWS_REGION, ACCOUNT_ID, REGISTRY, IMAGE_TAG
+#   PUBLISH_LATEST (optional; defaults to true, false builds a candidate only)
+#   RUNNER_DOCKERFILE (optional; Dockerfile.recovery for the scoped repair)
 
 phases:
   pre_build:
@@ -37,10 +39,20 @@ phases:
   build:
     commands:
       - cd platform/arc-runner
-      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -t "$REGISTRY/$ECR_REPO:latest" -f Dockerfile .
+      - |
+        case "${PUBLISH_LATEST:-true}" in
+          true|false) ;;
+          *) echo "PUBLISH_LATEST must be true or false" >&2; exit 1 ;;
+        esac
+      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -f "${RUNNER_DOCKERFILE:-Dockerfile}" .
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
-      - docker push "$REGISTRY/$ECR_REPO:latest"
+      - |
+        if [ "${PUBLISH_LATEST:-true}" = true ]; then
+          docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
+          docker push "$REGISTRY/$ECR_REPO:latest"
+        fi
 
   post_build:
     commands:
-      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"
+      - test "$CODEBUILD_BUILD_SUCCEEDING" = 1
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (PUBLISH_LATEST=${PUBLISH_LATEST:-true})"

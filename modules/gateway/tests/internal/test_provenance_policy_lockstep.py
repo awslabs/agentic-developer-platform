@@ -104,3 +104,59 @@ class TestTriggerPolicyLockstep:
         from src.internal import provenance_routes
 
         assert provenance_routes.TRIGGER_POLICY_ANY_ADP_USER != provenance_routes.TRIGGER_POLICY_HOME_TENANT_ONLY
+
+
+class TestProvenanceVocabularyLockstep:
+    """#5664 (A10): the PROVEN-method vocabulary is duplicated for the same reason.
+
+    The webhook resolver decides which platform user a GitHub sender IS, and the
+    handler feeds that answer to ``agent_authority.VerifiedHumanEvent`` to mint human
+    dispatch authority. So the resolver needs to know which verification methods are
+    proof of account ownership — and it cannot import the gateway's
+    ``PROVEN_METHODS`` for the packaging reason this module's docstring explains.
+
+    A drift here is worse than a policy drift: if the Lambda's set is WIDER than the
+    gateway's, the webhook path grants authority from a link the gateway itself
+    considers unproven, which is the A10 finding reopening on the one path where it
+    is reachable without authentication.
+    """
+
+    def test_proven_sets_are_identical(self, resolver):
+        from src.shared.identity.verification import PROVEN_METHODS
+
+        assert resolver.PROVEN_VERIFICATION_METHODS == PROVEN_METHODS
+
+    def test_lambda_set_is_not_wider_than_the_gateway(self, resolver):
+        """Stated separately from equality because this is the direction that bites.
+
+        Equality already covers it today, but if this contract is ever relaxed to
+        "the Lambda may lag the gateway", the subset direction is the half that must
+        survive: a Lambda accepting a method the gateway rejects is a bypass, whereas
+        a Lambda rejecting one the gateway accepts is merely conservative.
+        """
+        from src.shared.identity.verification import PROVEN_METHODS
+
+        assert resolver.PROVEN_VERIFICATION_METHODS <= PROVEN_METHODS
+
+    def test_unproven_methods_are_rejected_by_the_lambda(self, resolver):
+        """The two sides must also agree on what is NOT proof.
+
+        Asserted against the gateway's UNPROVEN set rather than hard-coded strings, so
+        a method moved from unproven to proven on one side alone fails here.
+        """
+        from src.shared.identity.verification import UNPROVEN_METHODS
+
+        for method in UNPROVEN_METHODS:
+            assert not resolver._is_proven(method), f"{method!r} must not be proof in the Lambda"
+
+    def test_unknown_provenance_is_not_proof(self, resolver):
+        """Fail-closed on the values that actually occur in production today.
+
+        ``""`` is what a DDB row carries (the attribute is not projected) and what a
+        gateway predating the response field returns; ``None`` is a missing key. If
+        either counted as proof, the gate would be decorative on every existing row.
+        """
+        assert not resolver._is_proven("")
+        assert not resolver._is_proven(None)
+        assert not resolver._is_proven("magic_link")
+        assert not resolver._is_proven("self_asserted")

@@ -53,3 +53,48 @@ class IdentityProvider(StrEnum):
 
 # Frozen set for O(1) membership checks in validation paths.
 SUPPORTED_PROVIDERS: frozenset[str] = frozenset(IdentityProvider)
+
+
+# ---------------------------------------------------------------------------
+# Internal setup namespaces — NOT linkable identities (#5664, A10)
+# ---------------------------------------------------------------------------
+
+# `magic_link_nonces` is shared by two unrelated kinds of one-time credential:
+# the user-facing identity-linking token, and the browser-redirect "state" token
+# that protects the platform-admin GitHub App install / registration flows. The
+# only thing distinguishing them is this `provider` string.
+#
+# Before #5664 the user-facing route took `provider` straight off the URL path
+# and handed it to `store_nonce` unvalidated, so any signed-in user could mint a
+# nonce labelled `github_app_register` — the sole authenticator on
+# `register_app_callback`, which overwrites the shared GitHub App credentials,
+# the webhook signing secret and the GitHub sign-in secret. Ordinary user ->
+# whole-fleet credential replacement, via a text column.
+#
+# These names are deliberately absent from `IdentityProvider`: they are not
+# identities and nothing may ever write a `user_identities` row carrying one.
+# The assertion below makes the disjointness a startup invariant rather than a
+# convention two modules have to remember — adding a colliding member to the
+# enum fails at import, not in production.
+INTERNAL_SETUP_NAMESPACES: frozenset[str] = frozenset(
+    {
+        "github_install",
+        "github_app_register",
+    }
+)
+
+assert not (INTERNAL_SETUP_NAMESPACES & SUPPORTED_PROVIDERS), (
+    f"Internal setup namespaces must stay disjoint from linkable providers; overlap: {sorted(INTERNAL_SETUP_NAMESPACES & SUPPORTED_PROVIDERS)}"
+)
+
+
+def is_linkable_provider(provider: str) -> bool:
+    """True when `provider` may be used on the user-facing identity-link surface.
+
+    Rejects both unknown values and the internal setup namespaces above. Call
+    this BEFORE persisting anything: the ORM validator on
+    ``UserIdentity.provider`` only fires when the identity row is written, which
+    on the magic-link flow is one request too late — the nonce has already been
+    stored and the token already handed to the caller.
+    """
+    return provider in SUPPORTED_PROVIDERS and provider not in INTERNAL_SETUP_NAMESPACES

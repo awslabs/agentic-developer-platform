@@ -789,21 +789,27 @@ describe('ControlPanel — polling lifecycle', () => {
     expect(mockGetState).toHaveBeenCalledTimes(1);
   });
 
-  it('stops polling once the run reports itself unavailable', async () => {
+  it('backs off while the listener is unavailable and observes later abort finalization', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    mockGetState.mockResolvedValue(
-      controllableState({
-        available: false,
-        state: 'unavailable',
-        capabilities: { pause: false, resume: false, steer: false, abort: false },
-      }),
-    );
-    renderPanel();
+    const onCommandApplied = vi.fn();
+    mockGetState.mockResolvedValue(controllableState({
+      available: false, state: 'unavailable',
+      capabilities: { pause: false, resume: false, steer: false, abort: false },
+    }));
+    renderPanel({ onCommandApplied });
     await waitFor(() => expect(mockGetState).toHaveBeenCalledTimes(1));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(CONTROL_POLL_MS * 4);
-    });
+    expect(screen.getByTestId('control-phase')).toHaveTextContent('Controls unavailable');
+    await act(async () => { await vi.advanceTimersByTimeAsync(CONTROL_POLL_MS + 100); });
     expect(mockGetState).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(CONTROL_POLL_MS + 100); });
+    expect(mockGetState).toHaveBeenCalledTimes(2);
+    mockGetState.mockResolvedValue(controllableState({ state: 'terminal', available: false }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(CONTROL_POLL_MS * 4 + 100); });
+    expect(screen.getByTestId('control-phase')).toHaveTextContent('Finished');
+    expect(onCommandApplied).toHaveBeenCalled();
+    const calls = mockGetState.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(mockGetState).toHaveBeenCalledTimes(calls);
   });
 
   it('stops polling when the modal closes', async () => {

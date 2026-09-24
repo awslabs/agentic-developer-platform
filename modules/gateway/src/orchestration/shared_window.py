@@ -84,7 +84,11 @@ async def effective_shared_window(session, plan, policy):
     if type(data.get("plan_version")) is not int or data["plan_version"] > plan.version:
         raise WindowRenewalError("window_receipt_unverifiable")
     if data["plan_version"] < plan.version:
-        return policy  # A later graph acceptance requires its own approval.
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, data)
+        if plan is None:
+            return policy  # General plan changes still require a fresh approval.
     original = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
     wall_clock = data.get("max_wall_clock_seconds")
     prior_wall_clock = data.get("before_wall_clock_seconds", original.limits.max_wall_clock_seconds)
@@ -224,13 +228,14 @@ def aware(moment):
 
 
 async def capped_deadlines(session, flow, plan, before, after, max_seconds, renewed_seconds=None):
+    from .plan_lineage import ancestor_plan
+
     rows = list(
         await session.scalars(
             select(OrchestrationExecution)
             .where(
                 OrchestrationExecution.org_id == flow.org_id,
                 OrchestrationExecution.flow_id == flow.id,
-                OrchestrationExecution.accepted_plan_version == plan.version,
                 OrchestrationExecution.status.not_in({"concluded", "superseded"}),
             )
             .order_by(OrchestrationExecution.id)
@@ -241,12 +246,21 @@ async def capped_deadlines(session, flow, plan, before, after, max_seconds, rene
         raise WindowRenewalError("renewal_history_limit")
     result = []
     for row in rows:
+        if await ancestor_plan(session, plan, row.accepted_plan_version, node_id=row.node_id) is None:
+            continue
         old_cap = aware(row.created_at) + timedelta(seconds=max_seconds)
         if row.deadline_at is None or aware(row.deadline_at) not in {before, old_cap}:
             continue
         deadline = min(after, aware(row.created_at) + timedelta(seconds=renewed_seconds or max_seconds))
         if deadline > aware(row.deadline_at):
-            result.append({"execution_id": row.id, "before": aware(row.deadline_at).isoformat(), "after": deadline.isoformat()})
+            result.append(
+                {
+                    "execution_id": row.id,
+                    "accepted_plan_version": row.accepted_plan_version,
+                    "before": aware(row.deadline_at).isoformat(),
+                    "after": deadline.isoformat(),
+                }
+            )
     return result
 
 
@@ -254,6 +268,8 @@ async def advance_deadlines(session, document):
     # NOWAIT prevents lock inversion with dispatch/settlement; callers retry the
     # unchanged preview after concurrent work finishes. No worker is restarted.
     from sqlalchemy.exc import DBAPIError
+
+    from .plan_lineage import execution_plan_matches
 
     for expected in document["deadlines"]:
         try:
@@ -271,10 +287,19 @@ async def advance_deadlines(session, document):
         if (
             row is None
             or row.flow_id != document["flow_id"]
-            or row.accepted_plan_version != document["plan_version"]
+            or row.accepted_plan_version != expected.get("accepted_plan_version", document["plan_version"])
             or row.status in {"concluded", "superseded"}
             or row.deadline_at is None
             or aware(row.deadline_at).isoformat() != expected["before"]
+        ):
+            raise WindowRenewalError("execution_deadline_changed")
+        if not await execution_plan_matches(
+            session,
+            org_id=row.org_id,
+            flow_id=row.flow_id,
+            node_id=row.node_id,
+            version=row.accepted_plan_version,
+            current_version=document["plan_version"],
         ):
             raise WindowRenewalError("execution_deadline_changed")
         row.deadline_at = datetime.fromisoformat(expected["after"])

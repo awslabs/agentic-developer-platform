@@ -54,13 +54,7 @@ export const CONTROL_POLL_MS = 2000;
 /** Ceiling for the error backoff. Bounded so a recovered backend is picked up. */
 export const CONTROL_POLL_MAX_MS = 30000;
 
-/**
- * Control phases in which no command can be sent and polling should stop.
- *
- * `unavailable` is included deliberately: it is not an error, it is the ordinary
- * answer for a run with no reachable control registration, and continuing to
- * poll it would be a request per two seconds that can never change.
- */
+/** Neither phase allows commands; only terminal ends observation. */
 const INERT_STATES: ReadonlySet<string> = new Set(['terminal', 'unavailable']);
 
 // ---------------------------------------------------------------------------
@@ -248,6 +242,7 @@ export function ControlPanel({
     inFlightRef.current = null;
   }
   const consecutiveFailures = useRef(0);
+  const consecutiveUnavailable = useRef(0);
 
   // Reset every piece of per-run state when the run changes or the modal closes.
   // Without this, commands submitted against one run would be listed under the
@@ -261,6 +256,7 @@ export function ControlPanel({
     pendingCommandRef.current = null;
     lastGenerationRef.current = null;
     consecutiveFailures.current = 0;
+    consecutiveUnavailable.current = 0;
   }, [invocationId, isOpen]);
 
   const pollEnabled = Boolean(invocationId) && isOpen && visible && flagEnabled && !isTerminalRun;
@@ -277,6 +273,8 @@ export function ControlPanel({
       try {
         const result = await getControlState(invocationId, signal);
         consecutiveFailures.current = 0;
+        consecutiveUnavailable.current = result.state === 'unavailable' || !result.available
+          ? consecutiveUnavailable.current + 1 : 0;
         return result;
       } catch (error) {
         consecutiveFailures.current += 1;
@@ -289,13 +287,14 @@ export function ControlPanel({
     refetchInterval: (query) => {
       // Back off on consecutive failures rather than hammering a backend that is
       // already struggling; bounded so recovery is still noticed.
-      const failures = consecutiveFailures.current;
+      const current = query.state.data;
+      if (current?.state === 'terminal') return false;
+      // Listener teardown precedes terminal persistence, and registrations can
+      // recover. Unavailable is transient: retry with bounded backoff while visible.
+      const failures = Math.max(consecutiveFailures.current, consecutiveUnavailable.current);
       if (failures > 0) {
         return Math.min(CONTROL_POLL_MS * 2 ** failures, CONTROL_POLL_MAX_MS);
       }
-      const current = query.state.data;
-      // Stop once there is nothing left that can change.
-      if (current && (INERT_STATES.has(current.state) || !current.available)) return false;
       return CONTROL_POLL_MS;
     },
     refetchIntervalInBackground: false,

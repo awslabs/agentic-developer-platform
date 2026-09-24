@@ -1524,7 +1524,14 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # token-mint will 404 deterministically. Delete the poison message to
     # prevent FIFO head-of-line blocking and exit cleanly. Only applies to
     # GitHub-path messages (GitLab is routed above).
-    if installation_id in (0, None, "0"):
+    # A protected control evaluation has no GitHub installation. This marker
+    # only defers the GitHub guard: bootstrap and evaluation_request below must
+    # still authenticate the dispatch and verify its projected fixture identity
+    # before any experiment runs or any repository credential is requested.
+    control_evaluation_requested = authority_enabled() and isinstance(
+        (envelope.get("payload") or {}).get("control_evaluation"), dict
+    )
+    if installation_id in (0, None, "0") and not control_evaluation_requested:
         logger.error(
             "FATAL: installation_id=%r is invalid (message_id=%s, repo=%s, issue=%s). "
             "Deleting poison message to prevent FIFO jam.",
@@ -1613,6 +1620,62 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     from lib.run_identity import bootstrap_run_identity
 
     run_identity = bootstrap_run_identity(envelope)
+
+    # The operator's live SDK fixture uses the same acquired dispatch and
+    # authenticated bootstrap, but needs no repository/GitHub credential. The
+    # projected fixture nonce and protected envelope must agree before entering
+    # this bounded handoff. Ordinary dispatches do not select this path.
+    from lib.control_evaluation import evaluation_request, run_evaluation
+
+    evaluation = evaluation_request(
+        envelope, authenticated=run_identity is not None, env=dict(os.environ)
+    )
+    if evaluation is not None:
+        bootstrap_log.step_success(1, "control_evaluation_authenticated")
+        bootstrap_log.close()
+        # Issue #5891 (LF-01): register the SAME production control channel an
+        # ordinary run registers, before the evaluation's SDK process starts.
+        # Before this, the fixture branch returned above `_setup_agent_control`
+        # (line ~2816 in the ordinary path) entirely — no token was minted, no
+        # listener address was written to the invocation row, so the gateway's
+        # dashboard had nothing to reach. `control_env` carries the ADP_CONTROL_*
+        # values `run_evaluation` places into the evaluation subprocess's own
+        # environment; `os.environ` is left untouched, exactly as the ordinary
+        # path leaves it for its own agent subprocess (#3960's separation between
+        # this process's env and the child's).
+        control_env: dict = {}
+        registered_mode = evaluation.get("mode", "sdk") != "sdk"
+        control_registered = (
+            _setup_agent_control(control_env, message_id, arrived_at) if registered_mode else False
+        )
+        try:
+            rc = run_evaluation(evaluation, envelope, start_proxy=_start_sigv4_proxy,
+                                stop_proxy=_stop_sigv4_proxy, control_env=control_env)
+        except Exception:
+            logger.exception("Authenticated control evaluation failed")
+            rc = 1
+        finally:
+            # Symmetric with the ordinary path: the credential must not outlive
+            # the process it was minted for, whether the run succeeded or raised.
+            _teardown_agent_control(message_id, arrived_at, control_registered)
+        if task_heartbeat is not None:
+            task_heartbeat.stop()
+        abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+        if abort_outcome is not None:
+            summary = "Run-bound live control evaluation aborted by an operator"
+            persisted = _persist_abort_terminal_status(message_id, arrived_at, summary)
+            return _finalize_abort_acknowledgement(
+                queue_url=queue_url, region=region, receipt_handle=receipt_handle,
+                exit_code=0, terminal_persisted=persisted, message_id=message_id,
+                arrived_at=arrived_at, summary=summary,
+            )
+        recorded = update_invocation_status(
+            message_id, arrived_at, "complete" if rc == 0 else "failed",
+            summary="Run-bound live control evaluation finished",
+        )
+        if recorded:
+            _delete_message(queue_url, region, receipt_handle)
+        return rc if recorded else 1
 
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
@@ -4240,10 +4303,12 @@ def _handle_success(
                 _join_notes(summary, draft_note, amendment_note, binding_note, handoff, review_note),
                 check_run_url,
             )
+            # The model process has exited. A reporting-only retry must not
+            # leave it looking live forever or fabricate successful delivery.
             update_invocation_status(
                 message_id,
                 arrived_at,
-                "in_progress" if pr_handoff_pending() else "complete",
+                "failed" if pr_handoff_pending() else "complete",
                 summary=f"{persona} — run ended; "
                 + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
@@ -4361,7 +4426,7 @@ def _handle_success(
         update_invocation_status(
             message_id,
             arrived_at,
-            "in_progress" if pr_handoff_pending() else "complete",
+            "failed" if pr_handoff_pending() else "complete",
             summary=f"{persona} — run ended; "
             + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )

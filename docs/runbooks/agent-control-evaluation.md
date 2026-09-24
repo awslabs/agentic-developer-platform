@@ -125,11 +125,9 @@ generation and digests with your fixture's actual ones.
   "environment": "dev-control-fixture-embark1",
   "fixture_isolated": true,
   "tenant_id": "org-fixture-0001",
-
   "gateway_url": "https://gateway.dev.internal",
   "flag_off_gateway_url": "https://gateway-flagoff.dev.internal",
   "invocation_table": "adp-dev-webhook-events",
-
   "live_run_id": "msg-0000000000000001",
   "arrived_at": "2026-09-12T10:00:00Z",
   "generation": 1,
@@ -137,21 +135,22 @@ generation and digests with your fixture's actual ones.
   "terminal_arrived_at": "2026-09-12T10:05:00Z",
   "unknown_run_id": "msg-does-not-exist-0001",
   "aborted_run_id": "msg-0000000000000003",
-
+  "abort_run_id": "msg-0000000000000004",
   "command_id": "3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b",
   "oversize_bytes": 32768,
   "expected_output_digest": "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
-  "allowed_parity_fields": ["control", "registration", "state"],
-
+  "allowed_parity_fields": [
+    "control",
+    "registration",
+    "state"
+  ],
   "source_digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   "deployed_digest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-
   "identity_env": {
     "owner": "CONTROL_EVAL_OWNER_SESSION",
     "nonowner": "CONTROL_EVAL_NONOWNER_SESSION",
     "other_tenant": "CONTROL_EVAL_OTHER_TENANT_SESSION"
   },
-
   "artifacts": {
     "provenance": "artifacts/provenance.json",
     "listener_auth": "artifacts/listener_auth.json",
@@ -174,20 +173,58 @@ generation and digests with your fixture's actual ones.
     "wave2_preflight": "artifacts/wave2_preflight.json",
     "security_capture": "artifacts/security_capture.json",
     "teardown_verification": "artifacts/teardown_verification.json",
-    "browser_control_run": "artifacts/browser_control_run.json"
+    "wave3_preflight": "artifacts/wave3_preflight.json",
+    "abort_finalization": "artifacts/abort_finalization.json",
+    "abort_acknowledgement": "artifacts/abort_acknowledgement.json",
+    "abort_edge_cases": "artifacts/abort_edge_cases.json",
+    "steer_security_matrix": "artifacts/steer_security_matrix.json",
+    "steer_handoff": "artifacts/steer_handoff.json",
+    "steer_queue_bounds": "artifacts/steer_queue_bounds.json",
+    "steer_trust_boundary": "artifacts/steer_trust_boundary.json",
+    "sdk_input_stream": "artifacts/sdk_input_stream.json",
+    "steer_fixture_pr": "artifacts/steer_fixture_pr.json",
+    "steer_retry": "artifacts/steer_retry.json",
+    "wave3_security_capture": "artifacts/wave3_security_capture.json",
+    "wave3_teardown_verification": "artifacts/wave3_teardown_verification.json",
+    "steering_delivery": "artifacts/steering_delivery.json",
+    "steering_queue": "artifacts/steering_queue.json",
+    "steering_trust_boundary": "artifacts/steering_trust_boundary.json",
+    "steering_input_stream": "artifacts/steering_input_stream.json",
+    "steering_retry": "artifacts/steering_retry.json",
+    "browser_control_run": "artifacts/browser_control_run.json",
+    "wave4_preflight": "artifacts/wave4_preflight.json",
+    "wave4_steering_evidence": "artifacts/wave4_steering_evidence.json",
+    "wave4_abort_evidence": "artifacts/wave4_abort_evidence.json",
+    "wave4_security_matrix": "artifacts/wave4_security_matrix.json",
+    "wave4_runtime_comparison": "artifacts/wave4_runtime_comparison.json",
+    "wave4_evidence_index": "artifacts/wave4_evidence_index.json"
   },
-
   "resource_teardown": [
     "/opt/adp/fixtures/teardown-control-fixture.sh",
-    "--env", "dev-control-fixture-embark1"
+    "--env",
+    "dev-control-fixture-embark1"
   ],
   "resource_teardown_timeout_seconds": 600,
-
   "cleanup_items": [
-    {"event_id": "msg-0000000000000001", "arrived_at": "2026-09-12T10:00:00Z"},
-    {"event_id": "msg-0000000000000002", "arrived_at": "2026-09-12T10:05:00Z"},
-    {"event_id": "msg-0000000000000003", "arrived_at": "2026-09-12T10:10:00Z"}
-  ]
+    {
+      "event_id": "msg-0000000000000001",
+      "arrived_at": "2026-09-12T10:00:00Z"
+    },
+    {
+      "event_id": "msg-0000000000000002",
+      "arrived_at": "2026-09-12T10:05:00Z"
+    },
+    {
+      "event_id": "msg-0000000000000003",
+      "arrived_at": "2026-09-12T10:10:00Z"
+    }
+  ],
+  "authorized_fixture_repo": "YOUR_ORG/DISPOSABLE_FIXTURE_REPO",
+  "authorized_fixture_branch": "fixture/steering-pivot",
+  "authorized_fixture_base": "main",
+  "fixture_target_path": "target.txt",
+  "fixture_expected_content": "steered target\n",
+  "fixture_run_id": "YOUR_LIVE_FIXTURE_RUN_ID"
 }
 ```
 <!-- EXAMPLE-CONFIG-END -->
@@ -237,8 +274,8 @@ Most checks need observations the harness cannot make itself — a `kubectl exec
 from a probe pod, a token that has actually expired, two fixture runs compared, a
 jest suite's result. Those are recorded by the operator as small JSON files and
 referenced from `artifacts` by path, relative to the config file. The table below
-spans both waves; a wave-2 run reads the wave-2 artifacts and does not re-read
-wave 1's.
+spans every wave; a wave-2 run reads the wave-2 artifacts and does not re-read
+wave 1's, and the same holds for wave 3.
 
 Three outcomes, deliberately distinct:
 
@@ -269,6 +306,11 @@ Required keys per artifact:
 | `wave2_preflight` | W2-01 | `wave1_evidence`, `merged_revisions`, `protocol_version`, `adapter_id`, `sdk_version`, `package_versions`, `deployed_components`, `ci_gates`, `isolation_before_listener`, `ordinary_flags_off`, `fixture_only_flag_scope`, `fixture_identity`, `creation_ledger` |
 | `security_capture` | W2-10 | `captured_before_teardown`, `observed_revisions`, `fixture_identity`, `isolation_present`, `wave1_security`, `unsupported_verbs`, `unsupported_adapter_capabilities`, `general_flag_enablement`, `ordinary_flags_off` — recorded **before** teardown |
 | `teardown_verification` | W2-10 | `verified_after_teardown`, `captured_at`, `fixture_identity`, `removals`, `baseline_isolation_present`, `general_flag_enablement`, `ordinary_flags_off` — written **by your `resource_teardown` script**, after the removals |
+| `steering_delivery` | W3-06 | `command_id`, `accepted_at`, `handoff_at`, `marker_at`, `state_command_ids`, `log_command_ids`, `tool_active_at_submission`, `status_at_submission`, `delivered_at_matches_handoff`, `model_comprehension_claimed` |
+| `steering_queue` | W3-07 | `submission_order`, `handoff_order`, `accepted_count`, `overflow_status`, `paused_pending_ids`, `paused_delivered_after_resume`, `abort_cancelled_ids`, `expiry_outcome`, `replayed_after_unknown`, `authority_revalidated_at_handoff` |
+| `steering_trust_boundary` | W3-08 | `delimiters_present`, `instruction_inside_delimiters`, `actor_attribution`, `origin_kind`, `should_query`, `attacker_actor_metadata_rejected`, `raw_instruction_in_system_text` |
+| `steering_input_stream` | W3-09 | `initial_task_consumed`, `later_user_messages`, `generator_disposed`, `query_closed`, `message_count`, `turn_count`, `observed_by` |
+| `steering_retry` | W3-11 | `queued_command_id`, `deliveries_of_queued_command`, `confirmed_handoffs_replayed`, `session_preserved`, `attempt_id_before`, `attempt_id_after`, `ambiguous_handoff_outcome`, `abort_during_retry_started_next_attempt` |
 
 For `token_lifecycle`, use the expiry produced by the real registration writer
 and propagated to the listener as `ADP_CONTROL_TOKEN_EXPIRES_AT`. Record an
@@ -1035,6 +1077,215 @@ What the harness is strict about here:
   individually consistent files describing a posture that was never torn down and
   a teardown whose posture was never observed.
 
+## Wave 3's steering artifacts
+
+Five files, read only by `--wave 3`. They describe the same run from different
+angles: one steer delivered honestly (`steering_delivery`), the queue under load
+(`steering_queue`), the bytes that reached the SDK (`steering_trust_boundary`),
+the stream that carried them (`steering_input_stream`) and what a retry did to a
+command still in flight (`steering_retry`).
+
+One thing to know before capturing any of them: `delivered` in this system means
+**the SDK accepted the input**, and nothing more. It does not mean the model read
+the instruction, and it certainly does not mean the model complied. Several of
+these fields exist specifically to keep that distinction in the evidence, so
+resist the urge to record a stronger claim than you observed — a model that reads
+a steer and declines it is not a transport failure, and recording it as one sends
+the next reader looking for a bug in the queue.
+
+### `steering_delivery` (W3-06, wave 3)
+
+Submit a steer **while a tool is running**. That is the case AC-T2 names, and it
+is the one that can fail: mid-tool there is no parked SDK reader, so the command
+has to wait, and `pending` is the honest status for as long as it does.
+
+```sh
+# 1. Start a fixture task that runs a long tool (a sleep in Bash is enough), and
+#    confirm a tool is actually active before you submit. "I submitted during what
+#    I believe was a tool call" is not the observation.
+# 2. Submit the steer and record the 202's command_id and accepted_at.
+# 3. Then read BOTH records for that id — they must name the same command:
+curl -s -H "Authorization: Bearer $CONTROL_EVAL_OWNER_SESSION" \
+  "$GATEWAY/api/agent-runs/$RUN_ID/control/state" | jq '.commands[].command_id'
+kubectl logs -n adp-agents "$POD" | grep -o 'command_id[":= ]*[0-9a-f-]\{36\}'
+# 4. handoff_at is the worker's own record of the SDK accepting the input, and
+#    marker_at is when the live comment showed it. Take handoff_at from the log
+#    line the worker writes at handoff — NOT from the state row's accepted_at.
+```
+
+```json
+{
+  "command_id": "3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b",
+  "accepted_at": "2026-09-24T14:10:02Z",
+  "handoff_at": "2026-09-24T14:13:47Z",
+  "marker_at": "2026-09-24T14:13:52Z",
+  "state_command_ids": ["3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b"],
+  "log_command_ids": ["3f2b9c14-7d51-4e8a-9b02-5c6d7e8f9a0b"],
+  "tool_active_at_submission": true,
+  "status_at_submission": "pending",
+  "delivered_at_matches_handoff": true,
+  "model_comprehension_claimed": false
+}
+```
+
+The 35-second bound is measured from **`handoff_at`**, never from
+`accepted_at`, and that is why both are recorded. The example above is a pass with
+three and a half minutes between submission and handoff: the steer waited for a
+long tool, which is correct behaviour. Measured from submission it would fail,
+which is the substitution to avoid — it fails correct runs for being patient and
+passes an implementation that acknowledges at enqueue. What the bound constrains
+is the gap in which the SDK has the instruction and the operator cannot yet tell
+delivery from a dropped command.
+
+A `marker_at` *before* `handoff_at` fails. It is not read as clock skew, because
+acknowledging before delivering is the specific dishonesty AC-T4 forbids and no
+evidence available here distinguishes the two.
+
+### `steering_queue` (W3-07, wave 3)
+
+The queue under load. **Hold delivery while you submit** — pause the run, or
+submit during a long tool — or the cap is unreachable: commands that hand off as
+fast as they arrive never accumulate, so the eleventh is accepted and the bound
+appears not to exist.
+
+```sh
+# Eleven submissions with delivery held. The first ten are 202; the eleventh must
+# be 429. Record the ids IN SUBMISSION ORDER — the ordering comparison is the
+# point, and a set cannot say which pair inverted.
+for i in $(seq 1 11); do
+  curl -s -o /dev/null -w '%{http_code} ' \
+    -X POST -H "Authorization: Bearer $CONTROL_EVAL_OWNER_SESSION" \
+    -d "{\"action\":\"steer\",\"command_id\":\"$(uuidgen)\",\"instruction\":\"note $i\"}" \
+    "$GATEWAY/api/agent-runs/$RUN_ID/control"
+done
+# Then release, and read the handoff order from the worker's handoff log lines.
+```
+
+```json
+{
+  "submission_order": ["<id-1>", "<id-2>", "…ten ids in submission order…"],
+  "handoff_order": ["<id-1>", "<id-2>", "…the same ten, in handoff order…"],
+  "accepted_count": 10,
+  "overflow_status": 429,
+  "paused_pending_ids": ["<id-p1>", "<id-p2>"],
+  "paused_delivered_after_resume": ["<id-p1>", "<id-p2>"],
+  "abort_cancelled_ids": ["<id-a1>"],
+  "expiry_outcome": "unknown",
+  "replayed_after_unknown": false,
+  "authority_revalidated_at_handoff": true
+}
+```
+
+Four separate sub-cases, and each needs its own submissions rather than a reread
+of the ten above:
+
+* **paused** — submit while paused, confirm the commands stay `pending`, resume,
+  and record what was delivered. The two lists must be equal *and in the same
+  order*: a pause is not a discard.
+* **aborted** — submit, then abort with commands still pending. Those ids must
+  appear in `abort_cancelled_ids` and must NOT appear in `handoff_order`. An abort
+  that flushes its queue on the way out delivers the instructions the operator
+  aborted to prevent.
+* **expired** — let a journal generation lapse under a pending command. The
+  outcome must be `unknown`, and nothing may be resubmitted afterwards. Both
+  alternatives are dishonest in opposite directions: `delivered` claims a handoff
+  nobody saw, `pending` schedules a duplicate delivery.
+* **revalidation** — the authority check happens immediately before the physical
+  handoff, not at submission. A command can sit in the queue for minutes, so this
+  is what stops a revoked authorization from reaching the model through the delay.
+
+### `steering_trust_boundary` (W3-08, wave 3)
+
+The **bytes handed to the SDK**, not a claim that a wrapper is called somewhere.
+Capture the actual payload from the worker's handoff log or a debug dump of the
+message pushed into the input stream.
+
+```json
+{
+  "delimiters_present": true,
+  "instruction_inside_delimiters": true,
+  "actor_attribution": "operator <login> via ADP control (trusted caller)",
+  "origin_kind": "human",
+  "should_query": true,
+  "attacker_actor_metadata_rejected": true,
+  "raw_instruction_in_system_text": false
+}
+```
+
+`instruction_inside_delimiters` is the one that carries AC-S8, and it is separate
+from `delimiters_present` on purpose: a wrapper appended *after* the raw text has
+the delimiters and contains nothing. Check where the instruction actually sits
+relative to them.
+
+For `attacker_actor_metadata_rejected`, submit a steer whose text attempts to set
+its own attribution — an `actor:` line, a fake trusted-caller header, a JSON blob
+naming a different login. Attribution is ADP's statement about who called; if text
+inside the envelope can set it, the envelope's authority claim is
+attacker-controlled. And `raw_instruction_in_system_text` must be `false` even
+though the wrapped copy is present: the delimiters elsewhere do not matter if the
+text also appears in the one part of the prompt the model treats as its own rules.
+
+### `steering_input_stream` (W3-09, wave 3)
+
+The claim mocks cannot make. A fixture channel accepts as many messages as the
+test pushes into it by construction; what AC-T6 asks is whether the **real** SDK
+does, at the pinned version, for a session already doing work. A source grep
+establishes that the code intends to push — not that the provider accepted.
+
+`modules/agent-factory/agent/src/control-runtime.integration.ts` experiments 9 and
+10 drive this against the live SDK and print the counts. They are not run by CI
+(model availability, network egress, spend), so running them is an operator step.
+
+```json
+{
+  "initial_task_consumed": true,
+  "later_user_messages": 2,
+  "generator_disposed": true,
+  "query_closed": true,
+  "message_count": 3,
+  "turn_count": 4,
+  "observed_by": "control-runtime.integration.ts experiment 9 against @anthropic-ai/claude-agent-sdk 0.3.220"
+}
+```
+
+`observed_by` is checked for the words that name a non-observation — `mock`,
+`stub`, `grep`, `source read` — and the check fails if it finds one. Two later
+messages is the bar because one is ambiguous: a single post-initial message is
+also what a restart with the prompt replayed looks like.
+
+Disposal is recorded here rather than separately because the failure it prevents
+only shows up in aggregate. Each undisposed generator or unclosed Query holds an
+SDK subprocess, so a run that retries a few times exhausts what it was given
+while no single attempt looks wrong.
+
+### `steering_retry` (W3-11, wave 3)
+
+A retry replaces the attempt — new Query, new input channel — while the run, the
+session and the queue continue. Force one with a command still pending.
+
+```json
+{
+  "queued_command_id": "9c1e4a77-0b52-4d13-8f6a-2e7b5c8d1a03",
+  "deliveries_of_queued_command": 1,
+  "confirmed_handoffs_replayed": 0,
+  "session_preserved": true,
+  "attempt_id_before": "<attempt id before the retry>",
+  "attempt_id_after": "<a DIFFERENT attempt id>",
+  "ambiguous_handoff_outcome": "unknown",
+  "abort_during_retry_started_next_attempt": false
+}
+```
+
+`deliveries_of_queued_command` is an integer because 0 and 2 are both failures
+with opposite causes — a stranded instruction and a duplicated one — and "not 1"
+would merge them. Count the handoff log lines for that id across both attempts.
+
+The attempt ids must **differ** (otherwise no attempt was replaced and the
+reattachment path never ran) and the session must **not** change (a new session
+has discarded the context the instruction was written about). Also submit a steer
+during retry backoff and then abort: no next attempt may start, because backoff is
+not a window in which cancellation is deferred.
+
 ## Wave 2 is fully implemented; completing it is still on you
 
 `--wave 2` registers all ten checks from evaluation #3968, and as of #5825 every
@@ -1063,6 +1314,25 @@ right thing, and the only way to make it green was to leave a row behind. The
 reads now happen before teardown (`security_capture`) and only absence is
 verified afterwards (`teardown_verification`). If you have a `not_run` on W2-10
 from an older run, that is the likely cause and it was never your fixture's fault.
+
+## Wave 3 is registered and partially implemented
+
+`--wave 3` registers all twelve checks from evaluation #3969. Five of them have
+predicates today — W3-06 through W3-09 and W3-11, the steering half, delivered by
+S6 #3965. The other seven report `not_run` naming who owes them: W3-02 through
+W3-04 belong to S4 #3963 (abort), and W3-01, W3-05, W3-10 and W3-12 to the wave's
+gate owner.
+
+**So a wave-3 run cannot exit 0 yet, and that is deliberate.** The whole manifest
+is registered in one edit rather than growing check by check, because a manifest
+trimmed to the implemented checks would make `required` five, five could pass, and
+`--wave 3` would exit 0 on a wave with no abort evidence at all. A 5/12 nonzero is
+the honest report; a 5/5 zero is the false green the design exists to prevent.
+
+What you can do with it now is verify the steering half: capture the five
+`steering_*` artifacts above and confirm W3-06 through W3-09 and W3-11 pass. A
+`not_run` on any of those five is yours to fix (a missing artifact or key). A
+`not_run` on the other seven is not — the message names the story.
 
 ## Cleanup
 
@@ -1200,6 +1470,32 @@ implements W2-03 through W2-05, S5 (#3964) implements W2-06 through W2-09, and
 | W2-09 | AC-A10 | The live run-stats response carries the aborted counter at every level | **S5** |
 | W2-10 | Gate/regression | Wave-2 cleanup and security recheck | **#5825** (defect on #3968) |
 
+### Wave 3 (evaluation #3969)
+
+Wave 3's manifest is registered in full — all twelve IDs from #3969's acceptance
+table — and the predicates are still landing. The "Owner" column is the story that
+must be merged and deployed before the check can be *answered*, which is not the
+same thing as who implements the predicate: W3-05 through W3-11 describe the `steer`
+verb executing, and steer is not in the runtime's implemented verb set until **S6
+#3965**. Those checks report `not_run` naming that story rather than passing
+vacuously — see *Wave 3 is registered; its predicates are still landing* above for
+why the manifest is not shortened to the answerable subset.
+
+| ID | Acceptance IDs | Subject | Owner |
+|---|---|---|---|
+| W3-01 | Gate/regression | Wave-3 preflight: wave 2 accepted, S4 then S6 merged and contained in both deployed components, green named CI, all four implemented capabilities exercised | **#3969** |
+| W3-02 | AC-A1, AC-A2, AC-A8 | Graceful abort finalization: exactly one final comment, `aborted` with `completed_at`, check conclusion `cancelled`, control record revoked, and no later reclassification | **S4 #3963** |
+| W3-03 | AC-A4, AC-A5 | Once-only acknowledgement and no redelivery: the run's own SQS message correlated to one successful `DeleteMessage`, pod exit 0, measured visibility window, terminal-envelope replay starts nothing | **S4 #3963** |
+| W3-04 | AC-A6, AC-A7 | Abort during pause, tool completion and retry backoff; double and concurrent abort; bounded housekeeping; a failed acknowledgement must not report success | **S4 #3963** |
+| W3-05 | AC-S1, AC-S2, AC-S3, AC-S5, AC-S6, AC-S7 | The wave-1 security matrix re-run now that verbs *execute* — a rejected command must have changed nothing | **S6 #3965** |
+| W3-06 | AC-T2, AC-T4 | Steer during a long tool: `202`/pending, handoff at the next boundary, marker within 35s **of the recorded handoff** (not of submission) | **S6 #3965** |
+| W3-07 | AC-T5, AC-T8 | Bounded FIFO: 10 accepted, the eleventh `429`, exact submission/handoff ID *ordering* compared; abort cancels pending; expiry becomes `unknown` with no replay | **S6 #3965** |
+| W3-08 | AC-S8 | The text **actually bound to the SDK** carries the `wrapUntrusted` delimiters, `origin.kind: human` and `shouldQuery: true`; attacker-supplied actor metadata rejected; instruction never elevated to system text | **S6 #3965** |
+| W3-09 | AC-T6 | The real SDK input stream consumes the initial task plus **at least two** later user messages; generator disposed and Query closed — not a source grep or mocks | **S6 #3965** |
+| W3-10 | AC-T3 | In an authorized disposable fixture repo, a steer changes a deterministic artifact, target tests pass, and the resulting PR is merged — PR URL and merge SHA recorded, no manual pod access | **S6 #3965** |
+| W3-11 | AC-T7 | Forced in-process retry delivers the queued steer **exactly once per command**, never replays confirmed handoffs, preserves the session; ambiguous handoff is `unknown` | **S6 #3965** |
+| W3-12 | Gate/regression | Prior-wave regressions green on current code; evidence collected, then exact rows, workloads and test objects removed — a cleanup failure keeps the gate open | **#3969** |
+
 The full manifest keeps `required` at 10, so no subset of the wave can satisfy
 `passed == required` and `not_run == 0`. That guard is unchanged by W2-01 and
 W2-10 landing: it now bites on missing evidence rather than on missing code.
@@ -1235,12 +1531,59 @@ because a map whose keys you choose can only confirm the resources you chose to
 mention, and the whole point of the ledger is that omitting a leaked resource
 must not pass.
 
+## Wave 3 is registered; its predicates are still landing
+
+`--wave 3` registers all twelve checks from evaluation
+[#3969](https://github.com/aws-e/adp/issues/3969) — the whole acceptance table, not
+just the checks that can be answered today. That is deliberate, and it is the one
+thing about wave 3 worth understanding before you run it.
+
+Six of those twelve (W3-05 through W3-11) are about the **`steer` verb executing**.
+At this revision `steer` is not implemented: it is excluded from
+`IMPLEMENTED_CONTROL_VERBS` in `modules/agent-factory/agent/src/control-runtime.ts`,
+the Claude adapter reports `steer: {supported: false}`, and the gateway's
+`SUPPORTED_ACTIONS` omits it — so an authorized steer returns 501 and there is no
+handoff to observe. Steering is owned by **S6 #3965**, and this harness does not
+implement it.
+
+So the honest report while that story is outstanding is twelve `not_run` checks and
+a nonzero exit, each naming who owes it. The alternative — registering only the
+abort checks — is the dangerous edit: `report_is_passing` divides by the manifest,
+so a wave 3 registered with five checks would be a 5/5 wave that **exits 0**, a
+green report for an evaluation whose steering and retry proof does not exist. A
+short wave whose every present check passes is indistinguishable from a complete
+one, which is why the count stays at twelve.
+
+What this means when you run it:
+
+* A nonzero `--wave 3` is **not** necessarily a defect in the deployment. Read
+  `result.json`'s per-check messages: `not_run` naming an owning story is
+  outstanding implementation, while `not_run` naming a missing artifact or an unset
+  identity variable is evidence you can go and collect.
+* Wave 3 cannot be *accepted* before wave 2 is accepted and S4/S6 are merged and
+  deployed. W3-01 asserts both, and asserts them in order — S6's steering
+  integration is built on S4's abort finalization, because abort has to be able to
+  cancel queued steers, so a steering revision that does not contain the abort
+  revision is an integration nobody reviewed as a whole. That is checked as commit
+  **containment**, not by comparing merge dates: two commits on unrelated branches
+  can carry any timestamps at all.
+* Nothing in wave 3 is runnable from CI, for the same reason as waves 1 and 2 — it
+  needs an operator-created isolated fixture and a real credential.
+
+
+
 ### Wave 4 (evaluation #3970)
 
 Wave 4's manifest is registered in full — all ten IDs from #3970's acceptance
-table — and S7 (#3966) implements the four whose subject is the dashboard it
-builds. The other six consolidate criteria other stories own, and report
-`not_run` naming that owner.
+table — and **all ten now have predicates**. S7 (#3966) implemented the four whose
+subject is the dashboard it builds; #3970 implements the six that consolidate
+criteria other stories own.
+
+That changes what a wave-4 `not_run` means, and the difference is worth reading
+carefully before you act on one. It used to say *"nobody has written this check
+yet — wait for the owning story"*. It now says *"this check ran and the evidence
+it needs was not there"*, and names the artifact. The first was someone else's
+work to finish; the second is yours to collect.
 
 | ID | Acceptance IDs | Subject | Owner |
 |---|---|---|---|
@@ -1253,15 +1596,35 @@ builds. The other six consolidate criteria other stories own, and report
 | W4-07 | Gate/regression | Live JSON matches `agentControl.ts` and `control_schemas.py` at each level | **S7 #3966** |
 | W4-08 | Gate/regression | Measured polling lifecycle, backoff, stop conditions, distinct delivery states | **S7 #3966** |
 | W4-09 | AC-F1, AC-F2 | Flag-off/flag-on runtime comparison with final code; live stats provenance | S5 #3964 |
-| W4-10 | Gate/regression | Evidence index covering exactly all 37 acceptance IDs | operations |
+| W4-10 | Gate/regression | Evidence index covering exactly all 37 acceptance IDs, inside a report where every other check passed | operations |
 
-As with wave 2, the full manifest keeps `required` at 10, so the four implemented
-checks cannot satisfy `passed == required` and `not_run == 0` on their own. **A
-complete wave-4 report is not reachable in this revision**, and that is the
-correct state rather than a gap to work around: W4-03 needs steering to be
-routable (S6 #3965 — the gateway's `SUPPORTED_ACTIONS` excludes `steer` today),
-and W4-01 and W4-10 need waves 1–3 accepted, which is an operations act on a
-deployed environment.
+**A complete wave-4 report is still not reachable in this revision**, and that
+remains the correct state rather than a gap to work around. What blocks it is no
+longer missing code:
+
+- **Wave 3 is registered but not accepted.** Seven of its twelve checks have no
+  predicate yet (see "Wave 3 is registered and partially implemented" above), so
+  an honest wave-3 report is 5/12. W4-01 needs waves 1–3 *accepted*, and
+  `measure_prior_wave` derives that from the counts the wave's own `result.json`
+  carries — so this is the prerequisite that cannot be satisfied by paperwork. An
+  operator asserting "wave 3 is done" never enters the record; a 5/12 does.
+- **W4-03 needs steering to be routable** (S6 #3965 — the gateway's
+  `SUPPORTED_ACTIONS` excludes `steer` today).
+- **The browser capture producer** (#5878) is what W4-02/04/07/08 read. The
+  harness consumes it; it does not make it.
+
+So a run against a correct environment in this revision reports eight passed and
+W4-01/W4-10 failed, and exits nonzero. Do not read the eight as "wave 4 is nearly
+done": the two that are missing are precisely the ones that check whether
+everything else adds up.
+
+**W4-10 reads this run's other nine verdicts, not just its inventory.** Worth
+knowing because it changes where you look when it fails. A complete, correctly
+compiled evidence index is *not* sufficient: if any other wave-4 check failed or
+reported `not_run`, W4-10 fails too and names the sibling. The row makes this
+consolidation the condition for closing all four evaluations, so it cannot be
+satisfied inside a report that does not pass its own gate. When W4-10's message
+names another check, fix that one — the index is not the problem.
 
 #### `browser_control_run` (W4-02, W4-04, W4-07, W4-08, wave 4)
 
@@ -1275,7 +1638,11 @@ Run the dedicated browser scenarios in **live** mode:
 cd modules/gateway/frontend
 npm install -D @playwright/test && npx playwright install chromium
 CONTROL_E2E_LIVE=1 \
+CONTROL_E2E_CAPTURE_DIR="$PRIVATE_CAPTURE_DIR" \
+CONTROL_E2E_BUNDLE_REVISION="$DEPLOYED_FRONTEND_REVISION" \
+CONTROL_E2E_ASSET_MANIFEST="$DEPLOYMENT_RECEIPT_JSON" \
 CONTROL_E2E_SESSION_FILE="$PRIVATE_FIXTURE_SESSION_JSON" \
+CONTROL_E2E_NONOWNER_SESSION_FILE="$PRIVATE_NONOWNER_SESSION_JSON" \
 CONTROL_E2E_DISABLED_URL="$FLAG_OFF_FIXTURE_URL" \
 GATEWAY_URL="$FIXTURE_GATEWAY_URL" \
 CONTROL_E2E_RUN_ID="$LIVE_RUN_ID" \
@@ -1283,22 +1650,59 @@ CONTROL_E2E_ABORT_RUN_ID="$ABORT_RUN_ID" \
   npx playwright test --config tests/e2e/agent-control.config.ts
 ```
 
-`CONTROL_E2E_SESSION_FILE` is a private JSON file containing a real fixture user's
-`access_token`, `id_token`, `expires_at_ms` and optional `refresh_token`. Keep it
-outside the repository and evidence published to GitHub. Live mode never injects
-the fabricated JWT used by the mocked browser tests. `CONTROL_E2E_DISABLED_URL`
-must serve the same reviewed frontend bundle against a fixture with controls
-disabled; live mode requires this check and does not skip it.
+This writes `$CONTROL_E2E_CAPTURE_DIR/browser_control_run.json` — the artifact
+the `artifacts` mapping points at. Where each input comes from:
+
+| Input | Where it comes from | Why the run refuses to proceed without it |
+|---|---|---|
+| `CONTROL_E2E_CAPTURE_DIR` | A private directory outside the repo | The capture holds redacted raw observations; a default inside the repo gets committed by accident |
+| `CONTROL_E2E_BUNDLE_REVISION` | The deployed frontend revision, from the preflight's `deployed_components` | Names the revision the capture *claims*; on its own it is a claim, which is why the manifest below exists |
+| `CONTROL_E2E_ASSET_MANIFEST` | The deployment receipt written by `gateway-deploy.yml`: served asset path → sha256 | Proves the asset the browser actually received *is* the claimed revision. Without it the producer falls back to hashing the local `dist/`, which is weaker and recorded as such |
+| `CONTROL_E2E_SESSION_FILE` | A private JSON file for the owning fixture user | Live mode uses a real session; it never injects a fabricated JWT |
+| `CONTROL_E2E_NONOWNER_SESSION_FILE` | A second fixture user who does **not** own the run | A non-owner refusal must be the gateway's answer. Mocked mode fulfils a 403 in the browser and records it as an injection, which is not the same evidence |
+| `CONTROL_E2E_DISABLED_URL` | The same reviewed bundle served against a flag-off fixture | Live mode requires the flag-off render and does not skip it |
+| `CONTROL_E2E_RUN_ID`, `CONTROL_E2E_ABORT_RUN_ID` | Two controllable fixture runs | Binds the observations to specific runs; an unbound capture could describe any run |
+
+Session files hold `access_token`, `id_token`, `expires_at_ms` and an optional
+`refresh_token`. Keep them outside the repository and outside evidence published
+to GitHub. The producer reads their token values into a leak watch and will
+refuse to write a capture containing any of them, so a session file supplied here
+cannot end up in the artifact, the log or the partial diagnostic.
+
+Every input is validated in global setup, so a missing or inconsistent one fails
+**before** the browser sends a control command rather than halfway through
+mutating a live run.
+
+### Mocked mode is a different claim, and the gate enforces it
 
 The scenario's default (mocked) mode is **not** valid evidence for these checks:
 it stubs the gateway, so it proves the bundle's wiring and wording and nothing
 about a worker. Only `CONTROL_E2E_LIVE=1` drives a real deployment.
 
-The runner currently writes a standard Playwright report; it does **not** yet
-produce the `browser_control_run` artifact below. A measured capture producer
-remains required for live acceptance. Do not rename the Playwright report or
-fill missing observations with configured constants: missing evidence must
-remain `not_run`.
+A mocked capture is still written, and is deliberately labelled as mocked, so
+run the gate before citing any capture as acceptance evidence:
+
+```sh
+node --experimental-strip-types tests/e2e/agent-control-gate.ts \
+  "$PRIVATE_CAPTURE_DIR/browser_control_run.json"
+```
+
+Exit 0 means admissible. Exit 1 names the reason it is not — mocked mode, a
+served bundle not matched against a deployment receipt, or an injected control
+response. The question "may this file be offered as live proof?" has to be
+answerable about a file on disk by a reviewer who did not run the browser, which
+is why it is a separate executable rather than a note in this runbook.
+
+### Incomplete runs
+
+The producer writes `browser_control_run.json` **only** for a complete measured
+run. If any scenario fails or any required observation is missing, it writes
+`browser_control_run.partial.json` under a different name, records
+`incomplete_reason`, and exits nonzero. Nothing is back-filled with a passing
+default: a missing polling window is *incomplete*, not `false`, because "we never
+looked" and "we looked and saw nothing" are different findings and only one of
+them is evidence. Point the `artifacts` mapping at the partial and the harness
+rejects it, which is the intended outcome — missing evidence stays `not_run`.
 
 Every key below must come from browser observations; a source file cannot
 establish it. `bundle_revision` is what ties the observations to a deployed asset —
@@ -1320,15 +1724,175 @@ W4-02 refuses one whose `gateway_url` differs from this config's.
 | `active_tool_reason` | The tool-activity text rendered. Must report an unknown count as unknown and never assert quiescence. |
 | `steer_request`, `steer_status_sequence` | The steer request sent and the statuses rendered; a `delivered` with no preceding `pending` fails. |
 | `poll_intervals_ms` | At least two **measured** intervals, each 1000–4000ms. A configured constant is not an observation. |
-| `polled_while_hidden`, `polled_after_close`, `polled_after_terminal` | Must each be an observed `false`. |
-| `backoff_intervals_ms` | At least two intervals observed while the endpoint was failing; must be non-decreasing. |
+| `polled_while_hidden`, `polled_after_close`, `polled_after_terminal` | Must each be an observed `false`, and each must be backed by an `observation_windows` entry labelled with that key name, recording the window's start/end and the requests seen in it. A `false` with no window is "we never looked" wearing the costume of a measurement, and the producer refuses to write one. |
+| `backoff_intervals_ms` | At least two intervals observed while the endpoint was failing. Intervals must widen below the 30-second cap; a plateau at the cap is valid. Nonfinite, nonpositive and boolean observations are rejected. |
 | `detail_refreshed_after_command` | Whether the invocation detail re-read after a command. |
 | `request_destinations`, `request_bodies_contain_pod_address`, `request_bodies_contain_token` | Every destination the browser addressed, and whether any body carried pod coordinates. |
 | `spoofed_identity_rejected` | Whether a spoofed identity was refused. |
 
-Wave 3 remains unregistered and `--wave 3` is still refused outright. That is not
-an oversight in wave 4: several wave-4 checks consolidate wave 3's criteria, so
-wave 4 cannot be complete before wave 3 exists and is accepted.
+Wave 4 acceptance requires accepted Wave 3 evidence.
+
+#### The five operator-collected wave-4 artifacts
+
+These are produced by `platform/scripts/operator-wave4/`, not typed by hand. Each
+module asks the system that holds the answer and **omits** any field it could not
+measure, reporting the reason on stderr.
+
+That omission is the design, and it is worth understanding before you are tempted
+to fill a gap in:
+
+> A field that could not be measured is absent. It is never defaulted to `false`,
+> because `verify()` failing and `verify()` never running must not produce the same
+> value. The first is a deployment defect you should fix; the second is a
+> collection problem, and an artifact that reports the wrong one sends you to the
+> wrong place.
+
+A missing key makes its check **fail**, naming the key. (An entirely missing
+artifact is `not_run` instead — nobody recorded that observation, and the harness
+cannot make it from outside the cluster. A present-but-incomplete artifact is a
+claim without its evidence, so it fails.) Neither is something to work around by
+adding the key with a plausible value: the collector refused it for a reason, and
+the reason is in the run's output.
+
+**`wave4_preflight` (W4-01).** Where each field comes from, chosen so the answer is
+not yours to write:
+
+| Key | Source |
+|---|---|
+| `deployed_components` | `git` + `aws ecr describe-images` + `aws codebuild batch-get-builds` |
+| `frontend` | `git` for the revision, plus the **served** assets fetched from the deployment |
+| `prior_waves` | each earlier wave's own `result.json`, summarised as written |
+| `merged_revisions` | `git rev-parse` + `git merge-base --is-ancestor` — "merged" as a graph relation, not a claim |
+| `ci_gates` | `gh run view --json …`, archived verbatim and parsed per job |
+| `browser_identity` | the gateway's own answer to "who is this token" |
+| `ordinary_users_gated`, `ordinary_flags_off` | the live flag surface, read rather than asserted |
+
+`frontend.served_asset_evidence` is the field most worth defending. "Is the
+deployed bundle the revision we think?" cannot be answered from git — git says what
+a revision *contains*, and the question is what the deployment is *serving*. So the
+collector fetches the SPA entry point, extracts the content-hashed asset names the
+HTML references, and compares them against what a build of the claimed revision
+produces. Content hashing is what makes this a fingerprint rather than a name
+check, which is what catches the real case: a cache still serving the previous
+build while every revision field says the new one.
+
+An error page served at the SPA route is the trap here, and it is handled
+explicitly: a 200 whose body references no hashed assets is a **refusal**, not an
+empty set. An empty set would trivially match another empty set and report success.
+
+**The four consolidated artifacts** — `wave4_steering_evidence` (W4-03),
+`wave4_abort_evidence` (W4-05), `wave4_security_matrix` (W4-06) and
+`wave4_runtime_comparison` (W4-09). Each transcribes the evidence the owning wave
+recorded, plus the metadata that makes its **currency** checkable. Shared keys:
+
+| Key | Meaning |
+|---|---|
+| `wave` | Which wave owns the evidence. Emitted from the harness's own spec, so a document filed under the wrong wave produces a mismatch rather than agreement. |
+| `evaluation` | The evaluation that accepted it. Evidence attached to no evaluation cannot be consolidated into one. |
+| `criteria` | Per-AC entries: `status`, `evidence` (a retrievable reference), and `live` (a boolean — read, never inferred). An entry missing any of these is **dropped**, so the criterion reads as unevidenced instead of evidenced by something nobody recorded. |
+| `evidenced_revision` | Full 40-character SHA the observations were taken at. |
+| `evidenced_at` | ISO-8601 instant. Without it, staleness is *unanswerable* rather than absent. |
+
+Plus the per-check keys. Each proof is named **individually** because the wave-4
+rows name them individually: one proof cannot be satisfied by another in the same
+artifact passing, so there is no combined "steering works" field to record.
+
+| Artifact | Additional required keys |
+|---|---|
+| `wave4_steering_evidence` | `fifo_order_proven`, `retry_delivery_proven`, `pending_cap_proven`, `sdk_bound_text_proven`, `fixture_pivot` (the W3-10 pivot: `executed` and `at`), `merged_test_pr` (`merged` and `url`) |
+| `wave4_abort_evidence` | `cancel_left_run_untouched`, `confirmed_abort_terminal`, `repeat_and_double_abort`, `stats_writer_assertions`, `finalized_comment_count` (a **count**, not a boolean), `aborted_renderers` (per-component), `completed_at_observed` |
+| `wave4_security_matrix` | `non_gateway_probe_blocked`, `bundle_scan_supplemental` |
+| `wave4_runtime_comparison` | `flag_off_events_digest`, `flag_on_events_digest`, `differing_fields`, `ordinary_flags_off`, `stats_source`, `stats_response_keys` |
+
+Three of those are live reads rather than transcriptions, and the collectors take
+them from injected lookups:
+
+- `completed_at_observed` — the aborted run's **actual** row (`run_id`, `status`,
+  `completed_at`), read from DynamoDB. This is the difference between a UI that
+  renders a terminal state and a record that is one. A read that cannot say *which*
+  row it saw is refused: it is indistinguishable from a read of a different run.
+- `stats_source` — the provenance of the live stats read (`live`, `endpoint`,
+  `status`).
+- `stats_response_keys` — the keys that response actually carried. Separate from
+  `stats_source` on purpose: a schema can match perfectly on fabricated data, so the
+  key list is not evidence of a live read and the provenance is not evidence of
+  parity. A non-200 records the status **with no key list**, because the keys of an
+  error body are not the response's keys.
+
+Two behaviours here will look like bugs and are not:
+
+- **A recorded `false` is emitted, not refused.** If the source says
+  `fifo_order_proven: false`, the artifact says so and the check fails on it.
+  Refusing it would omit the key and turn *"we looked and it was not true"* into
+  *"we did not look"* — a softer report of a worse fact.
+- **Containment and staleness are not collected.** The evaluator computes both from
+  the commit graph. A recorded `compatible_with_current_revision: true` **is** the
+  conclusion those checks exist to reach, so the artifact carries the two inputs
+  (`evidenced_revision`, `evidenced_at`) and nothing more.
+
+Staleness is why `evidenced_at` matters: if any source surface the criteria cover
+was modified **after** the evidence was taken, the evidence describes code that is
+no longer deployed, and the criterion must be rerun. On a shallow clone git cannot
+answer when a surface last changed, and that case is `not_run` — never "not stale".
+
+**`wave4_evidence_index` (W4-10)** — `criteria` (all 37 ACs, each with `owner`,
+`evaluation`, `revision`, `evidence`, `live`, `status`), `evaluations` (each prior
+wave's acceptance), `compiled_at`, `compiled_revision`, `fixture_identity`.
+
+This is the artifact most worth forging — 37 rows of `{"status": "passed"}`
+satisfies every structural check about shape — so the compiler is built to be
+unable to type one. Every row is **derived**, from exactly one of two places: a
+consolidated artifact's own `criteria` map, or a prior evaluator report's verdict on
+the browser capture (for the criteria whose evidence *is* the capture, where what
+maps DOM observations onto acceptance IDs is the evaluator's check rather than any
+recorded field). A criterion with neither source gets **no row**, and W4-10 then
+reports it missing.
+
+Supply `compile_index(read_capture=...)` with a reader for the artifact paths in
+that report. Browser rows require exactly one readable capture referenced by the
+check, `mode: live`, the current fixture run ID, a matching bundle revision, a verified deployment asset
+manifest match, and an injection record without mocked command responses. A
+passing report alone cannot establish liveness. Missing provenance produces a
+refusal; the row retains the capture path for review. Consolidated source
+evaluation IDs are preserved, and a caller-supplied expectation cannot replace a
+different ID in the source document.
+
+Compile it **between** two evaluator runs: run the wave, compile from what that run
+observed, re-run so W4-10 can reconcile the index against the run in front of it.
+That is not circular — W4-10 compares the index against **this** run's own results
+and skips wave 4 in its `evaluations` loop, so a flattering index cannot certify the
+run that reads it. A complete index inside a report with `not_run`s is rejected, and
+that combination is the specific forgery the check exists to catch.
+
+#### The AC-to-evidence map: developer proof versus required live execution
+
+Everything in `platform/scripts/tests/test_agent_control_eval.py` is **developer
+proof**. It runs the real collectors and the real evaluator against controlled
+transports — injected `fetch`, `gh run view` and DynamoDB responses, and a modelled
+commit graph. It demonstrates that the producers measure what they claim and refuse
+what they cannot measure. It demonstrates **nothing** about any deployment, and no
+number of passing tests moves any acceptance criterion toward accepted.
+
+What each of the 37 needs for live acceptance:
+
+| Criteria | Live requirement |
+|---|---|
+| AC-F3, AC-P1–P6 | A `CONTROL_E2E_LIVE=1` Playwright capture against the deployed bundle. Mocked mode stubs the gateway and is not valid evidence. |
+| AC-T1–T8, AC-S8 | A real mid-run steer delivered to a live SDK attempt (needs S6 #3965 first). |
+| AC-A1–A12 | A real run aborted, transitioning an actual DynamoDB row to terminal. |
+| AC-S1–S7 | Probes of a deployed gateway. A bundle scan is supplemental, never the evidence. |
+| AC-F1, AC-F2 | Two runtime executions, flag-off and flag-on, compared against final code. |
+| Gate/regression (W4-01, W4-07, W4-08, W4-10) | Green CI on the deployed revision, a live schema read, a timed browser run, and waves 1–3 accepted. |
+
+Every one of these needs a live fixture run and exact cleanup, which are the
+maintainer's. A criterion whose only evidence is a test in this repository is
+`not_run`, and the evaluator is built so you cannot record it as anything else.
+
+Wave 3 is registered now, and `--wave 3` runs — but five of its twelve checks have
+predicates, so it reports 5/12 and is not accepted. That is not an oversight in
+wave 4: several wave-4 checks consolidate wave 3's criteria, so wave 4 cannot be
+complete before wave 3 is accepted at 12/12 with its cleanup confirmed.
+
 
 ## Troubleshooting
 
@@ -1360,3 +1924,9 @@ For W2-08, `vocabulary_parity.suites` must include passing results for
 For W2-09, export nonempty backend schema key lists for `response` (the root),
 `today`, `daily`, `by_persona`, `active_runs`, `recent_failures`, `top_repos`, and
 `spend` into `stats_schema_keys.levels`. Empty evidence cannot establish parity.
+
+The browser producer guard regressions can be run without a browser from `modules/gateway/frontend`:
+
+```sh
+node --experimental-strip-types --test tests/e2e/agent-control-capture.test.ts
+```

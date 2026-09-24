@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -20,6 +21,16 @@ logger = logging.getLogger(__name__)
 GITHUB_API_BASE = "https://api.github.com"
 _APP_JWT_EXPIRY_SECONDS = 600  # 10 min max per GitHub spec
 _APP_JWT_BACKDATE_SECONDS = 60  # clock-skew buffer
+
+
+def github_account_id(value: Any) -> str | None:
+    """Normalize a positive immutable GitHub account ID, never a login or boolean."""
+    if isinstance(value, bool) or not isinstance(value, str | int):
+        return None
+    raw = str(value)
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 20:
+        return None
+    return str(int(raw)) if int(raw) > 0 else None
 
 
 def _mint_app_jwt(app_id: str, private_key_pem: str) -> str:
@@ -256,6 +267,40 @@ class GitHubAppClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    async def has_org_admin_membership(self, *, installation_id: int, org_id: str, org_login: str, user_id: str) -> bool:
+        """Verify active org-admin control for immutable user and organization IDs.
+
+        Resolve the current login from the proven numeric ID; stored/editable
+        usernames never nominate the membership subject. The membership response
+        must name the same immutable user and org. Missing App members:read or
+        provider faults raise so callers can report an unavailable proof check.
+        """
+        if not github_account_id(user_id) or not github_account_id(org_id):
+            return False
+        token = await self.get_installation_token(installation_id)
+        if not token:
+            raise ValueError("GitHub returned an empty installation token")
+        headers = {"Authorization": f"Bearer {token}"}
+        user_response = await self._http_client.get(f"/user/{user_id}", headers=headers)
+        if user_response.status_code == 404:
+            return False
+        user_response.raise_for_status()
+        user = user_response.json()
+        login = user.get("login")
+        if github_account_id(user.get("id")) != user_id or user.get("type") != "User" or not isinstance(login, str) or not login:
+            return False
+        response = await self._http_client.get(f"/orgs/{quote(org_login, safe='')}/memberships/{quote(login, safe='')}", headers=headers)
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        membership = response.json()
+        return (
+            membership.get("state") == "active"
+            and membership.get("role") == "admin"
+            and github_account_id(membership.get("user", {}).get("id")) == user_id
+            and github_account_id(membership.get("organization", {}).get("id")) == org_id
+        )
 
     async def aclose(self) -> None:  # pragma: no cover
         await self._http_client.aclose()

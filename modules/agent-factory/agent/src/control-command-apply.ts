@@ -14,6 +14,7 @@
 import { abortSentinelBindingFromEnv, writeAbortSentinel } from './control-abort-sentinel';
 import type { ControlAction, ControlStateStore } from './control-state';
 import type { ClaudeControlAdapter } from './harnesses/claude-control';
+import type { SteerQueue } from './steer-queue';
 
 /**
  * Default abort recorder: bind the sentinel to this run and write it — #3963.
@@ -192,6 +193,25 @@ export async function applyControlCommand(args: {
    * `AbortSentinel.signed_body_base64`.
    */
   reason?: string | null;
+  /**
+   * The operator's steering text — Issue #3965.
+   *
+   * Separate from `reason` because it has the opposite trust handling: `reason`
+   * is quoted back to a human, `instruction` crosses into a model prompt and is
+   * wrapped as untrusted input by the queue below. `null` for every other verb.
+   */
+  instruction?: string | null;
+  /**
+   * The run's steering delivery pump — Issue #3965.
+   *
+   * Absent for a run with no queue (which is every run before this story, and
+   * every run with the control flag off), in which case `steer` falls through to
+   * the no-executor rejection below rather than being accepted and forgotten.
+   *
+   * Structurally typed for the same reason as `adapter` and `store`: this module
+   * is imported by unit tests and must not pull the Claude SDK in behind it.
+   */
+  steerQueue?: Pick<SteerQueue, 'enqueue'>;
 }): Promise<void> {
   const { action, commandId, adapter, store } = args;
   const log = args.log ?? (() => {});
@@ -313,6 +333,34 @@ export async function applyControlCommand(args: {
         'run aborted, but the terminal outcome could not be recorded for finalization',
       );
       log('ERROR', 'control: run aborted but the abort record did not land', { command_id: commandId });
+    }
+    return;
+  }
+
+  if (action === 'steer') {
+    // Issue #3965. Note what this arm does *not* do: it does not settle the
+    // command, and it does not touch the journal on the success path. The whole
+    // point of steering is that acceptance and delivery are separated in time, so
+    // the command deliberately stays `pending` from here until the pump reaches a
+    // boundary the harness can take input at — and the pump owns every transition
+    // out of `pending`, including the authority re-check that must happen
+    // immediately before the physical handoff rather than now.
+    //
+    // A run with no queue is the one case this arm settles, and it settles as
+    // `rejected` rather than leaving the command pending forever: the verb was
+    // advertised (the capability intersection said yes) but nothing in this
+    // process can deliver it, which is a build-level mismatch the operator should
+    // see as a refusal rather than as an instruction still in flight.
+    if (!args.steerQueue) {
+      store.settle(commandId, 'rejected', 'this run has no steering queue attached');
+      log('WARN', 'control: steer accepted with no queue attached', { command_id: commandId });
+      return;
+    }
+    // `enqueue` settles the command itself when it refuses the text (absent,
+    // empty or over the bound), so there is nothing to record here on `false`.
+    if (args.steerQueue.enqueue(commandId, args.instruction ?? '')) {
+      log('INFO', 'control: steering instruction accepted, awaiting a handoff boundary',
+        { command_id: commandId });
     }
     return;
   }

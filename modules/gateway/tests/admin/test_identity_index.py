@@ -45,8 +45,10 @@ class TestIdentityIndexClient:
             org_id="org-001",
         )
         assert result is True
-        mock_dynamodb.put_item.assert_called_once()
-        call_args = mock_dynamodb.put_item.call_args
+        mock_dynamodb.transact_write_items.assert_called_once()
+        transaction = mock_dynamodb.transact_write_items.call_args.kwargs["TransactItems"]
+        assert transaction[0]["ConditionCheck"]["Key"]["identity_type"] == {"S": "github_installation_revoked"}
+        call_args = ((), transaction[1]["Put"])
         assert call_args[1]["TableName"] == "adp-dev-identity-index"
         item = call_args[1]["Item"]
         assert item["identity_type"]["S"] == "github_installation_id"
@@ -78,7 +80,7 @@ class TestIdentityIndexClient:
     async def test_put_identity_exhausts_retries(self, index_client, mock_dynamodb):
         """Test that put returns False after exhausting retries."""
         error_response = {"Error": {"Code": "InternalServerError", "Message": "Service unavailable"}}
-        mock_dynamodb.put_item.side_effect = ClientError(error_response, "PutItem")
+        mock_dynamodb.transact_write_items.side_effect = ClientError(error_response, "PutItem")
 
         result = await index_client.put_identity(
             identity_type="github_installation_id",
@@ -86,7 +88,7 @@ class TestIdentityIndexClient:
             org_id="org-003",
         )
         assert result is False
-        assert mock_dynamodb.put_item.call_count == 3
+        assert mock_dynamodb.transact_write_items.call_count == 3
 
     @pytest.mark.asyncio
     async def test_delete_identity_success(self, index_client, mock_dynamodb):
@@ -128,7 +130,7 @@ class TestIdentityIndexClient:
         # Issue #3134 fix: installation rows use UpdateItem (preserves policy attrs),
         # cognito rows still use PutItem.
         # Should have: update new-1, update kept-1, put client-new, delete removed-1, delete client-old
-        assert mock_dynamodb.update_item.call_count == 2
+        assert mock_dynamodb.transact_write_items.call_count == 2
         assert mock_dynamodb.put_item.call_count == 1
         assert mock_dynamodb.delete_item.call_count == 2
 
@@ -176,7 +178,7 @@ class TestUpdateInstallationIdentityConditionalWrite:
     @pytest.fixture
     def mock_dynamodb(self):
         client = MagicMock()
-        client.update_item = MagicMock(return_value={})
+        client.transact_write_items = MagicMock(return_value={})
         return client
 
     @pytest.fixture
@@ -192,7 +194,7 @@ class TestUpdateInstallationIdentityConditionalWrite:
         # DynamoDB itself enforces the condition; a rejected write surfaces as
         # ConditionalCheckFailedException. Simulating the store's verdict is the
         # only way to test our handling of it without a real table.
-        mock_dynamodb.update_item.side_effect = ClientError(
+        mock_dynamodb.transact_write_items.side_effect = ClientError(
             {"Error": {"Code": "ConditionalCheckFailedException", "Message": "The conditional request failed"}},
             "UpdateItem",
         )
@@ -209,7 +211,7 @@ class TestUpdateInstallationIdentityConditionalWrite:
     @pytest.mark.asyncio
     async def test_conditional_failure_is_terminal_not_retried(self, index_client, mock_dynamodb):
         """A conditional failure must not burn the retry budget — it is deterministic."""
-        mock_dynamodb.update_item.side_effect = ClientError(
+        mock_dynamodb.transact_write_items.side_effect = ClientError(
             {"Error": {"Code": "ConditionalCheckFailedException", "Message": "The conditional request failed"}},
             "UpdateItem",
         )
@@ -219,12 +221,12 @@ class TestUpdateInstallationIdentityConditionalWrite:
         # Exactly one attempt. Re-evaluating the same condition against the same
         # data fails identically, so a retry loop here would only delay the
         # answer and make a refusal look like an outage.
-        assert mock_dynamodb.update_item.call_count == 1
+        assert mock_dynamodb.transact_write_items.call_count == 1
 
     @pytest.mark.asyncio
     async def test_transient_error_still_retries(self, index_client, mock_dynamodb):
         """Guard against over-correcting: a genuine transient fault must still retry."""
-        mock_dynamodb.update_item.side_effect = [
+        mock_dynamodb.transact_write_items.side_effect = [
             ClientError({"Error": {"Code": "InternalServerError", "Message": "boom"}}, "UpdateItem"),
             {},
         ]
@@ -232,7 +234,7 @@ class TestUpdateInstallationIdentityConditionalWrite:
         result = await index_client.update_installation_identity(identity_value="124731131", org_id="own-org")
 
         assert result is True
-        assert mock_dynamodb.update_item.call_count == 2
+        assert mock_dynamodb.transact_write_items.call_count == 2
 
     @pytest.mark.asyncio
     async def test_same_tenant_reconfirmation_succeeds(self, index_client, mock_dynamodb):
@@ -240,7 +242,7 @@ class TestUpdateInstallationIdentityConditionalWrite:
         result = await index_client.update_installation_identity(identity_value="124731131", org_id="own-org")
 
         assert result is True
-        assert mock_dynamodb.update_item.call_count == 1
+        assert mock_dynamodb.transact_write_items.call_count == 1
 
 
 class TestAdminServiceIdentityWriteThrough:

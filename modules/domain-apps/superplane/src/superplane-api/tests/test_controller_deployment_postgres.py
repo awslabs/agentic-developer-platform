@@ -38,10 +38,15 @@ pytestmark = [] if os.environ.get("CI") else postgres_available
 
 
 @pytest.fixture
-async def workload(lifecycle, monkeypatch, tmp_path):  # noqa: F811
+async def workload(lifecycle, monkeypatch, tmp_path, request):  # noqa: F811
     context = lifecycle
     workspace_id, cluster_id, request_id = [uuid.uuid4() for _ in range(3)]
     profile = profile_fixture(cluster_id)
+    if getattr(request, "param", False):
+        del profile["instance_type"]
+        profile.update(
+            accelerators=["A10G:1", "L4:1"], max_gpus_per_node=1, cpus=4, memory_gb=32
+        )
     engine = context.sessions.kw["bind"]
     async with engine.begin() as connection:
         await connection.run_sync(Deployment.__table__.create)
@@ -691,6 +696,8 @@ async def worker_runtime(workload, tmp_path):
         "controller_certificate_authority"
     ]
     cloud, verified = Cloud(data), {}
+    cloud.sky_tasks = []
+    cloud.capacity_constraints = ["physical_gpu_limit"]
     kube = Kubernetes(cloud)
     role = f"arn:aws:iam::{data['provider_account_id']}:role/approved"
 
@@ -719,9 +726,11 @@ async def worker_runtime(workload, tmp_path):
                     "role_arn": role,
                     "credential_source": "web_identity",
                     "allocation_tags": ["instance", "volume", "network-interface"],
+                    "capacity_constraints": cloud.capacity_constraints,
                 },
             )
         if path == "/launch":
+            cloud.sky_tasks.append(json.loads(json.loads(request.content)["task"]))
             cloud.launches += 1
             cloud.exists = cloud.ever_created = True
         elif path == "/down":
@@ -909,6 +918,7 @@ async def assert_completed_worker(worker_runtime, worker):
 
 
 @pytest.mark.parametrize("leaked_volume", [False, True])
+@pytest.mark.parametrize("workload", [False, True], indirect=True)
 async def test_actual_api_dispatch_paid_worker_rpc_and_owned_absence_quota_projection(
     workload, worker_runtime, leaked_volume
 ):
@@ -919,6 +929,15 @@ async def test_actual_api_dispatch_paid_worker_rpc_and_owned_absence_quota_proje
     worker = await worker_runtime.publish(created)
     assert all(result[1] == "settle" for result in await worker_runtime.execute(worker))
     assert worker_runtime.cloud.launches == 1
+    if worker.plan.data["version"] == 3:
+        resources = worker_runtime.cloud.sky_tasks[0]["resources"]
+        assert "instance_type" not in resources
+        assert resources["any_of"] == [
+            {"accelerators": "A10G:1"},
+            {"accelerators": "L4:1"},
+        ]
+        assert resources["labels"]["superplane-max-gpus-per-node"] == "1"
+        assert resources["cpus"] == "4+" and resources["memory"] == "32+"
     # A completed task's closed lease cannot authorize a duplicate launch.
     from harness_jobs.execution import ProviderCallRefused
 
@@ -987,6 +1006,19 @@ async def test_actual_api_dispatch_paid_worker_rpc_and_owned_absence_quota_proje
         )
     assert not worker_runtime.kube.stored
     assert worker_runtime.cloud.launches == 1
+
+
+@pytest.mark.parametrize("workload", [True], indirect=True)
+async def test_gpu_selection_requires_backend_physical_limit_support(
+    workload, worker_runtime
+):
+    created = await api_create(workload)
+    worker = await worker_runtime.publish(created)
+    worker_runtime.cloud.capacity_constraints = []
+    with pytest.raises(OperationRefused):
+        await worker_runtime.execute(worker)
+    assert worker_runtime.cloud.launches == 0
+    assert not worker_runtime.kube.stored
 
 
 @pytest.mark.parametrize("kind", ["Deployment", "Service"])

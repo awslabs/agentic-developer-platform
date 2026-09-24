@@ -48,7 +48,6 @@ of a brand-new org gets their membership), alongside the #2952 tests they amend.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -57,13 +56,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
-from src.admin.connections.service import _PROVIDER_GITHUB_INSTALL, install_callback
+from src.admin.connections.service import install_callback
 from src.shared.models.base import Base
 from src.shared.models.onboarding import Tenant, TenantMembership
 from src.shared.models.organization import Organization, User
-from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce
+from src.shared.models.vault import ChannelTenantMap
+from tests.admin import install_setup_fixtures as setup_fixtures
+from tests.admin.install_setup_fixtures import (
+    bind_real_org_control,
+    issue_install_nonce,
+)
 
 pytestmark = pytest.mark.asyncio
+
+offline_setup_boundaries = setup_fixtures.offline_setup_boundaries
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -79,7 +85,7 @@ INSTALL_ID = 4072001
 
 
 @pytest.fixture(autouse=True)
-def _no_aws(monkeypatch):
+def _no_aws(monkeypatch, offline_setup_boundaries):
     """Block Secrets Manager and DynamoDB; expose the identity-index mock."""
     monkeypatch.setenv("BG_GITHUB_APP_SLUG", "test-adp-agent")
     monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "true")
@@ -190,23 +196,15 @@ def _github_client(*, account_login: str = "Victim-Corp", account_github_id: int
         }
     )
     client.list_installation_repository_names = AsyncMock(return_value=["victim-corp/private-repo"])
-    return client
+    # These human-routing cases model an unavailable optional bot lookup.
+    client.get_bot_user = AsyncMock(return_value={})
+    return bind_real_org_control(client)
 
 
 async def _write_nonce(db: AsyncSession, *, jti: str = "jti-4072") -> None:
     """The nonce the attacker legitimately obtained for their own session."""
-    db.add(
-        MagicLinkNonce(
-            jti=jti,
-            provider=_PROVIDER_GITHUB_INSTALL,
-            provider_user_id="sub-attacker",
-            channel_context=None,
-            target_user_id="attacker-user-001",
-            expires_at=datetime.now(UTC) + timedelta(minutes=15),
-            consumed_at=None,
-        )
-    )
-    await db.commit()
+    user = await db.get(User, "attacker-user-001")
+    await issue_install_nonce(db, user, jti=jti)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +218,7 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",
@@ -234,7 +232,7 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",
@@ -251,7 +249,7 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",
@@ -285,7 +283,7 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",
@@ -304,7 +302,7 @@ class TestCrossTenantTakeoverRefused:
             "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
             new_callable=AsyncMock,
         ) as mock_seed:
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",
@@ -320,7 +318,7 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",
@@ -337,7 +335,7 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",
@@ -380,7 +378,7 @@ class TestSlugCollisionBypassRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock) as mock_seed:
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=INSTALL_ID,
                     setup_action="install",

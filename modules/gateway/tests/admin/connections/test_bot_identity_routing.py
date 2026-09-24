@@ -1,5 +1,6 @@
 """Review reproduction: installing a shared app must preserve earlier bot routing."""
 
+import importlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -20,6 +21,13 @@ from src.shared.models.organization import User
 async def test_second_install_preserves_first_tenant_bot_resolution(db_session, monkeypatch, v2):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[4] / "agent-factory/webhook-ingress/lambda"))
     from common import identity_resolver
+
+    installation_owners = {"111": "org-a", "222": "org-b", "333": "org-unrelated"}
+    monkeypatch.setattr(
+        importlib.import_module("common.gateway_client"),
+        "resolve_installation_by_id",
+        lambda iid: {"state": "resolved", "tenant_id": installation_owners[str(iid)], "revocation_checked": True},
+    )
 
     monkeypatch.setenv("USER_IDENTITY_INDEX_V2_WRITE", str(v2).lower())
     monkeypatch.setenv("USER_IDENTITY_INDEX_V2_READ", str(v2).lower())

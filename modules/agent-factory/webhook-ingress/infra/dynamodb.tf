@@ -79,6 +79,16 @@ resource "aws_dynamodb_table" "webhook_events" {
     type = "S"
   }
 
+  attribute {
+    name = "task_work_shard"
+    type = "S"
+  }
+
+  attribute {
+    name = "task_due"
+    type = "S"
+  }
+
   # correlation-index powers the Agent Activity chain view (#1616): retrieve all
   # invocations sharing a correlation_id via a Query (was a full-table Scan,
   # which is costly and required a dynamodb:Scan grant the gateway role lacks).
@@ -134,6 +144,15 @@ resource "aws_dynamodb_table" "webhook_events" {
     name            = "engine-command-index"
     hash_key        = "engine_command_status"
     range_key       = "arrived_at"
+    projection_type = "ALL"
+  }
+
+  # Discovery only. Claims consistently re-read the primary record and resolve
+  # its protected authority-table locator before any mutation.
+  global_secondary_index {
+    name            = "task-work-index"
+    hash_key        = "task_work_shard"
+    range_key       = "task_due"
     projection_type = "ALL"
   }
 

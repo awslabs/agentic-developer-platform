@@ -74,10 +74,18 @@ class Plan:
                 "certificate_authority",
                 "workload",
             }
-            if data.get("version") == 2:
-                if set(data) != (required - {"certificate_authority"}) | {
+            if data.get("version") in {2, 3}:
+                fields = (required - {"certificate_authority"}) | {
                     "certificate_authority_sha256"
-                }:
+                }
+                if data["version"] == 3:
+                    fields = (fields - {"instance_type"}) | {
+                        "accelerators",
+                        "max_gpus_per_node",
+                        "cpus",
+                        "memory_gb",
+                    }
+                if set(data) != fields:
                     raise ValueError("unsupported versioned plan")
                 ca = request.parameters["controller_certificate_authority"]
                 if (
@@ -110,7 +118,10 @@ class Plan:
                 not re.fullmatch(r"\d{12}", data["provider_account_id"])
                 or not re.fullmatch(r"[a-z]{2}(?:-gov)?-[a-z]+-\d", data["region"])
                 or not re.fullmatch(r"ami-[a-f0-9]{8,17}", data["image_id"])
-                or not re.fullmatch(r"[a-z0-9]+\.[a-z0-9]+", data["instance_type"])
+                or (
+                    data["version"] != 3
+                    and not re.fullmatch(r"[a-z0-9]+\.[a-z0-9]+", data["instance_type"])
+                )
                 or not re.fullmatch(
                     r"[A-Za-z0-9+=,.@_-]{1,128}", data["instance_profile"]
                 )
@@ -126,7 +137,7 @@ class Plan:
                 raise ValueError("unbounded resources")
             control = (
                 request.action == "teardown"
-                and data["version"] == 2
+                and data["version"] in {2, 3}
                 and bool(request.parameters.get("controller_deployment_id"))
                 and bool(request.parameters.get("controller_source_operation_id"))
             )
@@ -221,10 +232,55 @@ class Plan:
                 or not 0 <= workload["gpu_count"] <= 8
             ):
                 raise ValueError("invalid GPU request")
+            if data["version"] == 3:
+                choices = data["accelerators"]
+                limit = data["max_gpus_per_node"]
+                if (
+                    type(limit) is not int
+                    or not 1 <= limit <= 8
+                    or not isinstance(choices, list)
+                    or not 1 <= len(choices) <= 8
+                    or any(
+                        not isinstance(choice, str)
+                        or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,63}:[1-8]", choice)
+                        for choice in choices
+                    )
+                    or len(set(choices)) != len(choices)
+                    or any(
+                        not max(1, workload["gpu_count"])
+                        <= int(choice.rsplit(":", 1)[1])
+                        <= limit
+                        for choice in choices
+                    )
+                    or (
+                        not control and data["node_count"] * limit != max_resource_units
+                    )
+                ):
+                    raise ValueError(
+                        "GPU choices must fit the approved physical capacity"
+                    )
             if not re.fullmatch(
                 r"[1-9][0-9]{0,4}m?", workload["cpu"]
             ) or not re.fullmatch(r"[1-9][0-9]{0,4}[MG]i", workload["memory"]):
                 raise ValueError("invalid workload resources")
+            if data["version"] == 3:
+                cpu_millis = int(workload["cpu"].removesuffix("m")) * (
+                    1 if workload["cpu"].endswith("m") else 1000
+                )
+                memory_mib = int(workload["memory"][:-2]) * (
+                    1024 if workload["memory"].endswith("Gi") else 1
+                )
+                if (
+                    type(data["cpus"]) is not int
+                    or not 1 <= data["cpus"] <= 1024
+                    or type(data["memory_gb"]) is not int
+                    or not 1 <= data["memory_gb"] <= 16384
+                    or data["cpus"] * 1000 <= cpu_millis
+                    or data["memory_gb"] * 1024 <= memory_mib
+                ):
+                    raise ValueError(
+                        "machine CPU and memory minimums must leave room for node services"
+                    )
             if workload["kind"] == "serving":
                 if (
                     type(workload["port"]) is not int
@@ -294,7 +350,6 @@ class Plan:
                 "cloud": "aws",
                 "region": data["region"],
                 "image_id": data["image_id"],
-                "instance_type": data["instance_type"],
                 "use_spot": False,
                 "disk_size": data["disk_size"],
                 "labels": {"superplane-capacity": self.cluster_name},
@@ -306,4 +361,17 @@ class Plan:
             + str(int(operation.grant.lease.runtime_deadline.timestamp()))
             + ' - $(date +%s))); if [ "$remaining" -gt 0 ]; then sleep "$remaining"; fi',
         }
+        if data["version"] == 3:
+            # Alternatives for this allocation. SkyPilot performs selection;
+            # every candidate retains the installed AWS identity/network/image.
+            task["resources"]["any_of"] = [
+                {"accelerators": value} for value in data["accelerators"]
+            ]
+            task["resources"]["labels"]["superplane-max-gpus-per-node"] = str(
+                data["max_gpus_per_node"]
+            )
+            task["resources"]["cpus"] = f"{data['cpus']}+"
+            task["resources"]["memory"] = f"{data['memory_gb']}+"
+        else:
+            task["resources"]["instance_type"] = data["instance_type"]
         return json.dumps(task)

@@ -119,7 +119,7 @@ from src.orchestration.shared_window_routes import router as shared_window_route
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
-from .delivery_progress import DeliveryProgress, current_executions, node_progress
+from .delivery_progress import DeliveryProgress, current_executions, is_preserved_execution, node_progress
 
 logger = logging.getLogger("bedrockgateway.orchestration")
 
@@ -1534,6 +1534,9 @@ async def get_flow_graph(
     cost_by_address = {node_cost.address: node_cost for node_cost in aggregate.nodes}
 
     graph_nodes: list[GraphNodeResponse] = []
+    from .plan_lineage import preserved_execution_pairs
+
+    preserved = set(await preserved_execution_pairs(db, org_id=current_user.org_id, flow_ids=[flow_id]))
     for node in nodes:
         address = f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
         node_cost = cost_by_address.get(address)
@@ -1602,6 +1605,7 @@ async def get_flow_graph(
                     execution=executions_by_node.get(node.id),
                     policy_enabled=policy_inputs.policy is not None or policy_inputs.refusal is not None,
                     plan_version=policy_inputs.plan_version,
+                    preserved_execution=is_preserved_execution(executions_by_node.get(node.id), preserved),
                     policy_hash=policy_inputs.policy.policy_hash if policy_inputs.policy else None,
                     admission_refusal=admission_refusals.get(node.id),
                     observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,

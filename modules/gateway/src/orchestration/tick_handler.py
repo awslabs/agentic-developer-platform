@@ -527,6 +527,14 @@ async def _run() -> TickReport:
             # Give existing review/repair work first use of released capacity;
             # otherwise new development can starve a completed PR at limit one.
             await session.commit()
+            from .review_recovery import recover_stalled_stories
+
+            try:
+                recovered = await recover_stalled_stories(factory)
+                logger.info("orchestration stalled-review recovery: recovered=%d", recovered)
+            except Exception:
+                logger.exception("orchestration stalled-review recovery: pass failed; prior controls remain committed")
+                report.errors += 1
             try:
                 execution_runner_report = await run_execution_runner(factory)
             except Exception:

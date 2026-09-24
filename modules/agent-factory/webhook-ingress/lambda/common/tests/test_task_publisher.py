@@ -66,7 +66,7 @@ def test_t0_dispatch_envelope_fixture_publishes_with_the_contract_attributes(sqs
     envelope = fixture("valid/envelope-dispatch.json")
     expected = fixture("valid/sqs-publish-attributes.json")
 
-    result = publish_task_envelope(envelope, tenant_id="t-4821", queue_url=QUEUE)
+    result = publish_task_envelope(envelope, queue_url=QUEUE)
 
     assert result == {
         "publication_outcome": "confirmed",
@@ -87,23 +87,23 @@ def test_dedup_key_is_the_dispatch_not_the_invocation(sqs):
     envelope = fixture("valid/envelope-dispatch.json")
     wrong = fixture("invalid/sqs-dedup-id-is-invocation.json")
 
-    attributes = publish_attributes(envelope, tenant_id="t-4821")
+    attributes = publish_attributes(envelope)
 
     assert attributes["MessageDeduplicationId"] != wrong["MessageDeduplicationId"]
     assert attributes["MessageDeduplicationId"] != envelope["invocation_id"]
     assert attributes["MessageDeduplicationId"] == envelope["dispatch_id"]
 
 
-def test_recovery_republish_of_the_same_run_is_not_deduplicated_away(sqs):
-    """Same task and invocation, new dispatch: two distinct dedup keys."""
+def test_recovery_republish_keeps_the_same_dispatch_dedup_key(sqs):
+    """Recovery retries the exact immutable envelope and dispatch identity."""
     first = fixture("valid/envelope-dispatch.json")
-    second = {**first, "dispatch_id": "c7f0946c-0d35-4342-a703-f9c9db4792cf"}
+    retry = dict(first)
 
-    a = publish_attributes(first, tenant_id="t-4821")
-    b = publish_attributes(second, tenant_id="t-4821")
+    a = publish_attributes(first)
+    b = publish_attributes(retry)
 
-    assert a["MessageGroupId"] == b["MessageGroupId"], "same task must stay ordered"
-    assert a["MessageDeduplicationId"] != b["MessageDeduplicationId"]
+    assert a == b
+    assert a["MessageDeduplicationId"] == first["dispatch_id"]
 
 
 def test_group_id_isolates_tasks_and_tenants():
@@ -148,7 +148,7 @@ def test_message_id_must_equal_the_invocation_id(sqs):
 def test_confirmed_publication_does_not_put_the_transport_id_in_the_body(sqs):
     envelope = fixture("valid/envelope-dispatch.json")
 
-    publish_task_envelope(envelope, tenant_id="t-4821", queue_url=QUEUE)
+    publish_task_envelope(envelope, queue_url=QUEUE)
 
     body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
     assert "sqs_message_id" not in body
@@ -167,9 +167,7 @@ def test_ambiguous_send_reports_unknown_rather_than_failed(monkeypatch):
     monkeypatch.setattr(task_publisher, "_sqs", client)
 
     with pytest.raises(TaskPublicationError) as raised:
-        publish_task_envelope(
-            fixture("valid/envelope-dispatch.json"), tenant_id="t-4821", queue_url=QUEUE
-        )
+        publish_task_envelope(fixture("valid/envelope-dispatch.json"), queue_url=QUEUE)
 
     assert raised.value.outcome == "unknown"
     assert raised.value.code == "send_ambiguous"
@@ -181,9 +179,7 @@ def test_success_response_without_a_message_id_is_not_confirmed(monkeypatch):
     monkeypatch.setattr(task_publisher, "_sqs", client)
 
     with pytest.raises(TaskPublicationError) as raised:
-        publish_task_envelope(
-            fixture("valid/envelope-dispatch.json"), tenant_id="t-4821", queue_url=QUEUE
-        )
+        publish_task_envelope(fixture("valid/envelope-dispatch.json"), queue_url=QUEUE)
 
     assert raised.value.outcome == "unknown"
 
@@ -191,9 +187,7 @@ def test_success_response_without_a_message_id_is_not_confirmed(monkeypatch):
 def test_missing_queue_is_a_failure_before_any_send(sqs):
     """Nothing was sent, so this one IS definitively failed."""
     with pytest.raises(TaskPublicationError) as raised:
-        publish_task_envelope(
-            fixture("valid/envelope-dispatch.json"), tenant_id="t-4821", queue_url=""
-        )
+        publish_task_envelope(fixture("valid/envelope-dispatch.json"), queue_url="")
 
     assert raised.value.outcome == "failed"
     assert not sqs.send_message.called
@@ -213,7 +207,7 @@ def test_oversize_envelope_fails_loudly(sqs):
     envelope["persona"] = "a" * (64 * 1024)
 
     with pytest.raises(TaskPublicationError) as raised:
-        publish_task_envelope(envelope, tenant_id="t-4821", queue_url=QUEUE)
+        publish_task_envelope(envelope, queue_url=QUEUE)
 
     assert raised.value.code == "envelope_too_large"
     assert not sqs.send_message.called
