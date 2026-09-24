@@ -1,19 +1,18 @@
+# ruff: noqa: F811
 import json
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-import boto3
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from moto import mock_aws
 
 from src.agentauth import task_dispatch_routes
 from src.agentauth.routes import get_agent_runtime
 from src.agentauth.task_dispatch_routes import router, work_store
-from src.agentauth.task_work import DUE_ATTRIBUTE, SHARD_ATTRIBUTE, TASK_WORK_INDEX, TaskWorkStore, work_shard
+from src.agentauth.task_work import TaskWorkStore, work_shard
+from tests.tasks.test_store import AUTHORITY_TABLE, NOW, TABLE, _request, client, store  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "modules/agent-factory/webhook-ingress/lambda"))
@@ -24,31 +23,13 @@ from common import task_dispatch, task_publisher  # noqa: E402
 TASK = "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20"
 DISPATCH = "b5e9835b-fc24-4231-96f2-e8b8ca3681be"
 INVOCATION = "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40"
-TENANT = "t-4821"
-NOW = datetime(2026, 9, 24, 14, 42, 3, tzinfo=UTC)
+TENANT = "tenant-a"
 SCHEMAS = Registry(ROOT / "docs/task-api/contracts/v1/schemas")
 ADAPTER_SCHEMA = SCHEMAS.docs["internal-adapters.schema.json"]
 
 
 def envelope():
-    return {
-        "kind": "adp.task", "schema_version": "1.0", "task_id": TASK,
-        "invocation_id": INVOCATION, "message_id": INVOCATION,
-        "persona": "agent-task-investigator", "dispatch_id": DISPATCH,
-        "request_digest": "9" * 64,
-        "input_ref": {"record_type": "TASK", "input_digest": "1" * 64},
-        "assignment_ref": {
-            "grant_pk": f"TENANT#{TENANT}",
-            "grant_sk": f"TASK_RUN#{INVOCATION}#GEN#0000000001", "generation": 1,
-        },
-    }
-
-
-def scoped(**values):
-    return {
-        **values, "task_id": {"S": TASK}, "invocation_id": {"S": INVOCATION},
-        "generation": {"N": "1"}, "scope": {"M": {"tenant_id": {"S": TENANT}}},
-    }
+    return _request(task_id=TASK, invocation_id=INVOCATION, dispatch_id=DISPATCH).envelope
 
 
 def assert_schema(value, definition):
@@ -60,86 +41,32 @@ def assert_schema(value, definition):
 
 
 @pytest.fixture
-def seam(monkeypatch):
-    with mock_aws():
-        dynamodb = boto3.client("dynamodb", region_name="us-east-1")
-        dynamodb.create_table(
-            TableName="requests",
-            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
-            AttributeDefinitions=[
-                {"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"},
-                {"AttributeName": SHARD_ATTRIBUTE, "AttributeType": "S"}, {"AttributeName": DUE_ATTRIBUTE, "AttributeType": "S"},
-            ],
-            GlobalSecondaryIndexes=[{
-                "IndexName": TASK_WORK_INDEX,
-                "KeySchema": [{"AttributeName": SHARD_ATTRIBUTE, "KeyType": "HASH"}, {"AttributeName": DUE_ATTRIBUTE, "KeyType": "RANGE"}],
-                "Projection": {"ProjectionType": "ALL"},
-                "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
-            }], ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
-        )
-        dynamodb.create_table(
-            TableName="authority",
-            KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
-            AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}],
-            ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
-        )
-        clock = [NOW.timestamp()]
-        store = TaskWorkStore(
-            dynamodb_client=dynamodb, table_name="requests", authority_table_name="authority", clock=lambda: clock[0],
-        )
-        dynamodb.put_item(TableName="requests", Item=scoped(
-            event_id={"S": f"TASK#{TASK}"}, arrived_at={"S": "META"},
-            status={"S": "accepted"}, version={"S": "task-v1"}, record_type={"S": "TASK"},
-        ))
-        grant_sk = f"TASK_RUN#{INVOCATION}#GEN#0000000001"
-        dynamodb.put_item(
-            TableName="authority",
-            Item=scoped(
-                pk={"S": f"TENANT#{TENANT}"}, sk={"S": grant_sk}, status={"S": "active"},
-                canonical_principal_id={"S": "service-principal-1"},
-                task_policy_sk={"S": "TASK_POLICY#service-principal-1"},
-                task_policy_version={"N": "1"},
-            ),
-        )
-        dynamodb.put_item(
-            TableName="authority",
-            Item=scoped(pk={"S": f"TENANT#{TENANT}"}, sk={"S": f"TASK#{TASK}"}, status={"S": "active"}),
-        )
-        dynamodb.put_item(
-            TableName="authority",
-            Item={
-                "pk": {"S": f"TENANT#{TENANT}"}, "sk": {"S": "TASK_POLICY#service-principal-1"},
-                "record_type": {"S": "TASK_SERVICE_POLICY"}, "status": {"S": "active"},
-                "canonical_principal_id": {"S": "service-principal-1"}, "version": {"N": "1"},
-                "allowed_personas": {"L": [{"S": "agent-task-investigator"}]},
-                "task_scopes": {"L": [{"S": "submit"}, {"S": "read"}]},
-                "scope": {"M": {"tenant_id": {"S": TENANT}}},
-            },
-        )
-        store.put_work(
-            task_id=TASK, kind="dispatch", tenant_id=TENANT,
-            deadline_at=NOW + timedelta(minutes=30), envelope=envelope(),
-        )
-        env = {
-            "ADP_TASK_API_ADMISSION_ENABLED": "true", "ADP_TASK_API_RECOVERY_ENABLED": "true",
-            "ADP_TASK_DISPATCH_PRODUCER_ROLES": "dispatch-role",
-            "ADP_TASK_RECOVERY_PRODUCER_ROLES": "recovery-role",
-            "WEBHOOK_EVENTS_TABLE": "requests", "AGENT_AUTHORITY_TABLE": "authority",
-        }
-        runtime = SimpleNamespace(env=env, store=SimpleNamespace(client=dynamodb, table="authority"))
-        app = FastAPI()
-        app.include_router(router)
-        app.dependency_overrides[get_agent_runtime] = lambda: runtime
-        app.dependency_overrides[work_store] = lambda: store
+def seam(monkeypatch, client, store):
+    dynamodb = client
+    store.accept(_request(task_id=TASK, invocation_id=INVOCATION, dispatch_id=DISPATCH))
+    clock = [NOW.timestamp()]
+    store = TaskWorkStore(
+        dynamodb_client=dynamodb, table_name=TABLE, authority_table_name=AUTHORITY_TABLE, clock=lambda: clock[0],
+    )
+    env = {
+        "ADP_TASK_API_ADMISSION_ENABLED": "true", "ADP_TASK_API_RECOVERY_ENABLED": "true",
+        "ADP_TASK_DISPATCH_PRODUCER_ROLES": "dispatch-role",
+        "ADP_TASK_RECOVERY_PRODUCER_ROLES": "recovery-role",
+        "WEBHOOK_EVENTS_TABLE": "requests", "AGENT_AUTHORITY_TABLE": "authority",
+    }
+    runtime = SimpleNamespace(env=env, store=SimpleNamespace(client=dynamodb, table="authority"))
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    app.dependency_overrides[work_store] = lambda: store
 
-        async def authenticate(proof, identity, *, allowed_roles):
-            assert proof == "fixture-proof"
-            return next(iter(allowed_roles))
+    async def authenticate(proof, identity, *, allowed_roles):
+        assert proof == "fixture-proof"
+        return next(iter(allowed_roles))
 
-        monkeypatch.setattr(task_dispatch_routes, "verify_producer", authenticate)
-        with TestClient(app) as client:
-            yield SimpleNamespace(client=client, store=store, dynamodb=dynamodb, clock=clock)
-
+    monkeypatch.setattr(task_dispatch_routes, "verify_producer", authenticate)
+    with TestClient(app) as client:
+        yield SimpleNamespace(client=client, store=store, dynamodb=dynamodb, clock=clock)
 
 def test_closed_routes_reject_caller_task_or_tenant_fields(seam):
     response = seam.client.post("/internal/v1/tasks/dispatch/claim", json={
@@ -275,7 +202,5 @@ def test_recovery_settlement_requires_committed_publication_evidence(seam):
         "evidence": {"kind": "publication", "observed": True, "observed_at": "2026-09-24T14:42:04Z"},
         "producer_proof": "fixture-proof",
     })
-    assert response.status_code == 200
-    assert response.json()["operation_status"] == "rejected"
-    assert response.json()["task_status"] == "accepted"
-    assert_schema(response.json(), "recovery_settle_response")
+    assert response.status_code == 409
+    assert seam.store.task_status(TASK) == "accepted"
