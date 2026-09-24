@@ -60,16 +60,15 @@ route with a signed envelope, a live grant and the shipped
 ``SUPPORTED_AGENT_ACTIONS``, so the marker under test is written by production code
 on a request that production would have accepted.
 
-## Why zero task starts is asserted at ``bind``, not at a flag
+## Worker startup evidence
 
-"Task starts" is not a counter this test can invent, because the thing that starts
-tasks is ``subprocess.run(["node", ...])`` in the worker entrypoint, and that line
-is unreachable unless ``bootstrap_run_identity`` returns. It does not return on a
-404: ``RunIdentityError`` is uncaught all the way out of ``main()``, which kills the
-pod. So a refused bind **is** zero task starts on the protected path, and the
-assertions below are on the observable consequences of the refusal — no credential
-issued, no new ``POD#.../BINDING`` row, the original binding undisturbed — rather
-than on a spy that could be satisfied by a mechanism that does not ship.
+The combined test feeds the actual redelivered envelope into ``_main`` and
+bridges the signed identity client's HTTP transport into the real ASGI bootstrap
+route. A real admission refusal propagates out of startup as ``RunIdentityError``.
+Spies at ``subprocess.run`` and ``Popen`` verify that no process launches. External
+logging and transport credentials are fixtures; this is local integration evidence,
+not a deployed-pod acceptance run. The terminal-write failure above exercises the
+legacy direct-DynamoDB writer; protected reporting needs separate coverage.
 
 ``TestTheAbortingRunItselfIsNotStopped`` covers the other half, and it is the half an
 abort guard would have broken: the aborting pod re-presents its own binding every
@@ -330,6 +329,58 @@ class TestTheAbortedRunDoesNotStartAgain:
                 now=datetime.now(UTC),
             )
 
+        # Drive the actual startup on the same redelivery, bridging only HTTP
+        # transport into the production gateway route and bootstrap store.
+        import asyncio
+        from contextlib import nullcontext
+        from unittest.mock import Mock
+
+        import lib.run_identity as run_identity
+        from botocore.credentials import Credentials
+
+        loop = asyncio.get_running_loop()
+        responses = []
+        original_verify = ctx.runtime.workloads.verify
+        monkeypatch.setattr(ctx.runtime.workloads, "verify", lambda token:
+            pod("replacement-pod") if token == "replacement-proof" else original_verify(token))
+
+        class Transport:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def post(self, url, *, data, headers, **_kwargs):
+                assert url == "https://gateway.test/internal/v1/agent/bootstrap"
+                assert headers[WORKLOAD_HEADER] == "replacement-proof"
+                assert "Authorization" in headers
+                # API Gateway supplies this verified transport identity.
+                response = asyncio.run_coroutine_threadsafe(ctx.client.post(
+                    "/internal/v1/agent/bootstrap", content=data,
+                    headers={**headers, "X-Caller-Identity": "shared-role"},
+                ), loop).result(timeout=10)
+                responses.append(response)
+                return nullcontext(response)
+
+        monkeypatch.setenv("QUEUE_URL", ctx.child.queue)
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+        monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://gateway.test/internal/v1/agent")
+        monkeypatch.setattr(worker, "_receive_one_message", lambda *_: (redelivered, "owned-via-gateway"))
+        monkeypatch.setattr(worker, "BootstrapLogger", Mock())
+        monkeypatch.setattr(run_identity.requests, "Session", Transport)
+        monkeypatch.setattr(run_identity, "read_workload_token", lambda: "replacement-proof")
+        monkeypatch.setattr("adp_trigger.transport_identity.worker_credentials",
+                            lambda _: Credentials("AKIAEXAMPLE", "secret", "token"))
+        launch = Mock(side_effect=AssertionError("refused worker launched a subprocess"))
+        monkeypatch.setattr(worker.subprocess, "run", launch)
+        monkeypatch.setattr(worker.subprocess, "Popen", launch)
+        with pytest.raises(run_identity.RunIdentityError, match="gateway refused run identity"):
+            await asyncio.to_thread(worker._main)
+        assert len(responses) == 1
+        assert responses[0].status_code == 404
+        launch.assert_not_called()
+
         # The refusal left no trace a later attempt could build on, and did not
         # disturb the aborting run's own binding.
         assert ctx.store._read("POD#replacement-pod", "BINDING") is None
@@ -482,129 +533,6 @@ class TestTheAbortedRunDoesNotStartAgain:
         assert response.status_code == 404, response.text
         # No credential was issued, so nothing the task needs to run exists.
         assert "credential" not in response.json()
-
-    async def test_the_worker_startup_seam_turns_that_404_into_a_dead_pod(self, abort_context, worker):
-        """The worker half of the same refusal, driven through its real startup code.
-
-        The test above ends at the gateway's 404. This one starts there and shows what
-        the worker does with it, because "zero task starts" is a claim about the pod,
-        not about a status code — and root's review asked for the redelivery to be
-        refused at the worker's startup/admission seam rather than inferred from HTTP.
-
-        Driven through the shipped ``RunIdentitySession._request``, whose non-200
-        branch is the entire admission decision on the worker side. What must hold is
-        a conjunction the docstring alone cannot enforce:
-
-        1. a 404 becomes ``RunIdentityError`` — not ``WorkOwnershipPending``, which
-           would make the pod *retry* for up to 1800s instead of dying;
-        2. nothing between the bootstrap call and the task start catches it, so the
-           error reaches the top of ``main()``.
-
-        (2) is asserted by parsing ``entrypoint.py`` rather than by executing an entire
-        1200-line ``_main``, and by walking the AST rather than counting ``try``
-        keywords in text — the first draft did the latter and was simply wrong, because
-        one ``try`` may own several ``except`` clauses. The AST answers the actual
-        question: is the bootstrap call lexically inside a handler that could swallow
-        ``RunIdentityError``?
-        """
-        import lib.run_identity as run_identity
-
-        # A 404 from the gateway, shaped the way `requests` delivers one.
-        class Refused:
-            status_code = 404
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return False
-
-        class Session:
-            trust_env = True
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return False
-
-            def post(self, *_args, **_kwargs):
-                return Refused()
-
-        identity_session = run_identity.RunIdentitySession.__new__(run_identity.RunIdentitySession)
-        identity_session._url = "https://gateway.test/internal/v1/agent/bootstrap"
-        identity_session._invocation_id = abort_context.target_invocation
-        identity_session._digest = "0" * 64
-
-        import unittest.mock
-
-        from botocore.credentials import Credentials
-
-        with (
-            unittest.mock.patch.object(run_identity.requests, "Session", Session),
-            unittest.mock.patch(
-                "adp_trigger.transport_identity.worker_credentials",
-                # Real credentials, because SigV4 actually signs here. The request is
-                # genuinely built and signed; only the socket is replaced.
-                lambda _session: Credentials("AKIAEXAMPLE", "secret", "token"),
-            ),
-            unittest.mock.patch("lib.run_identity.read_workload_token", lambda: "token"),
-        ):
-            # Not WorkOwnershipPending: that is the 425 branch, and confusing the two
-            # would turn a refused aborted run into a pod that waits and retries.
-            with pytest.raises(run_identity.RunIdentityError) as refused:
-                identity_session._request()
-        assert not isinstance(refused.value, run_identity.WorkOwnershipPending)
-
-        # And the refusal is fatal because nothing catches it.
-        import ast
-
-        source = (_WORKER_IMAGE / "entrypoint.py").read_text()
-        tree = ast.parse(source)
-
-        def find_call(node):
-            """Line of the `bootstrap_run_identity(envelope)` call, wherever it moved to."""
-            for child in ast.walk(node):
-                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == "bootstrap_run_identity":
-                    return child.lineno
-            return None
-
-        call_line = find_call(tree)
-        assert call_line, "the startup seam moved; this test must be re-anchored"
-
-        # Every `try` whose body lexically contains the call, and which has a handler
-        # that could catch RunIdentityError. `main()`'s try/finally has no handlers, so
-        # it correctly does not count.
-        swallowing = [
-            node.lineno
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Try) and node.handlers and any(stmt.lineno <= call_line <= (stmt.end_lineno or stmt.lineno) for stmt in node.body)
-        ]
-        assert not swallowing, (
-            f"a try/except at line(s) {swallowing} encloses the bootstrap call; a refused "
-            "aborted run could be swallowed and the pod would continue to the task start"
-        )
-
-        # And the task start really is downstream of it, so the raise prevents it.
-        # Not *any* `subprocess.run` — `run_cmd`, the `gh pr list` probes and the
-        # `git ls-remote` check are all earlier in the file and none of them starts the
-        # agent. The task start is the one that execs the assembled `command`, and
-        # matching it by that argument is what makes this assertion mean what it says.
-        starts = [
-            node.lineno
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "run"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "subprocess"
-            and node.args
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "command"
-        ]
-        assert len(starts) == 1, f"expected exactly one agent-runtime exec, found {starts}; re-anchor this test"
-        assert starts[0] > call_line, "the task start must come after the bootstrap call for the refusal to prevent it"
-
 
 class TestTheAbortingRunItselfIsNotStopped:
     """Quiescence before terminal — instruction 5808383984.
