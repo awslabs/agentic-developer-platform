@@ -407,14 +407,58 @@ class TestFreshCreation:
 class TestMintingIsRobust:
     """Creation must fail closed, never by joining an existing conversation."""
 
-    def test_a_collision_retries_with_a_fresh_id_instead_of_adopting_the_row(self, aws):
-        """The dangerous failure mode, so it is tested rather than assumed.
+    def test_a_real_collision_never_overwrites_the_existing_row(self, aws):
+        """The conditional write itself, exercised against a row that is there.
 
-        A minted id that already exists must NOT be returned: the existing row
-        may belong to somebody else, and handing it over would be the exact
-        cross-tenant handover this route exists to prevent. The conditional
-        write is what makes the difference, so the test forces the condition to
-        fail once and checks a DIFFERENT id comes back.
+        This is the test that distinguishes `ConditionExpression=
+        attribute_not_exists(session_id)` from a plain `put_item`. A plain put
+        would silently REPLACE whatever was at that id — on a collision with
+        another tenant's conversation that is a destroyed conversation plus a
+        cross-tenant handover, and no exception would ever be raised to notice
+        it by.
+
+        So the mint is steered onto an id that already exists, rather than
+        injecting the exception a conditional write would have produced.
+        """
+        handler = _import_handler()
+        # A conversation that already exists, owned by somebody else, with
+        # history worth destroying.
+        victim_id = "sess-aaaabbbbccccddddeeeeffff00001111"
+        aws["sessions"].put_item(Item={
+            "session_id": victim_id,
+            "owner_principal": json.dumps(
+                [STRANGER["custom:tenant_id"], STRANGER["custom:org_id"],
+                 STRANGER["custom:team_id"], STRANGER["sub"], "webchat"],
+                separators=(",", ":"),
+            ),
+            "owner_user_id": STRANGER["sub"],
+            "user_workspace": f'{STRANGER["sub"]}#webchat',
+            "tenant_id": STRANGER["custom:tenant_id"],
+            "channel": "webchat",
+            "messages": [{"role": "user", "content": "the stranger's history", "ts": 1}],
+            "threads": {}, "created_at": 1, "updated_at": 1,
+            "expires_at": 9_999_999_999,
+        })
+
+        # The first mint collides with that row; the second is genuinely new.
+        minted = iter([victim_id, "sess-99998888777766665555444433332222"])
+        with patch.object(handler, "_mint_session_id", side_effect=lambda: next(minted)):
+            reply = _create_session(handler, OWNER, OWNER_CONN)
+
+        assert reply["statusCode"] == 200
+        assert reply["session_id"] != victim_id, "the colliding row must not be handed over"
+
+        # The stranger's conversation is intact: same owner, same history.
+        victim_row = _row(aws["sessions"], victim_id)
+        assert victim_row["owner_user_id"] == STRANGER["sub"]
+        assert "the stranger's history" in str(victim_row["messages"])
+
+    def test_a_collision_retries_with_a_fresh_id_instead_of_adopting_the_row(self, aws):
+        """The retry itself: a failed condition must produce a NEW id.
+
+        Complements the test above — that one proves the condition is set, this
+        one proves the handler responds to it by minting again rather than
+        surfacing the collision as an error or returning the colliding id.
         """
         handler = _import_handler()
         real_put = handler.sessions_table.put_item
