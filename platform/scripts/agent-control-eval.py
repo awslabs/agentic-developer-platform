@@ -77,6 +77,7 @@ documentation while the bearer tokens come from the supported credential path.
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import hashlib
 import json
@@ -484,6 +485,14 @@ POLICY_LEDGER_KINDS: tuple[str, ...] = ("networkpolicy", "policy")
 # than as a silent 400 in a live evaluation.
 STEER_VERB = "steer"
 ABORTED_STATUS = "aborted"
+
+# The stats response model W4-09's row calls "the complete current RunStatsResponse".
+# Named here rather than inlined because it is the one piece of the parity comparison
+# that must be a literal: the FIELDS are parsed from the deployed source so they
+# cannot go stale (see `Driver._stats_response_fields`), but which class to parse has
+# to be stated somewhere. A rename on the gateway side makes W4-09 report that it
+# could not find the model — not that the live response matched nothing.
+STATS_RESPONSE_MODEL = "StatsResponse"
 
 # The outcomes a native provider interruption may legitimately normalize to, and the
 # provenance the experiment that observed one must carry.
@@ -894,35 +903,27 @@ WAVE_REVISIONS: dict[int, str] = {
 # no predicate is deliberate — see WAVE2_CHECKS above — but it must never be
 # indistinguishable from a check the harness forgot.
 #
-# Waves 1 and 2 are fully implemented and contribute nothing here. Wave 4 (#3966)
-# implements the four checks whose subject is the dashboard it builds — the three
-# browser checks plus the schema-parity gate — and registers the other six as owed,
-# because they consolidate criteria this story does not own and cannot evidence:
+# Every registered wave is now fully implemented, so this mapping is EMPTY — and it
+# is kept, rather than deleted, because the distinction it draws is the one thing
+# that must not be lost as waves land.
 #
-#  - W4-01 / W4-10 are the wave's own preflight and 37-criterion consolidation. Both
-#    require waves 1-3 ACCEPTED, which is an operations act on a deployed
-#    environment, not something a frontend story can assert. Implementing them here
-#    would mean writing a predicate that reads the operator's own claim of
-#    acceptance back to them.
-#  - W4-03's steer half is S7's, but the row also demands W3-10's fixture pivot and
-#    merged-PR assertion and the FIFO/retry/cap/SDK proof, which are S6 #3965's.
-#    A partial predicate that passed on the steer half alone would report a green
-#    W4-03 while the retry proof was never made.
-#  - W4-05 (all twelve AC-A criteria), W4-06 (deployed security matrix) and W4-09
-#    (flag-off runtime comparison and live stats provenance) belong to S4 #3963,
-#    S1 #3960 and S5 #3964 respectively.
+# The history is worth recording. Wave 4 previously registered six checks here:
+# W4-01/W4-10 (the preflight and the 37-criterion consolidation), W4-03's
+# FIFO/retry/cap/SDK half, W4-05's abort family, W4-06's security matrix and W4-09's
+# runtime comparison. That was correct while no predicate existed — a partial W4-03
+# that passed on the browser steer alone would have reported green while S6's retry
+# proof was never made. #3970 implemented all six, as currency checks over the owning
+# stories' evidence rather than as reimplementations of it, so the evaluator is no
+# longer the missing piece.
 #
-# Note what this does NOT mean: a wave whose every check has a predicate can still
-# report not_run, for a missing artifact or an unset identity variable. "Nobody
-# owes an implementation" and "the evidence is complete" are different claims.
-PENDING_CHECK_OWNERS: dict[str, str] = {
-    "W4-01": "operations (accepted waves 1-3 and the deployed-revision preflight)",
-    "W4-03": "S6 #3965 (live steering delivery, FIFO/retry/cap and the W3-10 pivot)",
-    "W4-05": "S4 #3963 with S5 #3964 (graceful abort and the aborted accounting)",
-    "W4-06": "S1 #3960 (the deployed security matrix this check repeats)",
-    "W4-09": "S5 #3964 (flag-off runtime comparison and live stats provenance)",
-    "W4-10": "operations (the 37-criterion evidence index across all four waves)",
-}
+# The consequence to be clear about: an empty mapping does NOT mean any wave is
+# closer to passing. It means a not_run can no longer be caused by a missing
+# IMPLEMENTATION, so every remaining not_run names a missing INPUT — an absent
+# artifact, an unaccepted prior wave, an unregistered wave-3 manifest — and the
+# predicate's message names who owes it. "Nobody owes an implementation" and "the
+# evidence is complete" were always different claims; conflating them is what this
+# mapping exists to prevent, which is why it stays.
+PENDING_CHECK_OWNERS: dict[str, str] = {}
 
 # Retained for the manifest guard and for callers that only need wave 1's ID set.
 # Deliberately still wave 1: it is the DEFAULT for `assert_check_manifest`, and a
@@ -6022,6 +6023,234 @@ class Driver:
                 f"{sorted(set(emitted_ids) - expected)}"
             )
 
+    # ---- W4-01 ---------------------------------------------------------
+
+    def check_w4_01(self, *, emitted_ids: tuple[str, ...] = ()) -> None:
+        """Wave 4's preflight: is this the build the other nine checks think it is?
+
+        The same role W2-01 plays for wave 2, with two additions that are specific to
+        wave 4 being the LAST evaluation:
+
+        1. **Three prior waves, not one.** Wave 4's row closes all four evaluations,
+           so waves 1, 2 and 3 must each be accepted, and each acceptance must be
+           contained in what is deployed now. Wave 3 being unregistered in this
+           revision is a named refusal rather than a shorter prerequisite list — see
+           `_assert_prior_wave_accepted`.
+        2. **The frontend is a third deployed component.** Wave 4's checks are
+           browser checks, so the artifact under evaluation is a served SPA bundle. A
+           current gateway behind a stale bundle is the normal half-deployment and no
+           check that reads only the two container images can see it. The preflight's
+           frontend revision must also agree with the `bundle_revision` the browser
+           capture independently recorded: two sources naming the same bundle is
+           evidence, and a disagreement names which one is stale.
+
+        The browser identity is asserted here rather than in a browser check because
+        it is a statement about authorization, not about the DOM. The capture only
+        ever drove one identity, so it cannot establish that ordinary users are still
+        gated — and "the fixture owner can drive the controls" plus "everyone else
+        can too" is not the state this wave is allowed to be accepted in.
+        """
+        preflight = self._artifact("wave4_preflight")
+        self._assert_fixture_identity(preflight, "wave4_preflight", self.config)
+
+        # (0) What is running, per component. Everything below is relative to it.
+        deployed = self._deployed_components(preflight)
+        deployed_revisions = {name: entry["revision"] for name, entry in deployed.items()}
+
+        # (1) The frontend, as its own deployed artifact.
+        frontend = preflight["frontend"]
+        if not isinstance(frontend, dict):
+            raise AssertionError(
+                f"'frontend' must be an object recording the deployed SPA's identity, got {frontend!r}. "
+                "Wave 4's checks are browser checks, so the bundle being served is part of what is under "
+                "evaluation rather than context for it"
+            )
+        missing = [key for key in WAVE4_FRONTEND_KEYS if key not in frontend]
+        if missing:
+            raise AssertionError(
+                f"the deployed frontend identity is missing {sorted(missing)}; without all of "
+                f"{list(WAVE4_FRONTEND_KEYS)} the bundle the browser loaded cannot be tied back to "
+                "reviewed source"
+            )
+        frontend_revision = frontend["revision"]
+        if not isinstance(frontend_revision, str) or not _GIT_REVISION_RE.match(frontend_revision):
+            raise AssertionError(
+                f"the frontend revision is {frontend_revision!r}, which is not a full 40-character git "
+                "SHA. A branch name names whatever that ref happened to point at, and 'the dashboard is "
+                "deployed' has to mean a specific commit"
+            )
+        # The served-asset evidence, not merely a claimed revision. An operator can
+        # record any revision; what establishes which bundle is actually being served
+        # is a comparison against the assets retrieved from the deployment.
+        served = frontend["served_asset_evidence"]
+        if not isinstance(served, dict) or served.get("verified") is not True:
+            raise AssertionError(
+                f"'frontend.served_asset_evidence' does not record a verified match ({served!r}). A "
+                "recorded revision says which commit the operator believes is deployed; only a "
+                "comparison against the assets actually retrieved from the deployment establishes it, "
+                "and a stale bundle is exactly what this field exists to catch"
+            )
+        # The frontend must itself be contained in the deployment's other components'
+        # history — it is built from the same repository, so a frontend revision that
+        # is not an ancestor of the running backend is either from a branch or from
+        # the future, and both mean these three artifacts are not one build.
+        self._assert_contained_in(
+            frontend_revision,
+            subject=f"the deployed frontend revision {frontend_revision}",
+            deployed_revisions=deployed_revisions,
+            hint=(
+                "A frontend built from a revision the running backend does not contain is a "
+                "half-deployment: the SPA may call fields the gateway does not serve yet."
+            ),
+        )
+
+        # The two independent records of which bundle was under test must agree.
+        capture = self._artifact("browser_control_run")
+        captured_bundle = str(capture.get("bundle_revision") or "").strip()
+        if not captured_bundle:
+            raise AssertionError(
+                "the browser capture records no `bundle_revision`, so the preflight's frontend revision "
+                "cannot be corroborated. One record naming a bundle is a claim; two independent records "
+                "agreeing is evidence"
+            )
+        if captured_bundle != frontend_revision:
+            raise AssertionError(
+                f"the browser drove bundle {captured_bundle!r} but the preflight records the deployed "
+                f"frontend as {frontend_revision!r}. One of the two is stale, and every wave-4 browser "
+                "observation is about whichever bundle the browser actually loaded — so this has to be "
+                "resolved rather than reconciled in favour of the preflight"
+            )
+
+        # (2) Prior waves, each accepted and each contained in what runs now.
+        prior = preflight["prior_waves"]
+        if not isinstance(prior, dict):
+            raise AssertionError(
+                f"'prior_waves' must be an object keyed by wave number, got {prior!r}. A single "
+                "'waves_1_3_accepted' boolean cannot say which wave is unaccepted, and wave 3 being "
+                "unregistered has a different owner from wave 1 being stale"
+            )
+        for wave in WAVE4_PRIOR_WAVES:
+            record = prior.get(str(wave), prior.get(wave))
+            if record is None:
+                raise AssertionError(
+                    f"no acceptance recorded for wave {wave}. Wave 4's evidence closes all four "
+                    f"evaluations, so every earlier wave's acceptance is a prerequisite rather than "
+                    f"context"
+                )
+            self._assert_prior_wave_accepted(
+                wave, record, deployed_revisions=deployed_revisions
+            )
+
+        # (3) The dashboard story, merged and contained.
+        merged = preflight["merged_revisions"]
+        if not isinstance(merged, dict):
+            raise AssertionError(f"'merged_revisions' must be an object keyed by story, got {merged!r}")
+        for story, description in WAVE4_REQUIRED_STORIES.items():
+            entry = merged.get(story)
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"no merged revision recorded for {story} ({description}); wave 4 evaluates that "
+                    f"story's dashboard, so evidence gathered while it is unmerged describes a build "
+                    f"without the feature under test"
+                )
+            if entry.get("merged") is not True:
+                raise AssertionError(
+                    f"{story} ({description}) is not recorded as merged: {entry.get('merged')!r}"
+                )
+            revision = entry.get("revision")
+            if not isinstance(revision, str) or not _GIT_REVISION_RE.match(revision):
+                raise AssertionError(
+                    f"{story}'s merged revision is {revision!r}, which is not a full 40-character git "
+                    f"SHA. {description} must be pinned to an exact commit, not to a moving ref"
+                )
+            self._assert_contained_in(
+                revision,
+                subject=f"{story}'s merged revision {revision} ({description})",
+                deployed_revisions={**deployed_revisions, "frontend": frontend_revision},
+                hint="A merged dashboard story that is not in the served bundle is not deployed.",
+            )
+
+        # (4) Gates, by name, on the revision they tested.
+        gates = preflight["ci_gates"]
+        if not isinstance(gates, dict):
+            raise AssertionError(f"'ci_gates' must be an object keyed by gate name, got {gates!r}")
+        # Wave 4's row asks for the frontend's three gates AND the control CI set, so
+        # both are required. Wave 2's set is not replaced by wave 4's: a green Vitest
+        # over a build whose harness tests never ran is not "current green CI".
+        for gate in (*WAVE4_REQUIRED_CI_GATES, *WAVE2_REQUIRED_CI_GATES):
+            entry = gates.get(gate)
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"no result recorded for the {gate!r} gate ({entry!r}). Required gates are checked by "
+                    "the name CI defines, because any nonempty map of 'passed' values demonstrates the "
+                    "operator's spelling rather than the build's gates"
+                )
+            if entry.get("status") != STATUS_PASSED:
+                raise AssertionError(
+                    f"the {gate!r} gate is {entry.get('status')!r}, not {STATUS_PASSED!r}"
+                )
+            if not entry.get("run_id"):
+                raise AssertionError(
+                    f"the {gate!r} gate records no 'run_id'. A gate result a reviewer cannot retrieve is "
+                    "a summary of a gate rather than the gate"
+                )
+            tested = entry.get("revision")
+            if not isinstance(tested, str) or not _GIT_REVISION_RE.match(tested):
+                raise AssertionError(
+                    f"the {gate!r} gate records revision {tested!r}, which is not a full 40-character git "
+                    "SHA. Which commit a gate tested is the whole of what makes it relevant"
+                )
+            # A green gate on a revision the deployment does not contain tested
+            # different code. This is the "merge went green, then something else
+            # shipped" case.
+            self._assert_contained_in(
+                tested,
+                subject=f"the {gate!r} gate's tested revision {tested}",
+                deployed_revisions={**deployed_revisions, "frontend": frontend_revision},
+                hint="A gate that passed on code the deployment does not contain did not test this build.",
+            )
+
+        # (5) Fixture scope: the browser identity is the owner, others still gated.
+        identity = preflight["browser_identity"]
+        if not isinstance(identity, dict):
+            raise AssertionError(
+                f"'browser_identity' must be an object describing the identity the browser drove, got "
+                f"{identity!r}"
+            )
+        if identity.get("role") != "owner":
+            raise AssertionError(
+                f"the browser drove the {identity.get('role')!r} identity, but wave 4's row requires the "
+                "isolated fixture browser identity to be the run's OWNER. Observations of what a "
+                "non-owner's dashboard renders cannot establish what the owner's does"
+            )
+        if identity.get("is_run_owner") is not True:
+            raise AssertionError(
+                f"'browser_identity.is_run_owner' is {identity.get('is_run_owner')!r}; the identity must "
+                "be observed to own the run under test, not merely labelled 'owner'"
+            )
+        if preflight.get("ordinary_users_gated") is not True:
+            raise AssertionError(
+                f"'ordinary_users_gated' is {preflight.get('ordinary_users_gated')!r}. Wave 4's row "
+                "requires ordinary users to remain gated pending acceptance: a dashboard that is live for "
+                "everyone before its evaluation passed has shipped an unevaluated control surface"
+            )
+        if preflight.get("ordinary_flags_off") is not True:
+            raise AssertionError(
+                f"'ordinary_flags_off' is {preflight.get('ordinary_flags_off')!r}; DP-INV-1 requires the "
+                "ordinary gateway/worker/SPA flags to stay off, and a fixture that got its observations by "
+                "enabling them more widely produced an invalid pass rather than a weaker one"
+            )
+
+        # (6) The report's own inventory: every check this wave declares is present.
+        inventory = tuple(emitted_ids)
+        expected = tuple(spec.check_id for spec in WAVE_CHECKS[4])
+        if inventory and set(inventory) != set(expected):
+            raise AssertionError(
+                f"this run's check inventory is {sorted(inventory)} but wave 4 declares {sorted(expected)}. "
+                "A report missing a check cannot be complete, and one carrying an extra ID is describing "
+                "a different wave"
+            )
+
     # ---- wave 4 (#3966): the dashboard's own evidence -------------------
     #
     # These four read the captured browser run. Every assertion below is about
@@ -6378,6 +6607,700 @@ class Driver:
                     "when only the queue does"
                 )
 
+    # ---- wave 4 consolidation: earlier waves' criteria, rechecked ---------
+    #
+    # W4-03, W4-05, W4-06 and W4-09 each repeat a family of criteria an earlier
+    # wave evidenced. They are NOT re-running those waves' probes: the evidence
+    # already exists, and asking the fixture to reproduce a whole abort family
+    # would mutate the run the other checks describe.
+    #
+    # What they establish instead is the thing wave 4's row actually asks and no
+    # earlier wave could answer: is that evidence still about the build that is
+    # deployed NOW? Two ways for it not to be, both checked in
+    # `_assert_evidence_not_stale` — a revision the deployment does not contain,
+    # and a timestamp predating a later change to a surface the criteria cover.
+    #
+    # So a consolidating check can fail for a reason the original wave passed on,
+    # which is correct and is the point. "It passed in wave 3" and "it describes
+    # what is running" are different claims, and only the second one lets wave 4
+    # close.
+
+    def _consolidate(self, check_id: str, *, proofs: tuple[str, ...] = ()) -> dict:
+        """The shared spine of the four consolidating checks.
+
+        Each of them needs the same four things established in the same order, and
+        the order is load-bearing:
+
+        1. **Identity**, so the artifact is about this fixture and not a previous
+           run's. Checked first because every assertion after it is meaningless
+           otherwise.
+        2. **The evaluation it came from**, so evidence filed against the wrong wave
+           cannot be counted toward this one.
+        3. **Currency** — contained in the deployment, and not predating a change to
+           a surface it covers. This is wave 4's own contribution.
+        4. **Coverage**, so every acceptance ID this check carries has a passing
+           entry with evidence behind it, and no entry it does not carry.
+
+        The named row-specific proofs come last, via `_assert_named_proofs`: they are
+        the individual observations each row lists, and a row that lists four proofs
+        must not be satisfiable by one of them.
+        """
+        source = WAVE4_CONSOLIDATED_SOURCES[check_id]
+        payload = self._artifact(source["artifact"])
+        self._assert_fixture_identity(payload, source["artifact"], self.config)
+
+        expected_evaluation = WAVE_EVALUATIONS.get(source["wave"])
+        recorded = str(payload.get("evaluation") or "")
+        if expected_evaluation and recorded != expected_evaluation:
+            raise AssertionError(
+                f"{check_id}: this evidence names evaluation {recorded!r} but the criteria it carries "
+                f"were evidenced by wave {source['wave']} under evaluation {expected_evaluation!r}. "
+                f"Evidence attached to a different evaluation cannot be consolidated into this one"
+            )
+
+        # Currency needs to know what is deployed, and that lives in the wave's
+        # preflight. Reading it here rather than taking a `deployed_revisions`
+        # argument keeps each check independently runnable — and an absent preflight
+        # makes this not_run, which is right: without knowing what is deployed,
+        # staleness is unanswerable rather than false.
+        preflight = self._artifact("wave4_preflight")
+        deployed = {
+            name: entry["revision"]
+            for name, entry in self._deployed_components(preflight).items()
+        }
+        frontend = preflight.get("frontend")
+        if isinstance(frontend, dict) and isinstance(frontend.get("revision"), str):
+            deployed["frontend"] = frontend["revision"]
+
+        self._assert_evidence_not_stale(payload, check_id, deployed_revisions=deployed)
+        self._assert_criteria_cover(payload, check_id, CHECK_ACCEPTANCE_IDS[check_id])
+        if proofs:
+            self._assert_named_proofs(payload, check_id, proofs)
+        return payload
+
+    # ---- W4-03 ---------------------------------------------------------
+
+    def check_w4_03(self) -> None:
+        """AC-T1..T8 and AC-S8: steering, as delivered and as still current.
+
+        The browser half is wave 4's own — a 202 to a schema-valid steer, then a
+        pending state tied to the command_id and a matching delivery marker — and it
+        is asserted here from the capture rather than trusted from the artifact,
+        because that is the half a browser can actually observe.
+
+        The rest is wave 3's: FIFO order, retry delivery, the pending cap, the
+        SDK-bound text, the fixture pivot and the merged test-PR assertion. Those are
+        named individually because the row names them individually; a single
+        `steering_proven` boolean cannot say which one was never made, and they do not
+        all have the same owner.
+        """
+        payload = self._consolidate(
+            "W4-03",
+            proofs=(
+                "fifo_order_proven",
+                "retry_delivery_proven",
+                "pending_cap_proven",
+                "sdk_bound_text_proven",
+            ),
+        )
+
+        # The W3-10 pivot and the merged test PR. Objects rather than booleans: the
+        # row demands they EXECUTE, and "true" cannot distinguish an executed pivot
+        # from an intention to pivot.
+        pivot = payload.get("fixture_pivot")
+        if not isinstance(pivot, dict) or pivot.get("executed") is not True:
+            raise AssertionError(
+                f"W4-03: 'fixture_pivot' does not record an executed pivot ({pivot!r}). W3-10's pivot is "
+                "an action taken against the fixture, so a boolean claim that it happened is the "
+                "substitute for evidence this check refuses"
+            )
+        test_pr = payload.get("merged_test_pr")
+        if not isinstance(test_pr, dict):
+            raise AssertionError(
+                f"W4-03: 'merged_test_pr' must be an object identifying the PR the steered agent opened, "
+                f"got {test_pr!r}"
+            )
+        if test_pr.get("merged") is not True or not test_pr.get("url"):
+            raise AssertionError(
+                f"W4-03: the test PR is recorded as merged={test_pr.get('merged')!r} at "
+                f"url={test_pr.get('url')!r}. W3-10 requires a merged PR a reviewer can open: that PR "
+                "existing is the end-to-end proof that a steer reached a real agent and changed what it "
+                "did"
+            )
+
+        # The browser half, from the capture. Observed, not asserted.
+        capture = self._browser_run()
+        request = capture.get("steer_request")
+        if not isinstance(request, dict):
+            raise AssertionError(
+                f"W4-03: the capture's `steer_request` must record the request the browser sent, got "
+                f"{request!r}"
+            )
+        if request.get("status") != 202:
+            raise AssertionError(
+                f"W4-03: the browser's steer was answered {request.get('status')!r}, expected 202. AC-T1 "
+                "is about an ACCEPTED steer; any other status means the dashboard's own submission path "
+                "does not work, whatever the backend suite proves in isolation"
+            )
+        path = str(request.get("path") or "")
+        if not path.endswith("/agent/steer"):
+            raise AssertionError(
+                f"W4-03: the browser posted its steer to {path!r}, which is not an agent steer route. A "
+                "202 from the wrong destination is a 202 from something else"
+            )
+
+        statuses = capture.get("steer_status_sequence")
+        if not isinstance(statuses, list) or not statuses:
+            raise AssertionError(
+                f"W4-03: `steer_status_sequence` must be the nonempty list of per-command statuses the "
+                f"DOM rendered in order, got {statuses!r}"
+            )
+        rendered = [str(entry).lower() for entry in statuses]
+        if "pending" not in rendered:
+            raise AssertionError(
+                f"W4-03: the DOM never rendered a pending state for the steer ({statuses}). AC-T1 "
+                "requires the pending state tied to the command_id: without it the operator cannot tell "
+                "an accepted instruction from a lost one"
+            )
+        if not any("deliver" in entry for entry in rendered):
+            raise AssertionError(
+                f"W4-03: the DOM never rendered a delivery marker for the steer ({statuses}). An "
+                "instruction that stays pending forever is indistinguishable from one the agent never "
+                "received, and AC-T1 is satisfied by the delivery, not by the acknowledgement"
+            )
+        if rendered.index("pending") > next(
+            index for index, entry in enumerate(rendered) if "deliver" in entry
+        ):
+            raise AssertionError(
+                f"W4-03: the DOM showed delivery before pending ({statuses}). The order is the claim: "
+                "delivered-then-pending means the UI is not tracking this command's real progress"
+            )
+
+    # ---- W4-05 ---------------------------------------------------------
+
+    def check_w4_05(self) -> None:
+        """AC-A1..A12: abort, and the row it actually left behind.
+
+        All twelve criteria, consolidated from wave 3 — but the assertion this check
+        adds beyond coverage is `completed_at_observed`. The row says "the actual row
+        has completed_at", and that wording is doing real work: a dashboard rendering
+        a terminal state and a record that IS terminal are different things, and the
+        second is what every later cost and stats read depends on.
+        """
+        payload = self._consolidate(
+            "W4-05",
+            proofs=(
+                "cancel_left_run_untouched",
+                "confirmed_abort_terminal",
+                "repeat_and_double_abort",
+                "stats_writer_assertions",
+            ),
+        )
+
+        # Exactly one finalized comment. Not "at least one": AC-A6's failure mode is
+        # a duplicate, which is a second comment on someone's PR, and >= would accept
+        # precisely the thing being forbidden.
+        count = payload.get("finalized_comment_count")
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise AssertionError(
+                f"W4-05: 'finalized_comment_count' is {count!r}, expected a counted integer. A boolean "
+                "cannot distinguish one finalized comment from several"
+            )
+        if count != 1:
+            raise AssertionError(
+                f"W4-05: {count} finalized comment(s) were observed, expected exactly 1. Zero means the "
+                "abort left no record on the work it stopped; more than one means a duplicate comment on "
+                "a real PR, which is the user-visible defect this criterion exists to prevent"
+            )
+
+        renderers = payload.get("aborted_renderers")
+        if not isinstance(renderers, dict) or not renderers:
+            raise AssertionError(
+                f"W4-05: 'aborted_renderers' must be a nonempty object recording each surface that "
+                f"renders the aborted state and what it showed, got {renderers!r}. An empty map would "
+                "satisfy every per-renderer assertion vacuously"
+            )
+        unrendered = sorted(name for name, value in renderers.items() if value is not True)
+        if unrendered:
+            raise AssertionError(
+                f"W4-05: {unrendered} did not render the aborted state. An abort the UI shows as failed "
+                "or as still running misattributes a deliberate stop to a fault, which is the wrong "
+                "signal to every operator reading it"
+            )
+
+        # The row itself, read rather than claimed.
+        observed = payload.get("completed_at_observed")
+        if not isinstance(observed, dict):
+            raise AssertionError(
+                f"W4-05: 'completed_at_observed' must be an object recording the read of the actual row, "
+                f"got {observed!r}. The row's terminal timestamp is the fact this criterion is about, so "
+                "a boolean here would be a claim standing in for the read"
+            )
+        for key in ("run_id", "status", "completed_at"):
+            if not observed.get(key):
+                raise AssertionError(
+                    f"W4-05: 'completed_at_observed.{key}' is missing or empty. The read has to identify "
+                    "WHICH row it saw and what that row said, or it cannot be distinguished from a read "
+                    "of a different run"
+                )
+        if str(observed.get("status")) != ABORTED_STATUS:
+            raise AssertionError(
+                f"W4-05: the observed row's status is {observed.get('status')!r}, expected "
+                f"{ABORTED_STATUS!r}. A run the UI calls aborted whose record says otherwise will be "
+                "counted as something else by every stats and spend query that reads the record"
+            )
+        if _parse_timestamp(observed.get("completed_at")) is None:
+            raise AssertionError(
+                f"W4-05: the observed row's 'completed_at' is {observed.get('completed_at')!r}, which is "
+                "not an ISO-8601 instant. An unparseable terminal timestamp is not a terminal timestamp"
+            )
+
+    # ---- W4-06 ---------------------------------------------------------
+
+    def check_w4_06(self) -> None:
+        """AC-S1..S7: the security matrix, repeated, plus every destination the
+        browser actually requested.
+
+        The consolidation half is wave 3's matrix rechecked for currency. Wave 4's own
+        addition is the capture: the matrix probes what the GATEWAY does, and this
+        check additionally establishes what the BUNDLE does — which destinations it
+        chose and what it put in the bodies. A gateway that refuses a direct pod
+        request is necessary and not sufficient, because a bundle that tries one has
+        already put a pod address into the browser.
+        """
+        payload = self._consolidate("W4-06", proofs=("non_gateway_probe_blocked",))
+
+        # The row says the bundle scan is supplemental ONLY. Required as an explicit
+        # acknowledgement rather than allowed to be absent: a matrix whose evidence
+        # is a static scan of the built assets has not probed a deployment at all,
+        # and absence would let that pass silently.
+        if payload.get("bundle_scan_supplemental") is not True:
+            raise AssertionError(
+                f"W4-06: 'bundle_scan_supplemental' is {payload.get('bundle_scan_supplemental')!r}. The "
+                "wave-4 row admits the bundle scan as supplemental evidence only, so this has to be an "
+                "explicit acknowledgement: a static scan cannot establish what a deployment refuses"
+            )
+
+        capture = self._browser_run()
+        destinations = capture.get("request_destinations")
+        if not isinstance(destinations, list) or not destinations:
+            raise AssertionError(
+                f"W4-06: `request_destinations` must be the nonempty list of every URL the browser "
+                f"requested while driving the controls, got {destinations!r}. An empty list means either "
+                "nothing was captured or nothing was requested, and both make the per-destination "
+                "assertions vacuous"
+            )
+        gateway = str(self.config.get("gateway_url") or capture.get("gateway_url") or "").rstrip("/")
+        offsite = [
+            str(url)
+            for url in destinations
+            if not str(url).startswith(gateway + "/") and str(url) != gateway
+        ]
+        if offsite:
+            raise AssertionError(
+                f"W4-06: the browser requested {offsite}, which are not on the gateway {gateway!r}. "
+                "AC-S1 requires the controls to target gateway activity routes only — a control request "
+                "to anything else is a control path that does not go through the gateway's authorization"
+            )
+        non_activity = [
+            str(url) for url in destinations if "/activity/" not in str(url)
+        ]
+        if non_activity:
+            raise AssertionError(
+                f"W4-06: the browser sent control traffic to {non_activity}, which are not activity "
+                "routes. Being on the right host is not the same as being on the route whose "
+                "authorization was evaluated"
+            )
+
+        for key, what in (
+            ("request_bodies_contain_pod_address", "a pod address"),
+            ("request_bodies_contain_token", "a control token"),
+        ):
+            value = capture.get(key)
+            if value is not False:
+                raise AssertionError(
+                    f"W4-06: `{key}` is {value!r}: the capture does not establish that no request body "
+                    f"carried {what}. It must be an observed `false` — a secret the browser sends is in "
+                    "devtools, in proxy logs and in any error report, and 'not measured' is not 'absent'"
+                )
+
+        if capture.get("spoofed_identity_rejected") is not True:
+            raise AssertionError(
+                "W4-06: the capture does not establish that a spoofed identity was rejected. AC-S5 is "
+                "about what the deployment does when the browser lies about who it is, which cannot be "
+                "inferred from the honest requests succeeding"
+            )
+
+    # ---- W4-09 ---------------------------------------------------------
+
+    def check_w4_09(self) -> None:
+        """AC-F1, AC-F2: the flag-off comparison rerun, and live stats provenance.
+
+        Two independent questions, deliberately not collapsed:
+
+        * **Parity** — with the flag off and with it on but no command issued, the
+          runtime behaves identically. The comparison must be rerun with the FINAL
+          code, which is what `_consolidate`'s currency assertions establish.
+        * **Provenance** — the stats fields came from the live endpoint, not a mock.
+          A schema can match perfectly on fabricated data, so matching keys is not
+          evidence of a live read and has to be asserted separately.
+
+        The row also forbids enabling ordinary flags as a testing shortcut. That is
+        not a weaker form of a pass: observations obtained that way describe a
+        configuration DP-INV-1 forbids, so they are invalid rather than partial.
+        """
+        payload = self._consolidate("W4-09")
+
+        off = str(payload.get("flag_off_events_digest") or "")
+        on = str(payload.get("flag_on_events_digest") or "")
+        if not off or not on:
+            raise AssertionError(
+                f"W4-09: the runtime comparison records digests off={off!r} on={on!r}; both halves are "
+                "required, because a comparison with one side missing is not a comparison"
+            )
+        if off != on:
+            raise AssertionError(
+                f"W4-09: the flag-off event digest {off!r} differs from the flag-on/no-command digest "
+                f"{on!r}. AC-F1 is that enabling the flag without issuing a command changes nothing: a "
+                "difference here means the feature alters runtime behaviour for every run merely by "
+                "being switched on"
+            )
+        differing = payload.get("differing_fields")
+        if not isinstance(differing, list):
+            raise AssertionError(
+                f"W4-09: 'differing_fields' must be a list (empty when the runs match), got "
+                f"{differing!r}. An absent list cannot be distinguished from an unmeasured one"
+            )
+        if differing:
+            raise AssertionError(
+                f"W4-09: the two runs differ in {sorted(str(name) for name in differing)} even though "
+                "their digests were recorded as equal. The artifact contradicts itself, so neither half "
+                "can be relied on"
+            )
+        if payload.get("ordinary_flags_off") is not True:
+            raise AssertionError(
+                f"W4-09: 'ordinary_flags_off' is {payload.get('ordinary_flags_off')!r}. The row forbids "
+                "ordinary flag enablement as a testing shortcut: a comparison obtained by switching the "
+                "ordinary flags on describes a configuration DP-INV-1 forbids, which makes the "
+                "observation invalid rather than merely weaker"
+            )
+
+        # Provenance: a live read, from the deployment under evaluation.
+        source = payload.get("stats_source")
+        if not isinstance(source, dict):
+            raise AssertionError(
+                f"W4-09: 'stats_source' must be an object recording where these stats came from, got "
+                f"{source!r}. 'live' versus 'mocked' is the question, and a schema match cannot answer it"
+            )
+        if source.get("live") is not True:
+            raise AssertionError(
+                f"W4-09: 'stats_source.live' is {source.get('live')!r}. The row requires the live stats "
+                "schema and provenance: a unit fixture can reproduce every field name of "
+                "RunStatsResponse on invented numbers, so the fields matching is not evidence that "
+                "anything was served"
+            )
+        endpoint = str(source.get("endpoint") or "")
+        if "agent-run-stats" not in endpoint:
+            raise AssertionError(
+                f"W4-09: 'stats_source.endpoint' is {endpoint!r}, which is not the agent-run-stats "
+                "endpoint. Which URL produced these numbers is part of the provenance claim"
+            )
+        if source.get("status") != 200:
+            raise AssertionError(
+                f"W4-09: the live stats read returned {source.get('status')!r}, expected 200. A "
+                "non-200 response did not serve the schema being compared"
+            )
+
+        # Parity against the CURRENT response model, read from the deployed source
+        # rather than transcribed. W2-09's transcription is the right tool for a live
+        # probe; here the claim is specifically "the complete CURRENT
+        # RunStatsResponse", which a hardcoded list stops being the moment a field is
+        # added.
+        declared = self._stats_response_fields()
+        recorded = payload.get("stats_response_keys")
+        if not isinstance(recorded, list):
+            raise AssertionError(
+                f"W4-09: 'stats_response_keys' must be the list of top-level keys the live response "
+                f"carried, got {recorded!r}"
+            )
+        observed = {str(key) for key in recorded}
+        missing = sorted(declared - observed)
+        if missing:
+            raise AssertionError(
+                f"W4-09: the live stats response omits {missing}, which the deployed stats schema "
+                "declares. Every one is an `undefined` in the dashboard, which renders as a blank "
+                "rather than as an error"
+            )
+        invented = sorted(observed - declared)
+        if invented:
+            raise AssertionError(
+                f"W4-09: the recorded stats response carries {invented}, which the deployed schema does "
+                "not declare. The row forbids invented mock fields specifically: a key no schema "
+                "declares is one the capture supplied rather than one the gateway served"
+            )
+
+    def _stats_response_fields(self) -> set[str]:
+        """The deployed stats response's top-level field names, from its source.
+
+        Parsed out of the model definition rather than listed here, for the reason
+        W4-09's row gives: it asks about the "complete current RunStatsResponse", and
+        a list written down in the harness stops being current the first time a field
+        is added to the model. Parsing keeps the two in step by construction.
+
+        Read with `ast` rather than by importing the gateway, because this script runs
+        standalone against a URL and must not acquire the gateway's dependency tree —
+        the same constraint that makes the protocol constants mirrored copies.
+
+        An unreadable or unrecognisable source file raises
+        :class:`PrerequisiteMissingError`. The harness could not determine what the
+        schema declares, so it cannot compare anything against it, and defaulting to
+        a hardcoded list would silently reintroduce exactly the staleness this method
+        exists to remove.
+        """
+        path = self._repo_root / "modules/gateway/src/activity/stats_schemas.py"
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError) as exc:
+            raise PrerequisiteMissingError(
+                f"cannot read the deployed stats schema at {path}: {exc}. W4-09 compares the live "
+                "response against the CURRENT model definition, so without it the comparison is "
+                "unanswerable rather than satisfied"
+            ) from None
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef) or node.name != STATS_RESPONSE_MODEL:
+                continue
+            fields = {
+                statement.target.id
+                for statement in node.body
+                if isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+            }
+            if not fields:
+                raise PrerequisiteMissingError(
+                    f"{STATS_RESPONSE_MODEL} in {path} declares no annotated fields, so there is nothing "
+                    "to compare the live response against. An empty expectation would make the parity "
+                    "assertion vacuously true"
+                )
+            return fields
+        raise PrerequisiteMissingError(
+            f"no {STATS_RESPONSE_MODEL} class found in {path}; the model this check compares against "
+            "may have been renamed, and comparing against nothing would pass silently"
+        )
+
+    # ---- W4-10 ---------------------------------------------------------
+
+    def check_w4_10(self, *, emitted_ids: tuple[str, ...] = ()) -> None:
+        """The consolidation: all 37 criteria, each owned, current and live where
+        required — and a report with nothing missing in it.
+
+        This is the check the wave-4 row makes the condition for closing all four
+        evaluations, so it is the one with the most ways to be quietly wrong. Each
+        assertion below closes one:
+
+        * **Exactly the 37 IDs**, computed from the four waves' manifests rather than
+          compared against a constant. A hardcoded 37 would be satisfiable by editing
+          the constant to match whatever the index happened to contain, which is the
+          opposite of a consolidation check.
+        * **Per-entry owner, evaluation, revision and evidence.** An AC with a status
+          and no owner is one nobody can be asked about; one with no revision cannot
+          be tested for currency.
+        * **Currency, computed.** Every entry's revision must be contained in what is
+          deployed. An index of true-but-old observations is the stale-but-passing
+          case, and it looks identical to a current one in every status field.
+        * **Live where the row demands live.** A unit mock cannot stand in for a named
+          live SDK/API/browser check, and that is only checkable because each entry
+          records which it was.
+        * **No missing, skipped or not-run result** — asserted against THIS RUN's own
+          results, not against the index's self-description. An index claiming
+          completeness inside a report with three not_runs is exactly the fabricated
+          10/10 the kickoff forbids.
+        """
+        index = self._artifact("wave4_evidence_index")
+        self._assert_fixture_identity(index, "wave4_evidence_index", self.config)
+
+        compiled_at = _parse_timestamp(index.get("compiled_at"))
+        if compiled_at is None:
+            raise AssertionError(
+                f"W4-10: 'compiled_at' is {index.get('compiled_at')!r}, which is not an ISO-8601 "
+                "instant. When the index was compiled is what makes it possible to say whether it "
+                "predates a change to the code it indexes"
+            )
+        compiled_revision = index.get("compiled_revision")
+        if not isinstance(compiled_revision, str) or not _GIT_REVISION_RE.match(compiled_revision):
+            raise AssertionError(
+                f"W4-10: 'compiled_revision' is {compiled_revision!r}, which is not a full 40-character "
+                "git SHA"
+            )
+
+        preflight = self._artifact("wave4_preflight")
+        deployed = {
+            name: entry["revision"]
+            for name, entry in self._deployed_components(preflight).items()
+        }
+        frontend = preflight.get("frontend")
+        if isinstance(frontend, dict) and isinstance(frontend.get("revision"), str):
+            deployed["frontend"] = frontend["revision"]
+        self._assert_contained_in(
+            compiled_revision,
+            subject=f"the evidence index's compiled revision {compiled_revision}",
+            deployed_revisions=deployed,
+            hint="An index compiled from a revision the deployment does not contain indexes other code.",
+        )
+
+        # (1) Exactly the criterion set the manifests declare.
+        expected = all_acceptance_ids()
+        if len(expected) != WAVE4_TOTAL_ACCEPTANCE_IDS:
+            raise AssertionError(
+                f"W4-10: the registered waves declare {len(expected)} acceptance criteria but the "
+                f"wave-4 row names {WAVE4_TOTAL_ACCEPTANCE_IDS}. The manifests and the evaluation have "
+                f"diverged, so consolidating against either would misstate the other. Declared: "
+                f"{list(expected)}"
+            )
+        criteria = index.get("criteria")
+        if not isinstance(criteria, dict):
+            raise AssertionError(
+                f"W4-10: 'criteria' must be an object keyed by acceptance ID, got {criteria!r}"
+            )
+        recorded = [str(key) for key in criteria]
+        duplicates = sorted({key for key in recorded if recorded.count(key) > 1})
+        if duplicates:
+            raise AssertionError(
+                f"W4-10: the index carries duplicate entries for {duplicates}. Two rows for one "
+                "criterion let a pass and a fail coexist, and which one a reader believes depends on "
+                "ordering"
+            )
+        present = set(recorded)
+        missing = sorted(set(expected) - present)
+        unknown = sorted(present - set(expected))
+        if missing:
+            raise AssertionError(
+                f"W4-10: the evidence index has no entry for {missing}. The row requires exactly all "
+                f"{WAVE4_TOTAL_ACCEPTANCE_IDS} acceptance IDs, and an absent entry is an unevidenced "
+                "criterion — which is precisely what a consolidation is counting"
+            )
+        if unknown:
+            raise AssertionError(
+                f"W4-10: the index carries {unknown}, which no registered wave declares. An unknown ID "
+                f"inflates the apparent total toward {WAVE4_TOTAL_ACCEPTANCE_IDS} and can therefore "
+                "conceal a missing real one"
+            )
+
+        # (2) Each entry: owned, evidenced, current, and live where required.
+        for acceptance_id in expected:
+            entry = criteria[acceptance_id]
+            if not isinstance(entry, dict):
+                raise AssertionError(
+                    f"W4-10: criterion {acceptance_id} is {entry!r}; each entry must be an object "
+                    "carrying its owner, evaluation, revision, evidence and liveness"
+                )
+            absent = [key for key in EVIDENCE_INDEX_ENTRY_KEYS if key not in entry]
+            if absent:
+                raise AssertionError(
+                    f"W4-10: criterion {acceptance_id} is missing {sorted(absent)}. Each of "
+                    f"{list(EVIDENCE_INDEX_ENTRY_KEYS)} is a separate way for a green index row to be "
+                    "worthless — unowned, unattributed, untestable for currency, or unevidenced"
+                )
+            if entry.get("status") != STATUS_PASSED:
+                raise AssertionError(
+                    f"W4-10: criterion {acceptance_id} is {entry.get('status')!r}, not "
+                    f"{STATUS_PASSED!r}. All four evaluations may close only with every criterion "
+                    "passing, so not_run and skipped keep this check failed rather than partial"
+                )
+            for key in ("owner", "evaluation", "evidence"):
+                value = entry.get(key)
+                if not value or (isinstance(value, str) and not value.strip()):
+                    raise AssertionError(
+                        f"W4-10: criterion {acceptance_id} records an empty {key!r}. A criterion nobody "
+                        "owns is nobody's to rerun, and a status with no evidence reference behind it is "
+                        "the substitute for evidence this evaluation refuses"
+                    )
+            revision = entry.get("revision")
+            if not isinstance(revision, str) or not _GIT_REVISION_RE.match(revision):
+                raise AssertionError(
+                    f"W4-10: criterion {acceptance_id} was evidenced at {revision!r}, which is not a "
+                    "full 40-character git SHA. Without an exact commit its currency cannot be checked"
+                )
+            self._assert_contained_in(
+                revision,
+                subject=f"criterion {acceptance_id}'s evidence revision {revision}",
+                deployed_revisions=deployed,
+                hint=(
+                    "A criterion evidenced at a revision the deployment does not contain was a true "
+                    "observation of a build nobody is running, and must be rerun."
+                ),
+            )
+            live = entry.get("live")
+            if not isinstance(live, bool):
+                raise AssertionError(
+                    f"W4-10: criterion {acceptance_id} records live={live!r}, which is not a boolean. "
+                    "Whether an observation was live or mocked is the distinction the row turns on, so "
+                    "it cannot be left implicit"
+                )
+            if acceptance_id in LIVE_EVIDENCE_REQUIRED_IDS and live is not True:
+                raise AssertionError(
+                    f"W4-10: criterion {acceptance_id} is evidenced by a non-live observation "
+                    f"(evidence={entry.get('evidence')!r}). Its row names a live SDK, API or browser "
+                    "check, and a unit mock reproducing the same shape proves the test double behaves as "
+                    "written rather than that the deployment does"
+                )
+
+        # (3) The evaluations themselves, each accepted and each current.
+        evaluations = index.get("evaluations")
+        if not isinstance(evaluations, dict):
+            raise AssertionError(
+                f"W4-10: 'evaluations' must be an object keyed by wave number recording each "
+                f"evaluation's acceptance, got {evaluations!r}"
+            )
+        for wave in sorted(WAVE_EVALUATIONS):
+            if wave == 4:
+                # Wave 4 is the run producing this report. An index asserting its own
+                # wave's acceptance would be the report certifying itself, and the
+                # acceptance it would be claiming is the one this check is part of
+                # establishing.
+                continue
+            record = evaluations.get(str(wave), evaluations.get(wave))
+            if record is None:
+                raise AssertionError(
+                    f"W4-10: no acceptance recorded for wave {wave} (evaluation "
+                    f"{WAVE_EVALUATIONS[wave]}). All four evaluations close together on this evidence, "
+                    "so an unaccepted earlier wave means there is nothing to close them against"
+                )
+            self._assert_prior_wave_accepted(wave, record, deployed_revisions=deployed)
+        for wave in WAVE4_PRIOR_WAVES:
+            if wave not in WAVE_EVALUATIONS:
+                raise PrerequisiteMissingError(
+                    f"W4-10: wave {wave} has no registered evaluation in this revision, so its criteria "
+                    f"are not in the consolidated set and the index cannot be complete. Registered: "
+                    f"{sorted(WAVE_EVALUATIONS)}"
+                )
+
+        # (4) This run's own report, not the index's description of it.
+        #
+        # The order matters: everything above could pass on a perfectly-compiled
+        # index while this run reported three not_runs, and that combination is the
+        # fabricated full report the kickoff names. The inventory is the wave's
+        # manifest, passed in by `run_checks`.
+        inventory = tuple(emitted_ids)
+        declared = tuple(spec.check_id for spec in WAVE_CHECKS[4])
+        if inventory and set(inventory) != set(declared):
+            raise AssertionError(
+                f"W4-10: this run's inventory is {sorted(inventory)} but wave 4 declares "
+                f"{sorted(declared)}. A consolidation cannot be complete inside a report that is short a "
+                "check, and one carrying an extra ID is describing a different wave"
+            )
+        uncovered = sorted(
+            acceptance_id
+            for spec in WAVE_CHECKS[4]
+            for acceptance_id in spec.acceptance_ids
+            if acceptance_id not in _NON_ACCEPTANCE_ROW_LABELS
+            and acceptance_id not in present
+        )
+        if uncovered:
+            raise AssertionError(
+                f"W4-10: wave 4's own checks carry {uncovered}, which the index does not record. The "
+                "wave cannot consolidate criteria its own manifest asserts but its index omits"
+            )
+
 
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
@@ -6413,15 +7336,34 @@ WAVE2_PREDICATES: dict[str, str] = {
     "W2-10": "check_w2_10",
 }
 
-# S7 (#3966) implements the four wave-4 checks whose subject is the dashboard it
-# builds. The other six consolidate other stories' criteria and are registered in
-# PENDING_CHECK_OWNERS instead — see the comment there for why a partial predicate
-# would be worse than an honest not_run.
+# S7 (#3966) delivered the four wave-4 checks whose subject is the dashboard it
+# builds. #3970 adds the other six — the wave's preflight, the four consolidating
+# checks and the 37-criterion index — so every ID in the manifest now resolves to a
+# predicate and PENDING_CHECK_OWNERS is empty for this wave.
+#
+# What that does and does not mean is the important part. It means "the evaluator is
+# missing" has stopped being a possible reason for a wave-4 not_run; a not_run from
+# here on names a missing INPUT — an absent artifact, an unaccepted prior wave, an
+# unregistered wave-3 manifest — and names who owes it. It does NOT mean the wave is
+# any closer to passing: the six new predicates assert prerequisites nobody has
+# satisfied yet, so the wave still reports honest not_runs, now for the real reason.
+#
+# The six are deliberately implemented as CURRENCY checks over other stories'
+# evidence rather than as re-runs of their probes. A W4-05 that re-aborted a run
+# would mutate the fixture the other checks describe, and re-deriving another wave's
+# conclusions here would put two implementations of the same claim in one report,
+# free to disagree.
 WAVE4_PREDICATES: dict[str, str] = {
+    "W4-01": "check_w4_01",
     "W4-02": "check_w4_02",
+    "W4-03": "check_w4_03",
     "W4-04": "check_w4_04",
+    "W4-05": "check_w4_05",
+    "W4-06": "check_w4_06",
     "W4-07": "check_w4_07",
     "W4-08": "check_w4_08",
+    "W4-09": "check_w4_09",
+    "W4-10": "check_w4_10",
 }
 
 CHECK_PREDICATES: dict[str, str] = {
@@ -6459,7 +7401,9 @@ TEARDOWN_AWARE_CHECK_IDS: frozenset[str] = frozenset({"W2-10"})
 
 # Predicates that need the wave's full check-ID inventory passed in, because their
 # subject includes the report's own completeness.
-MANIFEST_AWARE_CHECK_IDS: frozenset[str] = frozenset({"W1-10", "W2-01", "W2-10"})
+MANIFEST_AWARE_CHECK_IDS: frozenset[str] = frozenset(
+    {"W1-10", "W2-01", "W2-10", "W4-01", "W4-10"}
+)
 
 
 def split_post_cleanup_specs(

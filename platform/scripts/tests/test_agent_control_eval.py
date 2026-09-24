@@ -1500,20 +1500,41 @@ class TestCheckIdsMatchTheEvaluationFile:
             "W4-10",
         )
 
-    def test_wave_four_implements_only_the_dashboard_checks_it_owns(self):
-        """The four S7 can evidence, and no more.
+    def test_wave_four_now_implements_every_check_in_its_manifest(self):
+        """All ten, with nothing left owed — and nothing gained by it.
 
-        Pinned in both directions. An implemented predicate for a check whose
-        criteria belong to another story would be a partial assertion reporting a
-        green consolidation — e.g. a W4-03 that checked the browser steer and not
-        S6's retry/FIFO/cap proof.
+        This assertion replaces an earlier one pinning wave 4 at S7's four checks.
+        That was the right bar while six predicates did not exist: a partial W4-03
+        that checked the browser steer and not S6's retry/FIFO/cap proof would have
+        reported a green consolidation over a proof nobody made.
+
+        #3970 implemented the six, so the correct invariant flips. The load-bearing
+        part is the SECOND assertion: an empty PENDING_CHECK_OWNERS for this wave must
+        not be read as the wave being closer to passing. It means the only remaining
+        cause of a wave-4 not_run is a missing INPUT, which is a different and honest
+        answer — `TestWaveFourRefusesWithoutItsInputs` is where that is pinned.
         """
-        assert set(_mod.WAVE4_PREDICATES) == {"W4-02", "W4-04", "W4-07", "W4-08"}
+        assert set(_mod.WAVE4_PREDICATES) == {
+            "W4-01",  # #3970 — the wave's own preflight
+            "W4-02",  # S7 #3966 — AC-F3, browser
+            "W4-03",  # #3970 — steering consolidation
+            "W4-04",  # S7 #3966 — the pause family, browser
+            "W4-05",  # #3970 — abort consolidation
+            "W4-06",  # #3970 — security matrix consolidation
+            "W4-07",  # S7 #3966 — live schema parity
+            "W4-08",  # S7 #3966 — polling lifecycle, browser
+            "W4-09",  # #3970 — runtime comparison consolidation
+            "W4-10",  # #3970 — the 37-criterion evidence index
+        }
         owed = {spec.check_id for spec in _mod.WAVE4_CHECKS} - set(_mod.WAVE4_PREDICATES)
-        assert owed == {"W4-01", "W4-03", "W4-05", "W4-06", "W4-09", "W4-10"}
-        # Every owed check names who owes it, or it becomes nobody's job.
-        for check_id in owed:
-            assert _mod.PENDING_CHECK_OWNERS.get(check_id, "").strip(), check_id
+        assert owed == set()
+        # No stale owner entry survives: an owner recorded against a delivered check
+        # reads as outstanding work forever.
+        assert not (set(_mod.PENDING_CHECK_OWNERS) & {
+            spec.check_id for spec in _mod.WAVE4_CHECKS
+        })
+        for method_name in _mod.WAVE4_PREDICATES.values():
+            assert hasattr(_mod.Driver, method_name), method_name
 
     def test_wave_four_records_its_evaluation_and_revision(self):
         """#3970 reads wave 4, under revision revival-2026-09-12.
