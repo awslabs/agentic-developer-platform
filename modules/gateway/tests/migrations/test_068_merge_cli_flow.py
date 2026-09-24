@@ -8,10 +8,14 @@ from alembic.script import ScriptDirectory
 from tests.migrations.conftest_postgres import GATEWAY_ROOT, upgrade
 
 
-def test_merge_retains_both_existing_migration_histories():
+def _script_directory() -> ScriptDirectory:
     config = Config(str(GATEWAY_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(GATEWAY_ROOT / "alembic"))
-    scripts = ScriptDirectory.from_config(config)
+    return ScriptDirectory.from_config(config)
+
+
+def test_merge_retains_both_existing_migration_histories():
+    scripts = _script_directory()
     # One head, with the merge in its ancestry — the point of this test is that
     # the two 067 branches stay merged, not what the current head is called
     # (pinning the name made #5664's migration fail it).
@@ -46,6 +50,12 @@ def test_upgrade_from_either_parent_preserves_controls(pg_url, initial_head):
             } <= credential_columns
             assert "execution_paused" in {column["name"] for column in schema.get_columns("orchestration_flows")}
             assert connection.scalar(text("SELECT enabled FROM budget_enforcement_settings WHERE scope_key='global'")) is False
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["069_aws_verification_binding"]
+            # Exactly one stamped revision, and it is whatever the script directory
+            # says the head is — the point is that a merge parent converges on a
+            # SINGLE head, not what that head happens to be called. Pinning the name
+            # made every later migration fail this test about 068's own lineage
+            # (main's 070_opus55_pricing and #5664's 071 both hit it).
+            stamped = connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
+            assert stamped == [_script_directory().get_heads()[0]], stamped
     finally:
         engine.dispose()
