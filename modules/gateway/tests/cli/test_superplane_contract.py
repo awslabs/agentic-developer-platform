@@ -361,7 +361,7 @@ def private_home(tmp_path, monkeypatch):
     for key in list(os.environ):
         if key.startswith("ADP_DEPLOYMENT") or key in {"ADP_HOME", "ADP_LEGACY_CONFIG_DIR", "BG_CONFIG_DIR"}:
             monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(common, "_deployment", None)
+    monkeypatch.setattr(common, "_deployment", common._UNRESOLVED)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(common, "access_token", lambda: "synthetic-session-token")
