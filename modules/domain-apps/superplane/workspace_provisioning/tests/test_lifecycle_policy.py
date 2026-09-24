@@ -47,6 +47,38 @@ def runtime_config():
     }
 
 
+@pytest.mark.parametrize(
+    "invalid", [None, "broad", "overlap", "public", "host-bits", "ipv6", "extra"]
+)
+def test_hybrid_network_ranges_are_explicit_private_and_nonoverlapping(invalid):
+    config = runtime_config()
+    hybrid = {
+        "node_cidr": "10.100.0.0/24",
+        "pod_cidr": "10.101.0.0/16",
+        "service_cidr": "172.20.0.0/16",
+    }
+    if invalid == "broad":
+        hybrid["node_cidr"] = "10.0.0.0/8"
+    elif invalid == "overlap":
+        hybrid["pod_cidr"] = "10.100.0.0/16"
+    elif invalid == "public":
+        hybrid["node_cidr"] = "203.0.113.0/24"
+    elif invalid == "host-bits":
+        hybrid["node_cidr"] = "10.100.0.1/24"
+    elif invalid == "ipv6":
+        hybrid["node_cidr"] = "fd00::/64"
+    elif invalid == "extra":
+        hybrid["activation_code"] = "must-not-be-a-terraform-input"
+    config["workspace_variables"]["hybrid_networks"] = hybrid
+    if invalid:
+        with pytest.raises(LifecycleRefused):
+            validate_runtime_config(config)
+    else:
+        validated = validate_runtime_config(config)
+        assert validated["workspace_variables"]["hybrid_networks"] == hybrid
+        assert validated is not config
+
+
 def policy():
     return {
         "adp_org_id": "adp-original",

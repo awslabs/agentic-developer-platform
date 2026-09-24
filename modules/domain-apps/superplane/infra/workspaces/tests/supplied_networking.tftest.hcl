@@ -470,3 +470,26 @@ run "supplied_sts_without_node_ingress_stops_before_nodes" {
   }
   expect_failures = [data.aws_security_group.supplied_sts]
 }
+
+
+run "hybrid_ranges_cannot_overlap_a_secondary_supplied_vpc_range" {
+  command = plan
+  variables {
+    hybrid_networks = { node_cidr = "10.100.0.0/24", pod_cidr = "10.101.0.0/16", service_cidr = "172.20.0.0/16" }
+  }
+  override_data {
+    target = data.aws_vpc.supplied[0]
+    values = {
+      id                   = "vpc-0a1b2c3d4e5f67890"
+      cidr_block           = "172.31.0.0/16"
+      enable_dns_support   = true
+      enable_dns_hostnames = true
+      cidr_block_associations = [{
+        association_id = "vpc-cidr-assoc-0123456789abcdef0"
+        cidr_block     = "10.100.0.0/16"
+        state          = "associated"
+      }]
+    }
+  }
+  expect_failures = [aws_eks_cluster.workspace]
+}
