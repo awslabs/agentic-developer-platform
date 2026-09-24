@@ -117,6 +117,22 @@ on:
       # is breaking one of those callers, not breaking control.
       - 'modules/agent-factory/agent/src/control-runtime.ts'
       - 'modules/agent-factory/agent/src/control-runtime.test.ts'
+      # The W2-05 pause_expiry producer (#5840). The `.integration.ts` half is
+      # listed too: jest cannot collect it, but `tsc --noEmit` in this workflow is
+      # the only thing that checks it at all, and it is the file that has to stay
+      # in step with the PauseGate/adapter seams it measures through.
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.integration.ts'
+      # The shared heartbeat / exit-watchdog emitter (#5840). One production copy,
+      # started by both `agent-worker.ts` and the live pause runner, so an edit here
+      # changes what an operator sees during a real paused run AND what the W2-05
+      # visibility fields measure. Listed as its own path because a change confined
+      # to this module matches none of the names above.
+      - 'modules/agent-factory/agent/src/run-heartbeat.ts'
+      - 'modules/agent-factory/agent/src/run-heartbeat.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.assembly.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.test.ts'
@@ -628,6 +644,48 @@ jobs:
         # required workflow, so a change re-enabling the refresh path for a
         # mediated run — handing back the exact credential mediation exists to
         # withhold — could merge green.
+        #
+        # control-runtime-timeout.test.ts is pinned here (#5840) because it is the
+        # ONLY automated check on the W2-05 pause_expiry producer. The measurement
+        # half of that producer lives in a `.integration.ts` file that jest cannot
+        # collect and that needs a real model, so nothing in CI will ever run it.
+        # What CI can run — and what this suite covers — is the honesty logic: that
+        # an unobserved field stays null rather than defaulting to a value the
+        # evaluator accepts, that auto-resume is not claimed from an explicit
+        # resume, that "no extra turn" comes from the live stream rather than the
+        # transport flag, and that a run which held no work cannot satisfy the
+        # cancellation fields vacuously. Unpinned, a change that turned any of
+        # those into a passing default would merge green and the evaluation would
+        # then read a fabricated pass as live evidence.
+        #
+        # run-heartbeat.test.ts is pinned alongside it (#5840) because that module is
+        # the only production copy of the heartbeat and the post-completion exit
+        # watchdog, and it has two distinct consumers: `agent-worker.ts` runs it on
+        # every real run, and the live pause runner starts it to measure the W2-05
+        # visibility fields. Two properties there are load-bearing and silent when
+        # broken. The watchdog must stand down while a pause is in force — unguarded
+        # it cannot tell a hung stream from a tool parked at the barrier, so an
+        # operator pausing a run to look at something would come back to a killed pod,
+        # and nothing else in CI asserts that. And the heartbeat must keep logging
+        # *and say it is paused*: a silent log is indistinguishable from a crash, so
+        # the suite pins the wording and fields literally rather than paraphrasing
+        # them. Suppression is also asserted to be a deferral rather than an amnesty,
+        # so removing the bound cannot pass as fixing the kill.
+        #
+        # control-runtime-timeout.assembly.test.ts is pinned for a third reason (#5840):
+        # the two suites above cover the producer's *decisions*, and two real defects
+        # still got past them because both were in how the live runner **composes**
+        # those decisions — a spread that dropped one experiment's pod observations
+        # before the field-wise merge could see them, and a force-exit callback that
+        # recorded a verdict it had no way to attribute, so the required after-release
+        # firing was reported as a firing during the pause. Unit-green pieces say
+        # nothing about their assembly, so this suite calls the runner's real exported
+        # assembly and folds a real tick sequence from the real PauseGate through it.
+        # It imports `control-runtime-timeout.integration.ts` on purpose and that is
+        # safe: the only SDK-backed dependency there is behind a lazy `await import`
+        # inside the run function, so importing the module evaluates no SDK, starts no
+        # subprocess and spends nothing. The `.integration.ts` file itself still cannot
+        # be collected by jest, which is what keeps the live experiments out of CI.
         run: |
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
@@ -636,6 +694,8 @@ jobs:
             src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
             src/pause-attempt-fencing.test.ts \
             src/pause-output-race.test.ts src/control-deadline.test.ts \
+            src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
+            src/control-runtime-timeout.assembly.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -649,6 +709,8 @@ jobs:
             --collectCoverageFrom='src/control-command-apply.ts' \
             --collectCoverageFrom='src/harnesses/claude-control.ts' \
             --collectCoverageFrom='src/utils/resilientQuery.ts' \
+            --collectCoverageFrom='src/control-runtime-timeout.ts' \
+            --collectCoverageFrom='src/run-heartbeat.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
             --ci --verbose
 
