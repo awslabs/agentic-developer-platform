@@ -136,7 +136,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
             {node.issue_url && (
               <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>
             )}
-            {node.run_id && (
+            {node.run_id && node.kind !== 'story' && (
               <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline">View run</Link>
             )}
 
