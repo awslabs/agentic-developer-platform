@@ -287,7 +287,7 @@ schema:
     # CLI-24 adds three credential/operation revisions on the 016 branch. The
     # explicit 020 merge joins both histories without rewriting either parent.
     # 021 then adds durable deployment target and provider UID provenance.
-    version_files: 46
+    version_files: 47
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.

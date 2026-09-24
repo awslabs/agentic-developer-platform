@@ -97,6 +97,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     deployment_id = None
     if initial_head == "020_merge_workspace_cli":
         org_id, cluster_id, deployment_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        workspace_id = uuid.uuid4()
         async with engine.begin() as conn:
             await conn.execute(
                 text(
@@ -106,18 +107,26 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
             )
             await conn.execute(
                 text(
+                    "INSERT INTO workspaces (id, org_id, name, isolation_mode) "
+                    "VALUES (:id, :org, 'retained-workspace', 'namespace')"
+                ),
+                {"id": workspace_id, "org": org_id},
+            )
+            await conn.execute(
+                text(
                     "INSERT INTO clusters (id, org_id, name) VALUES (:id, :org, 'retained-cluster')"
                 ),
                 {"id": cluster_id, "org": org_id},
             )
             await conn.execute(
                 text(
-                    "INSERT INTO deployments (id, org_id, cluster_id, name, status, operation_request_json) "
-                    "VALUES (:id, :org, :cluster, 'retained-workload', 'Unknown', :request)"
+                    "INSERT INTO deployments (id, org_id, workspace_id, cluster_id, name, status, operation_request_json) "
+                    "VALUES (:id, :org, :workspace, :cluster, 'retained-workload', 'Unknown', :request)"
                 ),
                 {
                     "id": deployment_id,
                     "org": org_id,
+                    "workspace": workspace_id,
                     "cluster": cluster_id,
                     "request": '{"name":"retained-workload"}',
                 },
@@ -160,7 +169,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
             row = (
                 await conn.execute(
                     text(
-                        "SELECT name, status, operation_request_json, operation_target_json, provider_uid, workload_kind "
+                        "SELECT name, status, operation_request_json, operation_target_json, provider_uid, workload_kind, workspace_id "
                         "FROM deployments WHERE id=:id"
                     ),
                     {"id": deployment_id},
@@ -173,6 +182,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
                 None,
                 None,
                 "serving",
+                workspace_id,
             )
     if deployment_id is not None:
         async with engine.begin() as conn:
