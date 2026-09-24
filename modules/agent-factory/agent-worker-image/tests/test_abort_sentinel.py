@@ -34,6 +34,7 @@ from lib.abort_sentinel import (
     ABORT_SENTINEL_PATH,
     ABORT_SENTINEL_VERSION,
     MAX_SENTINEL_BYTES,
+    MAX_SENTINEL_ENVELOPE_BYTES,
     MAX_SENTINEL_REASON_LENGTH,
     _coerce_generation,
     bound_sentinel_reason,
@@ -289,6 +290,7 @@ class TestSharedVectors:
         assert _VECTORS["version"] == ABORT_SENTINEL_VERSION
         assert _VECTORS["path"] == ABORT_SENTINEL_PATH
         assert _VECTORS["max_reason_length"] == MAX_SENTINEL_REASON_LENGTH
+        assert _VECTORS["max_envelope_length"] == MAX_SENTINEL_ENVELOPE_BYTES
 
     @pytest.mark.parametrize("vector", _VECTORS["vectors"], ids=_vector_ids(_VECTORS["vectors"]))
     def test_document_vector(self, vector):
@@ -303,6 +305,13 @@ class TestSharedVectors:
             assert validated["run_id"] == binding["run_id"]
             assert validated["generation"] == binding["generation"]
             assert validated["reason"] == vector["expect_reason"]
+            # The normalization both readers have to agree on. Neither judges the
+            # signature here, so what is pinned is which values survive as a
+            # token and which collapse to exactly ``None`` — the value
+            # ``verify_abort_authorization`` treats as "no proof, refuse the
+            # abort". A shape surviving on one side only would mean one runtime
+            # refusing an authorized abort, or handing a non-token to a verifier.
+            assert validated["envelope"] == vector["expect_envelope"]
         else:
             assert validated is None, vector["note"]
 

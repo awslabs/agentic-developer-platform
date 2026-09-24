@@ -20,6 +20,7 @@ import { join } from 'path';
 import {
   ABORT_SENTINEL_PATH,
   ABORT_SENTINEL_VERSION,
+  MAX_SENTINEL_ENVELOPE_LENGTH,
   MAX_SENTINEL_REASON_LENGTH,
   abortSentinelBindingFromEnv,
   boundSentinelReason,
@@ -313,12 +314,14 @@ describe('shared cross-language vectors', () => {
     version: number;
     path: string;
     max_reason_length: number;
+    max_envelope_length: number;
     binding: { run_id: string; generation: number };
     vectors: Array<{
       name: string;
       accept: boolean;
       document: unknown;
       expect_reason?: string | null;
+      expect_envelope?: string | null;
       note: string;
     }>;
     generation_binding_vectors: Array<{
@@ -338,6 +341,7 @@ describe('shared cross-language vectors', () => {
     expect(vectors.version).toBe(ABORT_SENTINEL_VERSION);
     expect(vectors.path).toBe(ABORT_SENTINEL_PATH);
     expect(vectors.max_reason_length).toBe(MAX_SENTINEL_REASON_LENGTH);
+    expect(vectors.max_envelope_length).toBe(MAX_SENTINEL_ENVELOPE_LENGTH);
   });
 
   it.each(vectors.vectors.map((vector) => [vector.name, vector] as const))(
@@ -350,6 +354,13 @@ describe('shared cross-language vectors', () => {
         expect(validated!.run_id).toBe(fixtureBinding.runId);
         expect(validated!.generation).toBe(fixtureBinding.generation);
         expect(validated!.reason).toBe(vector.expect_reason ?? null);
+        // The normalization both readers have to agree on. Neither judges the
+        // signature here, so what is pinned is which values survive as a token
+        // and which collapse to exactly `null` — the value the Python finalizer
+        // treats as "no proof, refuse the abort". A shape that survived on one
+        // side only would mean one runtime refusing an authorized abort or
+        // handing a non-token to a verifier.
+        expect(validated!.envelope).toBe(vector.expect_envelope ?? null);
       } else {
         // The note explains which real failure this vector stands for.
         expect(validated).toBeNull();
