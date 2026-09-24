@@ -157,8 +157,20 @@ The list is bounded to 100 with an explicit truncation message. Wrong-workspace
 and late responses are refused; revoked access clears displayed rows. Job outcome,
 logs, results and observed cost remain unavailable until those backend contracts
 are composed. A terminal operation is not reported as verified cleanup. In-flight
-cancellation is not implemented by the stop button.
+cancellation has a separate action from the stop button.
 
 The isolated Chromium CI entry exercises serving and batch separately with
 fixture HTTP transports, keyboard operation and 360/1280px screenshots. This is
 browser evidence, not live workload acceptance.
+
+
+## Cancellation
+
+Both workload lists expose cancellation only when the server advertises current
+cancellation authority. The action addresses the displayed original operation;
+a retry after a lost reply uses those same IDs and creates no new request identity.
+Revoked access disables retries and workspace changes discard late replies.
+Cancellation acknowledgement never marks resources absent. Only the backend's
+`CancelledBeforeDispatch` outcome is displayed as not needing workload cleanup;
+other cancellations remain pending reconciliation. Keyboard cancellation is
+included in the isolated Chromium scenarios for both workload kinds.

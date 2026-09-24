@@ -1,3 +1,4 @@
+import { WorkloadCancellation } from './WorkloadCancellation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Alert, Button, Input } from '@/components/ui';
@@ -72,9 +73,13 @@ function ServingWorkspace(props: Props) {
         <h4 className="font-semibold">{row.name}</h4>
         <p>Status: {row.status}; operation: {row.operationState}</p>
         {row.operationId && <p>Operation reference: {row.operationId}</p>}
+      {row.cancellationRequested && <p>Cancellation requested. Cleanup: {row.cleanupStatus}.</p>}
+      {row.status === 'CancelledBeforeDispatch' && <p>Cancelled before dispatch; no workload cleanup is required.</p>}
+      {catalog?.canCancel && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
+        ['accepted', 'running', 'unknown'].includes(row.operationState) && <WorkloadCancellation workspaceId={props.workspaceId} row={row} kind="serving" onProgress={() => void refresh()} />}
         {row.providerUid && <p>Recorded resource: {row.providerUid}</p>}
-        <p>Cleanup and observed cost: not reported</p>
-        {catalog?.canReviewTeardown && row.deploymentId && row.operationId && row.status !== 'Deleted' &&
+        <p>Cleanup: {row.cleanupStatus}. Observed cost: unknown.</p>
+        {catalog?.canReviewTeardown && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
           <Button variant="secondary" onClick={() => setStopping(row)}>Review stop for {row.name}</Button>}
       </li>)}
     </ul>

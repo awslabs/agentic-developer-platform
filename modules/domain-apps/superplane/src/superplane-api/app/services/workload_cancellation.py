@@ -121,7 +121,8 @@ async def cancel(
             str(org_id),
             str(workspace_id),
         )
-    if unused and intent.status not in {"Deleting", "Deleted"}:
+    unused = bool(unused and intent.status not in {"Deleting", "Deleted"})
+    if unused:
         intent.status = "CancelledBeforeDispatch"
         intent.actual_replicas = 0
     await db.commit()

@@ -119,6 +119,7 @@ def main(kind="serving"):
                     value = {
                         "workspace_id": WORKSPACE,
                         "can_submit": True,
+                        "can_cancel": True,
                         "can_review_teardown": True,
                         "profiles": [
                             {
@@ -220,6 +221,22 @@ def main(kind="serving"):
                         }
                     ]
                     value = rows[0]
+                elif (
+                    path == root + f"/{resource}/{DEPLOYMENT}/cancellation"
+                    and method == "POST"
+                ):
+                    assert body == {"operation_id": "fixture-queued"}
+                    rows[0].update(
+                        status="CancelledBeforeDispatch",
+                        operation_state="cancelled",
+                        cancellation_requested=True,
+                        cleanup_status="not-required",
+                    )
+                    value = {
+                        **rows[0],
+                        "deployment_id": DEPLOYMENT,
+                        "workspace_id": WORKSPACE,
+                    }
                 elif path == root + f"/{resource}/{DEPLOYMENT}" and method == "DELETE":
                     assert body["operation_id"] == reviewed["idempotency_key"]
                     rows[0].update(
@@ -313,6 +330,51 @@ def main(kind="serving"):
                     page.screenshot(
                         path=str(OUTPUT / f"{kind}-desktop.png"), full_page=True
                     )
+                    # A separate fixture operation represents queued work. No
+                    # request in this browser test can create a real workload.
+                    rows[:] = [
+                        {
+                            "name": "queued-workload",
+                            ("job_id" if batch else "deployment_id"): DEPLOYMENT,
+                            "status": "Pending",
+                            "operation_state": "pending",
+                            "operation_id": "fixture-queued",
+                        }
+                    ]
+                    page.get_by_role(
+                        "button",
+                        name="Refresh batch jobs"
+                        if batch
+                        else "Refresh serving workloads",
+                        exact=True,
+                    ).click()
+                    cancel = page.get_by_role(
+                        "button",
+                        name="Cancel pending operation for queued-workload",
+                        exact=True,
+                    )
+                    expect(cancel).to_be_visible()
+                    cancel.focus()
+                    page.keyboard.press("Enter")
+                    expect(
+                        page.get_by_text(
+                            "Cancelled before dispatch; no workload cleanup is required.",
+                            exact=True,
+                        )
+                    ).to_be_visible()
+                    page.set_viewport_size({"width": 360, "height": 800})
+                    assert page.evaluate(
+                        "document.documentElement.scrollWidth <= window.innerWidth"
+                    )
+                    page.screenshot(
+                        path=str(OUTPUT / f"{kind}-mobile-cancel.png"), full_page=True
+                    )
+                    cancellations = [
+                        item
+                        for item in requests
+                        if item["path"].endswith("/cancellation")
+                    ]
+                    assert len(cancellations) == 1
                     assert not errors, errors
                     mutations = [
                         item
@@ -333,6 +395,7 @@ def main(kind="serving"):
                                 "keyboard": "pass",
                                 "widths": [360, 1280],
                                 "mutations": mutations,
+                                "cancellations": cancellations,
                             },
                             indent=2,
                         )

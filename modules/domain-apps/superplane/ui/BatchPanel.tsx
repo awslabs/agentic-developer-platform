@@ -1,3 +1,4 @@
+import { WorkloadCancellation } from './WorkloadCancellation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input } from '@/components/ui';
 import { isSuperseded, ScopeGuard } from './client';
@@ -55,9 +56,13 @@ function BatchWorkspace(props: Props) {
       <h4 className="font-semibold">{row.name}</h4>
       <p>Status: {row.status}; operation: {row.operationState}</p>
       {row.operationId && <p>Operation reference: {row.operationId}</p>}
+      {row.cancellationRequested && <p>Cancellation requested. Cleanup: {row.cleanupStatus}.</p>}
+      {row.status === 'CancelledBeforeDispatch' && <p>Cancelled before dispatch; no workload cleanup is required.</p>}
+      {catalog?.canCancel && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
+        ['accepted', 'running', 'unknown'].includes(row.operationState) && <WorkloadCancellation workspaceId={props.workspaceId} row={row} kind="batch" onProgress={() => void refresh()} />}
       {row.providerUid && <p>Recorded Job UID: {row.providerUid}</p>}
-      <p>Observed cost: unknown. Cleanup: {row.status === 'Deleted' ? 'confirmed by the backend' : 'unconfirmed'}.</p>
-      {catalog?.canReviewTeardown && row.deploymentId && row.operationId && !['Deleting', 'Deleted'].includes(row.status) &&
+      <p>Observed cost: unknown. Cleanup: {row.cleanupStatus === 'confirmed' ? 'confirmed by the backend' : row.cleanupStatus}.</p>
+      {catalog?.canReviewTeardown && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
         <Button variant="secondary" onClick={() => { setStopping(row); setCandidate(null); }}>Review stop for {row.name}</Button>}
     </li>)}</ul>
     {catalog?.canSubmit && <BatchForm profiles={catalog.profiles} onReview={(input) => { setCandidate(input); setStopping(null); }} />}
@@ -65,7 +70,7 @@ function BatchWorkspace(props: Props) {
     {stopping?.deploymentId && catalog?.canReviewTeardown && <WorkloadAction key={stopping.deploymentId} {...props} kind="batch" mayManage={catalog.canReviewTeardown} input={{ deploymentId: stopping.deploymentId }} onProgress={() => void refresh()} />}
     {receipts.filter(({ receipt }) => receipt.submissionStage === 'submitted').map(({ intent, receipt }) =>
       <WorkloadReceipt key={receipt.idempotencyKey} {...props} kind="batch" intent={intent} initial={receipt} />)}
-    <p>Stop can be reviewed after the original operation settles. In-flight cancellation is not available here yet. Resources remain reserved until the backend verifies cleanup.</p>
+    <p>Cancel pending operations to withdraw execution. Review stop after the original operation settles. Resources remain reserved until the backend confirms non-execution or cleanup.</p>
   </section>;
 }
 

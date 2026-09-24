@@ -24,15 +24,17 @@ export interface BatchInput { name: string; profile_id: string; batch_options: B
 export type WorkloadInput = ServingInput | BatchInput | { deploymentId: string };
 export type WorkloadKind = 'serving' | 'batch';
 export interface BatchProfile { profileId: string; options: BatchOptions }
-export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; canReviewTeardown: boolean }
+export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; canReviewTeardown: boolean; canCancel: boolean }
 
 export interface ServingDeployment {
   deploymentId: string | null;
   operationId: string | null;
-  operationState: ReturnType<typeof parseOperationState>;
+  operationState: ReturnType<typeof parseOperationState> | 'cancelled';
   name: string;
   status: string;
   providerUid: string | null;
+  cancellationRequested: boolean;
+  cleanupStatus: 'confirmed' | 'unconfirmed' | 'not-required';
 }
 
 export interface ServingReview {
@@ -59,6 +61,7 @@ export interface ServingCatalog {
   profiles: ServingProfile[];
   canSubmit: boolean;
   canReviewTeardown: boolean;
+  canCancel: boolean;
 }
 
 const record = (raw: unknown): raw is Record<string, unknown> =>
@@ -88,7 +91,7 @@ export function getBatchCatalog(guard: ScopeGuard, workspaceId: string) {
       if (!options || options.image !== entry.image) return null;
       profiles.push({ profileId: entry.profile_id, options });
     }
-    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown };
+    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true };
   });
 }
 
@@ -123,7 +126,7 @@ export function getServingCatalog(guard: ScopeGuard, workspaceId: string) {
         replicas: 1, gpu_per_replica: model.gpu_per_replica, tensor_parallel_size: model.tensor_parallel_size, max_model_len: model.max_model_len,
       } });
     }
-    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown };
+    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true };
   });
 }
 
@@ -131,8 +134,10 @@ export function parseDeployment(raw: unknown): ServingDeployment | null {
   if (!record(raw) || !id(raw.name) || !id(raw.status)) return null;
   return {
     deploymentId: text(raw.deployment_id), operationId: text(raw.operation_id),
-    operationState: parseOperationState(raw.operation_state), name: raw.name,
+    operationState: raw.operation_state === 'cancelled' ? 'cancelled' : parseOperationState(raw.operation_state), name: raw.name,
     status: raw.status, providerUid: text(raw.provider_uid),
+    cancellationRequested: raw.cancellation_requested === true,
+    cleanupStatus: raw.cleanup_status === 'confirmed' || raw.cleanup_status === 'not-required' ? raw.cleanup_status : 'unconfirmed',
   };
 }
 
@@ -196,5 +201,19 @@ export function submitServing(guard: ScopeGuard, workspaceId: string, review: Se
       if (kind === 'batch' && result?.deploymentId !== review.deploymentId) return null;
       if (!result || !result.operationId || (!teardown && result.deploymentId !== review.deploymentId)) return null;
       return result;
+    });
+}
+
+
+export function cancelWorkload(guard: ScopeGuard, workspaceId: string, deploymentId: string, operationId: string, kind: WorkloadKind) {
+  return call(guard, kind === 'batch' ? 'cancelBatchJob' : 'cancelDeployment',
+    { workspace_id: workspaceId, [kind === 'batch' ? 'job_id' : 'dep_id']: deploymentId },
+    { operation_id: operationId }, (raw) => {
+      if (!record(raw) || raw.workspace_id !== workspaceId || raw.deployment_id !== deploymentId ||
+          raw.operation_id !== operationId || typeof raw.cancellation_requested !== 'boolean' ||
+          (kind === 'batch' && raw.job_id !== deploymentId) ||
+          !['confirmed', 'unconfirmed', 'not-required'].includes(String(raw.cleanup_status)) ||
+          (raw.cleanup_status === 'not-required' && (!raw.cancellation_requested || raw.operation_state !== 'cancelled'))) return null;
+      return { requested: raw.cancellation_requested, state: parseOperationState(raw.operation_state), cleanup: String(raw.cleanup_status) };
     });
 }
