@@ -35,6 +35,12 @@ PROFILE_FIELDS = {
     "credential_reference",
     "serving_auth_contract",
 }
+GPU_PROFILE_FIELDS = (PROFILE_FIELDS - {"instance_type"}) | {
+    "accelerators",
+    "max_gpus_per_node",
+    "cpus",
+    "memory_gb",
+}
 
 
 def policy(env):
@@ -74,7 +80,7 @@ def policy(env):
                 isinstance(profile_id, str)
                 and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", profile_id)
                 and isinstance(profile, dict)
-                and set(profile) == PROFILE_FIELDS,
+                and set(profile) in (PROFILE_FIELDS, GPU_PROFILE_FIELDS),
                 "controller_profiles has an invalid profile identity",
             )
             workload = profile.get("workload", {})

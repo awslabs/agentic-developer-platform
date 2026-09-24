@@ -65,3 +65,74 @@ def test_guard_refuses_unattributed_and_mixed_allocation_resources(mutation):
         )
     with pytest.raises(ValueError):
         prepare_instances(values)
+
+
+@pytest.mark.parametrize("count", [1, 8, None, True])
+def test_selected_physical_gpu_count_is_checked_before_run_instances(
+    monkeypatch, count
+):
+    monkeypatch.setattr(BaseClient, "_make_api_call", BaseClient._make_api_call)
+    install()
+    client = boto3.client(
+        "ec2",
+        region_name="us-east-1",
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+    )
+    values = parameters()
+    values["TagSpecifications"][0]["Tags"].append(
+        {"Key": "superplane-max-gpus-per-node", "Value": "1"}
+    )
+    record = {"InstanceType": values["InstanceType"]}
+    if count is not None:
+        record["GpuInfo"] = {"Gpus": [{"Count": count}]}
+    with Stubber(client) as stub:
+        # Model-level bool validation would hide the runtime's malformed-value
+        # check, so inject that response at the read boundary in that one case.
+        if count is True:
+            monkeypatch.setattr(
+                client,
+                "describe_instance_types",
+                lambda **_: {"InstanceTypes": [record]},
+            )
+        else:
+            stub.add_response(
+                "describe_instance_types",
+                {"InstanceTypes": [record]},
+                {"InstanceTypes": [values["InstanceType"]]},
+            )
+        if type(count) is int and count == 1:
+            expected = copy.deepcopy(values)
+            prepare_instances(expected)
+            stub.add_response("run_instances", {"Instances": []}, expected)
+            client.run_instances(**values)
+        else:
+            with pytest.raises(ValueError):
+                client.run_instances(**values)
+        stub.assert_no_pending_responses()
+
+
+def test_gpu_inspection_failure_never_falls_through_to_instance_creation(monkeypatch):
+    monkeypatch.setattr(BaseClient, "_make_api_call", BaseClient._make_api_call)
+    install()
+    client = boto3.client(
+        "ec2",
+        region_name="us-east-1",
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+    )
+    values = parameters()
+    values["TagSpecifications"][0]["Tags"].append(
+        {"Key": "superplane-max-gpus-per-node", "Value": "1"}
+    )
+    from botocore.exceptions import ClientError
+
+    with Stubber(client) as stub:
+        stub.add_client_error(
+            "describe_instance_types",
+            service_error_code="UnauthorizedOperation",
+            expected_params={"InstanceTypes": [values["InstanceType"]]},
+        )
+        with pytest.raises(ClientError):
+            client.run_instances(**values)
+        stub.assert_no_pending_responses()
