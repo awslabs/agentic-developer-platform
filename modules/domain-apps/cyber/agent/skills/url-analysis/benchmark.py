@@ -18,12 +18,13 @@ from urllib.parse import urlsplit
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
-from case_contract import Assessment, utcnow
+from case_contract import assessment_schema, utcnow
 from research_case import assess_case, collection_summary, verify_case
 
 VERDICTS = {
     "malicious",
     "suspicious",
+    "clean",
     "no_specific_concern",
     "no_adverse_behavior_observed",
     "inconclusive",
@@ -136,9 +137,9 @@ def score(manifest, results, split):
     for case_id, reference in references.items():
         result = actual[case_id]
         verdict = result["verdict"]
-        if verdict not in VERDICTS:
+        if verdict is not None and verdict not in VERDICTS:
             raise ValueError("Unknown result verdict")
-        if verdict != "inconclusive" and not result.get("evidence_valid"):
+        if verdict not in {None, "inconclusive"} and not result.get("evidence_valid"):
             raise ValueError(
                 "Unsupported conclusions cannot count as accepted verdicts"
             )
@@ -149,6 +150,7 @@ def score(manifest, results, split):
         counts[label] += 1
         counts["available"] += available
         counts["inconclusive"] += verdict == "inconclusive"
+        counts["assessment_pending"] += verdict is None
         counts["evidence_validation_passes"] += bool(result.get("evidence_valid"))
         counts["model_failures"] += bool(result.get("model_failure"))
         if label == "phishing":
@@ -158,6 +160,7 @@ def score(manifest, results, split):
         elif label == "legitimate":
             counts["false_positives"] += positive
             counts["true_negatives"] += verdict in {
+                "clean",
                 "no_specific_concern",
                 "no_adverse_behavior_observed",
             }
@@ -181,6 +184,7 @@ def score(manifest, results, split):
         "false_positive_rate": ratio(fp, counts["legitimate"]),
         "availability_rate": ratio(counts["available"], counts["cases"]),
         "inconclusive_rate": ratio(counts["inconclusive"], counts["cases"]),
+        "assessment_pending_rate": ratio(counts["assessment_pending"], counts["cases"]),
         "human_evidence_correctness": ratio(
             counts["human_correct"], counts["human_reviewed"]
         ),
@@ -197,7 +201,7 @@ def score(manifest, results, split):
     }
 
 
-def materialize(s3, row, directory):
+def materialize(s3, row, directory, *, max_observations=6):
     body = get_bytes(s3, row["case_uri"])
     if hashlib.sha256(body).hexdigest() != row["sha256"]:
         raise ValueError("Case differs from the pinned dataset snapshot")
@@ -241,11 +245,11 @@ def materialize(s3, row, directory):
                 != observation[hash_field]
             ):
                 raise ValueError("Artifact differs from the pinned observation")
-    if len(case["observations"]) > 6 or case.get("browser_view", {}).get(
+    if len(case["observations"]) > max_observations or case.get("browser_view", {}).get(
         "session_open"
     ):
         raise ValueError(
-            "Snapshot evaluation requires a closed case with at most six observations"
+            "Snapshot evaluation requires a closed case within the observation budget"
         )
     return case
 
@@ -263,7 +267,12 @@ def model_input(case):
 
 def run_case(s3, model, model_id, row):
     started = time.monotonic()
-    result = {"id": row["id"], "verdict": "inconclusive", "evidence_valid": False}
+    result = {
+        "id": row["id"],
+        "verdict": None,
+        "assessment_status": "pending",
+        "evidence_valid": False,
+    }
     with tempfile.TemporaryDirectory(prefix="cyber-evaluation-") as tmp:
         directory = Path(tmp)
         try:
@@ -291,7 +300,7 @@ def run_case(s3, model, model_id, row):
                             }
                         }
                     )
-            schema = Assessment.model_json_schema()
+            schema = assessment_schema()
             messages = [{"role": "user", "content": content}]
             system = [
                 {
@@ -342,6 +351,7 @@ def run_case(s3, model, model_id, row):
                     assessed = assess_case(directory, assessment)
                     result.update(
                         verdict=assessed["assessment"]["verdict"],
+                        assessment_status="complete",
                         evidence_valid=True,
                         assessment=assessed["assessment"],
                         model_failure=False,

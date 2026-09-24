@@ -63,7 +63,7 @@ def test_case_retains_provenance_and_does_not_automatically_clear(tmp_path):
     out = tmp_path / "case"
     new_case(out, URL)
     case = add_probe(out, URL, capture=bundle)
-    assert case["assessment"]["verdict"] == "inconclusive"
+    assert case["assessment"]["verdict"] is None
     assert (out / "obs-001.png").read_bytes() == PNG
     assert "screenshot_base64" not in (out / "case.json").read_text()
     assert "private-value" not in (out / "case.json").read_text()
@@ -89,7 +89,7 @@ def test_failed_followup_keeps_evidence_and_allows_model_reassessment(tmp_path):
     assert len(case["observations"]) == 1
     assert (out / "obs-001.png").exists()
     assert case["probes"][-1]["status"] == "failed"
-    assert case["assessment"]["verdict"] == "inconclusive"
+    assert case["assessment"]["verdict"] is None
     assert (
         assess_case(out, assessment())["assessment"]["verdict"]
         == "no_adverse_behavior_observed"
@@ -210,7 +210,7 @@ def test_false_completeness_is_rejected(tmp_path, field, value):
     data["observations"][0][field] = value
     case = add_probe(out, URL, capture=lambda *a, **k: data)
     assert case["probes"][0]["status"] == "failed"
-    assert case["assessment"]["verdict"] == "inconclusive"
+    assert case["assessment"]["verdict"] is None
 
 
 def test_changed_artifact_prevents_assessment(tmp_path):

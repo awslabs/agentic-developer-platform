@@ -272,6 +272,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             timeline=copy.deepcopy(timeline),
             blocked_requests=session.refusals.copy(),
             connections=session.guard.connections.copy(),
+            transport_errors=copy.deepcopy(session.guard.transport_errors),
             dropped_events=dropped.copy(),
         )
         partial["errors"] = partial["errors"] + ["capture_in_progress"]
@@ -302,25 +303,38 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             "status": "partial",
             "errors": errors.copy(),
             "frames": [],
+            "frame_capture_status": "requested"
+            if request.get("_capture_frames", True)
+            else "not_requested",
             "screenshot_base64": "",
             "screenshot_sha256": "",
         }
+        checkpoint(o)
         try:
             data = sanitize(session.evaluate(PAGE_DATA))
             o.update(data)
         except Exception as exc:
             o["errors"].append(f"dom_capture:{type(exc).__name__}")
         checkpoint(o)
-        try:
-            png = session.screenshot(full_page=False, timeout=10000)
-            if not png.startswith(b"\x89PNG") or len(png) > 5 * 1024 * 1024:
-                raise ValueError("Screenshot is not a bounded PNG")
-            o["screenshot_base64"] = base64.b64encode(png).decode()
-            o["screenshot_sha256"] = digest(png)
-        except Exception as exc:
-            o["errors"].append(f"screenshot_capture:{type(exc).__name__}")
+        if request.get("_screenshots", True) or action == "screenshot":
+            from runtime_limits import SCREENSHOT_SECONDS
+
+            try:
+                png = session.screenshot(
+                    full_page=False, timeout=SCREENSHOT_SECONDS * 1000
+                )
+                if not png.startswith(b"\x89PNG") or len(png) > 5 * 1024 * 1024:
+                    raise ValueError("Screenshot is not a bounded PNG")
+                o["screenshot_base64"] = base64.b64encode(png).decode()
+                o["screenshot_sha256"] = digest(png)
+            except Exception as exc:
+                o["errors"].append(f"screenshot_capture:{type(exc).__name__}")
+        else:
+            o["screenshot_status"] = "not_requested"
         checkpoint(o)
-        for frame in session.frames[1:6]:
+        for frame in (
+            session.frames[1:6] if request.get("_capture_frames", True) else []
+        ):
             try:
                 o["frames"].append(
                     sanitize({"url": frame.url, **frame.evaluate(PAGE_DATA)})
@@ -372,6 +386,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
                     "timeline": copy.deepcopy(timeline),
                     "blocked_requests": session.refusals.copy(),
                     "connections": session.guard.connections.copy(),
+                    "transport_errors": copy.deepcopy(session.guard.transport_errors),
                     "dropped_events": dropped.copy(),
                 }
             )
@@ -430,7 +445,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             response = session.goto(
                 request["url"],
                 wait_until="domcontentloaded",
-                timeout=min(request["timeout_ms"], 30000),
+                timeout=request["timeout_ms"],
             )
             status = response.status if response else status
         except Exception as exc:
@@ -451,11 +466,11 @@ def recorded_browser(request: dict, playwright, *, opener=None):
                 if command["action"] == "back"
                 else (
                     command["target_url"]
-                    if command["action"] in {"follow", "root"}
+                    if command["action"] in {"follow", "root", "navigate"}
                     else None
                 )
             )
-            if command["action"] in {"follow", "root"}:
+            if command["action"] in {"follow", "root", "navigate"}:
                 subject = digest(command["target_url"])
             before_url = session.url
             try:

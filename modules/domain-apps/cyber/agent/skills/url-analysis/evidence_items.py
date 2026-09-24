@@ -106,6 +106,14 @@ def evidence_coverage(observation):
         "http_status": observation.get("http_status"),
         "errors": observation.get("errors", []),
         "interstitial": observation.get("interstitial"),
+        "screenshot_status": observation.get(
+            "screenshot_status",
+            "captured" if observation.get("screenshot_sha256") else "unavailable",
+        ),
+        "frame_capture_status": observation.get(
+            "frame_capture_status", "legacy_unspecified"
+        ),
+        "transport_errors": observation.get("transport_errors", []),
         "intact_item_ids": [
             x["id"] for x in observation.get("evidence_items", []) if x["complete"]
         ],

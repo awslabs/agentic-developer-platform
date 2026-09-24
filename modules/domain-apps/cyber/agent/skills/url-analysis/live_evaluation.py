@@ -23,7 +23,7 @@ from benchmark import get_bytes, put_json, require_aws_runtime, s3_location
 from botocore.config import Config
 from browser_client import investigation_request
 from PIL import Image
-from research_case import assess_case, verify_case
+from research_case import _pending, save_case, verify_case
 
 MODEL = "us.anthropic.claude-sonnet-4-6"
 REVIEW = {
@@ -59,7 +59,7 @@ DECISION = {
         },
         "evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
     },
-    "required": ["question", "reason", "expected_signal", "evidence_ids"],
+    "required": ["reason"],
 }
 
 
@@ -115,12 +115,22 @@ def tool_contracts():
                 "decision": DECISION,
                 "action": {
                     "type": "string",
-                    "enum": ["follow", "expand", "root", "back", "scroll", "wait"],
+                    "enum": [
+                        "follow",
+                        "expand",
+                        "root",
+                        "back",
+                        "scroll",
+                        "wait",
+                        "navigate",
+                        "screenshot",
+                    ],
                 },
                 "candidate_id": {"type": "string"},
+                "url": {"type": "string"},
                 "seconds": {"type": "integer", "minimum": 1, "maximum": 15},
             },
-            ["review", "decision", "action"],
+            ["decision", "action"],
         ),
         tool(
             "inspect_evidence",
@@ -138,7 +148,7 @@ def tool_contracts():
                 "decision": DECISION,
                 "name": {"type": "string", "enum": ["desktop", "mobile"]},
             },
-            ["review", "decision", "name"],
+            ["decision", "name"],
         ),
         tool(
             "finish",
@@ -426,6 +436,8 @@ def investigate(
                                     "back",
                                     "scroll",
                                     "wait",
+                                    "navigate",
+                                    "screenshot",
                                 }:
                                     raise ValueError("Unsupported browser action")
                                 if action in {"follow", "expand"} and args.get(
@@ -437,7 +449,8 @@ def investigate(
                                     raise ValueError(
                                         "Select an ID from the current observed choices"
                                     )
-                            cli.review(directory, args["review"])
+                            if args.get("review"):
+                                cli.review(directory, args["review"])
                             if name == "advance":
                                 case = cli.step(
                                     directory,
@@ -445,6 +458,7 @@ def investigate(
                                     args["decision"],
                                     candidate_id=args.get("candidate_id"),
                                     seconds=args.get("seconds"),
+                                    url=args.get("url"),
                                     request=request,
                                 )
                             else:
@@ -577,22 +591,16 @@ def investigate(
                     )
                 case = load_case(directory)
                 if not completed and (case["observations"] or context_records(case)):
-                    case = assess_case(
-                        directory,
-                        {
-                            "verdict": "inconclusive",
-                            "assessor": "live-evaluation-operational-fallback",
-                            "findings": cli.retained_findings(case),
-                            "limitations": [
-                                "The model did not complete an assessment. This is an operational fallback, not a model verdict."
-                            ],
-                            "recommended_actions": [
-                                "Review the preserved evidence and execution record."
-                            ],
-                        },
-                    )
+                    case["assessment"] = {
+                        **_pending(
+                            "The model did not complete an assessment; review the preserved evidence and execution record."
+                        ),
+                        "findings": cli.retained_findings(case),
+                    }
+                    save_case(directory, case)
                 result.update(
                     verdict=case["assessment"]["verdict"],
+                    assessment_status=case.get("assessment_status", "pending"),
                     verified_files=verify_case(directory),
                     evidence_valid=True,
                     sessions=case.get("sessions", []),

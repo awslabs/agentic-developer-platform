@@ -119,7 +119,7 @@ def test_live_feedback_preserves_context_and_updates_model_evidence(
     assert result["adaptive"]["multiple_observations_in_one_context"]
     assert len(clients) == 1 and clients[0].stopped
     assert all(method in {"GET", "HEAD", "OPTIONS"} for method, _ in transport.requests)
-    assert any("image" in b for b in model.calls[0]["messages"][0]["content"])
+    assert not any("image" in b for b in model.calls[0]["messages"][0]["content"])  # screenshots are model-selected
 
 
 def test_batched_actions_are_all_rejected_without_navigation(live_fixture, tmp_path):
@@ -175,7 +175,7 @@ def test_invalid_assessment_can_be_corrected_while_browser_stays_open(
     assert clients[0].stopped
 
 
-def test_model_failure_closes_and_records_operational_fallback(live_fixture, tmp_path):
+def test_model_failure_closes_and_leaves_assessment_pending(live_fixture, tmp_path):
     request, _, clients = live_fixture
 
     def fail(*args):
@@ -184,11 +184,11 @@ def test_model_failure_closes_and_records_operational_fallback(live_fixture, tmp
     result = live.investigate(
         tmp_path / "case", row(), ProtocolModel(fail), request=request
     )
-    assert not result["model_completed"] and result["verdict"] == "inconclusive"
+    assert not result["model_completed"] and result["verdict"] is None
     assert clients[0].stopped
     assert (
         live.load_case(tmp_path / "case")["assessment"]["assessor"]
-        == "live-evaluation-operational-fallback"
+        == "collection-system"
     )
 
 
@@ -207,7 +207,7 @@ def test_browser_only_mode_skips_model_without_observations(tmp_path):
     result = live.investigate(
         tmp_path / "case", row(), model, request=unavailable, browser_only=True
     )
-    assert result["model_turns"] == 0 and result["verdict"] == "inconclusive"
+    assert result["model_turns"] == 0 and result["verdict"] is None
     assert result["adaptive"]["model_browser_actions"] == 0
 
 

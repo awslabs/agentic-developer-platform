@@ -170,7 +170,7 @@ def test_legitimate_third_party_login_does_not_automatically_become_malicious(
     out = tmp_path / "legitimate"
     new_case(out, "https://public.test/")
     c = add_probe(out, "https://public.test/", capture=capture_fixture[0])
-    assert c["assessment"]["verdict"] == "inconclusive"
+    assert c["assessment"]["verdict"] is None
     value = {
         "verdict": "no_adverse_behavior_observed",
         "assessor": "synthetic-regression",
@@ -220,9 +220,8 @@ def test_dns_failure_is_terminal_with_a_valid_empty_assessment(tmp_path):
         "successful_pages": 0,
     }
     assert s["valid_evidence_ids"] == []
-    assert s["assessment"]["findings"] == []
+    assert s["assessment"] is None and s["assessment_status"] == "pending"
     assert calls == ["start"]
-    Assessment.model_validate(s["assessment"]).validate_evidence([])
     contract = cli.assessment_contract(c)
     assert "EvidenceReference" in contract["assessment_schema"]["$defs"]
     assert "unavailable" in (out / "report.md").read_text()

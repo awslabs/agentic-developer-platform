@@ -337,20 +337,20 @@ def test_provider_lookups_use_fixed_endpoints_and_preserve_gaps():
     def provider(url):
         calls.append(url)
         if "iana.org" in url:
-            return {"services": [[["test"], ["https://registry.test/rdap/"]]]}
+            return {"services": [[["com"], ["https://registry.test/rdap/"]]]}
         return {
-            "ldhName": "public.test",
+            "ldhName": "example.com",
             "events": [{"eventAction": "registration", "eventDate": "2020-01-01"}],
         }
 
-    result = context.lookup("rdap", "https://public.test/path", get_json=provider)
+    result = context.lookup("rdap", "https://example.com/path", get_json=provider)
     assert result["status"] == "available" and result["events"][0]["eventDate"]
     assert calls == [
         "https://data.iana.org/rdap/dns.json",
-        "https://registry.test/rdap/domain/public.test",
+        "https://registry.test/rdap/domain/example.com",
     ]
     assert (
-        context.lookup("virustotal", "https://public.test", api_key=None)["status"]
+        context.lookup("virustotal", "https://example.com", api_key=None)["status"]
         == "skipped"
     )
     assert (
@@ -386,7 +386,7 @@ def test_rejected_finish_attempts_retain_valid_findings_on_model_failure(
 
     result = live.investigate(out, row(), ProtocolModel(choose), request=request)
     case = json.loads((out / "case.json").read_text())
-    assert result["verdict"] == "inconclusive" and not result["model_completed"]
+    assert result["verdict"] is None and not result["model_completed"]
     assert len(case["assessment"]["findings"]) == 1
     assert case["assessment_attempts"][0]["assessment"]["findings"][1][
         "evidence_ids"
