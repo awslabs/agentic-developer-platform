@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import datetime as dt
 import json
 
 from . import contract, errors
@@ -149,16 +150,11 @@ def submit_request(body: dict) -> dict:
         # Named separately from the generic unknown-field refusal: these are
         # not typos, they are attempts to choose platform-owned state.
         raise errors.invalid_request(
-            "A task request may not select "
-            + ", ".join(forbidden)
-            + "; ownership and execution parameters are derived from the "
-            "verified principal and platform configuration."
+            "A task request may not select ownership or execution parameters."
         )
     unknown = sorted(set(body) - contract.SUBMIT_ALLOWED_FIELDS)
     if unknown:
-        raise errors.invalid_request(
-            "Unknown request field(s): " + ", ".join(unknown) + "."
-        )
+        raise errors.invalid_request("The task request contains unknown fields.")
     missing = [f for f in contract.SUBMIT_REQUIRED_FIELDS if f not in body]
     if missing:
         raise errors.invalid_request(
@@ -206,8 +202,6 @@ def submit_request(body: dict) -> dict:
                 limit_name="artifacts.max_input_artifacts",
                 limit_value=contract.MAX_INPUT_ARTIFACTS,
             )
-        if len(set(ids)) != len(ids):
-            raise errors.invalid_request("artifact_ids must be unique.")
         for value in ids:
             if not isinstance(value, str) or not contract.ARTIFACT_ID_PATTERN.fullmatch(
                 value
@@ -215,6 +209,8 @@ def submit_request(body: dict) -> dict:
                 raise errors.invalid_request(
                     "artifact_ids entries must be artifact identifiers."
                 )
+        if len(set(ids)) != len(ids):
+            raise errors.invalid_request("artifact_ids must be unique.")
 
     if "acceptance_criteria" in body:
         criteria = body["acceptance_criteria"]
@@ -273,6 +269,10 @@ def submit_response(receipt: object) -> dict:
             value
         ):
             raise errors.prerequisite_unavailable()
+        try:
+            dt.datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+        except ValueError:
+            raise errors.prerequisite_unavailable() from None
     # The URLs must address the task the gateway says it recorded, so a
     # caller cannot be handed a pointer to someone else's task.
     if receipt["status_url"] != f"/v1/tasks/{task_id}":

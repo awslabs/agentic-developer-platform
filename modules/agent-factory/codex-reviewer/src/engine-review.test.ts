@@ -127,6 +127,38 @@ test("failed functional or security inspection never publishes a repaired tree",
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
 
+for (const newWhitespace of [false, true]) {
+  test(`base merge preserves upstream whitespace while ${newWhitespace ? "rejecting" : "publishing"} the repair delta`, async t => {
+    const state = await fixture(t);
+    await state.git("checkout", "-b", "main");
+    await writeFile(join(state.workspace, "base-evidence.md"), "upstream evidence \n");
+    await state.git("add", "base-evidence.md");
+    await state.git("commit", "-m", "upstream fixture with existing whitespace");
+    state.pr.base.sha = await state.git("rev-parse", "HEAD");
+    await state.git("checkout", "story");
+    state.pr.mergeable = false;
+    state.envelope.cycle.action = "repair";
+    const run = () => runEngineReview(state.envelope, state.runtime, {
+      github: state.github,
+      review: async () => approved,
+      fix: async () => {
+        await writeFile(join(state.workspace, "code.txt"), "repaired behavior\n");
+        if (newWhitespace) await writeFile(join(state.workspace, "new-repair.txt"), "new whitespace \n");
+      },
+    });
+    if (newWhitespace) {
+      await assert.rejects(run(), /diff --cached --check/);
+      assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
+    } else {
+      const result = await run();
+      assert.equal(result.report.verdict, "approve");
+      assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+      assert.equal(await state.git("rev-parse", "HEAD^2"), state.pr.base.sha);
+      assert.equal(await readFile(join(state.workspace, "base-evidence.md"), "utf8"), "upstream evidence \n");
+    }
+  });
+}
+
 test("an inspected repair stages a tracked deletion under a now ignored directory", async t => {
   const state = await fixture(t, true);
   let reviews = 0;

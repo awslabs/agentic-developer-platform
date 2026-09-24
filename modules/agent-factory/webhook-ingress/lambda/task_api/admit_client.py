@@ -16,8 +16,9 @@ The internal call carries three independent things:
   captured from one submission cannot admit a different one.
 
 Any transport failure, timeout, redirect or response this module cannot fully
-validate raises ``TaskApiError`` — never a partial success. A task the gateway
-did not durably record must never be reported as accepted.
+validate raises ``TaskApiError`` — never a partial success. Because a response
+can be lost after a durable commit, that refusal reports an unknown outcome and
+requires a retry with the original idempotency key.
 """
 
 from __future__ import annotations
@@ -190,11 +191,10 @@ def admit(
             raw = b""
     except Exception:  # noqa: BLE001 - see below; the catch must be total
         # Deliberately broad. Any failure reaching the gateway — DNS, TLS,
-        # timeout, socket reset, a botocore error while signing — means this
-        # request was not durably recorded. Narrowing this would let an
-        # unanticipated exception propagate and be reported as something other
-        # than "not accepted", which is the one outcome that must never be
-        # wrong. The exception is dropped rather than chained so no transport
+        # timeout, socket reset, or a botocore error while signing — means the
+        # outcome cannot be proven. Narrowing this would let an unanticipated
+        # exception escape instead of telling the caller to retry the same
+        # idempotent intent. The exception is dropped rather than chained so no transport
         # detail or credential can reach a log or response.
         raise errors.prerequisite_unavailable() from None
 
@@ -223,17 +223,26 @@ def _relay(status: int, receipt: object) -> errors.TaskApiError:
     code = receipt.get("code")
     if code not in contract.ERROR_STATUS or contract.ERROR_STATUS[code] != status:
         return errors.prerequisite_unavailable()
-    message = receipt.get("message")
-    if not isinstance(message, str) or not message:
-        message = "The task submission was refused."
+    messages = {
+        "invalid_request": "The task submission request is invalid.",
+        "invalid_credential": "A valid access token is required.",
+        "disallowed_scope": "The credential is not authorized to submit tasks.",
+        "disallowed_persona": "The requested task persona is not allowed.",
+        "not_found": "No such resource.",
+        "idempotency_conflict": "The Idempotency-Key was used for another request.",
+        "payload_too_large": "The task submission is too large.",
+        "rate_limited": "The task submission rate limit was reached.",
+        "queue_full": "Task capacity is currently full.",
+        "prerequisite_unavailable": (
+            "Task submission outcome is unavailable; retry with the same "
+            "Idempotency-Key."
+        ),
+    }
     retry_after_ms = receipt.get("retry_after_ms")
-    if not isinstance(retry_after_ms, int) or isinstance(retry_after_ms, bool):
+    if (
+        not isinstance(retry_after_ms, int)
+        or isinstance(retry_after_ms, bool)
+        or retry_after_ms < 0
+    ):
         retry_after_ms = None
-    details = receipt.get("details")
-    if isinstance(details, dict):
-        details = {k: v for k, v in details.items() if k in contract.ERROR_DETAIL_FIELDS}
-    else:
-        details = None
-    return errors.TaskApiError(
-        code, message, retry_after_ms=retry_after_ms, details=details or None
-    )
+    return errors.TaskApiError(code, messages[code], retry_after_ms=retry_after_ms)

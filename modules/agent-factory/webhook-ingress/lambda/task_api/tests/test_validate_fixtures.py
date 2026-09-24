@@ -169,7 +169,7 @@ def test_forged_tenant_is_refused_rather_than_ignored():
     with pytest.raises(errors.TaskApiError) as caught:
         validate.submit_request(body)
     assert caught.value.code == "invalid_request"
-    assert "tenant_id" in caught.value.message
+    assert "tenant_id" not in caught.value.message
 
 
 def test_error_fixtures_match_the_shapes_this_module_emits():

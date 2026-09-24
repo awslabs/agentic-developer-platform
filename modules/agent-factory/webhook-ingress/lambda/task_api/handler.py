@@ -91,13 +91,12 @@ def handle_task_submit(event: dict, context) -> dict:
         return _response(exc.status, exc.body(request_id))
     except Exception:  # noqa: BLE001 - the last line of defence must be total
         # Deliberately broad, and deliberately the final branch. An unexpected
-        # fault anywhere above means the task was not durably recorded, so the
-        # only safe answer is an explicit failure. Letting an exception escape
-        # would surface as an API Gateway 502 whose body this code does not
-        # control, which is how a caller ends up unable to tell a refused
-        # submission from a possibly-accepted one. The exception is not
+        # fault means this invocation cannot prove a complete acceptance receipt;
+        # the caller must retry the same idempotent intent. Letting an exception
+        # escape would surface as an API Gateway 502 whose body this code does not
+        # control, making that recovery rule less explicit. The exception is not
         # formatted into the log, because it may carry the caller's token,
         # the producer proof or the request body.
-        print("task_api: submission failed before acceptance")
+        print("task_api: submission outcome unavailable")
         fallback = errors.prerequisite_unavailable()
         return _response(fallback.status, fallback.body(request_id))

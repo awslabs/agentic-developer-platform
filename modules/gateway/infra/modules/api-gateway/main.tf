@@ -420,13 +420,27 @@ resource "aws_api_gateway_rest_api" "main" {
       } : {},
       # Issue #5795 (T2): POST /v1/tasks — Lambda proxy to the ingress Lambda.
       #
-      # An explicit path with a single explicit method, which is what keeps this
-      # additive. API Gateway prefers an explicit resource over /{proxy+}, so
-      # this moves POST /v1/tasks off the pod path and changes the resolution of
-      # nothing else — including GET /v1/tasks and every other /v1/* path, which
-      # continue to reach the gateway pod through /{proxy+} exactly as before.
+      # API Gateway selects the explicit /v1/tasks resource before /{proxy+} for
+      # every method. Keep an any-method fallback on that resource so methods
+      # other than POST still reach the gateway pod; the explicit POST method
+      # overrides only task submission and lands on the ingress Lambda.
       var.enable_task_api_route && var.task_api_lambda_invoke_arn != "" ? {
         "/v1/tasks" = {
+          x-amazon-apigateway-any-method = {
+            "x-amazon-apigateway-auth" = { type = "NONE" }
+            x-amazon-apigateway-integration = {
+              type                 = "http_proxy"
+              httpMethod           = "ANY"
+              uri                  = "http://${var.internal_alb_dns}/v1/tasks"
+              timeoutInMillis      = var.integration_timeout_ms
+              responseTransferMode = "STREAM"
+              passthroughBehavior  = "when_no_match"
+              connectionType       = "VPC_LINK"
+              connectionId         = aws_apigatewayv2_vpc_link.main.id
+              integrationTarget    = var.internal_alb_arn
+              requestParameters    = local.blank_caller_identity
+            }
+          }
           post = {
             "x-amazon-apigateway-auth" = { type = "NONE" }
             x-amazon-apigateway-integration = {
@@ -516,6 +530,14 @@ resource "aws_api_gateway_rest_api" "main" {
   # applying to new routes is worse than no check, because the deploy still goes
   # green. Iterating the method map keeps it applying to any route shape.
   lifecycle {
+    precondition {
+      condition = !var.enable_task_api_route || (
+        var.task_api_lambda_invoke_arn != "" &&
+        var.task_api_lambda_function_name != ""
+      )
+      error_message = "Publishing POST /v1/tasks requires both the ingress Lambda invoke ARN and function name."
+    }
+
     postcondition {
       # MOCK integrations are exempt, and that exemption is now stated rather
       # than incidental. The first-pass placeholder body (no ALB yet) serves

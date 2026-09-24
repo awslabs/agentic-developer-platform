@@ -5,9 +5,10 @@ entirely and lands on the webhook-ingress Lambda. Three facts make that safe,
 none of which any Python unit test would notice, and all of which fail silently
 — the deploy succeeds and the API answers:
 
-  1. It is an EXPLICIT path with an EXPLICIT method. Written as a proxy, or as
-     ``any-method``, it would capture sibling paths and methods that belong to
-     the pod through ``/{proxy+}``.
+  1. It is an EXPLICIT path with an EXPLICIT POST method. Because API Gateway
+     selects an explicit resource before ``/{proxy+}`` for every method, the
+     resource also needs an any-method fallback to keep non-POST methods on the
+     gateway pod.
   2. The Lambda invoke permission names that one method and path. The ingress
      Lambda also serves the GitHub webhook route, so a ``/*/*`` grant — the form
      the broker permission uses — would let any present or future route on this
@@ -54,21 +55,24 @@ class TestTheRouteIsNarrow:
             "POST /v1/tasks must be an explicit API Gateway path"
         )
 
-    def test_the_route_declares_one_explicit_method_not_any_method(self):
-        """``any-method`` here would also capture GET/DELETE /v1/tasks.
-
-        Those belong to the gateway pod (task reads and cancellation are gateway
-        routes), so capturing them would send read traffic to a Lambda that
-        cannot serve it.
-        """
+    def test_the_route_declares_an_explicit_post_method(self):
         block = _route_block(APIGW_MAIN_TF.read_text())
 
-        assert "x-amazon-apigateway-any-method" not in block, (
-            "the task route must declare POST only, not any-method"
-        )
         assert re.search(r"^\s*post = \{", block, re.MULTILINE), (
             "the task route must declare an explicit post method"
         )
+
+    def test_non_post_methods_fall_through_to_the_gateway_pod(self):
+        """An explicit resource shadows ``/{proxy+}`` for every HTTP method."""
+        block = _route_block(APIGW_MAIN_TF.read_text())
+
+        assert "x-amazon-apigateway-any-method" in block
+        fallback, post = block.split("post = {", 1)
+        assert 'type                 = "http_proxy"' in fallback
+        assert 'httpMethod           = "ANY"' in fallback
+        assert 'uri                  = "http://${var.internal_alb_dns}/v1/tasks"' in fallback
+        assert 'type                = "aws_proxy"' in post
+        assert "var.task_api_lambda_invoke_arn" in post
 
     def test_the_route_is_not_a_proxy_path(self):
         """``/v1/tasks/{proxy+}`` would swallow paths this story does not own."""
@@ -183,11 +187,17 @@ class TestTheRolloutIsTwoIndependentSwitches:
             block = text[start : text.index("}", start)]
             assert "default     = false" in block, f"{path.name}: route must default off"
 
-    def test_the_route_requires_both_the_flag_and_the_arn(self):
-        """Either alone would render a route with no reachable integration."""
+    def test_the_route_requires_both_lambda_identifiers(self):
+        """A route without an integration URI or invoke permission is unusable."""
         tf = APIGW_MAIN_TF.read_text()
 
         assert 'var.enable_task_api_route && var.task_api_lambda_invoke_arn != "" ?' in tf
+        start = tf.index("precondition {")
+        end = tf.index("postcondition {", start)
+        precondition = tf[start:end]
+        assert "!var.enable_task_api_route" in precondition
+        assert 'var.task_api_lambda_invoke_arn != ""' in precondition
+        assert 'var.task_api_lambda_function_name != ""' in precondition
 
     def test_the_root_module_passes_the_task_variables_through(self):
         tf = ROOT_MAIN_TF.read_text()
@@ -271,9 +281,10 @@ class TestTheIntegrationBudgetIsNotModelSized:
         Lambda chose and shaped.
         """
         block = _route_block(APIGW_MAIN_TF.read_text())
+        post = block.split("post = {", 1)[1]
 
-        assert "var.integration_timeout_ms" not in block
-        assert "timeoutInMillis = 29000" in block
+        assert "var.integration_timeout_ms" not in post
+        assert "timeoutInMillis = 29000" in post
 
 
 class TestTheRouteIsValidSwagger:
@@ -282,12 +293,17 @@ class TestTheRouteIsValidSwagger:
         block = _route_block(APIGW_MAIN_TF.read_text())
 
         # Terraform's HCL map syntax for this block is close enough to JSON that
-        # the method/integration nesting can be checked structurally: `post`
-        # must be the only method key, and it must own the integration.
+        # the method/integration nesting can be checked structurally.
         method_keys = re.findall(
             r"^\s{10}([a-z-]+(?:-[a-z]+)*) = \{", block, re.MULTILINE
         )
-        assert method_keys == ["post"], f"unexpected method keys: {method_keys}"
+        assert method_keys == ["x-amazon-apigateway-any-method", "post"], (
+            f"unexpected method keys: {method_keys}"
+        )
 
-        assert block.index("post = {") < block.index("x-amazon-apigateway-integration")
+        post = block.split("post = {", 1)[1]
+        assert "x-amazon-apigateway-integration" in post
+        assert post.index("x-amazon-apigateway-integration") < post.index(
+            "var.task_api_lambda_invoke_arn"
+        )
         assert json.dumps(ROUTE) == '"/v1/tasks"'

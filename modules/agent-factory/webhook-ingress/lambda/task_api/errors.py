@@ -81,7 +81,10 @@ def payload_too_large(limit_name: str, limit_value: int) -> TaskApiError:
 
 
 def prerequisite_unavailable(
-    message: str = "Task submission is unavailable; this request was not accepted.",
+    message: str = (
+        "Task submission outcome is unavailable; retry with the same "
+        "Idempotency-Key."
+    ),
     *,
     retry_after_ms: int = 5000,
 ) -> TaskApiError:

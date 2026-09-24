@@ -1384,9 +1384,12 @@ def check_manifest(results: Results) -> None:
     runnable = sorted(
         cid for cid, entry in criteria.items() if entry["command_status"] == "runnable"
     )
-    implemented_prefixes = ("V0-", "T0-", "T2-")
+    implemented_prefixes = ("V0-", "T0-")
+    implemented_criteria = {"T2-AC04"}
     expected_runnable = sorted(
-        cid for cid in criteria if cid.startswith(implemented_prefixes)
+        cid
+        for cid in criteria
+        if cid.startswith(implemented_prefixes) or cid in implemented_criteria
     )
     results.record(
         "exactly the implemented stories' criteria are runnable at this wave",

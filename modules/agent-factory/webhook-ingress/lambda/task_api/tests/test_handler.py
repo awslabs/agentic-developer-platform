@@ -235,6 +235,17 @@ def test_forged_tenant_is_refused_without_forwarding(enabled):
     admit.assert_not_called()
 
 
+def test_non_string_artifact_id_is_a_client_error_without_forwarding(enabled):
+    body = dict(_VALID_SUBMIT)
+    body["artifact_ids"] = [{"forged": "artifact"}]
+    with patch("task_api.handler.admit_client.admit") as admit:
+        response = handler.handle_task_submit(_event(body=json.dumps(body)), None)
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"])["code"] == "invalid_request"
+    admit.assert_not_called()
+
+
 def test_legacy_persona_is_refused_without_forwarding(enabled):
     body = json.dumps({**_VALID_SUBMIT, "persona": "agent-developer"})
     with patch("task_api.handler.admit_client.admit") as admit:
@@ -308,6 +319,7 @@ def test_an_unexpected_fault_cannot_produce_a_202(enabled):
         {"status_url": "/v1/tasks/tsk_00000000-0000-4000-8000-000000000000"},
         {"events_url": "/v1/tasks/other/events"},
         {"created_at": "2026-09-24 14:42:03"},
+        {"created_at": "2026-99-24T14:42:03Z"},
         {"invocation_id": "not-a-uuid"},
         {"schema_version": "2.0"},
         {"unexpected_field": "value"},

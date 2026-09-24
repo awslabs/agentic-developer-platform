@@ -487,8 +487,8 @@
         "fixtures/valid/submit-request.json",
         "fixtures/valid/submit-response.json"
       ],
-      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py",
-      "command_status": "runnable"
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
     },
     "T2-AC02": {
       "title": "Unauthenticated/expired/revoked/wrong-scope calls and forged tenant/service names produce the specified denial with no dispatch",
@@ -504,8 +504,8 @@
         "fixtures/invalid/submit-request-nonfinite-number.json",
         "fixtures/valid/error-payload-too-large.json"
       ],
-      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py",
-      "command_status": "runnable"
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
     },
     "T2-AC03": {
       "title": "Idempotent retries return the existing handle and storage/authority failure cannot return false acceptance",
@@ -514,8 +514,8 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py",
-      "command_status": "runnable"
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
     },
     "T2-AC04": {
       "title": "Task-disabled and task-import-failure cases leave existing handler fixtures functional",
@@ -524,7 +524,7 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
       "command_status": "runnable"
     },
     "T2-AC05": {
@@ -534,8 +534,8 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
-      "command_status": "runnable"
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
     },
     "T3-AC01": {
       "title": "Injected failures before/after record commit, queue send and acknowledgement recover without requiring another client request",
