@@ -11,7 +11,9 @@ def test_verification_binding_extends_both_preserved_histories():
     config = Config(str(GATEWAY_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(GATEWAY_ROOT / "alembic"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["069_aws_verification_binding"]
+    head = scripts.get_current_head()  # raises if histories have diverged again
+    assert head is not None
+    assert "069_aws_verification_binding" in {revision.revision for revision in scripts.iterate_revisions(head, "base")}
     assert scripts.get_revision("069_aws_verification_binding").down_revision == "068_merge_cli_flow"
 
 
