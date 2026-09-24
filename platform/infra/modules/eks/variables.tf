@@ -79,6 +79,8 @@ variable "additional_private_subnet_ids_by_az" {
 
     Existing nodes are not moved by this; only newly launched nodes can use the
     added subnets.
+
+    Procedure, expected plan and rollback: docs/runbooks/eks-pod-ip-exhaustion.md
   DESC
   default     = {}
 

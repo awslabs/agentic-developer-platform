@@ -105,6 +105,51 @@ The latter requires a separate authorized GitHub smoke test. An environment
 without an App stays unconfigured. No browser setup is required for an existing
 App installation.
 
+### Additional cluster capacity subnets
+
+When the cluster's original private subnets run out of IP addresses, the CNI
+fails every newly scheduled pod with `failed to assign an IP address to
+container`, and existing pods keep running while nothing new can start. The
+supported remedy on a running Auto Mode cluster is to add **already-existing**
+private subnets to the cluster's own subnet set: the AWS-managed `default`
+NodeClass takes its subnets from the cluster's `resourcesVpcConfig.subnetIds` and
+exposes no selector of its own, so widening that set is what gives new nodes
+addresses. Do not edit the managed NodeClass — Auto Mode reconciles such edits
+away.
+
+Subnet IDs are account-specific, so they are never committed. Supply them as a
+map keyed by the availability zone each subnet is in:
+
+```bash
+export TF_VAR_additional_private_subnet_ids_by_az='{"us-east-1a":"subnet-...","us-east-1b":"subnet-..."}'
+```
+
+For CI applies, set the `ADDITIONAL_PRIVATE_SUBNETS_BY_AZ` repository variable to
+the same JSON object; `platform-infra-apply.yml` passes it through. Unset or
+blank is a no-op and the cluster's subnet set is left exactly as it is.
+
+The change is additive — the original subnets always stay in the set — and it
+creates nothing: no subnet, NAT gateway or VPC endpoint. It widens the
+**cluster's** subnet set only; the RDS subnet group, load balancers, Lambda VPC
+configurations and VPC endpoints are unaffected. Existing nodes are not moved,
+so only nodes launched after the apply can use the added capacity.
+
+Every entry is checked before anything is applied. The plan **fails** if a subnet
+is not in the platform VPC, is not really in the zone it is keyed by, assigns
+public IPs, has no default route, or reaches `0.0.0.0/0` through an internet
+gateway rather than NAT. Keying by zone is what makes one-subnet-per-zone
+structural: a subnet pasted under the wrong zone is refused instead of quietly
+collapsing the added capacity into a single zone.
+
+Upgrades retain this. An `--update` run rediscovers the live cluster's subnet set
+and re-exports the additions Terraform does not own, so a later routine update
+cannot silently shrink the set back and re-break pod scheduling. If discovery
+cannot represent what it finds — a subnet whose zone it cannot resolve, or two
+additions in the same zone — it stops rather than dropping them. Note that
+`platform.tfvars.json` is applied after the repository tfvars, so during an
+update run configure additions through the export above (which discovery merges
+in), not by editing `environments/<env>/platform.tfvars`.
+
 ### Ordered upgrades and completion
 
 Legacy webhook-secret KMS ownership moves from webhook state to platform state
