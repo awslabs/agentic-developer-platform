@@ -20,6 +20,7 @@ on:
       - 'modules/gateway/lambda/shared/*.py'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
+      - 'modules/gateway/scripts/sync-gateway-engine.py'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - 'modules/gateway/lambda/shared/root_principal.py'
       # Issue #4969: shared pricing policy, vendored into both budget Lambda zips
@@ -131,7 +132,7 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/migrate-before-rollout\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/(migrate-before-rollout|sync-gateway-engine)\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
@@ -752,33 +753,13 @@ jobs:
 
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
       - name: Update the scheduled orchestration engine
-        # The engine runs in Lambda using this same image. An EKS rollout alone
-        # leaves ticks on the previous digest indefinitely (#4575).
         env:
-          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
           ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
         run: |
-          set -euo pipefail
-          ENGINE_FUNCTION="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:adp-${ENVIRONMENT}-orchestration-tick"
-          if ! aws lambda get-function --function-name "$ENGINE_FUNCTION" \
-              --query Configuration.FunctionName --output text >/dev/null 2>/tmp/engine-function-error; then
-            if grep -q 'ResourceNotFoundException' /tmp/engine-function-error; then
-              echo "::notice::The orchestration engine is not provisioned in this environment."
-              exit 0
-            fi
-            cat /tmp/engine-function-error >&2
-            exit 1
-          fi
-          ENGINE_DIGEST=$(aws ecr describe-images --repository-name adp-gateway \
-            --image-ids imageTag="${ADP_INPUT_3965067AD6}" --query 'imageDetails[0].imageDigest' --output text)
-          ENGINE_PINNED_IMAGE="${ENGINE_IMAGE%:*}@${ENGINE_DIGEST}"
-          aws lambda update-function-code --function-name "$ENGINE_FUNCTION" \
-            --image-uri "$ENGINE_PINNED_IMAGE" --query '{FunctionName:FunctionName,LastUpdateStatus:LastUpdateStatus}'
-          aws lambda wait function-updated-v2 --function-name "$ENGINE_FUNCTION"
-          ENGINE_LIVE_IMAGE=$(aws lambda get-function --function-name "$ENGINE_FUNCTION" \
-            --query Code.ResolvedImageUri --output text)
-          test "$ENGINE_LIVE_IMAGE" = "$ENGINE_PINNED_IMAGE"
-          echo "Scheduled engine now uses ${ENGINE_LIVE_IMAGE}"
+          python3 modules/gateway/scripts/sync-gateway-engine.py \
+            --image "$ENGINE_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+            --environment "$ENVIRONMENT" --namespace "$NAMESPACE"
+
       - name: Wire ALB to CloudFront (Section 6 — first deploy)
         id: wire_alb
         # On first deploy, the Ingress manifest creates an internal ALB.
@@ -925,6 +906,14 @@ jobs:
         env:
           ENVIRONMENT: ${{ inputs.environment || 'dev' }}
           NAMESPACE: ${{ env.NAMESPACE }}
+
+      - name: Verify gateway and engine release parity
+        env:
+          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
+        run: |
+          python3 modules/gateway/scripts/sync-gateway-engine.py \
+            --verify-only --image "$ENGINE_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+            --environment "$ENVIRONMENT" --namespace "$NAMESPACE"
 
       - name: Record gateway-backend build evidence
         env:

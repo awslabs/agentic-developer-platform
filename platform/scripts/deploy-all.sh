@@ -1188,6 +1188,12 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   kubectl apply -f k8s/namespace.yaml
   scripts/verify-restricted-admission.sh adp-gateway
 
+  # The scheduled engine consumes the same image but is a separate deployment.
+  python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
+    --image "$GATEWAY_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+    --environment "$ENVIRONMENT" \
+    || fail "Gateway rolled out but engine alignment failed; release is incomplete"
+
   PRICING_RELEASE_IMAGE="${GATEWAY_IMAGE}"
   python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" migrate \
     --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
@@ -1197,6 +1203,12 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
     --expected-image "$PRICING_RELEASE_IMAGE" \
     || fail "Pricing refresh verification failed; its schedule remains disabled"
+  # Recheck both consumers before declaring this release complete.
+  python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
+    --verify-only --image "$GATEWAY_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+    --environment "$ENVIRONMENT" \
+    || fail "Gateway rolled out but engine alignment failed; release is incomplete"
+
 fi
 ok "Gateway deployed"
 

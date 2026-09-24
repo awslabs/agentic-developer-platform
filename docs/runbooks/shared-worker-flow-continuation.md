@@ -272,3 +272,37 @@ See [the dependency amendment contract](../design-notes/paused-wave-dependency-a
 for request examples, preview tokens, lock conflicts and scope restrictions.
 The flow remains paused after acceptance; review the accepted graph before
 resuming admission.
+
+### Gateway / scheduled-engine release parity
+
+The gateway Deployment and `adp-<environment>-orchestration-tick` Lambda execute
+code from the same image, but require separate deployments. Building or pushing
+an ECR tag does not update Lambda. A cancelled workflow or a manual EKS rollout
+can leave the two consumers on different revisions, including incompatible plan
+lineage handling. A flow pause does not suspend observation or stall detection.
+
+Both `gateway-deploy.yml` and `platform/scripts/deploy-all.sh` now run the shared
+alignment helper and verify parity before declaring the gateway release complete.
+For a manual gateway rollout, run this immediately after migrations and EKS
+rollout, using the intended release image and the target cluster's kubeconfig:
+
+```bash
+python3 modules/gateway/scripts/sync-gateway-engine.py \
+  --image "$GATEWAY_IMAGE" --account "$ACCOUNT_ID" --region "$AWS_REGION" \
+  --environment "$ENVIRONMENT" --namespace adp-gateway
+```
+
+Repeat with `--verify-only` before recording release success, and after recovering
+an interrupted deployment. The helper resolves the release to an immutable digest,
+checks the active AWS account and gateway rollout, updates Lambda with a revision
+fence, waits for AWS completion, and rechecks both consumers. A missing function,
+permission error, unsuccessful update, or digest mismatch fails the release. This
+path expects the scheduled engine to be provisioned; an intentionally engine-free
+installation requires a separately scoped deployment, not a silent missing-engine
+success. The helper does not invoke the engine, change schedules, resume flows,
+or repair previously failed stories.
+
+These are completion checks, not an atomic cross-service deployment: cancellation
+or a concurrent manual update can still interrupt the rollout. Such a release is
+incomplete until the helper succeeds. Never substitute a successful ECR build or
+EKS health check for this verification.
