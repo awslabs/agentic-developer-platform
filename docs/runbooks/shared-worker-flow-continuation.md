@@ -82,6 +82,11 @@ zero. The preview rejects any other policy change.
 This operation verifies the original human acceptance and policy hash. Any prior
 nonzero attempt, worker report, dispatch, PR association, work claim, or execution
 record prevents this narrow adoption, including completed or expired history.
+An initial gate approval through the CLI or UI is also supported: the adapter
+verifies the bound draft hash, structural acceptance gate, human decision and
+exact resulting policy. Superseded draft addresses with zero attempts can remain
+as history when absent from the current plan; any worker or delivery history
+still prevents adoption.
 The new version links the original policy and decision, preserves the original
 acceptance time for wall-clock enforcement, and does not reset the expiry,
 attempts, or spend allowance. Its new human acceptance only selects the shared

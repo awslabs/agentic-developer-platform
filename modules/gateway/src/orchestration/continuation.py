@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
 from .compile import ApprovalContext
+from .continuation_acceptance import has_started_nodes, initial_gate_accepted
 from .dispatch_pass import attempt_run_id
 from .execution_policy import Action, ExecutionPolicy, policy_hash, stamp_policy
 from .execution_state import ExecutionIdentity, ExecutionPhase, OutcomeKind
@@ -250,12 +251,30 @@ async def _snapshot(session, org_id: str, flow_id: str, *, lock=False, require_p
                 "kind": decision.kind,
                 "actor_id": decision.actor_id,
                 "actor_kind": decision.actor_kind,
+                "actor_role": decision.actor_role,
+                "node_id": decision.node_id,
+                "from_state": decision.from_state,
+                "to_state": decision.to_state,
+                "reason": decision.reason,
                 "created_at": decision.created_at.isoformat(),
             }
             if decision
             else None,
             "start_evidence": evidence,
         }
+        if decision is not None and decision.kind == "gate_approved":
+            source = await session.scalar(
+                select(OrchestrationAcceptedPlan)
+                .where(
+                    OrchestrationAcceptedPlan.org_id == org_id,
+                    OrchestrationAcceptedPlan.flow_id == flow_id,
+                    OrchestrationAcceptedPlan.version == plan.version - 1,
+                )
+                .execution_options(populate_existing=True)
+            )
+            snapshot["accepted_policy"]["source_plan"] = (
+                {"version": source.version, "hash": source.plan_hash, "document": source.plan_document} if source else None
+            )
     return flow, plan, nodes, bindings, snapshot
 
 
@@ -272,7 +291,7 @@ def _preserved_authority(plan, snapshot, policy, now):
         not decision
         or decision["org_id"] != plan.org_id
         or decision["flow_id"] != plan.flow_id
-        or decision["kind"] != "plan_accepted"
+        or not (decision["kind"] == "plan_accepted" or (decision["kind"] == "gate_approved" and initial_gate_accepted(plan, snapshot)))
         or decision["actor_kind"] != "human"
         or decision["actor_id"] != previous.principal_id
         or previous.policy_hash != policy_hash(previous)
@@ -284,11 +303,7 @@ def _preserved_authority(plan, snapshot, policy, now):
         raise ContinuationRefusedError(
             "accepted_policy_changed", "Preserved continuation must retain every accepted limit, expiry, action, scope and gate."
         )
-    if (
-        snapshot["executions"]
-        or any(acceptance["start_evidence"].values())
-        or any(n["attempts"] != 0 or (n["kind"] != "gate" and n["state"] not in {"pending", "ready"}) for n in snapshot["nodes"])
-    ):
+    if snapshot["executions"] or any(acceptance["start_evidence"].values()) or has_started_nodes(plan.plan_document, snapshot["nodes"]):
         raise ContinuationRefusedError("accepted_flow_already_started", "Preserved continuation requires a flow with no worker or delivery history.")
     started = min(datetime.fromisoformat(acceptance["created_at"]), datetime.fromisoformat(decision["created_at"]))
     if started > now or now >= started + timedelta(seconds=previous.limits.max_wall_clock_seconds):
