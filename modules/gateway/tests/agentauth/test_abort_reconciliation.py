@@ -42,6 +42,8 @@ evidence, not a timer and not a lease.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -189,22 +191,16 @@ class TestTheRepairItself:
         row = read_event(client)
         assert row["abort_reconciled_by"]["S"] == RECONCILED_BY
 
-    def test_the_stop_is_dated_when_the_operator_asked_not_when_the_repair_ran(self, client):
-        """``status_updated_at`` is deliberately not stamped with the repair's clock.
-
-        The abort happened when the operator's command was accepted, which the marker
-        records. Stamping the repair moment would date the stop minutes (or hours, if
-        the outage was long) after it really happened, making the run look like it kept
-        running — the opposite of what the repair is for.
-        """
+    def test_repair_dates_the_terminal_report_without_redating_the_request(self, client):
         put_event(client, status_updated_at={"S": "2026-09-24T11:59:30Z"})
+        before = datetime.now(UTC).replace(microsecond=0)
         repair(client, execution())
-
+        after = datetime.now(UTC).replace(microsecond=0)
         row = read_event(client)
+        reported = datetime.fromisoformat(row["status_updated_at"]["S"].replace("Z", "+00:00"))
+        assert before <= reported <= after
         assert row["abort_requested_at"]["S"] == REQUESTED
-        assert row["status_updated_at"]["S"] == "2026-09-24T11:59:30Z", (
-            "the repair must not re-date the run's last signal to its own clock"
-        )
+        assert row["abort_reconciled_by"]["S"] == RECONCILED_BY
 
 
 class TestTheVocabularyIsNotRestated:

@@ -132,6 +132,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -232,15 +233,17 @@ def repair_aborted_terminal_status(
     names = {"#st": "status", "#tid": "tenant_id"}
     values = {
         ":status": {"S": ABORTED_STATUS},
+        ":updated_at": {"S": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")},
         ":tid": {"S": tenant_id},
         ":reconciled_by": {"S": RECONCILED_BY},
         ":stop_reason": {"S": "operator_aborted"},
         ":requested_at": {"S": execution.get("abort_requested_at", {}).get("S", "")},
     }
-    # `status_updated_at` is deliberately NOT set to "now". The abort's moment is when
-    # the operator's command was accepted, which the marker holds; stamping this repair
-    # with the current clock would date the stop minutes after it happened and make the
-    # run look like it ran longer than it did.
+    # This is the report transition time, not the time the operator requested
+    # cancellation. Activity derives completed_at from this field, so retaining
+    # an in-progress timestamp would put completion before the abort request.
+    # Keep abort_requested_at separately; the repair marker makes delayed
+    # observation explicit without inventing an exact container exit time.
     protected = []
     for index, status in enumerate(_PROTECTED_STATUSES):
         values[f":p{index}"] = {"S": status}
@@ -265,7 +268,7 @@ def repair_aborted_terminal_status(
             TableName=events_table,
             Key={"event_id": {"S": invocation_id}, "arrived_at": {"S": arrived_at}},
             UpdateExpression=(
-                "SET #st = :status, stop_reason = :stop_reason, "
+                "SET #st = :status, status_updated_at = :updated_at, stop_reason = :stop_reason, "
                 "abort_reconciled_by = :reconciled_by, abort_requested_at = :requested_at "
                 "REMOVE " + ", ".join(CONTROL_ATTRIBUTES)
             ),
