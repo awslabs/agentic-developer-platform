@@ -25,7 +25,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event, start_webchat_session
 
 # ---------------------------------------------------------------------------
 # Helpers to import the handler with mocked env / boto3
@@ -506,14 +506,17 @@ class TestHandlerResolverIntegration:
             user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
             user_resolver.cache_clear()
 
+            claims = {
+                "sub": "cognito-user-1", "email": "u@e.com",
+                "custom:tenant_id": "test-tenant",
+            }
+            # #5615: the server issues the session id; a browser cannot invent one.
+            session_id = start_webchat_session(handler, claims, connection_id="conn-wc")
             event = mock_apigw_event(
                 route_key="$default",
-                body={"action": "message", "text": "Hello!", "session_id": "sess-wc"},
+                body={"action": "message", "text": "Hello!", "session_id": session_id},
                 connection_id="conn-wc",
-                authorizer_claims={
-                    "sub": "cognito-user-1", "email": "u@e.com",
-                    "custom:tenant_id": "test-tenant",
-                },
+                authorizer_claims=claims,
             )
             result = handler.lambda_handler(event, None)
 

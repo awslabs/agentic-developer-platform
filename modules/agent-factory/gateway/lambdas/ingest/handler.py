@@ -1618,17 +1618,24 @@ def parse_body(event):
 # ─── Session & Thread DynamoDB Operations ─────────────────────
 
 def _client_may_name_a_new_session(message) -> bool:
-    """True when this channel's session id legitimately originates off-server.
+    """True when this session id legitimately originates outside the store.
 
-    #5615 (S16): for the BROWSER chat path the answer is now no. Its ids are
-    issued by `handle_create_session`, so an id the store has never seen was
+    #5615 (S16): for an id the BROWSER chose, the answer is now no. Browser ids
+    are issued by `handle_create_session`, so an id the store has never seen was
     never issued — and a request naming one is not authorization to create it.
-    Without this, an attacker could pre-create an id a victim's browser was
-    about to choose and lock the victim out of their own new conversation.
+    Without this, an attacker could pre-create an id a victim's browser was about
+    to choose (they were derived from the clock) and lock the victim out of their
+    own new conversation.
 
-    The other two callers are unchanged, because neither takes an id from an
-    untrusted browser:
+    The refusal is scoped to a CLIENT-SUPPLIED id — `message.thread_id`, which
+    the webchat adapter carries through from the untrusted body — rather than to
+    the channel, because three id sources reach this function and only that one
+    is client-chosen:
 
+      - No `session_id` in the body at all. The caller then falls back to
+        `message.session_key`, derived from the verified sub and the connection
+        (`channels/base.py`). Nothing client-chosen is in it, and it cannot name
+        another user's conversation, so first contact must still create it.
       - `gateway-api` (the CLI / operator plane) already mints its ids
         SERVER-side in `gateway/src/orchestration/intake_dispatch.py`
         (`new_session_id`) and reaches this Lambda through an IAM-gated direct
@@ -1639,10 +1646,19 @@ def _client_may_name_a_new_session(message) -> bool:
       - Slack's session id IS the thread timestamp Slack assigns
         (`channels/slack.py`), so first contact on a thread must still create
         the row or Slack chat stops working entirely.
+
+    Note what this does NOT rely on: an id being unguessable. Ownership is still
+    enforced on every path by `_assert_session_item_owner`, and guessing an
+    existing id still yields a bare "not found". Randomness supplements that
+    check; it does not replace it.
     """
     if message.platform_data.get("ingress") == GATEWAY_API_SOURCE:
         return True
-    return message.channel != ChannelType.WEBCHAT
+    if message.channel != ChannelType.WEBCHAT:
+        return True
+    # Only an id the browser put on the wire is refused; the server-derived
+    # fallback above is not a client's choice.
+    return not message.thread_id
 
 
 def get_or_create_session(session_id, connection_id, message, now):
