@@ -602,9 +602,11 @@ def _assert_session_owned_by_caller(session_id: str, identity: dict[str, str]) -
     without this a caller who learned another user's session id could attach
     files to that conversation and list its catalogue.
 
-    Upload completion requires a reservation created by token issuance. A
-    missing session and a legacy row without complete ownership are both
-    quarantined rather than adopted.
+    Both upload routes require a session that ALREADY EXISTS and is owned by the
+    verified caller. A missing session and a legacy row without complete
+    ownership are both quarantined rather than adopted — see
+    `handle_upload_token` for why "missing" must be a refusal here and not a
+    create.
     """
     expected_principal = _session_owner_principal(
         identity["tenant_id"], identity["org_id"], identity["team_id"],
@@ -618,54 +620,6 @@ def _assert_session_owned_by_caller(session_id: str, identity: dict[str, str]) -
         raise SessionOwnershipError(session_id) from e
 
     _assert_session_item_owner(resp.get("Item"), expected_principal, session_id)
-
-
-def _reserve_upload_session(session_id: str, connection_id: str,
-                            identity: dict[str, str]) -> None:
-    """Atomically reserve a prospective upload session for its verified owner."""
-    expected_principal = _session_owner_principal(
-        identity["tenant_id"], identity["org_id"], identity["team_id"],
-        identity["user_id"], "webchat",
-    )
-    now = int(time.time())
-    item = {
-        "session_id": session_id,
-        "owner_principal": expected_principal,
-        "owner_user_id": identity["user_id"],
-        "user_workspace": f'{identity["user_id"]}#webchat',
-        "org_id": identity["org_id"],
-        "tenant_id": identity["tenant_id"],
-        "team_id": identity["team_id"],
-        "connection_id": connection_id,
-        "channel": "webchat",
-        "messages": [],
-        "threads": {},
-        "created_at": now,
-        "updated_at": now,
-        "expires_at": now + 86400,
-    }
-    try:
-        sessions_table.put_item(
-            Item=item,
-            ConditionExpression="attribute_not_exists(session_id)",
-        )
-        return
-    except ClientError as error:
-        if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            logger.error("Upload session reservation failed for %s: %s", session_id, error)
-            raise SessionOwnershipError(session_id) from error
-    except Exception as error:
-        logger.error("Upload session reservation failed for %s: %s", session_id, error)
-        raise SessionOwnershipError(session_id) from error
-
-    try:
-        existing = sessions_table.get_item(
-            Key={"session_id": session_id}, ConsistentRead=True,
-        ).get("Item")
-    except Exception as error:
-        logger.error("Upload session collision lookup failed for %s: %s", session_id, error)
-        raise SessionOwnershipError(session_id) from error
-    _assert_session_item_owner(existing, expected_principal, session_id)
 
 
 # ─── Server-issued session ids (#5615 / S16) ──────────────────
@@ -859,11 +813,25 @@ def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
         logger.warning("Refusing upload token: unsafe key segment for session %r", session_id)
         return _respond(400, {"error": "Invalid upload parameters"})
 
-    # Reserve only after every client-controlled key component has validated, so
-    # an invalid upload request cannot squat a prospective conversation id.
+    # #5615 (S16): the conversation must ALREADY EXIST and be owned by this
+    # caller. This route used to CREATE the row it was asked about, which made it
+    # a second way to name a conversation and walked straight around the
+    # server-issued-only contract: a browser-chosen id refused by the message
+    # path could be created here, and then accepted there. What that restores is
+    # squatting — pre-creating the id a victim is about to be issued, locking
+    # them out of their own new conversation. (Another user's id was refused
+    # before this change and still is; this is a contract bypass, not disclosure.)
+    #
+    # Nothing legitimate is lost. The row now exists from the moment the
+    # conversation is STARTED (`handle_create_session`), and the browser only
+    # offers the drop zone once it has an acknowledged id — so attaching a file
+    # before the first message, which is what the old create-on-reserve behaviour
+    # existed for, still works.
     try:
-        _reserve_upload_session(session_id, connection_id, ident)
+        _assert_session_owned_by_caller(session_id, ident)
     except SessionOwnershipError:
+        # Same answer for "never issued" and "somebody else's", so the route is
+        # not an oracle for which ids exist.
         return _respond(404, {"error": "session not found"})
 
     try:

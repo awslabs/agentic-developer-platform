@@ -1084,3 +1084,182 @@ class TestAttachmentsUseTheAcknowledgedId:
         task = json.loads(messages[0]["Body"])
         assert task["session_id"] == session_id
         assert "art_abc123" in json.dumps(task)
+
+
+# ---------------------------------------------------------------------------
+# 7. The upload route is not a second way to name a conversation
+# ---------------------------------------------------------------------------
+
+
+class TestUploadTokenIsNotACreationRoute:
+    """The gap the review on PR #5857 found, at its real size.
+
+    The message path refuses an id the store never issued. But `upload-token`
+    still CREATED the row it was asked about, stamping the caller as its owner —
+    so the refusal could be walked around in three steps:
+
+        sendMessage(invented id)  -> 404, no row
+        upload-token(same id)     -> 200, ROW CREATED, caller recorded as owner
+        sendMessage(same id)      -> 200, the invented id is now "owned"
+
+    That is a bypass of the server-issued-only contract, not cross-owner
+    disclosure: another user's id was already refused here before this change
+    and still is (`test_a_stranger_cannot_attach_to_an_issued_session` above).
+    What it restores is SQUATTING — pre-creating the id a victim's browser is
+    about to be issued, locking the victim out of their own new conversation.
+
+    An upload token now requires a conversation that already exists and is owned
+    by the verified caller. Nothing is lost by that: the row now comes into
+    existence when the conversation is STARTED (`create-session`), which the
+    browser does before it can offer the drop zone at all — so attaching a file
+    before the first message still works, which is what the create-on-upload
+    behaviour originally existed for.
+    """
+
+    @staticmethod
+    def _connect(handler, claims: dict, connection_id: str) -> None:
+        handler.lambda_handler(
+            {"requestContext": {"routeKey": "$connect", "connectionId": connection_id,
+                                "authorizer": {"claims": claims}}},
+            None,
+        )
+
+    @staticmethod
+    def _upload_token(handler, session_id: str, claims: dict,
+                      connection_id: str, filename: str = "inert.txt") -> dict:
+        """Ask for an upload token. No object is ever PUT: the presigner is
+        stubbed, so this exercises the authorization decision and nothing else."""
+        with patch.object(handler.s3_client, "generate_presigned_url",
+                          return_value="https://s3.example.test/presigned"):
+            result = handler.lambda_handler(_ws_event({
+                "action": "upload-token", "session_id": session_id,
+                "task_id": "task-1", "filename": filename,
+            }, claims, connection_id), None)
+        return {"statusCode": result["statusCode"], **json.loads(result["body"])}
+
+    def test_an_upload_token_does_not_create_the_session_it_names(self, aws):
+        """The bypass, end to end. Fails before the repair at every step after 1."""
+        handler = _import_handler()
+        _direct_response_classifier(handler)
+        self._connect(handler, OWNER, OWNER_CONN)
+        invented = "sess-invented-by-the-client"
+
+        # 1. The message path already refuses it.
+        assert _send_message(handler, invented, OWNER, OWNER_CONN)["statusCode"] == 404
+        assert not _row(aws["sessions"], invented)
+
+        # 2. The upload route must refuse it too, and must not create the row.
+        assert self._upload_token(handler, invented, OWNER, OWNER_CONN)["statusCode"] == 404
+        assert not _row(aws["sessions"], invented), (
+            "upload-token created a client-named session, bypassing create-session"
+        )
+
+        # 3. So the id is still not usable — the squat never takes hold.
+        assert _send_message(handler, invented, OWNER, OWNER_CONN)["statusCode"] == 404
+
+    def test_the_refusal_does_not_distinguish_unknown_from_somebody_elses(self, aws):
+        """Otherwise the route becomes an oracle for which ids exist."""
+        handler = _import_handler()
+        self._connect(handler, OWNER, OWNER_CONN)
+        self._connect(handler, STRANGER, STRANGER_CONN)
+        owned = _create_session(handler, OWNER, OWNER_CONN)["session_id"]
+
+        unknown = self._upload_token(
+            handler, "sess-never-issued-at-all", STRANGER, STRANGER_CONN)
+        foreign = self._upload_token(handler, owned, STRANGER, STRANGER_CONN)
+
+        assert unknown["statusCode"] == foreign["statusCode"] == 404
+        assert unknown["error"] == foreign["error"]
+
+    def test_an_upload_token_for_an_issued_session_still_works(self, aws):
+        """Regression: the repair must not break attaching a file.
+
+        Including BEFORE the first message is sent, which is the case the old
+        create-on-upload behaviour existed to serve.
+        """
+        handler = _import_handler()
+        self._connect(handler, OWNER, OWNER_CONN)
+        session_id = _create_session(handler, OWNER, OWNER_CONN)["session_id"]
+
+        reply = self._upload_token(handler, session_id, OWNER, OWNER_CONN)
+
+        assert reply["statusCode"] == 200
+        assert reply["s3_key"] == (
+            f'o/{OWNER["custom:org_id"]}/t/{OWNER["custom:team_id"]}'
+            f'/u/{OWNER["sub"]}/s/{session_id}/task-1/in/inert.txt'
+        )
+
+    def test_repeated_uploads_to_the_same_session_all_succeed(self, aws):
+        """The ownership read must not be a one-shot reservation."""
+        handler = _import_handler()
+        self._connect(handler, OWNER, OWNER_CONN)
+        session_id = _create_session(handler, OWNER, OWNER_CONN)["session_id"]
+
+        replies = [
+            self._upload_token(handler, session_id, OWNER, OWNER_CONN,
+                               filename=f"file{i}.txt")
+            for i in range(3)
+        ]
+
+        assert [r["statusCode"] for r in replies] == [200, 200, 200]
+        assert len({r["s3_key"] for r in replies}) == 3
+
+    def test_an_upload_and_its_completion_still_agree(self, aws):
+        """The full attachment flow on an acknowledged id: token -> record -> read."""
+        handler = _import_handler()
+        self._connect(handler, OWNER, OWNER_CONN)
+        session_id = _create_session(handler, OWNER, OWNER_CONN)["session_id"]
+
+        issued_key = self._upload_token(handler, session_id, OWNER, OWNER_CONN)["s3_key"]
+        complete = handler.lambda_handler(_ws_event({
+            "action": "upload-complete", "session_id": session_id,
+            "task_id": "task-1", "filename": "inert.txt", "checksum": "cafe1234",
+        }, OWNER, OWNER_CONN), None)
+
+        assert complete["statusCode"] == 200
+        rows = aws["artifacts"].query(
+            KeyConditionExpression="PK = :pk",
+            ExpressionAttributeValues={":pk": f"session#{session_id}"},
+        )["Items"]
+        assert [r["s3Key"] for r in rows] == [issued_key]
+
+    def test_a_session_from_before_this_change_can_still_take_uploads(self, aws):
+        """Live conversations predate `create-session`; they must not be stranded."""
+        handler = _import_handler()
+        self._connect(handler, OWNER, OWNER_CONN)
+        legacy_id = "sess-1700000000000-abc1234"  # the old clock-derived shape
+        aws["sessions"].put_item(Item={
+            "session_id": legacy_id,
+            "owner_principal": json.dumps(
+                [OWNER["custom:tenant_id"], OWNER["custom:org_id"],
+                 OWNER["custom:team_id"], OWNER["sub"], "webchat"],
+                separators=(",", ":"),
+            ),
+            "owner_user_id": OWNER["sub"],
+            "org_id": OWNER["custom:org_id"], "team_id": OWNER["custom:team_id"],
+            "tenant_id": OWNER["custom:tenant_id"],
+            "channel": "webchat", "messages": [], "threads": {},
+            "created_at": 1, "updated_at": 1, "expires_at": 9_999_999_999,
+        })
+
+        assert self._upload_token(
+            handler, legacy_id, OWNER, OWNER_CONN)["statusCode"] == 200
+
+    def test_an_unowned_legacy_row_is_not_adopted_by_an_upload(self, aws):
+        """A row with no recorded owner proves nothing about who owns it.
+
+        Quarantined rather than claimed — the same disposition the message path
+        already gives it.
+        """
+        handler = _import_handler()
+        self._connect(handler, OWNER, OWNER_CONN)
+        aws["sessions"].put_item(Item={
+            "session_id": "sess-unowned-legacy", "channel": "webchat",
+            "messages": [], "threads": {},
+            "created_at": 1, "updated_at": 1, "expires_at": 9_999_999_999,
+        })
+
+        reply = self._upload_token(handler, "sess-unowned-legacy", OWNER, OWNER_CONN)
+
+        assert reply["statusCode"] == 404
+        assert "owner_principal" not in _row(aws["sessions"], "sess-unowned-legacy")
