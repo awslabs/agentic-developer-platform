@@ -1686,3 +1686,174 @@ run "refuses_a_wildcard_caller" {
 
   expect_failures = [var.allowed_caller_role_arns]
 }
+
+run "extra_ipv4_listener_ingress" {
+  command = plan
+  variables { fixture_edge_enabled = true }
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = { ids = ["sgr-link-egress", "sgr-alb-ingress", "sgr-extra"] }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-extra"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = null
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+      cidr_ipv4                    = "0.0.0.0/0"
+    }
+  }
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+run "extra_ipv6_listener_ingress" {
+  command = plan
+  variables { fixture_edge_enabled = true }
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = { ids = ["sgr-link-egress", "sgr-alb-ingress", "sgr-extra"] }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-extra"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = null
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+      cidr_ipv6                    = "::/0"
+    }
+  }
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+run "extra_all_protocol_ingress" {
+  command = plan
+  variables { fixture_edge_enabled = true }
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = { ids = ["sgr-link-egress", "sgr-alb-ingress", "sgr-extra"] }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-extra"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = null
+      ip_protocol                  = "-1"
+      from_port                    = -1
+      to_port                      = -1
+      cidr_ipv4                    = "0.0.0.0/0"
+    }
+  }
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+run "extra_foreign_group_ingress" {
+  command = plan
+  variables { fixture_edge_enabled = true }
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = { ids = ["sgr-link-egress", "sgr-alb-ingress", "sgr-extra"] }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-extra"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = "sg-foreign"
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+
+    }
+  }
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+run "second_attached_permissive_group" {
+  command = plan
+  variables { fixture_edge_enabled = true }
+  override_data {
+    target = data.aws_lb.fixture[0]
+    values = {
+      arn             = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name        = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
+      internal        = true
+      vpc_id          = "vpc-0d6115bead9301d25"
+      security_groups = ["sg-0b0f5533ab8440db8", "sg-extra"]
+      tags            = { AdpFixtureRun = "a1b2c3d4e5f60718" }
+    }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = { ids = ["sgr-link-egress", "sgr-alb-ingress", "sgr-extra"] }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-extra"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-extra"
+      referenced_security_group_id = null
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+      cidr_ipv4                    = "0.0.0.0/0"
+    }
+  }
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+run "backend_egress_preserved" {
+  command = plan
+  variables { fixture_edge_enabled = true }
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = { ids = ["sgr-link-egress", "sgr-alb-ingress", "sgr-extra"] }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-extra"]
+    values = {
+      is_egress                    = true
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = null
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+      cidr_ipv4                    = "10.0.0.0/16"
+    }
+  }
+  assert {
+    condition     = local.vpc_link_can_reach_fixture_alb
+    error_message = "Unrelated backend traffic must preserve listener reachability."
+  }
+}
+
+run "non_listener_ingress_preserved" {
+  command = plan
+  variables { fixture_edge_enabled = true }
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = { ids = ["sgr-link-egress", "sgr-alb-ingress", "sgr-extra"] }
+  }
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-extra"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = null
+      ip_protocol                  = "tcp"
+      from_port                    = 443
+      to_port                      = 443
+      cidr_ipv4                    = "10.0.0.0/16"
+    }
+  }
+  assert {
+    condition     = local.vpc_link_can_reach_fixture_alb
+    error_message = "Unrelated backend traffic must preserve listener reachability."
+  }
+}

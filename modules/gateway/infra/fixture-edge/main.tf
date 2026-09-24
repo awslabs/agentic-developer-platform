@@ -312,6 +312,17 @@ locals {
     local.rule_admits_fixture_port[id]
   ]
 
+  # Security groups combine permissions across every attached group. A valid
+  # link/ALB pair does not cancel a second rule exposing the listener to others.
+  # Backend egress and ingress on other ports are outside this listener check.
+  fixture_alb_untrusted_listener_rules = [
+    for id, r in data.aws_vpc_security_group_rule.reachability : id
+    if !r.is_egress &&
+    contains(local.fixture_alb_security_group_ids, r.security_group_id) &&
+    local.rule_admits_fixture_port[id] &&
+    !try(contains(local.vpc_link_security_group_ids, r.referenced_security_group_id), false)
+  ]
+
   # Reachability is the CONJUNCTION. Either half alone is a silent timeout.
   vpc_link_can_reach_fixture_alb = (
     length(local.vpc_link_egress_rules_to_fixture_alb) > 0 &&
@@ -543,6 +554,11 @@ resource "terraform_data" "run_binding_gate" {
             --filters Name=group-id,Values=<alb-sg-id> \
             --query 'SecurityGroupRules[?IsEgress==`false`]'
       EOT
+    }
+
+    precondition {
+      condition     = length(local.fixture_alb_untrusted_listener_rules) == 0
+      error_message = "Refusing: attached ALB security groups expose the fixture listener outside the VPC Link security groups. Disallowed rule IDs: ${join(", ", local.fixture_alb_untrusted_listener_rules)}. Use an isolated suitable group composition; do not modify shared security groups."
     }
 
     # --- the ALB traffic source must be OBSERVED, not absent -----------------
