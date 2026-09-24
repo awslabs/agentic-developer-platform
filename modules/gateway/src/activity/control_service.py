@@ -80,10 +80,12 @@ from src.activity.liveness import OBSERVED_TERMINAL_STATUSES
 logger = logging.getLogger("bedrockgateway.activity.control")
 
 # #3961 provides the pause barrier; #5222 signs human commands and revalidates
-# ownership before delivery. Keep this set synchronized with policy, worker and
-# CI. Per-run adapter capability and deployed signing configuration can still
-# veto either verb. Steer and abort remain unavailable.
-SUPPORTED_ACTIONS: frozenset[str] = frozenset({"pause", "resume"})
+# ownership before delivery; #3963 adds abort, whose proof is a cancellation path
+# plus a terminal finalization that reports the run as deliberately stopped rather
+# than crashed. Keep this set synchronized with policy, worker and CI. Per-run
+# adapter capability and deployed signing configuration can still veto any verb.
+# Steer remains unavailable.
+SUPPORTED_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "abort"})
 
 # Feature flag. Read strictly (explicit "true" only) and read *independently* of
 # the worker's own flag: a gateway that could activate worker capabilities by

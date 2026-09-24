@@ -113,9 +113,9 @@ const NO_PAUSE_GATE_REASON =
  */
 const PAUSE_HOOK_TIMEOUT_MARGIN_SECONDS = 60;
 
-/** Reason steer/abort remain unsupported after S2. Their proofs are S4/S6's. */
+/** Reason steer remains unsupported after S4. Its proof is S6's. */
 const NOT_YET_PROVEN_REASON =
-  'no proven runtime boundary for this verb yet: steering and abort are later stories';
+  'no proven runtime boundary for this verb yet: steering is a later story';
 
 /**
  * What the model is told when a pause expires and the run continues by itself.
@@ -629,19 +629,37 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
    *
    * `pause`/`resume` are claimed only with a gate installed, because the claim is
    * about a mechanism rather than about a build: two runs of the same binary, one
-   * with the barrier hooked up and one without, honestly differ here. `steer` and
-   * `abort` stay false — their runtime proofs are S4's and S6's, and this story
-   * widening them would be the "advertised but unproven" failure it exists to
-   * avoid.
+   * with the barrier hooked up and one without, honestly differ here.
+   *
+   * `abort` is claimed on a *different* mechanism, and that difference is why it
+   * is resolved before the barrier check below rather than alongside pause.
+   * Aborting is {@link cancel} — the attempt registry's cancellation signal, which
+   * fires the typed error `resilientQuery` checks ahead of any error-text
+   * classification. That exists in every run of this adapter, hooks or none. A
+   * run without a barrier can still be stopped, so refusing `abort` there would
+   * be a false negative in the one direction that strands work: an operator told
+   * a runaway run cannot be stopped, when in fact it can.
+   *
+   * The barrier is not irrelevant to an abort — cancellation denies anything held
+   * at it rather than flushing it — but it is an *additional* effect when a gate
+   * happens to be present, not the mechanism the claim rests on.
+   *
+   * `steer` stays false: its runtime proof is S6's, and widening it here would be
+   * the "advertised but unproven" failure this table exists to avoid.
    */
   adapterCapabilities(): Record<ControlAction, VerbSupport> {
-    if (!this.pauseGate) return noVerbsSupported(NO_PAUSE_GATE_REASON);
     const unproven = boundReason(NOT_YET_PROVEN_REASON);
+    if (!this.pauseGate) {
+      return {
+        ...noVerbsSupported(NO_PAUSE_GATE_REASON),
+        abort: { supported: true },
+      };
+    }
     return {
       pause: { supported: true },
       resume: { supported: true },
       steer: { supported: false, reason: unproven },
-      abort: { supported: false, reason: unproven },
+      abort: { supported: true },
     };
   }
 
@@ -656,14 +674,30 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
 
   /** Effective capabilities reflect live attempt and barrier availability. */
   capabilities(): Record<ControlAction, boolean> {
+    // A live attempt is the floor for every verb: with nothing attached there is
+    // nothing any of them could act on.
+    const noAttempt = this.registry.currentAttemptId() === null;
+    // Barrier health, which is a statement about *pausing*. A breached barrier, a
+    // cancelled gate or an unusable budget each mean the gate cannot hold work.
+    const barrierUnusable = this.pauseGate?.barrierBreached()
+      || this.pauseGate?.currentPhase() === 'cancelled' || this.pauseGate?.safeBudget() === null;
+
+    if (noAttempt) return intersectCapabilities({
+      implemented: this.implementedVerbs,
+      adapter: this.adapterCapabilities(),
+      available: new Set<ControlAction>(),
+    });
+
     return intersectCapabilities({
       implemented: this.implementedVerbs,
       adapter: this.adapterCapabilities(),
-      // Availability requires a live attempt: with no attempt attached there is
-      // nothing a verb could act on, so nothing may be advertised.
-      available: this.registry.currentAttemptId() === null || this.pauseGate?.barrierBreached()
-        || this.pauseGate?.currentPhase() === 'cancelled' || this.pauseGate?.safeBudget() === null
-        ? new Set<ControlAction>() : undefined,
+      // An unusable barrier withdraws pause and resume, but deliberately NOT
+      // abort (#3963). Abort does not run through the gate — it cancels the
+      // attempt — so a degraded barrier is exactly the situation where being able
+      // to stop the run matters most. Withdrawing abort here would mean a run
+      // whose pause mechanism has failed also reports itself unstoppable, leaving
+      // an operator with no lever at all on the run most likely to need one.
+      available: barrierUnusable ? new Set<ControlAction>(['abort']) : undefined,
     });
   }
 

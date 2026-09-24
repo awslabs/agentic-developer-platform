@@ -828,10 +828,10 @@ class TestRO3fDeclaredSeam:
         service.authorize_command.assert_called_once()
 
     def test_only_implemented_verbs_are_advertised_as_supported(self):
-        """Pause/resume have signed transport; steer/abort remain unavailable."""
+        """Pause/resume/abort have signed transport; steer remains unavailable."""
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "abort"})
 
     @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
     def test_all_four_verbs_are_routed(self, app_with_router, action):

@@ -210,31 +210,62 @@ describe('adapter identity and capabilities', () => {
     expect(JSON.parse(declared).dependencies['@anthropic-ai/claude-agent-sdk']).toBe(CLAUDE_SDK_VERSION);
   });
 
-  it('keeps every verb unsupported when no barrier was installed in this run', async () => {
+  it('keeps every gate-dependent verb unsupported when no barrier was installed', async () => {
     // A live attempt with no gate is the most permissive *gateless* state this
-    // adapter reaches. Pause is enabled at build time now, so if a verb were going
-    // to leak through on a run that cannot actually hold a tool, it would be here.
+    // adapter reaches. Pause is enabled at build time now, so if a gate-dependent
+    // verb were going to leak through on a run that cannot actually hold a tool,
+    // it would be here.
+    //
+    // Abort is deliberately exempt (#3963). It does not run through the barrier —
+    // it cancels the attempt — so a gateless run can still honestly be stopped,
+    // and claiming otherwise would tell an operator a runaway run is unstoppable
+    // when it is not. Each verb's claim tracks the mechanism actually present,
+    // which is why this is not simply "everything off without a gate".
     const adapter = new ClaudeControlAdapter();
     await startAttempt(adapter);
 
     expect(adapter.currentAttempt()).not.toBeNull();
     for (const verb of ALL_VERBS) {
+      if (verb === 'abort') continue;
       expect(adapter.capabilities()[verb]).toBe(false);
       expect(adapter.describe().capabilities[verb].supported).toBe(false);
       expect(adapter.describe().capabilities[verb].reason).toBeTruthy();
     }
+    expect(adapter.capabilities().abort).toBe(true);
   });
 
   it('advertises pause and resume once a barrier is installed, and nothing more', async () => {
     const adapter = new ClaudeControlAdapter({ pauseGate: new PauseGate(), implementedVerbs: PAUSE_AND_RESUME });
     await startAttempt(adapter);
 
+    // `PAUSE_AND_RESUME` is the ADP set here, so abort is withheld by that
+    // argument rather than by the adapter — this case is about what a barrier
+    // buys, and abort does not depend on one.
     expect(adapter.capabilities()).toEqual({ pause: true, resume: true, steer: false, abort: false });
-    // Steering and abort each need their own runtime proof (S4/S6). The adapter
-    // can already carry input, and that is deliberately not enough: carrying input
-    // is not a delivered control.
+    // Steering still needs its own runtime proof (S6). The adapter can already
+    // carry input, and that is deliberately not enough: carrying input is not a
+    // delivered control.
     expect(adapter.describe().capabilities.steer.reason).toBeTruthy();
-    expect(adapter.describe().capabilities.abort.reason).toBeTruthy();
+    // The adapter's own table does claim abort, so the `false` above is the
+    // intersection at work rather than the adapter declining.
+    expect(adapter.describe().capabilities.abort.supported).toBe(true);
+    await adapter.dispose();
+  });
+
+  it('keeps abort available when the barrier itself has failed', async () => {
+    // The case that motivates the asymmetry (#3963). A breached barrier withdraws
+    // pause and resume — the gate cannot hold work, so promising to is dishonest —
+    // but it is precisely when an operator most needs to stop the run. Folding
+    // abort into the same withdrawal would leave them no lever at all on the run
+    // most likely to need one.
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    await startAttempt(adapter);
+    jest.spyOn(gate, 'barrierBreached').mockReturnValue(true);
+
+    expect(adapter.capabilities().pause).toBe(false);
+    expect(adapter.capabilities().resume).toBe(false);
+    expect(adapter.capabilities().abort).toBe(true);
     await adapter.dispose();
   });
 
@@ -255,8 +286,11 @@ describe('adapter identity and capabilities', () => {
     await adapter.dispose();
   });
 
-  it('still advertises nothing without a barrier even when ADP enables pause and resume', () => {
-    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual(['pause', 'resume']);
+  it('still advertises nothing without a barrier or a live attempt', () => {
+    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual(['pause', 'resume', 'abort']);
+    // No attempt attached, so *every* verb is withheld including abort — there is
+    // nothing to cancel. This is the floor that applies to all four verbs, as
+    // distinct from the barrier condition, which applies only to the gated ones.
     expect(Object.values(new ClaudeControlAdapter().capabilities())).toEqual([false, false, false, false]);
     expect(
       Object.values(new ClaudeControlAdapter({ implementedVerbs: PAUSE_AND_RESUME }).capabilities()),

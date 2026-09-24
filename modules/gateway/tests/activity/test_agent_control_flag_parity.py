@@ -357,4 +357,4 @@ class TestFlagDoesNotEnableUnimplementedVerbs:
         monkeypatch.setenv(FLAG_ENV_VAR, "true")
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "abort"})

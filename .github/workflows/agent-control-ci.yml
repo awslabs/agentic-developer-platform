@@ -361,8 +361,9 @@ jobs:
           ALL_VERBS = {"pause", "resume", "steer", "abort"}
 
           # Pause/resume: #3961 admission barrier plus #5222 signed human path.
+          # Abort: #3963 cancellation plus the terminal finalization that reports it.
           # Keep both language gates, gateway and worker in lockstep.
-          EXPECTED_SUPPORTED: set[str] = {"pause", "resume"}
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "abort"}
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
           # a truthiness check, so a refactor that drops the constant could report
@@ -530,9 +531,10 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // #3961 pause barrier plus the #5222 signed human command path.
+          // #3961 pause barrier plus the #5222 signed human command path, and
+          // #3963's abort (cancellation plus reported terminal finalization).
           // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
-          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume']);
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'abort']);
 
           const fail = (msg: string): never => {
             console.error(msg);

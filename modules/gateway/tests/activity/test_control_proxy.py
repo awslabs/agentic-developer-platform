@@ -300,12 +300,18 @@ class TestUnauthenticated:
 
 
 class TestSupportedVerbBoundary:
-    def test_supported_actions_are_pause_and_resume(self):
-        """The single switch that makes every verb a 501 and every capability false."""
-        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
+    def test_supported_actions_are_the_implemented_verbs(self):
+        """The single switch that makes an unimplemented verb a 501.
+
+        Abort joins the set in #3963, which delivers its cancellation path and the
+        terminal finalization that reports the run as deliberately stopped. Steer
+        stays out: its runtime proof is a later story, and a verb in this set with
+        no transport behind it answers 200 for work that never happens.
+        """
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "abort"})
 
     @BOTH_ADAPTERS
-    @pytest.mark.parametrize("action", ["steer", "abort"])
+    @pytest.mark.parametrize("action", ["steer"])
     def test_authorized_verb_returns_501(self, action, orchestration, regular_user, mock_db):
         client = build_client(make_service(items=[row()]), regular_user, mock_db, orchestration=orchestration)
 
