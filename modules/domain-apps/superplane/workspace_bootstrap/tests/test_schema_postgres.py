@@ -358,9 +358,7 @@ def test_the_downgrade_removes_the_table_and_its_indexes(migrated):
     """
     # Names the revision explicitly: this used to take the chain's last revision, which
     # stopped being this story's the moment another was appended (#5671's 018).
-    _, downgrade = render_migration_ddl(
-        upgrade_only=False, downgrade_revision=REVISION
-    )
+    _, downgrade = render_migration_ddl(upgrade_only=False, downgrade_revision=REVISION)
     migrated.execute(*_insert())
 
     migrated.execute(downgrade)

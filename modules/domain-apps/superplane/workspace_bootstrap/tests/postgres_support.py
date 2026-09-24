@@ -172,7 +172,9 @@ def render_migration_ddl(
         return upgrade, ""
     if downgrade_revision is None:
         raise ValueError("name the revision whose downgrade should be rendered")
-    return upgrade, render([directory.get_revision(downgrade_revision).module.downgrade])
+    return upgrade, render(
+        [directory.get_revision(downgrade_revision).module.downgrade]
+    )
 
 
 def chain_revision_ids() -> list[str]:
