@@ -153,7 +153,9 @@ def run_command(
     if runner is not None:
         return runner(argv)
     if shutil.which(argv[0]) is None:
-        return CommandResult(argv=argv, returncode=127, stdout="", stderr=f"{argv[0]}: not found")
+        return CommandResult(
+            argv=argv, returncode=127, stdout="", stderr=f"{argv[0]}: not found"
+        )
     try:
         completed = subprocess.run(
             argv,
@@ -193,13 +195,17 @@ def measure_command(
         )
     text = result.stdout.strip()
     if not text:
-        return Refused(f"{what}: `{' '.join(result.argv)}` succeeded but printed nothing")
+        return Refused(
+            f"{what}: `{' '.join(result.argv)}` succeeded but printed nothing"
+        )
     if parse is None:
         return text
     try:
         return parse(text)
     except Exception as exc:  # noqa: BLE001 - any parse failure is a refusal
-        return Refused(f"{what}: could not parse the output of `{' '.join(result.argv)}`: {exc}")
+        return Refused(
+            f"{what}: could not parse the output of `{' '.join(result.argv)}`: {exc}"
+        )
 
 
 def measure_json_command(

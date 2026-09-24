@@ -54,7 +54,7 @@ import { PauseGate, DEFAULT_FINALIZATION_MARGIN_MS, type PauseGateEvent } from '
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore } from './utils/spill';
 import { controlDeadlineAt } from './control-deadline';
-import { IMPLEMENTED_CONTROL_VERBS } from './control-runtime';
+import { IMPLEMENTED_CONTROL_VERBS, type CurrentAttemptRegistry } from './control-runtime';
 // The production heartbeat/exit-watchdog emitter — the same module `agent-worker.ts`
 // runs. Started here against the gate this experiment pauses, so its records are
 // evidence about *this* execution. See HEARTBEAT_OBSERVABLE_FLOOR_MS.
@@ -426,12 +426,12 @@ async function runLivePausedAttempt(options: LiveRunOptions): Promise<LiveRunObs
     backgroundWorkObserver: observer,
     implementedVerbs: IMPLEMENTED_CONTROL_VERBS,
   });
-  // Observe the adapter's own delivery seam rather than re-sending the note: the
-  // annotation under test is the one production emits from an expired release, and
-  // `annotateExpiry` reaches the transport through exactly this call.
-  const realSubmit = adapter.submitInput.bind(adapter);
-  adapter.submitInput = async (input) => {
-    const result = await realSubmit(input);
+  // Observe the registry delivery used by both submitInput and annotateExpiry.
+  // Instrument this adapter instance only; retain its real endpoint and transport.
+  const registry = (adapter as unknown as { registry: CurrentAttemptRegistry }).registry;
+  const realDeliver = registry.deliver.bind(registry);
+  registry.deliver = async (input) => {
+    const result = await realDeliver(input);
     const record: InputDeliveryObservation = { kind: input.kind, text: input.text, result, at: Date.now() };
     obs.deliveries.push(record);
     if (cancelledAt !== null) obs.deliveriesAfterCancel.push(record);
@@ -777,10 +777,13 @@ async function experimentIdleWatchdogDuringPause(): Promise<{
   report: ExperimentReport;
   observations: Partial<PauseExpiryObservations>;
 }> {
-  const IDLE_TIMEOUT_MS = 2_000;
+  // Allow real SDK startup/model latency before declaring a stall. Hold the
+  // tool longer than this window so suspension must still be exercised.
+  const IDLE_TIMEOUT_MS = 60_000;
+  const pauseBudgetMs = Math.max(SHORT_PAUSE_BUDGET_MS, 120_000);
   const run = await runLivePausedAttempt({
     dirPrefix: 'adp-expiry-idle-',
-    pauseBudgetMs: SHORT_PAUSE_BUDGET_MS,
+    pauseBudgetMs,
     idleTimeoutMs: IDLE_TIMEOUT_MS,
   });
   // Only meaningful if the window actually fired during the pause. Without a
@@ -803,7 +806,7 @@ async function experimentIdleWatchdogDuringPause(): Promise<{
       artifact: {
         production_module: 'utils/resilientQuery',
         idle_timeout_ms: IDLE_TIMEOUT_MS,
-        pause_budget_ms: SHORT_PAUSE_BUDGET_MS,
+        pause_budget_ms: pauseBudgetMs,
         idle_windows_rearmed: run.rearms,
         attempts_constructed: run.attempts,
         idle_retry_fired: idleRetryFired ?? null,

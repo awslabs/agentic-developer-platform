@@ -1,9 +1,17 @@
+export interface ControlOrigin {
+  principal: string;
+  authorityKind: 'human_session' | 'delegated_grant';
+}
+
 /** Private journal proof; never exposed in status responses. */
 export interface QueuedAuthorization {
   envelope: string;
   action: string;
   command_id: string;
   body_base64: string;
+  /** Copied only from a verified envelope, never from the request body. */
+  principal?: string;
+  authorityKind?: ControlOrigin['authorityKind'];
 }
 
 export const MAX_REVALIDATION_MS = 1000;

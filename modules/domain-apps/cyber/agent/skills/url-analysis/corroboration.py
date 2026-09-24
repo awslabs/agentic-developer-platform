@@ -102,7 +102,7 @@ def lookup_virustotal(url, api_key, *, get=requests.get):
         "checked_at": utcnow(),
         "subject_sha256": digest(url),
         "status": "unavailable",
-        "verdict_effect": "context_only",
+        "verdict_effect": "model_assessed",
     }
     if not api_key:
         return {

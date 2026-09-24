@@ -58,8 +58,13 @@ def results():
     ]
 
 
-def test_metrics_preserve_unavailable_and_abstained_cases_in_denominators():
-    value = score(manifest(), results(), "holdout")
+@pytest.mark.parametrize(
+    "negative", ["no_specific_concern", "no_adverse_behavior_observed"]
+)
+def test_metrics_preserve_unavailable_and_abstained_cases_in_denominators(negative):
+    cases = results()
+    cases[4]["verdict"] = negative
+    value = score(manifest(), cases, "holdout")
     assert value["precision"] == 0.5
     assert value["recall_all_phishing"] == 1 / 3
     assert value["recall_reachable_phishing"] == 0.5

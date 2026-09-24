@@ -84,7 +84,7 @@ def test_prioritize_and_preserve_handler_beyond_old_cutoff(
     assert "items: obs-001/script-001" in (out / "report.md").read_text()
 
 
-def test_truncated_relevant_handler_cannot_support_adverse_verdict(
+def test_truncated_handler_remains_citable_without_hiding_truncation(
     monkeypatch, capture_fixture, tmp_path
 ):
     page(
@@ -97,8 +97,9 @@ def test_truncated_relevant_handler_cannot_support_adverse_verdict(
     new_case(out, "https://public.test/")
     c = add_probe(out, "https://public.test/", capture=capture_fixture[0])
     assert len(c["observations"][0]["scripts"][0]["inline"]) == 32768
-    with pytest.raises(ValueError, match="truncated or failed"):
-        assess_case(out, adverse(c["observations"][0]))
+    result = assess_case(out, adverse(c["observations"][0]))
+    assert result["assessment"]["verdict"] == "malicious"
+    assert result["observations"][0]["scripts"][0]["truncated"]
 
 
 def partial_observation():
@@ -130,18 +131,16 @@ def partial_observation():
         "session_cleanup_unconfirmed",
     ],
 )
-def test_fatal_capture_errors_cannot_be_overridden_by_item_references(error):
+def test_capture_errors_are_evidence_not_verdict_vetoes(error):
     o = partial_observation()
     o["errors"].append(error)
-    with pytest.raises(ValueError, match="Incomplete collection"):
-        Assessment.model_validate(adverse(o)).validate_evidence([o])
+    Assessment.model_validate(adverse(o)).validate_evidence([o])
 
 
-def test_failed_page_and_changed_or_invented_items_are_refused():
+def test_failed_pages_are_citable_but_changed_or_invented_items_are_refused():
     o = partial_observation()
     for change in ({"status": "failed"}, {"http_status": 500}):
-        with pytest.raises(ValueError):
-            Assessment.model_validate(adverse(o)).validate_evidence([{**o, **change}])
+        Assessment.model_validate(adverse(o)).validate_evidence([{**o, **change}])
     altered = copy.deepcopy(o)
     altered["scripts"][0]["inline"] += "changed"
     with pytest.raises(ValueError, match="changed evidence"):
@@ -150,16 +149,14 @@ def test_failed_page_and_changed_or_invented_items_are_refused():
         Assessment.model_validate(adverse(o, item="script-999")).validate_evidence([o])
     value = adverse(o)
     value["findings"][0]["evidence_refs"] = []
-    with pytest.raises(ValueError, match="specific evidence_refs"):
-        Assessment.model_validate(value).validate_evidence([o])
+    Assessment.model_validate(value).validate_evidence([o])
 
 
-def test_partial_capture_cannot_be_cleared_even_with_intact_items():
+def test_partial_capture_does_not_determine_the_verdict():
     o = partial_observation()
     value = adverse(o)
     value["verdict"] = "no_adverse_behavior_observed"
-    with pytest.raises(ValueError, match="Incomplete collection"):
-        Assessment.model_validate(value).validate_evidence([o])
+    Assessment.model_validate(value).validate_evidence([o])
 
 
 def test_legitimate_third_party_login_does_not_automatically_become_malicious(

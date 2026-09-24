@@ -314,3 +314,19 @@ describe('actionable delivery status', () => {
     expect(screen.queryByText('Automatic review and repair are not configured for this flow.')).not.toBeInTheDocument();
   });
 });
+
+
+describe('evaluation exception', () => {
+  it('shows owner waiver and its reason without a passing test verdict or run', () => {
+    render(card({ ...story, kind: 'eval', state: 'waived', run_id: null, attempts: 0,
+      evaluation_waiver: { decision_id: 'waiver-1', actor_id: 'owner-1', created_at: '2026-09-24T12:00:00Z',
+        reason: 'Owner accepts the independent evaluation gap', criterion_ids: ['V0-01'], plan_version: 7 } }));
+    expect(screen.getByText('Waived by owner approval')).toBeVisible();
+    expect(screen.getByText('Independent evaluation was not run.')).toBeVisible();
+    expect(screen.getByText('Owner accepts the independent evaluation gap')).toBeVisible();
+    expect(screen.queryByText('Complete')).not.toBeInTheDocument();
+    expect(screen.queryByText('✓')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /run/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId('node-u1')).not.toHaveAttribute('aria-current');
+  });
+});

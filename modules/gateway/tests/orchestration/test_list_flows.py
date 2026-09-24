@@ -528,7 +528,8 @@ class TestQueryCount:
         finally:
             stop()
 
-        select_list = statements[0].upper().split("\nFROM", 1)[0]
+        page_statement = next(statement for statement in statements if statement.startswith("SELECT orchestration_flows."))
+        select_list = page_statement.upper().split("\nFROM", 1)[0]
 
         assert select_list.count("SELECT") == 1, f"correlated subquery in the SELECT list: {select_list}"
 
@@ -547,7 +548,8 @@ class TestQueryCount:
         finally:
             stop()
 
-        assert len(statements) == 1, "one GROUP BY for the page, not one query per flow"
+        assert len(statements) == 2, "one bounded compatibility read and one GROUP BY for the whole page"
+        assert "GROUP BY" in statements[-1].upper()
         assert sum(len(value) for value in waves.values()) == 20
 
     async def test_wave_aggregate_issues_no_query_for_an_empty_page(self, session):

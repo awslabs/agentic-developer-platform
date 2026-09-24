@@ -437,8 +437,8 @@ run "every_route_maps_both_trusted_headers" {
   # Exactly two planes today. A third route appearing without a deliberate test
   # update should draw a reviewer's attention.
   assert {
-    condition     = length(keys(jsondecode(local.fixture_api_body).paths)) == 2
-    error_message = "Expected exactly the internal and human routes; a new route needs its own auth-mapping assertions."
+    condition     = length(keys(jsondecode(local.fixture_api_body).paths)) == 3
+    error_message = "Expected exactly the internal, model and human routes; a new route needs its own auth-mapping assertions."
   }
 }
 
@@ -632,10 +632,10 @@ run "resource_policy_allows_only_listed_roles" {
       # flatten() normalizes a single-string Resource and a list of them to one
       # list. A ternary cannot: `tolist(x)` and `[x]` are list-of-string vs
       # tuple, which do not unify.
-      alltrue([for r in flatten([s.Resource]) : strcontains(r, "/internal")])
+      alltrue([for r in flatten([s.Resource]) : can(regex("/${var.environment}/(DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT)/(internal|agent)(/\\*)?$", r))])
       if s.Effect == "Deny"
     ])
-    error_message = "Every Deny must be scoped to /internal resources. An API-wide Deny also blocks the auth-NONE human routes, whose callers have no aws:PrincipalArn — the fixture's human sign-in path would be refused at the edge before the pod ever sees the JWT."
+    error_message = "Every Deny must be scoped to /internal or /agent resources. An API-wide Deny also blocks the auth-NONE human routes, whose callers have no aws:PrincipalArn — the fixture's human sign-in path would be refused at the edge before the pod ever sees the JWT."
   }
 
   # POSITIVE CONTROL for the human transport plane: it must be explicitly allowed
@@ -705,7 +705,7 @@ run "resource_policy_allows_only_listed_roles" {
   assert {
     condition = aws_api_gateway_deployment.fixture[0].triggers["redeployment"] == sha1(jsonencode([
       local.fixture_api_body,
-      aws_api_gateway_rest_api_policy.fixture[0].policy,
+      local.fixture_resource_policy,
     ]))
     error_message = "The deployment trigger must be a sha1 over BOTH the API body and the resource policy."
   }
@@ -1855,5 +1855,51 @@ run "non_listener_ingress_preserved" {
   assert {
     condition     = local.vpc_link_can_reach_fixture_alb
     error_message = "Unrelated backend traffic must preserve listener reachability."
+  }
+}
+
+
+run "sdk_model_route_is_authenticated_and_fixture_bound" {
+  command = plan
+  variables {
+    fixture_edge_enabled = true
+  }
+  assert {
+    condition     = jsondecode(local.fixture_api_body).paths["/agent/model/{proxy+}"]["x-amazon-apigateway-any-method"].security == [{ sigv4 = [] }]
+    error_message = "SDK model calls require IAM authentication."
+  }
+  assert {
+    condition     = jsondecode(local.fixture_api_body).paths["/agent/model/{proxy+}"]["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].uri == "http://${local.fixture_alb_dns_discovered}/model/{proxy}"
+    error_message = "SDK calls must strip only /agent and reach fixture model routes."
+  }
+  assert {
+    condition     = !contains(keys(jsondecode(local.fixture_api_body).paths), "/agent/{proxy+}")
+    error_message = "The model proxy must not provide signed access to human/admin paths."
+  }
+  assert {
+    condition     = contains(local.internal_plane_policy_resources, "${aws_api_gateway_rest_api.fixture[0].execution_arn}/${var.environment}/POST/agent/*")
+    error_message = "The model route must deny signed callers outside the fixture role allowlist."
+  }
+  assert {
+    condition     = jsondecode(local.fixture_api_body).paths["/agent/model/{proxy+}"]["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].requestParameters["integration.request.header.X-Caller-Identity"] == local.fixture_verified_caller_identity["integration.request.header.X-Caller-Identity"]
+    error_message = "The model route must inject verified caller identity."
+  }
+}
+
+run "human_nested_agent_path_is_not_denied" {
+  command = plan
+  variables {
+    fixture_edge_enabled = true
+  }
+  assert {
+    condition = alltrue([
+      for resource in local.internal_plane_policy_resources :
+      !can(regex("^${replace(resource, "*", ".*")}$", "${aws_api_gateway_rest_api.fixture[0].execution_arn}/${var.environment}/GET/activity/invocations/run-id/agent/state"))
+    ])
+    error_message = "IAM stars cross slashes: internal-role Deny must not match the browser control URL."
+  }
+  assert {
+    condition     = length(local.fixture_resource_policy) <= 8192
+    error_message = "Expanded policy must remain within API Gateway's resource policy limit."
   }
 }

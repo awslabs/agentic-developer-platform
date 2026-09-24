@@ -37,6 +37,7 @@ import { performance } from 'node:perf_hooks';
 import {
   MAX_REVALIDATION_MS,
   type QueuedAuthorization,
+  type ControlOrigin,
   type RevalidationOutcome,
 } from './control-authorization';
 
@@ -331,6 +332,15 @@ export class ControlStateStore {
     return true;
   }
 
+  /** Private attribution for a pending steer, copied from verified authorization. */
+  steeringOrigin(commandId: string): ControlOrigin | null {
+    const entry = this.journal.get(commandId);
+    const proof = entry?.authorization;
+    if (entry?.record.action !== 'steer' || entry.record.status !== 'pending' ||
+        !proof?.principal || !['human_session', 'delegated_grant'].includes(proof.authorityKind ?? '')) return null;
+    return { principal: proof.principal, authorityKind: proof.authorityKind! };
+  }
+
   /**
    * The signed envelope that authorized a command, if it carried one — #3963.
    *
@@ -409,7 +419,7 @@ export class ControlStateStore {
   }
 
   /** The only delivery path for proof-bearing commands. Approval is never cached. */
-  async deliverAuthorized(commandId: string, handoff: () => void): Promise<boolean> {
+  async deliverAuthorized(commandId: string, handoff: () => void, ready?: () => boolean): Promise<boolean> {
     const entry = this.journal.get(commandId);
     if (!entry || !entry.authorization || entry.checking || entry.record.status !== 'pending') return false;
     entry.checking = true;
@@ -438,6 +448,9 @@ export class ControlStateStore {
       this.settle(commandId, 'rejected', 'authorization unavailable or revoked before delivery');
       return false;
     }
+    // Runtime readiness may change while authority is checked. A closed
+    // boundary leaves the command pending for a later, freshly authorized try.
+    if (ready && !ready()) return false;
     // Recorded before the handoff, because the executor reads it *during* the
     // handoff — the abort path writes its sentinel synchronously inside `run()`.
     // Assigning after would leave the receipt absent at the only moment it is read.

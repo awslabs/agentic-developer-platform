@@ -228,7 +228,20 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
     if node.state not in {"running", "awaiting_merge"}:
         _refuse("continued_story_not_active")
     identity = context.identity
-    if identity.org_id != node.org_id or identity.node_id != node.id or identity.accepted_plan_version != inputs.plan_version:
+    from .plan_lineage import execution_plan_matches
+
+    if (
+        identity.org_id != node.org_id
+        or identity.node_id != node.id
+        or not await execution_plan_matches(
+            session,
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            version=identity.accepted_plan_version,
+            current_version=inputs.plan_version,
+        )
+    ):
         _refuse("policy_changed")
     claim = await session.scalar(
         select(OrchestrationWorkClaim).where(

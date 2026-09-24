@@ -348,7 +348,9 @@ def compile_index(
         else:
             evaluations[str(wave)] = record
     if evaluation_refusals and not evaluations:
-        artifact.set("evaluations", Refused("evaluations: " + "; ".join(evaluation_refusals)))
+        artifact.set(
+            "evaluations", Refused("evaluations: " + "; ".join(evaluation_refusals))
+        )
     else:
         artifact.set("evaluations", evaluations)
 

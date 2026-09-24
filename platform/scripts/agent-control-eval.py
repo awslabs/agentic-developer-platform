@@ -81,11 +81,13 @@ import ast
 import copy
 import hashlib
 import json
+import math
 import logging
 import os
 import re
 import subprocess  # noqa: S404 - invokes only the operator's declared teardown command
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,6 +127,23 @@ CONTROL_VERBS: tuple[str, ...] = ("pause", "resume", "steer", "abort")
 CONTROL_PROTOCOL_VERSION = 1
 CLAUDE_ADAPTER_ID = "claude"
 EXPECTED_CLAUDE_SDK_VERSION = "0.3.220"
+
+# Wave 3's two numeric bounds, named because both are easy to get subtly wrong.
+#
+# The marker bound is measured from the recorded SDK HANDOFF, never from
+# submission. #3969 is explicit about that and the distinction is load-bearing: a
+# steer submitted during a long tool call is legitimately pending for minutes, so
+# measuring from submission would fail a correct run for being patient. What the
+# bound actually constrains is the gap between "the SDK accepted the input" and
+# "the operator can see that it did" — an honest acknowledgement arriving late is
+# still a defect, because the operator is left unable to distinguish delivery from
+# a dropped command.
+#
+# The queue cap mirrors `DEFAULT_MAX_PENDING` in
+# `modules/agent-factory/agent/src/control-state.ts`. Mirrored rather than
+# imported, as with the SDK version above; a test pins the pair.
+STEER_MARKER_MAX_LATENCY_SECONDS = 35
+STEER_QUEUE_CAP = 10
 
 # The stories whose source must be merged and deployed before wave 2's evidence
 # means anything, keyed by the story number the evaluation names. W2-01 requires a
@@ -794,6 +813,119 @@ WAVE2_CHECKS: tuple[CheckSpec, ...] = (
     ),
 )
 
+# Transcribed from evaluation #3969's acceptance table (revision
+# revival-2026-09-12, with the harness-neutral-2026-09-15 compatibility
+# amendment), on the same rule §7 states for waves 1 and 2.
+#
+# Registered by S6 #3965, which implements the steering half (W3-06..09, W3-11).
+# The abort half (W3-02..04) belongs to S4 #3963, W3-01/05/10/12 to the wave's
+# gate/regression owner, and all of those are registered here WITHOUT predicates
+# on purpose. Two things follow from that, and both are the point:
+#
+#  - `run_checks` FAILS an unimplemented check that has no owner, so every ID
+#    below without a predicate has an entry in PENDING_CHECK_OWNERS naming the
+#    story that owes it. A not_run then says who to go to.
+#  - a wave-3 run today cannot pass. That is correct and is the reason the whole
+#    manifest lands in one edit rather than growing check by check: a manifest
+#    trimmed to the checks S6 implements would let five of twelve steering and
+#    abort criteria be absent while `--wave 3` exited 0, which is exactly the
+#    false pass the comment on WAVE2_CHECKS warns about.
+WAVE3_CHECKS: tuple[CheckSpec, ...] = (
+    CheckSpec(
+        "W3-01",
+        ("Gate/regression",),
+        "preflight has wave 2 acceptance, merged S4 then S6, current worker/gateway "
+        "digests and green named CI; ordinary flags remain off while disposable "
+        "fixtures exercise all four implemented capabilities",
+    ),
+    CheckSpec(
+        "W3-02",
+        ("AC-A1", "AC-A2", "AC-A8"),
+        "API abort returns pending, then exactly one finalized aborted-by-user "
+        "comment, DDB status aborted with completed_at, check conclusion cancelled "
+        "and a revoked control record; later transcript/budget classification "
+        "cannot overwrite abort",
+    ),
+    CheckSpec(
+        "W3-03",
+        ("AC-A4", "AC-A5"),
+        "one correlated logical run, SQS message and successful DeleteMessage; pod "
+        "exit 0 with no deletion or kill; no new execution of that run through "
+        "measured visibility expiry plus margin; a replayed terminal-aborted "
+        "envelope starts zero tasks; termination evidence preserved before TTL",
+    ),
+    CheckSpec(
+        "W3-04",
+        ("AC-A6", "AC-A7"),
+        "abort during confirmed/pending pause, tool completion and retry backoff "
+        "cancels held work with no auto-resume note or new query; double and "
+        "concurrent abort produce one comment and one successful delete; a failed "
+        "acknowledgement never reports a successful abort; versioned sentinel "
+        "malformed/stale cases preserve unrelated credential retry behaviour",
+    ),
+    CheckSpec(
+        "W3-05",
+        ("AC-S1", "AC-S2", "AC-S3", "AC-S5", "AC-S6", "AC-S7"),
+        "the all-verb auth, nonowner/tenant, token expiry, malformed payload, "
+        "terminal/stale generation and unsafe-target matrix repeated now that the "
+        "verbs execute; unauthorized or malformed commands have zero side effects",
+    ),
+    CheckSpec(
+        "W3-06",
+        ("AC-T2", "AC-T4"),
+        "a steer submitted during a fixture long tool is 202/pending and hands off "
+        "at the next boundary; state and log command IDs match; the live-comment "
+        "marker appears no later than 35 seconds AFTER the recorded SDK handoff, "
+        "not after submission; no model-comprehension claim is made",
+    ),
+    CheckSpec(
+        "W3-07",
+        ("AC-T5", "AC-T8"),
+        "with delivery held, ten steers are accepted and the eleventh rejected with "
+        "429; release compares exact submission/handoff ID ordering; paused steers "
+        "stay pending until resume; abort cancels pending commands; journal "
+        "expiry/generation loss becomes unknown with no replay",
+    ),
+    CheckSpec(
+        "W3-08",
+        ("AC-S8",),
+        "the actual SDK-bound steer text contains the wrapUntrusted delimiters with "
+        "trusted actor attribution, human origin and shouldQuery:true; "
+        "attacker-supplied actor metadata is rejected and the raw instruction is "
+        "never elevated to system text",
+    ),
+    CheckSpec(
+        "W3-09",
+        ("AC-T6",),
+        "the real SDK input stream consumes the initial task plus at least two later "
+        "user messages, and attempt finalization disposes the generator and closes "
+        "Query; recorded message and turn counts, not a source grep or mocks alone",
+    ),
+    CheckSpec(
+        "W3-10",
+        ("AC-T3",),
+        "in the explicitly authorized disposable fixture repo/branch a steer changes "
+        "a deterministic target artifact, target tests pass and the resulting test PR "
+        "is merged; PR URL, merge SHA and expected file content recorded; no manual "
+        "pod access, and operator fixture setup is separate from agent interaction",
+    ),
+    CheckSpec(
+        "W3-11",
+        ("AC-T7",),
+        "a forced in-process retry with one queued steer delivers that command to the "
+        "new Query/input exactly once, never replays a confirmed handoff, preserves "
+        "the session on continuation, reports an ambiguous handoff as unknown, and an "
+        "abort during retry starts no next attempt",
+    ),
+    CheckSpec(
+        "W3-12",
+        ("Gate/regression",),
+        "all prior-wave invariant and security regressions pass on current code; "
+        "evidence collected and exact rows/workloads/test objects removed; cleanup "
+        "failures keep the gate open",
+    ),
+)
+
 # Wave 4 (#3970): the dashboard's own evidence, plus the consolidation of all 37
 # acceptance criteria. Transcribed from the wave-4 evaluation body under revision
 # revival-2026-09-12, one spec per `check` row in its table.
@@ -909,23 +1041,21 @@ WAVE4_CHECKS: tuple[CheckSpec, ...] = (
 WAVE_CHECKS: dict[int, tuple[CheckSpec, ...]] = {
     1: WAVE1_CHECKS,
     2: WAVE2_CHECKS,
+    3: WAVE3_CHECKS,
     4: WAVE4_CHECKS,
 }
 SUPPORTED_WAVES: tuple[int, ...] = tuple(sorted(WAVE_CHECKS))
 
-# Wave 3 is deliberately ABSENT rather than registered empty. It is owned by S4
-# #3963 and S6 #3965, and `--wave 3` must stay an honest nonzero "this revision
-# carries no manifest for that wave" instead of a zero-check pass. Note the
-# consequence for wave 4: several of its checks consolidate wave 3's criteria, so
-# wave 4 cannot be complete before wave 3 exists and is accepted — which W4-01 and
-# W4-10 are the checks that refuse.
-WAVE_EVALUATIONS: dict[int, str] = {1: "3967", 2: "3968", 4: "3970"}
+# The evaluation issue that reads each wave's report, and the design revision that
+# wave's checks were transcribed from. #3967 accepted wave 1 with 10/10 and is
+# closed; #3968 owns wave 2's live acceptance and #3969 wave 3's.
+WAVE_EVALUATIONS: dict[int, str] = {1: "3967", 2: "3968", 3: "3969", 4: "3970"}
 WAVE_REVISIONS: dict[int, str] = {
     1: "revival-2026-09-12",
     2: "harness-neutral-2026-09-15",
-    # The wave-4 body self-identifies as revival-2026-09-12; harness-neutral is
-    # only a compatibility amendment on it and explicitly "does not authorize this
-    # later wave", so recording it here would overstate what has been approved.
+    # #3969 states revision revival-2026-09-12 with the harness-neutral amendment
+    # applied on top, rather than superseding it.
+    3: "revival-2026-09-12",
     4: "revival-2026-09-12",
 }
 
@@ -934,27 +1064,33 @@ WAVE_REVISIONS: dict[int, str] = {
 # no predicate is deliberate — see WAVE2_CHECKS above — but it must never be
 # indistinguishable from a check the harness forgot.
 #
-# Every registered wave is now fully implemented, so this mapping is EMPTY — and it
-# is kept, rather than deleted, because the distinction it draws is the one thing
-# that must not be lost as waves land.
+# Waves 1 and 2 are implemented. Wave 3 retains explicit owners for the seven checks
+# not yet implemented; registration cannot imply acceptance.
 #
-# The history is worth recording. Wave 4 previously registered six checks here:
-# W4-01/W4-10 (the preflight and the 37-criterion consolidation), W4-03's
-# FIFO/retry/cap/SDK half, W4-05's abort family, W4-06's security matrix and W4-09's
-# runtime comparison. That was correct while no predicate existed — a partial W4-03
-# that passed on the browser steer alone would have reported green while S6's retry
-# proof was never made. #3970 implemented all six, as currency checks over the owning
-# stories' evidence rather than as reimplementations of it, so the evaluator is no
-# longer the missing piece.
+# Wave 4 no longer appears here. It previously registered six: W4-01/W4-10 (the
+# preflight and the 37-criterion consolidation), W4-03's FIFO/retry/cap/SDK half,
+# W4-05's abort family, W4-06's security matrix and W4-09's runtime comparison. That
+# was correct while no predicate existed — a partial W4-03 that passed on the browser
+# steer alone would have reported green while S6's retry proof was never made. #3970
+# implemented all six, as currency checks over the owning stories' evidence rather
+# than as reimplementations of it, so for wave 4 the evaluator is no longer the
+# missing piece.
 #
-# The consequence to be clear about: an empty mapping does NOT mean any wave is
-# closer to passing. It means a not_run can no longer be caused by a missing
-# IMPLEMENTATION, so every remaining not_run names a missing INPUT — an absent
-# artifact, an unaccepted prior wave, an unregistered wave-3 manifest — and the
-# predicate's message names who owes it. "Nobody owes an implementation" and "the
-# evidence is complete" were always different claims; conflating them is what this
-# mapping exists to prevent, which is why it stays.
-PENDING_CHECK_OWNERS: dict[str, str] = {}
+# Note what that does NOT mean: a wave whose every check has a predicate can still
+# report not_run, for a missing artifact or an unset identity variable. "Nobody
+# owes an implementation" and "the evidence is complete" are different claims, and
+# keeping this distinction drawn per-wave is the whole reason the mapping exists —
+# so a wave-4 not_run now names a missing INPUT and who owes it, while a wave-3
+# not_run may still name a missing implementation.
+PENDING_CHECK_OWNERS: dict[str, str] = {
+    "W3-01": "the wave-3 gate owner (consolidated preflight, as #5825 did for wave 2)",
+    "W3-02": "S4 #3963 (graceful abort: finalization, comment, DDB status)",
+    "W3-03": "S4 #3963 (abort lifecycle: SQS delete, pod exit, no redelivery)",
+    "W3-04": "S4 #3963 (abort during pause/tool/retry; double and concurrent abort)",
+    "W3-05": "the wave-3 gate owner (wave-1 security matrix rerun with verbs live)",
+    "W3-10": "the wave-3 gate owner (authorized disposable fixture repo, merged test PR)",
+    "W3-12": "the wave-3 gate owner (prior-wave regressions plus verified cleanup)",
+}
 
 # Retained for the manifest guard and for callers that only need wave 1's ID set.
 # Deliberately still wave 1: it is the DEFAULT for `assert_check_manifest`, and a
@@ -1232,6 +1368,84 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
         "session_and_no_option_behavior_preserved",
         "cancel_prevents_new_query",
         "forced_retry_exercised",
+    ),
+    # Wave 3 / S6 (#3965). Live steering. Everything here is a fact about a
+    # *moment inside a run* — whether a parked reader existed, when a handoff
+    # physically happened, what bytes the SDK received — and none of it is legible
+    # to an HTTP reader after the fact. The harness makes the outside half itself
+    # (the 202, the journal projection, the 429); these are the inside half.
+    #
+    # `handoff_at` is the load-bearing field and the reason this artifact exists
+    # rather than being derived from the state endpoint. #3969 requires the marker
+    # within 35 seconds of the *recorded SDK handoff*, not of submission — a
+    # distinction that is meaningless without a separately recorded handoff
+    # timestamp, and one that quietly converts into "35 seconds after submission"
+    # if the harness has only `accepted_at` to work from. During a long tool call
+    # those two are minutes apart, so the substitution would fail a correct run.
+    "steering_delivery": (
+        "command_id",
+        "accepted_at",
+        "handoff_at",
+        "marker_at",
+        "state_command_ids",
+        "log_command_ids",
+        "tool_active_at_submission",
+        "status_at_submission",
+        "delivered_at_matches_handoff",
+        "model_comprehension_claimed",
+    ),
+    # W3-07 / AC-T5, AC-T8. Ordering and the bound, plus the three terminal
+    # outcomes that must not be replays. `submission_order`/`handoff_order` are
+    # recorded as full ID sequences rather than a "fifo_ok" boolean: the failure
+    # this catches is a queue that delivers ten commands in the wrong order, and a
+    # boolean cannot say which pair inverted.
+    "steering_queue": (
+        "submission_order",
+        "handoff_order",
+        "accepted_count",
+        "overflow_status",
+        "paused_pending_ids",
+        "paused_delivered_after_resume",
+        "abort_cancelled_ids",
+        "expiry_outcome",
+        "replayed_after_unknown",
+        "authority_revalidated_at_handoff",
+    ),
+    # W3-08 / AC-S8. The bytes, not a claim about the bytes. `delimiters_present`
+    # alone would be satisfiable by a wrapper appended AFTER the raw instruction,
+    # so `instruction_inside_delimiters` is separate and is the one that matters.
+    "steering_trust_boundary": (
+        "delimiters_present",
+        "instruction_inside_delimiters",
+        "actor_attribution",
+        "origin_kind",
+        "should_query",
+        "attacker_actor_metadata_rejected",
+        "raw_instruction_in_system_text",
+    ),
+    # W3-09 / AC-T6. Recorded message and turn counts from a real stream, which
+    # #3969 explicitly refuses to accept as a source grep or a mock.
+    "steering_input_stream": (
+        "initial_task_consumed",
+        "later_user_messages",
+        "generator_disposed",
+        "query_closed",
+        "message_count",
+        "turn_count",
+        "observed_by",
+    ),
+    # W3-11 / AC-T7. The retry. `deliveries_of_queued_command` is an integer
+    # because both 0 and 2 are real failures with opposite causes — a stranded
+    # instruction and a duplicated one — and a boolean would merge them.
+    "steering_retry": (
+        "queued_command_id",
+        "deliveries_of_queued_command",
+        "confirmed_handoffs_replayed",
+        "session_preserved",
+        "attempt_id_before",
+        "attempt_id_after",
+        "ambiguous_handoff_outcome",
+        "abort_during_retry_started_next_attempt",
     ),
     # Wave 4 / S7 (#3966). A captured Playwright run against the DEPLOYED SPA.
     #
@@ -4713,12 +4927,20 @@ class Driver:
                 )
 
         # --- the deployed surface must agree ----------------------------------
-        # S3 has no implemented verbs; S2 adds pause/resume later in this wave.
-        # Record the source build's expectations rather than freezing the final
-        # Wave 2 gate at S3's temporary capability surface.
+        # Prior-wave checks must remain runnable on later merged stages. This
+        # validates the declared surface, not acceptance of abort or steering;
+        # the live capability comparison below still has to match it exactly.
         implemented = contract.get("implemented_verbs", [])
-        if not isinstance(implemented, list) or implemented not in ([], ["pause", "resume"]):
-            raise AssertionError("implemented_verbs must be [] (S3) or ['pause', 'resume'] (S2)")
+        valid_stages = (
+            frozenset(), frozenset({"pause", "resume"}),
+            frozenset({"pause", "resume", "abort"}),
+            frozenset({"pause", "resume", "abort", "steer"}),
+        )
+        if (not isinstance(implemented, list)
+                or any(not isinstance(verb, str) for verb in implemented)
+                or len(set(implemented)) != len(implemented)
+                or frozenset(implemented) not in valid_stages):
+            raise AssertionError("implemented_verbs must name a valid S3/S2/S4/S6 stage without duplicates")
         live = self._require("live_run_id")
         owner = self._token("owner")
         for adapter, paths in ADAPTERS.items():
@@ -6054,6 +6276,516 @@ class Driver:
                 f"{sorted(set(emitted_ids) - expected)}"
             )
 
+    # ---- wave 3 shared helpers -----------------------------------------
+
+    @staticmethod
+    def _assert_command_id_sequence(value: object, *, field: str, subject: str) -> tuple[str, ...]:
+        """Read a recorded sequence of command IDs, refusing the shapes that hide a defect.
+
+        Returned as a tuple so callers compare ORDER, which is the only reason
+        these are recorded as sequences rather than counts. Two shapes are refused
+        outright: a non-list (a comma-joined string compares equal to another
+        comma-joined string regardless of how it was built, and cannot be indexed
+        to say which pair inverted) and a duplicated ID (the same command appearing
+        twice in a handoff order is a replay, and deduplicating it here would
+        convert that finding into a passing comparison).
+        """
+        if not isinstance(value, list) or not value:
+            raise AssertionError(
+                f"`{subject}.{field}` is {value!r}; expected a non-empty list of command IDs. "
+                "Ordering is the property under test and it cannot be read off a scalar"
+            )
+        ids: list[str] = []
+        for index, entry in enumerate(value):
+            if not isinstance(entry, str) or not entry.strip():
+                raise AssertionError(
+                    f"`{subject}.{field}[{index}]` is {entry!r}, not a command ID. An unnamed slot "
+                    "makes the sequence uncomparable at exactly the position it matters"
+                )
+            ids.append(entry.strip())
+        duplicated = sorted({entry for entry in ids if ids.count(entry) > 1})
+        if duplicated:
+            raise AssertionError(
+                f"`{subject}.{field}` repeats {duplicated}. A command ID appearing twice is a "
+                "replayed command, which is the failure AC-T5 and AC-T7 both forbid — it must not be "
+                "collapsed into a set before the order comparison"
+            )
+        return tuple(ids)
+
+    # ---- W3-06 ---------------------------------------------------------
+
+    def check_w3_06(self) -> None:
+        """A mid-tool steer is pending, then acknowledged at handoff (AC-T2, AC-T4).
+
+        Two claims, and the second is the one that is easy to fake. The first is
+        that a steer arriving while a tool is running is accepted and held —
+        `pending` is the honest answer there, because the SDK has no parked reader
+        to hand it to. The second is that the acknowledgement the operator sees
+        tracks the SDK handoff rather than the enqueue.
+
+        The latency bound is measured from `handoff_at`, not `accepted_at`, and the
+        difference is not a technicality. A steer submitted into a long tool call is
+        legitimately pending for minutes, so a bound measured from submission would
+        fail a correct run for being patient — and an implementation that
+        acknowledged at enqueue would pass it easily. Measured from handoff, the
+        bound constrains the only gap that is a defect: the SDK has the input and
+        the operator has not been told.
+
+        A marker stamped BEFORE the handoff fails for the same reason rather than
+        being tolerated as clock skew. Acknowledging first and delivering afterwards
+        is precisely the dishonest ordering AC-T4 exists to forbid, and it is
+        indistinguishable from skew by any evidence available here — so the
+        conservative reading is the one that does not silently accept it.
+
+        Nothing here asserts the model did what it was told. `delivered` means the
+        SDK accepted the bytes; a model that reads the instruction and declines is
+        not a delivery failure, and an artifact claiming comprehension is recording
+        something no transport observation can establish.
+        """
+        delivery = self._artifact("steering_delivery")
+
+        command_id = delivery.get("command_id")
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise AssertionError(
+                f"`steering_delivery.command_id` is {command_id!r}; without the ID the operator "
+                "submitted, none of the state, log and marker comparisons below identify anything"
+            )
+        command_id = command_id.strip()
+
+        # --- the submission was actually mid-tool -----------------------------
+        # If it was not, AC-T2's subject was never exercised: a steer handed off at
+        # an idle boundary is the easy case, and passing it says nothing about the
+        # case where there is no parked reader to hand it to.
+        if delivery.get("tool_active_at_submission") is not True:
+            raise AssertionError(
+                "no tool was active when the steer was submitted, so the mid-tool case AC-T2 names was "
+                "not exercised. Handoff at an idle boundary is the easy path and demonstrates nothing "
+                "about a submission that must wait for one"
+            )
+        if delivery.get("status_at_submission") != "pending":
+            raise AssertionError(
+                f"the steer was recorded as {delivery.get('status_at_submission')!r} at submission, "
+                "expected 'pending'. Mid-tool there is no parked SDK reader, so any status claiming "
+                "delivery at that moment is describing a handoff that could not have happened"
+            )
+
+        # --- the three instants -----------------------------------------------
+        instants: dict[str, datetime] = {}
+        for name in ("accepted_at", "handoff_at", "marker_at"):
+            parsed = _parse_timestamp(delivery.get(name))
+            if parsed is None:
+                raise AssertionError(
+                    f"`steering_delivery.{name}` is {delivery.get(name)!r}, which is not an ISO-8601 "
+                    "instant. All three are required separately: the bound AC-T4 states is a gap "
+                    "between two of them, and a missing one turns it into a different bound"
+                )
+            instants[name] = parsed
+        if instants["handoff_at"] < instants["accepted_at"]:
+            raise AssertionError(
+                f"the handoff at {delivery.get('handoff_at')!r} precedes acceptance at "
+                f"{delivery.get('accepted_at')!r}; a command cannot be delivered before it was received, "
+                "so at least one of the two recorded instants describes something other than what it names"
+            )
+        if instants["marker_at"] < instants["handoff_at"]:
+            raise AssertionError(
+                f"the live-comment marker at {delivery.get('marker_at')!r} predates the SDK handoff at "
+                f"{delivery.get('handoff_at')!r}. Acknowledging before delivering is the dishonest "
+                "ordering AC-T4 forbids — the operator is shown a confirmed command that the SDK had "
+                "not yet accepted"
+            )
+        latency = (instants["marker_at"] - instants["handoff_at"]).total_seconds()
+        if latency > STEER_MARKER_MAX_LATENCY_SECONDS:
+            raise AssertionError(
+                f"the marker appeared {latency:.1f}s after the SDK handoff, over the "
+                f"{STEER_MARKER_MAX_LATENCY_SECONDS}s bound. The wait before handoff is not counted "
+                "against this bound; what is over budget is the interval in which the SDK held the "
+                "instruction and the operator could not tell delivery from a dropped command"
+            )
+
+        # --- one command, one ID, in both records -----------------------------
+        for name in ("state_command_ids", "log_command_ids"):
+            ids = self._assert_command_id_sequence(
+                delivery.get(name), field=name, subject="steering_delivery"
+            )
+            if command_id not in ids:
+                raise AssertionError(
+                    f"command {command_id!r} does not appear in `steering_delivery.{name}` ({list(ids)}). "
+                    "State and logs must name the same command the operator submitted, or an operator "
+                    "correlating an acknowledgement to their own request has nothing to match on"
+                )
+        if delivery.get("delivered_at_matches_handoff") is not True:
+            raise AssertionError(
+                "the recorded `delivered_at` does not match the observed SDK handoff. That field is what "
+                "the dashboard renders as the delivery time, so a value taken at enqueue reports a "
+                "confirmation that had not happened yet"
+            )
+
+        # --- and no claim the transport cannot support -------------------------
+        if delivery.get("model_comprehension_claimed") is not False:
+            raise AssertionError(
+                "the artifact claims the model comprehended or complied with the instruction. `delivered` "
+                "is a statement about the SDK accepting bytes; whether the model then acted is not "
+                "observable from the transport, and recording it as though it were makes a declined "
+                "instruction indistinguishable from a delivered one"
+            )
+
+    # ---- W3-07 ---------------------------------------------------------
+
+    def check_w3_07(self) -> None:
+        """The bound, the order, and the three ways a command ends unsent (AC-T5, AC-T8).
+
+        The queue is the part of steering an operator interacts with under load,
+        and every property here is one whose violation is silent. A cap that admits
+        an eleventh command does not error — it just makes the run's instruction
+        backlog unbounded. A queue that delivers out of order still reports every
+        command delivered. A pending command cancelled by an abort, or lost to an
+        expired journal generation, looks from outside exactly like one that is
+        still waiting.
+
+        `handoff_order` is compared to `submission_order` element by element rather
+        than as sets, because a FIFO that inverts one pair satisfies every
+        set-level comparison. And an expired generation must resolve to `unknown`,
+        never to a retry: at that point the harness cannot tell whether the SDK got
+        the bytes, and the only two options are to say so or to risk delivering a
+        mid-run instruction twice.
+        """
+        queue = self._artifact("steering_queue")
+
+        submitted = self._assert_command_id_sequence(
+            queue.get("submission_order"), field="submission_order", subject="steering_queue"
+        )
+        # --- the cap -----------------------------------------------------------
+        accepted = queue.get("accepted_count")
+        if accepted != STEER_QUEUE_CAP:
+            raise AssertionError(
+                f"`accepted_count` is {accepted!r}, expected exactly {STEER_QUEUE_CAP}. The run-level "
+                "FIFO is bounded, and a cap that admits one more than it declares is an unbounded "
+                "backlog with a number written next to it"
+            )
+        if len(submitted) != STEER_QUEUE_CAP:
+            raise AssertionError(
+                f"{len(submitted)} submissions were recorded but the cap is {STEER_QUEUE_CAP}; the "
+                "overflow case is only exercised once the queue is actually full, so a short sequence "
+                "means the eleventh command was rejected by something other than the bound"
+            )
+        if queue.get("overflow_status") != 429:
+            raise AssertionError(
+                f"the over-cap submission returned {queue.get('overflow_status')!r}, expected 429. "
+                "Backpressure has to be visible to the caller: a silently dropped instruction is one "
+                "the operator believes is queued"
+            )
+
+        # --- the order ---------------------------------------------------------
+        handed = self._assert_command_id_sequence(
+            queue.get("handoff_order"), field="handoff_order", subject="steering_queue"
+        )
+        if handed != submitted:
+            if set(handed) != set(submitted):
+                raise AssertionError(
+                    f"the handoff set differs from the submission set: delivered-but-never-submitted "
+                    f"{sorted(set(handed) - set(submitted))}, submitted-but-never-delivered "
+                    f"{sorted(set(submitted) - set(handed))}. Every accepted command reaches the SDK or "
+                    "ends in a terminal status naming why; neither is what a missing ID records"
+                )
+            inverted = next(
+                (index for index, (a, b) in enumerate(zip(submitted, handed)) if a != b), 0
+            )
+            raise AssertionError(
+                f"the queue is not FIFO: position {inverted} was submitted as {submitted[inverted]!r} "
+                f"but handed off as {handed[inverted]!r}. Mid-run instructions are order-dependent — "
+                "'now do X' after 'stop doing Y' is not the same pair reversed — and an out-of-order "
+                "delivery still reports every command delivered"
+            )
+
+        # --- pause holds, it does not drop -------------------------------------
+        paused = self._assert_command_id_sequence(
+            queue.get("paused_pending_ids"), field="paused_pending_ids", subject="steering_queue"
+        )
+        released = self._assert_command_id_sequence(
+            queue.get("paused_delivered_after_resume"),
+            field="paused_delivered_after_resume",
+            subject="steering_queue",
+        )
+        if released != paused:
+            raise AssertionError(
+                f"commands submitted while paused were {list(paused)} but {list(released)} were "
+                "delivered after resume. A pause is not a discard: every command held at the barrier "
+                "has to arrive, in the order it was accepted, once the operator lets the run continue"
+            )
+
+        # --- abort cancels rather than delivers --------------------------------
+        cancelled = self._assert_command_id_sequence(
+            queue.get("abort_cancelled_ids"), field="abort_cancelled_ids", subject="steering_queue"
+        )
+        delivered_after_abort = sorted(set(cancelled) & set(handed))
+        if delivered_after_abort:
+            raise AssertionError(
+                f"these commands were recorded as cancelled by the abort AND handed to the SDK: "
+                f"{delivered_after_abort}. An abort that flushes its queue on the way out delivers "
+                "instructions the operator aborted to prevent"
+            )
+
+        # --- and the one outcome that must not become a retry ------------------
+        if queue.get("expiry_outcome") != "unknown":
+            raise AssertionError(
+                f"journal expiry or generation loss resolved to {queue.get('expiry_outcome')!r}, "
+                "expected 'unknown'. At that point nobody can say whether the SDK received the bytes, "
+                "and the two dishonest answers are opposite: 'delivered' claims a handoff nobody "
+                "observed, 'pending' invites a replay of an instruction the model may already have"
+            )
+        if queue.get("replayed_after_unknown") is not False:
+            raise AssertionError(
+                "a command was replayed after its outcome became unknown. `unknown` exists precisely so "
+                "that an ambiguous handoff is reported rather than retried; retrying it is how the model "
+                "receives the same mid-run instruction twice"
+            )
+        if queue.get("authority_revalidated_at_handoff") is not True:
+            raise AssertionError(
+                "authority was not revalidated immediately before the physical handoff. A command can "
+                "sit in the queue for minutes, so a check performed only at submission lets a revoked "
+                "or expired authorization reach the model through the delay — which is the bypass the "
+                "#5029 delivery authorization exists to close"
+            )
+
+    # ---- W3-08 ---------------------------------------------------------
+
+    def check_w3_08(self) -> None:
+        """The bytes handed to the SDK carry the trust boundary (AC-S8).
+
+        Operator steering text is untrusted input by the same rule that makes an
+        issue body untrusted: it arrives from outside the run and is read by a
+        model that acts on what it reads. So what matters is the actual SDK-bound
+        payload, not a source-level claim that a wrapper is called somewhere.
+
+        `delimiters_present` on its own is satisfiable by a wrapper appended AFTER
+        the raw instruction, which is why `instruction_inside_delimiters` is a
+        separate observation and the one that carries the property. A payload with
+        the preamble below the instruction has the delimiters and none of the
+        containment.
+
+        The other half is attribution. #5029's trusted caller identity is ADP
+        framing and belongs outside the envelope; attacker-supplied actor metadata
+        inside the instruction must not be promoted into it. If it can be, an
+        operator's text can name its own authority.
+        """
+        boundary = self._artifact("steering_trust_boundary")
+
+        if boundary.get("delimiters_present") is not True:
+            raise AssertionError(
+                "the SDK-bound steering text carries no trust-boundary delimiters. Unwrapped operator "
+                "text reads to the model as ADP's own instruction, which is how a steer becomes an "
+                "instruction-injection vector rather than a message to consider"
+            )
+        if boundary.get("instruction_inside_delimiters") is not True:
+            raise AssertionError(
+                "the instruction is not inside the trust-boundary delimiters. Delimiters that follow the "
+                "raw text — or wrap something else — satisfy `delimiters_present` while containing "
+                "nothing, so this is the observation that carries AC-S8 and it is failing"
+            )
+        attribution = boundary.get("actor_attribution")
+        if not isinstance(attribution, str) or not attribution.strip():
+            raise AssertionError(
+                f"`actor_attribution` is {attribution!r}; the trusted caller identity #5029 established "
+                "must accompany the instruction as ADP framing, or the model cannot tell an authorized "
+                "operator's steer from arbitrary text that reached the queue"
+            )
+        if boundary.get("origin_kind") != "human":
+            raise AssertionError(
+                f"`origin_kind` is {boundary.get('origin_kind')!r}, expected 'human'. Steering is an "
+                "operator message; an origin claiming otherwise misrepresents who is speaking in the "
+                "transcript the model reasons over"
+            )
+        if boundary.get("should_query") is not True:
+            raise AssertionError(
+                "`should_query` is not true for a steering message. Steering exists to make the model "
+                "act on the instruction; queued as a non-querying annotation it is filed away until "
+                "something else happens to provoke a turn, which is the note semantics, not steering"
+            )
+        if boundary.get("attacker_actor_metadata_rejected") is not True:
+            raise AssertionError(
+                "attacker-supplied actor metadata was not rejected. Attribution is ADP's statement about "
+                "who called; if text inside the envelope can set it, the envelope's own authority claim "
+                "becomes attacker-controlled"
+            )
+        if boundary.get("raw_instruction_in_system_text") is not False:
+            raise AssertionError(
+                "the raw instruction appeared in system text. Elevating untrusted operator input to the "
+                "one part of the prompt the model treats as its own rules defeats the wrapping entirely — "
+                "the delimiters elsewhere do not matter if the text is also present unwrapped"
+            )
+
+    # ---- W3-09 ---------------------------------------------------------
+
+    def check_w3_09(self) -> None:
+        """The real SDK input stream takes more than one message (AC-T6).
+
+        This is the claim mocks cannot make. A fixture input channel accepts as
+        many messages as the test pushes into it by construction; what AC-T6 asks
+        is whether the provider's streaming-input mode does, against the pinned SDK,
+        for a session that has already started work. So the evidence is recorded
+        message and turn counts from a live stream, and #3969 explicitly refuses a
+        source grep or a mock-only run as a substitute.
+
+        "At least two later user messages" is the bar because one is ambiguous: a
+        single post-initial message is also what a restart with the prompt replayed
+        looks like. Two consecutive ones on the same session can only be a stream
+        that stayed open.
+
+        Disposal is checked in the same place rather than separately because the
+        failure it prevents is a leak that only appears in aggregate — an
+        undisposed async generator and an unclosed Query hold a subprocess per
+        attempt, and a run that retries a few times exhausts what it is given
+        without any single attempt looking wrong.
+        """
+        stream = self._artifact("steering_input_stream")
+
+        if stream.get("initial_task_consumed") is not True:
+            raise AssertionError(
+                "the initial task was not consumed from the input stream. Steering shares the channel the "
+                "prompt arrives on, so a stream that never delivered the task is not the one the run "
+                "uses — and the later messages then say nothing about the production path"
+            )
+        later = stream.get("later_user_messages")
+        if not isinstance(later, int) or later < 2:
+            raise AssertionError(
+                f"`later_user_messages` is {later!r}; AC-T6 requires at least 2 after the initial task. "
+                "One is ambiguous — a replayed prompt on a fresh session looks identical — whereas two "
+                "consecutive later messages can only come from a stream that stayed open"
+            )
+        message_count = stream.get("message_count")
+        if not isinstance(message_count, int) or message_count < later + 1:
+            raise AssertionError(
+                f"`message_count` is {message_count!r} but the stream is recorded as carrying the initial "
+                f"task plus {later} later message(s), so it cannot be fewer than {later + 1}. The counts "
+                "have to agree or one of them is not counting the stream under test"
+            )
+        turn_count = stream.get("turn_count")
+        if not isinstance(turn_count, int) or turn_count <= 0:
+            raise AssertionError(
+                f"`turn_count` is {turn_count!r}; a stream that provoked no model turn delivered its "
+                "messages nowhere observable, which is indistinguishable from a channel that accepted "
+                "them and dropped them"
+            )
+        for key, consequence in (
+            ("generator_disposed", "the async generator was not disposed"),
+            ("query_closed", "the Query was not closed"),
+        ):
+            if stream.get(key) is not True:
+                raise AssertionError(
+                    f"{consequence} at attempt finalization. Each undisposed attempt holds an SDK "
+                    "subprocess, so a run that retries a few times exhausts its resources without any "
+                    "single attempt looking wrong — which is why this is checked per attempt rather "
+                    "than per run"
+                )
+
+        # --- and it has to have been observed, not inferred --------------------
+        observed_by = stream.get("observed_by")
+        if not isinstance(observed_by, str) or not observed_by.strip():
+            raise AssertionError(
+                f"`observed_by` is {observed_by!r}; without naming what produced these counts there is "
+                "nothing to distinguish a live stream from a static reading of the code"
+            )
+        lowered = observed_by.lower()
+        refused = [
+            token
+            for token in ("grep", "mock", "stub", "fake", "source read", "code read", "inspection")
+            if token in lowered
+        ]
+        if refused:
+            raise AssertionError(
+                f"`observed_by` is {observed_by!r}, which names {refused} as the source of these counts. "
+                f"AC-T6 is a claim about the real SDK at {EXPECTED_CLAUDE_SDK_VERSION}: a mock accepts "
+                "as many messages as it is handed by construction, and a source grep establishes that "
+                "the code intends to push them, neither of which is evidence the provider accepted them"
+            )
+
+    # ---- W3-11 ---------------------------------------------------------
+
+    def check_w3_11(self) -> None:
+        """A retry moves pending input and nothing else (AC-T7).
+
+        An in-process retry replaces the attempt — new Query, new input channel —
+        while the run, the session and the operator's queue all continue. That
+        makes it the moment steering is most likely to go wrong, in two opposite
+        directions: a pending command stranded on the dead attempt is never
+        delivered, and a confirmed one reattached to the new attempt is delivered
+        twice. `deliveries_of_queued_command` is recorded as an integer because 0
+        and 2 are both failures and a boolean would merge them into "not 1".
+
+        The attempt identity has to actually change, or the retry under test did
+        not happen and the anti-replay property was never exercised. The session
+        has to NOT change, because a retry that starts a new session has discarded
+        the context the queued instruction was written about.
+
+        The last two are the honest-degradation cases. A handoff whose outcome
+        cannot be determined is `unknown`; retrying it is the replay this check
+        forbids elsewhere. And an abort landing during backoff must stop the
+        sequence — a next attempt started after the operator aborted is the run
+        continuing past its own cancellation.
+        """
+        retry = self._artifact("steering_retry")
+
+        queued = retry.get("queued_command_id")
+        if not isinstance(queued, str) or not queued.strip():
+            raise AssertionError(
+                f"`queued_command_id` is {queued!r}; without the ID that was pending across the retry "
+                "the delivery count below is not attributable to any command"
+            )
+        deliveries = retry.get("deliveries_of_queued_command")
+        if deliveries != 1:
+            if deliveries == 0:
+                raise AssertionError(
+                    f"command {queued.strip()!r} was pending when the attempt was replaced and was never "
+                    "delivered. Pending commands reattach to the new attempt; one stranded on the dead "
+                    "attempt stays pending for the life of the run, so the operator waits on an "
+                    "instruction that can no longer arrive"
+                )
+            raise AssertionError(
+                f"command {queued.strip()!r} was delivered {deliveries!r} times across the retry, "
+                "expected exactly 1. A mid-run instruction delivered twice is acted on twice, and the "
+                "second copy arrives with no indication it is a repeat"
+            )
+        replayed = retry.get("confirmed_handoffs_replayed")
+        if replayed != 0:
+            raise AssertionError(
+                f"`confirmed_handoffs_replayed` is {replayed!r}, expected 0. Only PENDING commands cross "
+                "a retry: a confirmed handoff has already reached a model, and reattaching it to the new "
+                "attempt replays input the run has already acted on"
+            )
+        if retry.get("session_preserved") is not True:
+            raise AssertionError(
+                "the session was not preserved across the retry. A new session discards the context the "
+                "queued instruction was written about, so even a correctly reattached command is "
+                "delivered to a run that has forgotten what it refers to"
+            )
+        before = retry.get("attempt_id_before")
+        after = retry.get("attempt_id_after")
+        for name, value in (("attempt_id_before", before), ("attempt_id_after", after)):
+            if not isinstance(value, str) or not value.strip():
+                raise AssertionError(
+                    f"`{name}` is {value!r}; both attempt identities are required, because the property "
+                    "under test is which attempt the input resolved against"
+                )
+        if before.strip() == after.strip():
+            raise AssertionError(
+                f"the attempt identity did not change across the retry (both {before.strip()!r}). Then no "
+                "attempt was replaced, the reattachment path never ran, and the anti-replay property "
+                "this check exists for was not exercised"
+            )
+        if retry.get("ambiguous_handoff_outcome") != "unknown":
+            raise AssertionError(
+                f"an ambiguous handoff was recorded as {retry.get('ambiguous_handoff_outcome')!r}, "
+                "expected 'unknown'. A push that may or may not have reached the departing attempt is "
+                "exactly the case where guessing is worse than reporting: 'delivered' claims a handoff "
+                "nobody observed and 'pending' schedules the duplicate delivery"
+            )
+        if retry.get("abort_during_retry_started_next_attempt") is not False:
+            raise AssertionError(
+                "an abort arriving during retry backoff was followed by another attempt. Backoff is not a "
+                "window in which cancellation is deferred; a next attempt started there is the run "
+                "continuing past the point the operator stopped it"
+            )
+
     # ---- W4-01 ---------------------------------------------------------
 
     def check_w4_01(self, *, emitted_ids: tuple[str, ...] = ()) -> None:
@@ -6668,8 +7400,11 @@ class Driver:
                 f"was failing, got {backoff!r}"
             )
         if not all(
-            isinstance(value, (int, float)) for value in backoff
-        ) or any(later < earlier for earlier, later in zip(backoff, backoff[1:])):
+            type(value) in (int, float) and math.isfinite(value) and value > 0 for value in backoff
+        ) or any(
+            later < earlier or (later == earlier and earlier < 30000)
+            for earlier, later in zip(backoff, backoff[1:])
+        ):
             raise AssertionError(
                 f"the observed error intervals {backoff!r} do not increase. Retrying a failing control "
                 "endpoint at the same rate is what turns one backend problem into a load problem"
@@ -7174,7 +7909,12 @@ class Driver:
 
     # ---- W4-10 ---------------------------------------------------------
 
-    def check_w4_10(self, *, emitted_ids: tuple[str, ...] = ()) -> None:
+    def check_w4_10(
+        self,
+        *,
+        emitted_ids: tuple[str, ...] = (),
+        results_so_far: Sequence[CheckResult] = (),
+    ) -> None:
         """The consolidation: all 37 criteria, each owned, current and live where
         required — and a report with nothing missing in it.
 
@@ -7195,10 +7935,17 @@ class Driver:
         * **Live where the row demands live.** A unit mock cannot stand in for a named
           live SDK/API/browser check, and that is only checkable because each entry
           records which it was.
-        * **No missing, skipped or not-run result** — asserted against THIS RUN's own
-          results, not against the index's self-description. An index claiming
-          completeness inside a report with three not_runs is exactly the fabricated
-          10/10 the kickoff forbids.
+        * **No missing, skipped, not-run or FAILED result** — asserted against THIS
+          RUN's own check outcomes, not against the index's self-description. An index
+          claiming completeness inside a report with three not_runs is exactly the
+          fabricated 10/10 the kickoff forbids.
+
+        That last one needs `results_so_far` rather than `emitted_ids`, and the
+        difference was a real defect: an ID inventory says which checks answered, never
+        what they answered, so reading it alone let W4-10 pass beside a failed sibling.
+        The wave's own row makes this check the condition for closing all four
+        evaluations, so a consolidation that green-lights a report failing its own gate
+        is the exact outcome it exists to prevent.
         """
         index = self._artifact("wave4_evidence_index")
         self._assert_fixture_identity(index, "wave4_evidence_index", self.config)
@@ -7386,6 +8133,28 @@ class Driver:
                 "wave cannot consolidate criteria its own manifest asserts but its index omits"
             )
 
+        # (5) And what those checks ANSWERED. The inventory above establishes that
+        # every check ran; this establishes that none of them found anything. They are
+        # different claims, and a complete index sitting beside a failed sibling check
+        # satisfies the first while contradicting the whole point of the second.
+        #
+        # W4-10 itself is excluded because it has no verdict yet — it is the check
+        # making this assertion. Everything else in the wave is fair game, including
+        # `skipped`: the row names it explicitly, and a skipped criterion is an
+        # unobserved one however it came to be skipped.
+        unresolved = sorted(
+            f"{result.check_id}={result.status}"
+            for result in results_so_far
+            if result.check_id != "W4-10" and result.status != STATUS_PASSED
+        )
+        if unresolved:
+            raise AssertionError(
+                f"W4-10: this run's other checks did not all pass ({', '.join(unresolved)}). The wave-4 "
+                "row makes this consolidation the condition for closing all four evaluations, so it "
+                "cannot be satisfied inside a report that does not pass its own gate — however complete "
+                "the evidence index is"
+            )
+
 
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
@@ -7421,17 +8190,31 @@ WAVE2_PREDICATES: dict[str, str] = {
     "W2-10": "check_w2_10",
 }
 
+# S6 #3965 implements the steering half. The seven IDs absent here — W3-01/02/03/04/
+# 05/10/12 — are registered in WAVE3_CHECKS with owners in PENDING_CHECK_OWNERS, so
+# they report not_run naming who owes them rather than failing unowned. Adding a
+# predicate here without the evidence to support it would be the worse half of that
+# trade: a check that runs and passes on an artifact nobody produced.
+WAVE3_PREDICATES: dict[str, str] = {
+    "W3-06": "check_w3_06",
+    "W3-07": "check_w3_07",
+    "W3-08": "check_w3_08",
+    "W3-09": "check_w3_09",
+    "W3-11": "check_w3_11",
+}
+
 # S7 (#3966) delivered the four wave-4 checks whose subject is the dashboard it
 # builds. #3970 adds the other six — the wave's preflight, the four consolidating
-# checks and the 37-criterion index — so every ID in the manifest now resolves to a
-# predicate and PENDING_CHECK_OWNERS is empty for this wave.
+# checks and the 37-criterion index — so every ID in wave 4's manifest now resolves
+# to a predicate and wave 4 has no entries in PENDING_CHECK_OWNERS.
 #
 # What that does and does not mean is the important part. It means "the evaluator is
 # missing" has stopped being a possible reason for a wave-4 not_run; a not_run from
-# here on names a missing INPUT — an absent artifact, an unaccepted prior wave, an
-# unregistered wave-3 manifest — and names who owes it. It does NOT mean the wave is
-# any closer to passing: the six new predicates assert prerequisites nobody has
-# satisfied yet, so the wave still reports honest not_runs, now for the real reason.
+# here on names a missing INPUT — an absent artifact, an unaccepted prior wave, a
+# wave 3 whose own gate has not passed — and names who owes it. It does NOT mean the
+# wave is any closer to passing: the six new predicates assert prerequisites nobody
+# has satisfied yet, so the wave still reports honest not_runs, now for the real
+# reason.
 #
 # The six are deliberately implemented as CURRENCY checks over other stories'
 # evidence rather than as re-runs of their probes. A W4-05 that re-aborted a run
@@ -7454,6 +8237,7 @@ WAVE4_PREDICATES: dict[str, str] = {
 CHECK_PREDICATES: dict[str, str] = {
     **WAVE1_PREDICATES,
     **WAVE2_PREDICATES,
+    **WAVE3_PREDICATES,
     **WAVE4_PREDICATES,
 }
 
@@ -7490,6 +8274,18 @@ MANIFEST_AWARE_CHECK_IDS: frozenset[str] = frozenset(
     {"W1-10", "W2-01", "W2-10", "W4-01", "W4-10"}
 )
 
+# Predicates that need the OUTCOMES of the checks that already ran in this run, not
+# just their IDs. Exactly one check needs this and it is worth being explicit about
+# why, because the distinction is what a defect hid behind.
+#
+# W4-10's row forbids "missing/skipped/not-run result", and the inventory in
+# MANIFEST_AWARE_CHECK_IDS carries check IDs only. A check ID set cannot distinguish a
+# wave that answered all ten from a wave that answered all ten with three failures, so
+# reading the inventory alone let W4-10 pass beside a failed sibling — a consolidation
+# certifying a report that does not pass its own gate. The statuses have to be passed
+# in for the assertion the docstring describes to be makeable at all.
+RESULTS_AWARE_CHECK_IDS: frozenset[str] = frozenset({"W4-10"})
+
 
 def split_post_cleanup_specs(
     specs: tuple[CheckSpec, ...],
@@ -7511,6 +8307,7 @@ def run_checks(
     specs: tuple[CheckSpec, ...] = WAVE1_CHECKS,
     *,
     manifest_ids: tuple[str, ...] = (),
+    prior_results: Sequence[CheckResult] = (),
     cleanup: CleanupOutcome | None = None,
     capture: SecurityCapture | None = None,
     teardown: ResourceTeardown | None = None,
@@ -7532,6 +8329,12 @@ def run_checks(
     `main` passes the manifest explicitly — because with the post-cleanup split
     ``specs`` is only part of the wave, and a self-completeness check comparing
     against its own partition would always agree with itself.
+
+    ``prior_results`` is the results of any EARLIER partition of the same wave, for
+    the checks in RESULTS_AWARE_CHECK_IDS whose subject is the report's own outcomes.
+    Without it a consolidation running in the post-cleanup partition would see only
+    that partition's results and conclude the wave was clean because it could not see
+    the failures.
 
     ``cleanup`` is the harness's first-hand teardown record, passed to the checks
     that verify it. ``None`` means cleanup has not run, which those checks report
@@ -7595,6 +8398,13 @@ def run_checks(
         kwargs: dict[str, object] = {}
         if spec.check_id in MANIFEST_AWARE_CHECK_IDS:
             kwargs["emitted_ids"] = inventory
+        if spec.check_id in RESULTS_AWARE_CHECK_IDS:
+            # The outcomes recorded SO FAR, which for W4-10 is the other nine: it is
+            # last in the manifest, and a check cannot be handed its own verdict
+            # before it has one. A wave-4 run split across partitions passes the
+            # earlier partition's results in through `prior_results`, so the
+            # consolidation still sees the whole wave.
+            kwargs["results_so_far"] = tuple(prior_results) + tuple(results)
         if spec.check_id in CLEANUP_AWARE_CHECK_IDS:
             kwargs["cleanup"] = cleanup
         if spec.check_id in CAPTURE_AWARE_CHECK_IDS:
@@ -8467,6 +9277,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - each exit is 
                     driver,
                     post_cleanup_specs,
                     manifest_ids=expected_ids,
+                    # The earlier partition's outcomes, so a consolidation running here
+                    # sees the whole wave rather than only this partition. Without it a
+                    # results-aware check in the post-cleanup group would conclude the
+                    # wave was clean because the failures were before its horizon.
+                    prior_results=results,
                     cleanup=cleanup,
                     capture=capture,
                     teardown=teardown,
