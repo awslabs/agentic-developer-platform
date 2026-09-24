@@ -2310,8 +2310,8 @@ async function main(): Promise<void> {
       store: controlStore,
       // Issue #3961: the seam that makes an accepted command actually happen.
       // Without it every 202 was a promise nothing kept.
-      executor: (action, commandId) =>
-        applyControlCommand({ action, commandId, adapter: controlAdapter, store: controlStore, log }),
+      executor: (action, commandId, reason) =>
+        applyControlCommand({ action, commandId, reason, adapter: controlAdapter, store: controlStore, log }),
       // Issue #5028: this run's own identity and the gateway's public verification
       // keys. Both are placed here by the entrypoint. An absent key map means
       // live-control commands are refused — the read paths still work, and no verb

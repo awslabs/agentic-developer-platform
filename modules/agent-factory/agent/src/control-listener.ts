@@ -141,8 +141,13 @@ export interface ControlListenerConfig {
    * Invoked *through* the journal's delivery gate rather than directly, so an
    * envelope-bearing command is revalidated against the gateway first. The
    * executor itself must therefore settle the command it is handed.
+   *
+   * `reason` is the operator's own words, already length-bounded by payload
+   * validation, and `null` when none was supplied. It exists for `abort`
+   * (Issue #3963), whose terminal outcome quotes it back in the closing comment;
+   * verbs that do not use it ignore the argument.
    */
-  executor?: (action: ControlAction, commandId: string) => Promise<void>;
+  executor?: (action: ControlAction, commandId: string, reason: string | null) => Promise<void>;
 
   /**
    * This run's own id — Issue #5028.
@@ -522,7 +527,8 @@ export class ControlListener {
         // journal is the durable record, and the dashboard polls state, so the
         // outcome reaches the operator either way.
         this.writeJson(res, 202, { command: outcome.record, state: this.config.store.snapshot().state });
-        this.deliveryTail = this.deliveryTail.then(() => this.applyAccepted(action, validation.commandId));
+        this.deliveryTail = this.deliveryTail.then(() =>
+          this.applyAccepted(action, validation.commandId, validation.reason));
         return;
     }
   }
@@ -548,7 +554,7 @@ export class ControlListener {
    * pending cap doing its job. Auto-rejecting here instead would silently drain
    * the queue and disable the 429 backpressure the cap exists to provide.
    */
-  private async applyAccepted(action: ControlAction, commandId: string): Promise<void> {
+  private async applyAccepted(action: ControlAction, commandId: string, reason: string | null): Promise<void> {
     const executor = this.config.executor;
     if (!executor) {
       // Nothing to apply it with. Logged, not settled — see above.
@@ -564,7 +570,7 @@ export class ControlListener {
       // rejection would surface as an unhandled rejection and could take the
       // worker down over a control command.
       const run = () => {
-        void store.executeDelivered(commandId, () => executor(action, commandId)).catch((err: unknown) => {
+        void store.executeDelivered(commandId, () => executor(action, commandId, reason)).catch((err: unknown) => {
           this.log('warn', 'control executor failed', { action, command_id: commandId,
             detail: (err as Error)?.message ?? String(err) });
           store.settle(commandId, 'rejected', 'control executor failed');
@@ -660,7 +666,7 @@ export class ControlListener {
   private validatePayload(
     action: ControlAction,
     payload: Record<string, unknown>,
-  ): { ok: true; commandId: string } | { ok: false; detail: string } {
+  ): { ok: true; commandId: string; reason: string | null } | { ok: false; detail: string } {
     const allowed = action === 'steer' ? ['command_id', 'instruction'] : ['command_id', 'reason'];
     for (const key of Object.keys(payload)) {
       if (!allowed.includes(key)) {
@@ -686,9 +692,15 @@ export class ControlListener {
       if (typeof reason !== 'string' || reason.length > MAX_REASON_CHARS) {
         return { ok: false, detail: 'reason is invalid' };
       }
+      // Returned so the executor can carry it into the abort record and from
+      // there into the operator-facing closing comment — Issue #3963. Validation
+      // is the only place that has seen the body, and the journal's own `reason`
+      // field is the command's *outcome* annotation, not the request, so there is
+      // nowhere else to read it back from.
+      return { ok: true, commandId, reason };
     }
 
-    return { ok: true, commandId };
+    return { ok: true, commandId, reason: null };
   }
 
   /**
