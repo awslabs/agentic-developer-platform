@@ -455,7 +455,20 @@ async def verify_live_authority(
     """Fail closed on a withdrawn plan or work claim immediately before an effect."""
     async with factory() as session:
         admission = await load_in_force_policy(session, org_id=record.org_id, flow_id=record.flow_id)
-        if admission.refusal is not None or admission.policy is None or admission.plan_version != record.accepted_plan_version:
+        from .plan_lineage import execution_plan_matches
+
+        if (
+            admission.refusal is not None
+            or admission.policy is None
+            or not await execution_plan_matches(
+                session,
+                org_id=record.org_id,
+                flow_id=record.flow_id,
+                node_id=record.node_id,
+                version=record.accepted_plan_version,
+                current_version=admission.plan_version,
+            )
+        ):
             return BlockRecord(
                 code=BlockCode.AUTHORITY_UNVERIFIABLE,
                 owner="plan-owner",

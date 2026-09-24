@@ -124,6 +124,11 @@ async def valid_waiver(session, node):
         return None
     try:
         content = json.loads(record.reason)
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, content, node_id=node.id)
+        if plan is None:
+            return None
         expected = dict(
             contract=CONTRACT,
             plan_id=plan.id,

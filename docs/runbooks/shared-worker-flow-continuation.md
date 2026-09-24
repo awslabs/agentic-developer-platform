@@ -258,3 +258,17 @@ It neither reports completion nor approves a review. Verify an acknowledged
 worker start and then actual review evidence after recovery. A worker that exited
 without a terminal receipt still requires evidenced ownership/effect recovery;
 absence of activity is not permission to replace it.
+
+## Correct dependencies in future waves
+
+While the flow is paused, its policy owner can preview and accept explicit edge
+changes through `/orchestration/flows/{flow_id}/wave-dependencies/preview` and
+`/accept`. Only prerequisites of waves with no execution or accepted evaluation
+history may change. Every started wave is frozen in full; active workers may
+continue and finish. Acceptance preserves their original assignments, the
+existing evaluation waiver, effective policy supplements and budget posture.
+
+See [the dependency amendment contract](../design-notes/paused-wave-dependency-amendments.md)
+for request examples, preview tokens, lock conflicts and scope restrictions.
+The flow remains paused after acceptance; review the accepted graph before
+resuming admission.
