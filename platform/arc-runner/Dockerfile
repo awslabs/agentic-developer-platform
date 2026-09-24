@@ -18,12 +18,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 USER root
 
-# Use authenticated Ubuntu mirrors for both indexes and package downloads.
-# Plain HTTP returned a stale package/index pair in CodeBuild (package 404).
+# Pin a coherent Ubuntu archive: rolling mirrors advertised unavailable expat
+# packages during recovery. Refresh this date alongside the runner base.
+ARG UBUNTU_SNAPSHOT=20260924T000000Z
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
         -exec sed -i \
-        -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-        -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' {} +
+        -e "s|http://archive.ubuntu.com/ubuntu|https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" \
+        -e "s|http://security.ubuntu.com/ubuntu|https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}/|g" {} +
 
 # ── Base utilities ──────────────────────────────────────────────────────────
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
