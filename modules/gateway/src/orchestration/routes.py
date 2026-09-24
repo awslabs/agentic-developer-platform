@@ -91,6 +91,7 @@ from src.orchestration.dispatch_pass import (
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.draft_revision_routes import router as draft_revision_router
 from src.orchestration.evaluation_acceptance_routes import router as evaluation_acceptance_router
+from src.orchestration.evaluation_waiver_routes import router as evaluation_waiver_router
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
 from src.orchestration.flow_controls import router as flow_controls_router
@@ -118,7 +119,7 @@ from src.orchestration.shared_window_routes import router as shared_window_route
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
-from .delivery_progress import DeliveryProgress, current_executions, node_progress
+from .delivery_progress import DeliveryProgress, current_executions, is_preserved_execution, node_progress
 
 logger = logging.getLogger("bedrockgateway.orchestration")
 
@@ -1364,6 +1365,7 @@ class GraphNodeResponse(BaseModel):
     # generic message — so this never claims a binding exists where one does not.
     bound_pull_request: dict | None = None
     binding_hold: str | None = None
+    evaluation_waiver: dict | None = None
     cost: NodeCostResponse
     created_at: str
     updated_at: str | None
@@ -1473,12 +1475,26 @@ async def get_flow_graph(
     dispatches: dict[str, dict] = {}
     result_summaries: dict[str, dict] = {}
     gate_decisions: dict[str, GateDecisionSummary] = {}
+    waivers: dict[str, dict] = {}
     observed_at: dict[str, tuple[int, str]] = {}
     admission_refusals: dict[str, dict] = {}
     from .admission_diagnostics import ACTOR as ADMISSION_ACTOR
     from .admission_diagnostics import CONTRACT as ADMISSION_CONTRACT
 
     for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind == "evaluation_waived" and decision.actor_kind == "human":
+            try:
+                content = json.loads(decision.reason or "{}")
+                waivers[decision.node_id] = dict(
+                    decision_id=decision.id,
+                    actor_id=decision.actor_id,
+                    created_at=decision.created_at.isoformat(),
+                    reason=content["reason"],
+                    criterion_ids=content["criterion_ids"],
+                    plan_version=content["plan_version"],
+                )
+            except (ValueError, KeyError, TypeError):
+                pass
         if decision.kind == DecisionKind.TRANSITION_REJECTED.value and decision.actor_id == ADMISSION_ACTOR and decision.actor_kind == "service":
             try:
                 refusal = json.loads(decision.rejection_reason or "{}")
@@ -1518,6 +1534,9 @@ async def get_flow_graph(
     cost_by_address = {node_cost.address: node_cost for node_cost in aggregate.nodes}
 
     graph_nodes: list[GraphNodeResponse] = []
+    from .plan_lineage import preserved_execution_pairs
+
+    preserved = set(await preserved_execution_pairs(db, org_id=current_user.org_id, flow_ids=[flow_id]))
     for node in nodes:
         address = f"{flow.slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
         node_cost = cost_by_address.get(address)
@@ -1586,11 +1605,13 @@ async def get_flow_graph(
                     execution=executions_by_node.get(node.id),
                     policy_enabled=policy_inputs.policy is not None or policy_inputs.refusal is not None,
                     plan_version=policy_inputs.plan_version,
+                    preserved_execution=is_preserved_execution(executions_by_node.get(node.id), preserved),
                     policy_hash=policy_inputs.policy.policy_hash if policy_inputs.policy else None,
                     admission_refusal=admission_refusals.get(node.id),
                     observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
                 ),
                 last_gate_decision=gate_decisions.get(node.id),
+                evaluation_waiver=waivers.get(node.id) if node.state == "waived" else None,
                 configuration_problem=(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
                 ),
@@ -1923,5 +1944,6 @@ router.include_router(shared_concurrency_router)
 router.include_router(shared_retry_router)
 router.include_router(shared_window_router)
 router.include_router(evaluation_acceptance_router)
+router.include_router(evaluation_waiver_router)
 
 router.include_router(draft_revision_router)

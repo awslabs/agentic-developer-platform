@@ -1,5 +1,9 @@
 # Append missing producers to an accepted shared flow
 
+For dependency changes among existing nodes while other waves are active, use
+[paused wave dependency amendments](paused-wave-dependency-amendments.md). That
+separate path freezes whole started waves and preserves active assignments.
+
 The human who owns an accepted `code_only` shared-worker policy can add story
 producers and dependency edges through:
 

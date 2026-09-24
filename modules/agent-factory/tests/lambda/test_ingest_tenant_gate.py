@@ -33,7 +33,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event, start_webchat_session
 
 HANDLER_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "gateway", "lambdas", "ingest"
@@ -217,16 +217,42 @@ def _enable_ownership(monkeypatch, org_to_installation: dict):
     sys.modules["installation_resolver"] = module
 
 
-def _send(handler, *, repo: str, org_id: str | None, session: str):
-    """Deliver a webchat message whose classification targets `repo`."""
-    claims = {"sub": f"user-{session}", "email": f"{session}@example.com", "custom:tenant_id": "test-tenant"}
+def _claims(session: str, org_id: str | None) -> dict:
+    claims = {"sub": f"user-{session}", "email": f"{session}@example.com",
+              "custom:tenant_id": "test-tenant"}
     if org_id is not None:
         claims["custom:org_id"] = org_id
+    return claims
+
+
+def _start(handler, *, session: str, org_id: str | None) -> str:
+    """#5615: get a server-issued session id for the caller `_send` will use.
+
+    Call this when the test needs to know the id (to read the row back). The
+    claims must match `_send`'s exactly, or the ownership gate refuses the
+    message and the test stops exercising the tenant gate it is about.
+    """
+    return start_webchat_session(
+        handler, _claims(session, org_id), connection_id=f"conn-{session}"
+    )
+
+
+def _send(handler, *, repo: str, org_id: str | None, session: str,
+          session_id: str | None = None):
+    """Deliver a webchat message whose classification targets `repo`.
+
+    #5615: webchat session ids are server-issued, so this asks the server for
+    one first, the way the browser now does. Pass `session_id` when the test
+    already has an id — a pre-seeded row, or one obtained via `_start`.
+    """
+    claims = _claims(session, org_id)
+    if session_id is None:
+        session_id = _start(handler, session=session, org_id=org_id)
     return handler.lambda_handler(
         mock_apigw_event(
             route_key="$default",
             body={"action": "message", "text": f"Fix the bug in {repo}",
-                  "session_id": session},
+                  "session_id": session_id},
             connection_id=f"conn-{session}",
             authorizer_claims=claims,
         ),
@@ -264,11 +290,14 @@ class TestForeignOwnerRejected:
         handler, calls = _load_handler(
             _dispatch_classification(f"{FOREIGN_ORG}/secret-repo"), monkeypatch
         )
+        session_id = _start(handler, session="sess-foreign-thread",
+                            org_id=CONFIGURED_ORG)
         _send(handler, repo=f"{FOREIGN_ORG}/secret-repo",
-              org_id=CONFIGURED_ORG, session="sess-foreign-thread")
+              org_id=CONFIGURED_ORG, session="sess-foreign-thread",
+              session_id=session_id)
 
         item = aws["table"].get_item(
-            Key={"session_id": "sess-foreign-thread"}
+            Key={"session_id": session_id}
         ).get("Item", {})
         assert item.get("threads", {}) == {}
 
@@ -336,8 +365,11 @@ class TestForeignOwnerRejected:
             "messages": [],
         })
 
+        # The subject is this pre-seeded conversation, so the id is passed
+        # explicitly rather than minted — see `_send`.
         result = _send(handler, repo=f"{FOREIGN_ORG}/secret-repo",
-                       org_id=CONFIGURED_ORG, session="sess-foreign-followup")
+                       org_id=CONFIGURED_ORG, session="sess-foreign-followup",
+                       session_id="sess-foreign-followup")
 
         assert result["statusCode"] == 403
         assert calls["comment"] == []
@@ -381,14 +413,20 @@ class TestOrgIdFailsClosed:
         """
         repo = f"{CONFIGURED_ORG}/app"
         handler, calls = _load_handler(_dispatch_classification(repo), monkeypatch)
+        claims = {"sub": "user-tenant-only", "custom:tenant_id": CONFIGURED_ORG}
+        # #5615: the server issues the session id. A tenant-only caller CAN own
+        # a conversation — the tenant is what the owner record needs — which is
+        # exactly why the dispatch gate must still read org_id and refuse below.
+        session_id = start_webchat_session(
+            handler, claims, connection_id="conn-tenant-only"
+        )
         result = handler.lambda_handler(
             mock_apigw_event(
                 route_key="$default",
                 body={"action": "message", "text": f"Fix {repo}",
-                      "session_id": "sess-tenant-only"},
+                      "session_id": session_id},
                 connection_id="conn-tenant-only",
-                authorizer_claims={"sub": "user-tenant-only",
-                                   "custom:tenant_id": CONFIGURED_ORG},
+                authorizer_claims=claims,
             ),
             None,
         )

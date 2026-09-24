@@ -398,9 +398,28 @@ describe('a legacy run cannot accept an abort', () => {
 
     expect(IMPLEMENTED_CONTROL_VERBS.has('abort' as ControlAction)).toBe(true);
     expect(store.isSupported('abort' as ControlAction)).toBe(true);
-    // Steer is the control: unsupported, so unauthenticated — and also
-    // undeliverable, which is why that combination is safe.
-    expect(store.isSupported('steer' as ControlAction)).toBe(false);
+
+    // This test used to name `steer` as its control — an implemented verb paired
+    // with an unimplemented one, showing the two answers tracking each other.
+    // Issue #3965 implements `steer`, so that control is gone, and the honest
+    // repair is to assert the derivation over the whole verb set rather than to
+    // find another verb to stand in. This is strictly stronger than the original
+    // pair: it holds no matter which verbs are implemented, so it cannot be
+    // invalidated again the next time one is enabled.
+    const everyVerb: ControlAction[] = ['pause', 'resume', 'steer', 'abort'];
+    for (const verb of everyVerb) {
+      expect(store.isSupported(verb)).toBe(IMPLEMENTED_CONTROL_VERBS.has(verb));
+    }
+
+    // And the other half of the derivation, which is what made the original
+    // control safe: an unsupported verb is unauthenticated *and* undeliverable.
+    // Constructed with an empty supported set rather than by naming a verb,
+    // because there is no longer an unimplemented verb to name.
+    const legacy = new ControlStateStore({ generation: 4, supportedActions: new Set<ControlAction>() });
+    for (const verb of everyVerb) {
+      expect(legacy.isSupported(verb)).toBe(false);
+      expect(legacy.submit(verb, `${COMMAND}-${verb}`, 'fingerprint-x').kind).toBe('unsupported');
+    }
   });
 
   it('cannot deliver an abort when no revalidator is configured', async () => {

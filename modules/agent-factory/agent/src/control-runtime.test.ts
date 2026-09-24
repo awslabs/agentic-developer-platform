@@ -800,14 +800,27 @@ describe('capability intersection', () => {
   });
 
   it('defaults to the ADP-implemented set rather than to everything the adapter claims', () => {
-    // Omitting the set permits what ADP implements, but never steer.
-    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual(['pause', 'resume', 'abort']);
+    // This case used to name `steer` as the verb an adapter claims and ADP does
+    // not implement. Issue #3965 implements it, and with all four verbs now
+    // implemented there is no verb left to play that role — so the property is
+    // asserted as the derivation itself: omitting `implemented` yields exactly
+    // `IMPLEMENTED_CONTROL_VERBS` membership, whatever that set happens to hold.
+    // That is what the original example was evidence *for*, and unlike the example
+    // it cannot be invalidated by enabling another verb.
     expect(intersectCapabilities({ adapter: bothSupported })).toEqual({
-      pause: true,
-      resume: true,
-      steer: false,
-      abort: true,
+      pause: IMPLEMENTED_CONTROL_VERBS.has('pause'),
+      resume: IMPLEMENTED_CONTROL_VERBS.has('resume'),
+      steer: IMPLEMENTED_CONTROL_VERBS.has('steer'),
+      abort: IMPLEMENTED_CONTROL_VERBS.has('abort'),
     });
+    // And the narrowing direction, which is the half that actually protects a
+    // caller: an adapter claiming all four against a deliberately smaller ADP set
+    // gets only the smaller set. This is the same veto the default relies on, shown
+    // with a set small enough that "trusting the adapter" would be visible.
+    expect(intersectCapabilities({
+      implemented: new Set<ControlAction>(['pause']),
+      adapter: bothSupported,
+    })).toEqual({ pause: true, resume: false, steer: false, abort: false });
     // The veto is the *default*, not a hardcoded answer: the same adapter with an
     // explicit implemented set still yields its claimed verbs, so this test
     // cannot pass merely because intersection returns false for everything.
@@ -908,7 +921,12 @@ describe('listener verb derivation', () => {
     // it is cancellation, not a gated tool boundary, so a run with no barrier can
     // still be stopped. Advertising it here is the honest answer for the same
     // reason refusing pause is — each claim tracks the mechanism actually present.
-    expect([...listenerActionsFor(new ClaudeControlAdapter())]).toEqual(['abort']);
+    //
+    // Steering joins abort for the same reason (#3965): its transport is the SDK's
+    // streaming input, which does not run through the admission barrier, so a run
+    // with no barrier can still be steered. The gate-dependent verbs are the two
+    // that name the gate.
+    expect([...listenerActionsFor(new ClaudeControlAdapter())].sort()).toEqual(['abort', 'steer']);
   });
 
   it('refuses to advertise a verb ADP implemented but the adapter cannot perform', () => {
@@ -961,11 +979,12 @@ describe('listener verb derivation', () => {
   });
 
   it('defaults to the ADP-implemented set, so a caller cannot widen it by omission', () => {
-    // Omitting the second argument must not mean "trust the adapter". This adapter
-    // claims all four; the default admits only what ADP has implemented, and
-    // `steer` — claimed here — is still excluded.
+    // Omitting the second argument must not mean "trust the adapter". With all four
+    // verbs now implemented (#3965) an adapter claiming all four can no longer show
+    // that by exclusion, so the default is asserted against the shipped set itself
+    // — which is the property the old `steer`-shaped example stood in for.
     expect([...listenerActionsFor(adapterClaiming(allSupported))].sort())
-      .toEqual(['abort', 'pause', 'resume']);
+      .toEqual([...IMPLEMENTED_CONTROL_VERBS].sort());
     // ...and the default is genuinely the ADP set rather than a hardcoded empty
     // answer: the same adapter with an explicit set still derives those verbs.
     expect([...listenerActionsFor(adapterClaiming(allSupported), PAUSE_AND_RESUME)].sort())

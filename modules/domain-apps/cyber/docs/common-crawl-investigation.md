@@ -1,7 +1,8 @@
 # Historical context before live URL investigation
 
-The hosted cyber agent uses `prepare → hypothesize → browse`, followed by its
-existing evidence/review/action loop. Preparation queries Common Crawl's Parquet
+The hosted cyber agent uses `prepare → selected archive pages → hypothesize → browse`,
+followed by its existing evidence/review/action loop. Page selection is model-directed
+and optional when the index has no useful candidates. Preparation queries Common Crawl's Parquet
 index through Athena without starting a browser. The model reads the recorded
 metadata, states an initial hypothesis and limitations, then tests that hypothesis
 against the current site. No classification labels are imported from the index.
@@ -11,7 +12,7 @@ against the current site. No classification labels are imported from the index.
 Each lookup records its Athena query ID, workgroup, database, selected crawl
 partitions, scan bytes, and up to 30 newest matching index records. Records include
 URL, hostname, fetch time/status, content type/language, content digest, and WARC
-coordinates. Page bodies are not downloaded. The model can infer useful leads
+coordinates. Discovery alone does not download page bodies. The model can infer useful leads
 from paths and metadata, but cannot claim historical page text or ownership from
 these fields. A digest match is a lead about indexed content, not attribution.
 
@@ -24,11 +25,54 @@ filters for Parquet pruning; a public suffix is not a supported domain-wide cens
 The latest 30 rows are a sample, not prevalence statistics or a first-seen date.
 
 The initial hypothesis and source IDs are retained in case JSON and reports.
-Archive context remains separate from browser observations and can inform the
-existing `context_assessment` even when live browsing fails. Unavailable sources
-cannot support reported facts. Query output remains in S3; the dedicated query
-bucket expires its intermediate results after seven days. Normal case artifacts
+Archive records and browser observations retain their distinct provenance. The
+model weighs both in the overall verdict; `context_assessment` holds source-linked
+contextual findings. Browser failure does not veto an archive-informed conclusion.
+The model must describe unavailable sources and missing page content honestly.
+Query output remains in S3; the dedicated query bucket expires its intermediate results after seven days. Normal case artifacts
 follow their own retention policy.
+
+## Selective archived page content
+
+This follows the existing CIP discovery, selected range-read, snapshot and extraction
+pattern. The reviewed source is pinned to CIP commit
+[`6f7b59ac`](https://github.com/aws-e/cip/tree/6f7b59ac28e286f6b53b50b58ef7ed167dc44df6):
+
+- [`provider.py`](https://github.com/aws-e/cip/blob/6f7b59ac28e286f6b53b50b58ef7ed167dc44df6/src/retrieval/providers/commoncrawl/provider.py) selects and caches representative pages.
+- [`warc_fetch.py`](https://github.com/aws-e/cip/blob/6f7b59ac28e286f6b53b50b58ef7ed167dc44df6/src/retrieval/providers/commoncrawl/warc_fetch.py) reads S3 byte ranges and snapshots payloads before extraction.
+- [`extract.py`](https://github.com/aws-e/cip/blob/6f7b59ac28e286f6b53b50b58ef7ed167dc44df6/src/extract/extract.py) extracts text without browsing the original site.
+
+The cyber adaptation lets the model select pages from `archive_candidates` rather
+than using CIP's company-page ranking. It retains forms and script text as inert
+evidence in addition to prose and links. There is no CIP service dependency or
+second classifier. The maintained command is:
+
+```bash
+python /app/skills/url-analysis/domain_investigation.py archive --case "$CASE_DIR" \
+  --source-id "$INDEX_SOURCE_ID" --capture-id "$CAPTURE_ID" \
+  --reason "$RESEARCH_QUESTION"
+```
+
+A selection resolves to the stored index coordinates, never caller-supplied S3
+locations. The tool reads one range from `s3://commoncrawl/`, checks its framing
+and target identity, saves the WARC member and original response payload, then
+extracts content without executing it. Extracted content has a source ID and an
+inert JSON artifact. Original bytes and extracted content have SHA-256 hashes in
+the case manifest. Capture time and retrieval time remain separate.
+
+The CLI returns a preview; the model can read `content_file` for the retained
+extraction. The evaluation adapter exposes `archive` and `inspect_archive` tools.
+Each case can select eight records; duplicate selections reuse their result.
+Reads are bounded to 8 MiB compressed and 25 MiB expanded per record. Text and
+script truncation is recorded. Non-text formats and unsupported encodings remain
+explicit extraction failures with downloaded bytes preserved. These operational
+limits do not assign a verdict. Public target content retrieval runs only in AWS;
+local tests use synthetic WARC fixtures. Complete case artifacts use the existing
+AWS run-artifact publication path.
+
+The model may cite archived-page source IDs in its final assessment even when
+live browsing fails. Archived text does not establish current behavior, and a
+script or form's declared action does not establish observed execution.
 
 ## Runtime changes
 
@@ -45,7 +89,7 @@ partial evidence; destination-policy refusals still propagate as refusals.
 Screenshot failure no longer prevents DOM evidence from being
 retained, and frame capture happens after the main screenshot. Both normal and
 checkpoint observations contain the evidence-item inventory required by the
-assessment validator. A skipped corroboration lookup preserves saved findings.
+reference integrity checks. A skipped corroboration lookup preserves saved findings.
 
 With session-owner routing enabled, new starts use the Kubernetes service without
 client-IP affinity. The returned private capability includes its owner pod IP;
@@ -66,7 +110,9 @@ S3 results bucket, projected Glue table and scoped worker policy when explicit
 crawl partitions are configured. The workgroup enforces a 1 GiB scan cutoff per
 query. The client verifies that cutoff before starting a query and requests
 cancellation if its 45-second polling budget expires. IAM grants index-object
-reads under `commoncrawl/cc-index/table/cc-main/warc/`, not WARC payload downloads.
+index reads under `commoncrawl/cc-index/table/cc-main/warc/` and read-only WARC
+access under `crawl-data/<configured-crawl>/segments/*/warc/*.warc.gz`. No additional
+evidence-bucket or operator access is granted.
 
 Pass application settings through webhook-stack composition:
 

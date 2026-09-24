@@ -18,7 +18,7 @@ from analyst_context import SOURCES, context_records, incident_records, lookup
 from browser_client import investigation_request
 from browser_guard import DestinationRefused
 from case_contract import Assessment, content_digest, digest, sanitize, utcnow
-from evidence_items import evidence_eligibility, validate_inventory
+from evidence_items import evidence_coverage, validate_inventory
 from research_case import (
     CASE_FILE,
     _inconclusive,
@@ -31,6 +31,7 @@ from research_case import (
 
 MAX_INVESTIGATION_STEPS = 24
 MAX_PROFILES = 2
+MAX_ARCHIVE_PAGES = 8
 
 
 def _lease_path(output):
@@ -204,12 +205,6 @@ def _record_close(case, result):
     for probe in case["probes"]:
         if probe.get("manifest", {}).get("session_id") == sid:
             probe["manifest"]["cleanup_status"] = status
-    if status != "stopped":
-        for o in case["observations"]:
-            if o["session_id"] == sid:
-                o["status"] = "partial"
-                o["errors"].append("session_cleanup_unconfirmed")
-        case["assessment"] = _inconclusive("Browser cleanup was not confirmed")
     case["browser_view"]["session_open"] = False
 
 
@@ -253,7 +248,7 @@ def _initialize(
     objective,
     *,
     profile="desktop",
-    scope="host",
+    scope="observed_external",
     incident_context=None,
     brand_references=None,
 ):
@@ -361,7 +356,7 @@ def start(
     objective,
     *,
     profile="desktop",
-    scope="host",
+    scope="observed_external",
     incident_context=None,
     brand_references=None,
     request=investigation_request,
@@ -646,18 +641,22 @@ def finish(
             case["assessment_attempts"] = attempts[-10:]
             save_case(output, case)
             raise
-        if (
-            case["observations"]
-            and review_data is None
-            and (
-                not case["reviews"]
-                or case["reviews"][-1]["probe_id"] != case["probes"][-1]["id"]
-            )
-        ):
-            raise ValueError("Review the latest observation before finishing")
     if review_data is not None and case["observations"]:
         review(output, review_data)
-    close(output, reason, request=request)
+    # Cleanup is always attempted. Failure is operational evidence, not a verdict veto.
+    try:
+        close(output, reason, request=request)
+    except Exception as error:
+        with _case(output) as case:
+            case["stop_reason"] = _text(reason, "stop reason")
+            case.setdefault("operational_errors", []).append(
+                {
+                    "operation": "close",
+                    "error": type(error).__name__,
+                    "diagnostic": sanitize(str(error))[:1000],
+                }
+            )
+            save_case(output, case)
     return assess_case(output, parsed.model_dump())
 
 
@@ -669,10 +668,11 @@ def assessment_contract(case=None):
             evidence_items={
                 o["id"]: o.get("evidence_items", []) for o in case["observations"]
             },
-            evidence_eligibility={
-                o["id"]: evidence_eligibility(o) for o in case["observations"]
+            evidence_coverage={
+                o["id"]: evidence_coverage(o) for o in case["observations"]
             },
             valid_context_ids=[r["id"] for r in context_records(case) if "id" in r],
+            archive_candidates=archive_candidates(case),
             empty_evidence_assessment=_inconclusive(
                 "No page observations were captured"
             ),
@@ -695,6 +695,7 @@ def status(case):
         "target_url": case["target_url"],
         "objective": case["objective"],
         "collection": collection_summary(case),
+        "browser_cleanup": case.get("browser_cleanup", "unknown"),
         "assessment": case["assessment"],
         "assessment_required": bool(case["observations"] or context_records(case)),
         "terminal": bool(case.get("stop_reason")) and not view.get("session_open"),
@@ -703,6 +704,7 @@ def status(case):
         "corroboration": case.get("corroboration", []),
         "incident_context": case.get("incident_context", []),
         "context_records": context_records(case),
+        "archive_candidates": archive_candidates(case),
         "enrichment_available": True,
         "last_probe": case["probes"][-1] if case["probes"] else None,
         "initial_hypothesis": case.get("initial_hypothesis"),
@@ -741,13 +743,156 @@ def _append_context(case, record):
     records.append({**sanitize(record), "id": f"corroboration-{len(records) + 1:03d}"})
 
 
+def archive_candidates(case):
+    """Expose recorded page choices; the model selects relevance, not a URL rule."""
+    return [
+        {
+            "source_id": source["id"],
+            "capture_id": capture.get("capture_id", f"capture-{i + 1:03d}"),
+            **{
+                key: capture.get(key)
+                for key in (
+                    "url",
+                    "crawl",
+                    "fetch_time",
+                    "fetch_status",
+                    "content_mime_type",
+                )
+            },
+        }
+        for source in context_records(case)
+        if source.get("kind") == "archive_index" and source.get("status") == "available"
+        for i, capture in enumerate(source.get("captures", []))
+    ]
+
+
+def archive(output, source_id, capture_id, reason, *, fetch_fn=None):
+    """Fetch a model-selected archived page; preserve bytes before extracting them."""
+    from archive_content import coordinates, extract_content, fetch_record, parse_record
+
+    reason = _text(reason, "archive selection reason")
+    with _case(output) as case:
+        source = next(
+            (
+                s
+                for s in context_records(case)
+                if s.get("id") == source_id
+                and s.get("kind") == "archive_index"
+                and s.get("status") == "available"
+            ),
+            None,
+        )
+        if source is None:
+            raise ValueError("Select a recorded Common Crawl index source")
+        capture = next(
+            (
+                c
+                for i, c in enumerate(source.get("captures", []))
+                if c.get("capture_id", f"capture-{i + 1:03d}") == capture_id
+            ),
+            None,
+        )
+        if capture is None:
+            raise ValueError("Select an existing archive capture ID")
+        prior = [r for r in context_records(case) if r.get("kind") == "archived_page"]
+        for page in prior:
+            if (
+                page["index_source_id"] == source_id
+                and page["capture_id"] == capture_id
+            ):
+                return case  # Reuse the preserved result, including a recorded failure.
+        if len(prior) >= MAX_ARCHIVE_PAGES:
+            raise ValueError(
+                "Archive page budget exhausted; assess the preserved content"
+            )
+        _append_context(
+            case,
+            {
+                "kind": "archived_page",
+                "source": "common_crawl_warc",
+                "status": "fetching",
+                "verdict_effect": "model_assessed",
+                "index_source_id": source_id,
+                "capture_id": capture_id,
+                "selection_reason": reason,
+                "checked_at": utcnow(),
+                "url": capture.get("url"),
+                "crawl": capture.get("crawl"),
+                "index_fetch_time": capture.get("fetch_time"),
+                "limitations": [
+                    "Historical archive content; current behavior may differ."
+                ],
+            },
+        )
+        record = case["corroboration"][-1]
+        stem = f"archive-{len(prior) + 1:03d}"
+        save_case(output, case)
+        try:
+            key, offset, length = coordinates(capture)
+            raw = (fetch_fn or fetch_record)(capture)
+            if len(raw) != length:
+                raise ValueError("Archive range length differs from the index")
+            archive_file = stem + ".warc.gz"
+            (output / archive_file).write_bytes(raw)
+            record.update(
+                warc_filename=key,
+                warc_record_offset=offset,
+                warc_record_length=length,
+                archive_file=archive_file,
+                archive_sha256=digest(raw),
+            )
+            save_case(output, case)
+            payload, metadata = parse_record(raw, capture)
+            # Keep original response bytes inert. Do not replace them with redacted text.
+            payload_file = stem + "-payload.bin"
+            (output / payload_file).write_bytes(payload)
+            record.update(
+                **metadata, payload_file=payload_file, payload_sha256=digest(payload)
+            )
+            save_case(output, case)
+            content = extract_content(payload, metadata)
+            content_file = stem + "-content.json"
+            (output / content_file).write_text(json.dumps(content, indent=2) + "\n")
+            record.update(
+                status="available",
+                content_file=content_file,
+                content_sha256=digest((output / content_file).read_bytes()),
+                content_preview={
+                    "title": content["title"],
+                    "text": content["text"][:6000],
+                    "forms": content["forms"],
+                    "links": content["links"][:30],
+                    "scripts": [
+                        {**s, "inline": s["inline"][:1000]} for s in content["scripts"]
+                    ],
+                    "extraction_truncated": content["extraction_truncated"],
+                    "preview_notice": "Preview only; read content_file for the full retained extraction.",
+                },
+                limitations=record["limitations"] + content["limitations"],
+            )
+        except Exception as error:
+            record.update(
+                status="unavailable",
+                error_type=type(error).__name__,
+                reason="Selected archive content could not be extracted; any downloaded bytes remain preserved.",
+            )
+            # Parser errors are fixed diagnostics; network errors may carry provider details.
+            if isinstance(error, ValueError):
+                record["diagnostic"] = sanitize(str(error))[:1000]
+        save_case(output, case)
+        return case
+
+
 def enrich(output, source, reason, *, lookup_fn=lookup):
     """One model-selected provider lookup for the seed; browser state is preserved."""
     reason = _text(reason, "enrichment reason")
     if source not in SOURCES:
         raise ValueError("Unsupported enrichment source")
     with _case(output) as case:
-        if len(case.get("corroboration", [])) >= 10:
+        if (
+            sum(r.get("kind") != "archived_page" for r in case.get("corroboration", []))
+            >= 10
+        ):
             raise ValueError("Corroboration budget exhausted")
         if any(
             r.get("requested_source") == source for r in case.get("corroboration", [])
@@ -772,7 +917,11 @@ def main(argv=None):
         p.add_argument("--objective", required=True)
         p.add_argument("--case", required=True, type=Path)
         p.add_argument("--profile", choices=["desktop", "mobile"], default="desktop")
-        p.add_argument("--scope", choices=["host", "observed_external"], default="host")
+        p.add_argument(
+            "--scope",
+            choices=["host", "observed_external"],
+            default="observed_external",
+        )
         p.add_argument("--incident-context", type=Path)
         p.add_argument("--brand-references", type=Path)
     for command in (
@@ -789,6 +938,7 @@ def main(argv=None):
         "enrich",
         "hypothesize",
         "browse",
+        "archive",
     ):
         p = commands.add_parser(command)
         p.add_argument("--case", required=True, type=Path)
@@ -817,6 +967,10 @@ def main(argv=None):
             p.add_argument("--virustotal-url")
         if command == "enrich":
             p.add_argument("--source", choices=SOURCES, required=True)
+            p.add_argument("--reason", required=True)
+        if command == "archive":
+            p.add_argument("--source-id", required=True)
+            p.add_argument("--capture-id", required=True)
             p.add_argument("--reason", required=True)
     args = parser.parse_args(argv)
     if args.command == "schema":
@@ -849,7 +1003,14 @@ def main(argv=None):
                         args.virustotal_url, os.environ.get("CYBER_VT_API_KEY")
                     )
                 )
-            if len(case.get("corroboration", [])) + len(records) > 10:
+            if (
+                sum(
+                    r.get("kind") != "archived_page"
+                    for r in case.get("corroboration", [])
+                )
+                + len(records)
+                > 10
+            ):
                 raise ValueError("Corroboration budget exhausted")
             for record in records:
                 _append_context(case, {"status": "available", **record})
@@ -882,6 +1043,8 @@ def main(argv=None):
         result = browse(args.case)
     elif args.command == "enrich":
         result = enrich(args.case, args.source, args.reason)
+    elif args.command == "archive":
+        result = archive(args.case, args.source_id, args.capture_id, args.reason)
     elif args.command == "review":
         result = review(args.case, json.loads(args.review.read_text()))
     elif args.command == "step":

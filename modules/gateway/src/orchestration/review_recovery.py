@@ -253,13 +253,18 @@ async def verify_recovery_decision(session, *, decision_id, context, node, bindi
     if binding is None or node is None:
         raise CycleBlockedError("recovery_authority_changed")
     plan, _ = await shared_marker(session, org_id=node.org_id, flow_id=node.flow_id)
+    from .plan_lineage import ancestor_plan, receipt_plan
+
+    plan = await receipt_plan(session, plan, data, node_id=node.id)
+    if plan is None or await ancestor_plan(session, plan, context.identity.accepted_plan_version, node_id=node.id) is None:
+        raise CycleBlockedError("recovery_authority_changed")
     expected = {
         "contract": CONTRACT,
         "org_id": node.org_id,
         "flow_id": node.flow_id,
         "node_id": node.id,
         "attempt": node.attempts,
-        "plan_version": context.identity.accepted_plan_version,
+        "plan_version": plan.version,
         "plan_hash": plan.plan_hash,
         "execution_id": context.execution.id,
         "claim_id": context.identity.claim_id,

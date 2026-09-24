@@ -83,17 +83,11 @@ metadata:
     # Setting this annotation means the controller does NOT create a frontend
     # security group, so reachability is inherited rather than newly granted.
     alb.ingress.kubernetes.io/security-groups: __ALB_SG_IDS__
-    # With explicit frontend security groups, the controller does not manage the
-    # backend rules by default. Enabling it lets the controller open the path from
-    # this ALB to the fixture pods without any manual security-group edit.
-    #
-    # THIS IS SECURITY GROUPS ONLY. It does NOT satisfy the fixture pod's
-    # NetworkPolicy, which is a separate enforcement layer that the controller
-    # neither reads nor writes. #3968's fixture policy admits ingress by
-    # namespaceSelector, and an ALB is not a namespace-selected pod source, so an
-    # otherwise perfect security-group path still ends in a connection the pod
-    # drops. See RUNBOOK step 4.5 and ../main.tf's aws_network_interfaces read.
-    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    # Reuse existing backend reachability; this disposable fixture must not ask
+    # the controller to edit security-group rules on ordinary worker nodes.
+    # Target health and the live same-endpoint probes establish whether the
+    # existing path works. A failure must not silently widen shared groups.
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "false"
 
     # target-type `ip` is why the NetworkPolicy source is the ALB's OWN addresses:
     # the ALB connects directly to pod IPs from its own network interfaces rather
@@ -265,6 +259,39 @@ spec:
                   number: __PORT__
           - path: /admin/agent-run-stats
             pathType: Exact
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # Dashboard session gate, capability flag, and admin invocation view.
+          - path: /access/status
+            pathType: Exact
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /features
+            pathType: Exact
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /admin/agent-invocations
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # The IAM-only /agent/model/{proxy+} edge route strips /agent.
+          # The gateway still verifies run identity and model budget on each call.
+          - path: /model
+            pathType: Prefix
             backend:
               service:
                 name: __SERVICE__

@@ -60,14 +60,14 @@ def validate_start(payload):
     from research_case import _validate_input
 
     _validate_input(url)
-    if payload.get("scope", "host") not in {"host", "observed_external"}:
+    if payload.get("scope", "observed_external") not in {"host", "observed_external"}:
         raise InvestigationError("scope must be host or observed_external")
     if payload.get("profile", "desktop") not in {"desktop", "mobile"}:
         raise InvestigationError("profile must be desktop or mobile")
     return {
         "url": url,
         "profile": payload.get("profile", "desktop"),
-        "scope": payload.get("scope", "host"),
+        "scope": payload.get("scope", "observed_external"),
     }
 
 

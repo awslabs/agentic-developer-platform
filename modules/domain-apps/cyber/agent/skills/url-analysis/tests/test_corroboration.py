@@ -55,7 +55,9 @@ def test_reputation_skips_missing_credentials_without_calling_any_endpoint():
         raise AssertionError("Should not contact a provider")
 
     result = lookup_virustotal("https://sample.test", None, get=fail)
-    assert result["status"] == "skipped" and result["verdict_effect"] == "context_only"
+    assert (
+        result["status"] == "skipped" and result["verdict_effect"] == "model_assessed"
+    )
 
 
 def test_lookup_is_read_only_bounded_and_keeps_original_analysis_time():

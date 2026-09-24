@@ -82,7 +82,9 @@ async def validate_current_report_assignment(session, row):
     if claim.active_run_id != row.run_id:
         raise RunReportError("execution_assignment_superseded")
     plan, _ = await shared_marker(session, org_id=row.org_id, flow_id=row.flow_id)
-    if plan.version != identity.accepted_plan_version:
+    from .plan_lineage import ancestor_plan
+
+    if await ancestor_plan(session, plan, identity.accepted_plan_version, node_id=identity.node_id) is None:
         raise RunReportError("execution_assignment_superseded")
     operation = (metadata.get("review_cycle_input") or {}).get("operation_key")
     if operation:

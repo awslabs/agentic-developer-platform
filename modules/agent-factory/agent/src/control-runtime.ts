@@ -65,12 +65,14 @@ export const CONTROL_PROTOCOL_VERSION = 1;
 
 /**
  * Pause/resume have an admission barrier and signed gateway control path; abort
- * has a cancellation path and a terminal finalization that reports it (#3963).
+ * has a cancellation path and a terminal finalization that reports it (#3963);
+ * steer has a bounded run-level queue that delivers wrapped operator input at an
+ * observed transport boundary and acknowledges at the handoff itself (#3965).
  * The adapter, current attempt and deployment configuration each still veto
- * unavailable controls. Steer remains outside this implementation set.
+ * unavailable controls.
  * Kept in lockstep with the gateway and both CI capability gates (#5222).
  */
-export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume', 'abort']);
+export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume', 'steer', 'abort']);
 
 /** Per-verb support, with a bounded reason when support is absent. */
 export interface VerbSupport {
@@ -245,6 +247,30 @@ export interface AttemptEndpoint {
   readonly attemptId: AttemptId;
   /** Physically hand input to this attempt's harness transport. */
   deliver(input: ControlInput): Promise<InputHandoffResult>;
+  /**
+   * Whether {@link deliver} would land right now — Issue #3965.
+   *
+   * The neutral spelling of "a supported handoff boundary". Its meaning is the
+   * adapter's to define (for Claude it is a parked stream reader), but the
+   * *consequence* is neutral and is the reason this is on the contract rather
+   * than read off a provider object: a coordinator that could not ask would have
+   * to either poll or push blindly, and pushing blindly is how an instruction
+   * gets refused and silently lost.
+   *
+   * Optional, and `undefined` must be read as "cannot tell", which the
+   * coordinator treats as *not* a boundary. An adapter that cannot report
+   * readiness has to hold input rather than gamble with it.
+   */
+  canAcceptInput?(): boolean;
+  /**
+   * Announce the next moment input becomes acceptable — Issue #3965.
+   *
+   * An edge notification, not a queue. The coordinator still performs its own
+   * authorization re-check and its own handoff afterwards, so nothing is
+   * committed by being told that a boundary exists. At most one listener; calling
+   * it again replaces the previous one.
+   */
+  notifyWhenInputAccepted?(listener: () => void): void;
   /** Close admission of new work; resolve only when the barrier is real. */
   requestPause?(signal: AbortSignal): Promise<PauseResult>;
   /** Release a confirmed pause, or cancel a pending one. Idempotent. */
@@ -281,6 +307,15 @@ export interface ControlRuntimeAdapter {
    * working across a retry.
    */
   submitInput(input: ControlInput): Promise<InputHandoffResult>;
+  /**
+   * Whether the current attempt could take input right now — Issue #3965.
+   *
+   * Fails closed: `false` with no attempt, after cancellation, and whenever the
+   * adapter cannot report readiness. A steering command held because this said
+   * `false` stays `pending`, which is honest; a command pushed because this
+   * wrongly said `true` is refused and has to be resubmitted by a human.
+   */
+  canAcceptInput(): boolean;
   requestPause(options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<PauseResult>;
   resumeFromPause(): Promise<void>;
   /** Typed cancellation: prevents further attempts; never a retryable error. */
@@ -495,6 +530,38 @@ export class CurrentAttemptRegistry {
     }
     this.emit({ type: 'input_handoff', attemptId: endpoint.attemptId, command_id: input.command_id, result });
     return result;
+  }
+
+  /**
+   * Whether the current attempt could take input right now — Issue #3965.
+   *
+   * Every negative answer here is a reason a steering command legitimately stays
+   * `pending`: no attempt (between retries), a cancelled or torn-down runtime, an
+   * adapter that cannot report readiness, or a transport with no reader waiting
+   * (mid-tool). The default when the endpoint does not implement the probe is
+   * `false`, not `true` — an unknown boundary must hold input, because the
+   * alternative is a refused push that an operator has to notice and repeat.
+   */
+  canAcceptInput(): boolean {
+    const endpoint = this.current;
+    if (!endpoint || this.cancelled || this.teardown) return false;
+    if (!this.isCurrent(endpoint.attemptId) || !endpoint.canAcceptInput) return false;
+    return endpoint.canAcceptInput();
+  }
+
+  /**
+   * Forward a readiness subscription to the current attempt — Issue #3965.
+   *
+   * Re-subscribed by the coordinator on every `attempt_attached`, because the
+   * endpoint (and its transport) is replaced wholesale on a retry. Silently a
+   * no-op when there is no attempt or the adapter cannot report readiness: the
+   * coordinator also re-drives itself on runtime events, so a missing edge delays
+   * an instruction rather than losing it.
+   */
+  notifyWhenInputAccepted(listener: () => void): void {
+    const endpoint = this.current;
+    if (!endpoint || this.cancelled || this.teardown) return;
+    endpoint.notifyWhenInputAccepted?.(listener);
   }
 
   /** Tracked work for the current attempt. `null` when unobservable. */

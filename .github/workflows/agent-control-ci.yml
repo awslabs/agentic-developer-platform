@@ -117,6 +117,13 @@ on:
       # is breaking one of those callers, not breaking control.
       - 'modules/agent-factory/agent/src/control-runtime.ts'
       - 'modules/agent-factory/agent/src/control-runtime.test.ts'
+      # Live steering (#3965): the run-level delivery pump and its suite. Listed
+      # explicitly because a change confined to either file matches none of the
+      # paths above, so the verb gates — which now expect `steer` in
+      # EXPECTED_SUPPORTED on both sides — would not run on exactly the PRs able to
+      # break the delivery path they vouch for.
+      - 'modules/agent-factory/agent/src/steer-queue.ts'
+      - 'modules/agent-factory/agent/src/agent-worker-steer.test.ts'
       # The W2-05 pause_expiry producer (#5840). The `.integration.ts` half is
       # listed too: jest cannot collect it, but `tsc --noEmit` in this workflow is
       # the only thing that checks it at all, and it is the file that has to stay
@@ -132,6 +139,8 @@ on:
       - 'modules/agent-factory/agent/src/run-heartbeat.ts'
       - 'modules/agent-factory/agent/src/run-heartbeat.test.ts'
       - 'modules/agent-factory/agent/src/control-runtime-timeout.assembly.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-fault-probe.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-steering-probe.test.ts'
       - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
@@ -197,6 +206,15 @@ on:
       # Evaluation harness
       - 'platform/scripts/agent-control-eval.py'
       - 'platform/scripts/tests/test_agent_control_eval.py'
+      # Wave 2 operator fixture tooling (#3968). This is the executable lifecycle
+      # that creates, observes, probes and tears down the isolated fixture the
+      # evaluation runs against. Root's finding 5808491910: PR #5839's rollup was
+      # empty because no workflow in the branch referenced these paths at all, so
+      # a change to the teardown logic or the workload-verifier composition had no
+      # merge check whatsoever. A `**` glob covers the scripts, the libraries and
+      # the tests together, because they are a single unit: a library change that
+      # breaks a script is only visible when both are exercised.
+      - 'platform/scripts/operator/wave2/**'
       # The fixture-config runbook. Listed because its example config is parsed
       # and validated by the harness tests: a doc-only edit that drifts the
       # example from the harness must fail CI, not merge quietly. The operator
@@ -525,8 +543,18 @@ jobs:
 
           # Pause/resume: #3961 admission barrier plus #5222 signed human path.
           # Abort: #3963 cancellation plus the terminal finalization that reports it.
+          # Steer: #3965 — the run-level delivery pump (steer-queue.ts) plus the
+          # observed handoff boundary on the adapter (canAcceptInput /
+          # notifyWhenInputAccepted), which is what the verb was missing. The
+          # streaming input transport and the authority re-check immediately before
+          # the physical handoff already existed; what did not was anything that
+          # *waited* for a boundary, so a command submitted mid-tool was refused.
+          #
+          # This completes the set: all four verbs are now implemented. A fifth verb
+          # still fails the ALL_VERBS pin below.
+          #
           # Keep both language gates, gateway and worker in lockstep.
-          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "abort"}
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "steer", "abort"}
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
           # a truthiness check, so a refactor that drops the constant could report
@@ -775,8 +803,10 @@ jobs:
             src/pause-attempt-fencing.test.ts \
             src/pause-output-race.test.ts src/control-deadline.test.ts \
             src/control-abort-sentinel.test.ts src/agent-worker-abort.test.ts \
+            src/agent-worker-steer.test.ts \
             src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
             src/control-runtime-timeout.assembly.test.ts \
+            src/control-runtime-steering-probe.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -788,6 +818,7 @@ jobs:
             --collectCoverageFrom='src/control-runtime.ts' \
             --collectCoverageFrom='src/pause-gate.ts' \
             --collectCoverageFrom='src/control-command-apply.ts' \
+            --collectCoverageFrom='src/steer-queue.ts' \
             --collectCoverageFrom='src/harnesses/claude-control.ts' \
             --collectCoverageFrom='src/utils/resilientQuery.ts' \
             --collectCoverageFrom='src/control-runtime-timeout.ts' \
@@ -831,10 +862,12 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // #3961 pause barrier plus the #5222 signed human command path, and
-          // #3963's abort (cancellation plus reported terminal finalization).
+          // #3961 pause barrier plus the #5222 signed human command path, #3963's
+          // abort (cancellation plus reported terminal finalization), and #3965's
+          // steering (the run-level delivery pump plus the adapter's observed
+          // handoff boundary).
           // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
-          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'abort']);
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'steer', 'abort']);
 
           const fail = (msg: string): never => {
             console.error(msg);
@@ -1182,3 +1215,103 @@ jobs:
             exit 1
           fi
           echo "OK: harness refused to run without an explicit fixture"
+
+  operator-fixture-tests:
+    # Required-check name for the Wave 2 operator lifecycle tooling. Do not rename:
+    # renaming a job silently removes a required check rather than failing.
+    name: Operator fixture tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install operator fixture test dependencies
+        # Deliberately short, and that is the point: the suite imports only the
+        # standard library plus pytest, and stubs `aws` and `kubectl` on PATH itself
+        # (tests/conftest.py) rather than reaching a cluster. pyyaml is needed
+        # because the tests that validate this workflow parse it to assert its own
+        # triggers and job names — a suite that claims a required check exists must
+        # read the file that defines it.
+        run: pip install pytest pyyaml
+
+      - name: Assert the prerequisites are actually present
+        # An honest failure on a missing dependency, rather than a skip. A suite that
+        # skips when its interpreter or shell is absent reports the same green tick as
+        # one that ran, which is precisely the failure mode root objected to: "no
+        # tests" and "all tests pass" are the same exit code to a glob.
+        run: |
+          set -euo pipefail
+          for tool in bash python3; do
+            command -v "$tool" >/dev/null || { echo "FAIL: $tool is required and absent"; exit 1; }
+          done
+          python3 -c 'import pytest, yaml' || { echo "FAIL: pytest/pyyaml did not install"; exit 1; }
+          echo "OK: bash, python3, pytest, pyyaml present"
+
+      - name: Run the full operator fixture suite
+        # The WHOLE directory, not the newly added files. A gate that runs only the
+        # latest suite cannot catch a change that breaks an older one, and the older
+        # ones cover teardown and ownership — the paths whose silent failure leaves
+        # real resources running in the account.
+        #
+        # No `-k`, no `--ignore`, and no `-p no:cacheprovider` shortcuts: every test
+        # here is hermetic, so there is nothing legitimate to exclude. `-o
+        # addopts=` neutralises any repo-level pytest config that might inject
+        # coverage flags this tree has no settings for.
+        working-directory: platform/scripts/operator/wave2
+        run: python3 -m pytest tests/ -o addopts= -v --tb=short
+
+      - name: Assert the suite is non-empty and collects cleanly
+        # Guards the gate itself. If a refactor moved or renamed the tests directory,
+        # pytest would collect nothing and exit 5; without this step a PR that
+        # deleted the entire suite could pass review with a green check. The floor is
+        # deliberately well below the current count (487) so it fails on collapse,
+        # not on ordinary churn.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          collected="$(python3 -m pytest tests/ -o addopts= --collect-only -q 2>/dev/null \
+            | grep -cE '^tests/.*::' || true)"
+          echo "collected $collected tests"
+          [ "$collected" -ge 400 ] || {
+            echo "FAIL: only $collected tests collected; the suite has lost coverage"
+            exit 1
+          }
+
+      - name: Check every shell script parses and every Python module compiles
+        # Syntax-only, because these scripts cannot be executed in CI: they mutate a
+        # real account. `bash -n` and py_compile are the strongest checks available
+        # without a cluster, and they catch the class of error that would otherwise
+        # surface for the first time mid-run against a live fixture, after resources
+        # already exist.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          for script in $(find . -name '*.sh' | sort); do
+            bash -n "$script" || { echo "FAIL: $script has a syntax error"; exit 1; }
+          done
+          for module in $(find . -name '*.py' -not -path './tests/__pycache__/*' | sort); do
+            python3 -m py_compile "$module" || { echo "FAIL: $module does not compile"; exit 1; }
+          done
+          echo "OK: all shell scripts parse and all Python modules compile"
+
+      - name: Assert no fixture script can run without an explicit target
+        # The same fail-closed smoke check the harness job applies, for the scripts
+        # that CREATE resources. If either exits 0 when invoked bare, it has acquired
+        # a default target — and for these the default would be whatever account the
+        # ambient credential resolves to, with real objects as the result.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          for script in 10-create-fixture.sh 20-collect-pause-evidence.sh; do
+            if bash "$script" > "/tmp/bare-$script.log" 2>&1; then
+              echo "FAIL: $script exited 0 with no target configured"
+              cat "/tmp/bare-$script.log"
+              exit 1
+            fi
+            echo "OK: $script refused to run bare"
+          done

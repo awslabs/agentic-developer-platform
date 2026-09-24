@@ -8,9 +8,9 @@ import domain_investigation as cli
 import live_evaluation as live
 import pytest
 from browser_guard import DestinationRefused
-from case_contract import Assessment, EvidenceValidationError
+from case_contract import Assessment
 from denylist import DenylistResult
-from evidence_items import evidence_eligibility
+from evidence_items import evidence_coverage
 
 from .test_domain_investigation import decision, review
 from .test_domain_investigation import live_fixture as browser_fixture
@@ -45,7 +45,7 @@ def warning_assessment():
     }
 
 
-def test_threat_warning_is_reportable_but_cannot_be_bypassed_or_prove_theft(
+def test_model_verdict_is_preserved_while_warning_bypass_remains_blocked(
     live_fixture, tmp_path
 ):
     request, transport, _ = live_fixture
@@ -59,23 +59,19 @@ def test_threat_warning_is_reportable_but_cannot_be_bypassed_or_prove_theft(
     obs = case["observations"][0]
     assert "threat_warning" in obs["errors"]
     assert "human_verification_challenge" not in obs["errors"]
-    assert evidence_eligibility(obs)["warning_finding_supported"]
+    assert evidence_coverage(obs)["interstitial"]["kind"] == "threat_warning"
     review(case, out)
     value = warning_assessment()
     value["verdict"] = "malicious"
-    with pytest.raises(ValueError, match="warning alone"):
-        cli.finish(out, value, "Finished", request=request)
     with pytest.raises(Exception, match="Challenge encountered"):
         cli.step(out, "root", decision(case), request=request)
     review(live.load_case(out), out)
-    case = cli.finish(
-        out, warning_assessment(), "Report the warning without bypass", request=request
-    )
-    assert case["assessment"]["verdict"] == "suspicious"
+    case = cli.finish(out, value, "Report the warning without bypass", request=request)
+    assert case["assessment"]["verdict"] == "malicious"
     assert not any("/portal" in url for _, url in transport.requests)
 
 
-def test_prior_finding_survives_later_challenge_with_precise_correction(
+def test_prior_finding_and_later_challenge_are_available_for_model_judgment(
     live_fixture, tmp_path
 ):
     request, transport, _ = live_fixture
@@ -107,11 +103,6 @@ def test_prior_finding_survives_later_challenge_with_precise_correction(
             }
         ],
     }
-    with pytest.raises(EvidenceValidationError) as error:
-        cli.finish(out, value, "Challenge prevented more browsing", request=request)
-    assert error.value.detail["observation_id"] == "obs-002"
-    assert error.value.detail["finding_index"] == 0
-    value["findings"][0]["evidence_ids"] = ["obs-001"]
     value["findings"].append(
         {
             "kind": "coverage_limitation",
@@ -236,7 +227,7 @@ def test_unavailable_page_can_still_receive_sourced_context_assessment(tmp_path)
     assert result["model_turns"] == 1
 
 
-def test_missing_or_invented_context_sources_cannot_support_reported_facts():
+def test_context_reference_must_exist_but_source_quality_is_model_owned():
     value = Assessment(
         verdict="inconclusive",
         assessor="synthetic",
@@ -254,8 +245,7 @@ def test_missing_or_invented_context_sources_cannot_support_reported_facts():
     )
     with pytest.raises(ValueError, match="unknown source"):
         value.validate_context([])
-    with pytest.raises(ValueError, match="Unavailable"):
-        value.validate_context([{"id": "corroboration-001", "status": "skipped"}])
+    value.validate_context([{"id": "corroboration-001", "status": "skipped"}])
 
 
 def test_unavailable_page_without_incident_still_allows_model_selected_enrichment(

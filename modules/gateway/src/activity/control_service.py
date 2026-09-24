@@ -84,8 +84,21 @@ logger = logging.getLogger("bedrockgateway.activity.control")
 # plus a terminal finalization that reports the run as deliberately stopped rather
 # than crashed. Keep this set synchronized with policy, worker and CI. Per-run
 # adapter capability and deployed signing configuration can still veto any verb.
-# Steer remains unavailable.
-SUPPORTED_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "abort"})
+#
+# #3965 (S6) adds steer. What the verb was missing was never the wire — this
+# module's route, ``ControlSteerRequest`` and ``AgentAction.STEER`` all predate it
+# — but a worker that could *wait*. The instruction arrives at an arbitrary
+# instant and almost none of those are a moment the harness can take input, so
+# without a run-level pump holding it to an observed handoff boundary a steer
+# submitted mid-tool was simply refused. ``steer-queue.ts`` is that pump, and the
+# adapter now reports the boundary (``canAcceptInput``), which is the third thing
+# pause/resume/abort already had.
+#
+# Note what enabling this does NOT change: acceptance here is still only
+# acceptance. A 202 means the command was journalled, and the worker marks it
+# delivered at the physical handoff — which for a run mid-tool may be minutes
+# later, and which still says nothing about whether the model complied.
+SUPPORTED_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "steer", "abort"})
 
 # Feature flag. Read strictly (explicit "true" only) and read *independently* of
 # the worker's own flag: a gateway that could activate worker capabilities by

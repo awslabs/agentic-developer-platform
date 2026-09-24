@@ -203,8 +203,8 @@ class TestReadiness:
 
         assert await _state_of(session, target.id) == NodeState.PENDING.value
 
-    async def test_only_passed_counts_as_satisfied(self):
-        assert SATISFIED_STATES == frozenset({NodeState.PASSED})
+    async def test_passed_or_verified_waiver_counts_as_satisfied(self):
+        assert SATISFIED_STATES == frozenset({NodeState.PASSED, NodeState.WAIVED})
 
     async def test_undeclared_predecessor_state_blocks_rather_than_releasing(self, session):
         # A node carrying a literal outside the vocabulary (the `rejected` /

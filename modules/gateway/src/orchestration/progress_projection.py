@@ -4,7 +4,7 @@ Historical decisions are audit records, not current stalls. A blocked delivery
 can still have node.state=running; only node.state=passed proves completion.
 """
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 
 from .display_state import ENGINE_TO_DISPLAY
 from .models import OrchestrationAcceptedPlan, OrchestrationExecution, OrchestrationNode, OrchestrationWorkClaim
@@ -12,7 +12,7 @@ from .models import OrchestrationAcceptedPlan, OrchestrationExecution, Orchestra
 CAPACITY_WAIT_NOTE = "Waiting for a shared worker slot; no dispatch attempt consumed."
 
 
-def node_progress_rows(*, org_id: str, flow_ids: list[str] | None = None):
+def node_progress_rows(*, org_id: str, flow_ids: list[str] | None = None, preserved_executions=()):
     node, execution, claim = OrchestrationNode, OrchestrationExecution, OrchestrationWorkClaim
     plans = (
         select(OrchestrationAcceptedPlan.flow_id, func.max(OrchestrationAcceptedPlan.version).label("version"))
@@ -21,6 +21,14 @@ def node_progress_rows(*, org_id: str, flow_ids: list[str] | None = None):
         .subquery()
     )
     current_plan = execution.accepted_plan_version == func.coalesce(plans.c.version, 0)
+    if preserved_executions:
+        by_version = {}
+        for node_id, version in preserved_executions:
+            by_version.setdefault(version, []).append(node_id)
+        current_plan = or_(
+            current_plan,
+            *[and_(execution.accepted_plan_version == version, execution.node_id.in_(node_ids)) for version, node_ids in by_version.items()],
+        )
     live_execution = and_(execution.id.is_not(None), current_plan, execution.status.not_in(("concluded", "superseded")))
     # A lapsed held claim is not a free worker slot. Show the ownership hold on
     # ready work too, without releasing it or inferring that its worker exited.

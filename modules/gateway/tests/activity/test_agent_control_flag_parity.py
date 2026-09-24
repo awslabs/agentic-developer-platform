@@ -353,8 +353,17 @@ class TestControlPortAgreesEverywhereItIsWritten:
 class TestFlagDoesNotEnableUnimplementedVerbs:
     """The flag enables routing; runtime support and authority still gate control."""
 
-    def test_only_implemented_verbs_are_available(self, monkeypatch):
-        monkeypatch.setenv(FLAG_ENV_VAR, "true")
+    @pytest.mark.parametrize("flag", ["true", "false", ""])
+    def test_the_flag_cannot_widen_the_verb_set(self, monkeypatch, flag):
+        """Turning the flag on must not add a verb the worker cannot perform.
+
+        The set is pinned *and* shown to be independent of the flag, because the
+        failure this guards against is a config change on the gateway appearing to
+        enable a capability that only exists on the worker side. #3965 grew the set
+        to all four verbs by shipping steer's queue and handoff boundary — the
+        independence claim is what survives that and every later addition.
+        """
+        monkeypatch.setenv(FLAG_ENV_VAR, flag)
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "abort"})
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "steer", "abort"})

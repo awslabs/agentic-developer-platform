@@ -16,6 +16,7 @@ Follow relevant pages within this domain and cite the evidence.”
 | Stage | Agent decision | Evidence retained |
 | --- | --- | --- |
 | Archive context | Examine historical index coverage and metadata | Query ID, crawl partitions, sampled records and limitations |
+| Selected archived pages | Choose indexed captures whose content answers a question | S3 WARC range, original payload, extracted text/forms/scripts, dates and hashes |
 | Initial hypothesis | Identify a question to test against the current site | Source-linked hypothesis before any browser lease starts |
 | Seed | Identify unanswered questions from the landing page | Initial screenshot, DOM, forms, scripts, links, requests |
 | Review | Support, refute or revise a hypothesis | Concise explanation and actual observation IDs |
@@ -30,11 +31,11 @@ keeps exact destinations private, so query redaction does not break link navigat
 Cookies, session storage and history survive between decisions. A profile change
 creates a new context and retains both sets of evidence in the same case.
 
-The default navigation scope is the supplied hostname and its subdomains. Other
-public hosts may supply subresources through the guarded transport. Related
-external navigation requires the researcher to request `observed_external`
-scope; otherwise those links remain leads. Private destinations remain prohibited
-in either mode. Forms, credentials, downloads and challenge bypass are excluded.
+The default `observed_external` scope allows the model to follow relevant observed
+links and redirects across public hosts, including sibling hosts. The researcher
+can explicitly select `host` to restrict navigation to the seed hostname and its
+subdomains. Private destinations remain prohibited in either mode. Forms,
+credentials, downloads and challenge bypass remain excluded from this transport.
 Supported controls are observed disclosure elements and tabs, not arbitrary
 selectors or JavaScript supplied by the agent.
 
@@ -84,13 +85,21 @@ relationships between observations/pages. The HTML/Markdown reports show finding
 and the investigation narrative alongside screenshots and evidence. File hashes,
 indicator CSV and provenance are retained. Long target URLs wrap in the HTML report.
 
-A declared form action is configuration, not observed transmission. Manual link
-navigation is identified separately from site redirects. Adverse findings on a
-partial page require intact, hash-checked evidence item references, explicit
-coverage limitations and confirmed cleanup; no-adverse requires
-all steps/observations complete and describes only the tested views. Counterevidence
-and legitimate identity-provider relationships must be considered. Semantic accuracy
-still requires researcher review; reference validation cannot prove every sentence.
+The model owns the overall verdict from Common Crawl, browser observations and
+other sourced context. Report structure, reference existence and artifact hashes
+are checked; finding semantics, evidence sufficiency and verdicts are not
+adjudicated by application code. Partial captures, HTTP errors and unconfirmed
+cleanup remain visible without forcing an inconclusive result. Cleanup is always
+attempted and its outcome is reported separately.
+
+Use `no_specific_concern`, `suspicious`, `malicious` or `inconclusive` for the overall
+assessment. The existing `no_adverse_behavior_observed` label remains available for
+browser-limited conclusions. An archive-only assessment must state that live page
+behavior was not verified. Index rows and selectively retrieved archived page
+content have separate source IDs.
+A declared form action is configuration, not observed transmission. The model
+must consider counterevidence and state uncertainty; reference checks do not prove
+that a claim is correct.
 
 The CLI persists locally. The agent must use the existing run-artifact publisher
 and verify success before claiming durable delivery. No new UI or automatic case
