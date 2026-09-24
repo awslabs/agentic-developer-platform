@@ -1687,16 +1687,48 @@ for field, want in (("run_nonce", nonce), ("account_id", account),
             "state was created for, or investigate how the two came to be crossed."
         )
 
-owned_ids = {r.get("id") for r in owned.get("resources") or [] if r.get("id")}
-by_id = {r["id"]: r for r in owned.get("resources") or [] if r.get("id")}
-if not owned_ids:
+# Keyed on (TERRAFORM RESOURCE TYPE, id), not on id alone.
+#
+# An id by itself cannot establish complete ownership, because two owned resources
+# can share one: aws_api_gateway_rest_api_policy's id IS the rest-api id (the policy
+# is an attribute of the API rather than a separate object). Compared as a set of
+# ids, a plan that deletes only the API satisfies BOTH entries, so an omitted policy
+# was undetectable — and the policy is the wrong-role Deny, so leaving it behind is
+# not a benign omission.
+#
+# Every receipt entry must therefore carry its type. A receipt that predates this is
+# refused below rather than silently compared on ids alone, since falling back would
+# reinstate exactly the gap this closes.
+owned_keys, by_key, untyped = set(), {}, []
+for r in owned.get("resources") or []:
+    rid = r.get("id")
+    if not rid:
+        continue
+    rtype_owned = r.get("type")
+    if not rtype_owned:
+        untyped.append(f"{r.get('kind', '?')} {r.get('name') or rid} (id={rid})")
+        continue
+    owned_keys.add((rtype_owned, rid))
+    by_key[(rtype_owned, rid)] = r
+if untyped:
+    sys.exit(
+        "STOP: the ownership receipt has entries with no `type`:\n  "
+        + "\n  ".join(untyped)
+        + "\n\nThe destroy plan is matched on (resource type, id) pairs because an id alone "
+          "cannot prove every owned resource is included — the REST API and its resource "
+          "policy share one id. An untyped entry cannot be matched that way, and falling "
+          "back to an id-only comparison would reinstate that gap. Re-apply with a current "
+          "outputs.tf so the receipt records each resource's type."
+    )
+owned_ids = {rid for _, rid in owned_keys}
+if not owned_keys:
     sys.exit(
         "STOP: the ownership receipt lists NO resource ids, so there is nothing to check the "
         "destroy plan against. An unverifiable destroy is not an authorised one."
     )
 
 plan = json.load(open(plan_path))
-foreign, untagged, planned_ids = [], [], set()
+foreign, untagged, planned_keys = [], [], set()
 for change in plan.get("resource_changes", []):
     actions = set(change.get("change", {}).get("actions", []))
     if "delete" not in actions:
@@ -1711,9 +1743,15 @@ for change in plan.get("resource_changes", []):
         # the same defect as deleting by name, arrived at from the other direction.
         foreign.append(f"{address} ({rtype}) — state records NO id for it")
         continue
-    planned_ids.add(rid)
-    if rid not in owned_ids:
-        foreign.append(f"{address} ({rtype}) id={rid} — NOT in this run's owned set")
+    planned_keys.add((rtype, rid))
+    if (rtype, rid) not in owned_keys:
+        # Reported with both halves: an id present under a DIFFERENT type is the
+        # interesting case (an imported resource, or a receipt/plan disagreement), and
+        # naming only the id would make it look like an unknown object.
+        hint = (" — the id is owned, but under type "
+                + ", ".join(sorted(t for t, i in owned_keys if i == rid))
+                ) if rid in owned_ids else " — NOT in this run's owned set"
+        foreign.append(f"{address} ({rtype}) id={rid}{hint}")
         continue
     # The provider-recorded TAG, where the type carries tags. A second, independent
     # fact: the id says state claims it, the tag says the object itself was stamped
@@ -1747,12 +1785,13 @@ if foreign or untagged:
     sys.exit("\n".join(lines))
 
 # --- and nothing OWNED may be silently left behind ---------------------------
-missing = sorted(owned_ids - planned_ids)
+missing = sorted(owned_keys - planned_keys)
 if missing:
     lines = ["STOP: the destroy plan LEAVES BEHIND resources this run owns:", ""]
-    for rid in missing:
-        entry = by_id[rid]
-        lines.append(f"  - {entry.get('kind', '?')} {entry.get('name') or rid} (id={rid})")
+    for key in missing:
+        entry = by_key[key]
+        lines.append(f"  - {entry.get('kind', '?')} {entry.get('name') or key[1]} "
+                     f"({key[0]} id={key[1]})")
     lines += [
         "",
         "Destroying this plan would report a completed teardown while these keep running",
@@ -1764,8 +1803,8 @@ if missing:
     ]
     sys.exit("\n".join(lines))
 
-print(f"  [ ok ] every deletion is in this run's owned set, by id and by run tag "
-      f"({len(planned_ids)} resources, nonce {nonce})")
+print(f"  [ ok ] every deletion is in this run's owned set, by (type, id) and by run tag "
+      f"({len(planned_keys)} resources, nonce {nonce})")
 PY
 }
 

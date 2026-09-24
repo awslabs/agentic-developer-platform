@@ -177,6 +177,27 @@ its own command line. Checking only the state *key* was not enough:
 | `type` | an `s3` record replaced by a `local` one still carries a matching key, and local state has none of the per-run isolation teardown's ownership story rests on |
 | `profile` | the backend's profile is the identity that **reads and writes** the state; if it differs from `--profile`, the plan is built from state that the run's account/cluster checks were never made against |
 
+#### The expectation comes from `init`, not from your command line
+
+Each of those comparisons needs something to compare *against*, and taking it from the
+current command line does not work: **a flag you omit cannot disagree with anything.**
+`init` pointed at someone else's state bucket followed by a `plan` with no
+`--state-bucket` exited **0** and planned against that foreign state, because with no
+expected bucket supplied there was no comparison left to fail. The same hole existed for
+`--profile`. A check that is waived by leaving an argument out is not a check.
+
+So `init` writes `backend.init.receipt.json` into the artifact directory, recording the
+bucket, key, type and profile it actually resolved — and every later command takes its
+expectation from **that**, unconditionally. Flags you *do* pass become a cross-check: a
+`--state-bucket` that contradicts the receipt is refused by name rather than silently
+preferred. The receipt's own run binding (nonce, account, region, environment) is
+validated before anything is read out of it, so a receipt from another run cannot supply
+the expectation used to admit that run's state.
+
+Practical consequence: run `init` for each run, and keep its artifact directory. If the
+receipt is missing you will be told to re-run `init` — that is deliberate, because the
+alternative is inferring the expectation from the very thing being checked.
+
 ### `--profile` binds the AWS CLI; the provider is bound separately
 
 `terraform` has **no `--profile` flag** — its AWS provider resolves credentials from
@@ -582,6 +603,30 @@ environment *before* any id is taken from it) plus the `AdpFixtureRun` tag the p
 stamped on each object. Two independent facts — the id says state claims the object,
 the tag says the object was stamped for this run at creation. An imported resource has
 the first and not the second.
+
+#### The match is on `(resource type, id)` pairs, and the ids are the provider's
+
+Two details of that comparison are load-bearing, and both were originally wrong.
+
+**An id alone cannot show every owned resource is included.** `aws_api_gateway_rest_api_policy`'s
+id *is* the rest-api id — the policy is an attribute of the API, not a separate object
+— so the six owned resources have only **five distinct ids** between them. Compared as
+a set of ids, a plan that deletes the API and *not* the policy presents every owned id
+and reads as complete coverage. The policy is the wrong-role Deny, so leaving it behind
+is not a benign omission. The receipt therefore records each row's Terraform **resource
+type** and the comparison is keyed on the pair. A receipt with an untyped row is
+**refused** and you are told to re-apply: falling back to an id-only comparison for it
+would reinstate exactly that gap.
+
+**The receipt's ids must be the ones a plan actually carries.** The stage's provider id
+is `ags-<rest-api-id>-<stage-name>`, *not* the stage name. The receipt previously
+recorded `stage_name` (`dev`), an identifier no plan ever contains, so the stage's real
+deletion line matched nothing, the guard concluded `NOT OWNED`, and **a legitimate
+teardown was blocked** — which is worse than a missed check, because the only apparent
+way forward is deleting by hand, the one thing this gate exists to prevent. Every row
+now records the resource's own `.id`. If you ever see `NOT OWNED` naming a resource you
+recognise as this run's, suspect this class of mismatch before you suspect the state,
+and do **not** resolve it by deleting the object directly.
 
 Both directions are refused:
 

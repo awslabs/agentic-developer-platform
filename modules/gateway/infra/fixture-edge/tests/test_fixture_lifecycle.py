@@ -41,6 +41,20 @@ DEPLOY = "w2-fixture-gateway-5836"
 SECRET = f"w2-fixture-provenance-{NONCE}"
 PARAM = f"/adp/dev/gateway/fixture/{NONCE}/apigw-provenance-secret"
 
+# The PROVIDER-ASSIGNED ids of the fixture edge's API Gateway resources, in the
+# shapes a real plan carries. They are constants because the destroy guard matches a
+# plan line's change.before.id against the ownership receipt, so a test that writes
+# an id in the wrong shape would be testing a plan no provider ever produces.
+#
+# STAGE_ID is the one that mattered: the provider sets a stage's id to
+# "ags-<rest-api-id>-<stage-name>" (aws/internal/service/apigateway/stage.go), NOT to
+# the bare stage name. outputs.tf recorded `stage_name`, so the stage's real deletion
+# line never matched its receipt entry and the guard refused a LEGITIMATE teardown.
+API_ID = "fixapi123"
+DEPLOYMENT_ID = "dep0kx1abc"
+STAGE_ID = f"ags-{API_ID}-dev"
+LOG_GROUP = "/aws/apigateway/bedrockgw-dev-w2fx"
+
 # The state bucket and the named profile every harness command is bound to. Both
 # are part of the backend binding the script checks, so they are constants rather
 # than literals repeated at each call site.
@@ -397,6 +411,11 @@ die("fake kubectl: unhandled %r" % (args,))
 
 FAKE_TERRAFORM = r'''#!/usr/bin/env python3
 import json, os, sys, pathlib
+# The provider-assigned ids for the two resources whose id is neither a name nor
+# supplied by a test. Real shapes: a deployment id is an opaque 10-char token, and a
+# log group's id is its name.
+FAKE_DEPLOYMENT_ID = "dep0kx1abc"
+FAKE_LOG_GROUP_DEFAULT = "/aws/apigateway/bedrockgw-dev-w2fx"
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write("terraform " + " ".join(args) + "\n")
@@ -431,29 +450,53 @@ if args[:1] == ["init"]:
     sys.exit(0)
 
 def owned_receipt():
-    """The `ownership` output as outputs.tf emits it: run binding + resource ids.
+    """The `ownership` output as outputs.tf emits it: run binding + typed resource ids.
 
     destroy checks its plan against THIS, so the default must be the consistent
-    case (every planned deletion is an owned id carrying this run's tag) and tests
-    perturb one side or the other.
+    case (every planned deletion is an owned (type, id) carrying this run's tag) and
+    tests perturb one side or the other.
+
+    ALL SIX resource types, with the ids the PROVIDER actually assigns. The previous
+    fake had two (API + parameter), which is why it could not catch root's executed
+    finding: outputs.tf recorded the stage as its stage_name ("dev") while a real
+    plan carries "ags-<api-id>-<stage-name>", so the stage line never matched and
+    LEGITIMATE teardown was refused. An inventory that omits four of six types cannot
+    detect a per-type identity mismatch at all.
+
+    Note the API and its POLICY deliberately share one id — that is real (the policy
+    is an attribute of the API), and it is why the comparison is keyed on
+    (type, id) rather than on ids alone.
     """
     if os.environ.get("FAKE_OWNERSHIP_JSON"):
         return json.loads(os.environ["FAKE_OWNERSHIP_JSON"])
     nonce = os.environ["FAKE_NONCE"]
+    # `or`, not a default: FAKE_API_ID="" models an unreadable `output rest_api_id`,
+    # and the API still exists with its real id.
+    api = os.environ.get("FAKE_API_ID") or "fixapi123"
+    stage = os.environ.get("FAKE_ENVIRONMENT", "dev")
     return {
         "run_nonce": nonce,
         "account_id": os.environ["FAKE_ACCOUNT"],
         "region": os.environ.get("FAKE_REGION", "us-east-1"),
-        "environment": os.environ.get("FAKE_ENVIRONMENT", "dev"),
-        "rest_api_id": os.environ.get("FAKE_API_ID") or "fixapi123",
+        "environment": stage,
+        "rest_api_id": api,
         "resources": [
-            {"kind": "apigateway-rest-api",
-             # `or`, not a default: FAKE_API_ID="" models an unreadable
-             # `output rest_api_id`, and the API still exists with its real id.
-             "id": os.environ.get("FAKE_API_ID") or "fixapi123",
-             "name": "w2-fixture-edge-" + nonce},
-            {"kind": "ssm-parameter", "id": os.environ["FAKE_PARAM"],
-             "name": os.environ["FAKE_PARAM"]},
+            {"kind": "apigateway-rest-api", "type": "aws_api_gateway_rest_api",
+             "id": api, "name": "w2-fixture-edge-" + nonce},
+            {"kind": "apigateway-rest-api-policy",
+             "type": "aws_api_gateway_rest_api_policy",
+             # SHARES the API's id — see the docstring.
+             "id": api, "name": "resource policy on w2-fixture-edge-" + nonce},
+            {"kind": "apigateway-deployment", "type": "aws_api_gateway_deployment",
+             "id": FAKE_DEPLOYMENT_ID, "name": "deployment of " + api},
+            {"kind": "apigateway-stage", "type": "aws_api_gateway_stage",
+             # The provider's id: "ags-<rest-api-id>-<stage-name>".
+             "id": f"ags-{api}-{stage}", "name": stage},
+            {"kind": "ssm-parameter", "type": "aws_ssm_parameter",
+             "id": os.environ["FAKE_PARAM"], "name": os.environ["FAKE_PARAM"]},
+            {"kind": "cloudwatch-log-group", "type": "aws_cloudwatch_log_group",
+             "id": os.environ.get("FAKE_LOG_GROUP", FAKE_LOG_GROUP_DEFAULT),
+             "name": os.environ.get("FAKE_LOG_GROUP", FAKE_LOG_GROUP_DEFAULT)},
         ],
     }
 
@@ -503,18 +546,43 @@ if args[:1] == ["plan"]:
         # The default destroy plan deletes EXACTLY the owned set, each line carrying
         # the recorded id and the run ownership tag — which is what a real plan
         # carries in `change.before` and what destroy now checks against.
-        changes = json.loads(os.environ.get("FAKE_DESTROY_CHANGES", "null")) or [
-            {"address": "aws_api_gateway_rest_api.fixture[0]",
-             "type": "aws_api_gateway_rest_api",
-             "change": {"actions": ["delete"],
-                        "before": {"id": os.environ.get("FAKE_API_ID") or "fixapi123",
-                                   "tags": owned_tags()}}},
-            {"address": "aws_ssm_parameter.fixture_provenance_secret[0]",
-             "type": "aws_ssm_parameter",
-             "change": {"actions": ["delete"],
-                        "before": {"id": os.environ["FAKE_PARAM"], "tags": owned_tags()}}},
+        # Derived FROM the receipt, so the default is the consistent case for all six
+        # types by construction rather than by a second hardcoded list that could
+        # drift from it — the drift between those two lists is precisely the defect
+        # root executed (stage recorded as "dev", planned as "ags-<api>-dev").
+        _addr = {
+            "aws_api_gateway_rest_api": "aws_api_gateway_rest_api.fixture[0]",
+            "aws_api_gateway_rest_api_policy": "aws_api_gateway_rest_api_policy.fixture[0]",
+            "aws_api_gateway_deployment": "aws_api_gateway_deployment.fixture[0]",
+            "aws_api_gateway_stage": "aws_api_gateway_stage.fixture[0]",
+            "aws_ssm_parameter": "aws_ssm_parameter.fixture_provenance_secret[0]",
+            "aws_cloudwatch_log_group": "aws_cloudwatch_log_group.fixture[0]",
+        }
+        # A real plan carries `tags` only on taggable types. The rest-api POLICY and
+        # the DEPLOYMENT are not taggable, so modelling tags on them would let the
+        # tag check pass on lines where a real plan offers nothing to check.
+        _untaggable = {"aws_api_gateway_rest_api_policy", "aws_api_gateway_deployment"}
+        # A test that supplies FAKE_DESTROY_CHANGES states the WHOLE plan; the
+        # default must not be appended to it, or a test asserting on an exact plan
+        # would silently get extra lines.
+        def _line(r):
+            # A test may perturb the receipt (drop a `type`, invent a kind). The plan
+            # is what the PROVIDER would emit, so derive a plausible line rather than
+            # raising: a fake that crashes on a perturbed receipt would make the test
+            # assert on a terraform traceback instead of on the guard's refusal.
+            rtype = r.get("type") or "aws_unknown_resource"
+            before = {"id": r.get("id", "")}
+            if rtype not in _untaggable:
+                before["tags"] = owned_tags()
+            return {"address": _addr.get(rtype, "%s.fixture[0]" % rtype),
+                    "type": rtype,
+                    "change": {"actions": ["delete"], "before": before}}
+
+        changes = json.loads(os.environ.get("FAKE_DESTROY_CHANGES", "null")) or (
+            [_line(r) for r in owned_receipt()["resources"]] + [
+            # A local-only line, which the guard must skip rather than demand an id for.
             {"address": "random_password.fixture_edge_provenance[0]",
-             "type": "random_password", "change": {"actions": ["delete"]}}]
+             "type": "random_password", "change": {"actions": ["delete"]}}])
         if os.environ.get("FAKE_DESTROY_PLAN_FAIL") == "1" and "-refresh=false" not in args:
             sys.stderr.write("Error: Reading ... data source error\n"); sys.exit(1)
     pathlib.Path(p).write_text(json.dumps({"resource_changes": changes}))
@@ -2265,16 +2333,37 @@ def test_destroy_fails_rather_than_skipping_the_api_probe_when_the_id_is_unreada
 # it, the tag says the object was stamped for this run at creation.
 
 
+def _owned_resources():
+    """The six typed entries outputs.tf emits, with the ids the PROVIDER assigns.
+
+    Mirrors FAKE_TERRAFORM's owned_receipt(); kept here so a test can perturb one
+    entry without rebuilding the whole inventory. Each carries its Terraform
+    resource TYPE because the destroy plan is matched on (type, id) pairs — the REST
+    API and its policy share one id, so ids alone cannot show both were included.
+    """
+    return [
+        {"kind": "apigateway-rest-api", "type": "aws_api_gateway_rest_api",
+         "id": API_ID, "name": f"w2-fixture-edge-{NONCE}"},
+        {"kind": "apigateway-rest-api-policy",
+         "type": "aws_api_gateway_rest_api_policy",
+         "id": API_ID, "name": f"resource policy on w2-fixture-edge-{NONCE}"},
+        {"kind": "apigateway-deployment", "type": "aws_api_gateway_deployment",
+         "id": DEPLOYMENT_ID, "name": f"deployment of {API_ID}"},
+        {"kind": "apigateway-stage", "type": "aws_api_gateway_stage",
+         "id": STAGE_ID, "name": "dev"},
+        {"kind": "ssm-parameter", "type": "aws_ssm_parameter",
+         "id": PARAM, "name": PARAM},
+        {"kind": "cloudwatch-log-group", "type": "aws_cloudwatch_log_group",
+         "id": LOG_GROUP, "name": LOG_GROUP},
+    ]
+
+
 def _receipt_with(harness, **overrides):
     """The ownership receipt the fake emits, with fields replaced."""
     doc = {
         "run_nonce": NONCE, "account_id": ACCOUNT, "region": "us-east-1",
-        "environment": "dev", "rest_api_id": "fixapi123",
-        "resources": [
-            {"kind": "apigateway-rest-api", "id": "fixapi123",
-             "name": f"w2-fixture-edge-{NONCE}"},
-            {"kind": "ssm-parameter", "id": PARAM, "name": PARAM},
-        ],
+        "environment": "dev", "rest_api_id": API_ID,
+        "resources": _owned_resources(),
     }
     doc.update(overrides)
     return {"FAKE_OWNERSHIP_JSON": json.dumps(doc)}
@@ -2297,10 +2386,46 @@ def _delete_change(address, rtype, rid, tags="owned"):
 def _owned_plan():
     return [
         _delete_change("aws_api_gateway_rest_api.fixture[0]",
-                       "aws_api_gateway_rest_api", "fixapi123"),
+                       "aws_api_gateway_rest_api", API_ID),
         _delete_change("aws_ssm_parameter.fixture_provenance_secret[0]",
                        "aws_ssm_parameter", PARAM),
     ]
+
+
+# Types a real plan carries NO `tags` on, because the resource is not taggable: the
+# rest-api POLICY is an attribute of the API, and a DEPLOYMENT has no tags. Modelling
+# tags on them would let the tag half of the gate "pass" on lines where a real plan
+# offers nothing to check — a green that means nothing was looked at.
+_UNTAGGABLE = {"aws_api_gateway_rest_api_policy", "aws_api_gateway_deployment"}
+
+_PLAN_ADDRESS = {
+    "aws_api_gateway_rest_api": "aws_api_gateway_rest_api.fixture[0]",
+    "aws_api_gateway_rest_api_policy": "aws_api_gateway_rest_api_policy.fixture[0]",
+    "aws_api_gateway_deployment": "aws_api_gateway_deployment.fixture[0]",
+    "aws_api_gateway_stage": "aws_api_gateway_stage.fixture[0]",
+    "aws_ssm_parameter": "aws_ssm_parameter.fixture_provenance_secret[0]",
+    "aws_cloudwatch_log_group": "aws_cloudwatch_log_group.fixture[0]",
+}
+
+
+def _full_owned_plan(omit_types=(), rows=None):
+    """A REAL-SHAPED destroy plan for the whole component: one delete line per owned
+    resource, each carrying the id the provider assigns and the run tag where the type
+    is taggable, plus the local-only line a real plan also contains.
+
+    `omit_types` drops lines, which is how the completeness half of the gate is
+    exercised — including the case that an id-keyed comparison cannot see at all
+    (dropping the policy, whose id is the API's).
+    """
+    plan = [
+        _delete_change(_PLAN_ADDRESS[r["type"]], r["type"], r["id"],
+                       tags=None if r["type"] in _UNTAGGABLE else "owned")
+        for r in (rows if rows is not None else _owned_resources())
+        if r["type"] not in omit_types
+    ]
+    return plan + [
+        {"address": "random_password.fixture_edge_provenance[0]",
+         "type": "random_password", "change": {"actions": ["delete"]}}]
 
 
 def test_destroy_refuses_to_delete_a_resource_state_does_not_record_as_ours(harness):
@@ -2413,6 +2538,159 @@ def test_destroy_does_not_demand_a_cloud_id_for_resources_that_have_none(harness
     assert r.returncode == 0, r.stderr
     assert "every deletion is in this run's owned set" in r.stdout
     assert "random_password" not in r.stderr
+
+
+# --- 5c. The receipt's ids must be the ids a PLAN CARRIES -------------------
+#
+# Root EXECUTED a valid six-resource inventory against a real-shaped destroy plan and
+# the guard refused it as NOT OWNED. The cause was not the guard: outputs.tf recorded
+# the stage as its `stage_name` ("dev"), while the provider sets a stage's id to
+# "ags-<rest-api-id>-<stage-name>" (aws/internal/service/apigateway/stage.go). The
+# receipt therefore held an identifier NO PLAN EVER CARRIES, the stage's real deletion
+# line matched nothing, and LEGITIMATE TEARDOWN WAS BLOCKED.
+#
+# That is worth naming precisely, because it is the failure mode that DEFEATS a
+# safety gate rather than bypassing it: the operator is told the plan touches
+# something it does not own, and the only way forward appears to be deleting by hand
+# — which is exactly what the guard exists to prevent. So the fix is on the receipt
+# side (record each resource's own `.id`) and the guard is NOT loosened.
+#
+# The tests below exercise the COMPLETE six-resource inventory. The previous fake had
+# two entries, which is why nothing here could have caught a per-type identity
+# mismatch: four of the six types never appeared in any plan under test.
+
+
+def test_destroy_accepts_the_real_shaped_plan_for_the_whole_component(harness):
+    """THE REGRESSION, as root executed it: a valid inventory and a real-shaped plan
+    covering all six resources must be ACCEPTED.
+
+    This is the test the stage-id mismatch failed. It is a positive control, so it is
+    also the one that proves the negatives below are not passing for the trivial
+    reason that the guard refuses everything.
+    """
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(_full_owned_plan())})
+    assert r.returncode == 0, r.stderr
+    assert "NOT OWNED" not in r.stderr
+    # Six resources, not five: the count is of (type, id) PAIRS, and the API and its
+    # policy share an id. A count of 5 would mean the shared id collapsed the two.
+    assert "6 resources" in r.stdout
+    assert "by (type, id) and by run tag" in r.stdout
+    assert "terraform apply" in harness.log.read_text()
+
+
+def test_destroy_accepts_the_stage_id_the_provider_actually_assigns(harness):
+    """Narrowed to the single resource root's finding was about, so a future
+    regression names the stage rather than showing a six-line diff."""
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(_full_owned_plan())})
+    assert r.returncode == 0, r.stderr
+    assert STAGE_ID.startswith("ags-"), "the test's own stage id must be the real shape"
+    assert STAGE_ID not in r.stderr, (
+        "the stage's real provider id was reported as a problem — the receipt is "
+        "recording an identifier no plan carries (probably stage_name)")
+
+
+def test_destroy_refuses_a_receipt_recording_the_stage_by_NAME(harness):
+    """The defect reproduced from the receipt side, and the reason the fix belongs
+    there: a receipt holding "dev" where the plan carries "ags-<api>-dev" must be
+    REFUSED, loudly, naming the real id.
+
+    The guard is correct to refuse — an identifier it cannot match is not an
+    identifier it may assume. What was wrong was the receipt. Pinning the refusal
+    means a reintroduced `stage_name` fails here instead of surfacing as an
+    unexplained teardown block during a live run.
+    """
+    rows = [dict(r, id="dev") if r["type"] == "aws_api_gateway_stage" else r
+            for r in _owned_resources()]
+    r = harness.run(
+        "destroy",
+        dict(_receipt_with(harness, resources=rows),
+             FAKE_DESTROY_CHANGES=json.dumps(_full_owned_plan())))
+    assert r.returncode != 0, "a receipt whose stage id no plan can carry was accepted"
+    assert "NOT OWNED" in r.stderr
+    assert STAGE_ID in r.stderr, "the refusal must name the id the plan actually carried"
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_detects_an_omitted_POLICY_despite_it_sharing_the_apis_id(harness):
+    """The case an id-keyed comparison is BLIND to, which is why the gate is keyed on
+    (type, id) pairs.
+
+    aws_api_gateway_rest_api_policy's id IS the rest-api id — the policy is an
+    attribute of the API, not a separate object. So a plan that deletes the API and
+    not the policy presents every owned ID, and a set-of-ids comparison reports
+    complete coverage. The policy is the wrong-role Deny, so leaving it behind is not
+    a benign omission.
+    """
+    plan = _full_owned_plan(omit_types={"aws_api_gateway_rest_api_policy"})
+    planned_ids = {c["change"]["before"].get("id") for c in plan
+                   if c["change"].get("before")}
+    owned_ids = {r["id"] for r in _owned_resources()}
+    assert owned_ids <= planned_ids, (
+        "this test is only meaningful while the omitted policy leaves every owned ID "
+        "still present in the plan — otherwise an id-only check would catch it too")
+
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0, (
+        "an omitted resource policy — the wrong-role refusal — was reported as a "
+        "complete teardown because its id is the API's")
+    assert "LEAVES BEHIND" in r.stderr
+    assert "aws_api_gateway_rest_api_policy" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_detects_an_omitted_API_despite_the_policy_sharing_its_id(harness):
+    """The same blindness from the other side: dropping the API while keeping the
+    policy also leaves every owned id present in the plan."""
+    plan = _full_owned_plan(omit_types={"aws_api_gateway_rest_api"})
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0, "an omitted REST API passed because its policy shares its id"
+    assert "LEAVES BEHIND" in r.stderr
+    assert "aws_api_gateway_rest_api id=" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+@pytest.mark.parametrize("rtype", sorted(_PLAN_ADDRESS))
+def test_destroy_detects_any_one_of_the_six_being_left_behind(harness, rtype):
+    """Every type, not a sample. The under-counting fake meant four of the six were
+    never in a plan under test, so no per-type mismatch was reachable at all."""
+    plan = _full_owned_plan(omit_types={rtype})
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0, f"a plan omitting {rtype} was accepted as complete"
+    assert "LEAVES BEHIND" in r.stderr
+    assert rtype in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_names_the_type_when_an_owned_id_appears_under_another_one(harness):
+    """A plan line whose id IS owned but under a different type is the interesting
+    refusal — an import, or a receipt/plan disagreement. Reporting only the id would
+    read as an unknown object and send the operator looking for the wrong thing."""
+    plan = _full_owned_plan() + [
+        _delete_change("aws_api_gateway_base_path_mapping.imported",
+                       "aws_api_gateway_base_path_mapping", API_ID)]
+    r = harness.run("destroy", {"FAKE_DESTROY_CHANGES": json.dumps(plan)})
+    assert r.returncode != 0
+    assert "NOT OWNED" in r.stderr
+    assert "the id is owned, but under type" in r.stderr
+    assert "aws_api_gateway_rest_api" in r.stderr
+    assert "terraform apply" not in harness.log.read_text()
+
+
+def test_destroy_refuses_an_untyped_receipt_rather_than_comparing_ids_alone(harness):
+    """A receipt from before this fix has no `type`. Falling back to an id-only
+    comparison for it would reinstate the exact gap above — the shared-id omission
+    would be undetectable again — so an untyped entry is refused and the operator is
+    told to re-apply, not quietly given a weaker check.
+    """
+    rows = [{k: v for k, v in r.items() if k != "type"} for r in _owned_resources()]
+    r = harness.run(
+        "destroy",
+        dict(_receipt_with(harness, resources=rows),
+             FAKE_DESTROY_CHANGES=json.dumps(_full_owned_plan())))
+    assert r.returncode != 0, "an untyped receipt was silently compared on ids alone"
+    assert "no `type`" in r.stderr
+    assert "re-apply" in r.stderr.lower()
+    assert "terraform apply" not in harness.log.read_text()
 
 
 def test_destroy_dry_run_checks_the_owned_set_before_reporting(harness):

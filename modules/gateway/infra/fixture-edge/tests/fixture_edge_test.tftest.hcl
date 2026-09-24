@@ -56,6 +56,49 @@ mock_provider "aws" {
     }
   }
 
+  # The stage's id is server-assigned too, and it is NOT the stage name: the
+  # provider sets it to "ags-<rest-api-id>-<stage-name>"
+  # (aws/internal/service/apigateway/stage.go — d.SetId(fmt.Sprintf("ags-%s-%s",
+  # apiID, stageName))). The mock reproduces that shape because the receipt used to
+  # record the bare `stage_name` instead, which is an identifier no plan ever
+  # carries: the destroy guard compares the plan's change.before.id against these
+  # ids, so the stage's real deletion line never matched, the guard concluded NOT
+  # OWNED, and legitimate teardown was BLOCKED. Root reproduced that with a
+  # real-shaped plan. Without a stand-in of the real shape, an assertion here could
+  # not tell the two apart.
+  mock_resource "aws_api_gateway_stage" {
+    defaults = {
+      id = "ags-fx1234abcd-dev"
+    }
+  }
+
+  # The remaining two ids the receipt now records. For these the provider's id IS the
+  # resource's name, so the stand-ins are the names main.tf composes under the
+  # `variables` block below (name_prefix = "bedrockgw-dev-w2fx-<nonce>").
+  #
+  # They need stand-ins for a reason worth stating: `id` is a COMPUTED attribute, so
+  # it is unknown until apply even when it will equal an attribute that is known now.
+  # An unknown inside the `ownership` output makes every expression built from that
+  # output unevaluable — `try()` recovers from errors, not from unknowns — so without
+  # these the secret-hygiene assertion below stops being checked rather than failing,
+  # and 18 later runs cascade to `skip`. Silently losing the largest output's
+  # no-secret check is a worse outcome than the mismatch it was added to catch.
+  mock_resource "aws_ssm_parameter" {
+    defaults = {
+      id = "/adp/dev/gateway/fixture/a1b2c3d4e5f60718/apigw-provenance-secret"
+    }
+  }
+  mock_resource "aws_cloudwatch_log_group" {
+    defaults = {
+      id = "/aws/api-gateway/bedrockgw-dev-w2fx-a1b2c3d4e5f60718-fixture-edge"
+      # The stage's access_log_settings.destination_arn is this arn, and the provider
+      # VALIDATES it as an ARN during plan. Declaring defaults for this resource makes
+      # its generated values deterministic, so the arn has to be a real-shaped one or
+      # the stage fails to plan for a reason unrelated to anything under test.
+      arn = "arn:aws:logs:us-east-1:879318057152:log-group:/aws/api-gateway/bedrockgw-dev-w2fx-a1b2c3d4e5f60718-fixture-edge"
+    }
+  }
+
   # The fixture ALB is now DISCOVERED rather than described by input strings, so
   # the mock has to supply the facts the blocking gate reads. The happy-path
   # defaults describe a correctly-built fixture ALB: internal, in the expected
@@ -612,6 +655,63 @@ run "resources_are_bound_to_run_account_and_region" {
       for r in output.ownership.resources : r.verify != "" && r.kind != ""
     ])
     error_message = "Every ownership row must name its kind and how to probe for its ABSENCE after teardown."
+  }
+
+  assert {
+    # Every row must carry its TERRAFORM RESOURCE TYPE, because the destroy guard
+    # matches plan lines on (type, id) pairs. It cannot match on ids alone: the REST
+    # API and its resource policy genuinely SHARE one id (the policy is an attribute
+    # of the API), so a set of ids is satisfied by a plan that deletes only the API
+    # and an omitted policy — the wrong-role Deny — could not be detected.
+    condition = alltrue([
+      for r in output.ownership.resources : r.type != "" && startswith(r.type, "aws_")
+    ])
+    error_message = "Every ownership row must record its Terraform resource type. The destroy guard matches on (type, id) because the REST API and its policy share an id, so an id-only receipt cannot show both were included."
+  }
+
+  assert {
+    # The receipt's identifiers must be the ones TERRAFORM WILL PRESENT in a plan.
+    # This is the assertion that fails on root's executed finding: the stage was
+    # recorded as its `stage_name` ("dev"), while the provider's id — and therefore
+    # every plan line — is "ags-<rest-api-id>-<stage-name>". The mismatch made the
+    # destroy guard refuse a LEGITIMATE teardown, pushing the operator toward
+    # deleting by hand, which is the exact outcome the guard exists to prevent.
+    condition = alltrue([
+      for r in output.ownership.resources :
+      r.id == {
+        aws_api_gateway_rest_api        = aws_api_gateway_rest_api.fixture[0].id
+        aws_api_gateway_rest_api_policy = aws_api_gateway_rest_api_policy.fixture[0].id
+        aws_api_gateway_deployment      = aws_api_gateway_deployment.fixture[0].id
+        aws_api_gateway_stage           = aws_api_gateway_stage.fixture[0].id
+        aws_ssm_parameter               = aws_ssm_parameter.fixture_provenance_secret[0].id
+        aws_cloudwatch_log_group        = aws_cloudwatch_log_group.fixture[0].id
+      }[r.type]
+    ])
+    error_message = "Each ownership row's id must be the resource's own provider-assigned .id, since that is what a destroy plan carries. Recording a stage's stage_name instead of its 'ags-<api>-<stage>' id made the guard refuse a legitimate teardown."
+  }
+
+  assert {
+    # Stated separately and literally, so this cannot silently pass again by both
+    # sides drifting together: the stage row must be the ags-prefixed composite, and
+    # must NOT be the bare stage name.
+    condition = alltrue([
+      for r in output.ownership.resources : (
+        startswith(r.id, "ags-${aws_api_gateway_rest_api.fixture[0].id}-") &&
+        r.id != aws_api_gateway_stage.fixture[0].stage_name
+      ) if r.type == "aws_api_gateway_stage"
+    ])
+    error_message = "The stage row must record the provider's composite id 'ags-<rest-api-id>-<stage-name>', not the bare stage_name. The bare name matches no plan line, so the destroy guard reported the stage as NOT OWNED and blocked teardown."
+  }
+
+  assert {
+    # All six must be individually accounted for as (type, id) pairs even though only
+    # five DISTINCT ids exist across them. Counting ids would give 5 and look like a
+    # missing resource; counting pairs is what the guard actually does.
+    condition = (
+      length(distinct([for r in output.ownership.resources : "${r.type}/${r.id}"])) == 6 &&
+      length(distinct([for r in output.ownership.resources : r.id])) == 5
+    )
+    error_message = "The six rows must be six distinct (type, id) pairs over five distinct ids — the REST API and its policy share an id. If the distinct id count is 6, the shared-id case is no longer being represented and the completeness check is not being tested."
   }
 
   assert {

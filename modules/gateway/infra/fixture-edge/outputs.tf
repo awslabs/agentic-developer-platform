@@ -139,7 +139,16 @@ output "ownership" {
 
     resources = var.fixture_edge_enabled ? [
       {
-        kind   = "apigateway-rest-api"
+        kind = "apigateway-rest-api"
+        # The TERRAFORM RESOURCE TYPE, which is what each plan line reports as
+        # `type`. Recorded because an id ALONE cannot establish complete ownership:
+        # aws_api_gateway_rest_api_policy's id IS the rest-api id (the policy is an
+        # attribute of the API, not a separate object), so those two entries share
+        # one identifier. Compared as a set of ids, a plan deleting only the API
+        # satisfies both, and omitting the policy could not be detected — while the
+        # policy IS the wrong-role refusal, so silently leaving it is not benign.
+        # Keying on (type, id) pairs keeps the two individually accounted for.
+        type   = "aws_api_gateway_rest_api"
         id     = try(aws_api_gateway_rest_api.fixture[0].id, "")
         name   = try(aws_api_gateway_rest_api.fixture[0].name, "")
         verify = "aws apigateway get-rest-api --rest-api-id ${try(aws_api_gateway_rest_api.fixture[0].id, "")} # EXPECT NotFoundException after teardown"
@@ -147,32 +156,54 @@ output "ownership" {
       {
         # Was missing from the previous revision. It is the wrong-role refusal, so
         # an inventory that omits it cannot show the refusal was removed with the API.
-        kind   = "apigateway-rest-api-policy"
+        kind = "apigateway-rest-api-policy"
+        type = "aws_api_gateway_rest_api_policy"
+        # Shares the REST API's id — see the `type` note above for why that makes a
+        # set of ids insufficient.
         id     = try(aws_api_gateway_rest_api_policy.fixture[0].id, "")
         name   = "resource policy on ${try(aws_api_gateway_rest_api.fixture[0].name, "")}"
         verify = "deleted with the REST API above; no separate probe exists"
       },
       {
         kind   = "apigateway-deployment"
+        type   = "aws_api_gateway_deployment"
         id     = try(aws_api_gateway_deployment.fixture[0].id, "")
         name   = "deployment of ${try(aws_api_gateway_rest_api.fixture[0].id, "")}"
         verify = "deleted with the REST API above"
       },
       {
-        kind   = "apigateway-stage"
-        id     = try(aws_api_gateway_stage.fixture[0].stage_name, "")
+        kind = "apigateway-stage"
+        # `.id`, NOT `.stage_name`. The provider sets the stage's id to
+        # "ags-<rest-api-id>-<stage-name>" (aws/internal/service/apigateway/stage.go:
+        # d.SetId(fmt.Sprintf("ags-%s-%s", apiID, stageName))), so recording the bare
+        # stage_name ("dev") recorded an identifier NO PLAN EVER CARRIES.
+        #
+        # This was not a cosmetic mismatch: the destroy guard compares the plan's
+        # change.before.id against these ids, so the stage's real line never matched,
+        # the guard concluded NOT OWNED, and LEGITIMATE TEARDOWN WAS BLOCKED —
+        # pushing the operator toward deleting by hand, which is the exact outcome the
+        # guard exists to prevent. Root reproduced this with a real-shaped plan.
+        #
+        # Every entry here now uses the resource's own `.id` for the same reason: the
+        # receipt's identifiers must be the ones Terraform will actually present.
+        type   = "aws_api_gateway_stage"
+        id     = try(aws_api_gateway_stage.fixture[0].id, "")
         name   = try(aws_api_gateway_stage.fixture[0].stage_name, "")
         verify = "aws apigateway get-stage --rest-api-id ${try(aws_api_gateway_rest_api.fixture[0].id, "")} --stage-name ${try(aws_api_gateway_stage.fixture[0].stage_name, "")} # EXPECT NotFoundException"
       },
       {
-        kind   = "ssm-parameter"
-        id     = try(aws_ssm_parameter.fixture_provenance_secret[0].name, "")
+        kind = "ssm-parameter"
+        type = "aws_ssm_parameter"
+        # The provider's id for an SSM parameter IS its name.
+        id     = try(aws_ssm_parameter.fixture_provenance_secret[0].id, "")
         name   = try(aws_ssm_parameter.fixture_provenance_secret[0].name, "")
         verify = "aws ssm get-parameter --name ${try(aws_ssm_parameter.fixture_provenance_secret[0].name, "")} # EXPECT ParameterNotFound (never print the value)"
       },
       {
-        kind   = "cloudwatch-log-group"
-        id     = try(aws_cloudwatch_log_group.fixture[0].name, "")
+        kind = "cloudwatch-log-group"
+        type = "aws_cloudwatch_log_group"
+        # The provider's id for a log group IS its name.
+        id     = try(aws_cloudwatch_log_group.fixture[0].id, "")
         name   = try(aws_cloudwatch_log_group.fixture[0].name, "")
         verify = "aws logs describe-log-groups --log-group-name-prefix ${try(aws_cloudwatch_log_group.fixture[0].name, "")} --query 'logGroups[].logGroupName' # EXPECT empty"
       },
