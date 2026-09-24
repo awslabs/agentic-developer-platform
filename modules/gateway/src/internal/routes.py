@@ -129,6 +129,14 @@ class ResolveUserResponse(BaseModel):
     org_id: str
     team_id: str
     is_shadow: bool
+    # How the link this answer rests on was established (#5664, A10). The lookup
+    # already filters to PROVEN_METHODS, so every value here is proof — but the
+    # webhook reader must not have to INFER that from the endpoint's filtering
+    # policy. Stating it makes the reader's authority check read the same fact the
+    # writer recorded, so a future relaxation of the filter cannot silently widen
+    # what a caller treats as proven. Empty string means a caller is talking to a
+    # gateway that predates the field: unknown provenance, which is not proof.
+    verification_method: str = ""
 
 
 class ResolveUserNotFoundResponse(BaseModel):
@@ -417,6 +425,7 @@ async def resolve_user(
                 org_id=user.org_id,
                 team_id=user.team_id,
                 is_shadow=user.is_shadow,
+                verification_method=identity.verification_method or "",
             )
 
     # 2. Check channel_tenant_map for auto-provisioning
@@ -450,7 +459,21 @@ async def resolve_user(
         )
         db.add(shadow)
 
-        # Create the identity link
+        # Create the identity link.
+        #
+        # #5664 (A10), noted not changed: `admin_manual` is not an accurate label
+        # here. No administrator asserted that THIS external account belongs to
+        # this platform user; an administrator mapped the workspace to the tenant
+        # via channel_tenant_map, and the account id came from the request body.
+        # Those are different facts, and the trust filter above now treats this
+        # label as proof, so the mislabel matters more than it did.
+        #
+        # It is left alone deliberately rather than quietly relabelled: making it
+        # unproven would make every subsequent resolve of an auto-provisioned
+        # shadow user miss, re-issuing a magic link forever and breaking the
+        # auto-provision flow for tenants that opted into it. That is a behavior
+        # change needing its own analysis and rollout, not a side effect of this
+        # one. Recorded as an adjacent finding on #5664 instead.
         link = UserIdentity(
             org_id=tenant_map.org_id,
             user_id=shadow.id,
@@ -492,6 +515,10 @@ async def resolve_user(
                 "org_id": shadow.org_id,
                 "team_id": shadow.team_id,
                 "is_shadow": True,
+                # Stated for the same reason as the 200 path (#5664, A10): the
+                # reader should read provenance, not infer it from the status code.
+                # The value matches the row written just above.
+                "verification_method": link.verification_method or "",
             },
         )
 

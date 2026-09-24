@@ -55,6 +55,49 @@ TRIGGER_POLICY_HOME_TENANT_ONLY = "home_tenant_only"
 # posture of every tenant that never configured the setting.
 DEFAULT_TRIGGER_POLICY = TRIGGER_POLICY_ANY_ADP_USER
 
+# ---------------------------------------------------------------------------
+# Which identity links are proof of ownership (issue #5664, A10)
+# ---------------------------------------------------------------------------
+# What this resolver returns becomes `resolved.user_id`, which the handler feeds
+# to `agent_authority.VerifiedHumanEvent.from_verified_webhook` to mint human
+# dispatch authority. So "which platform user is this GitHub sender?" is an
+# authorization answer, not a lookup convenience.
+#
+# The DDB identity projection carries no provenance at all: a row written from a
+# link a user merely ASSERTED about themselves is byte-identical to one the
+# provider confirmed. Anyone who could name someone else's GitHub user id could
+# therefore have their comments attributed to that person — and act with their
+# authority — with nothing in the row to distinguish the two.
+#
+# This vocabulary must equal the gateway's `PROVEN_METHODS`
+# (modules/gateway/src/shared/identity/verification.py). It cannot import it:
+# package-lambdas.sh roots the Lambda zip at lambda/, so nothing outside it is
+# importable at runtime. The drift guard is the lockstep test
+#   modules/gateway/tests/internal/test_provenance_policy_lockstep.py
+# which imports both sides and asserts the sets agree. If you change this set,
+# that test fails until the gateway follows — do not "fix" it by editing one
+# side's expected value.
+PROVEN_VERIFICATION_METHODS = frozenset(
+    {
+        "oauth",
+        "org_placement",
+        "admin_manual",
+        "magic_link_confirmed",
+    }
+)
+
+
+def _is_proven(verification_method: str | None) -> bool:
+    """Fail-closed: anything not explicitly proven is not proof.
+
+    Covers ``None`` and ``""`` — a DDB row written before provenance was projected,
+    or a gateway not yet redeployed with the field. In neither case has this
+    process observed evidence the sender controls the account, and a new method is
+    inert here until it is deliberately declared proven on both sides.
+    """
+    return verification_method in PROVEN_VERIFICATION_METHODS
+
+
 _dynamodb = None
 _cloudwatch = None
 # Exposed for callers that need the tenant_item after resolve() completes
@@ -72,6 +115,22 @@ class ResolvedIdentity:
     user_provisioning_mode: str  # "strict" | "auto_provision"
     user_kind: str = "human"  # "human" | "bot"
     bot_kind: str = ""  # e.g. "agent-developer", "" for humans
+    # Issue #5664 (A10): HOW the sender's identity link was established, carried
+    # so that consumers granting authority from `user_id` can tell an
+    # provider-confirmed link from one the user asserted about themselves. Defaults
+    # to "" — unknown provenance, which `identity_proven` treats as NOT proof.
+    verification_method: str = ""
+
+    @property
+    def identity_proven(self) -> bool:
+        """Whether this identity is evidence the sender controls the account.
+
+        Consumers that mint authority from ``user_id`` (notably
+        ``agent_authority.VerifiedHumanEvent``) must gate on this rather than on
+        the mere existence of a resolution. Resolving a sender and being entitled
+        to act as them are different questions.
+        """
+        return _is_proven(self.verification_method)
 
 
 def _get_table():
@@ -247,7 +306,15 @@ def _resolve_user_from_new_table(sender_id: int) -> dict | None:
 
 
 def _resolve_user_from_old_table(sender_id: int) -> dict | None:
-    """Resolve user from the existing identity-index table."""
+    """Resolve user from the existing identity-index table.
+
+    Issue #5664 (A10): rows in this table carry no ``verification_method`` — the
+    attribute was never written here. They are returned as-is; ``_is_proven``
+    treats the absent value as unproven, so a legacy row can still IDENTIFY a
+    sender but cannot by itself authorize one. That is the intended asymmetry: the
+    table predates provenance, and inferring proof from its silence is exactly the
+    permissive fallback this issue removes.
+    """
     table = _get_table()
     resp = table.get_item(
         Key={
@@ -462,7 +529,15 @@ def resolve(
         if _resolve_canonical_via_gateway_enabled():
             from common.gateway_client import resolve_user_by_identity
 
-            pg_result = resolve_user_by_identity("github", str(sender_id))
+            # Issue #5664 (A10): scope the lookup to the tenant this installation
+            # belongs to. `user_identities` is unique per (provider,
+            # provider_user_id, org_id), so an account linked in several tenants is
+            # ambiguous unscoped and the gateway declines to guess. The
+            # installation already told us the tenant, so the question is
+            # answerable — asking it unscoped was throwing away the answer.
+            pg_result = resolve_user_by_identity(
+                "github", str(sender_id), org_id=org_id
+            )
 
             if pg_result and user_item:
                 # Both returned a result — check for drift
@@ -567,6 +642,12 @@ def resolve(
                 user_provisioning_mode=user_provisioning_mode,
                 user_kind=user_kind,
                 bot_kind=user_item.get("bot_kind", ""),
+                # Issue #5664 (A10): absent on every DDB row (the attribute is not
+                # projected) and present only when the Postgres safety-net answered.
+                # "" is unknown provenance, which `identity_proven` treats as not
+                # proof — so resolution still IDENTIFIES the sender while authority
+                # is withheld until the link's origin is actually known.
+                verification_method=user_item.get("verification_method", ""),
             ),
             "ok",
         )

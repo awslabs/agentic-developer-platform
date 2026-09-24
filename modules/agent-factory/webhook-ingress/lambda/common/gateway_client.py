@@ -100,11 +100,27 @@ def _resolve_internal_api_key() -> str:
     return _internal_api_key
 
 
-def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | None:
+def resolve_user_by_identity(
+    provider: str, provider_user_id: str, org_id: str | None = None
+) -> dict | None:
     """Call POST /internal/v1/resolve-user to resolve canonical user via Postgres.
 
-    Returns dict with keys {user_id, org_id, team_id, is_shadow} on success,
-    or None on 404 / error.
+    Returns dict with keys {user_id, org_id, team_id, is_shadow,
+    verification_method} on success, or None on 404 / error.
+
+    Issue #5664 (A10): two additions.
+
+    ``org_id`` scopes the lookup to the tenant this webhook delivery is for.
+    ``user_identities`` is uniquely indexed per ``(provider, provider_user_id,
+    org_id)``, so one external account may legitimately hold rows in several
+    tenants; unscoped, the gateway cannot tell which one an event belongs to and
+    answers 409 rather than guessing. The installation already tells us the
+    tenant, so pass it and the question becomes answerable.
+
+    ``verification_method`` is the provenance of the link the answer rests on.
+    Callers that grant authority from this result must check it — see
+    ``identity_resolver``'s use of ``PROVEN_METHODS``. It is ``""`` when the
+    gateway predates the field, which is unknown provenance, NOT proof.
     """
     if not GATEWAY_API_URL:
         logger.warning("GATEWAY_API_URL not set — cannot resolve user via gateway")
@@ -115,6 +131,8 @@ def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | Non
         "provider": provider,
         "provider_user_id": provider_user_id,
     }
+    if org_id:
+        body["org_id"] = org_id
 
     api_key = _resolve_internal_api_key()
     if not api_key:
@@ -143,9 +161,24 @@ def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | Non
                     "org_id": data.get("org_id", ""),
                     "team_id": data.get("team_id", ""),
                     "is_shadow": data.get("is_shadow", False),
+                    # "" when the gateway has not been redeployed with the field.
+                    "verification_method": data.get("verification_method", ""),
                 }
             return None
     except urllib.error.HTTPError as e:
+        if e.code == 409:
+            # Issue #5664 (A10): the gateway refuses to guess which tenant an
+            # ambiguous identity belongs to. Treated as "no answer" rather than as
+            # an error to retry: the data is not transiently unavailable, it is
+            # genuinely ambiguous, and retrying returns the same 409.
+            logger.warning(
+                "resolve_user_by_identity: 409 ambiguous identity for provider=%s "
+                "provider_user_id=%s org_id=%r — declining to resolve",
+                provider,
+                provider_user_id,
+                org_id,
+            )
+            return None
         if e.code == 404:
             logger.info(
                 "resolve_user_by_identity: 404 for provider=%s provider_user_id=%s",

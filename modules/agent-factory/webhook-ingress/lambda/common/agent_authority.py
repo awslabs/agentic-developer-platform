@@ -23,6 +23,59 @@ class AuthorityProvisionError(Exception):
     """Dispatch cannot publish without a matching protected authority record."""
 
 
+# ---------------------------------------------------------------------------
+# Requiring proven identity before minting human authority (issue #5664, A10)
+# ---------------------------------------------------------------------------
+# `from_verified_webhook` turns "we resolved this sender to a platform user" into
+# "this platform user authorized this dispatch". Those are different claims. The
+# first only says a row existed mapping the sender's GitHub id to a user_id; it
+# says nothing about whether anyone ever demonstrated that the sender controls
+# that account. Before this flag, an identity link a user merely ASSERTED about
+# themselves minted human dispatch authority indistinguishably from an
+# OAuth-confirmed one.
+#
+# Why this is a flag rather than an unconditional check: `verification_method` is
+# not projected onto the DynamoDB identity rows that the resolver reads on the hot
+# path, so today essentially every resolution carries "" (unknown provenance).
+# Enforcing immediately would fail closed on EVERY human dispatch, platform-wide,
+# which is an outage rather than a fix. The projection has to land and backfill
+# first.
+#
+# So the default is fail-open-but-LOUD, the same posture `installation_gate` takes
+# for an unavailable gate: allow, but emit `UnprovenIdentityAuthority` so the
+# residual exposure is measurable instead of assumed. Once that metric reads zero
+# for a deployment, REQUIRE_PROVEN_IDENTITY_FOR_AUTHORITY=true closes it for good.
+# The flag exists only to sequence that rollout; it is not a supported permanent
+# posture.
+REQUIRE_PROVEN_IDENTITY_ENV = "REQUIRE_PROVEN_IDENTITY_FOR_AUTHORITY"
+
+
+def _require_proven_identity() -> bool:
+    return os.environ.get(REQUIRE_PROVEN_IDENTITY_ENV, "false").lower() == "true"
+
+
+def _emit_unproven_identity_metric(tenant_id: str) -> None:
+    """Make the residual exposure countable. Best-effort, never blocks dispatch."""
+    try:
+        boto3.client(
+            "cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        ).put_metric_data(
+            Namespace="ADP/AgentAuthority",
+            MetricData=[
+                {
+                    "MetricName": "UnprovenIdentityAuthority",
+                    "Value": 1,
+                    "Unit": "Count",
+                    "Dimensions": [
+                        {"Name": "TenantId", "Value": tenant_id or "unknown"}
+                    ],
+                }
+            ],
+        )
+    except Exception:  # noqa: BLE001 — observability must not gate authorization
+        pass
+
+
 # Issue #5365: the server-only marker that lets a human-summoned root coordinator
 # dispatch to other stories in its own repository. Named constants because the
 # gateway reader must agree with this writer exactly; two string literals that
@@ -60,6 +113,17 @@ class VerifiedHumanEvent:
             or not repo
         ):
             raise AuthorityProvisionError("human authorization required")
+
+        # Issue #5664 (A10): the sender must be PROVEN to control the account, not
+        # merely resolvable to it. `identity_proven` fails closed on unknown
+        # provenance. See REQUIRE_PROVEN_IDENTITY_ENV above for why enforcement is
+        # staged rather than immediate.
+        if not getattr(resolved, "identity_proven", False):
+            if _require_proven_identity():
+                raise AuthorityProvisionError(
+                    "human authorization requires a proven identity link"
+                )
+            _emit_unproven_identity_metric(tenant_id)
         digest = hashlib.sha256(event_type.encode() + b"\0" + body).hexdigest()
         return cls(f"github-event:{digest}", resolved.user_id, tenant_id, repo)
 
