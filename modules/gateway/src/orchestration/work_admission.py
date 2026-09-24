@@ -477,7 +477,25 @@ async def _repair_before_release(*, store, invocation_id: str, tenant_id: str, r
 async def maintain_work_claims() -> None:
     """Lifecycle cleanup in existing gateway processes; no new scheduler."""
     cursor = None
+    retained_cursor = ""
     while True:
+        # Recovery is independent of SQL claims and runs first so a database
+        # outage cannot discard accepted-abort reporting work.
+        try:
+            if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+                from src.agentauth.retained_abort_recovery import recover_retained_abort_pods
+                from src.agentauth.routes import get_agent_runtime
+
+                runtime = get_agent_runtime()
+                _, retained_cursor = await run_in_threadpool(
+                    recover_retained_abort_pods, store=runtime.store,
+                    workloads=runtime.workloads,
+                    events_table=os.environ.get(WEBHOOK_EVENTS_TABLE_ENV, ""),
+                    cursor=retained_cursor,
+                )
+        except Exception:
+            logger.exception("retained abort recovery failed; pod evidence remains")
+            retained_cursor = ""
         try:
             if enabled():
                 require_authority()
