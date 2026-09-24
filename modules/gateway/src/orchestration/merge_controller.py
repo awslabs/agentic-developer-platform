@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
@@ -26,7 +28,14 @@ from .execution_runner import (
 )
 from .execution_state import ActionIntent, BlockCode, ExecutionPhase, Observation, ObservedOutcome, OutcomeKind
 from .execution_store import load_execution, prepare_action, record_observation
-from .merge_evidence import EligibilityReason, EligibilityState, GitHubEvidenceSource, observe_merge_eligibility
+from .merge_evidence import (
+    EligibilityReason,
+    EligibilityState,
+    GitHubEvidenceSource,
+    GitHubMergeObserver,
+    evaluate_required_checks,
+    observe_merge_eligibility,
+)
 from .merge_provider import MergeProvider
 from .merge_review import load_merge_review
 from .models import (
@@ -242,7 +251,18 @@ class MergeServices:
             or evidence.merged_at != state.merged_at
         ):
             raise CycleBlockedError("merged_pr_identity_changed")
-        if not evidence.checks_successful:
+        # The reviewer and merge controller use repository requirements to
+        # select applicable checks. A merged PR must use that same policy:
+        # GitHub's aggregate is null when no checks apply, not SUCCESS.
+        async with AsyncExitStack() as stack:
+            client = self.provider.client or await stack.enter_async_context(httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False))
+            observation = await GitHubMergeObserver(client, token, lambda: datetime.now(UTC)).observe(binding)
+        if not observation.merged or observation.head_sha != evidence.head_sha or observation.merge_commit_sha != evidence.merge_commit_sha:
+            raise CycleBlockedError("merged_pr_identity_changed")
+        if len(observation.requirements.checks) > 100 or len(observation.checks) > 200 or len(observation.sources) > 64:
+            raise CycleBlockedError("merge_evidence_bound_exceeded")
+        check_reasons, checks = evaluate_required_checks(observation)
+        if check_reasons:
             raise CycleBlockedError("merged_pr_checks_not_successful")
         if not evidence.review_approved:
             raise CycleBlockedError("merged_pr_review_not_approved")
@@ -256,10 +276,16 @@ class MergeServices:
             "head_sha": evidence.head_sha,
             "merge_sha": evidence.merge_commit_sha,
             "merged_at": evidence.merged_at,
-            "checks_state": evidence.checks_state,
+            "checks_state": "SATISFIED" if checks else "NOT_REQUIRED",
+            "check_requirements": asdict(observation.requirements),
+            "checks": [asdict(check) for check in checks],
+            "check_sources": [{"kind": source.kind, "digest": source.payload_sha256} for source in observation.sources],
             "review_state": evidence.review_state,
             "review_ref": review.artifact_ref,
         }
+        serialized = encode(verification)
+        if len(serialized) > 65536:
+            raise CycleBlockedError("merge_evidence_bound_exceeded")
         key = OperationIdentity.from_context(context, "observe_existing_merge", binding.id, str(binding.revision), state.merge_sha).key
         receipt = MergeReceipt(
             **asdict(context.identity),
@@ -276,7 +302,7 @@ class MergeServices:
             operation_key=key,
             method="external",
             verification_kind="post_merge_verification",
-            eligibility_digest=hashlib.sha256(encode(verification).encode()).hexdigest(),
+            eligibility_digest=hashlib.sha256(serialized.encode()).hexdigest(),
             eligibility_observed_at=now,
             merged_at=datetime.fromisoformat(state.merged_at.replace("Z", "+00:00")),
             observed_at=now,

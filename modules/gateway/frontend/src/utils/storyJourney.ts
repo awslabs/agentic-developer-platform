@@ -11,6 +11,10 @@ export interface JourneyStep {
   run?: StoryActivity;
 }
 
+function isReviewer(run: StoryActivity): boolean {
+  return run.persona === 'reviewer' || run.persona === 'agent-codex-reviewer';
+}
+
 function runDetail(run: StoryActivity): string {
   if (run.status === 'complete') return 'Run finished';
   if (run.liveness === 'exited') return `Run ended: ${run.status.replace(/_/g, ' ')}`;
@@ -58,13 +62,13 @@ export function storyJourney(node: GraphNode): { headline: string; steps: Journe
   const byRun = new Map<string, JourneyStep>();
   let sawReview = false;
   for (const run of runs) {
-    const step = run.persona === 'reviewer' ? review : sawReview ? fixes : development;
-    if (run.persona === 'reviewer') sawReview = true;
+    const step = isReviewer(run) ? review : sawReview ? fixes : development;
+    if (isReviewer(run)) sawReview = true;
     byRun.set(run.invocation_id, step);
     step.run = run;
     // Incomplete chains can prove that a run ended, never that it is current.
     step.detail = run.liveness === 'exited' || run.status === 'complete' ? runDetail(run) : 'Run recorded';
-    step.progress = 'observed';
+    step.progress = run.status === 'complete' ? 'complete' : 'observed';
   }
 
   if (node.state === 'awaiting_merge' || node.state === 'passed' || sawReview) {
@@ -79,7 +83,8 @@ export function storyJourney(node: GraphNode): { headline: string; steps: Journe
     merged.detail = 'Story complete';
     merged.progress = 'complete';
     if (!fixes.run) {
-      fixes.detail = 'History not recorded';
+      fixes.detail = review.run?.persona === 'agent-codex-reviewer' && history?.history_complete
+        ? 'No separate fixes run recorded' : 'History not recorded';
       fixes.progress = 'unknown';
     }
     return { headline: 'Merged — story complete', steps };
@@ -92,12 +97,12 @@ export function storyJourney(node: GraphNode): { headline: string; steps: Journe
   const legacy = node.run_id && node.execution_history == null ? node.activity : null;
   const currentRun = latest ?? (history ? null : legacy);
   if (canExecute && currentRun) {
-    const step = byRun.get(currentRun.invocation_id) ?? (currentRun.persona === 'reviewer'
+    const step = byRun.get(currentRun.invocation_id) ?? (isReviewer(currentRun)
       ? review
       : node.state === 'awaiting_merge' && currentRun.invocation_id !== node.run_id ? fixes : development);
     step.run = currentRun;
     step.detail = runDetail(currentRun);
-    step.progress = 'current';
+    step.progress = currentRun.status === 'complete' ? 'complete' : 'current';
     if (step === development && !review.run && node.state === 'running') {
       review.detail = 'Upcoming';
       review.progress = 'upcoming';
