@@ -174,7 +174,7 @@ it('shows read-only users status without submit or stop controls', async () => {
   await screen.findByText('test-model');
   expect(screen.queryByRole('button', { name: /Review stop/ })).not.toBeInTheDocument();
   expect(screen.queryByRole('form')).not.toBeInTheDocument();
-  expect(screen.getByText('Cleanup and observed cost: not reported')).toBeInTheDocument();
+  expect(screen.getByText('Cleanup: unconfirmed. Observed cost: unknown.')).toBeInTheDocument();
 });
 
 it('rejects another workspace list and malformed or mismatched approval plans', async () => {

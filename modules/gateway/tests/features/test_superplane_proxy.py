@@ -103,6 +103,30 @@ def test_forward_only_trusted_transport_headers_and_preserve_denial(client, monk
     assert "set-cookie" not in response.headers and "x-org-id" not in response.headers
 
 
+@pytest.mark.parametrize("status", [200, 403])
+def test_retained_batch_result_reaches_domain_without_caching(client, monkeypatch, status):
+    calls = []
+    path = "/workspaces/ws-1/batch-jobs/job-1/result"
+    payload = {"content": "accuracy=0.95"} if status == 200 else {"detail": "workspace access denied"}
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(status, json=payload, headers={"cache-control": "no-store"})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upstream), **kw))
+    assert client.get("/superplane/v1" + path).status_code == 401
+    response = client.get("/superplane/v1" + path, headers={"Authorization": "Bearer user-token"})
+    assert response.status_code == status
+    assert response.json() == payload
+    assert response.headers["cache-control"] == "no-store"
+    assert len(calls) == 1
+    assert calls[0].url.path == path
+    assert calls[0].headers["authorization"] == "Bearer user-token"
+    assert client.post("/superplane/v1" + path, headers={"Authorization": "Bearer user-token"}).status_code == 404
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     "method,path",
     [

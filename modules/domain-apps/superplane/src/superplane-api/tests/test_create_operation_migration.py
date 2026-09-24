@@ -13,7 +13,7 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["032_batch_workload_kind"]
+    assert scripts.get_heads() == ["033_retained_batch_results"]
     assert (
         scripts.get_revision("031_controller_deployment_registry").down_revision
         == "030_merge_audit_lifecycle"

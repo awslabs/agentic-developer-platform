@@ -290,5 +290,33 @@
   [
     "DELETE",
     "/workspaces/{workspace_id}/batch-jobs/{job_id}"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/cancellation"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/cancellation"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/observation"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/observation"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/accounting"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/result"
   ]
 ]

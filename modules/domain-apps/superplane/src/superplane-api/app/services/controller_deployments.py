@@ -123,16 +123,35 @@ async def serving_catalog(
         "profiles": [],
         "can_submit": False,
         "can_review_teardown": False,
+        "can_cancel": False,
+        "can_observe": False,
+        "can_read_accounting": False,
+        "can_read_results": False,
     }
     try:
+        read_principal = await GrantBackedAuthority(async_session_factory).resolve(
+            org_id=str(org_id),
+            workspace_id=str(workspace_id),
+            permission="workspace:read",
+        )
+        result["can_observe"] = bool(
+            read_principal
+            and settings.controller_status_url
+            and settings.controller_registry_credential
+        )
+        owner = composition(request)
+        result["can_read_accounting"] = bool(read_principal)
+        result["can_read_results"] = bool(read_principal and workload_kind == "batch")
         principal = await GrantBackedAuthority(async_session_factory).resolve(
             org_id=str(org_id),
             workspace_id=str(workspace_id),
             permission="workspace:provision",
         )
-        if principal is None or "workspace:spend" not in principal.permissions:
+        if principal is None:
             return {**result, "reason": "not-permitted"}
-        owner = composition(request)
+        result["can_cancel"] = getattr(owner, "ledger", None) is not None
+        if "workspace:spend" not in principal.permissions:
+            return {**result, "reason": "not-permitted"}
         ready = owner.dispatcher is not None and await owner.dispatcher.ready(
             str(org_id)
         )

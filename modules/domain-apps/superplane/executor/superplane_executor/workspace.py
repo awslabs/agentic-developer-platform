@@ -312,15 +312,66 @@ class Workspace:
             for node in nodes
         )
 
-    async def workload_ready(self, operation, target, plan):
+    async def workload_ready(
+        self, operation, target, plan, *, known_references=None, authorize=None
+    ):
         spec = plan.data["workload"]
         kind = "Job" if spec["kind"] == "batch" else "Deployment"
+        governed = operation is not None and (
+            "controller_deployment_id" in operation.request.parameters
+        )
+        if governed and (known_references is None or authorize is None):
+            raise OperationRefused("readiness requires original workload authority")
+
+        def original(obj, object_kind):
+            metadata = obj.get("metadata", {})
+            prefix = f"kubernetes:{object_kind}:{target['namespace']}:{spec['name']}:"
+            uid = metadata.get("uid")
+            if (
+                metadata.get("namespace") != target["namespace"]
+                or metadata.get("name") != spec["name"]
+                or not isinstance(uid, str)
+                or not uid
+                or ":" in uid
+                or {r for r in known_references if r.startswith(prefix)}
+                != {prefix + uid}
+                or metadata.get("deletionTimestamp") is not None
+                or metadata.get("annotations", {}).get("superplane.io/deployment")
+                != operation.request.parameters["controller_deployment_id"]
+                or metadata.get("annotations", {}).get("superplane.io/approved-request")
+                != operation.plan_digest
+            ):
+                raise OperationRefused("original workload UID readiness unavailable")
+            return (
+                uid,
+                metadata.get("generation"),
+                metadata.get("resourceVersion"),
+            )
+
         response = await self.request(
             operation, target, "GET", self.path(target, kind, spec["name"])
         )
         if response.status_code != 200:
             return False
         obj = response.json()
+        identity = original(obj, kind) if governed else None
+        if governed:
+            containers = (
+                obj.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
+            )
+            if len(containers) != 1 or any(
+                containers[0].get(key, [] if key == "args" else None) != value
+                for key, value in {
+                    "name": "workload",
+                    "image": spec["image"],
+                    "command": spec["command"],
+                    "args": spec["args"],
+                }.items()
+            ):
+                raise OperationRefused("approved workload readiness changed")
         if (
             obj.get("metadata", {}).get("labels", {}).get("superplane.ai/capacity")
             != plan.cluster_name
@@ -335,6 +386,50 @@ class Workspace:
             or status.get("availableReplicas", 0) < 1
         ):
             return False
+
+        async def service_identity():
+            response = await self.request(
+                operation, target, "GET", self.path(target, "Service", spec["name"])
+            )
+            if response.status_code != 200:
+                raise OperationRefused("original serving Service unavailable")
+            service = response.json()
+            identity = original(service, "Service")
+            service_spec = service.get("spec", {})
+            ports = service_spec.get("ports", [])
+            if (
+                service_spec.get("type") != "ClusterIP"
+                or service_spec.get("selector")
+                != {"superplane.ai/capacity": plan.cluster_name}
+                or len(ports) != 1
+                or any(
+                    ports[0].get(key) != value
+                    for key, value in {
+                        "name": "http",
+                        "port": spec["port"],
+                        "targetPort": "http",
+                    }.items()
+                )
+            ):
+                raise OperationRefused("approved serving route changed")
+            return identity
+
+        async def unchanged():
+            response = await self.request(
+                operation, target, "GET", self.path(target, kind, spec["name"])
+            )
+            if (
+                response.status_code != 200
+                or original(response.json(), kind) != identity
+            ):
+                raise OperationRefused("workload changed during readiness")
+            if await service_identity() != service:
+                raise OperationRefused("Service changed during readiness")
+            await authorize()
+
+        if governed:
+            service = await service_identity()
+            await authorize()
         secret = await self.request(
             operation, target, "GET", self.path(target, "Secret", spec["auth_secret"])
         )
@@ -357,10 +452,16 @@ class Workspace:
             + "/proxy/healthz"
         )
         denied = await self.request(operation, target, "GET", path)
+        if denied.status_code not in (401, 403):
+            return False
+        if governed:
+            await unchanged()
         admitted = await self.request(
             operation, target, "GET", path, headers={"X-Superplane-Token": token}
         )
-        return denied.status_code in (401, 403) and admitted.status_code == 200
+        if governed:
+            await unchanged()
+        return admitted.status_code == 200
 
     async def delete(
         self, operation, target, plan, authorize, *, known_references=None

@@ -46,6 +46,9 @@ async def workload(lifecycle, monkeypatch, tmp_path):  # noqa: F811
     async with engine.begin() as connection:
         await connection.run_sync(Deployment.__table__.create)
         await connection.run_sync(ControllerDeploymentOperation.__table__.create)
+        from app.models.controller_execution import ControllerBatchResult
+
+        await connection.run_sync(ControllerBatchResult.__table__.create)
         await connection.run_sync(NodePool.__table__.create)
         await connection.run_sync(Node.__table__.create)
     async with context.sessions() as db:
@@ -1022,6 +1025,66 @@ async def test_governed_teardown_cannot_adopt_replacement_uid_with_same_capacity
         )
 
 
+async def assert_replaced_workload_cannot_complete(runtime, worker, object_kind):
+    """Exercise the real paid status call after successful, UID-recorded creation."""
+    for step in worker.plan.steps[:3]:
+        await worker.server.dispatch(
+            {
+                "token": worker.token,
+                "method": "execute_step",
+                "arguments": {"step_id": step["step_id"]},
+            }
+        )
+    original = next(
+        obj for obj in runtime.kube.stored.values() if obj["kind"] == object_kind
+    )
+    original["metadata"]["uid"] = "replacement-before-readiness"
+    before = len(runtime.kube.requests)
+    with pytest.raises(OperationRefused, match="original workload UID evidence"):
+        await worker.server.dispatch(
+            {
+                "token": worker.token,
+                "method": "execute_step",
+                "arguments": {"step_id": worker.plan.steps[3]["step_id"]},
+            }
+        )
+    async with runtime.pool.acquire() as connection:
+        from harness_jobs.execution_plan import confirmed_plan_progress, PlanProgress
+        from harness_jobs.store import stored_outcome
+
+        assert (
+            await confirmed_plan_progress(
+                connection, worker.operation.grant.lease.operation_id
+            )
+            != PlanProgress.COMPLETE
+        )
+        rows = await connection.fetch(
+            "SELECT stage,outcome FROM harness_provider_call_intent WHERE operation_id=$1 "
+            "AND operation_kind='status'",
+            worker.operation.grant.lease.operation_id,
+        )
+        assert len(rows) == 2
+        assert sum(stored_outcome(row["outcome"]) == "succeeded" for row in rows) == 1
+        # Transport uncertainty leaves the intent recoverable, without inventing
+        # a terminal observation of the replacement object.
+        assert (
+            sum(row["stage"] == "intended" and row["outcome"] is None for row in rows)
+            == 1
+        )
+    assert all(
+        "/secrets/" not in path and "/proxy/" not in path
+        for _, path in runtime.kube.requests[before:]
+    )
+
+
+@pytest.mark.parametrize("kind", ["Deployment", "Service"])
+async def test_serving_status_cannot_use_replacement_before_readiness(
+    workload, worker_runtime, kind
+):
+    worker = await worker_runtime.publish(await api_create(workload))
+    await assert_replaced_workload_cannot_complete(worker_runtime, worker, kind)
+
+
 async def test_approved_over_quota_api_request_cannot_open_paid_admission(workload):
     from fastapi import HTTPException
 
@@ -1393,7 +1456,9 @@ async def test_serving_catalog_checks_current_grants_profiles_and_transport_with
             )
     assert result["workspace_id"] == str(workload.workload_id)
     assert result["can_submit"] is (change is None)
-    assert result["can_review_teardown"] is (change not in {"dispatcher", "revoked", "provision-only"})
+    assert result["can_review_teardown"] is (
+        change not in {"dispatcher", "revoked", "provision-only"}
+    )
     if change in {None, "dispatcher"}:
         assert len(result["profiles"]) == 1
         profile = result["profiles"][0]

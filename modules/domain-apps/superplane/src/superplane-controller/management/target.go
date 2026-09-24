@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -63,44 +64,9 @@ func (m *Manager) inspectTarget(ctx context.Context, target Target) string {
 	if !target.Provisional && target.ClusterStatus != "Ready" && target.ClusterStatus != "Active" {
 		return "cluster_not_ready"
 	}
-	if m.config.WorkspaceCredentialsDir == "" {
-		return "credential_unavailable"
-	}
-	// Read this exact workspace's mounted credential on every reconcile. There
-	// is no default loader, ambient KUBECONFIG, in-cluster config, or exec plugin.
-	data, err := os.ReadFile(filepath.Join(m.config.WorkspaceCredentialsDir, target.WorkspaceID+".kubeconfig"))
-	if err != nil || len(data) > 1<<20 {
-		return "credential_unavailable"
-	}
-	kubeconfig, err := clientcmd.Load(data)
-	if err != nil || len(kubeconfig.Clusters) != 1 || len(kubeconfig.AuthInfos) != 1 || len(kubeconfig.Contexts) != 1 {
-		return "credential_refused"
-	}
-	current := kubeconfig.Contexts[kubeconfig.CurrentContext]
-	if current == nil || current.Namespace != target.Namespace || kubeconfig.CurrentContext != target.ClusterARN {
-		return "credential_refused"
-	}
-	cluster := kubeconfig.Clusters[current.Cluster]
-	auth := kubeconfig.AuthInfos[current.AuthInfo]
-	if cluster == nil || auth == nil {
-		return "credential_refused"
-	}
-	u, err := url.Parse(cluster.Server)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || cluster.Server != target.Endpoint || strings.TrimRight(cluster.Server, "/") == strings.TrimRight(m.config.ManagementAPIServer, "/") {
-		return "credential_refused"
-	}
-	if cluster.InsecureSkipTLSVerify || cluster.ProxyURL != "" || cluster.TLSServerName != "" || cluster.CertificateAuthority != "" || len(cluster.CertificateAuthorityData) == 0 || auth.Exec != nil || auth.AuthProvider != nil || auth.TokenFile != "" || auth.ClientCertificate != "" || auth.ClientKey != "" || len(auth.ClientCertificateData) != 0 || len(auth.ClientKeyData) != 0 || auth.Username != "" || auth.Password != "" || auth.Impersonate != "" || len(auth.ImpersonateGroups) != 0 || len(auth.ImpersonateUserExtra) != 0 || auth.ImpersonateUID != "" || auth.Token == "" {
-		return "credential_refused"
-	}
-	config, err := clientcmd.NewNonInteractiveClientConfig(*kubeconfig, kubeconfig.CurrentContext, &clientcmd.ConfigOverrides{}, nil).ClientConfig()
-	if err != nil {
-		return "credential_refused"
-	}
-	config.Timeout = 5 * time.Second
-	config.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return "credential_refused"
+	client, config, reason := m.workspaceClient(target)
+	if reason != "" {
+		return reason
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -189,9 +155,10 @@ func readOnlyWorkspaceRules(status authorizationv1.SubjectRulesReviewStatus) boo
 					return false
 				}
 				for _, resource := range rule.Resources {
-					coreRead := rule.APIGroups[0] == "" && (resource == "nodes" || resource == "namespaces" || resource == "pods")
+					coreRead := rule.APIGroups[0] == "" && (resource == "nodes" || resource == "namespaces" || resource == "pods" || resource == "pods/log")
 					domainRead := rule.APIGroups[0] == "superplane.ai" && (resource == "nodepools" || resource == "superplanenodes")
-					if !coreRead && !domainRead {
+					workloadRead := (rule.APIGroups[0] == "apps" && (resource == "deployments" || resource == "replicasets")) || (rule.APIGroups[0] == "batch" && resource == "jobs")
+					if !coreRead && !domainRead && !workloadRead {
 						return false
 					}
 				}
@@ -215,4 +182,55 @@ func readOnlyWorkspaceRules(status authorizationv1.SubjectRulesReviewStatus) boo
 		}
 	}
 	return true
+}
+
+// Every observation reopens the exact projected read credential. It cannot use
+// the execution sidecar's credentials or a cached identity after revocation.
+func (m *Manager) workspaceClient(target Target) (*kubernetes.Clientset, *rest.Config, string) {
+	if !uuidPattern.MatchString(target.WorkspaceID) || len(validation.IsDNS1123Label(target.Namespace)) > 0 || target.Namespace == "" {
+		return nil, nil, "registration_incomplete"
+	}
+	if m.config.WorkspaceCredentialsDir == "" {
+		return nil, nil, "credential_unavailable"
+	}
+	// Read this exact workspace's mounted credential on every reconcile. There
+	// is no default loader, ambient KUBECONFIG, in-cluster config, or exec plugin.
+	data, err := os.ReadFile(filepath.Join(m.config.WorkspaceCredentialsDir, target.WorkspaceID+".kubeconfig"))
+	if err != nil || len(data) > 1<<20 {
+		return nil, nil, "credential_unavailable"
+	}
+	if m.config.ManagementAPIServer == "" {
+		return nil, nil, "registration_incomplete"
+	}
+	kubeconfig, err := clientcmd.Load(data)
+	if err != nil || len(kubeconfig.Clusters) != 1 || len(kubeconfig.AuthInfos) != 1 || len(kubeconfig.Contexts) != 1 {
+		return nil, nil, "credential_refused"
+	}
+	current := kubeconfig.Contexts[kubeconfig.CurrentContext]
+	if current == nil || current.Namespace != target.Namespace || kubeconfig.CurrentContext != target.ClusterARN {
+		return nil, nil, "credential_refused"
+	}
+	cluster := kubeconfig.Clusters[current.Cluster]
+	auth := kubeconfig.AuthInfos[current.AuthInfo]
+	if cluster == nil || auth == nil {
+		return nil, nil, "credential_refused"
+	}
+	u, err := url.Parse(cluster.Server)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || cluster.Server != target.Endpoint || strings.TrimRight(cluster.Server, "/") == strings.TrimRight(m.config.ManagementAPIServer, "/") {
+		return nil, nil, "credential_refused"
+	}
+	if cluster.InsecureSkipTLSVerify || cluster.ProxyURL != "" || cluster.TLSServerName != "" || cluster.CertificateAuthority != "" || len(cluster.CertificateAuthorityData) == 0 || auth.Exec != nil || auth.AuthProvider != nil || auth.TokenFile != "" || auth.ClientCertificate != "" || auth.ClientKey != "" || len(auth.ClientCertificateData) != 0 || len(auth.ClientKeyData) != 0 || auth.Username != "" || auth.Password != "" || auth.Impersonate != "" || len(auth.ImpersonateGroups) != 0 || len(auth.ImpersonateUserExtra) != 0 || auth.ImpersonateUID != "" || auth.Token == "" {
+		return nil, nil, "credential_refused"
+	}
+	config, err := clientcmd.NewNonInteractiveClientConfig(*kubeconfig, kubeconfig.CurrentContext, &clientcmd.ConfigOverrides{}, nil).ClientConfig()
+	if err != nil {
+		return nil, nil, "credential_refused"
+	}
+	config.Timeout = 5 * time.Second
+	config.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
+	client, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, nil, "credential_refused"
+	}
+	return client, config, ""
 }

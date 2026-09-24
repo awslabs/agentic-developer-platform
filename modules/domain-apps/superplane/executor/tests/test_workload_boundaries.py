@@ -73,7 +73,7 @@ async def test_serving_requires_both_denial_and_authenticated_success(
 
     workspace.request = request
     assert await workspace.workload_ready(None, {"namespace": "tenant"}, plan) is ready
-    assert len(seen) == 4
+    assert len(seen) == (4 if denied in (401, 403) else 3)
 
 
 async def test_revocation_between_serving_writes_stops_before_service_creation():
@@ -220,3 +220,139 @@ async def test_governed_delete_checks_every_original_uid_before_first_mutation(
                 known_references=known,
             )
         assert writes == []
+
+
+@pytest.mark.parametrize("workload_kind", ["batch", "serving"])
+@pytest.mark.parametrize("change", ["none", "missing", "ambiguous", "uid", "image"])
+async def test_readiness_uses_original_uid_and_approved_image(workload_kind, change):
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    plan.data["workload"]["kind"] = workload_kind
+    operation = SimpleNamespace(
+        request=SimpleNamespace(
+            parameters={"controller_deployment_id": "deployment-1"}
+        ),
+        grant=SimpleNamespace(lease=SimpleNamespace(workspace_id="workspace-1")),
+        plan_digest="b" * 64,
+        max_runtime_seconds=60,
+    )
+    from datetime import UTC, datetime, timedelta
+
+    operation.grant.lease.runtime_deadline = datetime.now(UTC) + timedelta(seconds=60)
+    target = {"namespace": "tenant"}
+    objects = {}
+    for obj in workspace.objects(operation, target, plan):
+        obj["metadata"].update(
+            uid="original-" + obj["kind"], generation=1, resourceVersion="1"
+        )
+        obj["status"] = {
+            "succeeded": 1,
+            "observedGeneration": 1,
+            "availableReplicas": 1,
+        }
+        objects[workspace.path(target, obj["kind"], "service")] = obj
+    known = {workspace.reference(obj["kind"], obj) for obj in objects.values()}
+    root_kind = "Job" if workload_kind == "batch" else "Deployment"
+    root = objects[workspace.path(target, root_kind, "service")]
+    if change == "missing":
+        known.clear()
+    elif change == "ambiguous":
+        known.add(f"kubernetes:{root_kind}:tenant:service:other")
+    elif change == "uid":
+        root["metadata"]["uid"] = "replacement"
+    elif change == "image":
+        root["spec"]["template"]["spec"]["containers"][0]["image"] = "foreign"
+    probes = []
+
+    async def authorize():
+        return None
+
+    async def request(operation, target, method, path, **kwargs):
+        assert method == "GET"
+        if path in objects:
+            return httpx.Response(200, json=objects[path])
+        if "/secrets/" in path:
+            return httpx.Response(
+                200, json={"data": {"token": base64.b64encode(b"a" * 32).decode()}}
+            )
+        assert path.endswith("/proxy/healthz")
+        probes.append(kwargs.get("headers"))
+        return httpx.Response(200 if kwargs.get("headers") else 401)
+
+    workspace.request = request
+    if change == "none":
+        assert await workspace.workload_ready(
+            operation, target, plan, known_references=known, authorize=authorize
+        )
+        assert len(probes) == (2 if workload_kind == "serving" else 0)
+    else:
+        with pytest.raises(OperationRefused):
+            await workspace.workload_ready(
+                operation, target, plan, known_references=known, authorize=authorize
+            )
+        assert not probes
+
+
+@pytest.mark.parametrize(
+    "change", ["service_uid", "selector", "port", "deployment_generation", "revoked"]
+)
+async def test_serving_readiness_rechecks_identity_and_authority_before_token_probe(
+    change,
+):
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    operation = SimpleNamespace(
+        request=SimpleNamespace(
+            parameters={"controller_deployment_id": "deployment-1"}
+        ),
+        grant=SimpleNamespace(lease=SimpleNamespace(workspace_id="workspace-1")),
+        plan_digest="b" * 64,
+    )
+    target = {"namespace": "tenant"}
+    objects = {}
+    for obj in workspace.objects(operation, target, plan):
+        obj["metadata"].update(
+            uid="original-" + obj["kind"], generation=1, resourceVersion="1"
+        )
+        obj["status"] = {"observedGeneration": 1, "availableReplicas": 1}
+        objects[workspace.path(target, obj["kind"], "service")] = obj
+    known = {workspace.reference(obj["kind"], obj) for obj in objects.values()}
+    probed = False
+    authenticated = []
+
+    async def authorize():
+        if probed and change == "revoked":
+            raise OperationRefused("revoked")
+
+    async def request(operation, target, method, path, **kwargs):
+        nonlocal probed
+        if path in objects:
+            return httpx.Response(200, json=objects[path])
+        if "/secrets/" in path:
+            return httpx.Response(
+                200, json={"data": {"token": base64.b64encode(b"a" * 32).decode()}}
+            )
+        assert path.endswith("/proxy/healthz")
+        if kwargs.get("headers"):
+            authenticated.append(path)
+            return httpx.Response(200)
+        probed = True
+        service = objects[workspace.path(target, "Service", "service")]
+        if change == "service_uid":
+            service["metadata"]["uid"] = "replacement"
+        elif change == "selector":
+            service["spec"]["selector"] = {"other": "workload"}
+        elif change == "port":
+            service["spec"]["ports"][0]["port"] = 9999
+        elif change == "deployment_generation":
+            objects[workspace.path(target, "Deployment", "service")]["metadata"][
+                "generation"
+            ] = 2
+        return httpx.Response(401)
+
+    workspace.request = request
+    with pytest.raises(OperationRefused):
+        await workspace.workload_ready(
+            operation, target, plan, known_references=known, authorize=authorize
+        )
+    assert not authenticated

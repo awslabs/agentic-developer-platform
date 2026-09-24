@@ -43,6 +43,7 @@ import { LifecycleProposalPanel } from './LifecycleProposalPanel';
 import { ProviderConnectionPanel } from './ProviderConnectionPanel';
 import { ReadinessPanel } from './ReadinessPanel';
 import { ServingPanel } from './ServingPanel';
+import { BatchPanel } from './BatchPanel';
 import {
   ScopeGuard,
   getCapabilities,
@@ -431,6 +432,7 @@ export function OnboardingView() {
           />
           <ReadinessPanel report={readiness} workspaceName={selected?.display_name} />
           {selected && <ServingPanel workspaceId={selected.id} scope={scope} store={store} />}
+          {selected && <BatchPanel workspaceId={selected.id} scope={scope} store={store} />}
           {ENDPOINTS.listLifecycleProposals.served && selected && <LifecycleProposalPanel
             key={`${scope.orgId}:${selected.id}`}
             workspaceId={selected.id} scope={scope} store={store} mayManage={mayOnboard}

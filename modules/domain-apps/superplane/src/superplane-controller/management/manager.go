@@ -90,6 +90,7 @@ type Manager struct {
 	instanceID      string
 	client          *http.Client
 	mu              sync.RWMutex
+	targets         map[string]Target
 	snapshot        Snapshot
 	inspect         func(context.Context, Target) string
 	reconcileMu     sync.Mutex
@@ -246,6 +247,10 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	m.snapshot = snapshot
+	m.targets = make(map[string]Target, len(result.Targets))
+	for _, target := range result.Targets {
+		m.targets[target.WorkspaceID] = target
+	}
 	m.mu.Unlock()
 	m.updateExecutions(ctx, result.Targets, snapshot)
 	succeeded = true
@@ -302,6 +307,7 @@ func (m *Manager) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(m.Snapshot())
 	})
+	mux.HandleFunc("GET /workload-observation", m.workloadObservation)
 	return mux
 }
 

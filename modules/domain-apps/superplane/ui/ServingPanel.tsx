@@ -1,3 +1,6 @@
+import { WorkloadAccounting } from './WorkloadAccounting';
+import { WorkloadObservation } from './WorkloadObservation';
+import { WorkloadCancellation } from './WorkloadCancellation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Alert, Button, Input } from '@/components/ui';
@@ -13,13 +16,14 @@ import {
 import { useFreshnessClock } from './readiness';
 import {
   getServingCatalog, listDeployments, previewServing, submitServing,
-  type ServingCatalog, type ServingDeployment, type ServingInput, type ServingProfile, type ServingReview,
+  type ServingCatalog, type ServingDeployment, type ServingInput, type ServingProfile, type ServingReview, type WorkloadInput, type WorkloadKind,
 } from './workloads';
 
 interface Props {
   workspaceId: string;
   scope: ReceiptScope;
   store: ReceiptStore;
+  kind?: WorkloadKind;
 }
 
 export function ServingPanel(props: Props) {
@@ -71,24 +75,30 @@ function ServingWorkspace(props: Props) {
         <h4 className="font-semibold">{row.name}</h4>
         <p>Status: {row.status}; operation: {row.operationState}</p>
         {row.operationId && <p>Operation reference: {row.operationId}</p>}
+      {catalog?.canReadAccounting && row.deploymentId && <WorkloadAccounting workspaceId={props.workspaceId} row={row} kind="serving" />}
+      {catalog?.canObserve && row.deploymentId && !['Deleted', 'CancelledBeforeDispatch'].includes(row.status) && <WorkloadObservation workspaceId={props.workspaceId} row={row} kind="serving" />}
+      {row.cancellationRequested && <p>Cancellation requested. Cleanup: {row.cleanupStatus}.</p>}
+      {row.status === 'CancelledBeforeDispatch' && <p>Cancelled before dispatch; no workload cleanup is required.</p>}
+      {catalog?.canCancel && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
+        ['accepted', 'running', 'unknown'].includes(row.operationState) && <WorkloadCancellation workspaceId={props.workspaceId} row={row} kind="serving" onProgress={() => void refresh()} />}
         {row.providerUid && <p>Recorded resource: {row.providerUid}</p>}
-        <p>Cleanup and observed cost: not reported</p>
-        {catalog?.canReviewTeardown && row.deploymentId && row.operationId && row.status !== 'Deleted' &&
+        <p>Cleanup: {row.cleanupStatus}. Observed cost: unknown.</p>
+        {catalog?.canReviewTeardown && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
           <Button variant="secondary" onClick={() => setStopping(row)}>Review stop for {row.name}</Button>}
       </li>)}
     </ul>
     {catalog?.canSubmit && <ServingForm profiles={catalog.profiles} onReview={(input) => { setCandidate(input); setStopping(null); }} />}
-    {candidate && catalog?.canSubmit && <ServingAction key={fingerprint(candidate)} {...props} mayManage={catalog.canSubmit}
+    {candidate && catalog?.canSubmit && <WorkloadAction key={fingerprint(candidate)} {...props} mayManage={catalog.canSubmit}
       input={candidate} onProgress={() => void refresh()} />}
-    {stopping?.deploymentId && catalog?.canReviewTeardown && <ServingAction key={stopping.deploymentId} {...props} mayManage={catalog.canReviewTeardown}
+    {stopping?.deploymentId && catalog?.canReviewTeardown && <WorkloadAction key={stopping.deploymentId} {...props} mayManage={catalog.canReviewTeardown}
       input={{ deploymentId: stopping.deploymentId }} onProgress={() => void refresh()} />}
     {receipts.filter(({ receipt }) => receipt.submissionStage === 'submitted').map(({ intent, receipt }) =>
-      <ServingReceipt key={receipt.idempotencyKey} {...props} intent={intent} initial={receipt} />)}
-    <p>Batch submission, workload logs and authenticated endpoint access are not available in this view yet.</p>
+      <WorkloadReceipt key={receipt.idempotencyKey} {...props} intent={intent} initial={receipt} />)}
+    <p>Inspect a workload for current status and bounded logs. Authenticated endpoint access is not available in this view yet.</p>
   </section>;
 }
 
-function ServingReceipt({ initial, intent, ...props }: Props & { initial: StoredReceipt; intent: string }) {
+export function WorkloadReceipt({ initial, intent, ...props }: Props & { initial: StoredReceipt; intent: string }) {
   const [guard] = useState(() => new ScopeGuard());
   const [receipt, setReceipt] = useState(initial);
   const [problem, setProblem] = useState<Unavailable | null>(null);
@@ -114,12 +124,12 @@ function ServingReceipt({ initial, intent, ...props }: Props & { initial: Stored
   }, [guard, receipt.operationId, receipt.idempotencyKey, props.workspaceId, props.store, props.scope, intent]);
   useEffect(() => () => guard.supersede(), [guard]);
   useEffect(() => {
-    if (receipt.state === 'succeeded' || receipt.state === 'failed' || problem?.reason === 'not-permitted') return;
+    if (receipt.state === 'succeeded' || receipt.state === 'failed' || receipt.state === 'cancelled' || problem?.reason === 'not-permitted') return;
     void refresh();
     const timer = setInterval(() => void refresh(), 10000);
     return () => clearInterval(timer);
   }, [refresh, receipt.state, problem?.reason]);
-  return <article className="rounded border p-4 break-all" aria-label="Saved serving request">
+  return <article className="rounded border p-4 break-all" aria-label={props.kind === 'batch' ? 'Saved batch request' : 'Saved serving request'}>
     <p>Saved workload request: {receipt.idempotencyKey}</p>
     <p>Operation reference: {receipt.operationId ?? 'awaiting response'}; last response: {receipt.state}</p>
     <p>Cleanup requires a separate provider observation.</p>
@@ -155,8 +165,8 @@ function ServingForm({ profiles, onReview }: { profiles: ServingProfile[]; onRev
   </form>;
 }
 
-function ServingAction({ input, onProgress, ...props }: Props & {
-  input: ServingInput | { deploymentId: string }; onProgress: () => void; mayManage: boolean;
+export function WorkloadAction({ input, onProgress, ...props }: Props & {
+  input: WorkloadInput; onProgress: () => void; mayManage: boolean;
 }) {
   const [guard] = useState(() => new ScopeGuard());
   const [review, setReview] = useState<ServingReview | null>(null);
@@ -166,7 +176,7 @@ function ServingAction({ input, onProgress, ...props }: Props & {
   const [busy, setBusy] = useState(false);
   const locked = useRef(false);
   const teardown = 'deploymentId' in input;
-  const intent = `serving:${props.workspaceId}:${teardown ? `stop:${input.deploymentId}` : `create:${input.name}`}`;
+  const intent = `${props.kind ?? 'serving'}:${props.workspaceId}:${teardown ? `stop:${input.deploymentId}` : `create:${input.name}`}`;
   const now = useFreshnessClock();
   useEffect(() => () => guard.supersede(), [guard]);
   const matching = (value: OperationApproval, plan: ServingReview) =>
@@ -185,7 +195,7 @@ function ServingAction({ input, onProgress, ...props }: Props & {
         if (!guard.isCurrent(generation)) return;
         if (claim.kind === 'conflict') { setProblem({ reason: 'unknown', detail: 'A different workload request remains unresolved. Recover the saved request before changing these inputs.' }); return; }
         setReceipt(claim.receipt);
-        const result = await previewServing(guard, props.workspaceId, claim.receipt.idempotencyKey, input);
+        const result = await previewServing(guard, props.workspaceId, claim.receipt.idempotencyKey, input, props.kind);
         if (isSuperseded(result)) return;
         if (!result.ok) { if ('unavailable' in result) setProblem(result.unavailable); return; }
         setReview(result.value); setApproval(null); setProblem(null);
@@ -212,7 +222,7 @@ function ServingAction({ input, onProgress, ...props }: Props & {
             current.value.result !== 'allowed-once' || current.value.revoked || Date.parse(current.value.expires_at) <= Date.now()) {
           setApproval(current.value); setProblem({ reason: 'not-permitted', detail: 'Approval is no longer valid for this plan.' }); return;
         }
-        const checked = await previewServing(guard, props.workspaceId, receipt.idempotencyKey, input);
+        const checked = await previewServing(guard, props.workspaceId, receipt.idempotencyKey, input, props.kind);
         if (isSuperseded(checked)) return;
         if (!checked.ok) { if ('unavailable' in checked) setProblem(checked.unavailable); return; }
         if (checked.value.revision !== review.revision || checked.value.deploymentId !== review.deploymentId) {
@@ -221,7 +231,7 @@ function ServingAction({ input, onProgress, ...props }: Props & {
         const saved = await markSubmissionStage(props.store, props.scope, intent, receipt.idempotencyKey, 'submitted', approval.approval_id);
         if (!saved || !guard.isCurrent(generation)) return;
         setReceipt(saved);
-        const result = await submitServing(guard, props.workspaceId, review, approval.approval_id, input);
+        const result = await submitServing(guard, props.workspaceId, review, approval.approval_id, input, props.kind);
         if (isSuperseded(result)) return;
         const updated = await recordObservationExclusive(props.store, props.scope, intent, {
           idempotencyKey: saved.idempotencyKey, workspaceId: props.workspaceId,
@@ -243,20 +253,22 @@ function ServingAction({ input, onProgress, ...props }: Props & {
       if (guard.isCurrent(generation)) setBusy(false);
     }
   };
-  return <article className="rounded border p-4 space-y-3 break-words" aria-label={teardown ? 'Stop serving review' : 'Serving deployment review'}>
-    <h4 className="font-semibold">{teardown ? 'Stop serving deployment' : 'Review serving deployment'}</h4>
-    <Button variant="secondary" disabled={busy} onClick={() => void act('preview')}>Review {teardown ? 'stop' : 'serving'} plan</Button>
+  return <article className="rounded border p-4 space-y-3 break-words" aria-label={props.kind === 'batch' ? (teardown ? 'Stop batch review' : 'Batch job review') : (teardown ? 'Stop serving review' : 'Serving deployment review')}>
+    <h4 className="font-semibold">{props.kind === 'batch' ? (teardown ? 'Stop batch job' : 'Review batch job') : (teardown ? 'Stop serving deployment' : 'Review serving deployment')}</h4>
+    <Button variant="secondary" disabled={busy} onClick={() => void act('preview')}>Review {teardown ? 'stop' : (props.kind ?? 'serving')} plan</Button>
     {review && <>
       <p>Target: account {review.account}, region {review.region}, namespace {review.namespace}</p>
       <p className="break-all">Image: {review.image}</p>
       <p>Maximum resources: {review.resources}; maximum runtime: {review.runtimeSeconds} seconds</p>
       <p>Maximum additional cost: {review.maxCostMicros / 1_000_000} USD. Observed cost: unknown.</p>
       <p className="break-all">Plan reference: {review.revision}</p>
+      {review.batchOptions && <div><p>GPUs: {review.batchOptions.gpu_count}; CPU: {review.batchOptions.cpu}; memory: {review.batchOptions.memory}</p>
+        <p>Invocation arguments (in order):</p><pre className="whitespace-pre-wrap break-all">{JSON.stringify([...review.batchOptions.command, ...review.batchOptions.args], null, 2)}</pre></div>}
       {teardown && <p>Stopping requests governed cleanup of the original deployment. Existing resources and charges remain unresolved until provider verification completes.</p>}
       {!approval && <Button disabled={busy} onClick={() => void act('approval')}>Request workload approval</Button>}
     </>}
     {approval && <ApprovalPanel approval={approval} guard={guard} onChange={setApproval} />}
-    {review && approval && <Button disabled={busy || !approved || receipt?.state === 'succeeded'} onClick={() => void act('submit')}>{teardown ? 'Submit approved stop' : 'Submit approved deployment'}</Button>}
+    {review && approval && <Button disabled={busy || !approved || receipt?.state === 'succeeded'} onClick={() => void act('submit')}>{teardown ? 'Submit approved stop' : (props.kind === 'batch' ? 'Submit approved batch job' : 'Submit approved deployment')}</Button>}
     {receipt && <p role="status">Request reference: {receipt.idempotencyKey}; last response: {receipt.state}. {receipt.operationId ? `Operation: ${receipt.operationId}. ` : ''}Resource cleanup is checked separately.</p>}
     {problem && <Alert variant="warning" title="Workload request unavailable">{problem.detail}</Alert>}
   </article>;

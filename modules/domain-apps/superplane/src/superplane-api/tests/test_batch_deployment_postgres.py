@@ -31,6 +31,7 @@ from tests.test_controller_deployment_postgres import (
     workload as workload,
     worker_runtime,
     assert_completed_worker,
+    assert_replaced_workload_cannot_complete,
 )
 from tests.test_lifecycle_api_postgres import lifecycle as lifecycle
 from tests.test_operation_budget_ledger_postgres import (
@@ -298,6 +299,14 @@ async def test_batch_api_to_real_worker_and_finalizer_preserves_uid_and_allocati
             leaked_volume
         )
     assert not runtime.kube.stored and runtime.cloud.launches == 1
+
+
+async def test_batch_status_cannot_complete_from_replacement_job(
+    batch_workload, batch_runtime
+):
+    created = await create(batch_workload)
+    worker = await batch_runtime.publish(SimpleNamespace(**created))
+    await assert_replaced_workload_cannot_complete(batch_runtime, worker, "Job")
 
 
 async def test_batch_registration_rejects_changed_quota_kind_or_command(batch_workload):

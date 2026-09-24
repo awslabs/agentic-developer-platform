@@ -203,6 +203,7 @@ async def _proxy_to_domain(request: Request, native_path: str, *, content: bytes
                     status_code=upstream.status_code,
                     headers={
                         "Content-Type": upstream.headers.get("content-type", "application/json"),
+                        "Cache-Control": "no-store",
                         "X-Superplane-Release": config["release_id"],
                     },
                 )

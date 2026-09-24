@@ -90,6 +90,19 @@ export const ENDPOINTS = {
   listWorkspaces: { method: 'GET', path: '/workspaces', served: true },
   getWorkspace: { method: 'GET', path: '/workspaces/{workspace_id}', served: true },
   createWorkspace: { method: 'POST', path: '/workspaces', served: true },
+  batchResult: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/result', served: true },
+  batchAccounting: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting', served: true },
+  servingAccounting: { method: 'GET', path: '/workspaces/{workspace_id}/deployments/{dep_id}/accounting', served: true },
+  observeBatchJob: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/observation', served: true },
+  observeDeployment: { method: 'GET', path: '/workspaces/{workspace_id}/deployments/{dep_id}/observation', served: true },
+  cancelBatchJob: { method: 'POST', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/cancellation', served: true },
+  cancelDeployment: { method: 'POST', path: '/workspaces/{workspace_id}/deployments/{dep_id}/cancellation', served: true },
+  batchProfiles: { method: 'GET', path: '/workspaces/{workspace_id}/batch-profiles', served: true },
+  listBatchJobs: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs', served: true },
+  previewBatchJob: { method: 'POST', path: '/workspaces/{workspace_id}/batch-jobs/preview', served: true },
+  createBatchJob: { method: 'POST', path: '/workspaces/{workspace_id}/batch-jobs', served: true },
+  previewBatchTeardown: { method: 'POST', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/teardown-preview', served: true },
+  deleteBatchJob: { method: 'DELETE', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}', served: true },
   listDeployments: { method: 'GET', path: '/workspaces/{workspace_id}/deployments', served: true },
   servingProfiles: { method: 'GET', path: '/workspaces/{workspace_id}/deployment-profiles', served: true },
   previewDeployment: { method: 'POST', path: '/workspaces/{workspace_id}/deployments/preview', served: true },
@@ -564,6 +577,7 @@ export type OperationState =
   | 'running'
   | 'succeeded'
   | 'failed'
+  | 'cancelled'
   | 'unknown';
 
 /**
