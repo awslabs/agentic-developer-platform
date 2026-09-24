@@ -358,7 +358,9 @@ def _resolve_python_deps(clone_path: str) -> tuple[bool, str]:
             )
             detail = f"installed wheels from {os.path.basename(req_file)}"
             if dropped:
-                detail += f" ({dropped} non-declarative entr{'y' if dropped == 1 else 'ies'} dropped)"
+                detail += (
+                    f" ({dropped} non-declarative entr{'y' if dropped == 1 else 'ies'} dropped)"
+                )
             return True, detail
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             log.warning("pip install from %s failed: %s", req_file, e)
