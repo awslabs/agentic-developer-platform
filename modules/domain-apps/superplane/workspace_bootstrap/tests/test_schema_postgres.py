@@ -39,10 +39,10 @@ from __future__ import annotations
 import pytest
 
 from .postgres_support import (
-    head_revision_module,
     render_migration_ddl,
     require_asyncpg,
     require_pgserver,
+    walked_revision,
     _Loop,
 )
 
@@ -138,18 +138,24 @@ def migrated(server, loop, request):
 # --- the revision is part of the chain -------------------------------------------
 
 
-def test_this_storys_migration_is_the_single_head_of_the_chain():
+def test_this_storys_migration_is_reachable_in_the_single_headed_chain():
     """An orphan revision creates nothing, and every offline assertion about it passes.
 
-    `render_migration_ddl` walks the chain Alembic resolves; a revision that is not the
-    head — or a chain with two heads — means `alembic upgrade head` either skips this table
-    or refuses to run at all. Checked without a database, so it runs in the offline lane
-    too.
-    """
-    head = head_revision_module()
+    A revision `alembic upgrade head` never walks — or a chain with two heads, where it
+    refuses to run at all — means this table is not created. That is the property. Checked
+    without a database, so it runs in the offline lane too.
 
-    assert head.revision == REVISION
-    assert head.down_revision == "016_add_organization_grants"
+    Deliberately NOT "this revision is the head". It was written that way originally, and
+    `018` (#5673) then appended to the chain and broke it — correctly by the letter of the
+    assertion, and for no reason related to this table. Every future migration anywhere in
+    the chain would have done the same. Reachability is what the table's existence depends
+    on; being last is incidental. `down_revision` is still pinned, because this story's
+    revision must sit after the grants table it references.
+    """
+    revision = walked_revision(REVISION)
+
+    assert revision.revision == REVISION
+    assert revision.down_revision == "016_add_organization_grants"
 
 
 def test_the_chain_renders_the_reservations_table_as_postgresql_ddl():
@@ -350,7 +356,7 @@ def test_the_downgrade_removes_the_table_and_its_indexes(migrated):
     dropped by a name that does not match the one created — which renders perfectly and
     fails only against a database that has the index.
     """
-    _, downgrade = render_migration_ddl(upgrade_only=False)
+    _, downgrade = render_migration_ddl(upgrade_only=False, downgrade_revision=REVISION)
     migrated.execute(*_insert())
 
     migrated.execute(downgrade)

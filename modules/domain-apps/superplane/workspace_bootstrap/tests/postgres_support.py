@@ -113,10 +113,21 @@ def require_alembic():
 # --- the migration chain, rendered offline -------------------------------------
 
 
-def render_migration_ddl(*, upgrade_only: bool = True) -> tuple[str, str]:
+def render_migration_ddl(
+    *, upgrade_only: bool = True, downgrade_revision: str | None = None
+) -> tuple[str, str]:
     """Render the alembic chain to PostgreSQL DDL without connecting to anything.
 
-    Returns `(upgrade_ddl_for_the_whole_chain, downgrade_ddl_for_THIS_story's_revision)`.
+    Returns `(upgrade_ddl_for_the_whole_chain, downgrade_ddl_for_the_named_revision)`.
+
+    `downgrade_revision` must be given whenever a downgrade is requested, and naming it is
+    required rather than convenient. This function used to render `revisions[-1].downgrade`
+    -- the tail of the chain -- which silently meant "this story's revision" only for as
+    long as this story's revision happened to be the last one. When #5673 added `018` the
+    caller went on asking for a downgrade and received the DDL for a DIFFERENT revision:
+    the table under test was never dropped, so the assertion failed with "the table still
+    exists" and pointed at the schema rather than at this helper. A revision id cannot
+    drift that way.
 
     Alembic's offline (`--sql`) mode is used rather than `alembic upgrade head` against a
     live URL, because the rendering must not require a connection: the same function is
@@ -162,15 +173,34 @@ def render_migration_ddl(*, upgrade_only: bool = True) -> tuple[str, str]:
     upgrade = render([revision.module.upgrade for revision in revisions])
     if upgrade_only:
         return upgrade, ""
-    return upgrade, render([revisions[-1].module.downgrade])
+    if downgrade_revision is None:
+        raise AssertionError(
+            "render_migration_ddl(upgrade_only=False) requires downgrade_revision: "
+            "the revision to reverse must be named, not inferred from chain position"
+        )
+    named = [
+        revision for revision in revisions if revision.revision == downgrade_revision
+    ]
+    if not named:
+        raise AssertionError(
+            f"revision {downgrade_revision!r} is not in the chain Alembic walks; "
+            f"the chain ends at {revisions[-1].revision!r}"
+        )
+    return upgrade, render([named[0].module.downgrade])
 
 
-def head_revision_module():
-    """The revision at the head of the chain, as Alembic itself resolves it.
+def walked_revision(revision_id: str):
+    """The named revision, proven to be one Alembic actually walks to reach the head.
 
-    Used by the schema test to assert that this story's migration IS the head rather than
-    an orphan the chain never reaches — a revision file that exists but is not walked
-    creates no table, and every offline assertion about it would still pass.
+    What the schema test needs to rule out is an ORPHAN: a revision file that exists but
+    that no `upgrade` walks, which therefore creates no table while every offline assertion
+    about it still passes. Being the head is one way to be reachable, and that is how this
+    was originally written — but it is not the property, and conflating the two meant every
+    later migration anywhere in the chain broke a test about this story's table. `018`
+    (#5673) is what surfaced it.
+
+    Reachability is asserted directly instead: the chain has a single head, and the named
+    revision appears in the walk from base to that head.
     """
     alembic = require_alembic()
     config = alembic.config.Config(str(API_ROOT / "alembic.ini"))
@@ -178,7 +208,12 @@ def head_revision_module():
     directory = alembic.script.ScriptDirectory.from_config(config)
     heads = directory.get_heads()
     assert len(heads) == 1, f"the migration chain must have one head; found {heads}"
-    return directory.get_revision(heads[0])
+    walked = {revision.revision for revision in directory.walk_revisions()}
+    assert revision_id in walked, (
+        f"revision {revision_id!r} is not reachable from head {heads[0]!r}: "
+        "an unwalked revision creates nothing, and every offline assertion still passes"
+    )
+    return directory.get_revision(revision_id)
 
 
 # --- the event loop, parked on its own thread ----------------------------------
