@@ -1,14 +1,30 @@
-# Runbook: The Platform AWS Provider Floor
+# Runbook: The Platform AWS Provider Floor and the State-Schema Migration
 
-Covers why `platform/infra` requires AWS provider >= 6.42.0, how the failure it
-fixes presents, how to reproduce and verify it without touching a live account,
-and what to check before the next scoped apply.
+Covers why `platform/infra` requires AWS provider >= 6.42.0, how the failures it
+fixes present, how to reproduce them without touching a live account, and — the
+part an operator actually needs before a scoped rollout — **the order the
+provider upgrade and the state-schema migration must happen in.**
 
 **Issue:** #5831 · **Parent epic:** #3959 · **Deployment prerequisite for:** #5830
+
+> **If you are here to run a scoped rollout, read [Section 5](#section-5--the-supported-rollout-sequence) first.**
+> Raising the provider floor is necessary but **not sufficient**: a targeted plan
+> against mixed-age state still cannot be exported for review until the state
+> schema is migrated. Section 5 is the supported sequence. It does **not** include
+> an ordinary full apply, which against this source would propose destroying the
+> CoreDNS add-on.
 
 ---
 
 ## Section 1 — What was wrong, and why it was invisible
+
+There are **two** independent incompatibilities in the real state, not one, and
+they pull in opposite directions. This section covers the first; Section 5
+covers the second and the sequence that resolves both. The first attempt at
+#5831 fixed only this one and reported the blocker cleared — it was not, because
+a fixture carrying only the newer record passes while the real path still fails.
+
+### 1a — The newer record: no identity schema (fixed by the floor)
 
 A saved Terraform plan could not be exported for review. The platform module
 resolved AWS provider **5.100.0** — the final 5.x release, which is what
@@ -183,37 +199,208 @@ the fix scoped to the blocker. One carries real risk when it is addressed:
 bucket name**, so a changed value there would force bucket replacement. Verify
 the resolved value is identical before changing those call sites.
 
-## Section 5 — Before the next scoped apply
+## Section 5 — The supported rollout sequence
 
-**The CoreDNS add-on in state is not declared in the platform source.** The
-cluster runs EKS Auto Mode (`bootstrap_self_managed_addons = false`), which
-manages CoreDNS itself; `platform/infra` declares only the
-`amazon-cloudwatch-observability` and `metrics-server` add-ons. The only
-`aws_eks_addon "coredns"` definition in the repository lives on the unmerged
-branch `fix/management-coredns` (`platform/infra/modules/eks/dns.tf`).
+### 5a — The second defect: a stale record the floor cannot fix
 
-The consequence matters for apply safety: because the record contains a
-resource the committed configuration does not declare, **a full untargeted plan
-proposes destroying it**. This is exactly what the narrow resource-action scope
-enforced by `.github/scripts/verify_scoped_plan.py` exists to catch. Confirm the
-resource-action scope of any fresh plan before applying, and resolve the CoreDNS
-declaration question separately from the provider floor.
+With the floor raised, a **freshly generated** targeted plan against the real dev
+state still fails to export — on a different resource, with a different message:
+
+```
+Failed to marshal plan to json: error marshaling prior state:
+schema version 0 for aws_launch_template.gvisor_nodes in state does not match
+version 1 from the provider
+```
+
+This is not a stale plan file (Section 3's trap) and not the Section 1 defect.
+It is the opposite problem: a record **older** than the provider's schema.
+
+**The mechanism, which explains everything else in this section.** Terraform
+upgrades a resource's state schema only for resources **in scope for the run**.
+`-target` puts everything else out of scope, so untargeted records keep their
+recorded `schema_version` — while `terraform show -json` serialises *all* prior
+state, not just the targeted subset. **Targeting is what turns a stale record
+into an export failure.** A full-scope plan over the same state exports fine,
+because every resource is in scope and gets upgraded in memory.
+
+**No provider version fixes both defects.** This is why the answer is a state
+migration and not a different version bound:
+
+| Provider | `aws_launch_template` schema | `aws_eks_addon` identity schema |
+|---|---|---|
+| 5.100.0 | 0 — matches the old record | **absent** — breaks the add-on export |
+| 6.0.0 – 6.14.0 | 0 — matches the old record | absent |
+| 6.16.0 + | **1** — mismatches the old record | present from 6.42.0 |
+
+Reading the old launch-template record needs schema 0; reading the add-on
+identity needs 6.42.0+, which ships schema 1. **The requirements are disjoint.**
+Read from `terraform providers schema -json`, not from release notes, and
+asserted by `test_no_single_provider_version_satisfies_both_records`.
+
+A local state write (`terraform state mv`, for instance) does **not** upgrade the
+schema — verified. The upgrade is persisted only by an apply whose scope includes
+the resource. Hence the sequence below.
+
+### 5b — The sequence
+
+Each step is read-only until step 5, which is **root-operated** and writes state
+only. Do not compress these steps; the ordering is what keeps the migration
+reviewable.
+
+**1. Preserve.** Snapshot the state and record the upgrade inputs before
+anything else, so every later claim of preservation has a baseline to compare
+against.
+
+```bash
+terraform state pull > /tmp/pre-migration.tfstate
+python3 -c "import json;s=json.load(open('/tmp/pre-migration.tfstate'));print('serial',s['serial'],'resources',len(s['resources']))"
+```
+
+**2. Resolve the reviewed provider.** `init` so the constraint resolves to a
+6.42.0+ provider. Discard any plan file saved before this point — a saved plan is
+bound to the provider that produced it (Section 3).
+
+**3. Generate the migration plan, read-only.** A full-scope `-refresh-only` plan.
+`-refresh-only` is the operative flag: it proposes **no resource changes at all**,
+only state reconciliation, so it normalises schema across the resources a
+targeted plan would leave stale.
+
+```bash
+terraform plan -refresh-only -out=/tmp/migrate.tfplan
+terraform show -json /tmp/migrate.tfplan > /tmp/migrate.json
+```
+
+**4. Inspect before applying anything.** This is the review the whole exercise
+exists to protect. Confirm all three properties hold:
+
+```bash
+python3 - <<'PY'
+import json
+plan = json.load(open('/tmp/migrate.json'))
+pre = json.load(open('/tmp/pre-migration.tfstate'))
+changes = [c for c in plan.get('resource_changes', [])
+           if c['change']['actions'] != ['no-op']]
+drift = plan.get('resource_drift', [])
+print('resource changes (must be 0):', len(changes))
+print('drift entries proposing delete (must be 0):',
+      sum(1 for d in drift if 'delete' in d['change']['actions']))
+print('managed resources in pre-migration state:', len(pre['resources']))
+PY
+```
+
+- **No resource changes.** A `-refresh-only` plan that proposes creating,
+  updating or destroying anything is not a state migration; stop and re-review.
+- **No drift deletions.** A drift entry proposing `delete` means Terraform did
+  not find the resource in the account. Applying that removes it from state.
+- **Every managed address and ID still present.** Compare the addresses in the
+  plan against the snapshot from step 1. Root verified all **136** managed
+  addresses and IDs preserved on the real state.
+
+**5. Apply the saved refresh-only plan — root only.** Apply *that exact saved
+file*, never a freshly generated one, so what was reviewed is what is applied.
+This writes **state only**; it makes no cloud change.
+
+```bash
+terraform apply /tmp/migrate.tfplan
+```
+
+**6. Now the targeted rollout plan.** Generate a fresh targeted plan and export
+it. With the schema normalised, the export succeeds and the scoped-plan guard can
+read it.
+
+**What was verified where.** Steps 1–4's commands were executed against the
+synthetic fixture, credential-free, and the step-4 script was confirmed
+*discriminating*: run against a full-scope plan it reports a non-zero change
+count, i.e. it refuses the plan an operator must not apply. The `-refresh-only`
+plan and export against the **real** backend were verified by root, who observed
+all 136 managed addresses and IDs preserved, no drift deletions and no resource
+changes. Step 5 has **not** been executed by anyone at the time of writing: no
+state write has occurred.
+
+### 5c — Why not an ordinary full apply
+
+A full-scope plan **does** export, which can make `terraform apply` look like a
+quicker way to normalise state. **It is not, and the difference is destructive.**
+
+`-refresh-only` reconciles state and proposes no resource changes. An ordinary
+full apply acts on the difference between source and state — and that difference
+currently includes an add-on present in state that the source does not declare,
+so the plan proposes **destroying it**. On the real cluster that resource is
+CoreDNS, i.e. cluster DNS.
+
+`test_full_scope_plan_would_destroy_the_undeclared_add_on` exists to keep this
+advice honest: if this document ever drifts toward "just run a full apply", that
+assertion is what should stop it.
+
+### 5d — The undeclared CoreDNS add-on
+
+**What is observed:** the state records an `aws_eks_addon` for CoreDNS that the
+committed platform source does not declare. `platform/infra` declares only
+`amazon-cloudwatch-observability` and `metrics-server`. The only
+`aws_eks_addon "coredns"` definition in the repository is on the unmerged branch
+`fix/management-coredns` (`platform/infra/modules/eks/dns.tf`).
+
+**What is not established: what manages that add-on now.** An earlier revision of
+this runbook asserted that EKS Auto Mode manages CoreDNS, citing
+`bootstrap_self_managed_addons = false`. That inference does not hold — that
+setting governs whether the cluster bootstrapped self-managed add-ons **at
+creation time** and says nothing about current ownership. Ownership is unresolved
+and needs its own investigation.
+
+**The safe consequence holds either way,** which is why the sequence above does
+not depend on the answer: because state records a resource the source does not
+declare, any plan whose scope includes it proposes destroying it. So preserve the
+add-on, keep it out of scope, and confirm the resource-action scope of every plan
+before applying. `.github/scripts/verify_scoped_plan.py` enforces that narrowness
+by refusing any plan with collateral changes. Resolve the declaration question
+separately from this provider work.
+
+### 5e — Standing constraints
 
 **Discard any plan saved before the upgrade.** A saved plan is bound to the
 provider that produced it, so a pre-upgrade plan file cannot be exported or
-applied after the floor is raised (see Section 3 for the misleading error it
-produces). Generate a fresh plan after `init` resolves the new provider.
+applied afterwards; it fails with a *different*, easily-misread error (Section 3).
 
 Platform apply is **manual-only** (`platform-infra-apply.yml` is
 `workflow_dispatch`, no `push`). A provider-constraint change therefore cannot
-cause an unreviewed apply. The guard described below asserts that property so it
-cannot be relaxed silently.
+cause an unreviewed apply. `test_platform_apply_remains_manual_only` asserts that
+property so it cannot be relaxed silently.
 
-## Section 6 — The regression guard
+## Section 6 — The regression guards
 
-`.github/scripts/tests/test_platform_provider_constraint.py` asserts the floor
-holds, the root and child constraints stay identical, the major stays bounded,
-and platform apply stays manual-only.
+Two suites, covering the two defects in Section 1 and Section 5a respectively.
+
+### 6a — `test_platform_mixed_state_export.py`
+
+Reproduces the mixed-age state behaviour against a committed fixture
+(`.github/scripts/tests/fixtures/platform-mixed-state-5831/`): the targeted plan
+fails to export, the same plan exports once the stale record is at the provider's
+schema version, a full-scope plan exports, and that full-scope plan proposes
+deleting the undeclared add-on. It also asserts this runbook still documents the
+refresh-only sequence — a mechanism nobody can follow is not a fix.
+
+**The fixture carries records of two different ages on purpose.** The first
+attempt at #5831 used a fixture with only the newer add-on record; it passed on
+the raised floor while the real targeted plan still failed. A fixture younger
+than the real state certifies the wrong thing. See that directory's README.
+
+Every leg runs in a temp copy with `-refresh=false` and every `AWS_*` variable
+stripped, against synthetic state — no AWS call, no real state, no apply. The
+`-refresh-only` **apply** is deliberately not executed: it writes state, so it is
+root-operated, and what this suite asserts about it is that the runbook describes
+it, not that a test performed it.
+
+```bash
+cd .github/scripts && pytest tests/test_platform_mixed_state_export.py -v
+```
+
+The Terraform-dependent legs skip cleanly when no `terraform` binary is present;
+the fixture-integrity and runbook assertions still run.
+
+### 6b — `test_platform_provider_constraint.py`
+
+Asserts the floor holds, the root and child constraints stay identical, the major
+stays bounded, and platform apply stays manual-only.
 
 It reads the Terraform files **as text**, which is weaker than a plan assertion
 and is used deliberately: `required_providers` is resolved by `terraform init`,

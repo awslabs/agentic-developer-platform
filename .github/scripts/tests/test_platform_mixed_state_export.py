@@ -96,9 +96,30 @@ TARGETED_ADDRESS = "aws_eks_cluster.main"
 # Provider downloads and plans are far slower than the 60s default in script-tests.yml.
 TERRAFORM_TIMEOUT = 600
 
+def _terraform_missing_reason() -> str | None:
+    """Why the Terraform legs cannot run, or None if they can.
+
+    Skipping locally is a convenience. Skipping **in CI** would make this gate
+    decorative: the fixture-shape assertions would pass, the check would go green,
+    and the behaviour the suite exists to pin would never have been exercised. So
+    under `CI` a missing binary is a failure, not a skip — if the workflow's
+    setup-terraform step is ever dropped, that must be loud.
+    """
+    if shutil.which("terraform") is not None:
+        return None
+    if os.environ.get("CI"):
+        pytest.fail(
+            "terraform is not on PATH but CI is set. The Terraform-dependent legs of "
+            "this suite are the ones that reproduce #5831; skipping them in CI would "
+            "report green having checked only the fixture's shape. Restore the "
+            "setup-terraform step in script-tests.yml."
+        )
+    return "terraform binary not on PATH; the offline assertions still run"
+
+
 terraform_required = pytest.mark.skipif(
-    shutil.which("terraform") is None,
-    reason="terraform binary not on PATH; the offline assertions above still run",
+    _terraform_missing_reason() is not None,
+    reason="terraform binary not on PATH; the offline assertions still run",
 )
 
 
