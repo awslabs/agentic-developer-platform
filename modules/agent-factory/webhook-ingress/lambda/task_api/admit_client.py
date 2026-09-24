@@ -116,6 +116,46 @@ def _producer_proof(frozen, region: str, binding: str) -> str:
     ).decode()
 
 
+def _admission_payload(
+    *,
+    submit: dict,
+    idempotency_key: str,
+    caller_token: str,
+    producer_proof: str,
+    request_body: bytes,
+) -> bytes:
+    """Wrap the public request without re-serializing its ``submit`` value.
+
+    The frozen internal schema represents the public request as an object rather
+    than as an encoded byte string. Embedding the already-validated public bytes
+    directly as that object's lexical JSON value preserves their exact ordering
+    and whitespace while remaining a schema-valid ``admit_request``. The gateway
+    verifier requires this canonical wrapper layout and extracts the exact span
+    before recomputing the producer binding.
+    """
+    try:
+        if json.loads(request_body.decode("utf-8")) != submit:
+            raise ValueError()
+    except (UnicodeDecodeError, ValueError, TypeError):
+        raise errors.prerequisite_unavailable() from None
+
+    def encode(value):
+        return json.dumps(value, separators=(",", ":")).encode()
+    return b"".join(
+        (
+            b'{"schema_version":"1.0","submit":',
+            request_body,
+            b',"idempotency_key":',
+            encode(idempotency_key),
+            b',"caller_token":',
+            encode(caller_token),
+            b',"producer_proof":',
+            encode(producer_proof),
+            b"}",
+        )
+    )
+
+
 def admit(
     *, submit: dict, idempotency_key: str, caller_token: str, request_body: bytes
 ) -> dict:
@@ -130,14 +170,6 @@ def admit(
     started = time.monotonic()
     endpoint, region = _endpoint()
 
-    payload = {
-        "schema_version": contract.SCHEMA_VERSION,
-        "submit": submit,
-        "idempotency_key": idempotency_key,
-        "caller_token": caller_token,
-        "producer_proof": "",
-    }
-
     frozen = _frozen_credentials()
     binding = binding_digest(
         method=contract.SUBMIT_METHOD,
@@ -147,8 +179,13 @@ def admit(
         body=request_body,
     )
     proof = _producer_proof(frozen, region, binding)
-    payload["producer_proof"] = proof
-    data = json.dumps(payload, separators=(",", ":")).encode()
+    data = _admission_payload(
+        submit=submit,
+        idempotency_key=idempotency_key,
+        caller_token=caller_token,
+        producer_proof=proof,
+        request_body=request_body,
+    )
 
     url = endpoint + contract.ADMIT_ROUTE
     signed = botocore.awsrequest.AWSRequest(

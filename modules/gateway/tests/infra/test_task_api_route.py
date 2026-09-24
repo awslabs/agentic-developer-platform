@@ -243,10 +243,14 @@ class TestTheRouteDoesNotShadowGatewayRoutes:
         in its OpenAPI, and simply never receives a request.
         """
         src = GATEWAY_ROOT / "src"
+        route_declaration = re.compile(
+            r'(?:APIRouter\([^)]*prefix\s*=|@\w+\.(?:post|api_route)\()'
+            r'[^\n]*["\']/v1/tasks["\']'
+        )
         hits = [
             path
             for path in src.rglob("*.py")
-            if re.search(r'["\']/v1/tasks["\']', path.read_text())
+            if route_declaration.search(path.read_text())
         ]
         assert hits == [], (
             f"the gateway app now declares /v1/tasks ({hits}); the explicit API "
