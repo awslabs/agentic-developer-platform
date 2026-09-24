@@ -417,3 +417,19 @@ test("one reviewer fixes story and CI, publishes its evidence, merges, and repor
   assert.equal(merges, 1);
   assert.equal(result.repair_base_sha, state.sha);
 });
+
+test("stalled checkpoint review uses the latest story and preserves the saved commit", async t => {
+  const f = await fixture(t);
+  f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "previous-worker", checkpoint_sha: f.sha };
+  const prompts: string[] = [];
+  const github = { ...f.github, getIssue: async () => ({ number: 42, title: "Updated story",
+    body: "Owner clarification: preserve accepted inputs", html_url: "url" }) };
+  const result = await runEngineReview(f.envelope, f.runtime, { github,
+    review: async prompt => { prompts.push(prompt); return approved; },
+    fix: async () => { throw new Error("Already valid work does not need rewriting"); } });
+  assert.equal(result.sha, f.sha);
+  assert.ok(prompts[0]?.includes("stalled-story recovery"));
+  assert.ok(prompts[0]?.includes("Owner clarification: preserve accepted inputs"));
+  assert.ok(prompts[0]?.includes("do not restart from main"));
+  assert.equal(await f.git("rev-parse", "HEAD"), f.sha);
+});

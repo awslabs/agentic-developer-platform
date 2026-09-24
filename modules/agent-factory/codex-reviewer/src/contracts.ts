@@ -72,6 +72,7 @@ export interface CodexEngineReviewEnvelope extends CodexEnvelopeBase {
     findings: unknown[];
     allow_story_repairs: boolean;
     reviewer_owned_delivery?: boolean;
+    recovery?: { source: "existing_pr" | "checkpoint"; prior_run_id: string; checkpoint_sha: string };
   };
 }
 
@@ -139,6 +140,12 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
         || Buffer.byteLength(JSON.stringify(cycle), "utf8") > 32768) {
       throw new Error("invalid engine review-cycle input");
     }
+    const recovery = cycle.recovery as CodexEngineReviewEnvelope["cycle"]["recovery"];
+    if (recovery != null && (!["existing_pr", "checkpoint"].includes(recovery.source)
+        || typeof recovery.prior_run_id !== "string" || !recovery.prior_run_id
+        || recovery.checkpoint_sha !== cycle.head_sha)) {
+      throw new Error("invalid stalled-story recovery input");
+    }
     return {
       ...common,
       kind: "codex_engine_review",
@@ -151,6 +158,7 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
         findings: cycle.findings,
         allow_story_repairs: cycle.allow_story_repairs === true,
         reviewer_owned_delivery: cycle.reviewer_owned_delivery === true,
+        ...(recovery ? { recovery } : {}),
       },
     };
   }

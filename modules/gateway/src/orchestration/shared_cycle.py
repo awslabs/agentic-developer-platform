@@ -538,6 +538,7 @@ class SharedCycleServices(ReviewCycleServices):
                 reviewer_owned_delivery=allow_review_evidence,
                 findings=detail.get("findings", []),
                 review_artifact=detail.get("review_artifact"),
+                recovery=detail.get("recovery"),
                 operation_key=action.operation_key,
             )
             envelope["execution_continuation"] = {

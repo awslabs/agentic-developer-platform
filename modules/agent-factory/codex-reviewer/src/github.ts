@@ -238,6 +238,18 @@ export class GitHubClient {
     return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total };
   }
 
+  async markReady(nodeId: string): Promise<void> {
+    const result = await this.request<{ errors?: unknown; data?: { markPullRequestReadyForReview?: { pullRequest?: { isDraft: boolean } } } }>("/graphql", {
+      method: "POST", body: JSON.stringify({
+        query: "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}",
+        variables: { id: nodeId },
+      }),
+    });
+    if (result.errors || result.data?.markPullRequestReadyForReview?.pullRequest?.isDraft !== false) {
+      throw new Error("Recovery PR readiness was not acknowledged");
+    }
+  }
+
   async merge(number: number, sha: string, method: "squash" | "merge" | "rebase" = "squash"): Promise<string> {
     const result = await this.request<{ merged: boolean; message: string; sha?: string }>(
       `/repos/${this.repository}/pulls/${number}/merge`,

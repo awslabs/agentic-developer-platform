@@ -4303,10 +4303,12 @@ def _handle_success(
                 _join_notes(summary, draft_note, amendment_note, binding_note, handoff, review_note),
                 check_run_url,
             )
+            # The model process has exited. A reporting-only retry must not
+            # leave it looking live forever or fabricate successful delivery.
             update_invocation_status(
                 message_id,
                 arrived_at,
-                "in_progress" if pr_handoff_pending() else "complete",
+                "failed" if pr_handoff_pending() else "complete",
                 summary=f"{persona} — run ended; "
                 + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
@@ -4424,7 +4426,7 @@ def _handle_success(
         update_invocation_status(
             message_id,
             arrived_at,
-            "in_progress" if pr_handoff_pending() else "complete",
+            "failed" if pr_handoff_pending() else "complete",
             summary=f"{persona} — run ended; "
             + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )

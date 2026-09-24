@@ -306,3 +306,45 @@ These are completion checks, not an atomic cross-service deployment: cancellatio
 or a concurrent manual update can still interrupt the rollout. Such a release is
 incomplete until the helper succeeds. Never substitute a successful ECR build or
 EKS health check for this verification.
+
+### Automatic stalled-story review
+
+For accepted shared-worker flows, the tick can restore a story whose latest
+state transition is `node_stalled` and assign `agent-codex-reviewer` through the
+existing review-cycle runner. The flow must be unpaused, the policy must permit
+review, its expiry/budget must remain valid, and the initial attempt plus recorded
+continuation attempts must be below `max_attempts_per_node`. Recovery does not
+increase this ceiling or clear a halt. An explicit reviewer result/blocker or an
+unreconciled pending effect remains held for reconciliation.
+
+The prior worker must have a positively exited status in the exact, consistently
+read run-registry record. An old heartbeat, missing pod, elapsed timeout, or
+unavailable registry is insufficient. The old receipts are retained unchanged;
+the existing claim-transfer transaction fences them when the reviewer starts.
+
+If a bound PR exists, recovery retains it. If there is no PR, the engine resolves
+the original dispatch's repository/installation/story, verifies the corresponding
+`agent/issue-<number>` branch head, and records `recovery_pr_prepared` before any
+GitHub mutation. With both review and repair permission, it creates a draft PR
+(or adopts the single matching open PR after a lost response), then registers the
+real provider identity. A missing/moved checkpoint or ambiguous PR leaves the
+story blocked. This step creates no model run and fabricates no completion.
+
+The reviewer reads the current story/clarifications, checks the preserved work,
+repairs missing acceptance behavior within its authority, and uses the existing
+review/check/merge path. Only a complete recorded review and current checks may
+promote an engine recovery draft. Existing PR drafts retain their normal policy.
+A new reviewer consumes the same continuation counter as other reviews/repairs;
+there is no separate recovery budget or retry transport.
+
+`review_recovery_requested` records service identity and the verified exit/scope;
+`stalled_review_blocked` records a bounded failure code without provider secrets.
+The pass samples at most 100 unpaused failed stories and allows 30 seconds for
+candidate recovery work per tick, so repeated blockers cannot monopolize selection.
+A code deployment does not itself resume a paused flow or declare old work passed.
+
+Roll out the matching gateway/tick and worker images together. The tick also needs
+the Terraform `EngineRecoveryReads` grant: GetItem on initial `orch:*` and UUID
+continuation records in the configured webhook-events table, with no Scan or
+Query grant. Apply this IAM change before relying on autonomous recovery. Gateway
+and Lambda image parity must be verified using the deployment helper above.

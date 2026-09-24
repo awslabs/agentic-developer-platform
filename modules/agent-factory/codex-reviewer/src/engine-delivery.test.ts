@@ -90,3 +90,31 @@ test("GitHub permission refusal is an explicit blocker", async () => {
   const f = fixture(); f.github.merge = async () => { throw new GitHubRequestError(403, "denied"); };
   assert.deepEqual(await f.deliver(), { state: "blocked", reason: "GitHub refused merge (403)" });
 });
+
+test("a recovery draft becomes ready only after recorded review and checks", async () => {
+  const f = fixture();
+  f.pr.draft = true;
+  f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "old-run", checkpoint_sha: f.result.sha };
+  f.observation.merge_state = "blocked";
+  f.observation.merge_reasons = ["draft"];
+  const github = { ...f.github, markReady: async (node: string) => {
+    assert.equal(node, "PR_7"); f.events.push("ready"); f.pr.draft = false;
+    f.observation.merge_state = "eligible"; f.observation.merge_reasons = [];
+  } };
+  assert.equal((await deliverEngineReview(github, f.result, f.envelope, f.publish, f.checks)).state, "merged");
+  assert.deepEqual(f.events, ["publish", "authorize", "ready", "authorize", "merge"]);
+});
+
+for (const condition of ["permission", "checks", "verdict", "incomplete_review"] as const) {
+  test(`recovery draft remains draft when ${condition} is blocked`, async () => {
+    const f = fixture(); f.pr.draft = true;
+    f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "old-run", checkpoint_sha: f.result.sha };
+    f.observation.merge_reasons = condition === "permission" ? ["draft", "action_not_permitted"] : ["draft"];
+    if (condition === "incomplete_review") f.result.report.stages.security = "failed";
+    if (condition === "checks") f.observation.state = "failed";
+    if (condition === "verdict") f.result.report.verdict = "request_changes";
+    const github = { ...f.github, markReady: async () => { throw new Error("must not mark ready"); } };
+    assert.equal((await deliverEngineReview(github, f.result, f.envelope, f.publish, f.checks)).state, "blocked");
+    assert.ok(f.pr.draft);
+  });
+}

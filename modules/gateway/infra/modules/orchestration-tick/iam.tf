@@ -207,6 +207,19 @@ resource "aws_iam_role_policy" "tick" {
           Condition = {
             "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["orch:*"] }
           }
+        },
+        {
+          # Recovery reads the exact committed run/arrival key consistently.
+          # Continuation IDs are UUIDs; initial engine run IDs use orch:.
+          Sid      = "EngineRecoveryReads"
+          Effect   = "Allow"
+          Action   = ["dynamodb:GetItem"]
+          Resource = ["arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/${var.webhook_events_table_name}"]
+          Condition = {
+            "ForAllValues:StringLike" = {
+              "dynamodb:LeadingKeys" = ["orch:*", "????????-????-????-????-????????????"]
+            }
+          }
         }
       ] : [],
       # The table is encrypted with a customer-managed key, so Query and UpdateItem
