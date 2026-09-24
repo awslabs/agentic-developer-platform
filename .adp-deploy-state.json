@@ -538,5 +538,36 @@
     "owner_routing_plan_sha256": "1bff84a4d2e30e889cc3e365debacbd75e94d1ac22a0a72f8b36764160d934ea",
     "recorded_demo_sessions_independently_verified_terminated": 16,
     "coverage_followup": "adp-6qg"
+  },
+  "cyber_analyst_recovery_20260924": {
+    "account_id": "879318057152",
+    "aws_profile": "embark1",
+    "region": "us-east-1",
+    "scope": "Authorized cyber maintenance; preserve worker base and whole-module hold",
+    "implementation_commit": "e05c66f4d5350f2c587b1e991bb29b292d3253c2",
+    "release_source": "fd9561392e163b26875aa9afdc1276ad15217594",
+    "phases": {
+      "validation": "complete",
+      "archive_partitions": "complete",
+      "image_build": "complete",
+      "broker_rollout": "complete",
+      "worker_rollout": "complete",
+      "hosted_canary": "complete",
+      "github_rerun": "running"
+    },
+    "archive_plan_sha256": "50004667962e5a737c0280485c1ae3b487430143885337a6a31a3c1198cb595d",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
+    "build_id": "adp-dev-agent-runtime:cdded5ea-0a3f-4064-8443-2c903671618e",
+    "broker_plan_sha256": "26e8568ff2ca474c359c09b95316c83c995fc3a15a0e25c8d460a9f6649bd16a",
+    "implementation_merge": "a107e3cfb68cd75d8c205ad566ad71cc62dd857b",
+    "github_issues": [
+      5919,
+      5920,
+      5921,
+      5922,
+      5923
+    ],
+    "canary_session": "01M3A3VR8EZDN3D1DMX0040YS6",
+    "canary_verified_files": 19
   }
 }
