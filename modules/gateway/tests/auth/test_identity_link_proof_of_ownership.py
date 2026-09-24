@@ -51,6 +51,7 @@ from src.auth.middleware import get_current_user_context
 from src.auth.vault_routes import get_secrets_manager, router
 from src.shared.database import get_db
 from src.shared.identity.verification import (
+    DELIVERY_PROVIDER_DM,
     MAGIC_LINK_CONFIRMED,
     PROVEN_METHODS,
     SELF_ASSERTED,
@@ -249,6 +250,9 @@ class TestOutOfBandConfirmationIsProof:
             target_user_id="user-alice",
             expires_at=result["expires_at"],
             db=db,
+            # Private delivery to the claimed account is what makes this evidence.
+            # A shared-channel post is asserted to be UNPROVEN separately below.
+            delivery_method=DELIVERY_PROVIDER_DM,
         )
         await db.commit()
 
@@ -283,6 +287,7 @@ class TestOutOfBandConfirmationIsProof:
             target_user_id="user-alice",
             expires_at=result["expires_at"],
             db=db,
+            delivery_method=DELIVERY_PROVIDER_DM,
         )
         await db.commit()
 

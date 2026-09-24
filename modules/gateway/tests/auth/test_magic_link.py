@@ -41,6 +41,7 @@ from src.auth.magic_link import (
 from src.auth.middleware import get_current_user_context
 from src.auth.vault_routes import get_secrets_manager, router
 from src.shared.database import get_db
+from src.shared.identity.verification import DELIVERY_PROVIDER_DM
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
@@ -494,12 +495,25 @@ class TestMagicLinkLandingGet:
 class TestMagicLinkLandingPost:
     @patch("src.auth.vault_routes._get_magic_link_secret", return_value=_SECRET)
     def test_full_flow_link_succeeds(self, _mock_secret, db: AsyncSession):
-        """Issue token → POST confirm → user_identities row created."""
+        """Issue token → POST confirm → user_identities row created.
+
+        #5664 (A10): this test asserts the PROVEN outcome
+        (``magic_link_confirmed`` + ``verified_at``), so its nonce now has to carry
+        the two facts that make a confirmation proof — private delivery to the
+        claimed account, and a nonce bound to the platform user consuming it.
+
+        It previously passed with ``target_user_id=None`` and no delivery method at
+        all, i.e. it asserted "verified" for a link that was posted where others
+        could read it and that any signed-in user could have redeemed. That is the
+        finding this issue is about, so the fixture is corrected rather than the
+        assertion relaxed. The unbound/shared-channel case is now asserted to be
+        UNPROVEN in test_identity_link_proof_of_ownership.py.
+        """
         result = issue_token(
             provider="slack",
             provider_user_id="U-full-flow",
             channel_context="T01/C02",
-            target_user_id=None,  # internal-issued (any user may claim)
+            target_user_id=ALICE.user_id,
             secret_key=_SECRET,
         )
         import asyncio
@@ -510,9 +524,10 @@ class TestMagicLinkLandingPost:
                 provider="slack",
                 provider_user_id="U-full-flow",
                 channel_context="T01/C02",
-                target_user_id=None,
+                target_user_id=ALICE.user_id,
                 expires_at=result["expires_at"],
                 db=db,
+                delivery_method=DELIVERY_PROVIDER_DM,
             )
         )
 

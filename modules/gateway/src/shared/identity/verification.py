@@ -84,6 +84,53 @@ UNPROVEN_METHODS: Final[frozenset[str]] = frozenset(
 # this exact value in several predicates; named here so the two agree.
 PLACEMENT_VERIFICATION: Final[str] = "org_placement"
 
+# ---------------------------------------------------------------------------
+# HOW a magic link reached the account it claims — #5664 (A10), second pass
+# ---------------------------------------------------------------------------
+#
+# The first pass on this issue assumed the in-channel path was proof, on the
+# reasoning that "only someone who can read that channel can complete it". That
+# reasoning does not hold, and the gap it left is the reason this vocabulary
+# exists.
+#
+# `_handle_unresolved_user` in the ingest Lambda does not send a direct message.
+# It returns the link in the handler's HTTP response body, which the channel
+# adapter posts back to the SAME conversation the triggering message arrived in.
+# For a public Slack channel or a GitHub issue thread, that is a link readable by
+# every member of the channel. "Can read the channel" is a far weaker fact than
+# "controls the account", and it is not the fact an identity link asserts.
+#
+# Two independent conditions have to hold before a confirmed link is evidence of
+# ownership:
+#
+# 1. DELIVERY was private to the claimed account — a provider DM, or an
+#    assertion the provider itself signs. A post in a shared conversation is not.
+# 2. The nonce was BOUND to a specific platform user. An internal nonce carries
+#    `target_user_id=None` so that the recipient may pick their own account on the
+#    landing page — which also means any signed-in user who obtains the link can
+#    consume it. Unbound plus publicly-readable is precisely the squatting path.
+#
+# Both are recorded on the nonce so the consume path decides from stored facts
+# rather than from the name of the route that happened to mint it.
+
+# Delivered privately to the claimed account, or asserted by the provider.
+DELIVERY_PROVIDER_DM: Final[str] = "provider_dm"
+DELIVERY_PROVIDER_ASSERTED: Final[str] = "provider_asserted"
+
+# Posted into a conversation that others can read. Confirms channel access only.
+DELIVERY_SHARED_CHANNEL: Final[str] = "shared_channel"
+
+# Minted before this distinction existed: the platform cannot tell which it was.
+DELIVERY_UNKNOWN: Final[str] = "unknown"
+
+# Only these establish that the confirming party controls the claimed account.
+OWNERSHIP_PROVING_DELIVERY: Final[frozenset[str]] = frozenset(
+    {
+        DELIVERY_PROVIDER_DM,
+        DELIVERY_PROVIDER_ASSERTED,
+    }
+)
+
 # What a freshly-created, unproven claim is recorded as.
 SELF_ASSERTED: Final[str] = "self_asserted"
 
@@ -98,6 +145,21 @@ assert PLACEMENT_VERIFICATION in PROVEN_METHODS, "org-placement links are writte
 assert SELF_ASSERTED in UNPROVEN_METHODS, "a self-asserted claim must never count as proof"
 
 assert MAGIC_LINK_CONFIRMED in PROVEN_METHODS, "an out-of-band-confirmed magic link is proof of control"
+
+assert not (OWNERSHIP_PROVING_DELIVERY & {DELIVERY_SHARED_CHANNEL, DELIVERY_UNKNOWN}), (
+    "a shared-channel or unknown delivery must never count as private delivery"
+)
+
+
+def delivery_proves_ownership(delivery_method: str | None) -> bool:
+    """True when this delivery reached the claimed account and nobody else.
+
+    Fail-closed for the same reason as ``is_proven``: ``None`` covers both a nonce
+    row written before this column existed and a future minter that forgets to set
+    it, and in neither case has the platform observed a private delivery. A new
+    delivery channel is inert until it is declared proving here.
+    """
+    return delivery_method in OWNERSHIP_PROVING_DELIVERY
 
 
 def is_proven(verification_method: str | None) -> bool:

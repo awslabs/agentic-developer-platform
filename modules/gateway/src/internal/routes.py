@@ -60,6 +60,7 @@ from src.knowledge.github_app_service import (
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.identity.providers import is_linkable_provider
+from src.shared.identity.verification import DELIVERY_SHARED_CHANNEL, PROVEN_METHODS
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import new_uuid
 from src.shared.models.organization import Organization, User
@@ -115,6 +116,12 @@ class ResolveUserRequest(BaseModel):
     provider: str
     provider_user_id: str
     channel_context: str | None = None
+    # Optional tenant scope (#5664, A10). `user_identities` is unique per tenant,
+    # so one external account may legitimately hold rows in several. Supplying the
+    # tenant the inbound event is for narrows the lookup to it; omitting it means
+    # an account linked in more than one tenant is refused as ambiguous rather
+    # than silently resolved to whichever row the database returned first.
+    org_id: str | None = None
 
 
 class ResolveUserResponse(BaseModel):
@@ -297,6 +304,13 @@ async def issue_magic_link(
         target_user_id=None,
         expires_at=result["expires_at"],
         db=db,
+        # Recorded honestly (#5664, A10): the ingest caller posts this link back
+        # into the conversation the triggering message arrived in, which for a
+        # public channel or an issue thread is readable by everyone there. That is
+        # channel access, not proof of account ownership, so confirming a link
+        # delivered this way yields an UNPROVEN identity row. Mislabelling it
+        # `provider_dm` here is exactly the escalation this column prevents.
+        delivery_method=DELIVERY_SHARED_CHANNEL,
     )
 
     magic_link_url = _build_magic_link_url(result["token"])
@@ -350,13 +364,47 @@ async def resolve_user(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ):
-    # 1. Check user_identities
+    # 1. Check user_identities — trust-aware, and tenant-scoped when the caller
+    #    supplies a tenant (#5664, A10).
+    #
+    # Two defects were combined here. The lookup accepted ANY verification method,
+    # so a row a user had simply asserted about themselves resolved exactly like
+    # one the provider confirmed — and this endpoint's answer decides which
+    # platform user an inbound event acts as. And `scalar_one_or_none()` raises
+    # MultipleResultsFound on legitimate data: the unique index is per tenant
+    # (provider, provider_user_id, org_id), so one external account may hold rows
+    # in several tenants. That surfaced as an unhandled 500.
+    #
+    # Ambiguity is now an explicit refusal. Picking any one row would be guessing
+    # which tenant an event belongs to, and the safe answer to "which of these
+    # is it?" is to decline rather than to choose.
     stmt = select(UserIdentity).where(
         UserIdentity.provider == body.provider,
         UserIdentity.provider_user_id == body.provider_user_id,
+        UserIdentity.verification_method.in_(PROVEN_METHODS),
     )
-    result = await db.execute(stmt)
-    identity = result.scalar_one_or_none()
+    if body.org_id:
+        stmt = stmt.where(UserIdentity.org_id == body.org_id)
+
+    candidates = (await db.execute(stmt)).scalars().all()
+
+    if len(candidates) > 1:
+        logger.warning(
+            "Ambiguous identity resolution provider=%s provider_user_id=%s org_id=%r matches=%d",
+            body.provider,
+            body.provider_user_id,
+            body.org_id,
+            len(candidates),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "ambiguous_identity",
+                "message": ("This provider identity resolves to more than one tenant. Supply org_id to disambiguate."),
+            },
+        )
+
+    identity = candidates[0] if candidates else None
 
     if identity is not None:
         # Fetch the user row for org/team info
@@ -470,6 +518,9 @@ async def resolve_user(
         target_user_id=None,
         expires_at=result_token["expires_at"],
         db=db,
+        # Same in-channel delivery as /issue-magic-link above, so the same honest
+        # label. See the note there.
+        delivery_method=DELIVERY_SHARED_CHANNEL,
     )
 
     magic_link_url = _build_magic_link_url(result_token["token"])

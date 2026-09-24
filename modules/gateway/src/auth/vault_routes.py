@@ -35,6 +35,7 @@ from src.shared.identity.providers import is_linkable_provider
 from src.shared.identity.verification import (
     MAGIC_LINK_CONFIRMED,
     SELF_ASSERTED,
+    delivery_proves_ownership,
     is_proven,
 )
 from src.shared.models.audit import AuditLog
@@ -44,6 +45,7 @@ from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from .magic_link import (
     ChannelContextMismatchError,
+    ClaimNotBoundToNonceError,
     NonceAlreadyConsumedError,
     NonceNotFoundError,
     TargetUserMismatchError,
@@ -782,16 +784,22 @@ async def magic_link_landing_post(
         raise HTTPException(status_code=400, detail={"error": "token_invalid", "message": str(exc)})
 
     jti = payload["jti"]
-    provider = payload["provider"]
-    provider_user_id = payload["provider_user_id"]
     channel_context = payload.get("channel_context")
 
+    # The same closed allowlist the GET landing page and both minters apply. The
+    # nonce store is shared with the platform-admin setup namespaces, so a confirm
+    # route that skipped this check would be a second way onto that surface.
+    _require_linkable_provider(payload["provider"])
+
     try:
-        await consume_nonce(
+        nonce = await consume_nonce(
             jti=jti,
             channel_context=channel_context,
             consuming_user_id=token_context.user_id,
             db=db,
+            # Bind the signed claims to the stored row before spending the nonce.
+            claimed_provider=payload["provider"],
+            claimed_provider_user_id=payload["provider_user_id"],
         )
     except TokenExpiredError:
         await _append_audit(
@@ -815,6 +823,21 @@ async def magic_link_landing_post(
         raise HTTPException(status_code=400, detail={"error": "token_already_used", "message": "Magic-link has already been used"})
     except NonceNotFoundError:
         raise HTTPException(status_code=400, detail={"error": "token_invalid", "message": "Token nonce not found"})
+    except ClaimNotBoundToNonceError as exc:
+        await _append_audit(
+            db,
+            event_type="magic_link_failed",
+            org_id=token_context.org_id,
+            actor_id=token_context.user_id,
+            details={
+                "reason": "claim_not_bound_to_nonce",
+                "jti": jti,
+                "claimed_provider": payload.get("provider"),
+                "claimed_provider_user_id": payload.get("provider_user_id"),
+            },
+        )
+        await db.commit()
+        raise HTTPException(status_code=400, detail={"error": "token_invalid", "message": str(exc)})
     except ChannelContextMismatchError as exc:
         await _append_audit(
             db,
@@ -841,36 +864,143 @@ async def magic_link_landing_post(
         await db.commit()
         raise HTTPException(status_code=403, detail={"error": "user_mismatch", "message": str(exc)})
 
+    # Authoritative values come from the NONCE ROW, never from the token. The two
+    # were just proven equal, so this is not a behaviour change — it removes the
+    # token as a source of truth so a future edit cannot reintroduce one.
+    provider = nonce.provider
+    provider_user_id = nonce.provider_user_id
+
+    # Does confirming this link actually prove the confirmer owns the account?
+    #
+    # Two facts have to hold, and both are read from the stored nonce rather than
+    # inferred from which route minted it:
+    #
+    # * delivery was private to the claimed account. The ingest path posts the link
+    #   back into the SAME conversation the triggering message came from, which for
+    #   a public channel or an issue thread is readable by everyone in it. That
+    #   proves channel access, not account ownership.
+    # * the nonce named the platform user it was for. An internal nonce carries
+    #   target_user_id=None precisely so the recipient can choose their account on
+    #   the landing page — which means whoever reaches the link first can consume
+    #   it. Publicly readable AND unbound is the squatting path itself.
+    #
+    # When either fails the link is still recorded, as self_asserted with no
+    # verified_at, so a genuine user is not blocked and an attempt stays auditable.
+    # is_proven() rejects it, so it grants nothing.
+    delivered_privately = delivery_proves_ownership(nonce.delivery_method)
+    bound_to_a_user = nonce.target_user_id is not None
+    ownership_proven = delivered_privately and bound_to_a_user
+
+    if ownership_proven:
+        confirmed_method = MAGIC_LINK_CONFIRMED
+        confirmed_at = datetime.now(UTC)
+    else:
+        confirmed_method = SELF_ASSERTED
+        confirmed_at = None
+        logger.warning(
+            "Magic-link confirmed without ownership proof jti=%s delivery=%r bound=%s — recording as %s",
+            jti,
+            nonce.delivery_method,
+            bound_to_a_user,
+            SELF_ASSERTED,
+        )
+
     # Fetch the user row to get team_id (required by UserIdentity)
     user_stmt = select(User).where(User.id == token_context.user_id)
     user_result = await db.execute(user_stmt)
     user = user_result.scalar_one_or_none()
     team_id = user.team_id if user else ""
 
-    # The user may already hold an UNPROVEN claim on this account (recorded by
-    # POST /auth/identities/{provider}/link). Confirming an out-of-band link is
-    # precisely the evidence that claim was missing, so upgrade the row in place
-    # rather than inserting a second one and colliding with the
-    # (provider, provider_user_id, org_id) unique index from migration 021.
-    #
-    # Scoped to the caller's own row: a claim recorded by a DIFFERENT user is not
-    # upgraded here. That case falls through to the insert below and is refused by
-    # the unique index as a 409 — an attacker's claim must not be silently
-    # converted into someone else's proven link, nor the reverse.
-    identity = (
+    # Who, if anyone, already holds this (provider, provider_user_id) in this
+    # tenant? The unique index from migration 021 allows exactly one holder, so
+    # this single row decides between upgrade, recovery and refusal.
+    holder = (
         await db.execute(
             select(UserIdentity).where(
                 UserIdentity.org_id == token_context.org_id,
-                UserIdentity.user_id == token_context.user_id,
                 UserIdentity.provider == provider,
                 UserIdentity.provider_user_id == provider_user_id,
             )
         )
     ).scalar_one_or_none()
 
-    if identity is not None:
-        identity.verification_method = MAGIC_LINK_CONFIRMED
-        identity.verified_at = datetime.now(UTC)
+    if holder is not None and holder.user_id == token_context.user_id:
+        # The caller's own row. Confirming is the evidence it was missing, so
+        # upgrade in place rather than inserting a second row and colliding with
+        # the unique index.
+        identity = holder
+        identity.verification_method = confirmed_method
+        identity.verified_at = confirmed_at
+    elif holder is not None:
+        # Someone ELSE holds it. Whether this is recoverable depends entirely on
+        # what their claim is worth:
+        #
+        # * an UNPROVEN claim is a squat. Before this issue, a user could assert
+        #   any account and the row stood; the real owner then had no way to claim
+        #   their own identity, which is a lockout the fix must not preserve. A
+        #   caller who has now PROVEN ownership takes the identity over, and the
+        #   squatter's row is deleted rather than left to shadow it.
+        # * a PROVEN link is never transferred. Someone else demonstrated control
+        #   of this account, and no later confirmation overrides that — otherwise
+        #   the recovery path would itself become the takeover path. It is refused
+        #   and an operator resolves it.
+        if is_proven(holder.verification_method) or not ownership_proven:
+            await _append_audit(
+                db,
+                event_type="identity_link_refused",
+                org_id=token_context.org_id,
+                actor_id=token_context.user_id,
+                details={
+                    "reason": ("held_by_proven_link" if is_proven(holder.verification_method) else "claimant_has_no_proof"),
+                    "provider": provider,
+                    "provider_user_id": provider_user_id,
+                    "holder_verification_method": holder.verification_method,
+                },
+            )
+            await db.commit()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "identity_already_linked",
+                    "message": f"Provider identity {provider}:{provider_user_id} is already linked.",
+                },
+            )
+
+        logger.warning(
+            "Proven claim reclaiming an unproven-held identity provider=%s provider_user_id=%s from_user=%s to_user=%s",
+            provider,
+            provider_user_id,
+            holder.user_id,
+            token_context.user_id,
+        )
+        await _append_audit(
+            db,
+            event_type="identity_claim_reclaimed",
+            org_id=token_context.org_id,
+            actor_id=token_context.user_id,
+            details={
+                "provider": provider,
+                "provider_user_id": provider_user_id,
+                "displaced_user_id": holder.user_id,
+                "displaced_verification_method": holder.verification_method,
+            },
+        )
+        # Delete then flush BEFORE inserting: the unique index is on
+        # (provider, provider_user_id, org_id), so both rows would exist at once
+        # without the flush and the insert would violate it.
+        await db.delete(holder)
+        await db.flush()
+        identity = UserIdentity(
+            org_id=token_context.org_id,
+            user_id=token_context.user_id,
+            team_id=team_id,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            provider_username=None,
+            verification_method=confirmed_method,
+            verified_at=confirmed_at,
+        )
+        db.add(identity)
     else:
         identity = UserIdentity(
             org_id=token_context.org_id,
@@ -879,11 +1009,10 @@ async def magic_link_landing_post(
             provider=provider,
             provider_user_id=provider_user_id,
             provider_username=None,
-            # Proven: this token was delivered to the claimed account by the
-            # ingest path and confirmed from there. Distinct from the legacy bare
-            # "magic_link", which could not tell that apart from a self-claim.
-            verification_method=MAGIC_LINK_CONFIRMED,
-            verified_at=datetime.now(UTC),
+            # MAGIC_LINK_CONFIRMED only when delivery was private AND the nonce
+            # named this user; otherwise SELF_ASSERTED with verified_at NULL.
+            verification_method=confirmed_method,
+            verified_at=confirmed_at,
         )
         db.add(identity)
 
@@ -908,10 +1037,15 @@ async def magic_link_landing_post(
             "provider": provider,
             "provider_user_id": provider_user_id,
             "verification_method": identity.verification_method,
+            "delivery_method": nonce.delivery_method,
+            "ownership_proven": ownership_proven,
         },
     )
 
     try:
+        # One commit covers the nonce consumption, the identity row and the audit
+        # trail. consume_nonce deliberately left its UPDATE pending so that a
+        # failure here cannot burn the nonce without linking anything.
         await db.commit()
         await db.refresh(identity)
     except Exception as exc:
@@ -926,16 +1060,21 @@ async def magic_link_landing_post(
         )
 
     logger.info(
-        "Identity linked via magic-link user=%s provider=%s provider_user_id=%s",
+        "Identity linked via magic-link user=%s provider=%s provider_user_id=%s method=%s",
         token_context.user_id,
         provider,
         provider_user_id,
+        identity.verification_method,
     )
     return {
-        "status": "linked",
+        # Reported honestly: a confirmation that could not establish ownership is
+        # "linked_unverified", not "linked". A caller that treats the two the same
+        # is making its own choice; it is not being told the claim was proven.
+        "status": "linked" if ownership_proven else "linked_unverified",
         "identity_id": identity.id,
         "provider": provider,
         "provider_user_id": provider_user_id,
         "verification_method": identity.verification_method,
         "verified_at": identity.verified_at.isoformat() if identity.verified_at else None,
+        "next_step": (None if ownership_proven else _OUT_OF_BAND_NEXT_STEP),
     }

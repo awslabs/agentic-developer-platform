@@ -223,6 +223,14 @@ class MagicLinkNonce(Base):
     # target_user_id: set when a signed-in user issues the link; NULL when an
     # internal Lambda issues it (user picks Cognito identity on landing page).
     target_user_id: Mapped[str | None] = mapped_column(String(255))
+    # HOW this link reached the account it claims (#5664, A10).
+    #
+    # Nullable with no default on purpose. The consume path treats NULL as
+    # "not privately delivered" via `delivery_proves_ownership`, so rows written
+    # before this column existed — and any future minter that forgets to set it —
+    # produce an unproven link rather than a trusted one. Backfilling a value here
+    # would be asserting a delivery nobody observed.
+    delivery_method: Mapped[str | None] = mapped_column(String(32))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

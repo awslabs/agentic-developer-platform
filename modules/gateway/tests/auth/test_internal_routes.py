@@ -282,7 +282,16 @@ class TestResolveUser:
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings
 
-        # Seed a linked identity for alice
+        # Seed a linked identity for alice.
+        #
+        # #5664 (A10): this seed said `verification_method="magic_link"`. The intent
+        # of the test is "a genuinely linked identity resolves", and the bare
+        # `magic_link` string no longer expresses that — it is the ambiguous legacy
+        # value that could mean either a privately delivered confirmation or a
+        # self-assertion, so resolution now declines to trust it. The test keeps its
+        # original intent by seeding a method that IS proof; that an unproven row is
+        # ignored here is asserted separately in
+        # tests/internal/test_resolve_user_trust.py.
         async def _seed():
             identity = UserIdentity(
                 org_id="org-acme",
@@ -290,7 +299,7 @@ class TestResolveUser:
                 team_id="team-eng",
                 provider="slack",
                 provider_user_id="U-known",
-                verification_method="magic_link",
+                verification_method="oauth",
             )
             db.add(identity)
             await db.commit()
