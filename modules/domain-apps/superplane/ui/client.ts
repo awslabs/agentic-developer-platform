@@ -209,7 +209,7 @@ export function classify(error: unknown, endpoint: EndpointName): Unavailable {
  * for malformed-response assertions, and the failure mode being prevented is a
  * screen that renders `undefined` as though it were data.
  */
-async function call<T>(
+export async function call<T>(
   guard: ScopeGuard,
   endpoint: EndpointName,
   params: Record<string, string>,
@@ -702,7 +702,7 @@ export function previewWorkspace(
  * "response this version does not understand" path in `call`, instead of handing
  * the UI a receipt whose recover button cannot work.
  */
-function parseApprovalRequest(raw: unknown): Record<string, unknown> | null {
+export function parseApprovalRequest(raw: unknown): Record<string, unknown> | null {
   if (!isRecord(raw) || typeof raw.workspace_id !== 'string' ||
       (raw.action !== 'provision' && raw.action !== 'teardown') ||
       typeof raw.idempotency_key !== 'string' || !isRecord(raw.parameters) ||

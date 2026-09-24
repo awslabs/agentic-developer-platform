@@ -106,3 +106,39 @@ fallbacks.
 Live acceptance still requires the deployed release to complete an authorized onboarding
 journey, preserve its operation identity and report verified workspace readiness. Remote CI
 does not substitute for that demonstration or for browser layout verification.
+
+## Serving workload operations
+
+`ServingPanel.tsx` uses the maintained deployment preview, create, list and
+UUID-scoped teardown routes. Profile discovery checks current workspace grants,
+canonical target/credential bindings, the maintained plan producer and dispatcher
+readiness before enabling submission. The form selects validated model options
+from this catalog. Teardown review remains available to an authorized caller even
+when the original serving profile is no longer installed. The review renders the plan carried by the exact approval request,
+including its immutable workload image, target, resource ceiling, runtime and
+maximum additional cost. Approval is checked again immediately before submission.
+
+Create and stop have separate durable request receipts, scoped to deployment,
+organization and workspace. Receipts contain identifiers and a payload fingerprint,
+not model inputs, images or credential values. A lost reply retains its identity;
+saved requests recover their operation status by idempotency key without re-entering
+model inputs or replaying a mutation. Reviewing the same inputs can also recover
+the approval and retry that same request.
+Lists refresh every ten seconds; inaccessible results are removed and late results
+from a previous workspace are discarded. Operation success, missing list entries
+and accepted stop requests never establish provider absence or cost settlement.
+
+`ServingPanel.test.tsx` covers lost replies/reload, original-resource stop requests,
+changed plans, revoked and mismatched approvals, cross-workspace responses, and
+read-only views. These are remote CI transport-fixture tests. Browser layout and
+live serving acceptance remain outstanding. Batch submission, bounded logs,
+result links, endpoint access and reconciled workload costs remain required for complete #5731 delivery.
+
+`Superplane UI Browser CI`, called by Gateway CI, starts the maintained Vite
+frontend on loopback and renders this component in Chromium with fixture HTTP
+responses. It checks keyboard submission, review/approval/stop interaction and
+horizontal overflow at360px and1280px, and uploads screenshots plus a fixture
+receipt. Browser requests outside the loopback origin are refused. This is
+isolated browser evidence, not a deployed onboarding or serving demonstration.
+Tailwind explicitly scans the domain UI so its classes are included in the
+shipped frontend bundle.

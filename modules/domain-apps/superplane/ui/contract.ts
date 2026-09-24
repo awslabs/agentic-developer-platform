@@ -90,6 +90,12 @@ export const ENDPOINTS = {
   listWorkspaces: { method: 'GET', path: '/workspaces', served: true },
   getWorkspace: { method: 'GET', path: '/workspaces/{workspace_id}', served: true },
   createWorkspace: { method: 'POST', path: '/workspaces', served: true },
+  listDeployments: { method: 'GET', path: '/workspaces/{workspace_id}/deployments', served: true },
+  servingProfiles: { method: 'GET', path: '/workspaces/{workspace_id}/deployment-profiles', served: true },
+  previewDeployment: { method: 'POST', path: '/workspaces/{workspace_id}/deployments/preview', served: true },
+  createDeployment: { method: 'POST', path: '/workspaces/{workspace_id}/deployments', served: true },
+  previewDeploymentTeardown: { method: 'POST', path: '/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview', served: true },
+  deleteDeployment: { method: 'DELETE', path: '/workspaces/{workspace_id}/deployments/{dep_id}', served: true },
 
   registerConnection: {
     method: 'POST',

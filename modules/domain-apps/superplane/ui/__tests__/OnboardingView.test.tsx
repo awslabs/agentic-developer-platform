@@ -126,6 +126,10 @@ let restoreDeployment: () => void;
 const baselineCapabilitiesServed = ENDPOINTS.capabilities.served;
 beforeEach(() => {
   restoreDeployment = withoutOnboardingEndpoints();
+  server.use(
+    http.get(API('/workspaces/:workspaceId/deployments'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, deployments: [] })),
+    http.get(API('/workspaces/:workspaceId/deployment-profiles'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, profiles: [], can_submit: false, can_review_teardown: false })),
+  );
   // This suite's default fixture is a deployment without capability reporting.
   (ENDPOINTS.capabilities as { served: boolean }).served = false;
   currentUser = { id: 'u-1', orgId: 'org-a', role: AdminRole.ORG_ADMIN };

@@ -1,6 +1,10 @@
 [
   [
     "GET",
+    "/workspaces/{workspace_id}/deployment-profiles"
+  ],
+  [
+    "GET",
     "/capabilities"
   ],
   [
