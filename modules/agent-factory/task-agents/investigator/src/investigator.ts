@@ -32,7 +32,7 @@ import {
   InvalidAgentOutputError,
   type EvidenceIndex,
 } from './report.js';
-import type { InvestigatorReport, Stage, StartFrame } from './protocol.js';
+import { MAX_FRAME_BYTES, ProtocolViolation, type InvestigatorReport, type Stage, type StartFrame } from './protocol.js';
 
 /** Hard ceilings from `docs/task-api/contracts/v1/limits.json`. */
 export const TURN_CEILING = 8;
@@ -153,6 +153,47 @@ function renderEvidence(start: StartFrame, artifactNames: ReadonlyMap<string, st
   return parts.join('\n\n');
 }
 
+/** Select deterministic prefixes against the actual serialized model frame. */
+export function boundedModelMessages(start: StartFrame, names: ReadonlyMap<string, string>, followUps: unknown[], maxTokens: number): { messages: unknown[]; omissions: string[] } {
+  const artifacts = start.artifacts ?? [];
+  const build = (characters: number) => {
+    const omissions: string[] = [];
+    const selected = artifacts.map((artifact) => {
+      let content = artifact.content.slice(0, characters);
+      // Never split a Unicode scalar at the excerpt boundary.
+      if (content.length > 0 && /[\uD800-\uDBFF]/.test(content.at(-1) ?? '')) content = content.slice(0, -1);
+      const total = Buffer.byteLength(artifact.content, 'utf8');
+      const used = Buffer.byteLength(content, 'utf8');
+      if (used < total) {
+        const note = `Only the first ${used} of ${total} bytes of ${names.get(artifact.artifact_id) ?? artifact.artifact_id} were analysed; ${total - used} bytes were omitted to fit the bounded model request.`;
+        omissions.push(note);
+        content += `\n[Evidence excerpt boundary. ${note}]`;
+      }
+      return { ...artifact, content };
+    });
+    const messages: unknown[] = [{ role: 'user', content: `${renderEvidence({ ...start, artifacts: selected }, names)}\n\nInvestigate and reply with the JSON object.` }, ...followUps];
+    const bytes = Buffer.byteLength(JSON.stringify({ protocol_version: 1, type: 'model.request',
+      request_id: '00000000-0000-4000-8000-000000000000', task_id: start.task_id,
+      turn_id: '00000000-0000-4000-8000-000000000000', messages, system: SYSTEM_PROMPT, max_tokens: maxTokens }), 'utf8') + 1;
+    return { messages, omissions, bytes };
+  };
+  const maximum = Math.max(0, ...artifacts.map((artifact) => artifact.content.length));
+  const full = build(maximum);
+  if (full.bytes <= MAX_FRAME_BYTES) return full;
+  const empty = build(0);
+  if (empty.bytes > MAX_FRAME_BYTES) throw new ProtocolViolation('task instructions and follow-up input exceed the bounded model request');
+  let low = 0;
+  let high = maximum;
+  let chosen = empty;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = build(middle);
+    if (candidate.bytes <= MAX_FRAME_BYTES) { chosen = candidate; low = middle + 1; }
+    else high = middle - 1;
+  }
+  return chosen;
+}
+
 /**
  * Name artifacts so citations are human-meaningful.
  *
@@ -170,7 +211,7 @@ function nameArtifacts(start: StartFrame): Map<string, string> {
   let index = 0;
   for (const artifact of start.artifacts ?? []) {
     index += 1;
-    const declared = inputValues.find((value) => /\.(txt|json|log|ya?ml|conf|ini)$/i.test(value));
+    const declared = inputValues.find((value) => ![...names.values()].includes(value) && /\.(txt|json|log|ya?ml|conf|ini)$/i.test(value));
     const fallback = artifact.content_type === 'application/json' ? 'json' : 'txt';
     names.set(artifact.artifact_id, declared ?? `artifact-${index}.${fallback}`);
   }
@@ -237,9 +278,7 @@ export async function investigate(
 
   control.throwIfCancelled();
 
-  const messages: unknown[] = [
-    { role: 'user', content: `${renderEvidence(start, artifactNames)}\n\nInvestigate and reply with the JSON object.` },
-  ];
+  const followUps: unknown[] = [];
 
   let turnsRequested = 0;
   let askedForClarification = false;
@@ -254,7 +293,7 @@ export async function investigate(
     const pending = control.takeUnconsumed();
     if (pending.length > 0) {
       for (const input of pending) {
-        messages.push({ role: 'user', content: `Additional information from the caller: ${input.text}` });
+        followUps.push({ role: 'user', content: `Additional information from the caller: ${input.text}` });
       }
       index = buildEvidenceIndex({
         instructions: start.instructions,
@@ -265,8 +304,9 @@ export async function investigate(
       });
     }
 
+    const selected = boundedModelMessages(start, artifactNames, followUps, maxTokens);
     turnsRequested += 1;
-    const result = await host.model({ messages, system: SYSTEM_PROMPT, maxTokens,
+    const result = await host.model({ messages: selected.messages, system: SYSTEM_PROMPT, maxTokens,
       ...(pending[0]?.turn_id === undefined ? {} : { turnId: pending[0].turn_id }) });
 
     if (result.status === 'unknown') {
@@ -282,13 +322,14 @@ export async function investigate(
     // output is a failed run, and looping to "try for a better answer" would
     // spend the caller's budget hiding a broken agent.
     const grounded = groundReport(extractJsonObject(result.text), index);
+    grounded.report.uncertainties.push(...selected.omissions.filter(note => !grounded.report.uncertainties.includes(note)));
     outcome = grounded;
 
     // Stage 2: analysis. Reports what was established and what was set aside,
     // which is information the caller cannot get from the final report alone
     // (a demoted claim looks the same as one never made).
     await host.progress(
-      `Analysed the supplied evidence across ${turnsRequested} model turn(s): ` +
+      `Analysed ${selected.omissions.length > 0 ? "selected excerpts of the" : "the"} supplied evidence across ${turnsRequested} model turn(s): ` +
         `${grounded.report.findings.length} finding(s) supported by citations, ` +
         `${grounded.report.uncertainties.length} uncertainty(ies)` +
         (grounded.demoted.length > 0

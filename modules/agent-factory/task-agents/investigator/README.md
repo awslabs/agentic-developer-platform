@@ -186,3 +186,21 @@ with `--network none`, verifies zero observed network attempts, and records the
 source SHA, fixture hash, image digest and outcomes. It also checks the packaged
 Claude and Codex binaries and their unchanged legacy command mappings. Package
 unit tests are not a substitute for this built-image lane.
+
+### Large input artifacts
+
+The host may send ordered `artifact.chunk` frames before `start`, then reference
+verified content by artifact ID, SHA-256 and byte length in `start.artifacts`.
+Chunks carry 32 KiB decoded bytes (the last carries the remainder). Every frame
+remains at most 64 KiB; the accepted limits remain four artifacts, 256 KiB each,
+and 1 MiB total. The child reserves declared sizes before allocation and rejects
+noncanonical base64, changed metadata, reordered or incomplete transfers, digest
+mismatches, invalid UTF-8 and unmatched references before making a model call.
+The existing inline artifact descriptor remains supported.
+
+Full verified content stays local for citation validation. When evidence would
+exceed the model request frame bound, deterministic prefixes are selected using
+the actual serialized UTF-8 request size, including JSON escaping and the line
+terminator. Excerpts are labelled, and the final report lists omitted byte counts
+in its uncertainties. Instructions and accumulated followups that cannot fit on
+their own fail as a protocol violation before a model call.

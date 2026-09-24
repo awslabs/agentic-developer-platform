@@ -21,6 +21,7 @@
  * sanitized stderr, which is what the design says stderr is for.
  */
 
+import { ArtifactTransfers } from './artifact-transfer.js';
 import { createInterface } from 'node:readline';
 
 import { TaskControlAdapter, isControlCancellation, type ControlInput } from './control.js';
@@ -312,6 +313,7 @@ async function main(): Promise<number> {
   };
 
   const control = new TaskControlAdapter();
+  const transfers = new ArtifactTransfers();
   let start: StartFrame | null = null;
   let host: StdioHost | null = null;
   let finished = false;
@@ -380,13 +382,18 @@ async function main(): Promise<number> {
         return;
       }
 
+      if (frame.type === 'artifact.chunk') {
+        try { transfers.accept(frame); } catch (error) { fail(error); }
+        return;
+      }
+
       if (frame.type === 'start') {
         if (start !== null) {
           diagnostic('a second start frame was ignored');
           return;
         }
-        start = frame;
-        const bridge = new StdioHost(frame, control, write);
+        try { start = transfers.start(frame); } catch (error) { fail(error); return; }
+        const bridge = new StdioHost(start, control, write);
         host = bridge;
 
         write({
@@ -397,7 +404,7 @@ async function main(): Promise<number> {
           capabilities: [...IMPLEMENTED_CAPABILITIES],
         });
 
-        void investigate(frame, bridge, control)
+        void investigate(start, bridge, control)
           .then((outcome) => {
             if (finished) {
               return;

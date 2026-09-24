@@ -1,0 +1,43 @@
+{
+  "$fixture": {
+    "description": "Start references the verified artifact transfer",
+    "schema": "process-protocol.schema.json#/$defs/start_frame",
+    "expect": "valid",
+    "owner": "T4",
+    "criteria": [
+      "T0-AC02",
+      "T4-AC01",
+      "T5-AC01",
+      "V0-03",
+      "V2-03"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "start",
+  "request_id": "293041a5-2c6d-4e7f-b081-920314253647",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "generation": 1,
+  "runtime_attempt_id": "a1b2c3d4-e5f6-4718-9a2b-3c4d5e6f7081",
+  "instructions": "Investigate why checkout requests began returning 503 at 14:10 UTC. Use only the supplied logs and configuration.",
+  "inputs": {
+    "incident_window": "2026-09-24T14:05:00Z/2026-09-24T14:40:00Z",
+    "affected_service": "checkout-api"
+  },
+  "acceptance_criteria": [
+    "Name the most likely cause.",
+    "Cite the log lines supporting it."
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "art_6f1b9c22-4a7d-4f1e-8b3a-2c9d5e7f1a04",
+      "content_type": "text/plain",
+      "content_sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "byte_length": 6
+    }
+  ],
+  "limits": {
+    "max_turns": 8,
+    "max_output_tokens_per_turn": 4096
+  }
+}

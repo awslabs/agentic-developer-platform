@@ -32,6 +32,8 @@ describe('published valid fixtures are accepted', () => {
   // run the platform considers well-formed.
   for (const fixture of [
     loadFixture('valid', 'process-start-frame.json'),
+    loadFixture('valid', 'process-start-artifact-reference-frame.json'),
+    loadFixture('valid', 'process-artifact-chunk-frame.json'),
     loadFixture('valid', 'process-cancel-frame.json'),
     loadFixture('valid', 'process-model-result-unknown-frame.json'),
   ]) {
@@ -61,6 +63,11 @@ describe('published invalid fixtures are refused', () => {
   // asserted (not just "it threw") so a test cannot pass because the frame was
   // rejected for some unrelated reason.
   const cases: Array<{ file: string; expect: RegExp; boundary: string }> = [
+    { file: 'process-artifact-chunk-credential.json', expect: /forbidden field run_credential/, boundary: 'chunk transport is closed and bounded' },
+    { file: 'process-artifact-chunk-invalid-base64.json', expect: /base64/, boundary: 'chunk transport is closed and bounded' },
+    { file: 'process-artifact-chunk-oversize.json', expect: /permitted range/, boundary: 'chunk transport is closed and bounded' },
+    { file: 'process-artifact-chunk-sequence-zero.json', expect: /permitted range/, boundary: 'chunk transport is closed and bounded' },
+
     {
       file: 'process-start-frame-carries-credentials.json',
       expect: /forbidden field (aws_access_key_id|aws_secret_access_key|github_token)/,
@@ -145,17 +152,23 @@ describe('fixture corpus coverage', () => {
     ].sort();
 
     assert.deepEqual(published, [
+      'invalid/process-artifact-chunk-credential.json',
+      'invalid/process-artifact-chunk-invalid-base64.json',
+      'invalid/process-artifact-chunk-oversize.json',
+      'invalid/process-artifact-chunk-sequence-zero.json',
       'invalid/process-cancel-frame-unintentional.json',
       'invalid/process-model-request-selects-model.json',
       'invalid/process-progress-frame-leaks-reasoning.json',
       'invalid/process-result-frame-claims-host-fields.json',
       'invalid/process-start-frame-carries-credentials.json',
+      'valid/process-artifact-chunk-frame.json',
       'valid/process-cancel-frame.json',
       'valid/process-input-required-frame.json',
       'valid/process-model-request-frame.json',
       'valid/process-model-result-unknown-frame.json',
       'valid/process-progress-frame.json',
       'valid/process-result-frame.json',
+      'valid/process-start-artifact-reference-frame.json',
       'valid/process-start-frame.json',
     ]);
   });
