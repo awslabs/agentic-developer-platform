@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 import uuid
+
+import rfc8785
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -62,9 +64,7 @@ def _request_id() -> str:
 
 
 def _canonical_digest(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
-    ).hexdigest()
+    return hashlib.sha256(rfc8785.dumps(value)).hexdigest()
 
 
 def _stable_uuid4(namespace: str, value: str) -> str:
@@ -76,7 +76,10 @@ def _stable_uuid4(namespace: str, value: str) -> str:
 
 def _write_frame(process: subprocess.Popen, frame: dict) -> None:
     assert process.stdin is not None
-    process.stdin.write(json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n")
+    encoded = json.dumps(frame, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    if len(encoded.encode("utf-8")) > MAX_FRAME_BYTES:
+        raise TaskProtocolError("host frame exceeds the process byte limit")
+    process.stdin.write(encoded)
     process.stdin.flush()
 
 
@@ -213,12 +216,21 @@ class TaskHost:
         ):
             raise TaskRunClientError("task model receipt identity mismatch")
         status = response.get("operation_status")
-        if status == "confirmed":
+        if status == "confirmed" and (
+            not isinstance(response.get("content"), list)
+            or not isinstance(response.get("stop_reason"), str)
+            or not response["stop_reason"]
+        ):
             raise TaskHostError(
-                "confirmed model receipt has no model content in the frozen adapter contract",
-                code="protocol_violation",
+                "confirmed model receipt has no stored result", code="protocol_violation"
             )
-        if status not in {"pending", "unknown", "rejected"}:
+        if status != "confirmed" and (
+            response.get("content") is not None or response.get("stop_reason") is not None
+        ):
+            raise TaskHostError(
+                "unconfirmed model receipt exposes result content", code="protocol_violation"
+            )
+        if status not in {"confirmed", "pending", "unknown", "rejected"}:
             raise TaskRunClientError("task model receipt status is invalid")
         return {
             "protocol_version": PROTOCOL_VERSION,
@@ -227,8 +239,8 @@ class TaskHost:
             "task_id": assignment.task_id,
             "turn_id": frame["turn_id"],
             "operation_status": status,
-            "content": None,
-            "stop_reason": None,
+            "content": response.get("content"),
+            "stop_reason": response.get("stop_reason"),
             "error_code": (
                 "model_outcome_unknown" if status == "unknown" else response.get("error_code")
             ),
@@ -257,10 +269,7 @@ class TaskHost:
             raise TaskHostError(
                 "task runtime attempt is no longer current", code="authority_revoked"
             )
-        if (
-            type(response["pending_input_count"]) is not int
-            or response["pending_input_count"] < 0
-        ):
+        if type(response["pending_input_count"]) is not int or response["pending_input_count"] < 0:
             raise TaskRunClientError("task control response is invalid")
         if response["pending_input_count"]:
             raise TaskHostError(
@@ -545,9 +554,7 @@ class TaskHost:
                             )
                         elif frame["type"] == "result":
                             if result_report is not None:
-                                raise TaskProtocolError(
-                                    "task child emitted more than one result"
-                                )
+                                raise TaskProtocolError("task child emitted more than one result")
                             result_report = frame["report"]
                         elif frame["type"] == "cancelled":
                             if (
@@ -573,12 +580,13 @@ class TaskHost:
                 )
             elif exit_code != 0:
                 raise TaskHostError(
-                    "Task process failed"
-                    + (f": {''.join(stderr)[-512:]}" if stderr else ""),
+                    "Task process failed" + (f": {''.join(stderr)[-512:]}" if stderr else ""),
                     code="process_failed",
                 )
             elif result_report is None:
-                raise TaskHostError("Task process exited without a valid result", code="invalid_agent_output")
+                raise TaskHostError(
+                    "Task process exited without a valid result", code="invalid_agent_output"
+                )
             elif len(progress_messages) < _MIN_PROGRESS_MARKERS:
                 raise TaskHostError(
                     "Task process did not persist two distinct progress markers",

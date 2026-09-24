@@ -78,9 +78,7 @@ class FakeClient:
             "schema_version": "1.0",
             "task_id": body["attempt"]["run"]["task_id"],
             "cancel_requested": self.cancel,
-            "cancel_command_id": (
-                "f6071829-3a4b-4c5d-9f70-819203142536" if self.cancel else None
-            ),
+            "cancel_command_id": ("f6071829-3a4b-4c5d-9f70-819203142536" if self.cancel else None),
             "pending_input_count": 0,
             "last_receipt_cursor": None,
             "attempt_valid": True,
@@ -209,7 +207,10 @@ def test_progress_and_result_are_durable_before_acknowledgement(
     events = []
     client = FakeClient(bootstrap, events)
     executable = child_script(tmp_path)
-    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
     host = TaskHost(
         client=client,
         work_root=tmp_path / "work",
@@ -219,12 +220,15 @@ def test_progress_and_result_are_durable_before_acknowledgement(
     def acknowledge():
         events.append("ack")
 
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=acknowledge,
-    ) == 0
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=acknowledge,
+        )
+        == 0
+    )
     assert events.index("report:inspected evidence 0") < events.index("finalize:completed")
     assert events.index("report:inspected evidence 1") < events.index("finalize:completed")
     assert events.index("finalize:completed") < events.index("heartbeat.stop") < events.index("ack")
@@ -248,12 +252,15 @@ def test_multiple_ndjson_frames_buffered_in_one_pipe_read_are_all_processed(
         work_root=tmp_path / "work",
         command_resolver=lambda persona: [sys.executable, str(executable)],
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == 0
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == 0
+    )
     assert "report:batched evidence 0" in events
     assert "report:batched evidence 1" in events
 
@@ -265,18 +272,24 @@ def test_reporting_failure_terminates_child_leaves_assignment_unacked_and_cleans
     events = []
     client = FakeClient(bootstrap, events, report_failure=True)
     executable = child_script(tmp_path)
-    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
     host = TaskHost(
         client=client,
         work_root=tmp_path / "work",
         command_resolver=lambda persona: [sys.executable, str(executable)],
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == TASK_EXIT_RETRYABLE
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == TASK_EXIT_RETRYABLE
+    )
     assert "ack" not in events
     assert "settlement" in events
     assert list((tmp_path / "work").iterdir()) == []
@@ -289,18 +302,24 @@ def test_unknown_persona_is_terminally_failed_without_starting_a_legacy_runtime(
     bootstrap["persona"] = assignment.persona
     events = []
     client = FakeClient(bootstrap, events)
-    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
     host = TaskHost(
         client=client,
         work_root=tmp_path / "work",
         command_resolver=lambda persona: (_ for _ in ()).throw(ValueError("not packaged")),
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == TASK_EXIT_FAILED
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == TASK_EXIT_FAILED
+    )
     assert "finalize:failed" in events
     assert events[-2:] == ["ack", "credential.clear"]
 
@@ -327,18 +346,24 @@ def test_confirmed_model_receipt_without_content_fails_honestly(
 
     client.model = model
     executable = child_script(tmp_path, model=True)
-    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
     host = TaskHost(
         client=client,
         work_root=tmp_path / "work",
         command_resolver=lambda persona: [sys.executable, str(executable)],
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == TASK_EXIT_FAILED
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == TASK_EXIT_FAILED
+    )
     assert client.finalize_body["error"]["code"] == "protocol_violation"
     assert events.index("finalize:failed") < events.index("ack")
 
@@ -361,12 +386,15 @@ def test_stale_bootstrap_identity_never_starts_or_acknowledges(
             AssertionError("stale assignment started a child")
         ),
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == TASK_EXIT_RETRYABLE
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == TASK_EXIT_RETRYABLE
+    )
     assert "attempt" not in events and "ack" not in events
 
 
@@ -386,12 +414,15 @@ def test_intentional_cancellation_confirms_exit_before_terminal_ack(
         work_root=tmp_path / "work",
         command_resolver=lambda persona: [sys.executable, str(executable)],
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == TASK_EXIT_FAILED
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == TASK_EXIT_FAILED
+    )
     assert client.finalize_body["outcome"] == "cancelled"
     assert client.finalize_body["child_exit"]["confirmed"] is True
     assert events.index("finalize:cancelled") < events.index("ack")
@@ -415,12 +446,15 @@ def test_uncooperative_cancel_is_force_killed_with_owned_process_group_only(
         work_root=tmp_path / "work",
         command_resolver=lambda persona: [sys.executable, str(executable)],
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == TASK_EXIT_FAILED
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == TASK_EXIT_FAILED
+    )
     assert client.finalize_body["outcome"] == "cancelled"
     assert client.finalize_body["child_exit"]["confirmed"] is True
 
@@ -446,12 +480,15 @@ def test_ack_failure_records_unknown_settlement_and_returns_retryable(
         events.append("ack.attempted")
         raise TaskGatewayError("ack unavailable")
 
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=unavailable_ack,
-    ) == TASK_EXIT_RETRYABLE
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=unavailable_ack,
+        )
+        == TASK_EXIT_RETRYABLE
+    )
     assert events.index("finalize:completed") < events.index("ack.attempted")
     assert client.settlements[-1]["queue_ack_status"] == "unknown"
 
@@ -484,12 +521,15 @@ def test_ambiguous_finalization_receipt_never_attempts_a_conflicting_failure_wri
         work_root=tmp_path / "work",
         command_resolver=lambda persona: [sys.executable, str(executable)],
     )
-    assert host.run(
-        assignment,
-        envelope,
-        heartbeat=FakeHeartbeat(events),
-        acknowledge=lambda: events.append("ack"),
-    ) == TASK_EXIT_RETRYABLE
+    assert (
+        host.run(
+            assignment,
+            envelope,
+            heartbeat=FakeHeartbeat(events),
+            acknowledge=lambda: events.append("ack"),
+        )
+        == TASK_EXIT_RETRYABLE
+    )
     assert events.count("finalize:completed") == 1
     assert "finalize:failed" not in events
     assert "ack" not in events
@@ -511,3 +551,86 @@ def test_network_wrapper_denies_socket_creation():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_confirmed_model_result_reaches_child_protocol(assignment_and_bootstrap):
+    assignment, _, bootstrap = assignment_and_bootstrap
+    turn_id = str(__import__("uuid").uuid4())
+    content = [{"type": "text", "text": "Stored result"}]
+    client = FakeClient(
+        bootstrap,
+        [],
+        model_response={
+            "schema_version": "1.0",
+            "task_id": assignment.task_id,
+            "turn_id": turn_id,
+            "operation_status": "confirmed",
+            "content": content,
+            "stop_reason": "end_turn",
+        },
+    )
+    host = TaskHost(client=client)
+    response = host._model(
+        assignment,
+        {},
+        {
+            "turn_id": turn_id,
+            "messages": [{"role": "user", "content": "évidence"}],
+        },
+        32,
+    )
+    assert response["type"] == "model.result"
+    assert response["operation_status"] == "confirmed"
+    assert response["content"] == content
+    assert response["stop_reason"] == "end_turn"
+
+
+@pytest.mark.parametrize("status", ["pending", "unknown", "rejected"])
+def test_nonconfirmed_model_result_cannot_leak_content(status, assignment_and_bootstrap):
+    from lib.task_host import TaskHostError
+
+    assignment, _, bootstrap = assignment_and_bootstrap
+    turn_id = str(__import__("uuid").uuid4())
+    client = FakeClient(
+        bootstrap,
+        [],
+        model_response={
+            "task_id": assignment.task_id,
+            "turn_id": turn_id,
+            "operation_status": status,
+            "content": [{"type": "text", "text": "unconfirmed"}],
+        },
+    )
+    with pytest.raises(TaskHostError, match="unconfirmed"):
+        TaskHost(client=client)._model(
+            assignment,
+            {},
+            {
+                "turn_id": turn_id,
+                "messages": [{"role": "user", "content": "test"}],
+            },
+            32,
+        )
+
+
+def test_host_digest_uses_canonical_json_for_unicode_and_numbers():
+    import hashlib
+    from lib.task_host import _canonical_digest
+
+    expected = '{"a":0,"b":1e-7,"é":"évidence"}'.encode()
+    assert (
+        _canonical_digest({"é": "évidence", "b": 0.0000001, "a": -0.0})
+        == hashlib.sha256(expected).hexdigest()
+    )
+
+
+def test_host_rejects_oversized_frame_before_writing():
+    import io
+    from types import SimpleNamespace
+    from lib.task_host import _write_frame
+    from lib.task_protocol import TaskProtocolError
+
+    process = SimpleNamespace(stdin=io.StringIO())
+    with pytest.raises(TaskProtocolError, match="byte limit"):
+        _write_frame(process, {"content": "x" * 65536})
+    assert process.stdin.getvalue() == ""

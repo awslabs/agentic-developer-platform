@@ -193,6 +193,7 @@ RUN pip3 install --no-cache-dir --break-system-packages uv poetry ruff
 #   pydantic          — shared contract models
 RUN pip3 install --no-cache-dir --break-system-packages \
     'boto3>=1.34' \
+    'rfc8785==0.1.4' \
     'PyJWT[crypto]>=2.9' \
     'requests>=2.31' \
     'cryptography>=42.0' \
