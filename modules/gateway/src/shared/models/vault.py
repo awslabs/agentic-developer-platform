@@ -290,6 +290,22 @@ class ChannelTenantMap(Base):
     organization = relationship("Organization", backref="channel_mappings", lazy="selectin", passive_deletes=True)
 
 
+class InstallationRevocation(Base):
+    """Durable local denial and authorized retry state; never removed by cleanup."""
+
+    __tablename__ = "installation_revocations"
+
+    installation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Intentionally no cascading FK: deleting a tenant/user must not erase denial.
+    org_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    authorized_user_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    provider_uninstall_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    provider_revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    cleanup_pending: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class InstallationOwnershipConflict(Base):
     """Quarantine for installations that more than one tenant claims.
 

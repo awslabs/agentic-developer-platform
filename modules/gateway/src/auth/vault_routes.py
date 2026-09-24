@@ -421,7 +421,7 @@ def _get_magic_link_secret() -> str:
 # It used to, on the user-facing claim route, and handing that URL back to the
 # claimant is what made the "verification" circular. Link construction now lives
 # only on the internal issuance path (``src/internal/routes.py``), whose caller
-# delivers it in-channel to the claimed account. Keeping the builder here would
+# posts it in a shared conversation. That delivery does not prove account control. Keeping the builder here would
 # invite a future caller to re-open the circle, so it is deliberately absent
 # rather than left unused.
 
@@ -439,8 +439,7 @@ async def _append_audit(
 
 
 _OUT_OF_BAND_NEXT_STEP = (
-    "Send a message from this account in a connected channel. ADP will deliver a "
-    "confirmation link to that account; confirming it there proves you control it."
+    "Ask your platform administrator to verify this account link. Confirming a link from a shared conversation leaves the claim unverified."
 )
 
 
@@ -486,16 +485,15 @@ def _require_linkable_provider(provider: str) -> None:
     "/identities/{provider}/link",
     response_model=MagicLinkIssueResponse,
     status_code=201,
-    summary="Issue a magic-link to add a new identity",
+    summary="Record an unverified external-account claim",
     description=(
         "Records that the caller claims an external account. The claim is stored "
         "as UNPROVEN (`self_asserted`, no `verified_at`) and grants nothing.\n\n"
-        "Proof of ownership is established out-of-band: send a message from the "
-        "claimed account in an ADP-connected channel, and the platform delivers a "
-        "confirmation link to that account. Confirming it there records "
-        "`magic_link_confirmed`. This endpoint deliberately does not return a "
-        "confirmation link, because a link returned to the claimant proves nothing "
-        "about the account being claimed."
+        "A platform administrator must verify the account link through the "
+        "admin identity flow. Existing provider sign-in can also establish provider "
+        "identity during onboarding. Shared-conversation confirmation supplies "
+        "no new ownership proof. This endpoint does not return a confirmation credential, "
+        "and no private-message delivery adapter is implemented by this flow."
     ),
 )
 async def issue_identity_magic_link(
@@ -513,28 +511,15 @@ async def issue_identity_magic_link(
     their own HTTP response". Any signed-in user could therefore have an arbitrary
     external account recorded as verifiably theirs.
 
-    The issue allows two remedies — derive the account id from a completed provider
-    handshake, or deliver confirmation out-of-band to the claimed account and never
-    return it to the requester. This route takes the second, because a completed
-    handshake is not available here: the caller is authenticated to ADP, not to
-    Slack or Discord, so there is no provider-signed assertion about the account
-    they are naming. (Where such an assertion *does* exist the platform already
-    uses it — ``admin/onboarding/handler.py`` reads the immutable GitHub id out of
-    the signed Cognito claims, never from a request body.)
+    Provider-confirmed onboarding and an accountable administrator's identity
+    mapping are separate proof-establishing paths. This route implements neither:
+    it records the caller's claim and directs them to their platform administrator.
 
-    Out-of-band delivery is not new machinery. The ingest path already does it:
-    when a provider-authenticated inbound event arrives from an unrecognised
-    account, ``/internal/v1/issue-magic-link`` mints the token and the ingest
-    Lambda posts it back **in-channel** to that account
-    (``gateway/lambdas/ingest/handler.py``, ``_handle_unresolved_user``). Only
-    someone who can read that channel can complete it, which is what makes it
-    evidence. Nonce issuance therefore belongs solely to that path, and this route
-    records the claim and points the user at it.
-
-    Consequence worth stating plainly: because the in-channel path is now the only
-    minter, "a nonce exists" implies "it was delivered to the claimed account".
-    That invariant is structural rather than a rule someone has to remember, which
-    is also why no backfill of stored rows is required.
+    Internal nonce issuance currently posts confirmation in a shared conversation.
+    Those nonces are unbound and record shared-channel delivery, so confirmation
+    supplies no new proof. The consumer supports privately delivered, user-bound nonces,
+    but there is no production private-delivery adapter in this flow. Do not imply
+    that posting a message or reading its shared reply verifies account ownership.
 
     The claim row is still written, deliberately: recording it as ``self_asserted``
     keeps an attempt to claim someone else's account visible and auditable,
@@ -913,24 +898,32 @@ async def magic_link_landing_post(
 
     # Who, if anyone, already holds this (provider, provider_user_id) in this
     # tenant? The unique index from migration 021 allows exactly one holder, so
-    # this single row decides between upgrade, recovery and refusal.
+    # this single row decides between upgrade, recovery and refusal. Lock and
+    # reload it through the final nonce/identity/audit commit: a provider or admin
+    # may have proved the link concurrently, and stale classification must never
+    # downgrade or delete that proof. A missing row remains protected by the
+    # unique index; a competing insert fails the final transaction atomically.
     holder = (
         await db.execute(
-            select(UserIdentity).where(
+            select(UserIdentity)
+            .where(
                 UserIdentity.org_id == token_context.org_id,
                 UserIdentity.provider == provider,
                 UserIdentity.provider_user_id == provider_user_id,
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
 
     if holder is not None and holder.user_id == token_context.user_id:
-        # The caller's own row. Confirming is the evidence it was missing, so
-        # upgrade in place rather than inserting a second row and colliding with
-        # the unique index.
+        # Preserve the caller's existing proof, including its method and time.
+        # A shared-channel confirmation supplies no new account-ownership proof;
+        # it must not erase proof established by a provider or administrator.
         identity = holder
-        identity.verification_method = confirmed_method
-        identity.verified_at = confirmed_at
+        if not is_proven(identity.verification_method):
+            identity.verification_method = confirmed_method
+            identity.verified_at = confirmed_at
     elif holder is not None:
         # Someone ELSE holds it. Whether this is recoverable depends entirely on
         # what their claim is worth:
@@ -1067,14 +1060,13 @@ async def magic_link_landing_post(
         identity.verification_method,
     )
     return {
-        # Reported honestly: a confirmation that could not establish ownership is
-        # "linked_unverified", not "linked". A caller that treats the two the same
-        # is making its own choice; it is not being told the claim was proven.
-        "status": "linked" if ownership_proven else "linked_unverified",
+        # Report the resulting row: this confirmation may supply no new proof
+        # while preserving a link already proved by a provider or administrator.
+        "status": "linked" if is_proven(identity.verification_method) else "linked_unverified",
         "identity_id": identity.id,
         "provider": provider,
         "provider_user_id": provider_user_id,
         "verification_method": identity.verification_method,
         "verified_at": identity.verified_at.isoformat() if identity.verified_at else None,
-        "next_step": (None if ownership_proven else _OUT_OF_BAND_NEXT_STEP),
+        "next_step": (None if is_proven(identity.verification_method) else _OUT_OF_BAND_NEXT_STEP),
     }

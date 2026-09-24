@@ -180,8 +180,14 @@ export default function Connections() {
 
   const handleDisconnect = async (installationId: number) => {
     try {
-      await deleteGitHubConnection(installationId);
-      toast.success("GitHub installation disconnected.");
+      const result = await deleteGitHubConnection(installationId);
+      if (result?.warning) {
+        toast.warning(result.warning);
+      } else if (result?.provider_revoked === false) {
+        toast.success("Local access revoked. The installation remains at GitHub.");
+      } else {
+        toast.success("GitHub installation disconnected.");
+      }
       await loadConnections();
     } catch (err: unknown) {
       const message =

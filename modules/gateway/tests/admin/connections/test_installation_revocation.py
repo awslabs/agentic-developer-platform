@@ -1,34 +1,7 @@
-"""Durable installation revocation — #5664 (A10), repair item 3.
+"""Durable denial precedes fallible provider/index cleanup.
 
-A "disconnect" that leaves any durable record of the installation's authority
-behind is not a revocation, and one that *reports* success it did not achieve is
-worse than a visible failure: the operator stops looking.
-
-These tests pin the three properties the previous implementation lacked.
-
-1. **Consistency.** ``delete_connection`` used to remove exactly one of the two
-   records of ownership (the ``ChannelTenantMap`` row) and leave
-   ``organizations.github_installation_ids`` populated. Because
-   ``resolve_installation`` answers from that JSON list, and the webhook Lambda's
-   auto-register gate consults it, the deleted DynamoDB projections were
-   re-created from it on the next inbound event. Revocation has to clear both,
-   in that order, or it undoes itself.
-
-2. **Honesty.** The GitHub revoke was wrapped in ``except Exception:
-   logger.warning(...)`` followed by ``deleted=True``. It is now a precondition:
-   no confirmed uninstall, no disconnect, nothing changed.
-
-3. **Idempotent recovery.** Ordering is what makes this possible. The local
-   claims are the only thing authorizing the operation, so revoking at the
-   provider FIRST means every failure leaves them intact and the call simply
-   retryable. The reverse order is unrecoverable: the retry resolves NOT_FOUND
-   and raises while the installation stays live at GitHub forever.
-
-Plus the keying defect that made all three moot: ownership was matched on
-``provider_scope_id`` (the GitHub *account*) rather than the canonical
-``installation_id`` column, so the wrong installation could be revoked.
-
-The DynamoDB clients are mocked throughout — these tests must not touch AWS.
+Real SQL verifies ownership removal, saved retry authority and honest residuals.
+Moto and live production-reader acceptance cases are in the durable test module.
 """
 
 from __future__ import annotations
@@ -44,7 +17,7 @@ from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import delete_connection
 from src.shared.models.base import Base
 from src.shared.models.organization import Organization, User
-from src.shared.models.vault import ChannelTenantMap
+from src.shared.models.vault import ChannelTenantMap, InstallationRevocation
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -75,6 +48,9 @@ def index_spies():
     writer.sync_org_channels = AsyncMock(return_value=None)
 
     index = MagicMock()
+    index.put_installation_revocation = AsyncMock(return_value=True)
+    index.delete_installation_projection = AsyncMock(return_value=True)
+    index.delete_reverse_installation_if_matches = AsyncMock(return_value=True)
     index.get_reverse_installation_identity = AsyncMock(return_value=None)
     index.delete_identity = AsyncMock(return_value=True)
     index.write_reverse_installation_identity = AsyncMock(return_value=True)
@@ -82,6 +58,7 @@ def index_spies():
     with (
         patch("src.admin.identity.identity_index_writer.IdentityIndexWriter", return_value=writer),
         patch("src.admin.identity_index.IdentityIndexClient", return_value=index),
+        patch("src.admin.installations.revocation.IdentityIndexClient", return_value=index),
     ):
         yield writer, index
 
@@ -213,25 +190,15 @@ class TestAuthorityIsRevokedEverywhere:
 
         owner, state = await resolve_installation_owner(INSTALL_A, db=db)
         assert owner is None
-        assert state is OwnerState.NOT_FOUND
+        assert state is OwnerState.REVOKED
 
-    async def test_the_forward_projection_is_synced_with_the_revoked_id_removed(self, db: AsyncSession, index_spies):
-        """`sync_org_channels` must be told both the new list and the old one —
-        it deletes exactly the ids that disappeared between them."""
-        writer, _index = index_spies
+    async def test_forward_cleanup_is_scoped_and_guarded(self, db, index_spies):
+        writer, index = index_spies
         await _seed(db, installs=[str(INSTALL_A), str(INSTALL_B)], rows=[_map_row("org-1", INSTALL_A)])
-
-        await delete_connection(
-            installation_id=INSTALL_A,
-            caller_org_id="org-1",
-            db=db,
-            github_client=_gh(),
-            caller_is_admin=True,
-        )
-
-        kwargs = writer.sync_org_channels.await_args.kwargs
-        assert kwargs["github_installation_ids"] == [str(INSTALL_B)]
-        assert str(INSTALL_A) in kwargs["old_github_installation_ids"]
+        await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(), caller_is_admin=True)
+        index.put_installation_revocation.assert_awaited_once_with(str(INSTALL_A), "org-1")
+        index.delete_installation_projection.assert_awaited_once_with(str(INSTALL_A), "org-1")
+        writer.sync_org_channels.assert_not_awaited()
 
     async def test_a_surviving_installation_keeps_its_routing(self, db: AsyncSession, index_spies):
         """Revoking one installation must not disconnect the tenant's others.
@@ -299,69 +266,41 @@ class TestReverseRowRevocation:
     """org_installation/<org> -> installation_id: the row adp-trigger reads to
     pick the tenant's outbound credential. Nothing in the repo deleted it."""
 
-    async def test_it_is_deleted_when_it_names_the_revoked_installation(self, db: AsyncSession, index_spies):
-        _writer, index = index_spies
-        index.get_reverse_installation_identity = AsyncMock(return_value={"installation_id": {"N": str(INSTALL_A)}})
-        await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
-
-        result = await delete_connection(
-            installation_id=INSTALL_A,
-            caller_org_id="org-1",
-            db=db,
-            github_client=_gh(),
-            caller_is_admin=True,
-        )
-
-        index.delete_identity.assert_awaited_once_with("org_installation", "org-1")
-        assert result.residual == []
-
-    async def test_it_is_repointed_at_a_survivor_by_delete_then_write(self, db: AsyncSession, index_spies):
-        """Ordering matters and is not cosmetic: `write_reverse_installation_identity`
-        refuses to clobber a row lacking `auto_registered` (Postgres-owned) and
-        returns True for that no-op. Writing over it in place would therefore
-        report success while leaving the REVOKED id as the tenant's dispatch
-        credential. Deleting first makes the write a create, which the guard allows.
-        """
-        _writer, index = index_spies
-        index.get_reverse_installation_identity = AsyncMock(return_value={"installation_id": {"N": str(INSTALL_A)}})
+    async def test_reverse_cleanup_compares_expected_installation(self, db, index_spies):
+        _, index = index_spies
         await _seed(
-            db,
-            installs=[str(INSTALL_A), str(INSTALL_B)],
-            rows=[_map_row("org-1", INSTALL_A), _map_row("org-1", INSTALL_B, scope_id="55555")],
+            db, installs=[str(INSTALL_A), str(INSTALL_B)], rows=[_map_row("org-1", INSTALL_A), _map_row("org-1", INSTALL_B, scope_id="55555")]
         )
-
-        await delete_connection(
-            installation_id=INSTALL_A,
-            caller_org_id="org-1",
-            db=db,
-            github_client=_gh(),
-            caller_is_admin=True,
-        )
-
-        index.delete_identity.assert_awaited_once_with("org_installation", "org-1")
-        index.write_reverse_installation_identity.assert_awaited_once_with("org-1", INSTALL_B)
-
-    async def test_a_row_naming_a_different_installation_is_left_alone(self, db: AsyncSession, index_spies):
-        """It is correct for a surviving installation, so touching it would break
-        a connection this operation never named."""
-        _writer, index = index_spies
-        index.get_reverse_installation_identity = AsyncMock(return_value={"installation_id": {"N": str(INSTALL_B)}})
-        await _seed(
-            db,
-            installs=[str(INSTALL_A), str(INSTALL_B)],
-            rows=[_map_row("org-1", INSTALL_A), _map_row("org-1", INSTALL_B, scope_id="55555")],
-        )
-
-        await delete_connection(
-            installation_id=INSTALL_A,
-            caller_org_id="org-1",
-            db=db,
-            github_client=_gh(),
-            caller_is_admin=True,
-        )
-
+        result = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(), caller_is_admin=True)
+        index.delete_reverse_installation_if_matches.assert_awaited_once_with("org-1", str(INSTALL_A))
+        index.get_reverse_installation_identity.assert_not_awaited()
         index.delete_identity.assert_not_awaited()
         index.write_reverse_installation_identity.assert_not_awaited()
+        assert not result.residual
+
+    async def test_reverse_cleanup_does_not_overwrite_survivor(self, db, index_spies):
+        _, index = index_spies
+        await _seed(
+            db, installs=[str(INSTALL_A), str(INSTALL_B)], rows=[_map_row("org-1", INSTALL_A), _map_row("org-1", INSTALL_B, scope_id="55555")]
+        )
+        result = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(), caller_is_admin=True)
+        index.delete_reverse_installation_if_matches.assert_awaited_once_with("org-1", str(INSTALL_A))
+        index.get_reverse_installation_identity.assert_not_awaited()
+        index.delete_identity.assert_not_awaited()
+        index.write_reverse_installation_identity.assert_not_awaited()
+        assert not result.residual
+
+    async def test_reverse_cleanup_uses_no_stale_preliminary_read(self, db, index_spies):
+        _, index = index_spies
+        await _seed(
+            db, installs=[str(INSTALL_A), str(INSTALL_B)], rows=[_map_row("org-1", INSTALL_A), _map_row("org-1", INSTALL_B, scope_id="55555")]
+        )
+        result = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(), caller_is_admin=True)
+        index.delete_reverse_installation_if_matches.assert_awaited_once_with("org-1", str(INSTALL_A))
+        index.get_reverse_installation_identity.assert_not_awaited()
+        index.delete_identity.assert_not_awaited()
+        index.write_reverse_installation_identity.assert_not_awaited()
+        assert not result.residual
 
 
 # ---------------------------------------------------------------------------
@@ -370,61 +309,34 @@ class TestReverseRowRevocation:
 
 
 class TestProviderFailureIsReported:
-    async def test_a_failed_github_revoke_does_not_report_success(self, db: AsyncSession, index_spies):
-        """The defect: `except Exception: logger.warning(...)` then `deleted=True`.
-        The one step an operator cannot do locally failed silently."""
+    async def test_provider_failure_is_reported_after_local_denial(self, db, index_spies):
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
+        result = await delete_connection(
+            installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(revoke_fails=True), caller_is_admin=True
+        )
+        assert result.local_revoked and not result.provider_revoked
+        assert result.residual == ["provider_uninstall"]
+        assert result.warning
+        assert (await db.get(Organization, "org-1")).github_installation_ids == []
 
-        with pytest.raises(RuntimeError, match="retry the disconnect"):
-            await delete_connection(
-                installation_id=INSTALL_A,
-                caller_org_id="org-1",
-                db=db,
-                github_client=_gh(revoke_fails=True),
-                caller_is_admin=True,
-            )
-
-    async def test_a_failed_revoke_changes_nothing_locally(self, db: AsyncSession, index_spies):
-        """The recoverability property. Leaving the claims intact is what lets the
-        retry authorize itself; it also means there is no half-state to reconcile.
-        """
-        writer, index = index_spies
+    async def test_provider_failure_retains_durable_retry_authority(self, db, index_spies):
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
+        result = await delete_connection(
+            installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(revoke_fails=True), caller_is_admin=True
+        )
+        assert result.local_revoked
+        assert not list(await db.scalars(select(ChannelTenantMap)))
+        record = await db.get(InstallationRevocation, str(INSTALL_A))
+        assert record.org_id == "org-1" and record.restored_at is None
+        assert record.provider_uninstall_requested and not record.provider_revoked
 
-        with pytest.raises(RuntimeError):
-            await delete_connection(
-                installation_id=INSTALL_A,
-                caller_org_id="org-1",
-                db=db,
-                github_client=_gh(revoke_fails=True),
-                caller_is_admin=True,
-            )
-
-        org = await db.get(Organization, "org-1")
-        assert [str(i) for i in org.github_installation_ids] == [str(INSTALL_A)]
-        rows = (await db.execute(select(ChannelTenantMap).where(ChannelTenantMap.installation_id == str(INSTALL_A)))).scalars().all()
-        assert len(rows) == 1
-        # No projection was touched either — a deleted routing row with the claim
-        # still in Postgres is the self-resurrecting state item 3 exists to avoid.
-        writer.sync_org_channels.assert_not_awaited()
-        index.delete_identity.assert_not_awaited()
-
-    async def test_a_revoke_that_cannot_be_attempted_is_refused(self, db: AsyncSession, index_spies):
-        """No App credentials => no client => no call. Proceeding here would
-        report a revocation that never happened, by a different route."""
+    async def test_missing_credentials_leave_provider_pending(self, db, index_spies):
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
-
-        with pytest.raises(ValueError, match="credentials are unavailable"):
-            await delete_connection(
-                installation_id=INSTALL_A,
-                caller_org_id="org-1",
-                db=db,
-                github_client=None,
-                caller_is_admin=True,
-            )
-
-        org = await db.get(Organization, "org-1")
-        assert [str(i) for i in org.github_installation_ids] == [str(INSTALL_A)]
+        result = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=None, caller_is_admin=True)
+        assert result.local_revoked and not result.provider_revoked
+        assert result.residual == ["provider_uninstall"]
+        assert result.warning
+        assert (await db.get(Organization, "org-1")).github_installation_ids == []
 
     async def test_an_already_uninstalled_app_still_completes_locally(self, db: AsyncSession, index_spies):
         """`delete_installation` treats GitHub's 404 as success, which is what
@@ -462,7 +374,7 @@ class TestProviderFailureIsReported:
         delivering events, so "best effort" must not mean "unreported"."""
         writer, index = index_spies
         writer.sync_org_channels = AsyncMock(side_effect=RuntimeError("DDB down"))
-        index.delete_identity = AsyncMock(return_value=False)
+        index.delete_installation_projection = AsyncMock(return_value=False)
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
 
         result = await delete_connection(
@@ -482,8 +394,8 @@ class TestProviderFailureIsReported:
         abandoned every later cleanup."""
         writer, index = index_spies
         writer.sync_org_channels = AsyncMock(side_effect=RuntimeError("DDB down"))
-        index.delete_identity = AsyncMock(return_value=False)
-        index.get_reverse_installation_identity = AsyncMock(return_value={"installation_id": {"N": str(INSTALL_A)}})
+        index.delete_installation_projection = AsyncMock(return_value=False)
+        index.delete_reverse_installation_if_matches = AsyncMock(return_value=False)
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
 
         result = await delete_connection(
@@ -498,7 +410,7 @@ class TestProviderFailureIsReported:
         # attempted, and both are reported.
         assert "identity_index_forward_row" in result.residual
         assert "identity_index_reverse_row" in result.residual
-        index.delete_identity.assert_any_await("org_installation", "org-1")
+        index.delete_reverse_installation_if_matches.assert_awaited_once_with("org-1", str(INSTALL_A))
 
 
 # ---------------------------------------------------------------------------
@@ -507,67 +419,29 @@ class TestProviderFailureIsReported:
 
 
 class TestRetryIsRecoverable:
-    async def test_a_disconnect_that_failed_at_the_provider_succeeds_on_retry(self, db: AsyncSession, index_spies):
-        """The property the old ordering could not have. Had the local claims been
-        deleted before the failed revoke, this retry would resolve NOT_FOUND and
-        raise — leaving the installation live at GitHub with nothing left locally
-        to authorize removing it.
-        """
+    async def test_provider_retry_uses_saved_denial_after_claim_removal(self, db, index_spies):
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
-
-        with pytest.raises(RuntimeError):
-            await delete_connection(
-                installation_id=INSTALL_A,
-                caller_org_id="org-1",
-                db=db,
-                github_client=_gh(revoke_fails=True),
-                caller_is_admin=True,
-            )
-
+        first = await delete_connection(
+            installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(revoke_fails=True), caller_is_admin=True
+        )
+        assert "provider_uninstall" in first.residual
         gh = _gh()
-        second = await delete_connection(
-            installation_id=INSTALL_A,
-            caller_org_id="org-1",
-            db=db,
-            github_client=gh,
-            caller_is_admin=True,
-        )
-
-        assert (second.deleted, second.provider_revoked) == (True, True)
+        second = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=gh, caller_is_admin=True)
+        assert second.local_revoked and second.provider_revoked and not second.residual
         gh.delete_installation.assert_awaited_once_with(INSTALL_A)
-        org = await db.get(Organization, "org-1")
-        assert org.github_installation_ids == []
 
-    async def test_the_routing_row_is_deleted_directly_when_the_org_sync_fails(self, db: AsyncSession, index_spies):
-        """The forward row is the one cleanup that IS a security property — the
-        webhook path reads DDB first, so a surviving row keeps delivering events to
-        a tenant whose authority was just revoked.
-
-        It cannot be left to a retry: the Postgres claims are already gone, so a
-        re-run resolves NOT_FOUND and raises (pinned below). Hence a second,
-        narrower attempt in-line. `sync_org_channels` diffs the org's whole channel
-        set and upserts survivors, so it has many more ways to fail than the single
-        DeleteItem that is all routing actually requires.
-        """
+    async def test_aggregate_writer_failure_cannot_hide_forward_cleanup(self, db, index_spies):
         writer, index = index_spies
-        writer.sync_org_channels = AsyncMock(side_effect=RuntimeError("DDB down"))
+        writer.sync_org_channels.side_effect = RuntimeError("unrelated aggregate failure")
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
+        result = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=_gh(), caller_is_admin=True)
+        index.delete_installation_projection.assert_awaited_once_with(str(INSTALL_A), "org-1")
+        assert not result.residual
 
-        result = await delete_connection(
-            installation_id=INSTALL_A,
-            caller_org_id="org-1",
-            db=db,
-            github_client=_gh(),
-            caller_is_admin=True,
-        )
-
-        index.delete_identity.assert_any_await("github_installation_id", str(INSTALL_A))
-        assert result.residual == []
-
-    async def test_the_forward_row_is_residual_only_when_both_attempts_fail(self, db: AsyncSession, index_spies):
+    async def test_failed_scoped_forward_cleanup_is_residual(self, db: AsyncSession, index_spies):
         writer, index = index_spies
         writer.sync_org_channels = AsyncMock(side_effect=RuntimeError("DDB down"))
-        index.delete_identity = AsyncMock(return_value=False)
+        index.delete_installation_projection = AsyncMock(return_value=False)
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
 
         result = await delete_connection(
@@ -581,33 +455,16 @@ class TestRetryIsRecoverable:
         assert "identity_index_forward_row" in result.residual
         assert result.warning is not None
 
-    async def test_a_residual_cleanup_cannot_be_retried_by_rerunning(self, db: AsyncSession, index_spies):
-        """Pins the honest limit, so the docstring cannot drift back to claiming
-        re-running repairs residual state. Revocation has already succeeded, so
-        there is nothing left to resolve and the retry 404s by design — which is
-        precisely why `residual` is reported for operator action."""
-        writer, index = index_spies
-        writer.sync_org_channels = AsyncMock(side_effect=RuntimeError("DDB down"))
-        index.delete_identity = AsyncMock(return_value=False)
+    async def test_residual_cleanup_can_be_retried_after_claims_are_gone(self, db, index_spies):
+        _, index = index_spies
+        index.delete_installation_projection.side_effect = [False, True]
         await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
-
-        first = await delete_connection(
-            installation_id=INSTALL_A,
-            caller_org_id="org-1",
-            db=db,
-            github_client=_gh(),
-            caller_is_admin=True,
-        )
-        assert first.residual
-
-        with pytest.raises(ValueError, match="not connected to any ADP tenant"):
-            await delete_connection(
-                installation_id=INSTALL_A,
-                caller_org_id="org-1",
-                db=db,
-                github_client=_gh(),
-                caller_is_admin=True,
-            )
+        gh = _gh()
+        first = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=gh, caller_is_admin=True)
+        assert first.residual == ["identity_index_forward_row"]
+        second = await delete_connection(installation_id=INSTALL_A, caller_org_id="org-1", db=db, github_client=gh, caller_is_admin=True)
+        assert not second.residual
+        gh.delete_installation.assert_awaited_once_with(INSTALL_A)
 
     async def test_a_half_torn_down_installation_can_still_be_finished(self, db: AsyncSession, index_spies):
         """Only the map row was deleted — the exact state the OLD implementation
@@ -632,7 +489,7 @@ class TestRetryIsRecoverable:
         silent success that would imply a provider call had been made."""
         await _seed(db, installs=[], rows=[])
 
-        with pytest.raises(ValueError, match="not connected to any ADP tenant"):
+        with pytest.raises(ValueError, match="not connected to this tenant"):
             await delete_connection(
                 installation_id=INSTALL_A,
                 caller_org_id="org-1",
@@ -804,7 +661,7 @@ class TestSelfAssertedClaimsCanBeRetracted:
         db.add(_org("org-2", installs=[str(INSTALL_A)], github_org_id=None))
         await db.commit()
 
-        with pytest.raises(PermissionError, match="different ADP tenant"):
+        with pytest.raises(ValueError, match="not connected to this tenant"):
             await delete_connection(
                 installation_id=INSTALL_A,
                 caller_org_id="org-1",

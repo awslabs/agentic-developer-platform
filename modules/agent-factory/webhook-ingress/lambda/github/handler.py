@@ -131,100 +131,24 @@ class AutoRegisterResult(NamedTuple):
 def _auto_register_installation(
     installation_id: int, org_login: str, *, bypass_negative_cache: bool = False
 ) -> AutoRegisterResult:
-    """Write an installation_id → tenant row to the identity-index (guarded).
+    """Register only a currently owned, unrevoked installation.
 
-    Issue #2769: Postgres is the single source of truth for the
-    installation → tenant mapping. Auto-register must NEVER clobber a
-    Postgres-owned row (one written by the gateway write-through, which never
-    sets ``auto_registered``). The write-guard:
-
-      1. GetItem the ``github_installation_id`` row.
-      2. Row exists WITHOUT ``auto_registered`` → Postgres-owned → no-op. If
-         the stored org differs from this webhook's org login, emit
-         ``InstallationTenantDrift`` (visibility only). Returns the stored
-         tenant so downstream provisioning still works.
-      3. No row → **the tenant gate** (#2724 slice B, below).
-      4. Row exists WITH ``auto_registered`` → idempotent refresh OK.
-
-    The same guard is applied to the reverse-lookup ``org_installation`` row
-    (#2336).
-
-    **The tenant gate (#2724 slice B).** Step 3 previously resolved the
-    installation via the gateway and then fell through to
-    ``tenant_id = org_login`` no matter what the gateway said — so ANY GitHub org
-    that installed the App became an ADP tenant with no operator involvement, got
-    the platform App's private key copied into ``adp/<env>/tenants/<org>/github-app``,
-    and could dispatch agent pods on the platform's EKS. (Worse than compute
-    theft: the installer then signs in and is auto-approved as ``org_admin`` of
-    the tenant they just created.) The docstring promised a skip since #2769; the
-    code never implemented one. It does now:
-
-      * Gate via :func:`common.gateway_client.installation_gate`, the single
-        choke point shared with ``identity_resolver``'s independent backfill path
-        so the gate cannot be bypassed by whichever writer fires first.
-      * **Denied** (authoritative gateway 404, or a self-created
-        ``install_autocreate`` shell while the deployment is not open-onboarding)
-        → write nothing, return no tenant → caller 403s ``unknown_installation``.
-        This is the contract the docstring has always claimed.
-      * **Allowed via the gateway** (``resolved``: trusted provenance, or an
-        ``install_autocreate`` shell in an explicitly open-onboarding deployment)
-        → write the **Postgres tenant**, not the raw org login (that was the
-        phantom-tenant bug), tagged ``auto_registered``, with
-        ``ConditionExpression=attribute_not_exists(auto_registered)`` on the
-        non-clobber path. ``authoritative=True``.
-      * **Allowed because the gate could not be evaluated** (gateway
-        unreachable/unconfigured, or provenance absent because the gateway has
-        not been redeployed) → fail OPEN but LOUD: keep today's ``org_login``
-        fallback so a gateway outage never becomes "reject every new
-        installation", emit ``AutoRegisterGateUnavailable``, and return
-        ``authoritative=False`` so the caller does NOT seed credentials.
-
-    Open onboarding is controlled by ``ORG_TENANT_AUTO_CREATE`` — the same single
-    flag the gateway reads. There is deliberately no second Lambda-only flag.
-
-    **Partial writes (#4030).** The forward ``github_installation_id`` row is
-    what dispatch routes on, so the two writes are not equivalent and their
-    failures must not be handled the same way:
-
-      * **Forward write fails** (or anything before it) → return ``None``.
-        Nothing routes to this installation, so the caller must not treat it as
-        registered.
-      * **Reverse write fails** → log ERROR, emit ``AutoRegister.PartialWrite``,
-        and still return the tenant. The mapping is live and usable; only
-        ``adp-trigger`` resolution is degraded (#3860).
-
-    Previously a single ``except`` wrapped both writes, so a reverse-row failure
-    returned ``None`` *after* the forward row was already persisted. That made
-    the caller skip downstream provisioning forever: every later webhook
-    resolves successfully, so the ``unknown_installation`` self-heal branch
-    never fires again. That is the state the Acme PoV hit.
-
-    **Negative cache (#4047, #2724 slice C).** The step-3 gateway resolve is the
-    expensive part of this function (``resolve-installation`` filters
-    organizations in Python), and an unknown installation re-asks it on every
-    single delivery. When the gateway authoritatively answers ``not_found`` we
-    write a short-TTL row into the identity-index under a distinct
-    ``github_installation_negative`` key and skip the call while it is live.
-    Only ``not_found`` is cached — never ``error`` — so a gateway outage cannot
-    lock out a legitimate new tenant for the TTL window.
-
-    A cache hit synthesizes the same ``not_found`` state and feeds it to the one
-    shared ``installation_gate``, so slice B's deny applies to cached and live
-    ``not_found`` alike with no second decision point here.
-
-    ``bypass_negative_cache=True`` skips the read AND invalidates any existing
-    row — used for ``installation.created``, where a genuinely fresh install
-    must always re-resolve rather than inherit a stale "unknown" verdict.
-
-    Returns an :class:`AutoRegisterResult`. ``tenant_id`` is None when the gate
-    denied or we never persisted a routable mapping; ``authoritative`` tells the
-    caller whether per-tenant credential provisioning is permitted.
+    Canonical unavailability denies, including refreshes and delayed lifecycle
+    deliveries. A permanent DDB marker blocks writes racing local revocation.
+    ``bypass_negative_cache`` affects only ordinary unknown-cache maintenance;
+    it cannot bypass durable denial.
     """
     if not org_login:
         return AutoRegisterResult(None, False)
     resolver = _get_identity_resolver()
     try:
         table = resolver._get_table()
+        from common.installation_revocation import admit_installation, put_active_installation
+
+        canonical, _ = admit_installation(table, installation_id)
+        if canonical is None:
+            return AutoRegisterResult(None, False)
+
         # Step 1: read-before-write.
         existing = table.get_item(
             Key={
@@ -232,6 +156,9 @@ def _auto_register_installation(
                 "identity_value": str(installation_id),
             }
         ).get("Item")
+
+        if existing is not None and existing.get("org_id") != canonical["tenant_id"]:
+            return AutoRegisterResult(None, False)
 
         # Step 2: Postgres-owned row (no auto_registered flag) → do not clobber.
         if existing is not None and not existing.get("auto_registered"):
@@ -272,12 +199,10 @@ def _auto_register_installation(
             # does not narrow pg to dict[str, object], which would make
             # pg["tenant_id"] an `object` and break tenant_id's str | None type.
             pg: dict[str, Any]
-            if not bypass_negative_cache and neg_cache.is_negative_cached(
-                table, installation_id
-            ):
+            if not bypass_negative_cache and neg_cache.is_negative_cached(table, installation_id):
                 pg = {"state": "not_found", "cached": True}
             else:
-                pg = _get_gateway_client().resolve_installation_by_id(str(installation_id))
+                pg = canonical
                 # Cache ONLY the authoritative 404. An "error" state means we do
                 # not know — caching it would turn a gateway outage into a
                 # TTL-long lockout for legitimate new tenants.
@@ -376,9 +301,11 @@ def _auto_register_installation(
             # Non-clobber path: only write when we would not overwrite a
             # Postgres-owned row that appeared between our read and write.
             try:
-                table.put_item(
-                    Item=forward_item,
-                    ConditionExpression="attribute_not_exists(auto_registered)",
+                put_active_installation(
+                    table,
+                    installation_id,
+                    forward_item,
+                    condition="attribute_not_exists(identity_type)",
                 )
             except Exception as cond_exc:  # noqa: BLE001
                 # ConditionalCheckFailedException → a Postgres-owned row won the
@@ -393,10 +320,10 @@ def _auto_register_installation(
                     )
                     # The winner is a Postgres-owned row, so the mapping is
                     # authoritative regardless of how we got here.
-                    return AutoRegisterResult(tenant_id, True)
+                    return AutoRegisterResult(None, False)
                 raise
         else:
-            table.put_item(Item=forward_item)
+            put_active_installation(table, installation_id, forward_item)
 
         # The forward row is now persisted, so the mapping is live: dispatch
         # reads it and routes on it. From here on a failure is PARTIAL, not
@@ -414,14 +341,16 @@ def _auto_register_installation(
                 }
             ).get("Item")
             if reverse_existing is None or reverse_existing.get("auto_registered"):
-                table.put_item(
-                    Item={
+                put_active_installation(
+                    table,
+                    installation_id,
+                    {
                         "identity_type": "org_installation",
                         "identity_value": tenant_id,
                         "installation_id": installation_id,
                         "updated_at": now,
                         "auto_registered": True,
-                    }
+                    },
                 )
         except Exception as rev_exc:  # noqa: BLE001
             # Issue #4030: do NOT swallow this into a None return. The forward
@@ -444,8 +373,7 @@ def _auto_register_installation(
             return AutoRegisterResult(tenant_id, authoritative)
 
         logger.info(
-            "Auto-registered installation_id=%d → tenant=%s (forward + reverse, "
-            "authoritative=%s)",
+            "Auto-registered installation_id=%d → tenant=%s (forward + reverse, authoritative=%s)",
             installation_id,
             tenant_id,
             authoritative,
@@ -881,8 +809,7 @@ def _resolve_pointer_provenance(
             chain_depth = int(chain_depth)
         except (ValueError, TypeError):
             logger.warning(
-                "Malformed chain_depth=%r on chain row correlation=%s — treating "
-                "as unknown",
+                "Malformed chain_depth=%r on chain row correlation=%s — treating as unknown",
                 chain_depth,
                 pointer.get("correlation_id"),
             )
@@ -1748,9 +1675,7 @@ def handler(event: dict, context) -> dict:
             delivery_id=headers.get("x-github-delivery", "") if is_engine_command else "",
             sender_type=str(sender.get("type", "")) if is_engine_command else "",
             repo_id=(
-                int(payload.get("repository", {}).get("id", 0) or 0)
-                if is_engine_command
-                else 0
+                int(payload.get("repository", {}).get("id", 0) or 0) if is_engine_command else 0
             ),
         )
         # Echo the reason in the body for parity with the guard-block response
@@ -1820,11 +1745,7 @@ def handler(event: dict, context) -> dict:
     # PAT instead of minting an App installation token. Absent = App default.
     resolver_mod_for_token = _get_identity_resolver()
     tenant_item = getattr(resolver_mod_for_token, "last_tenant_item", None)
-    token_source = (
-        tenant_item.get("token_source_override")
-        if tenant_item
-        else None
-    )
+    token_source = tenant_item.get("token_source_override") if tenant_item else None
 
     # Provide a default correlation_ctx if not available (e.g. issues.labeled
     # events where we didn't compute correlation above).
@@ -1838,13 +1759,20 @@ def handler(event: dict, context) -> dict:
     }
 
     trusted_human_event = None
-    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and resolved.user_kind == "human":
+    if (
+        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        and resolved.user_kind == "human"
+    ):
         from common.agent_authority import AuthorityProvisionError, VerifiedHumanEvent
 
         try:
             trusted_human_event = VerifiedHumanEvent.from_verified_webhook(
-                body=body_bytes, event_type=event_type, resolved=resolved, sender=sender,
-                tenant_id=tenant_id, repo=repo,
+                body=body_bytes,
+                event_type=event_type,
+                resolved=resolved,
+                sender=sender,
+                tenant_id=tenant_id,
+                repo=repo,
             )
         except AuthorityProvisionError:
             return _response(403, {"error": "human_authority_refused"})

@@ -1,34 +1,17 @@
-"""The provenance projection script projects proof and never invents it — #5664 (A10).
-
-`scripts/backfill_identity_provenance.py` is load-bearing in two directions, so a
-bug in it is a security bug either way:
-
-* Project too LITTLE and the webhook authority gate (which now denies unproven
-  provenance unconditionally) refuses legitimate senders — the outage the previous
-  slice's allow-by-default flag existed to avoid.
-* Project too MUCH and the gate is decorative: a row that claims `oauth` when
-  Postgres holds a self-asserted link mints human dispatch authority from a claim
-  nobody verified, which is the A10 finding reopening.
-
-The reduction rule is the interesting part and is tested hardest. One external
-account holds N `user_identities` rows (the unique index is per provider +
-provider_user_id + org_id) which may carry DIFFERENT provenance, while the DDB key
-has no org component and therefore one slot. These tests pin that disagreement
-collapses to unknown rather than to the most permissive value.
-
-Same harness as `test_backfill_member_org_ids_script.py`: the script opens its own
-engine from a URL, so a throwaway file-backed SQLite database is built from the
-real ORM metadata and the script's own raw-SQL query runs against it.
-"""
+"""Offline binding and retry regressions: real SQLite query and Moto conditions."""
 
 from __future__ import annotations
 
 import importlib.util
+import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import patch
 
+import boto3
 import pytest
 from botocore.exceptions import ClientError
+from moto import mock_aws
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.shared.identity.verification import PROVEN_METHODS, UNPROVEN_METHODS, is_proven
@@ -39,302 +22,368 @@ from src.shared.models.vault import UserIdentity
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "backfill_identity_provenance.py"
 
 
-def _load_script():
+@pytest.fixture(scope="module")
+def script():
     spec = importlib.util.spec_from_file_location("backfill_identity_provenance", _SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-@pytest.fixture(scope="module")
-def script():
-    return _load_script()
-
-
 @pytest.fixture
 async def db_url(tmp_path):
-    """A file-backed SQLite DB with the one table the script's query touches."""
     url = f"sqlite+aiosqlite:///{tmp_path}/provenance.db"
     engine = create_async_engine(url)
     async with engine.begin() as conn:
-        await conn.run_sync(
-            lambda sync_conn: Base.metadata.create_all(
-                sync_conn,
-                tables=[Organization.__table__, UserIdentity.__table__],
-                checkfirst=True,
-            )
-        )
+        await conn.run_sync(lambda conn: Base.metadata.create_all(conn, tables=[Organization.__table__, UserIdentity.__table__]))
     yield url
     await engine.dispose()
 
 
-async def _seed(db_url: str, rows: list[dict]) -> None:
-    """Insert user_identities rows via raw SQL, matching the script's own query."""
-    from sqlalchemy import text
-
+async def _seed(db_url, rows):
     engine = create_async_engine(db_url)
     async with engine.begin() as conn:
-        for r in rows:
+        for row in rows:
             await conn.execute(
-                text(
-                    "INSERT INTO user_identities "
-                    "(id, user_id, provider, provider_user_id, org_id, team_id, verification_method, created_at, updated_at) "
-                    "VALUES (:id, :user_id, 'github', :pid, :org_id, :team_id, :method, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-                ),
-                {
-                    "id": r["id"],
-                    "user_id": r["user_id"],
-                    "pid": r["pid"],
-                    "org_id": r["org_id"],
-                    "team_id": f"{r['org_id']}-team-default",
-                    "method": r["method"],
-                },
+                text("""INSERT INTO user_identities
+                    (id, user_id, provider, provider_user_id, org_id, team_id, verification_method, created_at, updated_at)
+                    VALUES (:id, :user_id, :provider, :pid, :org_id, :team_id, :method, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""),
+                {**row, "provider": row.get("provider", "github"), "team_id": f"{row['org_id']}-team-default"},
             )
     await engine.dispose()
 
 
-class TestReductionRule:
-    """The pure function, exhaustively — no database, so the rule stands alone."""
-
-    @pytest.mark.parametrize("method", sorted(PROVEN_METHODS | UNPROVEN_METHODS))
-    def test_unanimous_agreement_projects_that_method(self, script, method):
-        """Every declared method round-trips when the account's rows agree.
-
-        Parametrized over the policy sets rather than a hard-coded list so a new
-        method added to the vocabulary is covered here automatically instead of
-        silently escaping the projection.
-        """
-        assert script.reduce_provenance({method}) == method
-
-    def test_disagreement_projects_unknown(self, script):
-        """The load-bearing case: proven in one tenant, unproven in another.
-
-        Projecting "oauth" here would let proof earned in org A mint authority for
-        an event routed to org B. The DDB row cannot say which tenant a resolution
-        is about, so the only correct answer is "ask Postgres".
-        """
-        assert script.reduce_provenance({"oauth", "self_asserted"}) == script.UNKNOWN_PROVENANCE
-
-    def test_disagreement_between_two_proven_methods_also_projects_unknown(self, script):
-        """Not just proven-vs-unproven: the rule is agreement, not trust level.
-
-        Two rows that are each proof, of different tenants, still do not tell the
-        reader which tenant's proof applies. A rule that special-cased
-        "all proven → project one of them" would be projecting a fact about org A
-        onto a lookup for org B.
-        """
-        assert script.reduce_provenance({"oauth", "admin_manual"}) == script.UNKNOWN_PROVENANCE
-
-    def test_unknown_mixed_with_proven_projects_unknown(self, script):
-        """A NULL/blank row is a disagreement, not something to ignore."""
-        assert script.reduce_provenance({"oauth", ""}) == script.UNKNOWN_PROVENANCE
-
-    def test_empty_input_projects_unknown(self, script):
-        assert script.reduce_provenance(set()) == script.UNKNOWN_PROVENANCE
-
-    def test_the_projected_unknown_is_not_proof(self, script):
-        """Closes the loop with the policy module: whatever "unknown" is spelled as,
-        the reader must refuse it. A future change to UNKNOWN_PROVENANCE that made
-        it a proven string would fail here rather than silently grant authority."""
-        assert not is_proven(script.UNKNOWN_PROVENANCE)
+def _source(*, user="u1", org="org-a", method="oauth", pid="123", identity="i1", provider="github"):
+    return {"id": identity, "user_id": user, "pid": pid, "org_id": org, "method": method, "provider": provider}
 
 
-# Marked per-class rather than module-wide: the reduction-rule and writer tests are
-# synchronous, and a blanket `pytestmark` makes pytest-asyncio warn on each of them.
-@pytest.mark.asyncio
-class TestProjectionQuery:
-    async def test_single_proven_row_projects_proven(self, script, db_url):
-        await _seed(db_url, [{"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"}])
-
-        assert await script.get_identity_provenance(db_url) == [
-            {"provider_user_id": "123", "provider": "github", "methods": ["oauth"], "verification_method": "oauth"}
-        ]
-
-    async def test_self_asserted_row_is_projected_as_itself_not_upgraded(self, script, db_url):
-        """The finding, in projection form. An unproven link must stay unproven."""
-        await _seed(db_url, [{"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "self_asserted"}])
-
-        result = await script.get_identity_provenance(db_url)
-
-        assert result[0]["verification_method"] == "self_asserted"
-        assert not is_proven(result[0]["verification_method"])
-
-    async def test_legacy_magic_link_is_never_upgraded_to_confirmed(self, script, db_url):
-        """Pre-#5664 rows are ambiguous and stay ambiguous.
-
-        "Upgrading" them would be inventing evidence that was never collected —
-        the script docstring's central promise, asserted rather than trusted.
-        """
-        await _seed(db_url, [{"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "magic_link"}])
-
-        result = await script.get_identity_provenance(db_url)
-
-        assert result[0]["verification_method"] == "magic_link"
-        assert not is_proven(result[0]["verification_method"])
-
-    async def test_disagreeing_rows_across_tenants_project_unknown(self, script, db_url):
-        """One GitHub account, OAuth-proven in org-a, self-asserted in org-b."""
-        await _seed(
-            db_url,
-            [
-                {"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"},
-                {"id": "i2", "user_id": "u2", "pid": "123", "org_id": "org-b", "method": "self_asserted"},
-            ],
-        )
-
-        result = await script.get_identity_provenance(db_url)
-
-        assert len(result) == 1
-        assert result[0]["methods"] == ["oauth", "self_asserted"]
-        assert result[0]["verification_method"] == script.UNKNOWN_PROVENANCE
-
-    async def test_agreeing_rows_across_tenants_project_proven(self, script, db_url):
-        """The legitimate multi-tenant case must NOT be degraded.
-
-        An account OAuth-linked in both tenants has unambiguous provenance, and
-        over-refusing here would deny real senders — the outage half of the
-        trade-off this script exists to make safe.
-        """
-        await _seed(
-            db_url,
-            [
-                {"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"},
-                {"id": "i2", "user_id": "u2", "pid": "123", "org_id": "org-b", "method": "oauth"},
-            ],
-        )
-
-        result = await script.get_identity_provenance(db_url)
-
-        assert result[0]["verification_method"] == "oauth"
-
-    async def test_provider_user_id_filter_selects_one_account(self, script, db_url):
-        await _seed(
-            db_url,
-            [
-                {"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"},
-                {"id": "i2", "user_id": "u2", "pid": "456", "org_id": "org-b", "method": "self_asserted"},
-            ],
-        )
-
-        result = await script.get_identity_provenance(db_url, provider_user_id="456")
-
-        assert result == [{"provider_user_id": "456", "provider": "github", "methods": ["self_asserted"], "verification_method": "self_asserted"}]
-
-    async def test_user_id_filter_still_reduces_over_the_accounts_full_set(self, script, db_url):
-        """--user-id picks WHICH account to repair; the reduction is still total.
-
-        Filtering the rows by user_id instead of the semi-join would reduce over
-        u1's row alone and project "oauth" for an account that is self-asserted in
-        another tenant — a targeted repair that manufactures proof.
-        """
-        await _seed(
-            db_url,
-            [
-                {"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"},
-                {"id": "i2", "user_id": "u2", "pid": "123", "org_id": "org-b", "method": "self_asserted"},
-            ],
-        )
-
-        result = await script.get_identity_provenance(db_url, user_id="u1")
-
-        assert result[0]["verification_method"] == script.UNKNOWN_PROVENANCE
+def _key(table):
+    if table == "legacy":
+        return {"identity_type": {"S": "github_user"}, "identity_value": {"S": "123"}}
+    return {"provider": {"S": "github"}, "provider_user_id": {"S": "123"}}
 
 
-class TestWriters:
-    def _client_error(self, code: str) -> ClientError:
-        return ClientError({"Error": {"Code": code, "Message": code}}, "UpdateItem")
-
-    def test_write_is_a_set_not_an_overwrite(self, script):
-        """UpdateItem SET, so sibling attributes (member_org_ids, user_kind) survive.
-
-        A PutItem here would blank the membership projection the cross-tenant
-        trigger policy reads, turning a provenance backfill into an authorization
-        regression on a different axis.
-        """
-        client = MagicMock()
-
-        assert script.update_new_table(client, "123", "oauth", dry_run=False) is True
-
-        kwargs = client.update_item.call_args.kwargs
-        assert kwargs["UpdateExpression"].startswith("SET verification_method")
-        assert kwargs["ExpressionAttributeValues"][":vmethod"] == {"S": "oauth"}
-
-    def test_write_refuses_to_create_a_bare_row(self, script):
-        """UpdateItem upserts by default. A row carrying only provenance and no
-        user_id would be an identity mapping Postgres never projected."""
-        client = MagicMock()
-
-        script.update_old_table(client, "123", "oauth", dry_run=False)
-
-        assert "attribute_exists" in client.update_item.call_args.kwargs["ConditionExpression"]
-
-    def test_absent_row_returns_false_not_success(self, script):
-        client = MagicMock()
-        client.update_item.side_effect = self._client_error("ConditionalCheckFailedException")
-
-        assert script.update_new_table(client, "123", "oauth", dry_run=False) is False
-        assert script.update_old_table(client, "123", "oauth", dry_run=False) is False
-
-    def test_a_real_ddb_fault_raises_rather_than_reporting_success(self, script):
-        """main() maps the raise to a non-zero exit, which is what the runbook's
-        "do not republish the Lambda until the backfill is clean" step keys on."""
-        client = MagicMock()
-        client.update_item.side_effect = self._client_error("ProvisionedThroughputExceededException")
-
-        with pytest.raises(ClientError):
-            script.update_new_table(client, "123", "oauth", dry_run=False)
-
-    def test_dry_run_writes_nothing(self, script):
-        client = MagicMock()
-
-        assert script.update_new_table(client, "123", "oauth", dry_run=True) is True
-        assert script.update_old_table(client, "123", "oauth", dry_run=True) is True
-        client.update_item.assert_not_called()
+def _put(client, table, *, user="u1", org="org-a", method=None):
+    item = _key(table) | {
+        "user_id": {"S": user},
+        "org_id": {"S": org},
+        "member_org_ids": {"L": [{"S": "org-a"}, {"S": "org-b"}]},
+        "user_kind": {"S": "human"},
+        "bot_kind": {"S": "none"},
+        "updated_at": {"S": "before-backfill"},
+    }
+    if method is not None:
+        item["verification_method"] = {"S": method}
+    client.put_item(TableName=table, Item=item)
+    return item
 
 
-class TestMainReportsWhatActuallyHappened:
-    """`main()` must act on the writers' return values, not just on exceptions.
+def _get(client, table):
+    return client.get_item(TableName=table, Key=_key(table)).get("Item")
 
-    `_update` reports a row it did not touch as False rather than raising, so a run
-    against the wrong table or a wrong environment writes nothing at all while
-    every call "succeeds". Counting those as successes made the script print
-    "N succeeded, 0 failed" and exit 0 — which the runbook instructs an operator to
-    read as "the backfill completed", so they would publish the enforcing Lambda
-    over a table with no provenance on it. That is the code-before-data outage the
-    whole rollout ordering exists to prevent, reintroduced by a miscount.
-    """
 
-    async def _run_main(self, script, monkeypatch, db_url, *, wrote: bool):
-        monkeypatch.setattr(script, "IDENTITY_INDEX_TABLE", "old-table")
-        monkeypatch.setattr(script, "USER_IDENTITY_INDEX_TABLE", "new-table")
-        monkeypatch.setattr(script, "update_old_table", lambda *a, **k: wrote)
-        monkeypatch.setattr(script, "update_new_table", lambda *a, **k: wrote)
-        # Module-level constant, read at import — setenv is too late.
-        monkeypatch.setattr(script, "DATABASE_URL", db_url)
-        monkeypatch.setattr(script.sys, "argv", ["backfill_identity_provenance.py"])
-        monkeypatch.setattr(script.boto3, "client", lambda *a, **k: MagicMock())
+@pytest.fixture
+def ddb(script, monkeypatch):
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        for table in ("legacy", "v2"):
+            columns = list(_key(table))
+            client.create_table(
+                TableName=table,
+                BillingMode="PAY_PER_REQUEST",
+                KeySchema=[{"AttributeName": columns[0], "KeyType": "HASH"}, {"AttributeName": columns[1], "KeyType": "RANGE"}],
+                AttributeDefinitions=[{"AttributeName": col, "AttributeType": "S"} for col in columns],
+            )
+        monkeypatch.setattr(script, "IDENTITY_INDEX_TABLE", "legacy")
+        monkeypatch.setattr(script, "USER_IDENTITY_INDEX_TABLE", "v2")
+        monkeypatch.setattr(script.boto3, "client", lambda *args, **kwargs: client)
+        yield client
 
-        records = []
-        monkeypatch.setattr(script.logger, "info", lambda msg, *args: records.append(msg % args if args else msg))
+
+@pytest.fixture
+def main_args(script, db_url, monkeypatch):
+    monkeypatch.setattr(script, "DATABASE_URL", db_url)
+    monkeypatch.setattr("sys.argv", ["backfill_identity_provenance.py"])
+
+
+@pytest.mark.parametrize("method", sorted(PROVEN_METHODS | UNPROVEN_METHODS | {""}))
+async def test_matching_source_copies_each_method_without_upgrading(script, db_url, ddb, method):
+    await _seed(db_url, [_source(method=method)])
+    account = (await script.get_identity_provenance(db_url))[0]
+    assert account == {
+        "provider": "github",
+        "provider_user_id": "123",
+        "bindings": [{"user_id": "u1", "org_id": "org-a", "verification_method": method}],
+    }
+    for table, writer in (("legacy", script.update_old_table), ("v2", script.update_new_table)):
+        original = _put(ddb, table)
+        assert writer(ddb, account, dry_run=False) == "updated"
+        result = _get(ddb, table)
+        assert result["verification_method"] == {"S": method}
+        assert is_proven(result["verification_method"]["S"]) == is_proven(method)
+        for key in original.keys() - {"updated_at"}:
+            assert result[key] == original[key]
+
+
+@pytest.mark.parametrize("method_b", ["oauth", "self_asserted", "admin_manual"])
+async def test_multitenant_proof_follows_each_exact_source_binding(script, db_url, ddb, method_b):
+    await _seed(db_url, [_source(), _source(user="u2", org="org-b", method=method_b, identity="i2")])
+    account = (await script.get_identity_provenance(db_url, user_id="u1"))[0]
+    assert len(account["bindings"]) == 2  # --user-id selects the full account.
+    _put(ddb, "legacy", user="u1", org="org-a")
+    _put(ddb, "v2", user="u2", org="org-b")
+    assert script.update_old_table(ddb, account, False) == "updated"
+    assert script.update_new_table(ddb, account, False) == "updated"
+    assert _get(ddb, "legacy")["verification_method"] == {"S": "oauth"}
+    assert _get(ddb, "v2")["verification_method"] == {"S": method_b}
+    # Membership/routing attributes are untouched; any_adp_user is a reader policy.
+    assert _get(ddb, "v2")["member_org_ids"] == {"L": [{"S": "org-a"}, {"S": "org-b"}]}
+
+
+async def test_query_filters_accounts_and_keeps_provider_namespace(script, db_url):
+    await _seed(db_url, [_source(), _source(pid="456", identity="i2"), _source(provider="slack", identity="i3")])
+    assert [a["provider_user_id"] for a in await script.get_identity_provenance(db_url)] == ["123", "456"]
+    result = await script.get_identity_provenance(db_url, provider_user_id="456")
+    assert len(result) == 1
+    assert result[0]["provider_user_id"] == "456"
+    assert result[0]["provider"] == "github"
+    assert await script.get_identity_provenance(db_url, user_id="missing") == []
+
+
+async def test_legacy_never_projects_another_provider(script, db_url, ddb):
+    await _seed(db_url, [_source()])
+    account = (await script.get_identity_provenance(db_url))[0] | {"provider": "slack"}
+    original = _put(ddb, "legacy")
+    with pytest.raises(ValueError, match="only supports GitHub"):
+        script.update_old_table(ddb, account, False)
+    assert _get(ddb, "legacy") == original
+    assert script.update_new_table(ddb, account, False) == "missing"
+
+
+@pytest.mark.parametrize("table", ["legacy", "v2"])
+@pytest.mark.parametrize("user,org", [("stale-user", "org-a"), ("u1", "stale-org"), ("u2", "org-a")])
+@pytest.mark.parametrize("existing_method", [None, "oauth"])
+async def test_stale_or_mixed_binding_clears_proof_and_reports_incomplete(script, db_url, ddb, table, user, org, existing_method):
+    await _seed(db_url, [_source(), _source(user="u2", org="org-b", identity="i2")])
+    account = (await script.get_identity_provenance(db_url))[0]
+    original = _put(ddb, table, user=user, org=org, method=existing_method)
+    writer = script.update_old_table if table == "legacy" else script.update_new_table
+    assert writer(ddb, account, False) == "mismatched"
+    item = _get(ddb, table)
+    assert not is_proven(item["verification_method"]["S"])
+    for key in original.keys() - {"verification_method", "updated_at"}:
+        assert item[key] == original[key]
+
+
+@pytest.mark.parametrize("missing", ["user_id", "org_id"])
+async def test_incomplete_projected_binding_is_denied(script, db_url, ddb, missing):
+    await _seed(db_url, [_source()])
+    account = (await script.get_identity_provenance(db_url))[0]
+    item = _put(ddb, "v2", method="oauth")
+    del item[missing]
+    ddb.put_item(TableName="v2", Item=item)
+    assert script.update_new_table(ddb, account, False) == "mismatched"
+    assert not is_proven(_get(ddb, "v2")["verification_method"]["S"])
+
+
+async def test_ambiguous_exact_binding_does_not_select_proof(script, db_url, ddb):
+    await _seed(db_url, [_source()])
+    account = (await script.get_identity_provenance(db_url))[0]
+    # Current DB uniqueness prevents this, but conflicting input is still not proof.
+    account["bindings"].append(account["bindings"][0] | {"verification_method": "self_asserted"})
+    _put(ddb, "v2", method="oauth")
+    assert script.update_new_table(ddb, account, False) == "ambiguous"
+    assert not is_proven(_get(ddb, "v2")["verification_method"]["S"])
+
+
+@pytest.mark.parametrize("changed", ["user_id", "org_id", "verification_method", "updated_at", "deleted"])
+async def test_concurrent_projection_replacement_is_not_overwritten(script, db_url, ddb, changed):
+    await _seed(db_url, [_source()])
+    account = (await script.get_identity_provenance(db_url))[0]
+    original = _put(ddb, "v2")
+    replacement = original | {changed: {"S": "concurrent-change"}}
+    real_update = ddb.update_item
+
+    def race(**kwargs):
+        if changed == "deleted":
+            ddb.delete_item(TableName="v2", Key=_key("v2"))
+        else:
+            ddb.put_item(TableName="v2", Item=replacement)
+        return real_update(**kwargs)
+
+    with patch.object(ddb, "update_item", side_effect=race):
+        assert script.update_new_table(ddb, account, False) == "conflict"
+    assert _get(ddb, "v2") == (None if changed == "deleted" else replacement)
+
+
+async def test_missing_required_projection_is_not_upserted_or_counted_complete(script, db_url, ddb, main_args, caplog):
+    await _seed(db_url, [_source()])
+    _put(ddb, "legacy")
+    # Unrelated legacy installation/reverse keys are not provenance targets.
+    unrelated = {"identity_type": {"S": "github_installation_id"}, "identity_value": {"S": "999"}, "org_id": {"S": "org-a"}}
+    ddb.put_item(TableName="legacy", Item=unrelated)
+    with caplog.at_level("INFO"), pytest.raises(SystemExit) as result:
         await script.main()
-        return records
+    assert result.value.code == 1
+    assert _get(ddb, "v2") is None
+    assert "0 complete, 1 incomplete (1 partial)" in caplog.text
+    assert ddb.get_item(TableName="legacy", Key={key: unrelated[key] for key in ("identity_type", "identity_value")})["Item"] == unrelated
+    _put(ddb, "v2")  # Canonical mapping repair, followed by a safe retry.
+    await script.main()
+    assert _get(ddb, "v2")["verification_method"] == {"S": "oauth"}
 
-    async def test_a_run_that_projected_nothing_is_not_reported_as_succeeding(self, script, monkeypatch, db_url):
-        await _seed(db_url, [{"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"}])
 
-        records = await self._run_main(script, monkeypatch, db_url, wrote=False)
+@pytest.mark.parametrize("failed_table", ["legacy", "v2"])
+async def test_dual_write_partial_fault_reports_failure_and_retry_repairs(script, db_url, ddb, main_args, caplog, failed_table):
+    await _seed(db_url, [_source()])
+    original = {table: _put(ddb, table) for table in ("legacy", "v2")}
+    real_update = ddb.update_item
 
-        summary = next(r for r in records if "Projection complete" in r)
-        assert "0 succeeded" in summary
-        assert "1 skipped" in summary
+    def fail_one(**kwargs):
+        if kwargs["TableName"] == failed_table:
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "offline fault"}}, "UpdateItem")
+        return real_update(**kwargs)
 
-    async def test_a_run_that_did_project_is_counted_as_a_success(self, script, monkeypatch, db_url):
-        """The other direction, so the stricter count cannot silently report zero
-        for a backfill that genuinely worked — which would block a real rollout."""
-        await _seed(db_url, [{"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"}])
+    with caplog.at_level("INFO"), patch.object(ddb, "update_item", side_effect=fail_one), pytest.raises(SystemExit) as result:
+        await script.main()
+    assert result.value.code == 1
+    assert _get(ddb, failed_table) == original[failed_table]
+    other = "legacy" if failed_table == "v2" else "v2"
+    assert _get(ddb, other)["verification_method"] == {"S": "oauth"}
+    assert "0 complete, 1 incomplete (1 partial)" in caplog.text
+    await script.main()
+    await script.main()
+    for table in ("legacy", "v2"):
+        assert _get(ddb, table)["verification_method"] == {"S": "oauth"}
+        assert _get(ddb, table)["member_org_ids"] == original[table]["member_org_ids"]
 
-        records = await self._run_main(script, monkeypatch, db_url, wrote=True)
 
-        summary = next(r for r in records if "Projection complete" in r)
-        assert "1 succeeded" in summary
-        assert "0 skipped" in summary
+async def test_validation_errors_are_errors_for_both_tables(script, db_url, ddb, main_args, monkeypatch, caplog):
+    await _seed(db_url, [_source()])
+    ddb.create_table(
+        TableName="wrong-schema",
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "different", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "different", "AttributeType": "S"}],
+    )
+    monkeypatch.setattr(script, "IDENTITY_INDEX_TABLE", "wrong-schema")
+    monkeypatch.setattr(script, "USER_IDENTITY_INDEX_TABLE", "wrong-schema")
+    with caplog.at_level("INFO"), pytest.raises(SystemExit) as result:
+        await script.main()
+    assert result.value.code == 1
+    assert "legacy:error" in caplog.text and "v2:error" in caplog.text
+    assert "0 complete, 1 incomplete (0 partial)" in caplog.text
+    assert "missing; mapping repair required" not in caplog.text
+
+
+async def test_validation_error_on_update_is_not_misreported_as_missing(script, db_url, ddb):
+    await _seed(db_url, [_source()])
+    _put(ddb, "v2")
+    account = (await script.get_identity_provenance(db_url))[0]
+    fault = ClientError({"Error": {"Code": "ValidationException", "Message": "offline rejected update"}}, "UpdateItem")
+    with patch.object(ddb, "update_item", side_effect=fault), pytest.raises(ClientError):
+        script.update_new_table(ddb, account, False)
+
+
+@pytest.mark.parametrize("stale", [False, True])
+async def test_dry_run_is_inert_and_reports_mapping_gaps(script, db_url, ddb, main_args, monkeypatch, stale):
+    await _seed(db_url, [_source()])
+    before = {table: _put(ddb, table, user="stale" if stale else "u1", method="self_asserted") for table in ("legacy", "v2")}
+    source_before = await script.get_identity_provenance(db_url)
+    monkeypatch.setattr("sys.argv", ["backfill_identity_provenance.py", "--dry-run"])
+    with patch.object(ddb, "update_item", side_effect=AssertionError("dry run must not write")) as writes:
+        if stale:
+            with pytest.raises(SystemExit) as result:
+                await script.main()
+            assert result.value.code == 1
+        else:
+            await script.main()
+        writes.assert_not_called()
+    assert await script.get_identity_provenance(db_url) == source_before
+    assert {table: _get(ddb, table) for table in ("legacy", "v2")} == before
+
+
+@pytest.mark.parametrize("mutation", ["UPDATE user_identities SET user_id='u2', verification_method='self_asserted'", "DELETE FROM user_identities"])
+async def test_main_refreshes_source_before_projection(script, db_url, ddb, main_args, monkeypatch, mutation):
+    await _seed(db_url, [_source()])
+    for table in ("legacy", "v2"):
+        _put(ddb, table, method="oauth")
+    real_query = script.get_identity_provenance
+
+    async def replaced_source(*args, **kwargs):
+        snapshot = await real_query(*args, **kwargs)
+        engine = create_async_engine(db_url)
+        async with engine.begin() as conn:
+            await conn.execute(text(mutation))
+        await engine.dispose()
+        return snapshot
+
+    monkeypatch.setattr(script, "get_identity_provenance", replaced_source)
+    with pytest.raises(SystemExit):
+        await script.main()
+    for table in ("legacy", "v2"):
+        assert not is_proven(_get(ddb, table)["verification_method"]["S"])
+
+
+async def test_requested_missing_account_exits_nonzero(script, db_url, ddb, main_args, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["backfill_identity_provenance.py", "--provider-user-id", "missing"])
+    with pytest.raises(SystemExit) as result:
+        await script.main()
+    assert result.value.code == 1
+
+
+@pytest.fixture
+def local_postgres():
+    # Always a disposable local server: never use an environment-provided DB URL.
+    pgserver = pytest.importorskip("pgserver")
+    with tempfile.TemporaryDirectory(prefix="adp-backfill-pg-", dir="/tmp") as data:
+        server = pgserver.get_server(data)
+        try:
+            yield server.get_uri()
+        finally:
+            server.cleanup()
+
+
+@pytest.mark.parametrize("mutation", ["UPDATE user_identities SET verification_method='self_asserted'", "DELETE FROM user_identities"])
+async def test_main_holds_canonical_rows_through_each_projection_attempt(script, ddb, local_postgres, monkeypatch, mutation):
+    import psycopg2
+
+    url = local_postgres.replace("postgresql://", "postgresql+asyncpg://", 1)
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("""CREATE TABLE user_identities (
+            provider text NOT NULL, provider_user_id text NOT NULL, user_id text NOT NULL,
+            org_id text NOT NULL, verification_method text NOT NULL,
+            UNIQUE(provider, provider_user_id, org_id))""")
+        )
+        await conn.execute(text("INSERT INTO user_identities VALUES ('github', '123', 'u1', 'org-a', 'oauth')"))
+    for table in ("legacy", "v2"):
+        _put(ddb, table)
+    monkeypatch.setattr(script, "DATABASE_URL", url)
+    monkeypatch.setattr("sys.argv", ["backfill_identity_provenance.py"])
+    connection = psycopg2.connect(local_postgres)
+    connection.autocommit = True
+    attempted = []
+    real_update = ddb.update_item
+
+    def change_source_during_write(**kwargs):
+        with connection.cursor() as cursor:
+            cursor.execute("SET lock_timeout = '100ms'")
+            with pytest.raises(psycopg2.errors.LockNotAvailable):
+                cursor.execute(mutation)
+        attempted.append(kwargs["TableName"])
+        return real_update(**kwargs)
+
+    try:
+        with patch.object(ddb, "update_item", side_effect=change_source_during_write):
+            await script.main()
+        assert attempted == ["legacy", "v2"]
+        for table in attempted:
+            assert _get(ddb, table)["verification_method"] == {"S": "oauth"}
+        # The source is writable after the account transaction is released.
+        with connection.cursor() as cursor:
+            cursor.execute(mutation)
+    finally:
+        connection.close()
+        await engine.dispose()

@@ -180,6 +180,7 @@ class PlatformVerification(BaseModel):
 class GitHubConnectionItem(BaseModel):
     """A single GitHub App installation connected to the caller's ADP tenant."""
 
+    revocation_pending: bool = False
     provider: str = Field(default="github")
     installation_id: int
     account_login: str = Field(..., description="GitHub org or user login")
@@ -256,31 +257,13 @@ class SwitchTenantResponse(BaseModel):
 
 
 class DeleteConnectionResponse(BaseModel):
-    """Outcome of a disconnect, including what did NOT succeed — #5664 (A10).
-
-    This used to be ``{deleted, installation_id}`` with ``deleted=True`` returned
-    unconditionally, while the GitHub revoke was wrapped in ``except Exception:
-    logger.warning(...)`` and continued. So the API reported complete revocation
-    for a call in which the provider still held a live installation — the operator
-    had no way to learn that the one step they cannot perform locally had failed.
-
-    A successful revoke at GitHub is now a PRECONDITION of touching local state,
-    so a returned response means both halves happened. What can still be
-    incomplete is the best-effort projection cleanup, which is reported:
-
-    * ``provider_revoked`` — GitHub confirmed the uninstall. Always True in a
-      returned response (a failed revoke aborts the operation and raises, leaving
-      nothing changed). Present because it is the fact a caller needs to know, and
-      so that a caller never has to infer it from ``deleted`` alone.
-    * ``residual`` — named index cleanups that did not complete. Each is safe to
-      leave pending — the authority itself is already gone from Postgres and every
-      reader fails closed without it — and each is repaired by re-running the same
-      disconnect, which is idempotent.
-    """
+    """Local denial is durable; provider uninstall and cleanup can remain pending."""
 
     deleted: bool
     installation_id: int
-    provider_revoked: bool = True
+    local_revoked: bool = True
+    provider_uninstall_requested: bool = False
+    provider_revoked: bool = False
     residual: list[str] = Field(default_factory=list)
     warning: str | None = None
 

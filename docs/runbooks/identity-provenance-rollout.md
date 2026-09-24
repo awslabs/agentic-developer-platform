@@ -1,75 +1,77 @@
 # Identity Provenance Enforcement — Ordered Rollout
 
-**Subsystem:** Webhook ingress (agent authority) + Gateway (identity index projection)
+**Subsystem:** Webhook ingress (agent authority) + Gateway (identity projection)
+
 **Issue:** #5664 (A10), parent #5677
 
-## Why this runbook exists
+## Why ordering matters
 
-`user_identities.verification_method` records HOW a link between a platform user
-and an external account was established. Before #5664 the webhook path granted
-human dispatch authority from the mere EXISTENCE of an identity row: a link a user
-merely asserted about themselves ("my GitHub id is `<someone else's id>`") was
-indistinguishable, at the point of decision, from one the provider confirmed via
-OAuth. Naming another person's GitHub user id was enough to have their comments
-attributed to them and to act with their authority.
+`user_identities.verification_method` records how a platform user was linked to
+an external account. The webhook authority gate refuses unproven or unknown
+links. Older DynamoDB projections do not carry that method, so enforcing the
+gate before projection repair can deny legitimate senders when canonical proof
+is unavailable. A source merge alone does not establish rollout completion.
 
-`common/agent_authority.py::from_verified_webhook` now refuses to mint authority
-for a resolution that is not proven, **unconditionally** — there is no flag to
-re-permit unproven links.
+For the combined A10 release that also introduces durable installation
+revocation, follow the
+[combined rollout sequence](installation-revocation.md#combined-a10-rollout).
+It requires installation traffic and mutations to remain quiesced across the
+entire mixed-version and reconciliation window. The table below describes
+standalone provenance enforcement; it must not be used to enable new teardown
+while old installation readers remain. Its writer verification and backfill
+completion gates still apply before traffic resumes in the combined rollout.
 
-**That refusal is what makes ordering matter.** The DynamoDB identity tables the
-webhook hot path reads are projections of Postgres, and until this change neither
-carried `verification_method` at all. So every pre-existing row answers "unknown",
-and unknown fails closed. Republish the enforcing Lambda before the projection is
-in place and **every human dispatch is denied platform-wide** — an outage, not a
-fix. An earlier slice on this issue shipped the check behind an allow-by-default
-flag for exactly this reason; the flag is now gone because the data gap it covered
-for is closed by the steps below.
+| Order | Component | Required outcome |
+|---|---|---|
+| 1 | Gateway identity writers | Canonical provider/account/user/tenant binding and truthful method reach both required projection tables |
+| 2 | Backfill and reconciliation | Existing matching bindings carry their canonical methods; required mapping gaps are resolved |
+| 3 | Enforcing webhook Lambda | Proven users can dispatch and unproven users are refused; per-tenant evidence is recorded |
 
-This is the same code-before-config hazard as
-[GitHub Auth Allowlist Remediation](./github-auth-allowlist-remediation.md), with
-the same remedy: land the thing the new code depends on first.
+Use the approved deployment procedure for the target environment. These steps
+involve live data and deployments; this runbook is not evidence they were run.
+No Terraform schema change is needed for the non-key provenance attribute.
 
-## What must land before enforcement
+## Step 1 — Deploy and verify the gateway writers
 
-| Order | Component | Where | What it does |
-|---|---|---|---|
-| 1 | Gateway writers | `src/admin/identity/*`, `src/admin/identity_index.py` | Set `verification_method` on every new/updated identity row, on both tables |
-| 2 | Backfill | `modules/gateway/scripts/backfill_identity_provenance.py` | Projects the attribute onto rows that already exist |
-| 3 | Enforcing Lambda | `webhook-ingress/lambda/common/agent_authority.py` | Denies unproven/unknown/mismatched provenance |
-
-Steps 1 and 2 are **forward-compatible and inert**: the old Lambda ignores an
-attribute it does not read, so both can land, be verified, and sit in production
-for as long as you like before step 3. That slack is the point — do not compress
-it.
-
-> **Terraform:** no change is required. Neither identity table has a GSI on
-> `verification_method`, and DynamoDB is schemaless for non-key attributes, so
-> adding it is a data-plane change only.
-
-## Step 1 — Deploy the gateway writers
-
-Ships with the normal gateway deploy (`gateway-deploy.yml`, or
-`modules/gateway/scripts/` for a manual run). No special sequencing.
-
-Verify that newly written rows carry the attribute — pick an account that has
-signed in or been re-approved since the deploy:
+Deploy the reviewed gateway release through the normal deployment path. Verify
+new identity writes against Postgres and **both** projection tables. Checking
+only the presence of a method does not verify its ownership binding.
 
 ```bash
 aws dynamodb get-item \
-  --table-name adp-<env>-user-identity-index \
+  --table-name adp-<env>-user-identity-index --consistent-read \
   --key '{"provider":{"S":"github"},"provider_user_id":{"S":"<numeric-github-id>"}}' \
-  --query 'Item.verification_method' --profile <profile>
+  --query Item --profile <profile> --region <region>
+
+aws dynamodb get-item \
+  --table-name adp-<env>-identity-index --consistent-read \
+  --key '{"identity_type":{"S":"github_user"},"identity_value":{"S":"<numeric-github-id>"}}' \
+  --query Item --profile <profile> --region <region>
 ```
 
-Expect a method string (`oauth`, `org_placement`, `admin_manual`,
-`magic_link_confirmed`). If the attribute is absent, step 1 has not actually
-reached this environment — stop here.
+For each row, compare its provider/account key, `user_id`, `org_id` and
+`verification_method` to the **same** canonical `user_identities` row. Methods
+must reflect the actual enrollment path; legacy `magic_link`, `self_asserted`
+and other unproven links must not be relabeled as proven to restore dispatch.
+If a required table is absent or dual-write is disabled, resolve that deployment
+configuration before using this two-table cutover procedure.
 
-## Step 2 — Backfill existing rows
+## Step 2 — Backfill existing bindings
 
-Dry-run first. It writes nothing and prints the reduction it would apply per
-account:
+The script reads canonical GitHub accounts and both projection tables. It only
+changes `verification_method` and `updated_at`; membership, user/bot classification
+and other attributes remain with their existing owners. It does not create a
+missing mapping, reassign a user or tenant, or change Postgres.
+
+One provider account can have different links in different tenants. For example,
+`github:123 → user-a/org-a/oauth` and `github:123 → user-b/org-b/self_asserted`
+are distinct canonical bindings. A DDB row for `user-a/org-a` receives `oauth`;
+a row for `user-b/org-b` receives `self_asserted`. A mixed `user-b/org-a` row
+receives no proof. The source tenant is not necessarily the repository's target
+tenant: `any_adp_user` and membership policies remain the resolver's routing
+responsibility. Do not infer that cross-tenant routing itself invalidates proof.
+
+Dry-run first; it reads both stores and plans changes without writing:
 
 ```bash
 cd modules/gateway
@@ -80,133 +82,160 @@ AWS_REGION=us-east-1 \
 python scripts/backfill_identity_provenance.py --dry-run
 ```
 
-Read the output before proceeding, specifically:
+Inspect every incomplete account and its per-table result:
 
-* **`holds disagreeing provenance across tenants`** warnings. One external account
-  can hold a proven link in tenant A and a self-asserted one in tenant B (the
-  unique index is per `provider, provider_user_id, org_id`), and the DDB key has no
-  org component. Those accounts project **unknown** — deliberately, because
-  projecting the more permissive of the two would let proof earned in A mint
-  authority in B. They are not broken: the resolver's canonical lookup is
-  tenant-scoped, so it answers precisely and overwrites the projected value. They
-  only need the gateway to be reachable, which step 3's verification covers.
-* **The ambiguous count** in the summary line. If it is a large fraction of your
-  accounts, investigate before enforcing rather than after.
+| Result | Meaning | Next action |
+|---|---|---|
+| `planned` / `updated` | Exact canonical binding found; its method will be / was copied | Verify whether that canonical method is proven for the intended action |
+| `missing` | This account's required projection row is absent; nothing created | Repair the full mapping through the canonical writer, then retry |
+| `mismatched` | Existing user/tenant tuple has no canonical match | Real run conditionally clears proof; repair the full mapping before retry |
+| `ambiguous` | Multiple canonical records claim the exact projected tuple | Real run conditionally clears proof; investigate source consistency |
+| `conflict` | Binding, method or version changed between DDB read and write | Reread canonical state and retry after the concurrent writer settles |
+| `error` | Canonical read, table schema, permission or service failure | Correct the actual error and rerun; it is not a missing row |
 
-Then run it for real:
+An incomplete dry-run exits nonzero, even though it wrote nothing. A missing
+`github_user` row for an account selected from Postgres is a required projection
+gap. Legacy installation and reverse-index rows do not represent users and are
+not targets for this script; they do not need `verification_method`.
+
+After reviewing the plan, perform the authorized write pass:
 
 ```bash
 DATABASE_URL=... IDENTITY_INDEX_TABLE=... USER_IDENTITY_INDEX_TABLE=... \
 python scripts/backfill_identity_provenance.py
 ```
 
-It is idempotent and safe to re-run. It **exits non-zero on any failure** — treat a
-non-zero exit as "the backfill did not complete" and do not proceed to step 3.
-
-Read the summary line, not just the exit code. It reports four counts:
-
-```
-Projection complete: 412 succeeded, 7 skipped (no existing row), 0 failed, 2 ambiguous (projected unknown), 421 total
-```
-
-* **succeeded** — provenance now on the row in both tables. This is the number that
-  must be non-trivial before you proceed.
-* **skipped** — no such row in a projection table, so there was nothing to update.
-  Not a failure (the normal write-through creates those rows carrying provenance
-  already), but it is *not* progress either. A run that is nearly all skips means
-  you are pointed at the wrong table or the wrong environment — check before
-  proceeding, because the exit code will still be 0.
-* **failed** — non-zero exit. Fix and re-run.
-* **ambiguous** — one account whose tenants disagree; projected as unknown on
-  purpose, and decided per-request by the tenant-scoped canonical lookup.
-
-The script only copies what Postgres recorded. It never upgrades a value: legacy
-ambiguous `magic_link` rows stay `magic_link` (unproven), because rewriting them to
-a proven value would be inventing evidence that was never collected.
-
-### Verify the backfill
-
-Count rows still missing provenance. A full scan is acceptable here — these tables
-are small (one row per linked account):
-
-```bash
-aws dynamodb scan --table-name adp-<env>-user-identity-index \
-  --filter-expression 'attribute_not_exists(verification_method)' \
-  --select COUNT --query 'Count' --profile <profile>
-```
-
-Expect `0`. A non-zero count is the population that will be refused in step 3.
-
-## Step 3 — Republish the enforcing Lambda
-
-Only after step 2 verifies clean:
-
-```bash
-cd modules/agent-factory/webhook-ingress
-./scripts/deploy-webhook-ingress.sh
-```
-
-### Verify enforcement, both directions
-
-Both halves matter. Checking only that dispatch still works proves nothing about
-the gate; checking only the refusal proves nothing about availability.
-
-1. **Legitimate path still works.** Have an OAuth-linked user comment
-   `@agent-developer` on an issue in an installed repo. It must dispatch as before.
-2. **Refusals are visible.** Watch the deny metric:
-
-```bash
-aws cloudwatch get-metric-statistics \
-  --namespace ADP/AgentAuthority --metric-name UnprovenIdentityAuthority \
-  --start-time "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" \
-  --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --period 300 --statistics Sum --profile <profile>
-```
-
-A **zero** count with normal dispatch traffic is the healthy state. A **non-zero**
-count means real senders are being refused because their rows lack provenance —
-that is a backfill gap, and the response is to go back to step 2 for those
-accounts, **not** to weaken the gate:
+Both tables are attempted independently. An account counts as complete only when
+both succeed; `partial` means at least one succeeded and another required result
+did not. **Any incomplete account exits nonzero.** Clearing stale proof is a
+security repair, but is still incomplete until the mapping is reconciled. Do not
+advance the cutover on a partial result. Retry a repaired account with:
 
 ```bash
 python scripts/backfill_identity_provenance.py --provider-user-id <numeric-github-id>
+python scripts/backfill_identity_provenance.py --user-id <ADP-users.id>
 ```
 
-Also check the Lambda logs for the withheld-provenance path, which indicates the
-canonical lookup authoritatively disagreed with a DDB row:
+`--user-id` chooses accounts and retains all their canonical tenant bindings.
+Legacy ambiguous methods are copied unchanged. A successful backfill reports
+projection agreement, not that every user now qualifies for protected actions.
+
+### Concurrency and completeness boundaries
+
+The write pass rereads each account under Postgres `FOR SHARE` row locks and
+holds them through both DDB attempts. This prevents updates or deletion of those
+selected identity rows during the pass. DDB conditional writes require the
+observed user, tenant, method and `updated_at` to remain unchanged, including
+attributes that were absent. A concurrent replacement cannot silently receive
+the prior mapping's proof.
+
+These are **not cross-store transactions**. They do not drain already pending
+write-through retries, prevent changes after the pass, or lock an absent source
+row. The script enumerates accounts from Postgres, so it also cannot discover
+orphan DDB keys with no canonical identity at enumeration time. Its success
+message is not a global drift or revocation audit. Before cutover, establish that
+the deployed writers preserve binding/proof together, pending older writes are
+settled, and the environment's approved reconciliation evidence covers orphan
+and revoked projections. Unresolved writer/reader coordination blocks acceptance.
+
+### Verify the backfill
+
+Retain the exit status and per-table summary. Compare representative repaired
+rows against the complete canonical tuple, including a proven sender, an
+unproven sender and any multi-tenant source bindings. Confirm required missing
+mappings were recreated by the canonical writer and then backfilled successfully.
+
+A count of rows lacking `verification_method` is insufficient: an empty method,
+an unproven method, or stale proof can all be present attributes. Whole-table
+counts also conflate non-GitHub accounts and unrelated legacy index rows. Use the
+required GitHub account inventory and exact binding checks above, together with
+the approved orphan/revocation reconciliation evidence.
+
+## Step 3 — Publish and verify enforcement
+
+Only after step 2 and its coordination checks are complete, publish the reviewed
+webhook Lambda through the approved deployment path.
+
+Verify both directions in an authorized test repository: a known proven user
+must dispatch with the expected platform identity, and a controlled unproven
+identity must be refused. Exercise the environment's cross-tenant routing policy
+where applicable; a same-tenant success alone does not validate that policy.
+
+The denial metric is published with the **`TenantId` dimension**. Query each
+relevant tenant (and `unknown` if events can lack a tenant), using the same AWS
+account and region as the emitting Lambda. Supply UTC timestamps for the actual
+verification window:
 
 ```bash
-aws logs tail /aws/lambda/adp-<env>-github-webhook --since 30m --profile <profile> \
-  | grep -i "withholding provenance"
+TENANT_ID='org-example'
+START_TIME='2026-09-24T12:00:00Z'
+END_TIME='2026-09-24T13:00:00Z'
+aws cloudwatch get-metric-statistics \
+  --namespace ADP/AgentAuthority --metric-name UnprovenIdentityAuthority \
+  --dimensions "Name=TenantId,Value=$TENANT_ID" \
+  --start-time "$START_TIME" --end-time "$END_TIME" \
+  --period 300 --statistics Sum \
+  --query 'sort_by(Datapoints, &Timestamp)' \
+  --profile <profile> --region <region>
+```
+
+CloudWatch does not aggregate custom metric dimensions implicitly. A query with
+no dimensions cannot measure the tenant series. This emitter publishes on
+refusal only: **`[]` means no datapoints, not an observed zero**. It can mean no
+refusals, wrong dimensions/region/window, delayed delivery, or a metrics failure.
+Confirm the controlled denial appears in its tenant's series and correlate the
+window with successful dispatch and refusal logs; metric absence alone cannot
+establish either availability or enforcement.
+
+Nonzero values count refusals, not necessarily backfill defects. Investigate the
+identity and reason: missing/stale projection of a proven canonical link needs
+reconciliation; a legacy or unproven link needs a legitimate proof-establishing
+flow. Rerunning the script cannot create that proof. Do not weaken the gate to
+make the metric quiet.
+
+Also inspect withheld-provenance logs, which can indicate a canonical lookup
+disagreed with the DDB row:
+
+```bash
+aws logs tail /aws/lambda/adp-<env>-github-webhook --since 30m \
+  --profile <profile> --region <region> | rg -i 'withholding provenance'
 ```
 
 ## Rollback
 
-There is no flag to flip, and that is intentional — an env var that re-permits
-unproven links would reintroduce the vulnerability by configuration.
+There is no flag to permit unproven links. If a deployment rollback is approved,
+use the normal release rollback procedure and record that prior Lambda code may
+restore the vulnerable authority behavior. Prefer repairing the demonstrated
+projection or writer defect. Retaining the projection attribute is compatible
+with older readers, but a later cutover requires fresh verification; intervening
+identity changes or delayed writes can invalidate an earlier backfill result.
 
-If enforcement must be backed out, **roll back the Lambda code** to the prior
-published version. The gateway writers and the backfilled attribute can stay: the
-old code does not read them, so leaving them in place costs nothing and means a
-re-attempt does not need step 2 again.
+## Policy consistency
 
-```bash
-aws lambda update-function-code --function-name adp-<env>-github-webhook \
-  --s3-bucket <artifact-bucket> --s3-key <previous-key> --profile <profile>
-```
+The gateway and Lambda proven-method vocabularies are checked by
+`modules/gateway/tests/internal/test_provenance_policy_lockstep.py`. That check
+prevents policy drift; it does not verify live projection data, enrollment proof,
+write-through ordering or completed rollout.
 
-Prefer fixing the backfill gap over rolling back: a rollback restores a window in
-which a self-asserted identity link mints human dispatch authority.
+## Supported proof and account-link recovery
 
-## Notes
+Self-service account claims remain unverified. The internal linking flow posts a
+confirmation in a shared conversation and records `shared_channel` delivery with
+no target user; consuming that link supplies no new ownership proof. An existing
+proven mapping held by the same user retains its method and verification time.
+There is no private DM delivery adapter in this change. Consumer tests that seed `provider_dm` or
+`provider_asserted` user-bound nonces verify the consumer contract only; they are
+not evidence that a provider delivered a private message.
 
-* **Nothing here rewrites Postgres.** The backfill only writes the DynamoDB
-  projection. `user_identities` is the source of truth and is untouched.
-* **The projection is a cache, not the authority.** When the tenant-scoped
-  canonical lookup answers, its provenance wins over the projected value; the
-  projection exists so the hot path is not blocked on a gateway round-trip.
-* **Both sides of the proven-method vocabulary are drift-guarded** by
-  `modules/gateway/tests/internal/test_provenance_policy_lockstep.py`. The Lambda
-  cannot import the gateway's `PROVEN_METHODS` (the Lambda zip is rooted at
-  `lambda/`), so the sets are duplicated and that test is what keeps them equal. A
-  Lambda set WIDER than the gateway's is a bypass.
+Existing provider-confirmed onboarding and the authenticated platform administrator
+identity flow remain the supported ways to establish a proven mapping. The admin
+identity routes require platform admin authority; workspace administration alone
+does not grant access. Platform administrators must verify the external account
+and intended tenant/user before assigning it. If an
+unproven claim occupies the tenant's unique provider-account key, inspect the claim
+and proof, remove the incorrect claim through the admin identity flow, then create
+the verified mapping for the rightful user. This is an operator reconciliation,
+not automatic self-service recovery; a proven mapping must not be reassigned merely
+because another user requests it. Validate canonical and projected bindings after
+reconciliation, following the ordered checks above. No live reconciliation is
+performed or authorized by these source changes.

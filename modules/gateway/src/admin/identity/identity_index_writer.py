@@ -12,6 +12,7 @@ import logging
 import os
 
 from src.admin.identity_index import IdentityIndexClient
+from src.shared.identity.providers import SUPPORTED_PROVIDERS
 
 from .user_identity_index import UserIdentityIndexClient
 
@@ -96,12 +97,17 @@ class IdentityIndexWriter:
     ) -> bool:
         """Write a channel_user entry to DDB for a single identity.
 
-        Sequential dual-write (Issue #537):
+        GitHub sequential dual-write (Issue #537):
           1. Write to OLD table (identity_type=github_user) — backward compat.
              Failure of this write is propagated to the caller.
           2. If OLD write succeeded AND USER_IDENTITY_INDEX_V2_WRITE=true,
              write to NEW table (PK=provider, SK=provider_user_id).
              Failure of the NEW write is logged but NOT propagated.
+
+        Other providers have no legacy key. They write only their provider-keyed
+        NEW row when the flag is enabled, returning that write's result. With the
+        flag disabled they are a successful no-op; they must never occupy a
+        legacy github_user key, even when their external ID matches a GitHub ID.
 
         Issue #3134: Optional member_org_ids param writes the list of org_ids
         where the user has TenantMembership. Used by the webhook Lambda for
@@ -125,8 +131,11 @@ class IdentityIndexWriter:
         always pass it — omitting it leaves the row's provenance unknown, which is
         treated as NOT proof downstream.
 
-        Returns True if the OLD-table write succeeded, False if exhausted retries.
+        GitHub returns the OLD-table result; other providers return the v2 result
+        when enabled. A failed projection never rolls back the SQL commit.
         """
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(f"Unsupported provider: {provider!r}")
         logger.info(
             "identity-index put channel_user: provider=%s provider_user_id=%s user_id=%s org_id=%s",
             provider,
@@ -135,7 +144,10 @@ class IdentityIndexWriter:
             org_id,
         )
 
-        if member_org_ids is not None:
+        if provider != "github":
+            # Only GitHub identities can be represented by the legacy schema.
+            old_success = True
+        elif member_org_ids is not None:
             # Full PutItem — caller owns member_org_ids and wants to set it explicitly
             extra_attrs: dict[str, str | None] = {
                 "user_id": user_id,
@@ -194,16 +206,20 @@ class IdentityIndexWriter:
                     )
                 if not new_success:
                     logger.warning(
-                        "user-identity-index v2 write failed (non-fatal): provider=%s provider_user_id=%s",
+                        "user-identity-index v2 write failed: provider=%s provider_user_id=%s",
                         provider,
                         provider_user_id,
                     )
+                if provider != "github":
+                    return new_success
             except Exception:
                 logger.exception(
-                    "user-identity-index v2 write exception (non-fatal): provider=%s provider_user_id=%s",
+                    "user-identity-index v2 write exception: provider=%s provider_user_id=%s",
                     provider,
                     provider_user_id,
                 )
+                if provider != "github":
+                    return False
 
         return True
 
@@ -217,10 +233,13 @@ class IdentityIndexWriter:
 
         Issue #3134: Targeted update for membership-change events — avoids
         needing the full identity context (user_id, org_id, etc.) just to
-        update membership. Dual-write to both old + new tables.
+        update membership. Only GitHub updates the old table; all providers
+        update their own new-table key when v2 writes are enabled.
 
-        Returns True if the OLD-table update succeeded, False otherwise.
+        Uses the same result and feature-flag semantics as put_user_identity.
         """
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(f"Unsupported provider: {provider!r}")
         logger.info(
             "identity-index update_user_membership_orgs: provider=%s provider_user_id=%s member_org_ids=%s",
             provider,
@@ -228,15 +247,14 @@ class IdentityIndexWriter:
             member_org_ids,
         )
 
-        # Update OLD table
-        old_success = await self._client.update_membership_orgs(
-            identity_type=GITHUB_USER_TYPE,
-            identity_value=provider_user_id,
-            member_org_ids=member_org_ids,
-        )
-
-        if not old_success:
-            return False
+        if provider == "github":
+            old_success = await self._client.update_membership_orgs(
+                identity_type=GITHUB_USER_TYPE,
+                identity_value=provider_user_id,
+                member_org_ids=member_org_ids,
+            )
+            if not old_success:
+                return False
 
         # Update NEW table (feature-flag gated)
         if _v2_write_enabled():
@@ -248,39 +266,44 @@ class IdentityIndexWriter:
                 )
                 if not new_success:
                     logger.warning(
-                        "user-identity-index v2 update_membership_orgs failed (non-fatal): provider=%s provider_user_id=%s",
+                        "user-identity-index v2 update_membership_orgs failed: provider=%s provider_user_id=%s",
                         provider,
                         provider_user_id,
                     )
+                if provider != "github":
+                    return new_success
             except Exception:
                 logger.exception(
-                    "user-identity-index v2 update_membership_orgs exception (non-fatal): provider=%s provider_user_id=%s",
+                    "user-identity-index v2 update_membership_orgs exception: provider=%s provider_user_id=%s",
                     provider,
                     provider_user_id,
                 )
+                if provider != "github":
+                    return False
 
         return True
 
     async def delete_user_identity(self, provider_user_id: str, provider: str = "github") -> bool:
         """Delete a single channel_user entry from DDB.
 
-        Sequential dual-delete: OLD table first, then NEW table (flag-gated).
-        Returns True if OLD-table delete succeeded, False if all retries exhausted.
+        GitHub deletes OLD first, then NEW (flag-gated); other providers delete
+        only their own NEW key. Uses the result semantics of put_user_identity.
         """
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(f"Unsupported provider: {provider!r}")
         logger.info(
             "identity-index delete channel_user: provider=%s provider_user_id=%s",
             provider,
             provider_user_id,
         )
 
-        # Step 1: Delete from OLD table
-        old_success = await self._client.delete_identity(
-            identity_type=GITHUB_USER_TYPE,
-            identity_value=provider_user_id,
-        )
-
-        if not old_success:
-            return False
+        if provider == "github":
+            old_success = await self._client.delete_identity(
+                identity_type=GITHUB_USER_TYPE,
+                identity_value=provider_user_id,
+            )
+            if not old_success:
+                return False
 
         # Step 2: Delete from NEW table (feature-flag gated)
         if _v2_write_enabled():
@@ -291,16 +314,20 @@ class IdentityIndexWriter:
                 )
                 if not new_success:
                     logger.warning(
-                        "user-identity-index v2 delete failed (non-fatal): provider=%s provider_user_id=%s",
+                        "user-identity-index v2 delete failed: provider=%s provider_user_id=%s",
                         provider,
                         provider_user_id,
                     )
+                if provider != "github":
+                    return new_success
             except Exception:
                 logger.exception(
-                    "user-identity-index v2 delete exception (non-fatal): provider=%s provider_user_id=%s",
+                    "user-identity-index v2 delete exception: provider=%s provider_user_id=%s",
                     provider,
                     provider_user_id,
                 )
+                if provider != "github":
+                    return False
 
         return True
 
@@ -348,9 +375,11 @@ class IdentityIndexWriter:
                 len(tasks),
             )
 
-    async def delete_all_user_identities(self, provider_user_ids: list[str]) -> None:
-        """Delete all channel_user entries for a user (on user deletion).
+    async def delete_all_user_identities(self, provider_user_ids: list[str], provider: str = "github") -> None:
+        """Delete a user's channel identities for one provider (on user deletion).
 
+        Defaults to GitHub for legacy callers. Call separately for each provider
+        so matching external IDs never delete another provider's identity.
         Best-effort — failures are logged but don't propagate.
         """
         import asyncio
@@ -358,7 +387,7 @@ class IdentityIndexWriter:
         if not provider_user_ids:
             return
 
-        tasks = [self.delete_user_identity(pid) for pid in provider_user_ids]
+        tasks = [self.delete_user_identity(pid, provider=provider) for pid in provider_user_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         failures = sum(1 for r in results if r is False or isinstance(r, Exception))
         if failures:

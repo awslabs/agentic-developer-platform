@@ -1749,6 +1749,7 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
+          "dynamodb:ConditionCheckItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:DeleteItem",
           "dynamodb:GetItem",

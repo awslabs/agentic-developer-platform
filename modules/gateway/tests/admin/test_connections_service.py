@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+import src.admin.connections.service as svc
 from src.admin.connections.github_app_provider import _reset_provider_for_testing
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
@@ -136,6 +137,7 @@ def _mock_github_client(
             "created_at": "2026-05-01T10:00:00Z",
         }
     )
+    client.has_org_admin_membership = AsyncMock(return_value=True)
     client.delete_installation = AsyncMock(return_value=None)
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
@@ -147,7 +149,31 @@ def _mock_github_client(
 # ---------------------------------------------------------------------------
 
 
+async def _proven_installer(db, user_id, org_id):
+    from src.shared.models.vault import UserIdentity
+
+    db.add(
+        UserIdentity(
+            user_id=user_id,
+            org_id=org_id,
+            team_id="team-test-001",
+            provider="github",
+            provider_user_id="98765",
+            verification_method="oauth",
+            verified_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+
+
 class TestInstallStart:
+    @pytest.fixture(autouse=True)
+    async def _registered_initiator(self, db_session):
+        from src.shared.models.organization import User
+
+        db_session.add(User(id="user-001", org_id="org-test-001", team_id="team-test-001", email="start@test.local", cognito_sub="sub-abc"))
+        await db_session.commit()
+
     async def test_writes_nonce_with_correct_provider(self, db_session: AsyncSession):
         result = await install_start(
             cognito_sub="sub-abc",
@@ -254,11 +280,13 @@ class TestInstallCallback:
                     )
                 )
                 await db.commit()
+        if seed_user:
+            await _proven_installer(db, target_user_id, user_org_id)
         nonce = MagicLinkNonce(
             jti=jti,
             provider=_PROVIDER_GITHUB_INSTALL,
             provider_user_id="sub-abc",
-            channel_context=None,
+            channel_context=svc._setup_context(kind="install", org_id=user_org_id),
             target_user_id=target_user_id,
             expires_at=now - timedelta(minutes=1) if expired else now + timedelta(minutes=15),
             consumed_at=now if consumed else None,
@@ -394,7 +422,7 @@ class TestInstallCallback:
     async def test_personal_account_does_not_raise(self, db_session: AsyncSession, org_in_db):
         """Personal account installs are handed off to #466; must not raise."""
         await self._write_nonce(db_session, jti="personal-jti")
-        gh = _mock_github_client(account_type="User", account_login="alice")
+        gh = _mock_github_client(installation_id=999, account_type="User", account_login="alice")
 
         result = await install_callback(
             installation_id=999,
@@ -470,7 +498,7 @@ class TestInstallCallbackTenantProvenance:
                 provider=_PROVIDER_GITHUB_INSTALL,
                 target_user_id=target_user_id,
                 provider_user_id=provider_user_id,
-                channel_context=None,
+                channel_context=svc._setup_context(kind="install", org_id="org-test-001"),
                 expires_at=datetime.now(UTC) + timedelta(minutes=15),
                 consumed_at=None,
             )
@@ -544,10 +572,9 @@ class TestInstallCallbackTenantProvenance:
         nonce = await db_session.get(MagicLinkNonce, "prov-jti-2")
         assert nonce is not None and nonce.consumed_at is None, "refusal consumed the single-use credential"
 
-    async def test_tenant_comes_from_initiator_not_from_provider_user_id(self, db_session: AsyncSession, org_in_db):
-        """Positive control: when BOTH are resolvable but disagree, the initiator's
-        tenant wins. Without this the fallback's removal could be "proved" by a
-        test that merely never exercises it."""
+    async def test_disagreeing_subject_and_canonical_initiator_are_refused(self, db_session: AsyncSession, org_in_db):
+        """A versioned setup binds both identifiers. A contradictory subject
+        must not attach the installation to either user's tenant."""
         from sqlalchemy import select
 
         await self._seed_user(
@@ -572,17 +599,19 @@ class TestInstallCallbackTenantProvenance:
             provider_user_id="sub-other",
         )
 
-        result = await install_callback(
-            installation_id=124731131,
-            setup_action="install",
-            state="prov-jti-3",
-            db=db_session,
-            github_client=_mock_github_client(),
-        )
-        assert result["success"] is True
+        from src.auth.magic_link import TargetUserMismatchError
+
+        with pytest.raises(TargetUserMismatchError):
+            await install_callback(
+                installation_id=124731131,
+                setup_action="install",
+                state="prov-jti-3",
+                db=db_session,
+                github_client=_mock_github_client(),
+            )
 
         rows = (await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.provider == "github"))).scalars().all()
-        assert [r.org_id for r in rows] == ["org-test-001"], "installation attached to the credential's tenant, not the initiator's"
+        assert rows == [], "contradictory setup binding attached an installation"
 
 
 # ---------------------------------------------------------------------------
@@ -901,11 +930,12 @@ class TestSeedTenantGitHubAppSecret:
             )
         )
         await db_session.commit()
+        await _proven_installer(db_session, "user-seed-test", "org-test-001")
         nonce = MagicLinkNonce(
             jti="seed-jti",
             provider=_PROVIDER_GITHUB_INSTALL,
             provider_user_id="sub-seed",
-            channel_context=None,
+            channel_context=svc._setup_context(kind="install", org_id="org-test-001"),
             target_user_id="user-seed-test",
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
             consumed_at=None,
@@ -963,11 +993,12 @@ class TestInstallCallbackWritesDDB:
                 )
             )
             await db.commit()
+        await _proven_installer(db, user_id, org_id)
         nonce = MagicLinkNonce(
             jti=jti,
             provider=_PROVIDER_GITHUB_INSTALL,
             provider_user_id="sub-ddb",
-            channel_context=None,
+            channel_context=svc._setup_context(kind="install", org_id=org_id),
             target_user_id=user_id,
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
             consumed_at=None,
@@ -1030,8 +1061,12 @@ class TestInstallCallbackWritesDDB:
 
         # Issue #3134 fix: installation rows now use UpdateItem (SET semantics)
         # so trigger_policy/min_author_association set elsewhere are preserved.
-        mock_ddb_client.update_item.assert_called_once()
-        call_kwargs = mock_ddb_client.update_item.call_args[1]
+        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
+        call_kwargs = next(
+            call.kwargs["TransactItems"][1]["Update"]
+            for call in mock_ddb_client.transact_write_items.call_args_list
+            if "Update" in call.kwargs["TransactItems"][1]
+        )
         assert call_kwargs["TableName"] == "adp-dev-identity-index"
         key = call_kwargs["Key"]
         assert key["identity_type"] == {"S": "github_installation_id"}
@@ -1051,7 +1086,7 @@ class TestInstallCallbackWritesDDB:
 
         mock_ddb_client = MagicMock()
         error_response = {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "throttled"}}
-        mock_ddb_client.update_item.side_effect = ClientError(error_response, "UpdateItem")
+        mock_ddb_client.transact_write_items.side_effect = ClientError(error_response, "UpdateItem")
 
         with patch(
             "src.admin.identity_index.boto3.client",
@@ -1097,15 +1132,23 @@ class TestInstallCallbackWritesReverseRow:
             )
 
         # Forward row: update_item call
-        mock_ddb_client.update_item.assert_called_once()
-        update_kwargs = mock_ddb_client.update_item.call_args[1]
+        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
+        update_kwargs = next(
+            call.kwargs["TransactItems"][1]["Update"]
+            for call in mock_ddb_client.transact_write_items.call_args_list
+            if "Update" in call.kwargs["TransactItems"][1]
+        )
         assert update_kwargs["Key"]["identity_type"] == {"S": "github_installation_id"}
         assert update_kwargs["Key"]["identity_value"] == {"S": "146123525"}
 
         # Reverse row: put_item call (org_installation)
-        put_calls = mock_ddb_client.put_item.call_args_list
+        put_calls = [
+            call.kwargs["TransactItems"][1]["Put"]
+            for call in mock_ddb_client.transact_write_items.call_args_list
+            if "Put" in call.kwargs["TransactItems"][1]
+        ]
         assert len(put_calls) == 1
-        put_kwargs = put_calls[0][1]
+        put_kwargs = put_calls[0]
         assert put_kwargs["Item"]["identity_type"] == {"S": "org_installation"}
         assert put_kwargs["Item"]["identity_value"] == {"S": "acme-hackathon"}
         assert put_kwargs["Item"]["installation_id"] == {"N": "146123525"}
@@ -1141,9 +1184,9 @@ class TestInstallCallbackWritesReverseRow:
             )
 
         # Forward row update_item should still fire
-        mock_ddb_client.update_item.assert_called_once()
+        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
         # Reverse row put_item should NOT fire (guard respected)
-        mock_ddb_client.put_item.assert_not_called()
+        assert all("Put" not in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list)
 
     async def test_reverse_row_overwrites_auto_registered(self, monkeypatch):
         """If an auto_registered reverse row exists, overwrite it (idempotent refresh)."""
@@ -1176,8 +1219,8 @@ class TestInstallCallbackWritesReverseRow:
             )
 
         # Both forward and reverse writes should fire
-        mock_ddb_client.update_item.assert_called_once()
-        mock_ddb_client.put_item.assert_called_once()
+        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
+        assert sum("Put" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
 
     async def test_reverse_row_failure_does_not_propagate(self, monkeypatch):
         """Reverse-row write failure is best-effort — does not raise."""
@@ -1197,7 +1240,7 @@ class TestInstallCallbackWritesReverseRow:
         mock_ddb_client.update_item.return_value = {}
         # put_item (reverse row) fails
         error_response = {"Error": {"Code": "InternalServerError", "Message": "boom"}}
-        mock_ddb_client.put_item.side_effect = ClientError(error_response, "PutItem")
+        mock_ddb_client.transact_write_items.side_effect = [{}, *[ClientError(error_response, "TransactWriteItems")] * 3]
 
         with patch(
             "src.admin.identity_index.boto3.client",

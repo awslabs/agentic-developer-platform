@@ -97,8 +97,16 @@ independent paths. Both are required; the code path fires on its own.
    so the flip does take effect on apply.
 
    ```bash
-   gh workflow run gateway-infra-apply.yml
+   # Set this to the exact main commit whose complete infra changes you reviewed.
+   REVIEWED_SOURCE_SHA='<reviewed-40-character-lowercase-commit-sha>'
+   gh workflow run gateway-infra-apply.yml --ref main \
+     --field reviewed_source_sha="$REVIEWED_SOURCE_SHA"
    ```
+
+   The required pin must equal the workflow run's commit and its checkout.
+   If main advances before dispatch, the workflow fails before deployment
+   identity or config loading. Review the new main commit before dispatching
+   again; do not replace the pin with an unreviewed latest-main lookup.
 
 3. **Confirm the live configuration:**
 
@@ -202,7 +210,8 @@ aws secretsmanager create-secret \
 ```
 
 Then set `github_auth_token_secret_arn` in
-`environments/dev/modules/gateway.tfvars` and re-run `gateway-infra-apply.yml`.
+`environments/dev/modules/gateway.tfvars` and re-run `gateway-infra-apply.yml`
+with the reviewed commit pin as described in step 2 above.
 The broker accepts either a raw string or a JSON object with a `token` key.
 
 ## Rollback

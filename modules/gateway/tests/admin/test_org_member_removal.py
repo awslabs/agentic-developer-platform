@@ -95,9 +95,9 @@ async def test_an_unproven_identity_still_gets_its_projection_refreshed(db_sessi
     """#5664 (A10): the projection snapshot is unfiltered, the trust guard is not.
 
     `member_org_ids` answers "which orgs does this GitHub ACCOUNT hold memberships
-    in", and `project_member_org_ids` recomputes it with no verification filter —
-    deliberately, since the DDB key is per account and the list is a union across
-    every user row holding it. Passing the PROVEN-only snapshot made the refresh a
+    in", recomputed through proven bindings across surviving users. The set of
+    external IDs needing a refresh must still include unproven removed claims,
+    since their stale memberships need clearing. A PROVEN-only snapshot made the refresh a
     silent no-op for accounts whose only row is unproven (auto-provisioned
     `channel_placement` rows, which were `admin_manual` and therefore proven before
     this issue). The stale row then kept advertising an org whose membership was
@@ -133,6 +133,19 @@ async def test_unproven_identity_does_not_block_removal_as_a_shared_login(db_ses
     await db_session.commit()
 
     assert await admin_service.remove_user("other", "user-other")
+
+
+async def test_removing_last_proven_binding_clears_membership_projection(db_session, admin_service, projection_writer):
+    await _seed(db_session)
+    unproven = await db_session.scalar(select(UserIdentity).where(UserIdentity.user_id == "user-other"))
+    unproven.verification_method = "channel_placement"
+    await db_session.commit()
+
+    assert await admin_service.remove_user("home", "user-home")
+
+    projection_writer.update_user_membership_orgs.assert_awaited_once_with(provider_user_id="123", member_org_ids=[], provider="github")
+    assert await db_session.get(User, "user-other") is not None
+    assert await db_session.scalar(select(TenantMembership).where(TenantMembership.user_id == "user-other")) is not None
 
 
 async def test_projection_failure_does_not_undo_removal(db_session, admin_service, projection_writer):

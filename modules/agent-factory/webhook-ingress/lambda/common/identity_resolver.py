@@ -325,37 +325,43 @@ def _resolve_user_from_old_table(sender_id: int) -> dict | None:
     return resp.get("Item")
 
 
-def _backfill_installation_identity(installation_id: int, org_id: str, table) -> None:
+def _backfill_installation_identity(installation_id: int, org_id: str, table) -> bool:
     """Backfill a missing DDB identity-index row for an installation.
 
     Issue #2950: When the Postgres fallback resolves a tenant that DDB missed,
     write the row back so subsequent webhook deliveries resolve from DDB
     directly (O(1) instead of a gateway HTTP call).
 
-    Best-effort — failures are logged but do not affect the current resolution.
+    A failed guarded write denies resolution because revocation may have won the race.
     """
     import time
 
+    from common.installation_revocation import put_active_installation
+
     try:
-        table.put_item(
-            Item={
+        put_active_installation(
+            table,
+            installation_id,
+            {
                 "identity_type": "github_installation_id",
                 "identity_value": str(installation_id),
                 "org_id": org_id,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
+            },
         )
         logger.info(
             "Backfilled identity-index: github_installation_id=%d → org=%s",
             installation_id,
             org_id,
         )
+        return True
     except Exception as e:
         logger.warning(
             "Failed to backfill identity-index for installation_id=%d: %s",
             installation_id,
             e,
         )
+        return False
 
 
 def resolve(
@@ -382,134 +388,34 @@ def resolve(
     try:
         table = _get_table()
 
-        # Step 1: Resolve tenant from installation
-        tenant_resp = table.get_item(
+        from common.gateway_client import installation_gate
+        from common.installation_revocation import admit_installation
+
+        canonical, reason = admit_installation(table, installation_id)
+        if canonical is None:
+            last_tenant_item = None
+            return None, reason
+        org_id = canonical["tenant_id"]
+        tenant_item = table.get_item(
             Key={
                 "identity_type": "github_installation_id",
                 "identity_value": str(installation_id),
             }
-        )
-        tenant_item = tenant_resp.get("Item")
-        last_tenant_item = tenant_item
+        ).get("Item")
+        if tenant_item and tenant_item.get("org_id") != org_id:
+            last_tenant_item = None
+            return None, "installation_owner_mismatch"
         if not tenant_item:
-            # Issue #2950: DDB miss — fall through to Postgres via the gateway
-            # internal API when the flag is enabled. This covers installations
-            # written to Postgres (via install-callback) before the DDB dual-write
-            # was added, or where the DDB write failed. On a Postgres hit we
-            # backfill the DDB row so subsequent lookups are fast again.
-            if _resolve_canonical_via_gateway_enabled():
-                from common import negative_cache
-                from common.gateway_client import (
-                    INSTALLATION_NOT_FOUND,
-                    installation_gate,
-                    resolve_installation_by_id,
-                )
-
-                # Issue #4047 (#2724 slice C): this is the SECOND gateway-resolve
-                # path for an unknown installation (the architect ruling on #2724
-                # flagged that it bypasses _auto_register_installation entirely),
-                # so it needs the same negative cache or the mitigation is trivially
-                # sidestepped on any cold/evicted row. A live negative row means the
-                # gateway already answered "not a known tenant" within the TTL.
-                if negative_cache.is_negative_cached(table, installation_id):
-                    logger.info(
-                        "Unknown installation_id=%d — no identity-index entry and a "
-                        "live negative-cache row (gateway resolve skipped)",
-                        installation_id,
-                    )
-                    return None, "unknown_installation"
-
-                pg_install = resolve_installation_by_id(str(installation_id)) or {}
-                # Issue #4046 (#2724 slice A): pg_install carries a "state" of
-                # resolved / not_found / error. A resolved result always carries a
-                # non-empty tenant_id.
-                #
-                # Issue #4047: cache ONLY the authoritative not_found. An "error"
-                # means we could not find out, and caching it would lock out a
-                # legitimate new tenant for the whole TTL window.
-                if pg_install.get("state") == INSTALLATION_NOT_FOUND:
-                    negative_cache.record_not_found(table, installation_id)
-
-                # Issue #2724 (slice B): this is the SECOND write path — it
-                # backfills a DDB identity row independently of the handler's
-                # _auto_register_installation, so gating only the handler would
-                # leave it trivially circumventable on any cold or evicted row.
-                # Run the same gate. A denied installation writes nothing and
-                # resolves as unknown_installation.
-                #
-                # Note this path only ever writes the *Postgres* tenant (there is
-                # no org_login fallback here), so the gate can only deny on an
-                # untrusted-provenance `resolved` result; not_found/error already
-                # fall through to unknown_installation below.
-                allowed, gate_reason = installation_gate(pg_install)
-                if not allowed:
-                    logger.warning(
-                        "AutoRegisterDenied (resolver backfill): installation_id=%d "
-                        "reason=%s created_via=%s — not a known ADP tenant, not "
-                        "backfilling",
-                        installation_id,
-                        gate_reason,
-                        pg_install.get("created_via", ""),
-                    )
-                    _emit_auto_register_denied_metric()
-                    return None, "unknown_installation"
-
-                if pg_install.get("tenant_id"):
-                    pg_tenant = pg_install["tenant_id"]
-                    logger.info(
-                        "installation_id=%d resolved via Postgres fallback "
-                        "(tenant=%s) — backfilling DDB",
-                        installation_id,
-                        pg_tenant,
-                    )
-                    # Backfill DDB so future lookups don't need the gateway call
-                    _backfill_installation_identity(installation_id, pg_tenant, table)
-                    org_id = pg_tenant
-                    user_provisioning_mode = "strict"
-                else:
-                    logger.info(
-                        "Unknown installation_id=%d — no identity-index entry "
-                        "and Postgres fallback returned no match",
-                        installation_id,
-                    )
-                    return None, "unknown_installation"
-            else:
-                logger.info(
-                    "Unknown installation_id=%d — no identity-index entry",
-                    installation_id,
-                )
+            allowed, _ = installation_gate(canonical)
+            if not allowed:
+                last_tenant_item = None
                 return None, "unknown_installation"
-        else:
-            org_id = tenant_item["org_id"]
-            user_provisioning_mode = tenant_item.get("user_provisioning_mode", "strict")
-
-        # Step 1b: Installation-tenant drift safety-net (Issue #2769).
-        # Cross-check the DDB installation → tenant mapping against Postgres
-        # (the source of truth) via POST /internal/v1/resolve-installation.
-        # On disagreement: trust Postgres, emit InstallationTenantDrift, log
-        # both tenants. On gateway miss/error: keep the DDB answer (fail-open —
-        # no hard RDS dependency on the webhook path). Flag-gated by the same
-        # RESOLVE_CANONICAL_VIA_GATEWAY switch as the user safety-net (#702).
-        #
-        # Issue #4046 (#2724 slice A): the client distinguishes not_found from
-        # error; this drift check is behavior-neutral and keeps the DDB answer for
-        # both (only a "resolved" result carries a tenant_id).
-        if _resolve_canonical_via_gateway_enabled():
-            from common.gateway_client import resolve_installation_by_id
-
-            pg_install = resolve_installation_by_id(str(installation_id)) or {}
-            if pg_install.get("tenant_id"):
-                pg_tenant = pg_install["tenant_id"]
-                if pg_tenant != org_id:
-                    logger.warning(
-                        "InstallationTenantDrift: installation_id=%d DDB tenant=%s, "
-                        "Postgres tenant=%s — trusting Postgres",
-                        installation_id,
-                        org_id,
-                        pg_tenant,
-                    )
-                    _emit_installation_tenant_drift_metric()
-                    org_id = pg_tenant
+            if not _backfill_installation_identity(installation_id, org_id, table):
+                last_tenant_item = None
+                return None, "installation_unavailable"
+            tenant_item = {"org_id": org_id}
+        last_tenant_item = tenant_item
+        user_provisioning_mode = tenant_item.get("user_provisioning_mode", "strict")
 
         # Step 2: Resolve sender (feature-flag-gated, Issue #537)
         user_item = None
@@ -566,9 +472,7 @@ def resolve(
                     # caller's error path (which keeps the stale DDB value).
                     user_item = {
                         **user_item,
-                        "verification_method": pg_result.get(
-                            "verification_method", ""
-                        ),
+                        "verification_method": pg_result.get("verification_method", ""),
                     }
             elif pg_result and not user_item:
                 # v2/legacy missed but Postgres has it (write-through lag)

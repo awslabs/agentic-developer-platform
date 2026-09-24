@@ -94,12 +94,18 @@ async def _mint_state(db: AsyncSession, *, target_user_id: str | None, cognito_s
     """Mint a register-flow state nonce exactly as register_app_start does."""
     import uuid
 
+    # Model authenticated issuance: subject and canonical target agree. Denial
+    # tests then exercise a revoked/insufficient role or a deleted target.
+    user = await db.get(User, target_user_id) if target_user_id else None
+    if user:
+        user.cognito_sub = cognito_sub
+        await db.commit()
     jti = str(uuid.uuid4())
     await store_nonce(
         jti=jti,
         provider=svc._PROVIDER_GITHUB_APP_REGISTER,
         provider_user_id=cognito_sub,
-        channel_context=None,
+        channel_context=svc._setup_context(kind="platform", owner_type="user"),
         target_user_id=target_user_id,
         expires_at=datetime.now(UTC) + timedelta(seconds=900),
         db=db,

@@ -403,6 +403,7 @@ class TestResolveInstallation:
         async def _seed():
             org = await db.get(Organization, "org-acme")
             org.github_installation_ids = ["144082554"]
+            db.add(ChannelTenantMap(provider="github", provider_scope_id="acme-account", installation_id="144082554", org_id="org-acme"))
             await db.commit()
 
         asyncio.get_event_loop().run_until_complete(_seed())
@@ -415,6 +416,7 @@ class TestResolveInstallation:
         )
         assert resp.status_code == 200
         assert resp.json()["tenant_id"] == "org-acme"
+        assert resp.json()["revocation_checked"] is True
         # Issue #2724 (slice B): the response now also carries provenance, which
         # is what the webhook's auto-register gate keys its trust decision on.
         # Seeded orgs are operator-created (migration 025 backfills "operator").
@@ -440,6 +442,7 @@ class TestResolveInstallation:
             org = await db.get(Organization, "org-acme")
             org.github_installation_ids = ["144082555"]
             org.created_via = "install_autocreate"
+            db.add(ChannelTenantMap(provider="github", provider_scope_id="acme-account", installation_id="144082555", org_id="org-acme"))
             await db.commit()
 
         asyncio.get_event_loop().run_until_complete(_seed())
@@ -453,6 +456,7 @@ class TestResolveInstallation:
         assert resp.status_code == 200
         assert resp.json()["tenant_id"] == "org-acme"
         assert resp.json()["created_via"] == "install_autocreate"
+        assert resp.json()["revocation_checked"] is True
 
     @patch("src.internal.routes.get_settings")
     def test_unknown_installation_returns_404(self, mock_settings, db: AsyncSession):

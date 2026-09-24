@@ -1,77 +1,41 @@
 #!/usr/bin/env python3
-"""Project verification_method onto DDB identity rows from Postgres truth.
+"""Copy canonical GitHub identity proof to existing, matching DDB bindings.
 
-Issue #5664 (A10). `user_identities.verification_method` records HOW a link
-between a platform user and an external account was established, and the webhook
-path now refuses to mint human dispatch authority from a link that is not proven
-(`common/agent_authority.py`). Both DynamoDB identity tables are read-optimized
-projections of Postgres, and until this issue neither carried the attribute — so
-every resolution off the hot path came out with no provenance at all.
+Issue #5664 (A10). Run after deploying the gateway writers and before enforcing
+webhook provenance; see docs/runbooks/identity-provenance-rollout.md.
 
-The gateway writers now set the attribute on every new or updated row. This
-script is what fixes rows that already exist: without it, enforcing the authority
-gate would refuse every sender whose row predates the writers, which is an outage
-rather than a fix. Run it BEFORE republishing the Lambda. See
-`docs/runbooks/identity-provenance-rollout.md` for the ordered procedure.
+A provider account can have different users and proof in different tenants.
+Each projection already names a source user_id and org_id: copy only the method
+from that exact canonical provider/account/user/tenant tuple. Do not reduce proof
+across tenants or select a new mapping. This leaves any_adp_user and membership
+routing decisions to the resolver.
 
-It is also the standing reconciliation path, for the same reason
-`backfill_member_org_ids.py` is: the write-through in
-`src/admin/identity/identity_index_writer.py` is deliberately best-effort (it
-never raises, so a DDB fault cannot fail a Postgres mutation that already
-committed), and that is only safe because drift can be repaired.
+Stale or ambiguous projected bindings have their proof cleared, conditionally,
+and are reported as incomplete. Missing projections are not created: this script
+does not own their membership, bot classification or other required attributes.
+Repair the mapping through the canonical writer, then retry. Legacy magic_link
+and other unproven methods are copied unchanged, never upgraded to proof.
 
-Nothing here invents evidence
------------------------------
-This script only COPIES what Postgres already recorded. It never upgrades a
-value: a `magic_link` row (pre-#5664, ambiguous — the platform genuinely cannot
-tell whether the link was delivered out-of-band or handed back to the requester)
-stays `magic_link`, which `is_proven()` treats as unproven. Rewriting those to a
-proven value would be manufacturing proof that was never collected, which is the
-finding this issue exists to close.
-
-The multi-row reduction rule
-----------------------------
-`user_identities` is unique per (provider, provider_user_id, org_id), so ONE
-external account legitimately holds N rows — one per tenant it is linked in — and
-those rows may carry DIFFERENT provenance (OAuth-confirmed in org A, merely
-self-asserted in org B). The DDB key is (provider, provider_user_id) with no
-org component, so a single value has to stand in for all N.
-
-The reduction is fail-closed: a proven method is projected only when EVERY row
-for the account agrees on it. Any disagreement projects "" (unknown), because the
-DDB row cannot say which tenant's link a given resolution is about, and
-projecting the most permissive of the N would let provenance earned in org A mint
-authority in org B. "" is not a denial of service: the resolver's canonical
-lookup is tenant-scoped (it passes the installation's org_id), so it answers the
-question precisely and overwrites the projected value — the projection is a cache,
-and the safe cache miss is "unknown".
+main() rereads each account under Postgres FOR SHARE locks held through both DDB
+attempts. These locks serialize changes to the selected identity rows; DDB
+conditions also reject changes to the observed mapping, method or updated_at.
+This is not a cross-store transaction, does not drain pending write-throughs,
+and does not repair orphan DDB keys absent from the source query. Cutover still
+requires writer/reader coordination and verification documented in the runbook.
 
 Usage:
-    # Dry-run — prints the reduction for every account, writes nothing:
-    python backfill_identity_provenance.py --dry-run
+    python scripts/backfill_identity_provenance.py --dry-run
+    python scripts/backfill_identity_provenance.py
+    python scripts/backfill_identity_provenance.py --provider-user-id 1234567
+    python scripts/backfill_identity_provenance.py --user-id <ADP-users.id>
 
-    # Backfill every account (the pre-cutover run):
-    python backfill_identity_provenance.py
+Dry-run reads Postgres and both DDB tables, but writes nothing. Both tables are
+required by default. Nonzero exit means a required projection is incomplete;
+success does not mean every canonical link is proven. Retrying after a partial
+write is safe. The script never mutates Postgres.
 
-    # Reconcile ONE account (targeted repair after a failed write-through):
-    python backfill_identity_provenance.py --provider-user-id 1234567
-    python backfill_identity_provenance.py --user-id 3f8c...-uuid
-
-    # Against a specific environment:
-    IDENTITY_INDEX_TABLE=adp-prod-identity-index \
-    USER_IDENTITY_INDEX_TABLE=adp-prod-user-identity-index \
-    DATABASE_URL=postgresql+asyncpg://... \
-    python backfill_identity_provenance.py
-
-Idempotent and safe to re-run: each account's value is recomputed from Postgres
-and overwritten. Re-running after a Postgres change is how the projection is
-brought back into agreement.
-
-Environment variables:
-    DATABASE_URL: Postgres connection string (required)
-    IDENTITY_INDEX_TABLE: legacy DDB table (default: adp-dev-identity-index)
-    USER_IDENTITY_INDEX_TABLE: v2 DDB table (default: adp-dev-user-identity-index)
-    AWS_REGION: AWS region (default: us-east-1)
+Environment: DATABASE_URL (required), IDENTITY_INDEX_TABLE,
+USER_IDENTITY_INDEX_TABLE, AWS_REGION (defaults below).
 """
 
 import argparse
@@ -80,9 +44,13 @@ import logging
 import os
 import sys
 import time
+from collections import Counter
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -91,263 +59,235 @@ IDENTITY_INDEX_TABLE = os.environ.get("IDENTITY_INDEX_TABLE", "adp-dev-identity-
 USER_IDENTITY_INDEX_TABLE = os.environ.get("USER_IDENTITY_INDEX_TABLE", "adp-dev-user-identity-index")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-
-# The value projected when the account's rows disagree. Deliberately the same
-# string a never-projected row reads as, so the two are indistinguishable to the
-# reader: both mean "this cache cannot answer, ask Postgres".
 UNKNOWN_PROVENANCE = ""
 
 
-def reduce_provenance(methods: set[str]) -> str:
-    """Collapse an account's per-tenant verification methods to one projected value.
+async def _query_accounts(conn, *, provider_user_id=None, user_id=None, lock=False) -> list[dict]:
+    """Keep the complete binding for every row of the selected GitHub accounts.
 
-    Returns the shared method when every row agrees, otherwise UNKNOWN_PROVENANCE.
-
-    Kept as a pure function so the rule is unit-testable without Postgres or DDB,
-    and so the fail-closed direction is stated in one place rather than inline in
-    the loop below. Note what it does NOT do: it does not prefer the proven value,
-    does not rank methods, and has no notion of "most trusted" — ranking is how a
-    reduction quietly becomes "project whatever grants the most".
+    --user-id selects accounts, not a subset of their bindings. Postgres row locks
+    keep their proof stable during projection. SQLite ignores row locks and is
+    used only for the offline query/projection tests.
     """
-    if len(methods) == 1:
-        return next(iter(methods))
-    return UNKNOWN_PROVENANCE
-
-
-async def get_identity_provenance(
-    db_url: str,
-    *,
-    provider_user_id: str | None = None,
-    user_id: str | None = None,
-) -> list[dict]:
-    """Query Postgres for each GitHub account's verification methods.
-
-    Grouped by provider_user_id (the DDB key), not by the user_identities row, for
-    the reason the module docstring explains: one account has N rows and the
-    projection has one slot. The aggregation happens in Python rather than via
-    `array_agg` so the query stays portable to the SQLite test suite.
-
-    The `user_id` filter is a semi-join, matching backfill_member_org_ids.py: it
-    selects WHICH account to rebuild, and the rebuild must still see every row
-    that account holds — otherwise a single-user repair would reduce over a subset
-    and could project a proven value the full set does not agree on.
-    """
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    engine = create_async_engine(db_url)
-
-    params: dict[str, str] = {}
+    params = {}
     filter_sql = ""
     if provider_user_id:
         filter_sql = "AND ui.provider_user_id = :provider_user_id"
         params["provider_user_id"] = provider_user_id
     elif user_id:
         filter_sql = """AND ui.provider_user_id IN (
-                SELECT ui2.provider_user_id
-                FROM user_identities ui2
-                WHERE ui2.provider = 'github' AND ui2.user_id = :user_id
-            )"""
+            SELECT ui2.provider_user_id FROM user_identities ui2
+            WHERE ui2.provider = 'github' AND ui2.user_id = :user_id
+        )"""
         params["user_id"] = user_id
 
-    query = text(f"""
-        SELECT
-            ui.provider_user_id,
-            ui.provider,
-            ui.verification_method
-        FROM user_identities ui
-        WHERE ui.provider = 'github'
-        {filter_sql}
-    """)
-
-    async with engine.connect() as conn:
-        result = await conn.execute(query, params)
-        rows = result.fetchall()
-
-    await engine.dispose()
-
-    grouped: dict[tuple[str, str], set[str]] = {}
-    for row in rows:
-        # A NULL/absent column reduces to unknown rather than being skipped: an
-        # account with one proven row and one NULL row must NOT project proven.
-        grouped.setdefault((row[0], row[1]), set()).add(row[2] or UNKNOWN_PROVENANCE)
-
-    return [
-        {
-            "provider_user_id": pid,
-            "provider": provider,
-            "methods": sorted(methods),
-            "verification_method": reduce_provenance(methods),
-        }
-        for (pid, provider), methods in grouped.items()
-    ]
+    lock_sql = "FOR SHARE" if lock and conn.dialect.name == "postgresql" else ""
+    result = await conn.execute(
+        text(f"""
+            SELECT ui.provider, ui.provider_user_id, ui.user_id, ui.org_id, ui.verification_method
+            FROM user_identities ui
+            WHERE ui.provider = 'github' {filter_sql}
+            ORDER BY ui.provider_user_id, ui.org_id, ui.user_id
+            {lock_sql}
+        """),
+        params,
+    )
+    grouped = {}
+    for provider, pid, uid, org_id, method in result.fetchall():
+        account = grouped.setdefault((provider, pid), {"provider": provider, "provider_user_id": pid, "bindings": []})
+        account["bindings"].append({"user_id": uid, "org_id": org_id, "verification_method": method or UNKNOWN_PROVENANCE})
+    return list(grouped.values())
 
 
-def _update(client, table: str, key: dict, provider_user_id: str, verification_method: str, dry_run: bool) -> bool:
-    """SET verification_method on one row, leaving every other attribute alone.
+async def get_identity_provenance(db_url: str, *, provider_user_id: str | None = None, user_id: str | None = None) -> list[dict]:
+    """Read the canonical binding snapshot; main refreshes it under row locks."""
+    engine = create_async_engine(db_url)
+    try:
+        async with engine.connect() as conn:
+            return await _query_accounts(conn, provider_user_id=provider_user_id, user_id=user_id)
+    finally:
+        await engine.dispose()
 
-    UpdateItem rather than PutItem on purpose: these rows carry attributes this
-    script does not know about (member_org_ids, user_kind, bot_kind), and a full
-    overwrite would blank them.
+
+def _update(client, table: str, key: dict, account: dict, dry_run: bool) -> str:
+    """Return updated/planned, missing, mismatched, ambiguous or conflict.
+
+    Read consistently, match the canonical tuple, then compare-and-set the
+    observed binding and proof. Validation and service errors remain errors.
+    SET preserves attributes owned by other projections, including memberships.
     """
-    if dry_run:
-        logger.info("[DRY-RUN] Would update %s: %s → verification_method=%r", table, provider_user_id, verification_method)
-        return True
+    item = client.get_item(TableName=table, Key=key, ConsistentRead=True).get("Item")
+    if not item:
+        logger.warning("%s: %s:%s missing; mapping repair required", table, account["provider"], account["provider_user_id"])
+        return "missing"
 
+    uid = item.get("user_id", {}).get("S")
+    org_id = item.get("org_id", {}).get("S")
+    matches = [binding for binding in account["bindings"] if uid and org_id and binding["user_id"] == uid and binding["org_id"] == org_id]
+    if len(matches) == 1:
+        method = matches[0]["verification_method"]
+        status = "updated"
+    else:
+        # Do not bless another user's row, or choose among conflicting sources.
+        method = UNKNOWN_PROVENANCE
+        status = "ambiguous" if matches else "mismatched"
+        logger.warning(
+            "%s: %s:%s %s binding user=%s org=%s; clearing proof, mapping repair required",
+            table,
+            account["provider"],
+            account["provider_user_id"],
+            status,
+            uid,
+            org_id,
+        )
+
+    if dry_run:
+        logger.info(
+            "[DRY-RUN] %s: %s:%s user=%s org=%s method=%r result=%s",
+            table,
+            account["provider"],
+            account["provider_user_id"],
+            uid,
+            org_id,
+            method,
+            status,
+        )
+        return "planned" if status == "updated" else status
+
+    names = {"#pk": next(iter(key))}
+    values = {
+        ":method": {"S": method},
+        ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+    }
+    conditions = ["attribute_exists(#pk)"]
+    for index, attr in enumerate(("user_id", "org_id", "verification_method", "updated_at")):
+        name = f"#observed{index}"
+        names[name] = attr
+        if attr in item:
+            value = f":observed{index}"
+            values[value] = item[attr]
+            conditions.append(f"{name} = {value}")
+        else:
+            conditions.append(f"attribute_not_exists({name})")
     try:
         client.update_item(
             TableName=table,
             Key=key,
-            UpdateExpression="SET verification_method = :vmethod, updated_at = :now",
-            ExpressionAttributeValues={
-                ":vmethod": {"S": verification_method},
-                ":now": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-            },
-            # Only touch rows that already exist. UpdateItem upserts by default,
-            # and creating a bare row carrying nothing but provenance would invent
-            # an identity mapping that Postgres never projected — the reader would
-            # see a row with no user_id.
-            ConditionExpression="attribute_exists(#pk)",
-            ExpressionAttributeNames={"#pk": next(iter(key))},
+            UpdateExpression="SET verification_method = :method, updated_at = :now",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ConditionExpression=" AND ".join(conditions),
         )
-        return True
-    except ClientError as e:
-        code = e.response["Error"]["Code"]
-        if code in ("ConditionalCheckFailedException", "ValidationException"):
-            logger.warning("%s row not found for %s — skipping (write-through will create it)", table, provider_user_id)
-            return False
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            logger.warning(
+                "%s: %s:%s changed during projection; retry with fresh canonical state", table, account["provider"], account["provider_user_id"]
+            )
+            return "conflict"
         raise
+    return status
 
 
-def update_old_table(client, provider_user_id: str, verification_method: str, dry_run: bool) -> bool:
-    """Update the legacy identity-index table (PK identity_type, SK identity_value)."""
+def update_old_table(client, account: dict, dry_run: bool) -> str:
+    """The legacy github_user namespace must never receive another provider."""
+    if account["provider"] != "github":
+        raise ValueError("The legacy github_user projection only supports GitHub")
     return _update(
         client,
         IDENTITY_INDEX_TABLE,
-        {
-            "identity_type": {"S": "github_user"},
-            "identity_value": {"S": provider_user_id},
-        },
-        provider_user_id,
-        verification_method,
+        {"identity_type": {"S": "github_user"}, "identity_value": {"S": account["provider_user_id"]}},
+        account,
         dry_run,
     )
 
 
-def update_new_table(client, provider_user_id: str, verification_method: str, dry_run: bool) -> bool:
-    """Update the v2 user-identity-index table (PK provider, SK provider_user_id)."""
+def update_new_table(client, account: dict, dry_run: bool) -> str:
     return _update(
         client,
         USER_IDENTITY_INDEX_TABLE,
-        {
-            "provider": {"S": "github"},
-            "provider_user_id": {"S": provider_user_id},
-        },
-        provider_user_id,
-        verification_method,
+        {"provider": {"S": account["provider"]}, "provider_user_id": {"S": account["provider_user_id"]}},
+        account,
         dry_run,
     )
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Project verification_method onto DDB identity rows from Postgres truth")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be updated without making changes")
+    parser = argparse.ArgumentParser(description="Project canonical proof onto matching DDB identity bindings")
+    parser.add_argument("--dry-run", action="store_true", help="Read and plan without writing")
     target = parser.add_mutually_exclusive_group()
-    target.add_argument("--provider-user-id", help="Reconcile only this GitHub numeric user id (the projection's DDB key)")
-    target.add_argument("--user-id", help="Reconcile only this ADP users.id UUID (resolved to its GitHub identities)")
+    target.add_argument("--provider-user-id", help="Reconcile this GitHub numeric user id")
+    target.add_argument("--user-id", help="Reconcile the GitHub accounts linked to this ADP users.id")
     args = parser.parse_args()
 
     if not DATABASE_URL:
         logger.error("DATABASE_URL environment variable is required")
         sys.exit(1)
-
-    single_user = args.provider_user_id or args.user_id
-    scope = f"provider_user_id={args.provider_user_id}" if args.provider_user_id else (f"user_id={args.user_id}" if args.user_id else "all accounts")
-    logger.info("Starting verification_method projection (dry_run=%s, scope=%s)", args.dry_run, scope)
-    logger.info("  Legacy table: %s", IDENTITY_INDEX_TABLE)
-    logger.info("  V2 table:     %s", USER_IDENTITY_INDEX_TABLE)
-    logger.info("  Region:       %s", AWS_REGION)
-
-    accounts = await get_identity_provenance(
-        DATABASE_URL,
-        provider_user_id=args.provider_user_id,
-        user_id=args.user_id,
+    logger.info(
+        "Starting provenance projection (dry_run=%s), legacy=%s v2=%s region=%s",
+        args.dry_run,
+        IDENTITY_INDEX_TABLE,
+        USER_IDENTITY_INDEX_TABLE,
+        AWS_REGION,
     )
-    logger.info("Found %d GitHub accounts with identity rows", len(accounts))
-
+    accounts = await get_identity_provenance(DATABASE_URL, provider_user_id=args.provider_user_id, user_id=args.user_id)
     if not accounts:
-        if single_user:
-            # Non-zero: an operator repairing one account needs to know the target
-            # was not found rather than read "complete" and assume it is now correct.
-            logger.error("No GitHub identity matched %s — nothing written", scope)
+        if args.provider_user_id or args.user_id:
+            logger.error("No canonical GitHub identity matched the requested target; nothing written")
             sys.exit(1)
-        logger.info("Nothing to project — exiting")
+        logger.info("No canonical GitHub accounts to project; this does not verify orphan DDB rows")
         return
 
-    ddb_client = boto3.client("dynamodb", region_name=AWS_REGION)
-
-    success_count = 0
-    skipped_count = 0
-    error_count = 0
-    ambiguous_count = 0
-    attempted = 0
-
-    for account in accounts:
-        provider_user_id = account["provider_user_id"]
-        verification_method = account["verification_method"]
-
-        if verification_method == UNKNOWN_PROVENANCE and len(account["methods"]) > 1:
-            # Surfaced per-account, not just counted: each of these is a real
-            # account whose webhook dispatches depend on the canonical lookup
-            # being reachable, so an operator should know they exist before
-            # enforcement goes live rather than discover them in the deny metric.
-            ambiguous_count += 1
-            logger.warning(
-                "Account %s holds disagreeing provenance across tenants (%s) — projecting unknown; "
-                "the tenant-scoped canonical lookup decides for this account",
-                provider_user_id,
-                ", ".join(account["methods"]),
-            )
-
-        attempted += 1
-        try:
-            # The return values decide the outcome; `_update` reports a row it did
-            # not touch (ConditionExpression failed => no such row) as False rather
-            # than raising. Ignoring them made a run where NOTHING was projected
-            # print "N succeeded, 0 failed" and exit 0 — which the runbook tells an
-            # operator to read as "the backfill completed", so they would publish
-            # the enforcing Lambda over an unbackfilled table.
-            wrote_old = update_old_table(ddb_client, provider_user_id, verification_method, args.dry_run)
-            wrote_new = update_new_table(ddb_client, provider_user_id, verification_method, args.dry_run)
-            if wrote_old and wrote_new:
-                success_count += 1
-            else:
-                # Not an error: a row absent from a projection table is created
-                # carrying provenance by the normal write-through. It is also not a
-                # success, and it must not be reported as one.
-                skipped_count += 1
-        except Exception:
-            logger.exception("Failed to project provenance for account %s", provider_user_id)
-            error_count += 1
-
-        # Throttle to avoid DDB throughput issues, matching backfill_member_org_ids.py.
-        # Counted on rows ATTEMPTED, not rows that succeeded: `success_count` only
-        # advances inside the try, so keying the modulus on it desynchronises after
-        # the first skip or error and can stop throttling entirely.
-        if not args.dry_run and attempted % 25 == 0:
-            await asyncio.sleep(0.1)
+    # Network failures must not leave canonical identity rows locked for the
+    # SDK's long default timeout/retry window.
+    client = boto3.client(
+        "dynamodb",
+        region_name=AWS_REGION,
+        config=Config(connect_timeout=5, read_timeout=10, retries={"mode": "standard", "total_max_attempts": 3}),
+    )
+    engine = create_async_engine(DATABASE_URL)
+    counts = Counter()
+    table_counts = Counter()
+    expected = "planned" if args.dry_run else "updated"
+    try:
+        for index, account in enumerate(accounts, 1):
+            outcomes = {}
+            try:
+                # Hold source locks across both independent DDB attempts. A
+                # partially successful pair is retried, never reported complete.
+                async with engine.begin() as conn:
+                    current = await _query_accounts(conn, provider_user_id=account["provider_user_id"], lock=not args.dry_run)
+                    canonical = current[0] if current else {**account, "bindings": []}
+                    for label, writer in (("legacy", update_old_table), ("v2", update_new_table)):
+                        try:
+                            outcomes[label] = writer(client, canonical, args.dry_run)
+                        except Exception:
+                            logger.exception("%s projection error for GitHub account %s", label, account["provider_user_id"])
+                            outcomes[label] = "error"
+            except Exception:
+                logger.exception("Canonical read/transaction error for GitHub account %s", account["provider_user_id"])
+                outcomes["source"] = "error"
+            complete = len(outcomes) == 2 and all(result == expected for result in outcomes.values())
+            counts["complete" if complete else "incomplete"] += 1
+            if not complete and expected in outcomes.values():
+                counts["partial"] += 1
+            for label, result in outcomes.items():
+                table_counts[f"{label}:{result}"] += 1
+            logger.info("Account %s: %s", account["provider_user_id"], outcomes)
+            if not args.dry_run and index % 25 == 0:
+                await asyncio.sleep(0.1)
+    finally:
+        await engine.dispose()
 
     logger.info(
-        "Projection complete: %d succeeded, %d skipped (no existing row), %d failed, %d ambiguous (projected unknown), %d total",
-        success_count,
-        skipped_count,
-        error_count,
-        ambiguous_count,
+        "%s: %d complete, %d incomplete (%d partial), %d accounts; table outcomes=%s",
+        "Dry-run plan" if args.dry_run else "Projection",
+        counts["complete"],
+        counts["incomplete"],
+        counts["partial"],
         len(accounts),
+        dict(table_counts),
     )
-    # Non-zero on any failure so a runbook caller cannot treat a partial run as a
-    # completed backfill and proceed to republish the enforcing Lambda.
-    if error_count:
+    if counts["incomplete"]:
         sys.exit(1)
 
 

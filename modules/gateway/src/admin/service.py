@@ -14,7 +14,7 @@ from src.admin.cognito_claims import sync_cognito_role_claims
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
 from src.admin.exceptions import MemberRemovalConflictError, PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
-from src.admin.installations.guards import assert_new_installation_ids_claimable_by
+from src.admin.installations.guards import assert_new_installation_ids_claimable_by, lock_installation_organization
 from src.admin.memberships import (
     is_admin_level_role,
     project_member_org_ids,
@@ -147,7 +147,12 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Organization", "name", request.name)
 
+        from src.shared.models.base import new_uuid
+
+        new_org_id = new_uuid()
+        await assert_new_installation_ids_claimable_by(new_org_id, new_ids=list(request.github_installation_ids or []), old_ids=[], db=self.db)
         org = Organization(
+            id=new_org_id,
             name=request.name,
             aws_accounts=request.aws_accounts,
             role_mappings=request.role_mappings,
@@ -291,8 +296,7 @@ class AdminService:
             ResourceNotFoundError: If organization not found
             ResourceConflictError: If new name already exists
         """
-        result = await self.db.execute(select(Organization).where(Organization.id == org_id))
-        org = result.scalar_one_or_none()
+        org = await lock_installation_organization(self.db, org_id)
 
         if not org:
             raise ResourceNotFoundError("Organization", org_id)
@@ -1868,15 +1872,12 @@ class AdminService:
         # authorize, a deletion.
         #
         # `projected_github_ids` is EVERY GitHub id the user holds, and feeds the
-        # `member_org_ids` projection refresh. That is an identification question,
-        # and it must use the same population `project_member_org_ids` recomputes
-        # over — which applies no verification filter at all, deliberately, since the
-        # DDB key is per GitHub ACCOUNT and the projected list is a union across every
-        # user row holding it. Passing the filtered set here silently skipped the
-        # refresh for accounts whose only row is unproven (auto-provisioned channel
-        # placements), leaving `member_org_ids` advertising an org whose membership
-        # row this function just deleted — stale in the PERMISSIVE direction for the
-        # fail-closed reader in `lambda/shared/membership_eligibility.py`.
+        # `member_org_ids` projection refresh. Every formerly affected key must be
+        # refreshed, even if this user's claim was unproven, to clear stale orgs.
+        # The recomputation itself includes only proven surviving bindings: the
+        # projected list grants sign-in eligibility and satisfies the webhook's
+        # strict membership policy. A broad refresh set must not become a broad
+        # authority set.
         identity_rows = (
             await self.db.execute(
                 select(UserIdentity.provider_user_id, UserIdentity.verification_method).where(

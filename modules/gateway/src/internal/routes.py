@@ -158,6 +158,7 @@ class ResolveInstallationRequest(BaseModel):
 
 
 class ResolveInstallationResponse(BaseModel):
+    revocation_checked: bool = True
     tenant_id: str
     # Issue #2724 (slice B): provenance of the owning organization row — which
     # path created it ("operator" | "register_flow" | "install_autocreate").
@@ -465,6 +466,11 @@ async def resolve_user(
     tenant_map = map_result.scalar_one_or_none()
 
     if tenant_map is not None:
+        if body.org_id and tenant_map.org_id != body.org_id:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "channel_tenant_mismatch", "message": "Channel does not belong to the requested organization."},
+            )
         # Auto-provision a shadow user
         shadow = User(
             id=new_uuid(),
@@ -629,6 +635,8 @@ async def resolve_installation(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> ResolveInstallationResponse:
+    from src.admin.installations.resolver import OwnerState, resolve_installation_owner
+
     installation_id = (body.installation_id or "").strip()
     if not installation_id:
         raise HTTPException(
@@ -636,6 +644,18 @@ async def resolve_installation(
             detail={"error": "not_found", "message": "Unknown installation"},
         )
 
+    if installation_id.isdecimal():
+        owner, state = await resolve_installation_owner(int(installation_id), db=db)
+        if state is OwnerState.REVOKED:
+            raise HTTPException(status_code=410, detail={"error": "installation_revoked"})
+        if state is not OwnerState.RESOLVED or owner is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "No proven installation owner"})
+        org = await db.get(Organization, owner.tenant_id)
+        if org is not None:
+            return ResolveInstallationResponse(tenant_id=org.id, created_via=org.created_via or "operator")
+
+    # Retain nonnumeric legacy identifiers for compatibility; real provider IDs
+    # above always use canonical ownership and durable revocation.
     # Postgres query intent: organizations WHERE :iid = ANY(github_installation_ids)
     # (backed by the GIN index ix_organizations_github_installation_ids on
     # Postgres, migration 005). We fetch candidate orgs and match in Python so

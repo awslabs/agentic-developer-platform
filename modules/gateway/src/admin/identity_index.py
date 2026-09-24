@@ -56,6 +56,83 @@ class IdentityIndexClient:
     def table_name(self) -> str:
         return self._table_name
 
+    async def _write_active_installation(self, installation_id: str, operation: dict) -> bool:
+        """Atomically refuse a delayed routing write once a denial marker exists."""
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.transact_write_items,
+                    TransactItems=[
+                        {
+                            "ConditionCheck": {
+                                "TableName": self._table_name,
+                                "Key": {"identity_type": {"S": "github_installation_revoked"}, "identity_value": {"S": installation_id}},
+                                "ConditionExpression": "attribute_not_exists(identity_type)",
+                            }
+                        },
+                        operation,
+                    ],
+                )
+                return True
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code == "ConditionalCheckFailedException" or any(
+                    reason.get("Code") == "ConditionalCheckFailed" for reason in exc.response.get("CancellationReasons", [])
+                ):
+                    logger.warning("Installation routing write rejected by ownership or revocation condition: installation=%s", installation_id)
+                    return False
+                if attempt + 1 < MAX_RETRIES:
+                    await asyncio.sleep(BASE_BACKOFF_SECONDS * (2**attempt))
+        logger.warning("Installation routing write refused or unavailable: installation=%s", installation_id)
+        return False
+
+    async def put_installation_revocation(self, installation_id: str, org_id: str) -> bool:
+        """Permanent denial, independent of forward/reverse projection cleanup."""
+        try:
+            await asyncio.to_thread(
+                self._client.put_item,
+                TableName=self._table_name,
+                Item={"identity_type": {"S": "github_installation_revoked"}, "identity_value": {"S": installation_id}, "org_id": {"S": org_id}},
+                ConditionExpression="attribute_not_exists(org_id) OR org_id = :org",
+                ExpressionAttributeValues={":org": {"S": org_id}},
+            )
+            return True
+        except ClientError:
+            logger.exception("Installation denial projection failed: installation=%s", installation_id)
+            return False
+
+    async def delete_installation_projection(self, installation_id: str, org_id: str) -> bool:
+        return await self._conditional_delete(
+            "github_installation_id", installation_id, "attribute_not_exists(org_id) OR org_id = :expected", {"S": org_id}
+        )
+
+    async def delete_reverse_installation_if_matches(self, org_id: str, installation_id: str) -> bool:
+        return await self._conditional_delete(
+            "org_installation", org_id, "attribute_not_exists(installation_id) OR installation_id = :expected", {"N": installation_id}
+        )
+
+    async def clear_installation_revocation(self, installation_id: str, org_id: str) -> bool:
+        return await self._conditional_delete(
+            "github_installation_revoked", installation_id, "attribute_not_exists(org_id) OR org_id = :expected", {"S": org_id}, mismatch_ok=False
+        )
+
+    async def _conditional_delete(self, identity_type: str, identity_value: str, condition: str, expected: dict, *, mismatch_ok: bool = True) -> bool:
+        """An unrelated replacement is already clean; never remove it after a stale read."""
+        try:
+            await asyncio.to_thread(
+                self._client.delete_item,
+                TableName=self._table_name,
+                Key={"identity_type": {"S": identity_type}, "identity_value": {"S": identity_value}},
+                ConditionExpression=condition,
+                ExpressionAttributeValues={":expected": expected},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return mismatch_ok
+            logger.exception("Installation cleanup failed: type=%s value=%s", identity_type, identity_value)
+            return False
+
     async def put_identity(
         self,
         identity_type: "IdentityType | str",
@@ -93,6 +170,9 @@ class IdentityIndexClient:
         # Issue #3134: member_org_ids as a DDB List attribute
         if member_org_ids is not None:
             item["member_org_ids"] = {"L": [{"S": oid} for oid in member_org_ids]}
+
+        if identity_type == "github_installation_id":
+            return await self._write_active_installation(identity_value, {"Put": {"TableName": self._table_name, "Item": item}})
 
         for attempt in range(MAX_RETRIES):
             try:
@@ -184,50 +264,18 @@ class IdentityIndexClient:
         # Reject a write that would re-point an existing row at a different one.
         condition_expression = "attribute_not_exists(org_id) OR org_id = :org"
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                await asyncio.to_thread(
-                    self._client.update_item,
-                    TableName=self._table_name,
-                    Key=key,
-                    UpdateExpression=update_expression,
-                    ExpressionAttributeValues=expression_values,
-                    ConditionExpression=condition_expression,
-                )
-                return True
-            except ClientError as e:
-                # A conditional failure is a definitive answer, not a transient
-                # fault: retrying re-evaluates the same condition against the same
-                # data and fails identically. Return immediately so a rejected
-                # cross-tenant overwrite is not mistaken for an outage, and so the
-                # backoff budget is not burned on a guaranteed-failing call.
-                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                    logger.error(
-                        "identity-index REJECTED cross-tenant overwrite: installation=%s is already owned by another tenant "
-                        "(attempted org=%s). Postgres is the record of truth — fix ownership there, then re-run "
-                        "scripts/backfill-identity-index.py.",
-                        identity_value,
-                        org_id,
-                    )
-                    return False
-
-                wait = BASE_BACKOFF_SECONDS * (2**attempt)
-                logger.warning(
-                    "identity-index update_installation_identity failed (attempt %d/%d): %s. Retrying in %.1fs",
-                    attempt + 1,
-                    MAX_RETRIES,
-                    e.response["Error"]["Message"],
-                    wait,
-                )
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(wait)
-
-        logger.error(
-            "identity-index update_installation_identity exhausted retries: value=%s org=%s",
+        return await self._write_active_installation(
             identity_value,
-            org_id,
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": key,
+                    "UpdateExpression": update_expression,
+                    "ExpressionAttributeValues": expression_values,
+                    "ConditionExpression": condition_expression,
+                }
+            },
         )
-        return False
 
     async def update_membership_orgs(
         self,
@@ -441,37 +489,17 @@ class IdentityIndexClient:
             "auto_registered": {"BOOL": True},
         }
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                await asyncio.to_thread(
-                    self._client.put_item,
-                    TableName=self._table_name,
-                    Item=item,
-                )
-                logger.info(
-                    "identity-index: wrote reverse row org_installation/%s → installation_id=%d",
-                    org_id,
-                    installation_id,
-                )
-                return True
-            except ClientError as e:
-                wait = BASE_BACKOFF_SECONDS * (2**attempt)
-                logger.warning(
-                    "identity-index write_reverse put_item failed (attempt %d/%d): %s. Retrying in %.1fs",
-                    attempt + 1,
-                    MAX_RETRIES,
-                    e.response["Error"]["Message"],
-                    wait,
-                )
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(wait)
-
-        logger.error(
-            "identity-index write_reverse_installation_identity exhausted retries: org=%s installation_id=%d",
-            org_id,
-            installation_id,
+        return await self._write_active_installation(
+            str(installation_id),
+            {
+                "Put": {
+                    "TableName": self._table_name,
+                    "Item": item,
+                    "ConditionExpression": "attribute_not_exists(identity_type) OR auto_registered = :auto",
+                    "ExpressionAttributeValues": {":auto": {"BOOL": True}},
+                }
+            },
         )
-        return False
 
     async def get_installation_identity(self, installation_id: int) -> dict | None:
         """Read the forward row (github_installation_id → org_id). READ-ONLY.

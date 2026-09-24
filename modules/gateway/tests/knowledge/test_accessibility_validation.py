@@ -29,6 +29,12 @@ from tests.knowledge.conftest import (
 class TestRegisterAssetAccessibility:
     """Tests for register-time accessibility validation in POST /assets."""
 
+    @pytest.fixture(autouse=True)
+    def inert_dispatch(self):
+        # Keep registration/tenant checks real without scheduling an ingestion job.
+        with patch("src.knowledge.routes.dispatch_ingestion", new_callable=AsyncMock) as dispatch:
+            yield dispatch
+
     @pytest.mark.anyio
     async def test_public_repo_accepted_as_shared(self, make_client, fake_user):
         """Public repo → ACCEPT shared scope, tenant_id=NULL, no installation call."""
@@ -947,6 +953,7 @@ class TestMembershipFallbackRouteIntegration:
         # here: the caller's personal tenant genuinely does not own the install,
         # which is what makes the membership fallback the path under test.
         gateway_db = FakeAsyncSession()
+        gateway_db.get = AsyncMock(return_value=None)  # No durable installation revocation.
         gateway_db.execute_results = [
             FakeResult(rows=[]),  # resolver: no quarantined conflict
             FakeResult(rows=[]),  # resolver: no channel_tenant_map claim
@@ -1023,6 +1030,7 @@ class TestMembershipFallbackRouteIntegration:
         # The caller's own tenant is the sole claimant, so ownership is granted
         # and the membership fallback is never reached — the point of this test.
         gateway_db = FakeAsyncSession()
+        gateway_db.get = AsyncMock(return_value=None)  # No durable installation revocation.
         gateway_db.execute_results = [
             FakeResult(rows=[]),  # resolver: no quarantined conflict
             FakeResult(rows=[("acme-corp",)]),  # resolver: channel_tenant_map claim → caller's tenant

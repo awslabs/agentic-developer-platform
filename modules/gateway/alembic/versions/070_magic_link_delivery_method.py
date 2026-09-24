@@ -14,8 +14,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "071_magic_link_delivery_method"
-down_revision = "070_opus55_pricing"
+revision = "070_magic_link_delivery_method"
+down_revision = "069_aws_verification_binding"
 branch_labels = None
 depends_on = None
 

@@ -28,6 +28,9 @@ def test_merge_retains_both_existing_migration_histories():
 
 @pytest.mark.parametrize("initial_head", ["067_aws_connection_verify", "067_flow_execution_pause", "068_merge_cli_flow"])
 def test_upgrade_from_either_parent_preserves_controls(pg_url, initial_head):
+    config = Config(str(GATEWAY_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(GATEWAY_ROOT / "alembic"))
+    current_head = ScriptDirectory.from_config(config).get_current_head()
     upgrade(pg_url, initial_head)
     engine = create_engine(pg_url)
     try:
@@ -46,6 +49,6 @@ def test_upgrade_from_either_parent_preserves_controls(pg_url, initial_head):
             } <= credential_columns
             assert "execution_paused" in {column["name"] for column in schema.get_columns("orchestration_flows")}
             assert connection.scalar(text("SELECT enabled FROM budget_enforcement_settings WHERE scope_key='global'")) is False
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == ["069_aws_verification_binding"]
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all() == [current_head]
     finally:
         engine.dispose()

@@ -19,6 +19,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import src.admin.connections.service as svc
 from src.admin.connections.routes import router
 from src.admin.connections.schemas import RegisterAppStartResponse
 from src.auth.dependencies import get_current_user
@@ -66,7 +67,7 @@ def _admin_initiator(mock_db: AsyncMock, *, user_id: str = "user-001") -> MagicM
 
 
 @pytest.fixture(autouse=True)
-def _no_app_registered_yet():
+def _no_app_registered_yet(monkeypatch):
     """Secrets Manager reports no GitHub App registered yet.
 
     Issue #5664 moved the "an App is already registered" guard INTO the callback,
@@ -82,6 +83,11 @@ def _no_app_registered_yet():
     themselves (the inner patch wins); the guard has dedicated coverage in
     tests/admin/test_register_app_callback_authority.py.
     """
+    # This file mocks the database to exercise manifest, redirect and secret
+    # handling. Canonical identity resolution is verified with real SQLite and
+    # real authenticated routes in test_setup_identity_binding.py.
+    identity = MagicMock(id="user-001", role="platform_admin", org_id="org-001")
+    monkeypatch.setattr(svc, "_resolve_setup_initiator", AsyncMock(return_value=identity))
     with patch(
         "src.admin.connections.service._check_existing_app_secret",
         return_value=None,
@@ -672,6 +678,8 @@ class TestRegisterAppCallbackService:
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
         mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
         _admin_initiator(mock_db)
 
         # Mock the DB query to return a valid nonce
@@ -695,6 +703,7 @@ class TestRegisterAppCallbackService:
         mock_db.execute = mock_execute
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nSECRET\n-----END RSA PRIVATE KEY-----",
@@ -1005,6 +1014,8 @@ class TestBrokerOAuthWriteThrough:
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
         mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
         _admin_initiator(mock_db)
 
         mock_result = MagicMock()
@@ -1025,6 +1036,7 @@ class TestBrokerOAuthWriteThrough:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 99999,
             "slug": "my-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nKEY\n-----END RSA PRIVATE KEY-----",
@@ -1242,6 +1254,8 @@ class TestLoginEnabledSignal:
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
         mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
         _admin_initiator(mock_db)
 
         mock_result = MagicMock()
@@ -1259,6 +1273,7 @@ class TestLoginEnabledSignal:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
@@ -1300,6 +1315,8 @@ class TestLoginEnabledSignal:
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
         mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
         _admin_initiator(mock_db)
 
         mock_result = MagicMock()
@@ -1317,6 +1334,7 @@ class TestLoginEnabledSignal:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
@@ -1364,6 +1382,8 @@ class TestLoginEnabledSignal:
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
         mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
         _admin_initiator(mock_db)
 
         mock_result = MagicMock()
@@ -1381,6 +1401,7 @@ class TestLoginEnabledSignal:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 12345,
             "slug": "test-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nK\n-----END RSA PRIVATE KEY-----",
@@ -1504,6 +1525,8 @@ class TestCallbackRedirectRelativePath:
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
         mock_nonce.target_user_id = "user-001"
+        mock_nonce.provider_user_id = "sub-123"
+        mock_nonce.channel_context = svc._setup_context(kind="platform", owner_type="user")
         _admin_initiator(mock_db)
 
         mock_result = MagicMock()
@@ -1524,6 +1547,7 @@ class TestCallbackRedirectRelativePath:
         mock_db.commit = AsyncMock()
 
         github_response = {
+            "owner": {"id": 999, "login": "test-owner", "type": "User"},
             "id": 77777,
             "slug": "my-platform-app",
             "pem": "-----BEGIN RSA PRIVATE KEY-----\nKEY\n-----END RSA PRIVATE KEY-----",

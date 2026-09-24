@@ -8,9 +8,9 @@ Issue #702: Added resolve_user_by_identity() to call the existing
 POST /internal/v1/resolve-user endpoint as a Postgres safety-net for
 canonical user_id resolution.
 
-Issue #4046 (#2724 slice A): resolve_installation_by_id() returns three distinct
-states (resolved / not_found / error) so callers can tell "this installation is
-authoritatively not a known tenant" from "we could not reach the gateway".
+Issue #4046 (#2724 slice A): resolve_installation_by_id() returns distinct
+states (resolved / revoked / not_found / error) so callers can distinguish
+authoritative absence or revocation from gateway unavailability.
 
 Only invoked from the webhook Lambda when:
   1. Tenant is resolved (installation is known)
@@ -42,6 +42,7 @@ _internal_api_key: str | None = None
 INSTALLATION_RESOLVED = "resolved"
 INSTALLATION_NOT_FOUND = "not_found"
 INSTALLATION_ERROR = "error"
+INSTALLATION_REVOKED = "revoked"
 
 # resolve_user_state() result states (Issue #5664, A10). Same three-state contract
 # as the installation resolver above, and for the same reason: a caller deciding
@@ -309,10 +310,11 @@ def resolve_installation_by_id(installation_id: str) -> dict:
     Issue #2769: Postgres is authoritative for the installation_id → tenant
     mapping.
 
-    Issue #4046 (#2724 slice A): returns one of three distinct states instead of
+    Issue #4046 (#2724 slice A): returns explicit states instead of
     collapsing everything except success into ``None``::
 
         {"state": "resolved",  "tenant_id": <org_id>, "created_via": <str>}
+        {"state": "revoked"}                            # authoritative gateway 410
         {"state": "not_found"}                          # authoritative gateway 404
         {"state": "error", "reason": <str>}             # we could not find out
 
@@ -322,15 +324,12 @@ def resolve_installation_by_id(installation_id: str) -> dict:
     as "unknown", never as "untrusted". Use :func:`installation_gate` rather than
     interpreting these fields directly.
 
-    ``not_found`` is returned ONLY for a gateway 404 — the one answer that
-    authoritatively means "this installation is not a known ADP tenant".
-    Everything else (missing config, missing internal API key, non-404 HTTP
-    status, timeout, malformed body) is ``error``: we do not know. Callers that
-    gate on "known tenant" must deny on ``not_found`` and fail open (loudly) on
-    ``error``, otherwise a gateway outage becomes a platform-wide deny.
-
-    Callers must branch on ``state``. Truthiness is NOT a success check — all
-    three results are truthy dicts.
+    Installation admission requires ``resolved`` plus ``revocation_checked=True``.
+    A 410 is durable denial; 404 is unknown ownership. Missing configuration,
+    other HTTP failures, timeouts and malformed responses are ``error`` and also
+    deny installation authority. An absent DDB marker cannot prove the gateway
+    did not commit a revocation whose marker publication failed.
+    Callers must branch on ``state``; all results are truthy dictionaries.
     """
     if not GATEWAY_API_URL:
         return _installation_error(installation_id, "gateway_url_not_configured")
@@ -362,6 +361,7 @@ def resolve_installation_by_id(installation_id: str) -> dict:
                     return {
                         "state": INSTALLATION_RESOLVED,
                         "tenant_id": tenant_id,
+                        "revocation_checked": data.get("revocation_checked") is True,
                         # Issue #2724: "" when the gateway has not been redeployed
                         # with the provenance field yet — the gate fails open on
                         # that, loudly.
@@ -374,6 +374,8 @@ def resolve_installation_by_id(installation_id: str) -> dict:
                 installation_id, "unexpected_status", str(resp.status)
             )
     except urllib.error.HTTPError as e:
+        if e.code == 410:
+            return {"state": INSTALLATION_REVOKED}
         if e.code == 404:
             logger.info(
                 "resolve_installation_by_id: 404 for installation_id=%s "
@@ -547,6 +549,9 @@ def installation_gate(result: dict | None) -> tuple[bool, str]:
         return True, GATE_UNAVAILABLE
 
     state = result.get("state")
+
+    if state == INSTALLATION_REVOKED:
+        return False, "installation_revoked"
 
     if state == INSTALLATION_NOT_FOUND:
         return False, GATE_NOT_A_KNOWN_TENANT

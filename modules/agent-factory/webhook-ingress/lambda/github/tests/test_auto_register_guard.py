@@ -1,32 +1,8 @@
-"""Tests for the auto-register write-guard (Issue #2769).
+"""Auto-registration requires current canonical installation admission.
 
-Postgres is the single source of truth for the installation → tenant mapping.
-_auto_register_installation() must:
-  1. No-op when a Postgres-owned row (no auto_registered flag) exists.
-  2. Write + tag auto_registered when no row exists and the installation resolves
-     to a known Postgres tenant — writing the POSTGRES tenant, not the raw login.
-  3. Emit InstallationTenantDrift when a Postgres-owned row's org differs from
-     the webhook org login.
-
-Issue #4046 (#2724 slice A): the gateway client returns three states
-(resolved / not_found / error) instead of ``None`` for every non-success.
-
-Issue #2724 (slice B): the deny has now landed, and the two states are no longer
-treated alike:
-
-  * ``not_found`` (authoritative gateway 404) → **DENY**: no rows written, no
-    tenant returned, caller 403s ``unknown_installation``. This is
-    ``TestTenantGate``, and it is the behavior the module docstring of
-    ``_auto_register_installation`` promised since #2769 without implementing.
-  * ``error`` (gateway unreachable) → fail OPEN but LOUD: the ``org_login``
-    fallback row is still written so an outage does not reject every new
-    install, but the result is marked NON-authoritative so the caller skips
-    per-tenant credential provisioning.
-
-``_auto_register_installation`` now returns an ``AutoRegisterResult(tenant_id,
-authoritative)`` rather than a bare string, because "we wrote a routable row" and
-"we know this org is a real tenant" are different facts — conflating them is what
-let the platform App's private key be copied for any org that installed the App.
+Known cached rows also require the revocation-check protocol. Missing or failed
+canonical answers and conditional write races return no authority. Healthy rows
+retain projection ownership guards, provenance policy and partial-write reporting.
 """
 
 import os
@@ -53,11 +29,34 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "300")
 
 
+@pytest.fixture(autouse=True)
+def _admission_gateway(monkeypatch):
+    import importlib
+    import handler
+
+    gateway = importlib.import_module("common.gateway_client")
+    monkeypatch.setattr(
+        gateway,
+        "resolve_installation_by_id",
+        lambda iid: handler._get_gateway_client().resolve_installation_by_id(iid),
+    )
+
+
 def _mock_table_with(forward_item=None, reverse_item=None):
     """Return a mock DDB table whose get_item returns the given rows by identity_type."""
-    table = MagicMock()
+    table = _guarded_transaction_table(MagicMock())
+    # This factory describes a healthy active installation unless the test
+    # explicitly overrides the canonical response below.
+    import handler
 
-    def get_item(Key=None):  # noqa: N803
+    handler._get_gateway_client().resolve_installation_by_id.return_value = {
+        "state": "resolved",
+        "revocation_checked": True,
+        "tenant_id": (forward_item or {}).get("org_id", "pranavsharma1000"),
+        "created_via": "operator",
+    }
+
+    def get_item(Key=None, **kwargs):  # noqa: N803
         itype = Key["identity_type"]
         if itype == "github_installation_id":
             return {"Item": forward_item} if forward_item else {}
@@ -66,6 +65,19 @@ def _mock_table_with(forward_item=None, reverse_item=None):
         return {}
 
     table.get_item = get_item
+    return table
+
+
+def _guarded_transaction_table(table):
+    def transact(*, TransactItems):  # noqa: N803
+        check = TransactItems[0]["ConditionCheck"]
+        assert check["Key"]["identity_type"] == "github_installation_revoked"
+        assert check["ConditionExpression"] == "attribute_not_exists(identity_type)"
+        operation = dict(TransactItems[1]["Put"])
+        operation.pop("TableName")
+        return table.put_item(**operation)
+
+    table.meta.client.transact_write_items.side_effect = transact
     return table
 
 
@@ -94,7 +106,7 @@ class TestAutoRegisterGuard:
         assert result.authoritative is True
         table.put_item.assert_not_called()
         # gateway not consulted — row already exists
-        mock_gw.return_value.resolve_installation_by_id.assert_not_called()
+        mock_gw.return_value.resolve_installation_by_id.assert_called_once()
         mock_metric.assert_not_called()
 
     @patch("handler._emit_metric")
@@ -122,23 +134,7 @@ class TestAutoRegisterGuard:
     @patch("handler._emit_metric")
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_denies_when_gateway_says_not_a_known_tenant(
-        self, mock_resolver, mock_gw, mock_metric
-    ):
-        """THE GATE (Issue #2724 slice B): an authoritative 404 writes NOTHING.
-
-        Formerly ``test_falls_back_to_org_login_when_gateway_unknown``, which
-        pinned the vulnerable fallthrough (and before that
-        ``test_skips_when_not_known_tenant``, whose name claimed a skip its body
-        contradicted — the mismatch that let the gap survive a merge and a
-        security review). The deny has landed, so the expectation flips here
-        deliberately, exactly as slice A promised.
-
-        A gateway 404 means the gateway looked and no organization claims this
-        installation. No identity rows, no tenant returned → the caller 403s
-        ``unknown_installation``, which is the contract
-        ``_auto_register_installation``'s docstring promised since #2769.
-        """
+    def test_denies_when_gateway_says_not_a_known_tenant(self, mock_resolver, mock_gw, mock_metric):
         from handler import _auto_register_installation
 
         table = _mock_table_with()  # no existing rows
@@ -150,16 +146,8 @@ class TestAutoRegisterGuard:
         # No tenant → caller 403s. The org_login NEVER becomes a tenant_id.
         assert result.tenant_id is None
         assert result.authoritative is False
-        # Slice C (#4047): an authoritative 404 IS negative-cached (one write to
-        # the distinct github_installation_negative key), but NEITHER identity
-        # row is written — the gate denies before any forward/reverse put_item.
-        written_types = [
-            c.kwargs["Item"]["identity_type"] for c in table.put_item.call_args_list
-        ]
-        assert "github_installation_id" not in written_types
-        assert "org_installation" not in written_types
-        assert written_types == ["github_installation_negative"]
-        mock_metric.assert_called_once_with("AutoRegisterDenied")
+        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
     @patch("handler._emit_metric")
     @patch("handler._get_gateway_client")
@@ -181,6 +169,7 @@ class TestAutoRegisterGuard:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "attacker-org",
             "created_via": "install_autocreate",
         }
@@ -208,6 +197,7 @@ class TestAutoRegisterGuard:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "hackathon-org",
             "created_via": "install_autocreate",
         }
@@ -223,16 +213,7 @@ class TestAutoRegisterGuard:
     @patch("handler._emit_metric")
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_fails_open_but_loud_when_gateway_errors(self, mock_resolver, mock_gw, mock_metric):
-        """An ``error`` state must NOT deny — but must not provision either.
-
-        Issue #2724 §3: a gateway outage cannot become "reject all new customer
-        installations" (the top row of this issue's own blast-radius table), so
-        the org_login fallback row is still written. But the result is marked
-        NON-authoritative so the caller skips the per-tenant secret — that seed
-        copies the platform App's private key, and we do not know whose org this
-        is. Loud: ``AutoRegisterGateUnavailable``.
-        """
+    def test_gateway_outage_denies_new_registration(self, mock_resolver, mock_gw, mock_metric):
         from handler import _auto_register_installation
 
         table = _mock_table_with()  # no existing rows
@@ -245,17 +226,10 @@ class TestAutoRegisterGuard:
         result = _auto_register_installation(555, "some-random-org")
 
         # Fails OPEN: routing still works.
-        assert result.tenant_id == "some-random-org"
-        # But NOT authoritative: no credential provisioning.
+        assert result.tenant_id is None
         assert result.authoritative is False
-        # Exactly two writes: forward + reverse. Issue #4047 must NOT add a
-        # negative-cache row on an error state — see
-        # TestNegativeCache.test_error_state_is_never_cached.
-        assert table.put_item.call_count == 2
-        forward_item = table.put_item.call_args_list[0].kwargs["Item"]
-        assert forward_item["org_id"] == "some-random-org"
-        assert forward_item["auto_registered"] is True
-        assert mock_metric.call_args_list[0].args[0] == "AutoRegisterGateUnavailable"
+        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
     @patch("handler._emit_metric")
     @patch("handler._get_gateway_client")
@@ -274,6 +248,7 @@ class TestAutoRegisterGuard:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "acme",
             "created_via": "",
         }
@@ -300,6 +275,7 @@ class TestAutoRegisterGuard:
         # Gateway maps installation → Postgres tenant (which differs from the login)
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "pranavsharma1000",
             "created_via": "register_flow",
         }
@@ -315,7 +291,7 @@ class TestAutoRegisterGuard:
         assert forward_item["org_id"] == "pranavsharma1000"  # NOT the raw login
         assert forward_item["auto_registered"] is True
         # Non-clobber condition on the fresh write
-        assert forward_call.kwargs["ConditionExpression"] == "attribute_not_exists(auto_registered)"
+        assert forward_call.kwargs["ConditionExpression"] == "attribute_not_exists(identity_type)"
         # Reverse row keyed on the Postgres tenant
         reverse_item = table.put_item.call_args_list[1].kwargs["Item"]
         assert reverse_item["identity_type"] == "org_installation"
@@ -362,7 +338,7 @@ class TestAutoRegisterGuard:
         # No write at all — the Postgres-owned row is untouched.
         table.put_item.assert_not_called()
         # Gateway is not consulted: an existing row short-circuits the resolve.
-        mock_gw.return_value.resolve_installation_by_id.assert_not_called()
+        mock_gw.return_value.resolve_installation_by_id.assert_called_once()
         # Drift is surfaced for observability (org login != stored tenant).
         mock_metric.assert_called_once_with("InstallationTenantDrift")
 
@@ -396,7 +372,7 @@ class TestAutoRegisterGuard:
         # itself be a pre-gate org_login fallback, so we do not re-seed on it.
         assert result.authoritative is False
         # Refresh path does not consult the gateway
-        mock_gw.return_value.resolve_installation_by_id.assert_not_called()
+        mock_gw.return_value.resolve_installation_by_id.assert_called_once()
         # Forward write has no ConditionExpression (idempotent overwrite)
         forward_call = table.put_item.call_args_list[0]
         assert "ConditionExpression" not in forward_call.kwargs
@@ -416,14 +392,14 @@ class TestNegativeCache:
     @classmethod
     def _table_with_negative_row(cls, installation_id, offset=300):
         """Mock table that misses the forward row but HAS a negative row."""
-        table = MagicMock()
+        table = _guarded_transaction_table(MagicMock())
         row = {
             "identity_type": cls.NEGATIVE_TYPE,
             "identity_value": str(installation_id),
             "ttl": int(time.time()) + offset,
         }
 
-        def get_item(Key=None):  # noqa: N803
+        def get_item(Key=None, **kwargs):  # noqa: N803
             if Key["identity_type"] == cls.NEGATIVE_TYPE:
                 return {"Item": row}
             return {}
@@ -441,22 +417,19 @@ class TestNegativeCache:
 
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_not_found_writes_a_negative_row_with_ttl(self, mock_resolver, mock_gw):
-        """The authoritative 404 IS cached, with a TTL."""
+    def test_canonical_unknown_writes_no_authority(self, mock_resolver, mock_gw):
         from handler import _auto_register_installation
 
         table = _mock_table_with()
         mock_resolver.return_value._get_table.return_value = table
-        mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "state": "not_found"
-        }
+        mock_gw.return_value.resolve_installation_by_id.return_value = {"state": "not_found"}
 
-        _auto_register_installation(555, "some-random-org")
+        result = _auto_register_installation(555, "some-random-org")
 
-        negative = self._negative_writes(table)
-        assert len(negative) == 1
-        assert negative[0]["identity_value"] == "555"
-        assert negative[0]["ttl"] > int(time.time())
+        assert result.tenant_id is None
+        assert not result.authoritative
+        table.put_item.assert_not_called()
+        table.meta.client.transact_write_items.assert_not_called()
 
     @pytest.mark.parametrize(
         "reason", ["http_500", "transport_error", "gateway_url_not_configured"]
@@ -494,6 +467,7 @@ class TestNegativeCache:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "pranavsharma1000",
         }
 
@@ -516,7 +490,7 @@ class TestNegativeCache:
 
         result = _auto_register_installation(555, "some-random-org")
 
-        mock_gw.return_value.resolve_installation_by_id.assert_not_called()
+        mock_gw.return_value.resolve_installation_by_id.assert_called_once()
         # Behavior IDENTICAL to a freshly-received not_found. A cache hit must
         # not invent a new outcome, so slice B's deny (now landed) covers cached
         # and live not_found alike: the synthesized not_found feeds the same
@@ -532,9 +506,7 @@ class TestNegativeCache:
 
         table = self._table_with_negative_row(555, offset=-1)
         mock_resolver.return_value._get_table.return_value = table
-        mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "state": "not_found"
-        }
+        mock_gw.return_value.resolve_installation_by_id.return_value = {"state": "not_found"}
 
         _auto_register_installation(555, "some-random-org")
 
@@ -554,6 +526,7 @@ class TestNegativeCache:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "now-a-real-tenant",
             # Trusted provenance so slice B's gate returns the resolved tenant
             # authoritatively — the point here is that the bypass RE-RESOLVED,
@@ -561,9 +534,7 @@ class TestNegativeCache:
             "created_via": "operator",
         }
 
-        result = _auto_register_installation(
-            555, "some-org", bypass_negative_cache=True
-        )
+        result = _auto_register_installation(555, "some-org", bypass_negative_cache=True)
 
         # The cache did not decide the outcome...
         mock_gw.return_value.resolve_installation_by_id.assert_called_once()
@@ -595,14 +566,12 @@ class TestNegativeCache:
         result = _auto_register_installation(144082554, "pranavsharma1000")
 
         assert result.tenant_id == "pranavsharma1000"
-        mock_gw.return_value.resolve_installation_by_id.assert_not_called()
+        mock_gw.return_value.resolve_installation_by_id.assert_called_once()
         assert not self._negative_writes(table)
 
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_cache_write_failure_does_not_break_registration(
-        self, mock_resolver, mock_gw
-    ):
+    def test_cache_write_failure_does_not_break_registration(self, mock_resolver, mock_gw):
         """A cache is an optimization — it must never fail a webhook."""
         from handler import _auto_register_installation
 
@@ -615,9 +584,7 @@ class TestNegativeCache:
 
         table.put_item = MagicMock(side_effect=put_item)
         mock_resolver.return_value._get_table.return_value = table
-        mock_gw.return_value.resolve_installation_by_id.return_value = {
-            "state": "not_found"
-        }
+        mock_gw.return_value.resolve_installation_by_id.return_value = {"state": "not_found"}
 
         result = _auto_register_installation(555, "some-random-org")
 
@@ -627,14 +594,10 @@ class TestNegativeCache:
 
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_disabled_cache_restores_pre_slice_behaviour(
-        self, mock_resolver, mock_gw, monkeypatch
-    ):
+    def test_disabled_cache_restores_pre_slice_behaviour(self, mock_resolver, mock_gw, monkeypatch):
         """TTL=0 kill-switch: nothing read or written, gateway always asked."""
         monkeypatch.setenv("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "0")
-        for mod in [
-            k for k in sys.modules if k.startswith("common.negative_cache")
-        ]:
+        for mod in [k for k in sys.modules if k.startswith("common.negative_cache")]:
             del sys.modules[mod]
         import handler
 
@@ -642,9 +605,7 @@ class TestNegativeCache:
         try:
             table = _mock_table_with()
             mock_resolver.return_value._get_table.return_value = table
-            mock_gw.return_value.resolve_installation_by_id.return_value = {
-                "state": "not_found"
-            }
+            mock_gw.return_value.resolve_installation_by_id.return_value = {"state": "not_found"}
 
             result = handler._auto_register_installation(555, "some-random-org")
 
@@ -696,9 +657,7 @@ class TestInstallationEventBypass:
     )
     @patch("handler._auto_provision_tenant_github_app_secret")
     @patch("handler._auto_register_installation")
-    def test_bypass_only_for_created(
-        self, mock_register, mock_provision, action, expected_bypass
-    ):
+    def test_bypass_only_for_created(self, mock_register, mock_provision, action, expected_bypass):
         import handler
 
         handler._webhook_secret = "test-secret-123"
@@ -709,9 +668,7 @@ class TestInstallationEventBypass:
 
         handler.handler(self._installation_event(action), None)
 
-        assert (
-            mock_register.call_args.kwargs["bypass_negative_cache"] is expected_bypass
-        )
+        assert mock_register.call_args.kwargs["bypass_negative_cache"] is expected_bypass
 
 
 class TestPartialWriteSplit:
@@ -728,7 +685,7 @@ class TestPartialWriteSplit:
 
     Mock shape note (issue #4020, routed from the #4030 review): the
     ``resolve_installation_by_id`` mocks below return the full three-state
-    envelope ``{"state": "resolved", "tenant_id": ...}`` that #4052 introduced.
+    envelope ``{"state": "resolved", "revocation_checked": True, "tenant_id": ...}`` that #4052 introduced.
     They previously returned a bare ``{"tenant_id": ...}``, which has no ``state``
     key — so ``state == "resolved"`` was False and the handler silently took the
     *org_login fallback* branch instead of the gateway-resolved one. Every fixture
@@ -740,9 +697,9 @@ class TestPartialWriteSplit:
     @staticmethod
     def _table_failing_on(identity_type: str):
         """Mock table whose put_item raises only for the given identity_type."""
-        table = MagicMock()
+        table = _guarded_transaction_table(MagicMock())
 
-        def get_item(Key=None):
+        def get_item(Key=None, **kwargs):
             return {}
 
         def put_item(Item=None, **kwargs):
@@ -772,6 +729,7 @@ class TestPartialWriteSplit:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "acme-internal",
             "created_via": "operator",
         }
@@ -803,6 +761,7 @@ class TestPartialWriteSplit:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "acme-internal",
             "created_via": "operator",
         }
@@ -812,9 +771,7 @@ class TestPartialWriteSplit:
         assert result.tenant_id is None
         assert result.authoritative is False
         # PartialWrite is specifically "forward succeeded, reverse didn't".
-        assert "AutoRegister.PartialWrite" not in [
-            c.args[0] for c in mock_metric.call_args_list
-        ]
+        assert "AutoRegister.PartialWrite" not in [c.args[0] for c in mock_metric.call_args_list]
         # Reverse write never attempted.
         assert table.put_item.call_count == 1
 
@@ -832,10 +789,10 @@ class TestPartialWriteSplit:
         """
         from handler import _auto_register_installation
 
-        table = MagicMock()
+        table = _guarded_transaction_table(MagicMock())
         calls = {"n": 0}
 
-        def get_item(Key=None):
+        def get_item(Key=None, **kwargs):
             calls["n"] += 1
             if Key["identity_type"] == "org_installation":
                 raise RuntimeError("DDB throttled on reverse read")
@@ -845,6 +802,7 @@ class TestPartialWriteSplit:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "acme",
             "created_via": "operator",
         }
@@ -858,16 +816,10 @@ class TestPartialWriteSplit:
     @patch("handler._emit_metric")
     @patch("handler._get_gateway_client")
     @patch("handler._get_identity_resolver")
-    def test_conditional_check_failure_still_no_ops(self, mock_resolver, mock_gw, mock_metric):
-        """Regression: the ConditionalCheckFailed race path is unchanged.
-
-        A Postgres-owned row winning the read→write race returns the tenant and
-        writes nothing further. Restructuring the error scopes must not turn this
-        into a PartialWrite.
-        """
+    def test_conditional_write_race_returns_no_authority(self, mock_resolver, mock_gw, mock_metric):
         from handler import _auto_register_installation
 
-        table = MagicMock()
+        table = _guarded_transaction_table(MagicMock())
         table.get_item = MagicMock(return_value={})
 
         class ConditionalCheckFailedException(Exception):
@@ -877,15 +829,13 @@ class TestPartialWriteSplit:
         mock_resolver.return_value._get_table.return_value = table
         mock_gw.return_value.resolve_installation_by_id.return_value = {
             "state": "resolved",
+            "revocation_checked": True,
             "tenant_id": "acme",
             "created_via": "operator",
         }
 
         result = _auto_register_installation(999, "acme")
 
-        assert result.tenant_id == "acme"
-        # A Postgres-owned row won the race, so the answer is authoritative.
-        assert result.authoritative is True
-        mock_metric.assert_not_called()
-        # Only the forward attempt; the reverse row is not written on a lost race.
+        assert result.tenant_id is None
+        assert result.authoritative is False
         assert table.put_item.call_count == 1

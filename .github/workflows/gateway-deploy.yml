@@ -878,13 +878,17 @@ jobs:
           # ALB was just wired this run; gateway-infra needs a re-apply so
           # CloudFront picks up the ALB ARN from SSM and creates the /api/*
           # ordered_cache_behavior (enable_vpc_origin flips from false to true).
+          # Preserve this release's reviewed source. If main has advanced, the
+          # infra workflow must reject the stale pin before acquiring authority.
           gh workflow run gateway-infra-apply.yml \
+            --field reviewed_source_sha="$REVIEWED_SOURCE_SHA" \
             --field customer_account_id="${CUSTOMER_ACCOUNT_ID}" \
             --field customer_aws_label="${CUSTOMER_AWS_LABEL}" \
             --field customer_user_id="${CUSTOMER_USER_ID}" \
             --field environment="${ENVIRONMENT}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEWED_SOURCE_SHA: ${{ inputs.adp_source_revision || github.sha }}
           CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id }}
           CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label }}
           CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}

@@ -84,8 +84,8 @@ class TestUsersWriteThrough:
             user_id=result.id,
             org_id="wt-org",
             identities=[
-                {"provider_user_id": "gh-123", "provider_username": "alice-gh", "verification_method": "admin_manual"},
-                {"provider_user_id": "sl-456", "provider_username": "alice-sl", "verification_method": "admin_manual"},
+                {"provider": "github", "provider_user_id": "gh-123", "provider_username": "alice-gh", "verification_method": "admin_manual"},
+                {"provider": "slack", "provider_user_id": "sl-456", "provider_username": "alice-sl", "verification_method": "admin_manual"},
             ],
         )
 
@@ -157,7 +157,7 @@ class TestUsersWriteThrough:
         deleted = await svc.delete_user("wt-org", user.id)
         assert deleted is True
 
-        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["sl-del2"])
+        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["sl-del2"], provider="slack")
 
     @pytest.mark.asyncio
     async def test_delete_user_no_identities_skips_ddb(self, db_session: AsyncSession, mock_cognito_sync, mock_identity_writer, seeded_org):

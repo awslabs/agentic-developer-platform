@@ -14,16 +14,15 @@ the claim self-certifying:
 Nothing in that circle ever contacted the account being claimed. So "verified"
 meant only "the requester can read their own HTTP response".
 
-Contrast the INTERNAL issuance path (``POST /internal/v1/issue-magic-link``),
-which looks identical in the database but is genuinely out-of-band: it is called
-by the ingest Lambda when a *provider-authenticated inbound event* arrives from an
-unrecognised account, and the Lambda posts the resulting link back **in-channel**
-to that account (``modules/agent-factory/gateway/lambdas/ingest/handler.py``
-``_handle_unresolved_user``). Only someone who can read that channel can complete
-it, which is what makes it proof of control.
+The INTERNAL issuance path posts the link in the shared conversation that
+triggered it. That is shared-channel access, not proof of account ownership, and
+its confirmations remain unproven. The private-delivery positives below seed
+user-bound nonces as consumer-contract fixtures; they do not exercise a deployed
+private-message adapter. Provider-confirmed onboarding and authenticated admin
+identity mapping are the existing production proof-establishing paths.
 
-Both paths wrote the same ``magic_link`` string, so a consumer reading
-``user_identities`` could not tell a proven link from a self-asserted one. These
+Earlier confirmations used the ambiguous ``magic_link`` string, so a consumer
+reading ``user_identities`` could not establish how ownership had been proven. These
 tests pin the distinction:
 
 * a self-service claim is recorded as ``self_asserted`` with ``verified_at``
