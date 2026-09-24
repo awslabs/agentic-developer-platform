@@ -175,7 +175,7 @@ async def create(request, db, org_id, workspace_id, body):
             raise ProvisioningRefused(
                 "replay must name the original reviewed deployment revision"
             )
-        if intent.status in {"Deleting", "Deleted"}:
+        if intent.status in {"Deleting", "Deleted", "CancelledBeforeDispatch"}:
             return await progress(owner, db, intent)
     else:
         review = await preview_create(db, org_id, workspace_id, body)
@@ -280,6 +280,10 @@ async def preview_delete(
     intent = await intent_for(
         db, org_id, workspace_id, deployment_id, workload_kind=workload_kind
     )
+    if intent.status == "CancelledBeforeDispatch":
+        raise ProvisioningRefused(
+            "workload was cancelled before dispatch; no teardown is required"
+        )
     original = stored_preview(intent)
     require_target(intent, workspace, cluster)
     async with owner.operation_connect() as connection:
@@ -371,6 +375,8 @@ async def delete(
 async def progress(owner, db, intent):
     """Report paid progress and original provider UIDs; never free reservations."""
     operation_id, state, provider_uid = None, None, intent.provider_uid
+    source_operation_id = None
+    cancellation_requested = False
     registrations = (
         await db.scalars(
             select(ControllerDeploymentOperation).where(
@@ -385,9 +391,11 @@ async def progress(owner, db, intent):
             (item for item in registrations if item.action == "teardown"),
             registrations[0],
         )
+        source_operation_id = selected.source_operation_id or selected.operation_id
         async with owner.operation_connect() as connection:
             row = await connection.fetchrow(
-                "SELECT operation_id,state FROM harness_operations WHERE operation_id=$1 "
+                "SELECT operation_id,state,cancel_requested_at IS NOT NULL AS cancellation_requested "
+                "FROM harness_operations WHERE operation_id=$1 "
                 "AND org_id=$2 AND workspace_id=$3 AND plan_digest=$4",
                 selected.operation_id,
                 selected.org_id,
@@ -399,6 +407,7 @@ async def progress(owner, db, intent):
                     "original deployment progress is unavailable"
                 )
             operation_id, state = row["operation_id"], row["state"]
+            cancellation_requested = row["cancellation_requested"]
             references = await connection.fetch(
                 "SELECT provider_reference FROM harness_allocation_resource WHERE org_id=$1 "
                 "AND workspace_id=$2 AND allocation_id=$3 AND provider='aws' AND operation_id=$4",
@@ -421,7 +430,7 @@ async def progress(owner, db, intent):
     status = intent.status
     # Success reports the reviewed workflow outcome, not a fresh live health or
     # a quota release. Only the trusted absence projection writes Deleted.
-    if status not in {"Deleted", "Deleting"}:
+    if status not in {"Deleted", "Deleting", "CancelledBeforeDispatch"}:
         status = {
             "pending": "Pending",
             "running": "Provisioning",
@@ -437,6 +446,11 @@ async def progress(owner, db, intent):
         "status": status,
         "deployment_id": intent.id,
         "operation_id": operation_id,
+        "source_operation_id": source_operation_id,
         "operation_state": state,
         "provider_uid": provider_uid,
+        "cancellation_requested": cancellation_requested,
+        "cleanup_status": "not-required"
+        if intent.status == "CancelledBeforeDispatch"
+        else ("confirmed" if intent.status == "Deleted" else "unconfirmed"),
     }

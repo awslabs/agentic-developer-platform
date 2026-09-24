@@ -13,6 +13,8 @@ from installation.execution import read_only_workspace_rules
     "resource,verb,allowed",
     [
         ("pods", "list", True),
+        ("pods/log", "get", True),
+        ("pods/proxy", "get", False),
         ("jobs", "create", False),
         ("secrets", "get", False),
         ("pods/exec", "get", False),
@@ -148,7 +150,20 @@ def test_executor_requires_real_release_and_explicit_same_account_role(
         validate(env, lock)
 
 
-@pytest.mark.parametrize("refused", [None, "namespace", "nodepools", "superplanenodes"])
+@pytest.mark.parametrize(
+    "refused",
+    [
+        None,
+        "namespace",
+        "nodepools",
+        "superplanenodes",
+        "pods",
+        "pods/log",
+        "deployments.apps",
+        "replicasets.apps",
+        "jobs.batch",
+    ],
+)
 def test_workspace_permission_probes_match_actual_crd_scopes(tmp_path, refused):
     import json
     from types import SimpleNamespace
@@ -167,6 +182,15 @@ def test_workspace_permission_probes_match_actual_crd_scopes(tmp_path, refused):
                 elif probe[1] == "nodepools.superplane.ai":
                     assert "-n" not in probe
                     selected = "nodepools"
+                elif probe[1] in {
+                    "pods",
+                    "pods/log",
+                    "deployments.apps",
+                    "replicasets.apps",
+                    "jobs.batch",
+                }:
+                    assert probe[-2:] == ["-n", "tenant-a"]
+                    selected = probe[1]
                 else:
                     selected = (
                         "superplanenodes"
@@ -203,3 +227,15 @@ def test_workspace_permission_probes_match_actual_crd_scopes(tmp_path, refused):
         assert ["list", "nodepools.superplane.ai"] in probes
         assert ["watch", "nodepools.superplane.ai"] in probes
         assert ["list", "superplanenodes.superplane.ai", "-n", "tenant-a"] in probes
+
+
+@pytest.mark.parametrize(
+    "group,resource",
+    [("apps", "deployments"), ("apps", "replicasets"), ("batch", "jobs")],
+)
+def test_workload_reader_accepts_only_read_verbs(group, resource):
+    rule = {"apiGroups": [group], "resources": [resource], "verbs": ["get", "list"]}
+    status = {"incomplete": False, "resourceRules": [rule]}
+    assert read_only_workspace_rules(status)
+    rule["verbs"].append("patch")
+    assert not read_only_workspace_rules(status)

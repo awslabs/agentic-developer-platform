@@ -215,6 +215,7 @@ export async function call<T>(
   params: Record<string, string>,
   body: unknown,
   parse: (raw: unknown) => T | null,
+  query?: Record<string, string>,
 ): Promise<Outcome<T>> {
   const declaration = ENDPOINTS[endpoint];
   if (!declaration.served) {
@@ -225,7 +226,7 @@ export async function call<T>(
 
   const generation = guard.current();
   const { signal, done } = guard.signal();
-  const path = resolvePath(declaration, params);
+  const path = resolvePath(declaration, params) + (query ? `?${new URLSearchParams(query).toString()}` : '');
 
   try {
     const raw =
@@ -814,7 +815,7 @@ export function decideApproval(guard: ScopeGuard, approvalId: string, result: 'a
 
 export function parseOperationState(raw: unknown): OperationState {
   if (raw === 'pending') return 'accepted';
-  return raw === 'accepted' || raw === 'running' || raw === 'succeeded' || raw === 'failed'
+  return raw === 'accepted' || raw === 'running' || raw === 'succeeded' || raw === 'failed' || raw === 'cancelled'
     ? raw : 'unknown';
 }
 

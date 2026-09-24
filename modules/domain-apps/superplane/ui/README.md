@@ -130,15 +130,51 @@ and accepted stop requests never establish provider absence or cost settlement.
 
 `ServingPanel.test.tsx` covers lost replies/reload, original-resource stop requests,
 changed plans, revoked and mismatched approvals, cross-workspace responses, and
-read-only views. These are remote CI transport-fixture tests. Browser layout and
-live serving acceptance remain outstanding. Batch submission, bounded logs,
+read-only views. These are remote CI transport-fixture tests. The isolated
+Chromium checks below cover browser layout. Live serving acceptance, bounded logs,
 result links, endpoint access and reconciled workload costs remain required for complete #5731 delivery.
 
 `Superplane UI Browser CI`, called by Gateway CI, starts the maintained Vite
 frontend on loopback and renders this component in Chromium with fixture HTTP
 responses. It checks keyboard submission, review/approval/stop interaction and
-horizontal overflow at360px and1280px, and uploads screenshots plus a fixture
+horizontal overflow at 360px and 1280px, and uploads screenshots plus a fixture
 receipt. Browser requests outside the loopback origin are refused. This is
 isolated browser evidence, not a deployed onboarding or serving demonstration.
 Tailwind explicitly scans the domain UI so its classes are included in the
 shipped frontend bundle.
+
+## Batch operations
+
+`BatchPanel` consumes the governed batch profile and Job routes. Users select a
+fixed immutable image/invocation, review the exact resource/runtime/cost envelope,
+obtain approval and submit. The shared workload action rechecks the current plan
+and approval before admission and persists a `batch:<workspace>:...` receipt
+separate from serving receipts. Reload can recover accepted operations without
+re-entering the invocation. A stop uses the original Job UUID and its separately
+approved teardown plan.
+
+The list is bounded to 100 with an explicit truncation message. Wrong-workspace
+and late responses are refused; revoked access clears displayed rows. Job outcome,
+logs, results and observed cost remain unavailable until those backend contracts
+are composed. A terminal operation is not reported as verified cleanup. In-flight
+cancellation has a separate action from the stop button.
+
+The isolated Chromium CI entry exercises serving and batch separately with
+fixture HTTP transports, keyboard operation and 360/1280px screenshots. This is
+browser evidence, not live workload acceptance.
+
+
+## Cancellation
+
+Both workload lists expose cancellation only when the server advertises current
+cancellation authority. The action addresses the displayed original operation;
+a retry after a lost reply uses those same IDs and creates no new request identity.
+Revoked access disables retries and workspace changes discard late replies.
+Cancellation acknowledgement never marks resources absent. Only the backend's
+`CancelledBeforeDispatch` outcome is displayed as not needing workload cleanup;
+other cancellations remain pending reconciliation. Keyboard cancellation is
+included in the isolated Chromium scenarios for both workload kinds.
+
+Workload rows offer current status and bounded Pod log windows when the API advertises observation support. Current READ authorization, original resource identity and a current manager lease are required. These observations do not establish endpoint acceptance, cleanup or reconciled cost. See `executor/WORKLOAD-OBSERVATIONS.md` for limits and read credential requirements.
+
+The workload budget view shows original/stop reservation ceilings, held amounts, ledger freshness and workspace reservation capacity. Values use exact USD millionths; estimated and provider-reconciled cost remain unavailable until supported evidence exists. Historical allocation counts are not live presence or cleanup proof. See `executor/WORKLOAD-ACCOUNTING.md`.

@@ -39,7 +39,13 @@ jobs:
       - name: Verify rendered IAM policies using mocked AWS providers
         run: |
           set -euo pipefail
-          for module in modules/agent-factory/infra/modules/runner-runtime-policy modules/agent-factory/infra/modules/runner-iam platform/infra/modules/codebuild platform/automation-infra; do
+          # runner-infra/infrastructure is the legacy runner installation. This job
+          # already triggers on changes under runner-infra/** (see paths above), but
+          # until #5613 it was absent from this loop — so editing that tree's trust or
+          # boundary wiring ran a green job that asserted nothing about the file
+          # changed. Its tests mock every provider and substitute the cluster/OIDC
+          # attributes, so like the others they need no credentials or backend.
+          for module in modules/agent-factory/infra/modules/runner-runtime-policy modules/agent-factory/infra/modules/runner-iam modules/agent-factory/runner-infra/infrastructure platform/infra/modules/codebuild platform/automation-infra; do
             terraform -chdir="$module" init -backend=false -input=false
             terraform -chdir="$module" test -no-color
           done

@@ -1,7 +1,8 @@
 """Bounded Athena lookup of Common Crawl index metadata, never target content.
 
-The index describes historical fetches. It supplies leads, not reputation or a
-current-page verdict. Raw query results stay in the configured S3 workgroup.
+The index describes historical fetches. The model weighs these leads alongside
+browser evidence to decide the verdict. Raw query results stay in the configured
+S3 workgroup.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from case_contract import redact_url, sanitize, utcnow
+from case_contract import digest, redact_url, sanitize, utcnow
 
 IDENTIFIER = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]{0,127}\Z")
 CRAWL = re.compile(r"CC-MAIN-20\d{2}-\d{2}\Z")
@@ -91,9 +92,9 @@ def query_for(config, domain):
        content_mime_type, content_languages, content_digest,
        warc_filename, warc_record_offset, warc_record_length
 FROM "{config.database}"."{config.table}"
-WHERE subset = 'warc' AND crawl IN ({', '.join('?' for _ in config.crawls)})
+WHERE subset = 'warc' AND crawl IN ({", ".join("?" for _ in config.crawls)})
   AND url_host_tld = ?
-  AND url_host_registered_domain IN ({', '.join('?' for _ in parents)})
+  AND url_host_registered_domain IN ({", ".join("?" for _ in parents)})
   AND (url_host_name = ? OR url_host_name LIKE ?)
 ORDER BY fetch_time DESC, url ASC
 LIMIT {MAX_ROWS}"""
@@ -112,7 +113,7 @@ def lookup_common_crawl(
         "source": "common_crawl_athena",
         "checked_at": utcnow(),
         "status": "unavailable",
-        "verdict_effect": "context_only",
+        "verdict_effect": "model_assessed",
         "limitations": [
             "Historical index metadata, not page content, reputation, or current behavior.",
             "Coverage is limited to the selected crawls and exact hostname plus subdomains.",
@@ -224,7 +225,9 @@ def lookup_common_crawl(
             if host != domain and not host.endswith("." + domain):
                 raise ValueError("Athena returned an out-of-scope hostname")
             if item.get("url"):
+                item["url_sha256"] = digest(item["url"])
                 item["url"] = redact_url(item["url"])
+            item["capture_id"] = f"capture-{len(captures) + 1:03d}"
             captures.append(sanitize(item))
         return {
             **record,

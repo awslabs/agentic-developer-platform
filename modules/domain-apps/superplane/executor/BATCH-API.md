@@ -10,9 +10,11 @@ This first producer supports GPU Jobs with a fixed immutable image and invocatio
 Source and input data must be included in that image, or otherwise accessible to
 the installed invocation without introducing an ambient credential. There is no
 arbitrary source checkout, data mount, environment injection, or caller-chosen
-namespace. Workload logs, result delivery, progress observations, cancellation
-before the original operation settles, and a batch browser form remain separate
-work. These routes alone do not complete the researcher lifecycle.
+namespace. The batch browser form uses these profiles and durable operation
+receipts. [Status/log observations](WORKLOAD-OBSERVATIONS.md),
+[original-operation cancellation](CANCELLATION-API.md) and
+[reservation accounting](WORKLOAD-ACCOUNTING.md) have separate contracts. Durable
+result delivery, provider-billed cost and live acceptance remain outstanding.
 
 ## Policy
 
@@ -35,7 +37,8 @@ interpret those identities. Preserve recovery records when planning rollback.
 
 All paths below are relative to the authenticated ADP `/api/superplane/v1` proxy.
 Every request is scoped to the workspace's current server-held grants. Discovery
-uses READ; mutations also require SPEND at the route and PROVISION at admission.
+uses READ; create and teardown require SPEND at the route and PROVISION at
+admission. Cancellation requires current PROVISION without new spend authority.
 
 1. `GET /workspaces/{workspace_id}/batch-profiles` returns authorized profiles and
    current submission/teardown-review availability. Keep the exact `batch_options`
@@ -61,8 +64,8 @@ uses READ; mutations also require SPEND at the route and PROVISION at admission.
    original Job UID; it reserves zero additional resource units and cost.
 
 `operation_state` describes the admitted workflow. `execution_outcome` remains
-unknown in this projection until workload observation is composed. Observed cost
-is `null`, never zero. Cleanup remains unconfirmed until the trusted finalizer
+unknown in the admission projection; the separate observation endpoint reports
+current Job/Pod status. Observed provider cost is `null`, never zero. Cleanup remains unconfirmed until the trusted finalizer
 verifies complete absence of the original owned workload and provider resources.
 A remaining volume keeps the quota reservation. Requesting stop or receiving a
 successful operation response cannot assert cleanup.
@@ -72,3 +75,5 @@ installer and full PostgreSQL migration checks. The linked batch test runs actua
 API admission, outbox, task registry, worker RPC and finalizer with only
 provider/network transports simulated. Live batch acceptance remains with the
 separately authorized workload evaluation.
+
+Supported images can publish bounded retained text results. See [BATCH-RESULTS.md](BATCH-RESULTS.md) for the message contract, authenticated download, limits and retention through cleanup.

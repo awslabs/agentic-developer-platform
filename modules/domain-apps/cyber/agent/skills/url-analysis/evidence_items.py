@@ -1,8 +1,8 @@
 """Collector-owned references to bounded evidence, separate from page coverage.
 
 An intact item is evidence of what was captured, not proof of malicious intent.
-Item hashes are checked again before accepting an assessment. Old captures without
-these records retain the original conservative rules for partial observations.
+Item hashes are checked again before accepting a cited reference. Completeness
+and capture errors are reported to the model; they do not determine its verdict.
 """
 
 from __future__ import annotations
@@ -96,79 +96,20 @@ def checked_item(observation, item_id):
     )
     if recorded is None or expected != recorded:
         raise ValueError("Unknown or changed evidence item")
-    if not recorded["complete"]:
-        raise ValueError("The cited evidence item was truncated or failed")
     return recorded
 
 
-def partial_evidence_usable(observation):
-    """Permit coverage gaps, never a failed page, challenge, or unknown cleanup."""
-    allowed_gaps = {
-        "page_capture_truncated",
-        "network_requests_failed",
-        "observation_coverage_limited",
-        "connections_truncated",
-    }
-    return (
-        observation.get("status") == "partial"
-        and type(observation.get("http_status")) is int
-        and 200 <= observation["http_status"] < 400
-        and bool(observation.get("screenshot_sha256"))
-        and bool(observation.get("screenshot") or observation.get("screenshot_base64"))
-        and bool(observation.get("dom_snapshot"))
-        and bool(observation.get("evidence_items"))
-        and set(observation.get("errors", [])) <= allowed_gaps
-        and not any(
-            x.get("navigation") for x in observation.get("blocked_requests", [])
-        )
-    )
-
-
-def warning_evidence_usable(observation):
-    """A captured warning is evidence of the warning, never the hidden page."""
-    return (
-        observation.get("interstitial", {}).get("kind") == "threat_warning"
-        and observation.get("status") == "partial"
-        and type(observation.get("http_status")) is int
-        and 200 <= observation["http_status"] < 500
-        and bool(observation.get("screenshot_sha256"))
-        and bool(observation.get("dom_snapshot"))
-        and bool(observation.get("evidence_items"))
-        and "threat_warning" in observation.get("errors", [])
-        and set(observation["errors"])
-        <= {
-            "threat_warning",
-            "page_capture_truncated",
-            "network_requests_failed",
-            "observation_coverage_limited",
-            "connections_truncated",
-        }
-        and not any(
-            x.get("navigation") for x in observation.get("blocked_requests", [])
-        )
-    )
-
-
-def evidence_eligibility(observation):
-    """Expose the same reference rules used by assessment validation to the agent."""
-    ordinary = observation["status"] == "complete" or partial_evidence_usable(
-        observation
-    )
-    warning = warning_evidence_usable(observation)
+def evidence_coverage(observation):
+    """Expose capture facts for model judgment, without finding-eligibility rules."""
     return {
-        "page_findings_supported": ordinary,
-        "warning_finding_supported": warning,
-        "coverage_only": not ordinary and not warning,
-        "requires_item_refs": observation["status"] != "complete",
+        "status": observation["status"],
+        "http_status": observation.get("http_status"),
         "errors": observation.get("errors", []),
+        "interstitial": observation.get("interstitial"),
         "intact_item_ids": [
             x["id"] for x in observation.get("evidence_items", []) if x["complete"]
         ],
-        "guidance": (
-            "Cite this view's intact items and state coverage gaps."
-            if ordinary
-            else "Cite warning-001 as threat_warning; provider identity and hidden content are unverified."
-            if warning
-            else "Use coverage_limitation only; retain earlier supported findings with their own citations."
-        ),
+        "incomplete_item_ids": [
+            x["id"] for x in observation.get("evidence_items", []) if not x["complete"]
+        ],
     }

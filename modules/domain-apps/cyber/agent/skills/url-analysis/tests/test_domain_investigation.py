@@ -178,7 +178,9 @@ def test_agent_selected_link_preserves_state_and_exact_link_then_revises_hypothe
         request=request,
     )
     assert not c["observations"][0]["forms"]
-    assert c["browser_view"]["external_leads"][0]["url"] == "https://external.test/lead"
+    assert any(
+        x["url"] == "https://external.test/lead" for x in c["browser_view"]["choices"]
+    )
     assert not any("payload.exe" in x["url"] for x in c["browser_view"]["choices"])
     with pytest.raises(ValueError, match="Review the latest"):
         cli.step(output, "root", decision(c), request=request)
@@ -332,7 +334,7 @@ def test_step_budget_closes_context(live_fixture, monkeypatch):
         )
 
 
-def test_unconfirmed_start_is_retained_and_allows_only_inconclusive(tmp_path):
+def test_unconfirmed_start_is_reported_without_vetoing_assessment(tmp_path):
     output = tmp_path / "unknown"
 
     def unavailable(operation, payload):
@@ -349,8 +351,9 @@ def test_unconfirmed_start_is_retained_and_allows_only_inconclusive(tmp_path):
         "Startup outcome unknown; service lease is the cleanup backstop",
         request=unavailable,
     )
-    with pytest.raises(ValueError, match="cleanup"):
-        assess_case(output, {"verdict": "suspicious", "assessor": "fixture"})
+    assessed = assess_case(output, {"verdict": "suspicious", "assessor": "fixture"})
+    assert assessed["assessment"]["verdict"] == "suspicious"
+    assert assessed["browser_cleanup"] == "unknown"
     c = assess_case(
         output,
         {
@@ -385,28 +388,32 @@ def test_failed_profile_start_does_not_claim_previous_context_cleanup(
     c = json.loads((output / "case.json").read_text())
     assert clients[0].stopped and c["sessions"][0]["cleanup_status"] == "stopped"
     assert c["unconfirmed_browser_start"]
-    with pytest.raises(ValueError, match="cleanup"):
-        assess_case(
-            output,
-            {
-                "verdict": "suspicious",
-                "assessor": "fixture",
-                "findings": [
-                    {
-                        "kind": "other",
-                        "basis": "observation",
-                        "statement": "Known prior observation",
-                        "evidence_ids": ["obs-001"],
-                    }
-                ],
-            },
-        )
+    cli.close(output, "Report earlier evidence and the failed profile", request=request)
+    assessed = assess_case(
+        output,
+        {
+            "verdict": "suspicious",
+            "assessor": "fixture",
+            "findings": [
+                {
+                    "kind": "other",
+                    "basis": "observation",
+                    "statement": "Known prior observation",
+                    "evidence_ids": ["obs-001"],
+                }
+            ],
+        },
+    )
+    assert assessed["assessment"]["verdict"] == "suspicious"
+    assert assessed["browser_cleanup"] == "unknown"
 
 
-def test_explicit_external_scope_follows_observed_lead(live_fixture):
+@pytest.mark.parametrize("scope", [None, "observed_external"])
+def test_default_and_explicit_external_scope_follow_observed_lead(live_fixture, scope):
     request, transport, clients = live_fixture
     p = request(
-        "start", {"url": "https://public.test/seed", "scope": "observed_external"}
+        "start",
+        {"url": "https://public.test/seed", **({"scope": scope} if scope else {})},
     )
     token = p["session_token"]
     try:

@@ -300,9 +300,12 @@ class OrchestrationRepository:
 
     # -- flows list page (derived aggregates) ---------------------------------
 
-    def _node_agg(self, *, org_id: str):
+    async def _node_agg(self, *, org_id: str):
         """Aggregate current display buckets in SQL, without per-flow reads."""
-        nodes = node_progress_rows(org_id=org_id)
+        from .plan_lineage import preserved_execution_pairs
+
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id)
+        nodes = node_progress_rows(org_id=org_id, preserved_executions=preserved)
         evaluation_story = and_(nodes.c.kind == "eval", func.trim(nodes.c.issue_ref) != "", nodes.c.state != "superseded")
         columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
         return (
@@ -321,10 +324,13 @@ class OrchestrationRepository:
 
     async def node_display_states(self, *, org_id: str, flow_id: str) -> dict[str, str | None]:
         """The graph uses exactly the same projection as list and wave counts."""
-        nodes = node_progress_rows(org_id=org_id, flow_ids=[flow_id])
+        from .plan_lineage import preserved_execution_pairs
+
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=[flow_id])
+        nodes = node_progress_rows(org_id=org_id, flow_ids=[flow_id], preserved_executions=preserved)
         return dict((await self._session.execute(select(nodes.c.node_id, nodes.c.display_state))).all())
 
-    def _joined_flows(self, *, org_id: str) -> tuple[Select, dict[str, Any]]:
+    async def _joined_flows(self, *, org_id: str) -> tuple[Select, dict[str, Any]]:
         """`orchestration_flows` LEFT JOINed to current node aggregates, org-filtered.
 
         LEFT, not inner: a flow with zero nodes must still appear (as
@@ -336,7 +342,7 @@ class OrchestrationRepository:
         query and the (unfiltered) chip query share one definition of them rather
         than each having its own copy to drift.
         """
-        node_agg = self._node_agg(org_id=org_id)
+        node_agg = await self._node_agg(org_id=org_id)
 
         derived: dict[str, Any] = {display.value: func.coalesce(getattr(node_agg.c, display.value), 0) for display in DisplayState}
         derived["stalled_count"] = derived["stalled"]
@@ -382,7 +388,7 @@ class OrchestrationRepository:
         if sort not in FLOW_SORTS:
             raise ValueError(f"unknown sort {sort!r}; expected one of {FLOW_SORTS}")
 
-        base, derived = self._joined_flows(org_id=org_id)
+        base, derived = await self._joined_flows(org_id=org_id)
 
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
@@ -537,7 +543,7 @@ class OrchestrationRepository:
         on this endpoint. If it ever hurts: **cache it, do not filter it.**
         Filtering it would change what it means.
         """
-        base, derived = self._joined_flows(org_id=org_id)
+        base, derived = await self._joined_flows(org_id=org_id)
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
@@ -575,7 +581,10 @@ class OrchestrationRepository:
             # rather than emitting a `WHERE flow_id IN ()`.
             return {}
 
-        nodes = node_progress_rows(org_id=org_id, flow_ids=flow_ids)
+        from .plan_lineage import preserved_execution_pairs
+
+        preserved = await preserved_execution_pairs(self._session, org_id=org_id, flow_ids=flow_ids)
+        nodes = node_progress_rows(org_id=org_id, flow_ids=flow_ids, preserved_executions=preserved)
         columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
         stmt = (
             select(nodes.c.flow_id, nodes.c.epic_ref, nodes.c.wave_ref, *columns, *_kind_count_columns(nodes))

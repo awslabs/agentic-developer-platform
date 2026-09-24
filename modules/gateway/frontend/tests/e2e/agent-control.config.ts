@@ -6,14 +6,28 @@
  *   npm install -D @playwright/test && npx playwright install chromium
  *
  *   # Mocked: real browser, real bundle, stubbed gateway. No AWS needed.
- *   npx playwright test --config tests/e2e/agent-control.config.ts
+ *   # Produces a capture LABELLED mocked, which is refused for live acceptance.
+ *   CONTROL_E2E_CAPTURE_DIR=/tmp/control-capture \
+ *   CONTROL_E2E_BUNDLE_REVISION="$(git rev-parse HEAD)" \
+ *     npx playwright test --config tests/e2e/agent-control.config.ts
  *
  *   # Live: drives a deployed gateway. Produces Wave 4 acceptance evidence.
  *   CONTROL_E2E_LIVE=1 \
  *   GATEWAY_URL="https://<distribution>" \
+ *   CONTROL_E2E_CAPTURE_DIR=/secure/path/control-capture \
+ *   CONTROL_E2E_BUNDLE_REVISION="<deployed frontend revision>" \
+ *   CONTROL_E2E_ASSET_MANIFEST="<deployment receipt: asset path -> sha256>" \
+ *   CONTROL_E2E_SESSION_FILE="<owner fixture session>" \
+ *   CONTROL_E2E_NONOWNER_SESSION_FILE="<second, non-owning fixture session>" \
+ *   CONTROL_E2E_DISABLED_URL="<same bundle served with the flag off>" \
  *   CONTROL_E2E_RUN_ID="<controllable run id>" \
  *   CONTROL_E2E_ABORT_RUN_ID="<second run id>" \
  *     npx playwright test --config tests/e2e/agent-control.config.ts
+ *
+ * Producer inputs are documented in docs/runbooks/agent-control-evaluation.md,
+ * including where each live value comes from. Every one of them is validated in
+ * global setup, so a missing or inconsistent input fails before the browser sends
+ * a control command rather than halfway through mutating a run.
  *
  * ---------------------------------------------------------------------------
  * Why this config is separate, and why @playwright/test is not a dependency
@@ -52,6 +66,14 @@ export default defineConfig({
   testDir: fileURLToPath(new URL('.', import.meta.url)),
   testMatch: 'agent-control.spec.ts',
 
+  // The evidence producer (#5878). Setup validates every input and fails before
+  // any browser command; teardown merges the scenario fragments, checks the run
+  // is complete and writes browser_control_run.json. Both are required for the
+  // capture to exist — a scenario cannot declare its own run complete, which is
+  // the point of putting the judgement in one place at the exit.
+  globalSetup: fileURLToPath(new URL('./agent-control.setup.ts', import.meta.url)),
+  globalTeardown: fileURLToPath(new URL('./agent-control.teardown.ts', import.meta.url)),
+
   // Serial: live mode drives real runs whose state the scenario mutates, so
   // parallel workers would race over the same worker process.
   fullyParallel: false,
@@ -68,8 +90,16 @@ export default defineConfig({
 
   reporter: [
     ['list'],
-    // Written for the wave-4 evidence directory: the harness attaches this.
-    ['json', { outputFile: process.env.CONTROL_E2E_REPORT || 'agent-control-report.json' }],
+    // Written into the capture directory, not the repo: this is run output, and a
+    // report that lands next to the spec gets committed by accident.
+    [
+      'json',
+      {
+        outputFile:
+          process.env.CONTROL_E2E_REPORT ||
+          `${process.env.CONTROL_E2E_CAPTURE_DIR || '.'}/agent-control-report.json`,
+      },
+    ],
   ],
 
   use: {

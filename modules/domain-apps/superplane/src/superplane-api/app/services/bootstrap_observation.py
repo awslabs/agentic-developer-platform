@@ -161,6 +161,12 @@ async def provisional_targets(db, *, org, connect):
 
 
 async def manager_snapshot():
+    return await manager_document("/statusz")
+
+
+async def manager_document(path, params=None):
+    if path not in {"/statusz", "/workload-observation"}:
+        raise HTTPException(503, "Controller observation endpoint refused")
     url = urlsplit(settings.controller_status_url)
     if (
         not url.hostname
@@ -185,7 +191,8 @@ async def manager_snapshot():
         ) as client:
             async with client.stream(
                 "GET",
-                settings.controller_status_url.rstrip("/") + "/statusz",
+                settings.controller_status_url.rstrip("/") + path,
+                params=params,
                 headers={"Authorization": settings.controller_registry_credential},
             ) as response:
                 response.raise_for_status()

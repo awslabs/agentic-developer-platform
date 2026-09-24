@@ -13,13 +13,16 @@ from src.orchestration.shared_amendment import SharedAppendError
 
 
 @pytest.mark.parametrize("accept", [False, True])
-async def test_append_rejects_nonhuman_sessions_before_read_or_write(monkeypatch, accept):
+@pytest.mark.parametrize("wave", [False, True])
+async def test_append_rejects_nonhuman_sessions_before_read_or_write(monkeypatch, accept, wave):
     access = SimpleNamespace(check_permission=AsyncMock())
     monkeypatch.setattr(routes, "AccessControl", lambda _: access)
     monkeypatch.setattr("src.agentauth.human_control.authorize_human_session", AsyncMock(side_effect=BootstrapRefusedError("not human")))
     handler = AsyncMock()
     monkeypatch.setattr(routes, "accept_shared_append" if accept else "preview_shared_append", handler)
     endpoint = routes.accept_append if accept else routes.preview_append
+    if wave:
+        endpoint = routes.accept_dependencies if accept else routes.preview_dependencies
     user = SimpleNamespace(org_id="org")
     with pytest.raises(HTTPException) as error:
         await endpoint(
@@ -34,7 +37,8 @@ async def test_append_rejects_nonhuman_sessions_before_read_or_write(monkeypatch
 
 
 @pytest.mark.parametrize("accept", [False, True])
-async def test_append_endpoint_denies_before_read_or_write_without_plan_permission(monkeypatch, accept):
+@pytest.mark.parametrize("wave", [False, True])
+async def test_append_endpoint_denies_before_read_or_write_without_plan_permission(monkeypatch, accept, wave):
     access = SimpleNamespace(check_permission=AsyncMock(side_effect=HTTPException(403, "permission denied")))
     monkeypatch.setattr(routes, "AccessControl", lambda _: access)
     human = AsyncMock()
@@ -43,6 +47,8 @@ async def test_append_endpoint_denies_before_read_or_write_without_plan_permissi
     monkeypatch.setattr(routes, "accept_shared_append" if accept else "preview_shared_append", handler)
     user = SimpleNamespace(org_id="org")
     endpoint = routes.accept_append if accept else routes.preview_append
+    if wave:
+        endpoint = routes.accept_dependencies if accept else routes.preview_dependencies
     with pytest.raises(HTTPException) as error:
         await endpoint(
             flow_id="flow",

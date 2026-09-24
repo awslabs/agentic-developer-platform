@@ -4,6 +4,13 @@ Wave evaluations #5067–#5070 remain open until their real-boundary criteria pa
 Offline tests, fixture matches, missing inputs and skipped tests do not establish
 live acceptance. Implementation stories own these checks; operations executes them.
 
+The [mixed-provider workload demo](MIXED-PROVIDER-DEMO.md) specifies the recovered
+AWS + Nebius / single-EKS acceptance baseline, including jobs on both providers and
+one authenticated serving endpoint with backend correlation. Its driver and hybrid
+execution composition are still missing; none of the narrower checks below proves
+that complete scenario. Historical results and implementation gaps are mapped in
+[Hybrid capacity requirements](../../executor/HYBRID-CAPACITY.md).
+
 ## U1: authenticated feature API observation
 
 `test_u1_features_live.py` implements the three **API** assertions under #5067's

@@ -72,6 +72,7 @@ def test_all_tables_registered():
         "workspace_lifecycle_control_operations",
         # Governed controller assignments, async handles and accounting (018).
         "controller_deployment_operations",
+        "controller_batch_results",
         "controller_executions",
         "controller_provider_requests",
         "controller_capacity",

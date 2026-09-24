@@ -93,7 +93,7 @@ def lookup(source, url, *, api_key=None, get_json=None):
         "checked_at": utcnow(),
         "subject": host,
         "status": "unavailable",
-        "verdict_effect": "context_only",
+        "verdict_effect": "model_assessed",
     }
     if literal:
         return {

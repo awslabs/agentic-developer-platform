@@ -2,7 +2,16 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,3 +64,34 @@ class ControllerExecutionAccounting(Base):
         UUID(as_uuid=False), ForeignKey("workspaces.id"), nullable=False
     )
     observation: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class ControllerBatchResult(Base):
+    __tablename__ = "controller_batch_results"
+    __table_args__ = (
+        CheckConstraint(
+            "octet_length(content)<=16384", name="ck_batch_result_size"
+        ).ddl_if(dialect="postgresql"),
+    )
+    operation_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id"), nullable=False
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("workspaces.id"), nullable=False
+    )
+    deployment_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("deployments.id"), nullable=False
+    )
+    allocation_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_uid: Mapped[str] = mapped_column(String(255), nullable=False)
+    pod_uid: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    redacted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )

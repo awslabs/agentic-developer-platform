@@ -248,7 +248,7 @@ function sameScope(a: ReceiptScope, b: ReceiptScope): boolean {
 }
 
 export function isTerminal(state: OperationState): boolean {
-  return state === 'succeeded' || state === 'failed';
+  return state === 'succeeded' || state === 'failed' || state === 'cancelled';
 }
 
 /**

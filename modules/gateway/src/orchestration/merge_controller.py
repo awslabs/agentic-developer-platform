@@ -69,7 +69,12 @@ async def code_only_delivery(session, context, node):
     from .shared_cycle import shared_marker
 
     accepted, _ = await shared_marker(session, org_id=node.org_id, flow_id=node.flow_id)
-    if accepted.version != context.identity.accepted_plan_version or marker["delivery_mode"] != "code_only":
+    from .plan_lineage import ancestor_plan
+
+    if (
+        await ancestor_plan(session, accepted, context.identity.accepted_plan_version, node_id=node.id) is None
+        or marker["delivery_mode"] != "code_only"
+    ):
         raise CycleBlockedError("code_delivery_contract_changed")
     return True
 
@@ -732,7 +737,9 @@ async def settle_merge(session, context, receipt, snapshot):
         from .shared_cycle import shared_marker
 
         plan, _ = await shared_marker(session, org_id=node.org_id, flow_id=node.flow_id)
-        if plan.version != context.identity.accepted_plan_version:
+        from .plan_lineage import ancestor_plan
+
+        if await ancestor_plan(session, plan, context.identity.accepted_plan_version, node_id=node.id) is None:
             raise CycleBlockedError("merge_flow_gate_changed")
     elif flow is None or flow.state != "running":
         raise CycleBlockedError("merge_flow_gate_changed")

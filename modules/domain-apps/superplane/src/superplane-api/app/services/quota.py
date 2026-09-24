@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # committed GPUs. Everything else — including in-flight creation — does count: a
 # reservation that stops counting the moment it is uncertain is how two concurrent
 # requests both see the same headroom.
-RELEASED_DEPLOYMENT_STATUSES = ("Deleted", "Failed")
+RELEASED_DEPLOYMENT_STATUSES = ("Deleted", "Failed", "CancelledBeforeDispatch")
 
 # Statuses a deployment row can hold while its cluster write is still in flight.
 # `reserve_deployment_gpus` writes this, and it counts toward the workspace total.
@@ -446,7 +446,7 @@ def _assert_deployment_within_quota(
             str(workspace_id),
         )
 
-    # Daily spend is checked separately, against cost actually recorded for today —
+    # The known node-rate subtotal is checked separately for today —
     # see `_assert_daily_spend_within_budget`. It is not derived from the GPU count
     # here: this service prices spend from each node's recorded `hourly_cost_usd`, and
     # there is no per-GPU list price to project a new deployment's cost from.
@@ -461,9 +461,9 @@ async def _assert_daily_spend_within_budget(
 ) -> None:
     """Raise 429 if the workspace has already spent its daily budget.
 
-    Uses cost the platform has actually recorded for today (the cost reconciler's own
-    calculation, from each node's recorded hourly rate) rather than a projection, so
-    the figure in the refusal is one an operator can reconcile against the cost views.
+    Uses the known subtotal from recorded node rates. This is an estimate and may
+    be incomplete; it is not a provider-reconciled charge or proof of unused budget.
+    Paid operation admission separately reserves the approved finite budget.
 
     The limitation is worth being precise about: this refuses further provisioning once
     the budget is already spent, so it bounds how far a workspace can run over rather

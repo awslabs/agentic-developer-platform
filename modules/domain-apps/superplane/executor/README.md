@@ -6,6 +6,11 @@ workload credentials, and SkyPilot transport credential. The Go process receives
 only the execution socket, per-operation tokens, read-only workspace credentials,
 and signed-observation credentials. No fallback invokes the legacy Go provider.
 
+Current capacity support is AWS native EKS in the cluster's account, region and
+VPC. Nebius/Lambda adapter source does not make hybrid capacity reachable through
+this executor. [Hybrid capacity requirements](HYBRID-CAPACITY.md) map the original
+upstream scenarios to the missing provider, network, join and cleanup composition.
+
 Assignments originate from already admitted operations and existing leased ADP
 runs. `SUPERPLANE_EXECUTION_OPERATION_FILE` is a JSON array of operation IDs from
 that run; it is only a selector. Gateway verifies the live run/pod, IAM scope,
@@ -75,8 +80,9 @@ reference; exact model options; and a digest-pinned serving image implementing
 `superplane-token-file-header-v1`. The `workload` carries command, arguments,
 resource requests, port and the name of an existing authentication Secret. That
 Secret is a prerequisite, not an object this controller creates or deletes.
-Unsupported replicas, model option changes, batch profiles and unbound targets
-are refused before admission.
+Unsupported replicas, model option changes and unbound targets are refused
+before admission. [Batch profiles](BATCH-API.md) use the separate batch producer
+and share quota with serving workloads.
 
 `POST /workspaces/{workspace}/deployments/preview` returns the exact approval
 request and revision for a caller-supplied operation UUID/profile. The existing
@@ -115,10 +121,9 @@ is put in a task, command or durable plan. The provider's request ID is journall
 before waiting. REST responses are checked without deserializing Python pickles.
 
 The provision sequence is launch, verify the intended EKS node join, create the
-workspace workload, verify workload execution. The production API producer supports
-one GPU serving replica using an explicitly installed profile. The executor retains
-its historical batch Job consumer with no retry and a finite deadline; there is
-currently no governed production batch request producer. Serving uses a Deployment
+workspace workload, verify workload execution. The production API producers support
+one GPU serving replica and bounded batch Jobs using explicitly installed profiles.
+Batch Jobs have no retry and a finite deadline. Serving uses a Deployment
 and private ClusterIP Service. Serving
 images must read `SUPERPLANE_AUTH_TOKEN_FILE` and enforce `X-Superplane-Token` on
 `/healthz`; readiness requires 401/403 without the token and 200 with it. Both
@@ -401,3 +406,8 @@ SkyPilot URL/token file. AWS observations use an explicit Describe-only STS sess
 policy; Kubernetes observations refuse mutations, secrets, exec and proxy paths.
 Immutable settlement receipts are delivered to the domain ledger using their
 original reservation identity.
+
+Workload UI/API reads expose [status and bounded logs](WORKLOAD-OBSERVATIONS.md) and
+[paid reservation accounting](WORKLOAD-ACCOUNTING.md). [Cancellation](CANCELLATION-API.md)
+retains uncertain resources and accounting. These surfaces do not establish
+provider-billed cost or live workload acceptance. Bounded batch text retention is documented in [BATCH-RESULTS.md](BATCH-RESULTS.md).

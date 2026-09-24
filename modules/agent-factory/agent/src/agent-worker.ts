@@ -71,6 +71,18 @@ let activeLiveComment: LiveStatusComment | null = null;
 let activeControlRuntime: {
   adapter: ClaudeControlAdapter;
   gate: PauseGate;
+  /**
+   * The run's steering delivery pump — Issue #3965.
+   *
+   * Published here rather than kept in `main()` because two things in
+   * `runAgent()` need it and neither can be reached from there: the query loop's
+   * boundaries, where a completing run must drain or cancel the queue
+   * deterministically, and the re-subscription that follows every retry. It is
+   * part of this object rather than a separate module-scope binding so a run
+   * either has the whole control runtime or none of it — a half-published runtime
+   * would be a steering queue with no attempt to deliver to.
+   */
+  steerQueue: SteerQueue;
 } | null = null;
 
 // Correlation propagation — Phase 2-d (EPIC #779)
@@ -105,6 +117,7 @@ import { PauseGate } from './pause-gate';
 // own module so they can be unit-tested; importing this file from a test pulls the
 // SDK's ESM entry point into Jest and the suite cannot parse.
 import { applyControlCommand, bindRuntimeTransitionsToStore } from './control-command-apply';
+import { SteerQueue, steerMarker } from './steer-queue';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -1834,6 +1847,22 @@ Now, complete the assigned task.`;
         }
       }
     } finally {
+      // Issue #3965: the run's steering queue closes here — at the boundary where
+      // the query loop has ended — and deterministically. This is the earliest
+      // honest point: past this line there is no attempt, no transport and no
+      // reader, so nothing queued can ever be delivered, and every path out of the
+      // loop reaches this `finally` (normal completion, a thrown error, an abort's
+      // typed cancellation and a `break queryLoop` alike).
+      //
+      // "Drains or cancels deterministically" resolves to cancel, and deliberately
+      // so. A last-gasp drain would have to either push into a closing transport —
+      // which reports `rejected` and settles the command as undelivered anyway, so
+      // it buys nothing — or hold teardown open waiting for a boundary that is not
+      // coming. Cancelling says the true thing: the run ended before these
+      // instructions were delivered. Leaving them `pending` is the one unacceptable
+      // option, because the journal an operator reads back would show an
+      // instruction still in flight for a run that is over.
+      activeControlRuntime?.steerQueue.dispose();
       heartbeat.stop();
       // Stop the Codex event watcher before the streamer so no late poll can
       // forward into a destroyed streamer (issue #2884).
@@ -2275,6 +2304,61 @@ async function main(): Promise<void> {
     // confirm/unavailable/expiry edges that change admission with no command behind
     // them. Without the latter the store can report `paused` while tools run.
     bindRuntimeTransitionsToStore({ adapter: controlAdapter, store: controlStore, log });
+    // Issue #3965: the steering delivery pump. It owns no ordering of its own —
+    // the journal above is the FIFO and the cap — and its entire job is to wait
+    // for a moment the harness can take input, then perform one authorized
+    // handoff. Constructed before the listener because the listener's executor
+    // closes over it.
+    const steerQueue = new SteerQueue({
+      store: controlStore,
+      submitInput: (input) => controlAdapter.submitInput(input),
+      // The definition of a handoff boundary, and the reason it is assembled here
+      // rather than inside the queue: all three facts belong to different owners
+      // and the intersection is the worker's to compute.
+      //
+      // 1. the transport has a reader parked (the adapter's observed fact);
+      // 2. no operator pause is active. A pause means "nothing is touching my
+      //    repository right now", and `shouldQuery: true` steering is allowed to
+      //    start a turn — so delivering into a pause would let an instruction
+      //    start tool work the barrier is holding back. That is the false-`Paused`
+      //    failure the whole pause story exists to prevent, reached through a side
+      //    door. The instruction stays pending and is delivered on resume;
+      // 3. no admitted tool work is outstanding. `activeToolCount()` is always an
+      //    observed number here (the gate counts admissions), so this is a fact
+      //    rather than an assumption — and a non-zero count means a tool is
+      //    mid-execution, which is precisely the "mid-tool submissions remain
+      //    pending" case.
+      atBoundary: () => controlAdapter.canAcceptInput() &&
+        !pauseGate.isPauseActive() && pauseGate.activeToolCount() === 0,
+      // Re-drive on every runtime transition, and re-subscribe to the new
+      // transport's readiness edge whenever an attempt attaches. The attach case
+      // is what makes a queued instruction survive an in-process retry: the old
+      // endpoint is gone, so its readiness notification is gone with it, and
+      // without re-subscribing here a command that was pending across a retry
+      // would wait for an edge nothing would ever fire.
+      subscribe: (onBoundary) => {
+        const unsubscribe = controlAdapter.subscribe((event) => {
+          if (event.type === 'attempt_attached') controlAdapter.notifyWhenInputAccepted(onBoundary);
+          onBoundary();
+        });
+        controlAdapter.notifyWhenInputAccepted(onBoundary);
+        return unsubscribe;
+      },
+      // Issue #3965: the deterministic live-comment marker. Written on the
+      // outcome, which is after the handoff — never on acceptance. A submission
+      // during a twenty-minute tool call produces no marker for twenty minutes,
+      // and that silence is correct: the marker attests to delivery, so anchoring
+      // it to submission would claim delivery of something still queued.
+      //
+      // The command id is the whole payload. The operator's instruction text is
+      // deliberately absent — the live comment is a public artifact on a GitHub
+      // issue, and echoing steering text into it would republish operator input
+      // outside the authorized control channel.
+      onOutcome: ({ commandId, outcome }) => {
+        activeLiveComment?.appendActivity(steerMarker(commandId, outcome));
+      },
+      log,
+    });
     const listener = new ControlListener({
       bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
       port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
@@ -2285,8 +2369,9 @@ async function main(): Promise<void> {
       store: controlStore,
       // Issue #3961: the seam that makes an accepted command actually happen.
       // Without it every 202 was a promise nothing kept.
-      executor: (action, commandId, reason) =>
-        applyControlCommand({ action, commandId, reason, adapter: controlAdapter, store: controlStore, log }),
+      executor: (action, commandId, reason, instruction) =>
+        applyControlCommand({ action, commandId, reason, instruction, steerQueue,
+          adapter: controlAdapter, store: controlStore, log }),
       // Issue #5028: this run's own identity and the gateway's public verification
       // keys. Both are placed here by the entrypoint. An absent key map means
       // live-control commands are refused while the read paths keep working. That
@@ -2309,9 +2394,25 @@ async function main(): Promise<void> {
       // the path every ordinary agent takes. And the capability claim stays
       // truthful in the only direction that matters: pause is advertised where the
       // mechanism is actually in place.
-      activeControlRuntime = { adapter: controlAdapter, gate: pauseGate };
+      //
+      // Issue #3965: the steering queue is published on the same condition, and
+      // that is the flag-off guarantee for this story. A run with no started
+      // listener leaves `activeControlRuntime` null, so the query below passes
+      // `undefined` for every transport hook and takes the plain string-prompt
+      // path byte-for-byte — there is no queue, no input iterable and no way for
+      // a steering command to exist, because there is no socket to submit one to.
+      activeControlRuntime = { adapter: controlAdapter, gate: pauseGate, steerQueue };
       log('INFO', `Control listener started on port ${outcome.port}`);
-    } else if (outcome.reason !== 'disabled') {
+    } else {
+      // Issue #3965: a listener that did not start — for any reason, including
+      // the ordinary flag-off case — means no command can ever arrive, so the
+      // queue is disposed rather than left holding a runtime subscription for the
+      // life of the run. Disposing an empty queue settles nothing; it just drops
+      // the subscription, which keeps the flag-off path free of any live control
+      // object.
+      steerQueue.dispose('the control listener did not start; no instruction can be delivered');
+    }
+    if (!outcome.started && outcome.reason !== 'disabled') {
       // A failure to start is logged at WARN and the run continues: control is an
       // add-on, and refusing to work without it would make an intervention
       // channel a new way for ordinary runs to die. 'disabled' is silent because
@@ -2634,6 +2735,14 @@ Please check the workflow logs for details.`);
     // unconditional — anything past that line never runs. Awaited so the socket
     // is actually closed rather than merely asked to close, and wrapped because a
     // teardown throw here would mask the run's real outcome.
+    // Issue #3965: dispose the steering queue before the listener stops, so a
+    // command accepted in the last instant before teardown is settled rather than
+    // left pending. `runAgent`'s own `finally` normally gets here first, and
+    // `dispose` is idempotent — this exists for the paths that never reached the
+    // query loop at all (a prompt-construction failure, a config error), where the
+    // queue would otherwise hold a subscription and any late command forever.
+    activeControlRuntime?.steerQueue.dispose();
+
     if (controlListener) {
       try {
         await controlListener.stop();

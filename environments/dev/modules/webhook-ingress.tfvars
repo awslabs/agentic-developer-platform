@@ -25,6 +25,18 @@ gateway_authority_managed_policies = true
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
 
-# Cyber domain investigations (#5808, #5810), retaining deployed worker repairs.
+# Model-owned cyber assessment and selected archive pages (#5898), preserving deployed worker source.
 # Worker and browser broker share this digest; protected-worker migration stays off.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f"
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:bfac5d37d711bdd8a96b0a3c7fe3b542916dbd52afe4d7cc5d46798aeb168d21"
+
+# The matching broker and worker support session-owner capabilities.
+domain_app_images = {
+  cyber-browser = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:bfac5d37d711bdd8a96b0a3c7fe3b542916dbd52afe4d7cc5d46798aeb168d21"
+}
+
+domain_app_settings = {
+  cyber = {
+    common_crawl_partitions = "CC-MAIN-2026-39,CC-MAIN-2026-34,CC-MAIN-2026-30"
+    session_owner_routing   = "true"
+  }
+}

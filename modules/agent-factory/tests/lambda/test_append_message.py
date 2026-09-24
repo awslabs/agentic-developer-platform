@@ -22,7 +22,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event, start_webchat_session
 
 HANDLER_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "gateway", "lambdas", "ingest"
@@ -221,16 +221,21 @@ class TestLongRunningNoDoubleAck:
         handler = _import_handler(mock_bedrock=mock_bedrock)
         table = mocked_aws_services["table"]
 
+        claims = {"sub": "user-esc", "email": "esc@example.com",
+                  "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-esc")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Analyze the codebase", "session_id": "sess-esc"},
+            body={"action": "message", "text": "Analyze the codebase",
+                  "session_id": session_id},
             connection_id="conn-esc",
-            authorizer_claims={"sub": "user-esc", "email": "esc@example.com", "custom:tenant_id": "test-tenant"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
 
-        messages = _get_session_messages(table, "sess-esc")
+        messages = _get_session_messages(table, session_id)
         # Should have: 1 user message + 1 assistant ack (the escalation note)
         assistant_msgs = [m for m in messages if m["role"] == "assistant"]
         assert len(assistant_msgs) == 1

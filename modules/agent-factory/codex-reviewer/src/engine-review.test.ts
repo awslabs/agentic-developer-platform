@@ -19,12 +19,16 @@ const blocked: EngineVerdict = { ...approved, verdict: "request_changes", findin
 
 async function fixture(t: test.TestContext, trackedLearning = false) {
   const directory = await mkdtemp(join(tmpdir(), "codex-engine-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const workspace = join(directory, "work");
   const remote = join(directory, "remote.git");
   await mkdir(workspace);
   const git = async (...args: string[]) => (await exec("git", args, { cwd: workspace })).stdout.trim();
   await git("init", "--initial-branch=story");
+  // Keep automatic Git maintenance inside the awaited Git process so it cannot
+  // race fixture teardown while rewriting objects/pack.
+  await git("config", "gc.autoDetach", "false");
+  await git("config", "maintenance.autoDetach", "false");
   await git("config", "user.name", "Reviewer Test");
   await git("config", "user.email", "reviewer@example.test");
   await writeFile(join(workspace, "code.txt"), "old behavior\n");
@@ -38,6 +42,8 @@ async function fixture(t: test.TestContext, trackedLearning = false) {
   await git("commit", "-m", "story implementation");
   const sha = await git("rev-parse", "HEAD");
   await git("init", "--bare", remote);
+  await git("--git-dir", remote, "config", "gc.autoDetach", "false");
+  await git("--git-dir", remote, "config", "maintenance.autoDetach", "false");
   await git("push", remote, "HEAD:refs/heads/story");
   await git("config", `url.${remote}.insteadOf`, "https://x-access-token@github.com/org/repo.git");
   const pr = { number: 7, state: "open", title: "Story", body: "Implement the story", html_url: "https://github.com/org/repo/pull/7",

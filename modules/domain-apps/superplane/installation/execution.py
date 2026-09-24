@@ -22,7 +22,9 @@ def read_only_workspace_rules(status):
             for verb in rule["verbs"]:
                 if verb in {"get", "list", "watch"}:
                     allowed = {
-                        "": {"nodes", "namespaces", "pods"},
+                        "": {"nodes", "namespaces", "pods", "pods/log"},
+                        "apps": {"deployments", "replicasets"},
+                        "batch": {"jobs"},
                         "superplane.ai": {"nodepools", "superplanenodes"},
                     }
                     groups = rule["apiGroups"]
