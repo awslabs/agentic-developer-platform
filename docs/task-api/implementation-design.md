@@ -638,6 +638,10 @@ Input artifact reads require live run authority and a stored immutable input
 artifact bound to this task and approved scope. Output or unrelated artifacts,
 caller-selected storage locations/owners and URL-based fetches are rejected.
 T6 implements this read variant on the existing artifact route; T4 consumes it.
+Internal result uploads are already bound to an active task and return
+`expires_at: null`; no active artifact TTL is created. Terminal settlement
+establishes their task retention. Public unclaimed uploads retain the required
+24-hour expiry timestamp. These are distinct response contracts.
 The adapter must validate base64, decoded byte length and SHA-256 before returning
 bytes, retaining the 256 KiB per-input and 1 MiB aggregate limits. These bounds
 apply to decoded bytes; no URL or credential is returned to the child. T3 owns
@@ -677,3 +681,7 @@ identifies the saved live draft separately from design acceptance.
 
 This is the accepted design baseline for engine implementation. Source/design
 approval is distinct from flow execution approval and runtime acceptance.
+
+### Host adapter completion correction
+
+The model adapter accepts the same optional `system` string (maximum 16,000 characters) already permitted by the child model-request frame. It participates in the canonical request digest and grants no additional authority. The turn adapter returns `messages` containing the immutable texts of exactly the returned turn’s committed command IDs, in FIFO order; initial turns and waiting responses use an empty list. Stored turn identity and command consumption remain atomic and attempt-fenced. T3 owns the turn/model adapters, T4 their host consumption, and T7 command admission. These fields close transport omissions without changing routes, model selection, authority, artifact/frame limits, or required evidence.

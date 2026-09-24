@@ -274,12 +274,13 @@
     "turn_response": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "operation_status", "turn", "pending_input_count"],
+      "required": ["schema_version", "operation_status", "turn", "pending_input_count", "messages"],
       "properties": {
         "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
         "operation_status": { "enum": ["committed", "existing", "waiting"] },
         "turn": { "oneOf": [{ "type": "null" }, { "$ref": "commands.schema.json#/$defs/turn" }] },
-        "pending_input_count": { "type": "integer", "minimum": 0, "maximum": 10 }
+        "pending_input_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "messages": { "type": "array", "maxItems": 10, "items": { "$ref": "process-protocol.schema.json#/$defs/turn_frame/properties/messages/items" }, "description": "Texts of exactly the returned turn’s committed commands in canonical FIFO order; empty for the initial turn or waiting response." }
       }
     },
     "model_request": {
@@ -304,7 +305,8 @@
             }
           }
         },
-        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 4096 }
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "system": { "type": "string", "maxLength": 16000 }
       }
     },
     "model_response": {
@@ -486,11 +488,56 @@
         }
       ]
     },
+    "artifact_output_response": {
+      "type": "object",
+      "description": "Already-bound internal result artifact. Active task content has no TTL: expires_at is null until terminal retention is established. This does not relax the public unclaimed-upload expiry.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "artifact_id",
+        "version",
+        "content_sha256",
+        "content_type",
+        "created_at",
+        "expires_at",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/schema_version"
+        },
+        "artifact_id": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/artifact_id"
+        },
+        "version": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/version"
+        },
+        "content_sha256": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/content_sha256"
+        },
+        "content_type": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/content_type"
+        },
+        "created_at": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/created_at"
+        },
+        "expires_at": {
+          "type": "null",
+          "description": "The output is already referenced by an active task; its terminal retention deadline is not known yet."
+        },
+        "request_id": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/request_id"
+        },
+        "download_url": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/download_url"
+        }
+      }
+    },
     "artifact_response": {
       "description": "Upload reference or bounded input bytes. Read responses echo the authorized run/artifact binding. Implementations must decode base64, verify decoded byte length and SHA-256, and enforce the task aggregate input limit; never return URLs or credentials.",
       "oneOf": [
         {
-          "$ref": "public-api.schema.json#/$defs/artifact_upload_response"
+          "$ref": "internal-adapters.schema.json#/$defs/artifact_output_response"
         },
         {
           "type": "object",
