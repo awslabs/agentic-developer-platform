@@ -184,38 +184,79 @@ inspection. #5831 owns the durable repair; this change waits on it.
 Also note the root module carries unrelated pending changes, so an ordinary full
 apply would sweep in collateral nobody reviewed. Target the cluster (§5.3).
 
-### 5.2 — Resolve the inputs first, and plan with exactly those
+### 5.2 — Resolve the inputs, in a private run directory, and check the refusal
+
+Three variables identify the target before anything below runs: `ENV` (the
+environment being repaired, e.g. `dev`), `ACCOUNT_ID` (its 12-digit AWS account)
+and `STATE_BUCKET` (`adp-terraform-state-$ACCOUNT_ID`). Set them in the shell you
+will use for the whole of §5.
 
 On a cluster that has already been widened, resolve the effective subnet map
 before planning, so the plan preserves the live additions instead of defaulting
 them away (§4):
 
 ```bash
+# runbook-block: resolve-inputs
+set -euo pipefail
 cd platform/infra
-export TF_VAR_additional_private_subnet_ids_by_az="$(
-  python3 ../scripts/resolve-capacity-subnets.py \
-    --environment <env> --bucket <state-bucket> \
-    --configured "${ADDITIONAL_PRIVATE_SUBNETS_BY_AZ:-}")"
+
+# Private run directory: a saved plan and its rendered JSON contain real
+# infrastructure values, so they must not sit at a predictable path under a
+# world-readable /tmp. mktemp -d creates it 0700; the chmod is belt-and-braces
+# against a permissive umask.
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/adp-capacity-subnets.XXXXXX")
+chmod 700 "$RUN_DIR"
+
+# Checked assignment BEFORE export. `export VAR="$(cmd)"` reports export's own
+# exit status, not the command's, so a refusal from the resolver would be
+# swallowed, VAR would be empty, and the plan below would remove the additions —
+# the exact failure this resolver exists to prevent. Under `set -e` a bare
+# assignment from a command substitution does propagate the failure, so this
+# stops here.
+SUBNETS=$(python3 ../scripts/resolve-capacity-subnets.py \
+  --environment "$ENV" --bucket "$STATE_BUCKET" \
+  --configured "${ADDITIONAL_PRIVATE_SUBNETS_BY_AZ:-}")
+export TF_VAR_additional_private_subnet_ids_by_az="$SUBNETS"
 echo "$TF_VAR_additional_private_subnet_ids_by_az"
+
+# Canonical retained inputs for this deployment, discovered read-only from live
+# state and written 0600 into the private directory above. This is what makes the
+# plan carry EVERY account-specific value (public access CIDRs, cluster-admin
+# principals, ECR encryption, retained KMS keys) rather than only the two an
+# operator happens to remember to export. It re-applies the §4 rules to the
+# export above and refuses identically, so it is not a way around them.
+python3 ../scripts/upgrade-state.py prepare \
+  --directory "$RUN_DIR" --account "$ACCOUNT_ID" --environment "$ENV"
 ```
 
-It exits non-zero rather than printing a map that would narrow the set. Echo and
-read the value: it is the input the plan and the apply both use. Other inputs the
-platform module expects per-invocation (`TF_VAR_eks_public_access_cidrs`,
-`extra_cluster_admin_principal_arns`) must carry their live values too — an
-unset one is its own silent narrowing.
+Echo and read the resolved value: it is the input the plan and the apply both use.
+
+Two things about precedence, because getting them the wrong way round is how an
+input goes missing. `$RUN_DIR/platform.tfvars.json` is passed **after** the
+committed `environments/$ENV/platform.tfvars`, so the discovered live values win
+over repository defaults — that is the point of discovering them. And because a
+later `-var-file` also overrides `TF_VAR_`, the export above reaches the plan only
+via that file, which is why discovery merges it in rather than the export standing
+on its own.
+
+A refusal from either command stops §5 here. That is the intended outcome, not an
+error to work around: fix the configuration it names, then re-run this block.
 
 ### 5.3 — Save a scoped plan, then inspect that file
 
 ```bash
-terraform plan -var-file=../../environments/<env>/platform.tfvars \
-  -target=module.eks.aws_eks_cluster.main -out=/tmp/subnets.tfplan
-terraform show -json /tmp/subnets.tfplan > /tmp/subnets.plan.json   # must exit 0 — see §5.1
+# runbook-block: scoped-plan
+set -euo pipefail
+terraform plan -var-file=../../environments/"$ENV"/platform.tfvars \
+  -var-file="$RUN_DIR/platform.tfvars.json" \
+  -target=module.eks.aws_eks_cluster.main -out="$RUN_DIR/subnets.tfplan"
+terraform show -json "$RUN_DIR/subnets.tfplan" > "$RUN_DIR/subnets.plan.json"  # must exit 0 — see §5.1
 ```
 
-Review `/tmp/subnets.plan.json`, then apply **that saved file**
-(`terraform apply /tmp/subnets.tfplan`) so the reviewed plan is the applied plan.
-Re-planning between review and apply discards the review.
+Review `$RUN_DIR/subnets.plan.json` against §5.5, then apply **that saved file**
+(`terraform apply "$RUN_DIR/subnets.tfplan"`) so the reviewed plan is the applied
+plan. Re-planning between review and apply discards the review. Remove the run
+directory afterwards (`rm -rf "$RUN_DIR"`).
 
 > `.github/scripts/verify_scoped_plan.py` has **no scope entry for this change**,
 > so there is no automated guard over this plan — the review is a human one
@@ -223,6 +264,13 @@ Re-planning between review and apply discards the review.
 > not depend on, which is why the subnet and route-table validations are wired
 > upstream of the cluster (`modules/eks/main.tf`); they run under a targeted plan
 > and their regression tests assert exactly that.
+
+The resolve block in §5.2 and this plan block are executed as a pair by
+`platform/scripts/tests/test_capacity_subnet_runbook.py`, which extracts them from
+this file and runs them with a refusing resolver and a recording `terraform` stub.
+It passes only if the refusal stops the procedure with no `terraform` invocation at
+all — so the failure-masking cannot be reintroduced here without turning that test
+red. Keep the block markers and the checked-assignment shape when editing.
 
 ### 5.4 — Recheck free capacity immediately before applying
 
@@ -303,17 +351,53 @@ the added subnets only serve nodes launched after the apply.
 
 Rollback is a **deliberate narrowing**, so clearing the variable is deliberately
 not enough — that is now read as "retain" (§4), precisely so an accidental blank
-cannot roll back for you. To narrow on purpose, authorise it:
+cannot roll back for you. To narrow on purpose, authorise it.
+
+Prerequisites: `ENV`, `ACCOUNT_ID` and `STATE_BUCKET` as in §5.2, plus
+`REDUCED_MAP` — the zone-keyed map you intend to be left with, `{}` to remove all
+additions. It is a placeholder here; nothing below has been run for you.
 
 ```bash
-# Operator path: state the reduced map you intend, and authorise the removal.
-python3 ../scripts/resolve-capacity-subnets.py --environment <env> \
-  --bucket <state-bucket> --configured '<reduced-or-empty-map>' --allow-removal
-# CI path: set the ALLOW_CAPACITY_SUBNET_REMOVAL repository variable for the run.
+# runbook-block: rollback
+set -euo pipefail
+cd platform/infra
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/adp-capacity-subnets.XXXXXX"); chmod 700 "$RUN_DIR"
+
+# State the reduced map you intend, and authorise the removal. Checked assignment
+# before export, for the §5.2 reason: `export VAR="$(cmd)"` would hide a refusal
+# and plan an empty map you did not choose.
+SUBNETS=$(python3 ../scripts/resolve-capacity-subnets.py \
+  --environment "$ENV" --bucket "$STATE_BUCKET" \
+  --configured "$REDUCED_MAP" --allow-removal)
+echo "Rolling back to: $SUBNETS"
+
+# The resolved map must actually reach the plan. Discovery would re-derive the
+# CURRENT live set — which is what you are deliberately narrowing — so write the
+# reduced map to its own file and pass it LAST, after the discovered inputs, so it
+# is the value that wins. Precedence is last-var-file-wins, and this is the one
+# place in this runbook where overriding discovery is the intent.
+python3 ../scripts/upgrade-state.py prepare \
+  --directory "$RUN_DIR" --account "$ACCOUNT_ID" --environment "$ENV"
+umask 077
+printf '{"additional_private_subnet_ids_by_az":%s}\n' "$SUBNETS" \
+  > "$RUN_DIR/rollback.tfvars.json"
+
+terraform plan -var-file=../../environments/"$ENV"/platform.tfvars \
+  -var-file="$RUN_DIR/platform.tfvars.json" \
+  -var-file="$RUN_DIR/rollback.tfvars.json" \
+  -target=module.eks.aws_eks_cluster.main -out="$RUN_DIR/rollback.tfplan"
+terraform show -json "$RUN_DIR/rollback.tfplan" > "$RUN_DIR/rollback.plan.json"
 ```
 
-Then plan and apply through §5.3 as usual. The cluster's subnet set narrows back
-to what you named.
+For a CI rollback, set the `ALLOW_CAPACITY_SUBNET_REMOVAL` repository variable for
+the run instead; the resolver step already passes the authorisation through.
+
+Review `$RUN_DIR/rollback.plan.json` and then apply that saved file, as in §5.3.
+Expect the mirror image of §5.5: one in-place cluster update whose `subnet_ids`
+**loses** the subnets you named and keeps everything else — the removal is the
+intended change here, so it is the one context in this runbook where a removal
+from `subnet_ids` is not a stop signal. A destroy, a replacement, or any other
+resource changing still is. Remove the run directory afterwards.
 
 **Rollback is not free, and it is not symmetric.** Nodes already launched into a
 removed subnet keep running, but the cluster will no longer place new nodes
