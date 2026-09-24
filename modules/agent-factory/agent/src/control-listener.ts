@@ -33,6 +33,7 @@
  */
 
 import * as http from 'http';
+import { ExplanationEvents, explanationsEnabled } from './explanation-events';
 import { timingSafeEqual, type KeyObject } from 'crypto';
 import { AddressInfo } from 'net';
 
@@ -123,6 +124,7 @@ export interface ControlListenerConfig {
   /** Run generation. A request declaring a different generation is stale. */
   generation: number;
   store: ControlStateStore;
+  events?: ExplanationEvents;
   /** Structured log sink. Injected so tests observe diagnostics without stdout capture. */
   logger?: (level: string, message: string, context?: Record<string, unknown>) => void;
 
@@ -204,6 +206,9 @@ export type StartOutcome =
 
 export class ControlListener {
   private server: http.Server | null = null;
+  private mutationsEnabled = false;
+  private readsEnabled = false;
+  private streams = new Set<http.ServerResponse>();
   // Serialize revalidation and executor *start* in journal acceptance order.
   // Never wait for pause settlement here: resume must be able to cancel it.
   private deliveryTail: Promise<void> = Promise.resolve();
@@ -239,7 +244,9 @@ export class ControlListener {
    * hardening decision gets undone by an unrelated deployment change.
    */
   async start(env: NodeJS.ProcessEnv = process.env): Promise<StartOutcome> {
-    if (!isAgentControlEnabled(env)) {
+    this.mutationsEnabled = isAgentControlEnabled(env);
+    this.readsEnabled = explanationsEnabled(env);
+    if (!this.mutationsEnabled && !this.readsEnabled) {
       // No server object, no port, no journal activity. The flag-off path must
       // leave the ordinary run byte-identical in its observable behaviour.
       return { started: false, reason: 'disabled' };
@@ -312,6 +319,8 @@ export class ControlListener {
     const server = this.server;
     if (!server) return;
     this.server = null;
+    this.config.events?.finish();
+    for (const response of this.streams) response.end();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
@@ -353,7 +362,7 @@ export class ControlListener {
       // served entirely from recorded state (revival-design §2).
       const state = this.config.store.snapshot();
       const keyIds = this.verificationKeyIds();
-      const ready = keyIds.length > 0;
+      const ready = this.mutationsEnabled && keyIds.length > 0;
       this.writeJson(res, 200, {
         ...state,
         verification_key_ids: keyIds,
@@ -367,14 +376,15 @@ export class ControlListener {
       return;
     }
     if (path === RESERVED_EVENTS_PATH) {
-      // Reserved, not implemented. 501 rather than 404 so the path is visibly
-      // claimed: a 404 would invite a later story to mount something else here.
-      this.writeJson(res, 501, { error: 'not_implemented', detail: 'event stream is reserved' });
-      return;
+      if (method !== 'GET' || !this.readsEnabled || !this.config.events) {
+        this.writeJson(res, 501, { error: 'not_implemented' }); return;
+      }
+      this.streamEvents(req, res); return;
     }
 
     const action = this.actionFromPath(method, path);
     if (action) {
+      if (!this.mutationsEnabled) { this.writeJson(res, 503, { error: 'controls_disabled' }); return; }
       await this.handleCommand(action, req, res);
       return;
     }
@@ -420,6 +430,34 @@ export class ControlListener {
       }
     }
     return true;
+  }
+
+  private streamEvents(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const events = this.config.events!;
+    const cursor = req.headers['last-event-id'];
+    if ((cursor !== undefined && (typeof cursor !== 'string' || cursor.length > 256)) ||
+        req.headers['x-adp-control-generation'] !== String(this.config.generation)) {
+      this.writeJson(res, 400, { error: 'invalid_cursor_or_generation' }); return;
+    }
+    let unsubscribe: () => void;
+    const send = (event: import('./explanation-events').ExplanationEvent) => {
+      if (!res.write(`id: ${events.cursor(event.sequence)}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`)) res.destroy();
+      if (event.kind === 'terminal') res.end();
+    };
+    try { unsubscribe = events.subscribe(send); }
+    catch { this.writeJson(res, 429, { error: 'subscriber_limit' }); return; }
+    this.streams.add(res);
+    const heartbeat = setInterval(() => {
+      if (!this.authenticate(req)) { res.end(); return; }
+      if (!res.write(`event: heartbeat\ndata: ${JSON.stringify({ timestamp: new Date().toISOString() })}\n\n`)) res.destroy();
+    }, 2000);
+    heartbeat.unref();
+    res.on('close', () => { clearInterval(heartbeat); unsubscribe(); this.streams.delete(res); });
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no' });
+    res.flushHeaders();
+    const replay = events.replay(cursor as string | undefined);
+    if (replay.reset) res.write('event: reset\ndata: {"reason":"History unavailable; showing retained updates."}\n\n');
+    for (const event of replay.events) { if (res.destroyed || res.writableEnded) break; send(event); }
   }
 
   /** Map `POST /agent/<verb>` to a known verb, or null. */

@@ -24,6 +24,8 @@ import { TableSkeleton } from '@/components/LoadingScreen';
 import { FilterChips } from '@/components/activity/FilterChips';
 import { ActivityCardList } from '@/components/activity/ActivityCardList';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
+import { useRevalidatingFeaturesQuery } from '@/hooks/useFeatures';
+import { LiveStreamLink } from '@/components/activity/LiveStreamLink';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
@@ -143,9 +145,10 @@ interface ChainRowProps {
   onDetailClick: (item: InvocationItem) => void;
   onNodeClick: (invocationId: string) => void;
   onTranscriptClick: (invocationId: string) => void;
+  liveStreamEnabled?: boolean;
 }
 
-function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick }: ChainRowProps) {
+function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick, liveStreamEnabled }: ChainRowProps) {
   const { root } = chain;
   const statusConfig = describeStatus(root.status);
   const isSingleton = chain.descendant_count === 0;
@@ -215,6 +218,8 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
           <ChainCostBadge cost={chain.chain_total_cost_usd} />
         </div>
 
+        <LiveStreamLink enabled={liveStreamEnabled} status={root.status} onOpen={() => onDetailClick(root)} />
+
         {/* Transcript link (Issue #3069) */}
         {root.transcript_key && (
           <button
@@ -245,53 +250,57 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
           {chain.descendants.map((desc) => {
             const descStatus = describeStatus(desc.status);
             return (
-              <button
-                key={desc.invocation_id}
-                type="button"
-                onClick={() => onNodeClick(desc.invocation_id)}
-                className="w-full text-left flex items-center gap-2 py-2 px-3 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-              >
-                <span className="text-gray-300 dark:text-gray-600 text-sm" aria-hidden="true">
-                  └─
-                </span>
-                <span className={`${descStatus.colorClass} text-sm font-medium`} aria-hidden="true">
-                  {descStatus.glyph}
-                </span>
-                <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
-                  {desc.topic || <span className="italic text-gray-400">untitled</span>}
-                </span>
-                {desc.total_cost_usd != null && (
-                  <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
-                    {formatAmount(desc.total_cost_usd)}
-                  </span>
-                )}
-                {desc.transcript_key && (
-                  <span
-                    role="link"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTranscriptClick(desc.invocation_id);
-                    }}
-                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onTranscriptClick(desc.invocation_id); } }}
-                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                    title="View full run transcript"
-                  >
-                    Transcript
-                  </span>
-                )}
-                {desc.persona && (
-                  <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
-                    {desc.persona}
-                  </span>
-                )}
-                <span
-                  className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap"
-                  title={formatDateTime(desc.invoked_at)}
+              <div key={desc.invocation_id} className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onNodeClick(desc.invocation_id)}
+                  className="w-full text-left flex items-center gap-2 py-2 px-3 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
                 >
-                  {formatRelativeTime(desc.invoked_at)}
-                </span>
-              </button>
+                  <span className="text-gray-300 dark:text-gray-600 text-sm" aria-hidden="true">
+                    └─
+                  </span>
+                  <span className={`${descStatus.colorClass} text-sm font-medium`} aria-hidden="true">
+                    {descStatus.glyph}
+                  </span>
+                  <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
+                    {desc.topic || <span className="italic text-gray-400">untitled</span>}
+                  </span>
+                  {desc.total_cost_usd != null && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
+                      {formatAmount(desc.total_cost_usd)}
+                    </span>
+                  )}
+                  {desc.transcript_key && (
+                    <span
+                      role="link"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTranscriptClick(desc.invocation_id);
+                      }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onTranscriptClick(desc.invocation_id); } }}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      title="View full run transcript"
+                    >
+                      Transcript
+                    </span>
+                  )}
+                  {desc.persona && (
+                    <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
+                      {desc.persona}
+                    </span>
+                  )}
+                  <span
+                    className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap"
+                    title={formatDateTime(desc.invoked_at)}
+                  >
+                    {formatRelativeTime(desc.invoked_at)}
+                  </span>
+                </button>
+                <LiveStreamLink enabled={liveStreamEnabled} status={desc.status} onOpen={() => {
+                  void getMyInvocationDetail(desc.invocation_id).then(onDetailClick).catch(() => onNodeClick(desc.invocation_id));
+                }} />
+              </div>
             );
           })}
         </div>
@@ -375,6 +384,8 @@ export default function AgentActivity() {
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
 
   // Issue #3770: Responsive layout — card view below lg breakpoint
+  const explanationFlags = useRevalidatingFeaturesQuery();
+  const liveStreamEnabled = !explanationFlags.isPending && !explanationFlags.isError && explanationFlags.data?.agent_explanations === true;
   const isNarrowViewport = useMediaQuery('(max-width: 1023px)');
 
   // Issue #3632: URL query-param deep-linking
@@ -1072,6 +1083,7 @@ export default function AgentActivity() {
                   <ChainRow
                     key={chain.chain_id}
                     chain={chain}
+                    liveStreamEnabled={liveStreamEnabled}
                     isExpanded={expandedChains.has(chain.chain_id)}
                     onToggle={() => toggleChainExpand(chain.chain_id)}
                     onDetailClick={(item) => setDetailItem(item)}
@@ -1130,6 +1142,7 @@ export default function AgentActivity() {
                 /* Card layout for narrow viewports (<1024px) — Issue #3770 */
                 <ActivityCardList
                   items={flatData.items}
+                  liveStreamEnabled={liveStreamEnabled}
                   onDetailClick={(item) => setDetailItem(item)}
                   onTranscriptClick={(id) => setTranscriptInvocationId(id)}
                 />
@@ -1240,6 +1253,7 @@ export default function AgentActivity() {
                           <SourceLink item={item} />
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
+                          <LiveStreamLink enabled={liveStreamEnabled} status={item.status} onOpen={() => setDetailItem(item)} />
                           {item.transcript_key ? (
                             <button
                               type="button"

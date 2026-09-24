@@ -9,6 +9,7 @@
  * collapsible "More" section.
  */
 
+import { LiveStreamLink } from './LiveStreamLink';
 import { useState, useCallback } from 'react';
 import type { InvocationItem, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
@@ -33,6 +34,7 @@ const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {
 
 export interface ActivityCardProps {
   item: InvocationItem;
+  liveStreamEnabled?: boolean;
   onDetailClick: (item: InvocationItem) => void;
   onTranscriptClick: (invocationId: string) => void;
 }
@@ -41,7 +43,7 @@ export interface ActivityCardProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActivityCard({ item, onDetailClick, onTranscriptClick }: ActivityCardProps) {
+export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStreamEnabled }: ActivityCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const statusConfig = describeStatus(item.status);
@@ -157,6 +159,8 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
           {formatRunCost(item.total_cost_usd, item.status)}
         </span>
       </div>
+
+      <LiveStreamLink enabled={liveStreamEnabled} status={item.status} onOpen={() => onDetailClick(item)} />
 
       {/* Expand/collapse toggle */}
       <button

@@ -3440,7 +3440,7 @@ def _setup_agent_control(
     abort the run it is attached to. What it must not do is fail silently, since
     the UI would then offer a channel that does not exist (FR-1.12, NFR-10).
     """
-    if not _is_agent_control_enabled():
+    if not (_is_agent_control_enabled() or os.environ.get("FEATURE_AGENT_EXPLANATIONS_ENABLED") == "true"):
         logger.info("Agent control disabled (FEATURE_AGENT_CONTROL_ENABLED not 'true')")
         return False
 

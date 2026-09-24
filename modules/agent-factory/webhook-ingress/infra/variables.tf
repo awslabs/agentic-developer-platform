@@ -502,6 +502,12 @@ variable "webhook_lambda_security_group_ids" {
 # readers are deployed. Enabling the flag on a shared environment before then is
 # how a control that appears to pause a run without doing so reaches a user.
 
+variable "agent_explanations_enabled" {
+  description = "Enable authenticated live explanation reads independently of control mutations. Requires protected worker identity and gateway-only listener ingress."
+  type        = bool
+  default     = false
+}
+
 variable "agent_control_enabled" {
   description = "Whether agent-worker pods start a live control listener. Strict: the worker acts on the exact string \"true\" and nothing else, so a typo leaves the feature off rather than half-on. Off by default and intended to stay off for ordinary workloads until a verb is actually implemented — this story ships the authenticated path with every verb answering 501. Read INDEPENDENTLY of the gateway's own FEATURE_AGENT_CONTROL_ENABLED: a config change on one side must not be able to start a listener on the other."
   type        = bool

@@ -15,6 +15,7 @@ import re
 from typing import Annotated, Literal
 
 import boto3
+import httpx
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -852,6 +853,38 @@ async def get_invocation_agent_state(
         return await control.get_state(invocation_id, user_id=user_id, tenant_id=tenant_id)
     except ControlError as exc:
         _raise_control_error(exc)
+
+
+@router.get("/activity/invocations/{invocation_id}/agent/events")
+async def stream_invocation_explanations(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+):
+    from src.activity.explanation_stream import open_explanation_stream
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+    from src.shared.database import get_session_factory
+
+    if request.query_params:
+        raise HTTPException(400, "event stream accepts no query parameters")
+
+    async def reauthorize():
+        async with get_session_factory()() as db:
+            return await authorize_human_session(current_user, db)
+
+    try:
+        session = await reauthorize()
+        return await open_explanation_stream(
+            control, invocation_id, session=session, reauthorize=reauthorize, cursor=request.headers.get("last-event-id")
+        )
+    except BootstrapRefusedError:
+        raise HTTPException(404, "run not found") from None
+    except ControlError as exc:
+        _raise_control_error(exc)
+    except httpx.HTTPError:
+        raise HTTPException(503, "live explanations unavailable") from None
 
 
 @router.post("/activity/invocations/{invocation_id}/agent/{action}")

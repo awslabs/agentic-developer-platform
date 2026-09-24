@@ -52,6 +52,7 @@ class TestFeaturesDefaults:
             "FEATURE_ORCHESTRATION_ENGINE_ENABLED",
             "FEATURE_BUDGET_SPEND_ENABLED",
             "FEATURE_AGENT_CONTROL_ENABLED",
+            "FEATURE_AGENT_EXPLANATIONS_ENABLED",
             "FEATURE_NEW_UI_ENABLED",
             "FEATURE_SUPERPLANE_ENABLED",
             "FEATURE_AGENT_MODELS_ENABLED",
@@ -81,6 +82,7 @@ class TestFeaturesDefaults:
                 # is that ordinary workloads stay off — so "absent" must mean off,
                 # not "off until someone sets it to something unparseable".
                 "agent_control": False,
+                "agent_explanations": False,
                 # Issue #5079: fail-closed. The current UI is the default and the
                 # /next shell is opt-in per environment, so "absent" must mean the
                 # new experience is not advertised at all.

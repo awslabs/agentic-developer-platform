@@ -16,7 +16,8 @@
  * teardown obligations. Ordinary runs and the fixture both call it; there is now
  * exactly one place that decides how a control runtime is built.
  */
-import { ControlListener } from './control-listener';
+import { ControlListener, isAgentControlEnabled } from './control-listener';
+import { ExplanationEvents, explanationsEnabled } from './explanation-events';
 import { revalidateQueuedCommand } from './control-revalidation';
 import { parseVerificationKeys } from './control-envelope';
 import { ControlStateStore } from './control-state';
@@ -39,6 +40,7 @@ export interface ControlRuntime {
 export interface ControlRuntimeStartResult {
   /** `null` when the listener did not start — see `outcome.reason`. */
   readonly runtime: ControlRuntime | null;
+  readonly events?: ExplanationEvents;
   readonly listener: ControlListener | null;
   readonly outcome: Awaited<ReturnType<ControlListener['start']>>;
 }
@@ -102,7 +104,9 @@ export async function startControlRuntime(args: {
     log,
   });
 
+  const events = explanationsEnabled(env) ? new ExplanationEvents(env.ADP_CONTROL_RUN_ID || '', Number(env.ADP_CONTROL_GENERATION || '1')) : undefined;
   const listener = new ControlListener({
+    events,
     bindAddress: env.ADP_CONTROL_BIND_ADDRESS || '',
     port: Number.parseInt(env.ADP_CONTROL_PORT || '0', 10),
     token: env.ADP_CONTROL_TOKEN || '',
@@ -121,7 +125,11 @@ export async function startControlRuntime(args: {
 
   const outcome = await listener.start(env);
   if (outcome.started) {
-    return { runtime: { adapter: controlAdapter, gate: pauseGate, steerQueue }, listener, outcome };
+    if (!isAgentControlEnabled(env)) {
+      steerQueue.dispose('read-only listener');
+      return { runtime: null, listener, outcome, events };
+    }
+    return { runtime: { adapter: controlAdapter, gate: pauseGate, steerQueue }, listener, outcome, events };
   }
   // A listener that did not start means no command can ever arrive, so the
   // queue is disposed rather than left holding a runtime subscription for the

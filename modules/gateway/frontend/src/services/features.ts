@@ -20,6 +20,7 @@ export interface FeatureFlags {
   budget_spend: boolean;
   /** Live run controls (pause/resume/steer/abort) — Issue #3960. Fail-closed. */
   agent_control: boolean;
+  agent_explanations?: boolean;
   /** Opt-in /next UI shell — Issue #5079. Fail-closed; rollout control only. */
   new_ui: boolean;
   /** Superplane domain app — Issue #5037 (EPIC #4910). Fail-closed. */
@@ -61,6 +62,7 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   // when the controls cannot work. An operator who clicks Abort during an outage
   // and sees no error has been told a run was aborted when it was not (AC-F3).
   agent_control: false,
+  agent_explanations: false,
   // Fail-closed — Issue #5079. The current UI is the default; /next is an opt-in
   // additional experience. `useFeatures` returns `data ?? ALL_FEATURES_ENABLED`, so
   // this value renders BOTH while /features is in flight AND whenever it errors. A

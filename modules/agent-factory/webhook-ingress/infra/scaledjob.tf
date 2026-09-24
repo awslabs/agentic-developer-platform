@@ -136,13 +136,15 @@ locals {
   # minted inside the pod by `secrets.token_urlsafe` per run (entrypoint.py) and
   # written straight to the invocation row. A token in a manifest would be one
   # value shared by every run, visible in `kubectl describe`, and unrotatable.
-  agent_control_env_block = var.agent_control_enabled ? join("\n", [
+  agent_control_env_block = (var.agent_control_enabled || var.agent_explanations_enabled) ? join("\n", [
     "                  # ── Live run control (Issue #3960) ───────────────────────────",
     "                  # Strict flag: the worker starts a listener ONLY on the exact",
     "                  # string \"true\". Read independently of the gateway's own flag —",
     "                  # neither side can activate the other.",
+    "                  - name: FEATURE_AGENT_EXPLANATIONS_ENABLED",
+    "                    value: \"${var.agent_explanations_enabled}\"",
     "                  - name: FEATURE_AGENT_CONTROL_ENABLED",
-    "                    value: \"true\"",
+    "                    value: \"${var.agent_control_enabled}\"",
     "                  - name: ADP_CONTROL_PORT",
     "                    value: \"${var.agent_control_port}\"",
     "                  # Duration cap only; the gateway supplies the absolute Job",

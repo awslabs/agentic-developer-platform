@@ -98,6 +98,8 @@ import { CodexEventWatcher } from './components/codexEventWatcher';
 // Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
 // so the control surface is unit-testable without starting a run.
 import { ControlListener } from './control-listener';
+import type { ExplanationEvents } from './explanation-events';
+let activeExplanationEvents: ExplanationEvents | undefined;
 import { ControlStateStore, type ControlAction } from './control-state';
 // Issue #5840: the heartbeat/exit-watchdog emitter, shared with the live
 // pause-expiry runner so both describe the same execution and the same gate.
@@ -1726,6 +1728,7 @@ Now, complete the assigned task.`;
                 codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
               });
             }
+            activeExplanationEvents?.publish(assistantText(assistantMsg.message.content));
             // Publish intentional explanations as well as technical activity.
             if (activeLiveComment) {
               activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));
@@ -2254,7 +2257,7 @@ async function main(): Promise<void> {
     // listener needs was placed in this process's env by the entrypoint, which
     // only does so when the flag is on and registration succeeded — so an
     // unregistered listener cannot exist.
-    const { runtime, listener, outcome } = await startControlRuntime({
+    const { runtime, listener, outcome, events } = await startControlRuntime({
       log,
       // Issue #3965: the deterministic live-comment marker. Written on the
       // outcome, which is after the handoff — never on acceptance. The
@@ -2264,6 +2267,7 @@ async function main(): Promise<void> {
         activeLiveComment?.appendActivity(steerMarker(commandId, outcome));
       },
     });
+    if (outcome.started) { controlListener = listener; activeExplanationEvents = events; }
     if (outcome.started && runtime && listener) {
       controlListener = listener;
       // Issue #3961: publishing the runtime here — and only here — is what

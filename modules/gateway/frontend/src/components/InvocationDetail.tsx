@@ -26,6 +26,7 @@ import { LivenessBadge } from '@/components/activity/LivenessBadge';
 // AND the polled control state says this run is genuinely controllable, so this
 // import does not change the modal for any existing deployment.
 import { ControlPanel } from '@/components/ControlPanel';
+import { LiveExplanations } from '@/components/LiveExplanations';
 import type { InvocationItem } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
@@ -500,6 +501,7 @@ export function InvocationDetail({
             offer from the polled control state, because a non-terminal status
             does not imply the run is reachable or controllable.
           */}
+          <LiveExplanations key={item.invocation_id} invocationId={item.invocation_id} isOpen={isOpen} terminal={isTerminal} onTerminal={onRefreshItem} />
           <ControlPanel
             invocationId={item.invocation_id}
             isOpen={isOpen}

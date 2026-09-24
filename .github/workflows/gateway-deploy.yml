@@ -696,6 +696,7 @@ jobs:
           # Absent parameter => "false", and `_is_enabled_strict` accepts only the
           # literal "true", so a missing or malformed value leaves the control path
           # closed rather than guessing.
+          FEATURE_AGENT_EXPLANATIONS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-explanations" "false")
           FEATURE_AGENT_CONTROL_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
           if [ -z "$FEATURE_AGENT_CONTROL_ENABLED" ] || [ "$FEATURE_AGENT_CONTROL_ENABLED" = "None" ]; then
             FEATURE_AGENT_CONTROL_ENABLED="false"
@@ -731,6 +732,7 @@ jobs:
           # Render then apply, so changes to probes, env, resource limits, volume
           # mounts, etc. actually propagate.
           sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+              -e "s|__FEATURE_AGENT_EXPLANATIONS_ENABLED__|${FEATURE_AGENT_EXPLANATIONS_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
               -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \

@@ -1,0 +1,40 @@
+name: Live explanation browser tests
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/gateway/frontend/**'
+      - '.github/workflows/agent-explanations-browser.yml'
+permissions:
+  contents: read
+concurrency:
+  group: explanations-browser-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: modules/gateway/frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/gateway/frontend/package-lock.json
+      - run: npm ci
+      - name: Install isolated browser tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/adp-stream-playwright" --no-save --package-lock=false @playwright/test@1.63.0
+          ln -s "$RUNNER_TEMP/adp-stream-playwright/node_modules/@playwright" node_modules/@playwright
+          "$RUNNER_TEMP/adp-stream-playwright/node_modules/.bin/playwright" install --with-deps chromium
+      - run: npx vitest run src/__tests__/components/LiveExplanations.test.tsx src/__tests__/services/agentExplanations.test.ts
+      - run: '"$RUNNER_TEMP/adp-stream-playwright/node_modules/.bin/playwright" test --config tests/e2e/explanations.config.ts'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: live-explanation-browser
+          path: modules/gateway/frontend/test-results/
+          retention-days: 7

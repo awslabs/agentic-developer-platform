@@ -2,6 +2,7 @@
 import { mkdirSync, writeFileSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { startControlRuntime } from './control-runtime-factory';
+import { assistantText } from './reporting-text';
 import { resilientQuery } from './utils/resilientQuery';
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore } from './utils/spill';
@@ -86,6 +87,8 @@ export async function runRegisteredControlFixture(): Promise<number> {
   try {
     const prompt = mode === 'native-interrupt'
       ? 'This is an authorized disposable control fixture. Run Bash sleep 30, then report completion. Do not run background commands.'
+      : started.events
+        ? 'This is an authorized disposable streaming fixture. First explain to the reader that a bounded history supports reconnects, choosing bounded memory over complete live replay. Include the marker STREAM-MECHANISM. Then run foreground Bash sleep 20. Next explain that seeing two live messages proves incremental delivery but not durable cross-pod replay; include STREAM-EVIDENCE. Then run foreground Bash sleep 20 and finish. Do not combine both explanations in one message. Do not use background work.'
       : 'This is an authorized disposable control fixture. Repeatedly use separate foreground Bash calls to sleep 2 seconds, then use Write to update progress.txt with the iteration number. Continue for 100 iterations unless a later user instruction changes the task. Keep all files within this working directory. Do not combine the loop into one Bash call or use background work.';
     const attach = runtime.adapter.onAttemptHandle();
     for await (const message of resilientQuery({
@@ -113,6 +116,10 @@ export async function runRegisteredControlFixture(): Promise<number> {
     })) {
       const event = message as unknown as Record<string, unknown>;
       record('sdk_message', { message_type: event.type, subtype: event.subtype });
+      if (event.type === 'assistant') {
+        const content = (event.message as { content?: Array<{ type?: unknown; text?: unknown }> } | undefined)?.content;
+        if (Array.isArray(content)) started.events?.publish(assistantText(content));
+      }
       if (event.type === 'assistant' && mode === 'native-interrupt' && !nativeRequested) {
         if (!handle || typeof handle.interrupt !== 'function') throw new Error('SDK interruption unavailable');
         nativeRequested = true;

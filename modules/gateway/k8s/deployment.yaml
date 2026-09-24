@@ -335,6 +335,8 @@ spec:
             # gates the route surface, the ping/state read path and the capability
             # report. It also cannot start a listener in an agent pod: the worker
             # reads its own copy of FEATURE_AGENT_CONTROL_ENABLED independently.
+            - name: FEATURE_AGENT_EXPLANATIONS_ENABLED
+              value: "__FEATURE_AGENT_EXPLANATIONS_ENABLED__"
             - name: FEATURE_AGENT_CONTROL_ENABLED
               value: "__FEATURE_AGENT_CONTROL_ENABLED__"
             # Issue #5079 (NUI-01 of EPIC #5078): the opt-in /next UI shell. Rendered

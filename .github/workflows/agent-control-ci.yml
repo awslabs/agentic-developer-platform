@@ -65,6 +65,10 @@ on:
       - 'modules/gateway/k8s/configmap.yaml'
       - '.github/workflows/gateway-deploy.yml'
       # In-pod control listener (TypeScript)
+      - 'modules/agent-factory/agent/src/explanation-events.ts'
+      - 'modules/agent-factory/agent/src/explanation-events.test.ts'
+      - 'modules/gateway/src/activity/explanation_stream.py'
+      - 'modules/gateway/tests/activity/test_explanation_stream.py'
       - 'modules/agent-factory/agent/src/control-listener.ts'
       - 'modules/agent-factory/agent/src/control-deadline*'
       - 'modules/agent-factory/agent/src/control-credentials.ts'
@@ -509,7 +513,7 @@ jobs:
         # nothing at all. Verified locally: the dotted form reports 100% line and
         # branch on both modules; the path form reports 0.00%.
         run: |
-          pytest tests/activity/test_control_proxy.py tests/agentauth/test_human_control.py \
+          pytest tests/activity/test_explanation_stream.py tests/activity/test_control_proxy.py tests/agentauth/test_human_control.py \
             --cov=src.activity.control_service \
             --cov=src.activity.control_schemas \
             --cov=src.agentauth.human_control \
@@ -813,7 +817,7 @@ jobs:
         # subprocess and spends nothing. The `.integration.ts` file itself still cannot
         # be collected by jest, which is what keeps the live experiments out of CI.
         run: |
-          npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+          npx jest src/explanation-events.test.ts src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
             src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
