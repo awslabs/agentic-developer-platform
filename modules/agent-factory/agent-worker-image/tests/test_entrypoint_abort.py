@@ -486,3 +486,308 @@ class TestConfirmedAcknowledgement:
 
         assert "redeliver" in caplog.text
         assert "aborted" in caplog.text
+
+
+class TestTheAbortReachesTheEndOfTheRun:
+    """The wiring in ``main()``, driven end to end.
+
+    Unit-testing the handlers is not enough here. Every defect this class targets
+    lives in the *ordering* of writes inside ``main()``: three separate writes
+    after ``_handle_abort`` derive an outcome from ``exit_code``, which is 0 for an
+    abort, so each one would quietly restate the run as a success. Nothing about
+    the handlers in isolation reveals that.
+    """
+
+    @pytest.fixture()
+    def run(self, monkeypatch, tmp_path, gateway_key):
+        """Drive the real ``main()`` with a genuinely authorized abort in place.
+
+        Only the run's edges are stubbed — SQS, GitHub, the transcript upload and
+        the Node subprocess. The terminal sequence under test is the real one.
+        """
+        from lib import run_report
+
+        envelope = {
+            "version": "1.0",
+            "channel": "github",
+            "tenant_id": "acme-corp",
+            "persona": "developer",
+            "message_id": RUN_ID,
+            "arrived_at": ARRIVED_AT,
+            "source_ref": {"installation_id": 123, "repo": "acme/app", "issue": 42},
+            "actor": {"user_id": "user-1", "github_login": "operator", "is_bot": False},
+            "intent": {"trigger": "issue_labeled", "label": "developer"},
+        }
+
+        monkeypatch.setattr(entrypoint.os, "environ", dict(entrypoint.os.environ))
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/1/agent.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+        monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path / "repo")
+        (tmp_path / "repo").mkdir()
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        for name in (
+            "_load_door_api_key",
+            "_stop_sigv4_proxy",
+            "_start_sigv4_proxy",
+            "_teardown_agent_control",
+            "_record_session_id",
+            "_is_already_completed",
+            "is_delivery_completed",
+            "record_delivery_completed",
+        ):
+            monkeypatch.setattr(entrypoint, name, MagicMock(return_value=False))
+        monkeypatch.setattr(entrypoint, "BootstrapLogger", MagicMock())
+        monkeypatch.setattr(entrypoint, "VisibilityHeartbeat", MagicMock())
+        monkeypatch.setattr(entrypoint, "_read_run_reports", lambda: ("", ""))
+        monkeypatch.setattr(entrypoint, "_read_result_metadata", lambda: {})
+        monkeypatch.setattr(entrypoint, "_upload_transcript_to_s3", lambda *a, **k: "t/key.md")
+        monkeypatch.setattr(entrypoint.shutil, "copytree", MagicMock())
+        monkeypatch.setattr(
+            entrypoint,
+            "VaultClient",
+            MagicMock(
+                return_value=MagicMock(
+                    get_secret=MagicMock(return_value={"app_id": "1", "private_key": "k"})
+                )
+            ),
+        )
+        monkeypatch.setattr(entrypoint, "mint_installation_token", MagicMock(return_value="tok"))
+        monkeypatch.setattr(
+            entrypoint,
+            "create_check_run",
+            MagicMock(return_value={"id": 1, "html_url": "https://example.test/c"}),
+        )
+        # A resolvable head SHA, because the check run is only created when one
+        # exists — and the check-run conclusion is one of the outcomes under test.
+        monkeypatch.setattr(
+            entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="a" * 40, returncode=0))
+        )
+        # Not a handoff resume: that path returns before the terminal sequence.
+        monkeypatch.setattr(entrypoint, "resume_pr_handoff", lambda: False)
+        monkeypatch.setattr(
+            entrypoint, "_receive_one_message", lambda *_: (json.dumps(envelope), "receipt")
+        )
+
+        # The control registration this pod performed: the generation the
+        # invocation row's atomic increment returned, which is the value the
+        # sentinel must be bound to.
+        registered = {"value": GENERATION}
+
+        def setup_control(agent_env, message_id, arrived_at):
+            entrypoint._registered_control_generation = registered["value"]
+            return registered["value"] is not None
+
+        monkeypatch.setattr(entrypoint, "_setup_agent_control", setup_control)
+
+        # A sentinel written where the Node worker would write it, carrying the
+        # gateway's signature over this exact run and generation.
+        sentinel_path = tmp_path / "abort.json"
+        signer = {"key": gateway_key}
+        document = {
+            "version": 1,
+            "run_id": RUN_ID,
+            "generation": GENERATION,
+            "command_id": COMMAND_ID,
+            "requested_at": _iso(SIGNED_AT),
+            "reason": "wrong approach",
+        }
+
+        def write_sentinel():
+            document["envelope"] = _mint(signer["key"])
+            sentinel_path.write_text(json.dumps(document), encoding="utf-8")
+
+        monkeypatch.setattr(
+            entrypoint,
+            "read_abort_sentinel",
+            lambda run_id, generation: abort_sentinel.read_abort_sentinel(
+                run_id, generation, path=str(sentinel_path)
+            ),
+        )
+
+        # A cancelled run exits non-zero: the typed cancellation propagates out of
+        # the Node worker. This is what makes the resolution order load-bearing.
+        agent_exit = {"code": 1}
+
+        def subprocess_run(command, **kwargs):
+            if command[0] == "node":
+                return MagicMock(returncode=agent_exit["code"], stdout="", stderr="")
+            return MagicMock(
+                returncode=2 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
+            )
+
+        monkeypatch.setattr(entrypoint.subprocess, "run", subprocess_run)
+
+        events, statuses, checks = [], [], []
+        monkeypatch.setattr(
+            entrypoint,
+            "_post_comment",
+            lambda repo, issue, mid, status, body, url="": events.append(("comment", status)),
+        )
+
+        def record_status(mid, arrived, status, **kw):
+            events.append(("status", status))
+            statuses.append((status, kw))
+
+        monkeypatch.setattr(entrypoint, "update_invocation_status", record_status)
+        monkeypatch.setattr(
+            entrypoint,
+            "update_check_run",
+            lambda *a, **kw: checks.append(kw) or events.append(("check", kw.get("conclusion"))),
+        )
+        # Stand-ins that do what the real handlers do to the operator's view: post
+        # a comment and write a terminal status. Inert mocks would make the
+        # "exactly one terminal handler" assertion unfalsifiable — a run that
+        # called both would look identical to one that called only the abort.
+        def handle_success(*args, **kwargs):
+            events.append(("comment", "complete"))
+            record_status(RUN_ID, ARRIVED_AT, "complete")
+            return 0
+
+        def handle_failure(*args, **kwargs):
+            events.append(("comment", "failed"))
+            record_status(RUN_ID, ARRIVED_AT, "failed")
+            return 1
+
+        monkeypatch.setattr(
+            entrypoint, "_handle_success", MagicMock(side_effect=handle_success)
+        )
+        monkeypatch.setattr(
+            entrypoint, "_handle_failure", MagicMock(side_effect=handle_failure)
+        )
+        acks = MagicMock()
+        monkeypatch.setattr(entrypoint, "_delete_message", acks)
+        monkeypatch.setattr(entrypoint.time, "sleep", lambda _: None)
+
+        reports = []
+        monkeypatch.setattr(run_report, "enabled", lambda: False)
+        monkeypatch.setattr(run_report, "terminal", lambda outcome: reports.append(outcome))
+        monkeypatch.setattr(run_report, "spool_undelivered_failure", lambda: None)
+        monkeypatch.setattr(run_report, "begin_delivery", lambda: None)
+        monkeypatch.setattr(run_report, "configure", lambda envelope: None)
+
+        write_sentinel()
+        return {
+            "events": events,
+            "statuses": statuses,
+            "checks": checks,
+            "acks": acks,
+            "reports": reports,
+            "agent_exit": agent_exit,
+            "registered": registered,
+            "signer": signer,
+            "document": document,
+            "sentinel_path": sentinel_path,
+            "write_sentinel": write_sentinel,
+            "run_report": run_report,
+            "monkeypatch": monkeypatch,
+        }
+
+    def test_an_aborted_run_reports_aborted_and_not_its_exit_code(self, run):
+        # The headline behaviour. The agent exited 1 because it was cancelled, and
+        # the run must still be reported as the deliberate stop it was.
+        assert entrypoint.main() == 0
+
+        assert ("comment", "aborted") in run["events"]
+        entrypoint._handle_failure.assert_not_called()
+        entrypoint._handle_success.assert_not_called()
+
+    def test_exactly_one_terminal_handler_runs(self, run):
+        # Two comments on one issue is the visible symptom of a missed `elif`:
+        # the operator sees both "aborted" and "failed with exit code 1" and has
+        # no way to tell which is the truth.
+        entrypoint.main()
+
+        assert [kind for kind, _ in run["events"]].count("comment") == 1
+
+    def test_the_final_status_is_aborted_after_every_later_write(self, run):
+        # The transcript write is unconditional and derives its status from
+        # `exit_code`. Without its abort branch the *last* status on the row would
+        # be `complete` — established, then silently undone a few lines later.
+        entrypoint.main()
+
+        statuses = [status for kind, status in run["events"] if kind == "status"]
+
+        assert statuses[-1] == "aborted"
+        # `in_progress` at the start is the pod announcing itself, long before the
+        # abort. What must not appear is a *terminal* status other than `aborted`:
+        # that would mean the run ended up recorded as something else.
+        assert not ({"complete", "failed", "budget_stopped"} & set(statuses))
+
+    def test_the_abort_reason_survives_the_transcript_write(self, run):
+        # A row reading `aborted` with no explanation is a worse outcome than no
+        # abort handling at all: the operator cannot tell their own abort from a
+        # mystery stop.
+        entrypoint.main()
+
+        aborted_writes = [kw for status, kw in run["statuses"] if status == "aborted"]
+        assert aborted_writes
+        assert all(kw.get("stop_reason") == "operator_aborted" for kw in aborted_writes)
+
+    def test_the_check_run_is_cancelled_not_successful(self, run):
+        # `exit_code` is 0 for an abort, so the `exit_code == 0 -> success` branch
+        # would show a green check on a run an operator stopped. `cancelled` is
+        # GitHub's own vocabulary for exactly this state.
+        entrypoint.main()
+
+        assert run["checks"], "the check run was never finalized"
+        assert run["checks"][-1]["conclusion"] == "cancelled"
+
+    def test_the_engine_is_never_told_an_aborted_story_completed(self, run):
+        # The engine's terminal vocabulary is binary, and `complete` would advance
+        # a workflow on deliberately stopped work — the one direction that cannot
+        # be undone from here.
+        run["monkeypatch"].setattr(run["run_report"], "enabled", lambda: True)
+
+        entrypoint.main()
+
+        assert run["reports"] == ["failed"]
+
+    def test_a_confirmed_acknowledgement_reports_the_abort_as_handled(self, run):
+        assert entrypoint.main() == 0
+
+        run["acks"].assert_called_once()
+
+    def test_an_unconfirmed_acknowledgement_does_not_report_success(self, run):
+        # The honest outcome. The operator-facing record is already written, but
+        # this pod did not finish handling the message, and saying otherwise would
+        # strand a message nobody is accountable for.
+        run["acks"].side_effect = RuntimeError("SQS unavailable")
+
+        assert entrypoint.main() == entrypoint.AGENT_EXIT_RETRYABLE
+
+        assert run["acks"].call_count == entrypoint.ABORT_ACK_ATTEMPTS
+        # The abort itself still reached the operator, and the row is terminal —
+        # which is what makes the redelivery refusable rather than a rerun.
+        assert ("comment", "aborted") in run["events"]
+        assert [status for kind, status in run["events"] if kind == "status"][-1] == "aborted"
+
+    def test_an_unsigned_sentinel_falls_back_to_the_exit_code(self, run):
+        # End-to-end form of the forgery defence: a run that merely *claims* to
+        # have been aborted is reported as the failure it actually was.
+        # The reader's own refusal, reproduced rather than stubbed: an unsigned
+        # document parses into a sentinel whose `envelope` is None, which
+        # `verify_abort_authorization` then declines.
+        run["document"].pop("envelope", None)
+        run["sentinel_path"].write_text(json.dumps(run["document"]), encoding="utf-8")
+
+        assert entrypoint.main() == 1
+
+        entrypoint._handle_failure.assert_called_once()
+        assert ("comment", "aborted") not in run["events"]
+
+    def test_a_run_with_no_abort_is_untouched_by_this_path(self, run):
+        # The overwhelmingly common case. The agent succeeded and nothing about
+        # the abort wiring may alter what it reports.
+        run["agent_exit"]["code"] = 0
+        run["monkeypatch"].setattr(
+            entrypoint, "read_abort_sentinel", lambda run_id, generation: None
+        )
+
+        assert entrypoint.main() == 0
+
+        entrypoint._handle_success.assert_called_once()
+        assert [status for kind, status in run["events"] if kind == "status"][-1] == "complete"
