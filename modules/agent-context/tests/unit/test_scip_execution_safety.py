@@ -702,3 +702,45 @@ class TestIngestionWorkerContainment:
     def test_worker_drops_all_capabilities(self):
         sc = self._worker_container()["securityContext"]
         assert sc.get("capabilities", {}).get("drop") == ["ALL"]
+
+
+class TestOrchestratedBoundary:
+    def test_refused_node_modules_never_reaches_indexer(self, tmp_path):
+        (tmp_path / "package.json").write_text('{"name":"fixture"}')
+        (tmp_path / "node_modules").mkdir()
+        with patch.dict(
+            INDEXERS,
+            {
+                "typescript": lambda _: (_ for _ in ()).throw(
+                    AssertionError("refused repository reached indexer")
+                )
+            },
+        ):
+            report = index_repo(str(tmp_path), "fixture/repo", ["typescript"])
+        assert not report.any_success
+        assert is_refusal(report.results[0].error)
+
+    def test_symlink_output_cannot_write_outside_clone(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.write_text("unchanged")
+        (repo / "index.scip").symlink_to(outside)
+
+        def write_index(clone):
+            output = Path(clone) / "index.scip"
+            output.write_text("index")
+            return str(output), None
+
+        with patch.dict(INDEXERS, {"python": write_index}):
+            report = index_repo(str(repo), "fixture/repo", ["python"])
+        assert outside.read_text() == "unchanged"
+        assert not report.any_success
+        assert is_refusal(report.results[0].error)
+
+    def test_inherited_pyright_config_is_refused(self, tmp_path):
+        (tmp_path / "pyrightconfig.json").write_text('{"extends":"base.json"}')
+        (tmp_path / "base.json").write_text('{"venvPath":".","venv":"custom"}')
+        with patch("scip_indexer._resolve_tool", side_effect=AssertionError("tool lookup")):
+            _, error = _index_python(str(tmp_path))
+        assert is_refusal(error)

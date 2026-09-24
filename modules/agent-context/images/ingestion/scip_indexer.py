@@ -14,7 +14,7 @@ Deferred (not in current corpus — D7):
   - Java/Kotlin/Scala: scip-java (JVM binary, not npm)
 
 Design points:
-  - Dep resolution is MANDATORY — without it monikers degrade to `local`
+  - Unsafe dependency resolution is refused; monikers may degrade to `local`
   - scip-python is npm (`@sourcegraph/scip-python`), NOT pip
   - scip-python --environment takes a JSON file, not a venv dir (EISDIR if dir)
   - Fail-loud: code-bearing repo with 0 edges → ERROR
@@ -157,7 +157,7 @@ def detect_languages(clone_path: str) -> dict[str, int]:
 #   3. We never place a file WE control inside the clone, and never let a path
 #      inside the clone reach a tool's executable/plugin lookup. The clone is a
 #      directory the repository author fully controls; sharing a namespace with
-#      it is what made the first fix incomplete (see _scratch_dir / _safe_env).
+#      it is what made the first fix incomplete (see index_repo / _safe_env).
 #   4. A tool configuration file that lives in the repository and can name a
 #      program, plugin or package source is itself repository-authored code
 #      loading. Either the loading is disabled on the command line (which
@@ -580,7 +580,9 @@ def _pyright_interpreter_override(clone_path: str) -> str | None:
     import roots inside the clone. All of them are repository-authored choices
     about what code gets loaded, so their presence means we refuse (#5614).
     """
-    dangerous = ("pythonPath", "venvPath", "venv", "extraPaths", "executionEnvironments")
+    # Reject inheritance until the complete config chain can be checked; a
+    # harmless top-level config must not delegate interpreter choice elsewhere.
+    dangerous = ("pythonPath", "venvPath", "venv", "extraPaths", "executionEnvironments", "extends")
 
     cfg = os.path.join(clone_path, "pyrightconfig.json")
     if os.path.isfile(cfg):
@@ -926,8 +928,50 @@ def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -
     langs_to_index = _consolidate_languages(report.languages_detected)
     log.info("Languages to index for %s: %s", repo, langs_to_index)
 
+    # Indexers and package managers write predictable paths in the checkout.
+    # A committed symlink can redirect those writes into the worker filesystem.
+    # Refuse structural indexing before any resolver mutates the checkout; do
+    # not follow links, and leave lexical ingestion to its existing owner.
+    unsafe_link = None
+
+    def unreadable_checkout(exc):
+        raise exc
+
+    try:
+        for root, dirs, files in os.walk(
+            clone_path, followlinks=False, onerror=unreadable_checkout
+        ):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for name in dirs + files:
+                path = os.path.join(root, name)
+                if os.path.islink(path):
+                    unsafe_link = os.path.relpath(path, clone_path)
+                    break
+            if unsafe_link:
+                break
+    except OSError as exc:
+        unsafe_link = f"unreadable checkout ({exc})"
+    if unsafe_link:
+        detail = f"{REFUSAL_PREFIX}: checkout contains symbolic link: {unsafe_link}"
+        report.results = [
+            IndexResult(language=lang, dep_resolution="refused", error=detail)
+            for lang in langs_to_index
+        ]
+        return report
+
     # Index each language independently (fail-soft per language)
     for lang in langs_to_index:
+        # Refusal due to a repository-supplied tool tree applies to the
+        # indexer as well as the resolver. Check before npm creates its own
+        # node_modules; the presence of that freshly installed tree is expected.
+        planted = _planted_tool_dir(clone_path, lang)
+        if planted:
+            detail = f"{REFUSAL_PREFIX}: repository supplies {planted}"
+            report.results.append(
+                IndexResult(language=lang, dep_resolution="refused", error=detail)
+            )
+            continue
+
         # Step 1: Resolve dependencies
         dep_resolver = DEP_RESOLVERS.get(lang)
         dep_ok = False
