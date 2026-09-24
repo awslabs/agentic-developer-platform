@@ -488,6 +488,11 @@ jobs:
           ADP_WORK_CLAIM_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claim-producer-roles" "")
           AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "")
           WEBHOOK_EVENTS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" "adp-${ENVIRONMENT}-webhook-events")
+          ADP_TASK_API_ADMISSION_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-admission-enabled" "false")
+          ADP_TASK_API_READ_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-read-enabled" "false")
+          ADP_TASK_API_WORKER_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-worker-enabled" "false")
+          ADP_TASK_API_RECOVERY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-api-recovery-enabled" "false")
+          TASK_ARTIFACT_BUCKET_NAME=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/task-artifact-bucket-name" "")
           AGENT_DISPATCH_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
           BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
           AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
@@ -560,6 +565,11 @@ jobs:
               -e "s|__ADP_WORK_CLAIM_PRODUCER_ROLES__|${ADP_WORK_CLAIM_PRODUCER_ROLES}|g" \
               -e "s|__AGENT_AUTHORITY_TABLE__|${AGENT_AUTHORITY_TABLE}|g" \
               -e "s|__WEBHOOK_EVENTS_TABLE__|${WEBHOOK_EVENTS_TABLE}|g" \
+              -e "s|__ADP_TASK_API_ADMISSION_ENABLED__|${ADP_TASK_API_ADMISSION_ENABLED}|g" \
+              -e "s|__ADP_TASK_API_READ_ENABLED__|${ADP_TASK_API_READ_ENABLED}|g" \
+              -e "s|__ADP_TASK_API_WORKER_ENABLED__|${ADP_TASK_API_WORKER_ENABLED}|g" \
+              -e "s|__ADP_TASK_API_RECOVERY_ENABLED__|${ADP_TASK_API_RECOVERY_ENABLED}|g" \
+              -e "s|__TASK_ARTIFACT_BUCKET_NAME__|${TASK_ARTIFACT_BUCKET_NAME}|g" \
               -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
               -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
               -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
