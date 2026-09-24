@@ -328,6 +328,7 @@ class BootstrapStore:
         record = self.authority.load_execution(invocation_id=invocation_id, tenant_id=tenant_id)
         if record is None:
             raise BootstrapRefusedError("bootstrap refused")
+
         grant = self.live_grant(invocation_id=invocation_id, tenant_id=tenant_id, attempt=record.current_attempt, now=now)
         pod_item = {
             **_key(f"POD#{pod.uid}", "BINDING"),
@@ -340,6 +341,39 @@ class BootstrapStore:
             if existing != pod_item or record.workload_binding != pod.uid or record.status != ExecutionStatus.ACTIVE:
                 raise BootstrapRefusedError("bootstrap refused")
             return record
+
+        # A run an operator deliberately stopped must not be STARTED again — #3963.
+        #
+        # This is the consumer of `record_abort_intent`, and the reason that marker is
+        # written before the abort is ever reported as accepted. Every other fact that
+        # could say "this run is over" is a write the aborting run must survive long
+        # enough to perform: the terminal invocation status, and the SQS DeleteMessage.
+        # Both can fail. When both fail the message becomes visible again and a fresh
+        # pod arrives here holding a perfectly valid dispatch envelope — nothing in the
+        # envelope records that the run was aborted. Without this check the deliberate
+        # stop is simply undone by the retry, which is the invariant violation the
+        # previous implementation only *logged*.
+        #
+        # Deliberately placed AFTER the `existing is not None` retry-return, which is
+        # the one thing that makes this safe rather than self-defeating. That branch is
+        # the already-bound pod re-presenting its own binding, and it is the path the
+        # run-identity renewal thread takes every 300s — including while the abort is
+        # being delivered and finalized. Refusing there would revoke the credential the
+        # aborting run needs in order to report its own terminal status and delete its
+        # queue message, so recording abort intent would destroy the ability to
+        # complete the abort. Here, past that branch, the caller is provably a pod with
+        # no binding of its own asking to take up this invocation for the first time.
+        #
+        # So the rule is exactly: an abort marker does not stop the run that is
+        # aborting, it stops the NEXT one. Durable redelivery exclusion and confirmed
+        # terminal abort stay separate facts.
+        #
+        # Fail-closed by omission: a store failure raises `AuthorityStoreError`, which
+        # the route maps to 503 rather than to an admission. The only way past this
+        # line is a positive read that no abort was ever requested.
+        if self.authority.abort_intent(invocation_id=invocation_id, tenant_id=tenant_id) is not None:
+            raise BootstrapRefusedError("run was aborted")
+
         if record.status != ExecutionStatus.PENDING or record.workload_binding is not None:
             raise BootstrapRefusedError("bootstrap refused")
         try:

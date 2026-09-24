@@ -776,6 +776,70 @@ class TestAcceptanceMustBeAttestedByTheGateway:
         ) is False
 
     @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"body_digest": "f" * 64},
+            {"body_digest": _digest(b'{"command_id":"cmd-abort-1","reason":"something else"}')},
+            {"tenant_id": "different-tenant"},
+        ],
+        ids=["fabricated_digest", "digest_of_other_bytes", "other_tenant"],
+    )
+    def test_a_receipt_must_attest_the_same_body_and_tenant_as_the_envelope(
+        self, gateway_key, public_keys, overrides
+    ):
+        """A verified receipt whose *claims* were never read — root's reproduction.
+
+        Every case here keeps a genuine gateway signature and the full set of bindings
+        the previous tests cover: the receipt is minted by the real key, with the
+        receipt audience and action, for this run, this generation and this command.
+        Only what the receipt *says* about the abort differs.
+
+        All three passed before the verified receipt payload was kept. The receipt was
+        checked and then discarded, so the body-digest comparison that follows read the
+        *issuance envelope's* claim — meaning the receipt attested "the gateway accepted
+        some abort of this run" and nothing about which bytes or whose tenant. A real
+        signature over a different statement is still a real signature, which is the
+        whole reason the statement has to be read rather than merely validated.
+
+        ``digest_of_other_bytes`` is the one that matters most: it is not a nonsense
+        digest but a correct sha256 of a *different* plausible request body, which is
+        what an attacker substituting the operator's reason would actually produce.
+        """
+        assert _verify(
+            _sentinel(_mint(gateway_key), receipt=_mint_receipt(gateway_key, **overrides)),
+            public_keys,
+        ) is False
+
+    def test_a_receipt_matching_the_envelope_on_both_claims_still_verifies(
+        self, gateway_key, public_keys
+    ):
+        # The other side of the check above, stated explicitly rather than left to the
+        # default fixture. `body_digest` and `tenant_id` are passed here with the same
+        # values the envelope carries, so a future edit that tightens the agreement into
+        # something no genuine gateway receipt can satisfy — comparing `principal`, say,
+        # which intentionally differs — fails here instead of silently refusing every
+        # real abort in production.
+        receipt = _mint_receipt(
+            gateway_key, body_digest=_digest(OPERATOR_BODY), tenant_id=TENANT
+        )
+
+        assert _verify(_sentinel(_mint(gateway_key), receipt=receipt), public_keys) is True
+
+    def test_a_receipt_naming_the_execution_rather_than_the_operator_is_accepted(
+        self, gateway_key, public_keys
+    ):
+        # `principal` deliberately differs between the two tokens and must not be
+        # compared. The envelope's names the human operator's session subject; the
+        # receipt's is `<invocation>#<attempt>`, the execution the abort was accepted
+        # against, which is what `revalidation._accept_abort` signs. This pins that
+        # asymmetry so a "make the claims agree" change cannot quietly require equality
+        # and reject every genuine receipt.
+        envelope = _mint(gateway_key, principal="user-1")
+        receipt = _mint_receipt(gateway_key, principal=f"{RUN_ID}#1")
+
+        assert _verify(_sentinel(envelope, receipt=receipt), public_keys) is True
+
+    @pytest.mark.parametrize(
         "receipt",
         [42, {"a": 1}, [], "", "not.a.token", "x" * (MAX_SENTINEL_ENVELOPE_BYTES + 1)],
         ids=["number", "dict", "list", "empty", "malformed", "oversized"],

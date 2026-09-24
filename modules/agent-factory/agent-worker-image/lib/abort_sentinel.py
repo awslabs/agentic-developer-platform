@@ -612,23 +612,73 @@ def verify_abort_authorization(
         #
         # Required, not optional. There is no fallback, because every weaker signal
         # available at this point is something the pod could have written about itself.
-        if (
-            _verify_signed_token(
-                sentinel.get("abort_receipt"),
-                audience=ABORT_RECEIPT_AUDIENCE,
-                action=ABORT_RECEIPT_ACTION,
-                run_id=run_id,
-                generation=generation,
-                command_id=command_id,
-                keys=keys,
-            )
-            is None
-        ):
+        #
+        # The payload is KEPT, not discarded — Issue #3963 review finding on e4d93b5f.
+        # The first version of this check tested the receipt's signature and bindings
+        # and then threw the verified claims away, which meant the receipt proved only
+        # "the gateway signed *an* acceptance for this run, generation and command"
+        # and never "it accepted THIS body, for THIS tenant". Root's reproduction:
+        # `_mint_receipt(key, body_digest="f" * 64)` and
+        # `_mint_receipt(key, tenant_id="different-tenant")` both verified, because the
+        # body-digest comparison below read `payload["body_digest"]` — the *issuance*
+        # envelope's claim — and nothing looked at the receipt's claims at all. A real
+        # signature over a different statement is still a real signature; that is
+        # precisely why the statement has to be read.
+        receipt = _verify_signed_token(
+            sentinel.get("abort_receipt"),
+            audience=ABORT_RECEIPT_AUDIENCE,
+            action=ABORT_RECEIPT_ACTION,
+            run_id=run_id,
+            generation=generation,
+            command_id=command_id,
+            keys=keys,
+        )
+        if receipt is None:
             logger.warning(
                 "Abort sentinel has no valid gateway acceptance receipt; it proves only "
                 "that an abort was requested, not that this run accepted one"
             )
             return False
+
+        # The two tokens must describe the SAME abort — #3963.
+        #
+        # `_accept_abort` mints the receipt over `raw`, the exact request bytes the
+        # issuance envelope's `body_digest` already covers, and under the tenant the
+        # envelope named. So on every path the gateway can produce, these two claims
+        # are equal by construction, and a mismatch means the pair was assembled from
+        # two different statements rather than issued for one abort.
+        #
+        # Checked against the envelope's claims rather than against values this
+        # process holds, because the envelope's claims are themselves signed. Tenant
+        # is deliberately not compared to `envelope["tenant_id"]` from the dequeued
+        # message: that is data the pod also sees and could align a forgery to,
+        # whereas agreement *between two gateway signatures* cannot be manufactured
+        # here — the pod has no signing key (see `run_identity._verification_keys`).
+        #
+        # `body_digest` is compared before the body is decoded below, so the digest
+        # the recorded bytes are checked against is one BOTH tokens attest.
+        if receipt["body_digest"] != payload["body_digest"]:
+            logger.warning(
+                "The gateway's acceptance receipt covers different request bytes than "
+                "the authorization envelope; refusing an abort assembled from two "
+                "unrelated statements"
+            )
+            return False
+        if receipt["tenant_id"] != payload["tenant_id"]:
+            logger.warning(
+                "The gateway's acceptance receipt names a different tenant than the "
+                "authorization envelope; refusing it"
+            )
+            return False
+
+        # `principal` is deliberately NOT compared. The two tokens identify different
+        # things there and are supposed to: the envelope's principal is the human
+        # operator's session subject, while `_accept_abort` sets the receipt's to
+        # `<invocation>#<attempt>` — the execution the abort was accepted against.
+        # Requiring equality would reject every genuine receipt. The receipt's own
+        # `target_run_id`/`target_generation` are already bound above to the run this
+        # process dequeued and the generation its own registration returned, which is
+        # the binding that matters and is checked against independently-known facts.
 
         # The request body binding — Issue #3963.
         #
