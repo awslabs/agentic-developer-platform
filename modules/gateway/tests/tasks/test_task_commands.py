@@ -240,7 +240,7 @@ def test_settlement_only_releases_capacity_on_confirmed_stop_once(store):
     body["queue_ack_status"] = "unknown"
     assert service.settlement(identity, body)["queue_ack_status"] == "confirmed"
     assert service.snapshot(req.task_id)["stop_evidence"]["child_exit_confirmed"] is True
-    assert service.snapshot(req.task_id)["state"] == "running"  # a stop receipt is not a successful task
+    assert service.snapshot(req.task_id)["state"] == "failed"  # confirmed stop without a result is never success
 
 
 def test_settlement_cannot_release_new_attempt_capacity(store):
@@ -271,3 +271,41 @@ def test_input_versus_final_result_version_fence(store, monkeypatch):
         service.finalize(identity, final_body(identity))
     assert service.snapshot(req.task_id)["state"] == "running"
     assert len(service.commands(req.task_id)) == 1
+
+
+def test_stop_only_revoked_run_terminalizes_without_releasing_model_reservation(store):
+    from src.tasks.records import task_authority_partition, task_run_grant_sort_key
+
+    req, service = accepted(store)
+    identity = running(store, req)
+    grant_key = {"pk": task_authority_partition(req.tenant), "sk": task_run_grant_sort_key(invocation_id=req.invocation_id, generation=1)}
+    store._client.update_item(
+        TableName=store.authority_table_name,
+        Key=_serialize(grant_key),
+        UpdateExpression="SET #s = :revoked",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues=_serialize({":revoked": "revoked"}),
+    )
+    turn_id = str(uuid.uuid4())
+    operation = {
+        "event_id": task_ops_partition(req.task_id),
+        "arrived_at": "MODEL#" + turn_id,
+        "turn_id": turn_id,
+        "operation_status": "unknown",
+        "reservation_status": "reserved",
+        "reserved_usd": 1,
+    }
+    store._client.put_item(TableName=store.table_name, Item=_serialize(operation))
+    response = service.settlement(
+        identity,
+        {
+            "stop_evidence": {"child_exit_confirmed": True, "workload_terminated": False, "observed_at": "2026-09-24T12:00:00Z"},
+            "queue_ack_status": "unknown",
+        },
+    )
+    assert response["operation_status"] == "confirmed"
+    snapshot = service.snapshot(req.task_id)
+    assert snapshot["state"] == "failed"
+    assert snapshot["error"]["provider_outcome"] == "unknown"
+    assert snapshot["error"]["total_usd"] is None
+    assert store._get(task_ops_partition(req.task_id), "MODEL#" + turn_id)["reservation_status"] == "reserved"

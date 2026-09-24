@@ -70,6 +70,9 @@ class TaskCommands:
         return {"Put": {"TableName": self.repo.table_name, "Item": _serialize(row), "ConditionExpression": "attribute_not_exists(event_id)"}}
 
     def _meta(self, snapshot: dict, updates: dict, *, attempt: str | None = None) -> dict:
+        from src.tasks.json_storage import encode_json_updates
+
+        updates = encode_json_updates(snapshot, updates)
         names = {f"#f{i}": key for i, key in enumerate(updates)}
         values = {f":v{i}": value for i, value in enumerate(updates.values())}
         names.update({"#version": "version", "#state": "state"})
@@ -208,7 +211,7 @@ class TaskCommands:
             "attempt_valid": True,
         }
 
-    def finalize(self, identity: Any, body: dict) -> dict:
+    def finalize(self, identity: Any, body: dict, *, stop_only: bool = False) -> dict:
         from datetime import timedelta
 
         from src.tasks.records import task_artifact_partition, task_capacity_partition, task_ops_partition, task_turns_partition
@@ -227,6 +230,8 @@ class TaskCommands:
                 "terminal_event_id": snapshot["terminal_event_id"],
             }
         outcome = body["outcome"]
+        if stop_only and outcome == "completed":
+            raise errors.state_conflict("Stop-only authority cannot complete a task.")
         if outcome == "completed" and (
             snapshot["state"] == "cancel_requested" or body["child_exit"]["exit_code"] != 0 or body["child_exit"]["signal"] is not None
         ):
@@ -285,10 +290,36 @@ class TaskCommands:
             "content_expires_at": int((self.repo._clock() + timedelta(days=30)).timestamp()),
             "expires_at": int((self.repo._clock() + timedelta(days=90)).timestamp()),
         }
-        transaction = [
-            self._meta(snapshot, updates, attempt=identity.runtime_attempt_id),
-            *self.repo._authority_condition_checks(snapshot=snapshot, runtime_attempt_id=identity.runtime_attempt_id),
-        ]
+        transaction = [self._meta(snapshot, updates, attempt=identity.runtime_attempt_id)]
+        if stop_only:
+            # Stop-only credentials can no longer spend/report. They can settle
+            # this exact persisted attempt even after policy revocation.
+            transaction.append(
+                {
+                    "ConditionCheck": {
+                        "TableName": self.repo.authority_table_name,
+                        "Key": _serialize(
+                            {
+                                "pk": task_authority_partition(identity.tenant),
+                                "sk": task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation),
+                            }
+                        ),
+                        "ConditionExpression": (
+                            "task_id = :task AND invocation_id = :invocation AND generation = :generation AND runtime_attempt_id = :attempt"
+                        ),
+                        "ExpressionAttributeValues": _serialize(
+                            {
+                                ":task": identity.task_id,
+                                ":invocation": identity.invocation_id,
+                                ":generation": identity.generation,
+                                ":attempt": identity.runtime_attempt_id,
+                            }
+                        ),
+                    }
+                }
+            )
+        else:
+            transaction.extend(self.repo._authority_condition_checks(snapshot=snapshot, runtime_attempt_id=identity.runtime_attempt_id))
         total_bytes = 0
         retained_artifacts = set(snapshot.get("artifact_ids", [])) | set(refs) | set(snapshot.get("result_artifact_ids", []))
         for artifact_id in retained_artifacts:
@@ -414,6 +445,37 @@ class TaskCommands:
         for field in ("child_exit_confirmed", "workload_terminated"):
             evidence[field] = evidence[field] or prior_evidence.get(field, False)
         stopped = evidence["child_exit_confirmed"] or evidence["workload_terminated"]
+        if stopped and snapshot["state"] not in TERMINAL:
+            import uuid
+
+            outcome = "cancelled" if snapshot["state"] == "cancel_requested" else "failed"
+            error = {
+                "schema_version": "1.0",
+                "outcome": outcome,
+                "code": "cancelled_by_client" if outcome == "cancelled" else "process_failed",
+                "message": "The current task process stopped without a successful final result.",
+                "committed_at": _iso(self.repo._clock()),
+                "child_exit_confirmed": True,
+                "recovery_required": False,
+                "provider_outcome": "unknown",
+                "total_usd": None,
+            }
+            # The workload proves a stop, not an exit code, provider refund, or
+            # useful result. Preserve the unavailable exit-code/signal as null.
+            self.finalize(
+                identity,
+                {
+                    "schema_version": "1.0",
+                    "outcome": outcome,
+                    "final_report_id": str(uuid.uuid4()),
+                    "child_exit": {"confirmed": True, "exit_code": None, "signal": None, "stopped_at": evidence["observed_at"]},
+                    "result": None,
+                    "error": error,
+                    "committed_result_refs": [],
+                },
+                stop_only=True,
+            )
+            snapshot = self._attempt(identity)
         timestamp = _iso(self.repo._clock())
         # A receipt may advance unknown -> confirmed; confirmed acknowledgement
         # is monotonic and cannot be overwritten by an older retry.
