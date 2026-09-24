@@ -411,10 +411,11 @@ Workload UI/API reads expose [status and bounded logs](WORKLOAD-OBSERVATIONS.md)
 [paid reservation accounting](WORKLOAD-ACCOUNTING.md). [Cancellation](CANCELLATION-API.md)
 retains uncertain resources and accounting. These surfaces do not establish
 provider-billed cost or live workload acceptance. Bounded batch text retention is documented in [BATCH-RESULTS.md](BATCH-RESULTS.md).
+
 ## GPU requirements instead of a fixed machine
 
-An installed workload profile may replace `instance_type` with `accelerators`
-, `max_gpus_per_node`, `cpus` and `memory_gb`, for example:
+An installed workload profile may replace `instance_type` with `accelerators`,
+`max_gpus_per_node`, `cpus` and `memory_gb`, for example:
 
 ```json
 {"accelerators": ["A10G:1", "L4:1"], "max_gpus_per_node": 1, "cpus": 4, "memory_gb": 32}
@@ -425,8 +426,8 @@ without an instance type and chooses a machine within the profile's AWS
 account, region, image and network constraints. `physical_gpus` must equal
 `node_count * max_gpus_per_node`. Each alternative must cover the workload's GPU
 request and fit that physical upper bound. CPU/memory minimums must exceed
-the workload requests; the profile owner sizes this headroom for node services. For example, AWS H100 capacity may
-require approving eight physical GPUs even when the workload uses one.
+the workload requests; the profile owner sizes this headroom for node services. For example, AWS H100 capacity may require
+approving eight physical GPUs even when the workload uses one.
 
 The installed SkyPilot backend must attest `physical_gpu_limit` support. Its
 RunInstances hook reads the selected type's GPU count from EC2 before creating
