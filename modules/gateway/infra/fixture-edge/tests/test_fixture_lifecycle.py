@@ -54,7 +54,13 @@ PARAM = f"/adp/dev/gateway/fixture/{NONCE}/apigw-provenance-secret"
 API_ID = "fixapi123"
 DEPLOYMENT_ID = "dep0kx1abc"
 STAGE_ID = f"ags-{API_ID}-dev"
-LOG_GROUP = "/aws/apigateway/bedrockgw-dev-w2fx"
+# The name main.tf ACTUALLY composes: "/aws/api-gateway/${local.name_prefix}-fixture-edge"
+# with name_prefix = "bedrockgw-${environment}-w2fx-${run_nonce}". Both this constant
+# and destroy's probe previously used "/aws/apigateway/w2-fixture-edge-<nonce>" --
+# wrong stem AND a missing hyphen in api-gateway -- so the suite agreed with the
+# script about a log group that has never existed. Pinned to the real composition
+# here so a probe that guesses instead of reading state fails a test.
+LOG_GROUP = f"/aws/api-gateway/bedrockgw-dev-w2fx-{NONCE}-fixture-edge"
 
 # The state bucket and the named profile every harness command is bound to. Both
 # are part of the backend binding the script checks, so they are constants rather
@@ -193,7 +199,13 @@ if args[:2] == ["logs", "describe-log-groups"]:
     if os.environ.get("FAKE_LOGS_DENIED") == "1":
         denied()
     if os.environ.get("FAKE_LOG_GROUP_SURVIVED") == "1":
-        print("/aws/apigateway/w2-fixture-edge-" + os.environ["FAKE_NONCE"]); sys.exit(0)
+        # Echo the prefix it was ASKED about. The previous fake printed a name it
+        # composed itself, so it answered "present" no matter which prefix the probe
+        # sent -- and therefore agreed with a probe that was asking about a log group
+        # main.tf never creates. A fake that ignores the query cannot detect a probe
+        # addressing the wrong object.
+        i = args.index("--log-group-name-prefix")
+        print(args[i + 1]); sys.exit(0)
     print(""); sys.exit(0)
 
 sys.stderr.write("fake aws: unhandled %r\n" % (args,)); sys.exit(1)
@@ -416,7 +428,9 @@ import json, os, sys, pathlib
 # supplied by a test. Real shapes: a deployment id is an opaque 10-char token, and a
 # log group's id is its name.
 FAKE_DEPLOYMENT_ID = "dep0kx1abc"
-FAKE_LOG_GROUP_DEFAULT = "/aws/apigateway/bedrockgw-dev-w2fx"
+FAKE_LOG_GROUP_DEFAULT = ("/aws/api-gateway/bedrockgw-%s-w2fx-%s-fixture-edge"
+                          % (os.environ.get("FAKE_ENVIRONMENT", "dev"),
+                             os.environ["FAKE_NONCE"]))
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write("terraform " + " ".join(args) + "\n")
@@ -594,6 +608,12 @@ if args[:1] == ["show"]:
     print(pathlib.Path(src).read_text()); sys.exit(0)
 
 if args[:1] == ["apply"]:
+    # A destroy that fails PARTWAY. Modelled so a test can check that a failed
+    # teardown leaves no absence artifact at all rather than a previous attempt's.
+    if (os.environ.get("FAKE_DESTROY_APPLY_FAIL") == "1"
+            and any("destroy.plan" in a for a in args)):
+        sys.stderr.write("Error: deleting aws_api_gateway_stage.fixture[0]: throttled\n")
+        sys.exit(1)
     sys.exit(0)
 
 sys.stderr.write("fake terraform: unhandled %r\n" % (args,)); sys.exit(1)
@@ -3181,3 +3201,350 @@ def test_verify_stops_when_the_fixture_api_is_the_ordinary_api(harness):
     r = harness.run("verify", env, args=VERIFY_OK_ARGS)
     assert r.returncode != 0
     assert "EQUALS the ordinary edge" in r.stderr
+
+
+# ===========================================================================
+# The #5825 evaluator's native artifact contract (blocker 7)
+# ===========================================================================
+# The merged evaluator (platform/scripts/agent-control-eval.py) reconciles
+# teardown_verification.removals against wave2_preflight.creation_ledger in BOTH
+# directions: a removal naming an identity the ledger lacks fails, and a ledger entry
+# with no absence observation fails as "unaccounted". Either way, a fixture resource
+# this component creates but does not contribute is outside W2-10's accounting
+# entirely. These tests pin both halves of the contribution.
+
+def _creation_fragment(harness):
+    return json.loads((harness.artifacts / "creation-ledger-fragment.json").read_text())
+
+
+def _removals_fragment(harness):
+    return json.loads((harness.artifacts / "teardown-removals-fragment.json").read_text())
+
+
+def test_apply_writes_a_creation_ledger_fragment_in_the_evaluators_own_shape(harness):
+    """LEDGER_ENTRY_KEYS = (kind, name, identity, created), every value non-falsy.
+
+    The evaluator rejects a falsy value in any of the four, so a fragment that is
+    merely present is not a fragment that can be consumed.
+    """
+    plan = _plan_then(harness)
+    r = harness.run("apply", args=["--plan-file", str(plan)])
+    assert r.returncode == 0, r.stderr
+    doc = _creation_fragment(harness)
+    assert doc["run_nonce"] == NONCE and doc["account_id"] == ACCOUNT
+    entries = doc["entries"]
+    # All six applied resources, not a subset: an under-contributed ledger is how a
+    # leaked resource escapes the reconciliation rather than failing it.
+    assert len(entries) == len(_owned_resources()), entries
+    for entry in entries:
+        assert set(entry) >= {"kind", "name", "identity", "created"}, entry
+        assert entry["created"] is True
+        assert all(entry[k] for k in ("kind", "name", "identity")), entry
+    # `identity` must be the PROVIDER-assigned id, which for the stage is
+    # ags-<api>-<stage> and NOT the bare stage name -- the same identifier the destroy
+    # guard matches plan lines on.
+    identities = {e["identity"] for e in entries}
+    assert STAGE_ID in identities and "dev" not in identities
+    assert DEPLOYMENT_ID in identities
+    # Globally unique, because the evaluator refuses a duplicate. The REST API and its
+    # resource policy really do share one provider id, so both get kind-qualified.
+    assert len(identities) == len(entries), entries
+    assert f"aws_api_gateway_rest_api:{API_ID}" in identities
+    assert f"aws_api_gateway_rest_api_policy:{API_ID}" in identities
+
+
+def test_apply_refuses_to_contribute_a_resource_with_no_observed_identity(harness):
+    """An entry the evaluator would reject, caught while the id can still be read.
+
+    Without an identity a resource cannot be told apart from a same-named one that
+    already existed, so neither its ownership nor its later removal is establishable.
+    """
+    broken = _owned_resources()
+    broken[3] = dict(broken[3], id="")
+    plan = _plan_then(harness)
+    r = harness.run("apply", _receipt_with(harness, resources=broken),
+                    args=["--plan-file", str(plan)])
+    assert r.returncode != 0
+    assert "identifying field is empty" in r.stderr
+    assert "aws_api_gateway_stage" in r.stderr
+
+
+def test_apply_refuses_an_ownership_receipt_from_another_run_for_the_fragment(harness):
+    """Contributing another run's identities would have the evaluator reconcile THIS
+    run's teardown against resources it never created."""
+    plan = _plan_then(harness)
+    r = harness.run("apply", _receipt_with(harness, run_nonce="ffffffffffffffff"),
+                    args=["--plan-file", str(plan)])
+    assert r.returncode != 0
+    assert "another run" in r.stderr or "Refusing" in r.stderr
+
+
+def test_destroy_writes_absence_observations_in_the_evaluators_removal_shape(harness):
+    """LEDGER_REMOVAL_KEYS = (identity, absent, observed_by, removed_at), reconciling
+    one-for-one with the creation fragment's identities."""
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    created = {e["identity"] for e in _creation_fragment(harness)["entries"]}
+
+    r = harness.run("destroy")
+    assert r.returncode == 0, r.stderr
+    doc = _removals_fragment(harness)
+    assert doc["verified_after_teardown"] is True
+    assert doc["unobserved"] == []
+    removals = doc["removals"]
+    for removal in removals:
+        assert set(removal) >= {"identity", "absent", "observed_by", "removed_at"}, removal
+        assert removal["absent"] is True
+        # `observed_by` has to name the read that established absence -- the evaluator
+        # refuses an unattributed claim, which is the assertion this replaced.
+        assert removal["observed_by"].startswith("aws "), removal
+        assert removal["removed_at"].endswith("Z")
+    # EVERY created entry accounted for, in both directions: an unaccounted entry is
+    # the evaluator's hard failure, and a removal it cannot find in the ledger is too.
+    assert {r_["identity"] for r_ in removals} == created
+
+
+def test_destroy_derives_the_policy_and_deployment_absence_and_says_that_it_did(harness):
+    """Neither has a probe of its own and neither can be given a fabricated one: the
+    policy is an ATTRIBUTE of the REST API and the deployment is its child, so once
+    the API is not found there is no API left to query them through. The inference is
+    sound; recording it as a direct read would not be."""
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    assert harness.run("destroy").returncode == 0
+    by_identity = {r["identity"]: r for r in _removals_fragment(harness)["removals"]}
+    policy = by_identity[f"aws_api_gateway_rest_api_policy:{API_ID}"]
+    assert policy["observation"] == "derived-from:rest_api"
+    assert "DERIVED" in policy["observed_by"] and "ATTRIBUTE" in policy["observed_by"]
+    assert by_identity[DEPLOYMENT_ID]["observation"] == "derived-from:rest_api"
+    # The API's own entry is a direct read, so the two are distinguishable without
+    # reading prose.
+    assert by_identity[f"aws_api_gateway_rest_api:{API_ID}"]["observation"] == "direct"
+
+
+def test_destroy_contributes_no_removal_for_a_resource_it_could_not_verify(harness):
+    """The reason the reconciliation has to be bidirectional.
+
+    An UNKNOWN probe is a call that failed, not a resource that answered. Emitting
+    `absent: true` would be the AccessDenied-reads-as-deleted defect; emitting
+    `absent: false` would assert it is STILL PRESENT, which was never established.
+    So it contributes NOTHING and the creation ledger's entry goes unaccounted --
+    which is exactly what an unverifiable resource is.
+    """
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    r = harness.run("destroy", {"FAKE_LOGS_DENIED": "1"})
+    assert r.returncode != 0
+    doc = _removals_fragment(harness)
+    assert doc["verified_after_teardown"] is False
+    assert any("aws_cloudwatch_log_group" in item for item in doc["unobserved"]), doc
+    assert not any(r_["identity"] == LOG_GROUP for r_ in doc["removals"])
+    assert "UNOBSERVED" in r.stderr
+
+
+def test_destroy_writes_the_fragment_even_when_a_resource_survived(harness):
+    """The evidence is most needed when teardown did NOT verify. Exiting nonzero with
+    no fragment leaves the assembler unable to tell 'not yet run' from 'ran and found
+    a survivor'."""
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    r = harness.run("destroy", {"FAKE_RUN_PARAM_SURVIVED": "1"})
+    assert r.returncode != 0
+    doc = _removals_fragment(harness)
+    assert doc["verified_after_teardown"] is False
+    survivor = [r_ for r_ in doc["removals"] if r_["identity"] == PARAM]
+    assert survivor and survivor[0]["absent"] is False, doc
+
+
+def test_destroy_removes_a_previous_attempts_fragment_before_deleting_anything(harness):
+    """The evaluator digests this artifact before invoking teardown and refuses a
+    byte-identical file afterwards, because an absence observation written ahead of
+    the removal describes the fixture while it still existed. A failed destroy must
+    therefore leave NO fragment rather than a previous run's."""
+    harness.artifacts.mkdir(exist_ok=True)
+    harness.artifacts.chmod(0o700)
+    stale = harness.artifacts / "teardown-removals-fragment.json"
+    stale.write_text(json.dumps({"schema": "stale", "removals": [],
+                                 "verified_after_teardown": True}))
+    r = harness.run("destroy", {"FAKE_DESTROY_APPLY_FAIL": "1"})
+    assert r.returncode != 0
+    assert not stale.exists(), "a failed destroy kept a previous attempt's absence artifact"
+
+
+def test_destroy_rebuilds_the_creation_fragment_rather_than_blocking_teardown(harness):
+    """A destroy that refuses to run because a REPORTING artifact is missing leaves
+    the fixture up, which is the opposite of the point. So the set is rebuilt from the
+    same ownership receipt the destroy guard reads out of state before deleting
+    anything -- same code, so the identities match by construction -- and the
+    provenance says which read produced it."""
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    (harness.artifacts / "creation-ledger-fragment.json").unlink()
+    r = harness.run("destroy")
+    assert r.returncode == 0, r.stderr
+    assert "rebuilding it from the ownership" in r.stdout
+    assert "rebuilt during teardown" in _creation_fragment(harness)["provenance"]
+    created = {e["identity"] for e in _creation_fragment(harness)["entries"]}
+    assert {r_["identity"] for r_ in _removals_fragment(harness)["removals"]} == created
+
+
+def test_destroy_refuses_when_an_applied_resource_has_no_absence_probe(harness):
+    """Adding a resource to main.tf without adding its probe would otherwise produce a
+    fragment that quietly accounts for less than the run created -- and the evaluator
+    would blame #3968's assembler for the gap."""
+    extra = _owned_resources() + [
+        {"kind": "sqs-queue", "type": "aws_sqs_queue", "id": "https://sqs/q",
+         "name": "w2-fixture-q"}]
+    plan = _plan_then(harness)
+    assert harness.run("apply", _receipt_with(harness, resources=extra),
+                       args=["--plan-file", str(plan)]).returncode == 0
+    r = harness.run("destroy", _receipt_with(harness, resources=extra))
+    assert r.returncode != 0
+    assert "no absence probe" in r.stderr and "aws_sqs_queue" in r.stderr
+
+
+def test_destroy_probes_the_log_group_state_records_not_a_name_it_rebuilds(harness):
+    """The defect this closes was silent in the worst way.
+
+    The probe composed "/aws/apigateway/w2-fixture-edge-<nonce>" while main.tf creates
+    "/aws/api-gateway/<name_prefix>-fixture-edge" -- wrong stem AND a missing hyphen.
+    describe-log-groups answers an unmatched prefix with an EMPTY LIST and exit 0, the
+    one probe where a clean exit is read as absence, so the real log group was
+    reported gone on every run and a survivor could not have been detected.
+    """
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    assert harness.run("destroy").returncode == 0
+    entry = [r for r in _removals_fragment(harness)["removals"]
+             if r["identity"] == LOG_GROUP]
+    assert entry, "the log group probed was not the one state records"
+    assert LOG_GROUP in entry[0]["observed_by"]
+    assert "/aws/apigateway/w2-fixture-edge" not in harness.log.read_text()
+
+
+def test_destroy_reports_the_stage_identity_the_evaluator_reconciles_on(harness):
+    """AWS offers the read by api-id + stage-name; the evaluator reconciles on the
+    provider's ags-<api>-<stage>. Two strings for one object, and the fragment has to
+    carry the one the creation ledger used."""
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    assert harness.run("destroy").returncode == 0
+    by_identity = {r["identity"]: r for r in _removals_fragment(harness)["removals"]}
+    assert STAGE_ID in by_identity
+    assert "get-stage" in by_identity[STAGE_ID]["observed_by"]
+
+
+def test_the_fragments_never_contain_the_provenance_secret(harness):
+    """The per-run provenance value must stay out of every artifact. Its NAME is
+    inventory; its VALUE is the trust root of the internal plane."""
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    assert harness.run("destroy").returncode == 0
+    import base64
+    secret = "s3cr3t-provenance-value"
+    b64 = base64.b64encode(secret.encode()).decode()
+    for name in ("creation-ledger-fragment.json", "teardown-removals-fragment.json"):
+        body = (harness.artifacts / name).read_text()
+        assert secret not in body and b64 not in body, name
+        # Positive control: the parameter's NAME is present, so this is not passing
+        # because the fragments are empty or omit the parameter entirely.
+        assert PARAM in body, name
+
+
+def test_destroy_refuses_an_observation_of_a_different_object_than_the_ledger_names(harness):
+    """A probe of a different object is not an absence observation of this one.
+
+    The two are separately sourced -- the creation fragment from apply, the probe
+    targets from the receipt destroy reads -- so they CAN diverge, and when they do the
+    result reads as verified absence of something nobody looked at. That is the same
+    failure mode as the guessed log-group prefix, reached from the other side, which is
+    why the fragment writer compares the probe's target against the identity rather
+    than trusting that they were built from the same place.
+    """
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    moved = [dict(r, id="/aws/api-gateway/somebody-elses-group",
+                  name="/aws/api-gateway/somebody-elses-group")
+             if r["type"] == "aws_cloudwatch_log_group" else r
+             for r in _owned_resources()]
+    r = harness.run("destroy", _receipt_with(harness, resources=moved))
+    assert r.returncode != 0
+    assert "did not read the object it was meant to establish" in r.stderr
+    assert LOG_GROUP in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# The contract is PINNED against the evaluator, not restated from memory
+# ---------------------------------------------------------------------------
+# Every assertion above encodes key names read out of #5825's merged evaluator. Key
+# names in two files drift silently: the evaluator renames a key, this component keeps
+# emitting the old one, both suites stay green, and the mismatch surfaces at live
+# acceptance as "the artifact is missing <key>" -- the worst possible moment.
+#
+# So the names are read back from the evaluator's own constants. This is a LOCKSTEP
+# check in the same spirit as the workflow's trigger on #3968's ownership.py: it makes
+# a rename in either place fail in the PR that makes it.
+#
+# It SKIPS when the evaluator in the tree does not carry the wave-2 ledger contract at
+# all, because that is the state of this branch: the #5825 evaluator merged to main
+# after this branch was cut, so the in-tree copy predates it. A skip is honest there --
+# there is nothing to pin against -- whereas asserting would fail for a reason that has
+# nothing to do with this component. Once the branch carries main's evaluator, the pin
+# engages automatically and any drift becomes a failure.
+# Overridable so the pin can be run against main's copy from a branch that predates
+# it -- which is how this pin was verified to actually engage rather than only to skip
+# politely. CI can set it to point at the merged evaluator.
+EVALUATOR = Path(os.environ.get(
+    "FIXTURE_EDGE_EVALUATOR",
+    COMPONENT.parents[3] / "platform" / "scripts" / "agent-control-eval.py"))
+
+
+def _evaluator_tuple(name):
+    if not EVALUATOR.is_file():
+        pytest.skip(f"{EVALUATOR} not present in this tree")
+    text = EVALUATOR.read_text()
+    m = re.search(rf"^{name}(?::[^=]+)?\s*=\s*\(([^)]*)\)", text, re.M)
+    if m is None:
+        pytest.skip(
+            f"{name} is not defined in {EVALUATOR.name}: this tree's evaluator predates "
+            "#5825's merged wave-2 ledger contract, so there is nothing to pin against"
+        )
+    return tuple(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+def test_the_creation_fragment_matches_the_evaluators_own_entry_keys(harness):
+    """Pinned against LEDGER_ENTRY_KEYS as the evaluator defines it."""
+    keys = _evaluator_tuple("LEDGER_ENTRY_KEYS")
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    for entry in _creation_fragment(harness)["entries"]:
+        missing = [k for k in keys if k not in entry]
+        assert not missing, f"entry {entry} is missing {missing} (from {EVALUATOR.name})"
+
+
+def test_the_removals_fragment_matches_the_evaluators_own_removal_keys(harness):
+    """Pinned against LEDGER_REMOVAL_KEYS as the evaluator defines it."""
+    keys = _evaluator_tuple("LEDGER_REMOVAL_KEYS")
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    assert harness.run("destroy").returncode == 0
+    for removal in _removals_fragment(harness)["removals"]:
+        missing = [k for k in keys if k not in removal]
+        assert not missing, f"removal {removal} is missing {missing} (from {EVALUATOR.name})"
+
+
+def test_the_fragment_kinds_stay_out_of_the_evaluators_listener_and_policy_sets(harness):
+    """`kind` is deliberately the AWS resource type.
+
+    The evaluator orders only entries whose `kind` is in LISTENER_LEDGER_KINDS or
+    POLICY_LEDGER_KINDS, asserting the control-enabled listener died before the
+    policies that isolated it. That ordering is about #3968's POD. An API Gateway stage
+    labelled "listener", or the resource policy labelled "policy", would be dragged
+    into an assertion about a different object and fail it for the wrong reason.
+    """
+    reserved = set(_evaluator_tuple("LISTENER_LEDGER_KINDS"))
+    reserved |= set(_evaluator_tuple("POLICY_LEDGER_KINDS"))
+    plan = _plan_then(harness)
+    assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
+    for entry in _creation_fragment(harness)["entries"]:
+        assert entry["kind"].lower() not in reserved, entry

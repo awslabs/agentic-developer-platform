@@ -49,6 +49,7 @@ circular prerequisite where neither side created the ALB this edge forwards to.
 | the trusted edge | this component | `scripts/fixture-lifecycle.sh` |
 | fixture **NetworkPolicy** | #3968 renders it | this component publishes the one fact it cannot know — the ALB's traffic source (step 4.5) |
 | ledger + teardown of k8s objects | #3968 | `ownership.py` / `90-cleanup-ledger.sh` |
+| `wave2_preflight` / `teardown_verification` **artifacts** | #3968 assembles them | this component emits the two entry fragments for its own resources (step 8.5) |
 
 On this EKS Auto Mode cluster one Ingress is one ALB and changing IngressGroup
 identity *replaces* the ALB, so a dedicated fixture Ingress is the only way to give
@@ -452,7 +453,11 @@ is no variable. **Do not add a rule to either group** — see step 1.
 ```
 
 `apply` takes a **reviewed plan file only**; it will not generate a fresh plan. It
-writes an ownership receipt to the artifact directory afterwards.
+writes an ownership receipt to the artifact directory afterwards, and from that
+receipt a **creation-ledger fragment** for #5825's W2-10 — see step 8.5. Without it
+this edge's resources sit outside the check that proves the evaluation left nothing
+behind, and their later absence observations are refused as naming resources the
+fixture never created.
 
 ### "A plan file" is not "the plan you reviewed"
 
@@ -816,9 +821,16 @@ What it does, and what it refuses:
    replacement created by someone else would be destroyed instead. This is why
    replacement-safe teardown needs exact state, not a post-hoc sweep.
 4. **Destroys the edge**, then **verifies absence** rather than trusting the summary —
-   the REST API and the per-run secret must be gone, and the **ordinary** provenance
-   parameter must still be present. Any unverified absence fails the command, so
-   cleanup is never reported as complete on an unproven teardown.
+   the REST API, its stage, the per-run secret and the log group must be gone, and the
+   **ordinary** provenance parameter must still be present. Every probe addresses the
+   id recorded in state rather than a name rebuilt here; see step 8.5 for the
+   guessed-prefix defect that made this necessary. Any unverified absence fails the
+   command, so cleanup is never reported as complete on an unproven teardown.
+5. **Writes the absence observations** as part of tearing down, into
+   `teardown-removals-fragment.json` — the other half of the W2-10 evidence, in the
+   evaluator's own removal shape. Step 8.5 covers what it contains, why an
+   unverifiable resource contributes nothing, and why you must never pre-create or
+   hand-edit it.
 
 ### A delete-only plan is not a plan that deletes only *your* resources
 
@@ -910,6 +922,117 @@ the ledger can see these resources and how they are torn down; they are *not* th
 delete authority. #3968's `cleanup_ok` stays `None` for a dry run and `False` on any
 unverified absence, so do not record success for this component until both the destroy
 verification and `90-cleanup-ledger.sh` report verified absence.
+
+## 8.5 The two evidence fragments #5825's W2-10 consumes
+
+**These are not optional paperwork.** The merged #5825 evaluator
+(`platform/scripts/agent-control-eval.py`) answers W2-10 — "the evaluation left
+nothing behind" — by reconciling `teardown_verification.removals` against
+`wave2_preflight.creation_ledger` **in both directions**:
+
+* a ledger entry with **no absence observation** fails as *unaccounted* — "a resource
+  nobody looked for is how a control-enabled workload outlives its evaluation";
+* a removal naming an identity **the ledger does not contain** also fails, as removing
+  something the fixture did not create.
+
+So a resource this component creates and does not contribute is not merely
+unrecorded. If you contribute neither half, W2-10 passes with this edge's API, stage,
+policy, log group and per-run parameter **entirely outside the accounting**. If you
+contribute only the removal, it is *refused* as naming something uncreated.
+
+The lifecycle script therefore writes two files into the artifact directory:
+
+| File | Written by | Belongs in |
+|---|---|---|
+| `creation-ledger-fragment.json` | `apply`, right after the apply succeeds | `wave2_preflight.creation_ledger` (concatenate `entries`) |
+| `teardown-removals-fragment.json` | `destroy`, **as part of** tearing down | `teardown_verification.removals` (concatenate `removals`); also take `captured_at` and this component's `verified_after_teardown` from here |
+
+Each entry is already in the evaluator's own shape —
+`(kind, name, identity, created)` and `(identity, absent, observed_by, removed_at)` —
+so #3968's preflight/teardown assembler concatenates rather than transforms. Hand both
+to that assembler; nothing under `platform/scripts/operator/wave2/` is modified by this
+component.
+
+### Why a fragment and not the artifact
+
+`wave2_preflight` is **one** artifact covering the whole run — #3968's fixture
+workload, its policies, its queues, and this edge. Writing the whole file here would
+mean owning fields that are #3968's to observe (`merged_revisions`, `ci_gates`,
+`deployed_components`, `fixture_only_flag_scope`). This component contributes only the
+entries for the resources it created.
+
+### `identity` is the provider-assigned id, read from state
+
+Not a name. The evaluator wants an identity precisely because a name cannot
+distinguish this object from a same-named replacement. Two consequences you will see
+in the files:
+
+* the stage appears as **`ags-<api-id>-dev`**, not `dev` — the provider's own id, and
+  the same string the destroy guard matches plan lines on;
+* the REST API and its resource **policy share one provider id** (the policy is an
+  attribute of the API), so both are qualified as `<type>:<id>`. The evaluator refuses
+  a duplicate identity across the whole ledger, and an unqualified collision would be
+  reported against #3968's assembler rather than the component that produced it.
+
+### An unverifiable resource contributes **nothing**, on purpose
+
+A probe that could not run — AccessDenied, a throttle, an unreadable id — is a call
+that failed, not a resource that answered. It is listed under `unobserved` and
+contributes **no** removal entry:
+
+* `absent: true` would be the AccessDenied-reads-as-deleted defect `probe_absent`
+  exists to prevent;
+* `absent: false` would assert it is **still present**, which was never established.
+
+Leaving it out means the creation ledger's entry goes unaccounted and W2-10 **fails**
+it — which is exactly what an unverifiable resource is. Do not synthesise removals for
+anything in `unobserved`, and do not report `cleanup_ok` true while that list is
+nonempty. `destroy` also exits nonzero in this case, so the two agree.
+
+The fragment is written on the **failing** paths too. Absence evidence is most needed
+when teardown did *not* verify: exiting nonzero with no file at all leaves the
+assembler unable to tell "not yet run" from "ran and found a survivor". A failing run's
+fragment carries `verified_after_teardown: false` and a nonempty `unobserved`, so it
+cannot be mistaken for a clean result.
+
+### Freshness is checked by the evaluator, not claimed by the file
+
+The evaluator digests this artifact immediately **before** invoking teardown and
+refuses a byte-identical file afterwards, because absence observations written ahead of
+the removal describe the fixture while it still existed. It also requires `captured_at`
+to be a parseable ISO-8601 instant that does not predate the teardown's start. Hence:
+
+* `destroy` **deletes any previous attempt's fragment before deleting anything**, so a
+  failed teardown leaves no fragment rather than a stale one;
+* `captured_at` is stamped as the fragment is written, i.e. after the deletion and
+  inside the teardown window;
+* **never** pre-create or hand-edit either file. A `captured_at` is a string written by
+  the same hand as the absence claims; the digest comparison is what makes it evidence.
+
+### Two entries are derived, and say so
+
+`aws_api_gateway_rest_api_policy` and `aws_api_gateway_deployment` have no probe of
+their own and must not be given a fabricated one: the policy is an **attribute** of the
+REST API and the deployment is its **child**, so once the API is not found there is
+neither a policy nor an API through which to query one. Their absence is derived from
+the API's own not-found, `observed_by` states the derivation in full, and
+`observation` reads `derived-from:rest_api` so a reviewer need not parse prose. Direct
+reads carry `observation: "direct"`.
+
+### If you add a resource to `main.tf`, add its probe
+
+An applied resource whose type `destroy` has no probe for is a **refusal**, not a
+silent omission — otherwise the fragment quietly accounts for less than the run
+created, and the evaluator would blame #3968's assembler for the gap.
+
+Relatedly, and the reason the probe targets are now read from the ownership receipt
+rather than recomposed in the script: the log-group probe used to rebuild its own name
+as `/aws/apigateway/w2-fixture-edge-<nonce>` while `main.tf` creates
+`/aws/api-gateway/<name_prefix>-fixture-edge` — wrong stem *and* a missing hyphen. As
+`describe-log-groups` answers an unmatched prefix with an **empty list and exit 0** (the
+one probe where a clean exit is read as absence), the real log group was reported gone
+on every run and a survivor could not have been detected. Probe targets come from state
+now; a fragment entry whose probe read a different object is refused.
 
 ## What CI checks before any of this runs
 

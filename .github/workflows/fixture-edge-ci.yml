@@ -73,6 +73,16 @@ on:
       # the fakes keep passing while the real invocation breaks at operator time.
       # This path makes such a change run these tests in the same PR.
       - 'platform/scripts/operator/wave2/lib/ownership.py'
+      # Same lockstep reasoning, for the other coordination seam. This component
+      # emits the creation-ledger and teardown-removals fragments that #5825's
+      # merged evaluator consumes, in that evaluator's OWN key shapes
+      # (LEDGER_ENTRY_KEYS / LEDGER_REMOVAL_KEYS / the listener+policy kind sets).
+      # Key names living in two files drift silently: the evaluator renames a key,
+      # this component keeps emitting the old one, both suites stay green, and the
+      # mismatch surfaces at live acceptance as a missing artifact field. The
+      # pytest pin reads those constants back out of the evaluator, and this path
+      # makes a rename there run that pin in the same PR.
+      - 'platform/scripts/agent-control-eval.py'
       - '.github/workflows/fixture-edge-ci.yml'
     branches:
       - main
