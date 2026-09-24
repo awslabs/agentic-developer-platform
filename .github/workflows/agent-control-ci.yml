@@ -215,6 +215,19 @@ on:
       # the tests together, because they are a single unit: a library change that
       # breaks a script is only visible when both are exercised.
       - 'platform/scripts/operator/wave2/**'
+      # Wave 4 operator collectors (#3970). Same reasoning as wave 2's glob above,
+      # and listed for the reason root's finding 5808491910 named: a package no
+      # workflow references has no merge check at all. The wave-4 tests in
+      # `test_agent_control_eval.py` drive these modules end to end — collector →
+      # artifact → evaluator — so a change here that breaks a measurement is only
+      # visible when both halves run, and the harness's own path entry above does
+      # not fire on an edit confined to this directory.
+      #
+      # The directory is hyphenated rather than `operator/wave4` deliberately: a
+      # nested package needs `platform/scripts/operator/__init__.py`, which shadows
+      # the standard library's `operator` module for anything importing with
+      # `platform/scripts` on the path.
+      - 'platform/scripts/operator-wave4/**'
       # The fixture-config runbook. Listed because its example config is parsed
       # and validated by the harness tests: a doc-only edit that drifts the
       # example from the harness must fail CI, not merge quietly. The operator
@@ -824,7 +837,7 @@ jobs:
             --collectCoverageFrom='src/control-runtime-timeout.ts' \
             --collectCoverageFrom='src/run-heartbeat.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
-            --ci --verbose
+            --maxWorkers=2 --ci --verbose
 
       - name: Assert the control adapter advertises no verb as supported
         working-directory: modules/agent-factory/agent
