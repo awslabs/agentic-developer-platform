@@ -577,11 +577,27 @@ class AgentAuthorityStore:
     def abort_intent(self, *, invocation_id: str, tenant_id: str) -> dict[str, str] | None:
         """Read this run's durable abort marker, if it has one (#3963).
 
-        Used by admission: a run an operator stopped must not be started again, and
-        this is the fact that says so independently of whether the aborted run
-        managed to write a terminal status or acknowledge its queue message. Those
-        are exactly the writes that can fail, which is why admission cannot depend
-        on them.
+        This answers "did an operator stop this run, and which command did it" from
+        the one table the worker cannot edit — so the answer holds even when the
+        aborted run failed to write its terminal status or acknowledge its queue
+        message. Those are exactly the writes that can fail, which is why anything
+        reporting on an abort reads this instead of them.
+
+        It is deliberately **not** an admission check. An earlier revision of
+        ``BootstrapStore.bind`` called this to refuse a redelivered envelope; that
+        guard was removed because it could not run. The marker only ever exists on a
+        record that is ``ACTIVE`` *and* bound (``revalidation._accept_abort`` is its
+        sole writer and is authorized only for ``ACTIVE``), while the region of
+        ``bind`` that would have consulted it is reached only by an *unbound*
+        ``PENDING`` record — and ``PENDING`` can never be restored, because
+        ``set_execution_status`` refuses it as a destination and
+        ``provision_pending`` writes under ``attribute_not_exists``. Zero restarts is
+        enforced by that binding lifecycle; see the comment in ``bind`` for why
+        adding a check above it would have revoked the aborting run's own credential.
+
+        So the callers are the ones that genuinely need the fact rather than a
+        decision: the abort receipt's claims, and an operator asking what stopped a
+        run. Kept as a reader for those, not as a gate.
         """
         record = self._get(sort_key=f"{_EXEC_PREFIX}{invocation_id}", tenant_id=tenant_id)
         if not record:

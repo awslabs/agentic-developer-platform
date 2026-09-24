@@ -342,38 +342,36 @@ class BootstrapStore:
                 raise BootstrapRefusedError("bootstrap refused")
             return record
 
-        # A run an operator deliberately stopped must not be STARTED again — #3963.
+        # An aborted run is not restarted here, and #3963 deliberately adds NO abort
+        # check to do it. The line below already does, and an `abort_intent` guard
+        # above it would be unreachable code that reads like the load-bearing one.
         #
-        # This is the consumer of `record_abort_intent`, and the reason that marker is
-        # written before the abort is ever reported as accepted. Every other fact that
-        # could say "this run is over" is a write the aborting run must survive long
-        # enough to perform: the terminal invocation status, and the SQS DeleteMessage.
-        # Both can fail. When both fail the message becomes visible again and a fresh
-        # pod arrives here holding a perfectly valid dispatch envelope — nothing in the
-        # envelope records that the run was aborted. Without this check the deliberate
-        # stop is simply undone by the retry, which is the invariant violation the
-        # previous implementation only *logged*.
+        # The reasoning, because "it happens to work" is not a reason to omit a
+        # security check. An abort marker can only exist on a record that was ACTIVE
+        # and bound: `revalidation._accept_abort` is the sole writer, it runs behind
+        # `evaluate_execution_state`, and that authorizes only an ACTIVE record. So
+        # any invocation carrying a marker has `status == ACTIVE` and a
+        # `workload_binding`, and fails the PENDING check below twice over. Nothing
+        # restores PENDING either: `set_execution_status` refuses PENDING as a
+        # destination outright (`status is ExecutionStatus.PENDING` is rejected
+        # regardless of the transition table), and `provision_pending` writes under
+        # `attribute_not_exists(pk)`, so a committed record cannot be reset.
         #
-        # Deliberately placed AFTER the `existing is not None` retry-return, which is
-        # the one thing that makes this safe rather than self-defeating. That branch is
-        # the already-bound pod re-presenting its own binding, and it is the path the
-        # run-identity renewal thread takes every 300s — including while the abort is
-        # being delivered and finalized. Refusing there would revoke the credential the
-        # aborting run needs in order to report its own terminal status and delete its
-        # queue message, so recording abort intent would destroy the ability to
-        # complete the abort. Here, past that branch, the caller is provably a pod with
-        # no binding of its own asking to take up this invocation for the first time.
+        # Redelivery after a failed terminal write AND a failed DeleteMessage — the
+        # case that motivated the guard — is therefore refused by this line, with no
+        # marker read at all. `tests/agentauth/test_abort_redelivery_refusal.py` drives
+        # exactly that flow end to end and asserts the 404, and it was mutation-checked
+        # against a build with the guard deleted: still 404, no credential, no binding.
         #
-        # So the rule is exactly: an abort marker does not stop the run that is
-        # aborting, it stops the NEXT one. Durable redelivery exclusion and confirmed
-        # terminal abort stay separate facts.
+        # What a guard here WOULD change is the aborting run's own finalization, and
+        # only for the worse. The renewal thread re-presents its binding every 300s and
+        # returns above on the `existing is not None` branch; a check placed before
+        # that branch revokes the credential the aborting pod needs to cancel the SDK,
+        # write its terminal row and delete its message — destroying the ability to
+        # complete the very abort the marker records. Placed after it, it is dead.
         #
-        # Fail-closed by omission: a store failure raises `AuthorityStoreError`, which
-        # the route maps to 503 rather than to an admission. The only way past this
-        # line is a positive read that no abort was ever requested.
-        if self.authority.abort_intent(invocation_id=invocation_id, tenant_id=tenant_id) is not None:
-            raise BootstrapRefusedError("run was aborted")
-
+        # The marker's real consumers are the abort receipt's claims and the operator's
+        # stated reason, not admission control.
         if record.status != ExecutionStatus.PENDING or record.workload_binding is not None:
             raise BootstrapRefusedError("bootstrap refused")
         try:

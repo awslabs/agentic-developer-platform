@@ -17,9 +17,16 @@ is what the legacy completion guard reads — so if the write fails, that guard 
 nothing. The DeleteMessage is what stops SQS redelivering — so if the ack fails,
 the envelope comes back. ``_finalize_abort_acknowledgement``'s own docstring calls
 this row "unprotected" and logs that "the run may execute again despite being
-aborted". This file is the test of whether that pessimism is warranted on the
-protected path. It is not, and the reason is a *third* mechanism neither of the
-first two is: the durable ``abort_intent`` marker read by ``BootstrapStore.bind``.
+aborted".
+
+This file is the test of whether that pessimism is warranted on the protected path.
+It is not — and the answer is the interesting part, because it is not a third abort
+mechanism. It is the ordinary binding lifecycle: the execution record is ACTIVE and
+already bound, so ``bind`` refuses the redelivered envelope for the same reason it
+refuses any second pod, and nothing can restore the PENDING status that would admit
+one. An abort-specific guard here would never execute; ``test_the_existing_binding_
+check_is_what_refuses_it_no_abort_guard`` pins that, and a guard added in an earlier
+revision of #3963 was removed on the strength of it.
 
 ## Why the redelivery here is real
 
@@ -47,12 +54,12 @@ assertions below are on the observable consequences of the refusal — no creden
 issued, no new ``POD#.../BINDING`` row, the original binding undisturbed — rather
 than on a spy that could be satisfied by a mechanism that does not ship.
 
-``TestTheAbortingRunItselfIsNotStopped`` pins the ordering the whole argument rests
-on: the marker sits *after* ``bind``'s existing-binding retry-return, so it stops the
-next run without stopping the one that is finalizing. Hoisting it above that return
-— the obvious-looking simplification — passes every other test in this file and
-breaks the aborting pod's own 300s credential renewal, so it is mutation-checked
-there rather than left to a comment.
+``TestTheAbortingRunItselfIsNotStopped`` covers the other half, and it is the half an
+abort guard would have broken: the aborting pod re-presents its own binding every
+300s through the run-identity renewal thread, and it still has work to do — cancel
+the SDK, write the terminal row, delete the message. Anything that refuses it there
+revokes the credential the abort itself needs, which is why "refuse an aborted run at
+startup" is a more delicate instruction than it sounds.
 """
 
 from __future__ import annotations
@@ -68,6 +75,7 @@ from botocore.exceptions import ClientError
 
 from src.agentauth.bootstrap import BootstrapRefusedError, envelope_digest
 from src.agentauth.execution import ExecutionStatus
+from src.agentauth.store import ExecutionTransitionConflictError
 from src.agentauth.task_delivery import TaskDelivery
 from src.agentauth.workload import WORKLOAD_HEADER, VerifiedPod
 from tests.agentauth.test_abort_receipt import (  # noqa: F401
@@ -193,7 +201,7 @@ class TestTheAbortedRunDoesNotStartAgain:
         # 4. Zero task starts. The replacement pod holds the real envelope and asks
         # to bind, which is the last gate before any task code runs.
         digest = envelope_digest(json.loads(redelivered))
-        with pytest.raises(BootstrapRefusedError, match="run was aborted"):
+        with pytest.raises(BootstrapRefusedError):
             ctx.store.bind(
                 invocation_id=ctx.target_invocation,
                 digest=digest,
@@ -207,35 +215,84 @@ class TestTheAbortedRunDoesNotStartAgain:
         after = ctx.store.authority.load_execution(invocation_id=ctx.target_invocation, tenant_id="tenant")
         assert after.workload_binding == original_binding
 
-    async def test_the_marker_is_what_refuses_it_not_the_status_check(self, abort_context):
-        """Isolate the mechanism, so this suite cannot pass on the wrong one.
+    async def test_the_existing_binding_check_is_what_refuses_it_no_abort_guard(self, abort_context):
+        """Name the mechanism, so nobody adds an unreachable guard believing it is needed.
 
-        ``bind`` has two refusals in sequence: the abort marker, then
-        ``status != PENDING or workload_binding is not None``. On a redelivery the
-        second one is also true, so a suite that only asserted "the replacement pod
-        was refused" would stay green with the marker deleted — and would then be
-        asserting nothing about abort at all.
+        An earlier revision of #3963 added an ``abort_intent`` check to ``bind`` above
+        the PENDING check. It is dead code, and this test is the reason it was removed
+        rather than kept as defence in depth: a guard that never executes is not
+        defence, it is a misleading signal about where the invariant lives.
 
-        The distinguishing evidence is the message. ``bind`` raises
-        ``"run was aborted"`` for the marker and ``"bootstrap refused"`` for the
-        status, and only the first names a fact that no ordinary redelivery of a
-        healthy run produces.
+        The proof is that the refusal does not depend on the abort at all. A second pod
+        is refused identically **before** any abort exists, for exactly the reason it is
+        refused after one — the record is ACTIVE and already bound. And a marker can
+        only ever exist on such a record, because ``_accept_abort`` runs behind
+        ``evaluate_execution_state``, which authorizes only an ACTIVE record. Neither
+        ``set_execution_status`` (which refuses PENDING as a destination) nor
+        ``provision_pending`` (which writes under ``attribute_not_exists(pk)``) can put
+        the record back, so "aborted" and "not PENDING" are not independent conditions.
+
+        Zero task starts on the protected path is therefore enforced by the binding
+        lifecycle, which is what root's instruction "do not invent a new guard if actual
+        protected startup already enforces zero restarts" describes.
         """
         ctx = abort_context
         digest = ctx.store._read("TENANT#tenant", f"EXEC#{ctx.target_invocation}")["envelope_digest"]["S"]
 
-        # Before the abort: a second pod is refused, but for the ordinary reason.
-        with pytest.raises(BootstrapRefusedError) as generic:
+        # Before the abort: already refused, and this is the mechanism.
+        with pytest.raises(BootstrapRefusedError) as before:
             ctx.store.bind(invocation_id=ctx.target_invocation, digest=digest, pod=pod("other-pod"), now=datetime.now(UTC))
-        assert str(generic.value) == "bootstrap refused"
+        assert str(before.value) == "bootstrap refused"
 
         await accept_abort(ctx)
 
-        # After it: the same call is refused by the marker, which is checked first
-        # and says something the status never could.
-        with pytest.raises(BootstrapRefusedError) as aborted:
+        # After it: the same refusal, unchanged. The abort adds no new rejection here
+        # because there was never an admission left to reject.
+        with pytest.raises(BootstrapRefusedError) as after:
             ctx.store.bind(invocation_id=ctx.target_invocation, digest=digest, pod=pod("other-pod"), now=datetime.now(UTC))
-        assert str(aborted.value) == "run was aborted"
+        assert str(after.value) == "bootstrap refused"
+
+        # And the precondition that makes the guard unreachable is the marker's own:
+        # it exists only on a record that is ACTIVE and bound.
+        record = ctx.store.authority.load_execution(invocation_id=ctx.target_invocation, tenant_id="tenant")
+        assert read_marker(ctx) is not None
+        assert record.status is ExecutionStatus.ACTIVE
+        assert record.workload_binding, "a marker cannot exist on an unbound record"
+
+    def test_no_transition_can_return_an_aborted_run_to_pending(self, abort_context):
+        """The premise the guard removal rests on, asserted rather than argued.
+
+        Removing the ``abort_intent`` check from ``bind`` is only safe because an
+        aborted record can never again be ``PENDING`` and unbound — the state that
+        admits a pod. That is a claim about ``set_execution_status``, not about abort
+        code, so if a later change made ``PENDING`` a reachable destination the removal
+        would silently become a real hole and every test above would still pass. This
+        is the test that would fail instead.
+
+        Driven through the store's public transition API, from each source status a
+        real record can hold, rather than by reading the transition table — the table
+        is the implementation, the refusal is the requirement.
+
+        Mutation-checked, and the two results are worth recording because they are
+        different. Adding ``PENDING`` to the reachable destinations of ``ACTIVE`` fails
+        this test, which is the hole it exists to catch. Deleting only the
+        ``status is ExecutionStatus.PENDING`` clause does *not* fail it — and that is
+        correct rather than a gap: with the transition table unchanged, ``PENDING`` is
+        still not a permitted destination from any source, and the conditional write
+        would also refuse it. So the requirement is enforced in two places, and this
+        test pins the one that would actually admit a pod.
+        """
+        ctx = abort_context
+        authority = ctx.store.authority
+        for source in (ExecutionStatus.PENDING, ExecutionStatus.ACTIVE, ExecutionStatus.CANCELLED):
+            with pytest.raises(ExecutionTransitionConflictError):
+                authority.set_execution_status(
+                    invocation_id=ctx.target_invocation,
+                    tenant_id="tenant",
+                    status=ExecutionStatus.PENDING,
+                    expected_attempt=1,
+                    expected_status=source,
+                )
 
     async def test_a_refused_redelivery_is_a_404_to_the_pod(self, abort_context):
         """End to end through HTTP, because the pod never calls ``bind`` directly.
@@ -272,11 +329,14 @@ class TestTheAbortedRunDoesNotStartAgain:
 class TestTheAbortingRunItselfIsNotStopped:
     """Quiescence before terminal — instruction 5808383984.
 
-    The marker refuses the *next* run, and must not refuse the one that is
-    finalizing. That run still needs its credential renewed (every 300s) and its
-    own idempotent re-bind to succeed, because it has work left to do: cancel the
-    SDK, write the terminal row, delete the message. A marker that stopped it would
-    destroy the ability to complete the very abort it records.
+    Accepting an abort must not stop the run that is finalizing it. That run still
+    needs its credential renewed (every 300s, via the run-identity thread's re-bind)
+    because it has work left to do: cancel the SDK, write the terminal row, delete the
+    message. Anything that refused it here would revoke the credential the abort needs
+    and leave the operator with an accepted command that never reaches the task.
+
+    This is the constraint that makes a startup abort guard self-defeating if placed
+    before ``bind``'s existing-binding return, and dead if placed after it.
     """
 
     async def test_the_aborting_pod_can_still_rebind_and_finalize(self, abort_context):
@@ -286,9 +346,9 @@ class TestTheAbortingRunItselfIsNotStopped:
         binding = record.workload_binding
         digest = ctx.store._read("TENANT#tenant", f"EXEC#{ctx.target_invocation}")["envelope_digest"]["S"]
 
-        # The aborting pod's own re-bind returns its record rather than raising,
-        # because `bind` returns on the existing-binding branch *before* reaching the
-        # marker check. That ordering is the design, not an accident of placement.
+        # The aborting pod's own re-bind returns its record rather than raising: it
+        # presents the binding it already holds, so `bind` returns on the
+        # existing-binding branch and the abort is irrelevant to the decision.
         rebound = ctx.store.bind(
             invocation_id=ctx.target_invocation, digest=digest, pod=pod(binding), now=datetime.now(UTC)
         )
