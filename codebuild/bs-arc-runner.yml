@@ -13,6 +13,7 @@ version: 0.2
 # Env vars injected by the caller:
 #   AWS_REGION, ACCOUNT_ID, REGISTRY, IMAGE_TAG
 #   PUBLISH_LATEST (optional; defaults to true, false builds a candidate only)
+#   RUNNER_DOCKERFILE (optional; Dockerfile.recovery for the scoped repair)
 
 phases:
   pre_build:
@@ -43,7 +44,7 @@ phases:
           true|false) ;;
           *) echo "PUBLISH_LATEST must be true or false" >&2; exit 1 ;;
         esac
-      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -f Dockerfile .
+      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -f "${RUNNER_DOCKERFILE:-Dockerfile}" .
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - |
         if [ "${PUBLISH_LATEST:-true}" = true ]; then

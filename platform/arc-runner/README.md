@@ -29,6 +29,12 @@ The `.github/workflows/arc-runner-build.yml` workflow fires on pushes to this di
 
 Candidate builds can set `PUBLISH_LATEST=false` to publish only the exact source tag. Verify that image before updating the scale set or the shared `latest` tag.
 
+For the September 24 dev recovery, `RUNNER_DOCKERFILE=Dockerfile.recovery`
+refreshes the runner files on the exact previously deployed image in account
+879318057152. This preserves the installed tools while rolling Ubuntu mirrors
+return package 404s. It is an account-specific recovery input, not the default
+full rebuild. Both paths check the runner version and tools before publishing.
+
 ## Rollout
 
 After the image lands in ECR, update the ARC runner scale set's Helm release to point at it. In our Terraform, that's the `helm_release.arc_runner_set` resource in `modules/agent-factory/infra/` — set `template.spec.containers[0].image` to `<registry>/adp-arc-runner:<tag>`.
