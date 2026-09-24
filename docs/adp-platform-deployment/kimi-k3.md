@@ -7,7 +7,7 @@ streaming/tool/reasoning payloads, and records usage through the pricing ledger.
 
 Supported IDs are `global.moonshotai.kimi-k3` and
 `us.moonshotai.kimi-k3`. Use the explicit profile ID in Responses requests.
-The model-list aliases `kimi-k3` and `kimi-k3-us` identify those profiles.
+Model discovery returns those exact profile IDs.
 Explicit tenant allowlists still need to grant access; a gateway route permission
 does not override a tenant denial. Bedrock access must be verified in the user's
 resolved destination account, which may differ from the platform hosting account.
@@ -60,9 +60,12 @@ api_key_env = "ADP_KIMI_LOCAL_CAPABILITY"
 provider = "adp"
 model = "global.moonshotai.kimi-k3"
 max_context_size = 1000000
-max_output_size = 1024
 capabilities = ["thinking", "image_in", "tool_use"]
 ```
+
+Kimi 2.1.1 only reads `max_output_size` for its Anthropic provider. The regression
+harness explicitly adds a 1,024-token output cap at its local proxy boundary,
+with aggregate byte/request limits; that cap is not a production Kimi setting.
 
 Validate a bounded read-only file task, confirm tool-result continuation, and
 inspect gateway usage for the exact model, destination, successful requests and

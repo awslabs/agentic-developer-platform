@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Default model alias mappings
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
-    "kimi-k3": "global.moonshotai.kimi-k3",
-    "kimi-k3-us": "us.moonshotai.kimi-k3",
+    "global.moonshotai.kimi-k3": "global.moonshotai.kimi-k3",
+    "us.moonshotai.kimi-k3": "us.moonshotai.kimi-k3",
     # Version-pinned /model aliases: <family><major><minor>, compact, no
     # separators (e.g. opus48, sonnet46, haiku45). Each → an invocable
     # inference-profile ID (global. prefix), verified ACTIVE + invokable

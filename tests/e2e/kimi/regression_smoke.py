@@ -40,6 +40,10 @@ def proxy():
         if handler.command != "POST" or handler.path != "/openai/v1/responses":
             raise ValueError("smoke only permits Responses requests")
         body = json.loads(raw)
+        # Kimi 2.1.1 ignores max_output_size for Responses. This test-only
+        # boundary supplies the explicit cap before sending any paid request.
+        body.setdefault("max_output_tokens", 1024)
+        raw = json.dumps(body).encode()
         cap = body.get("max_output_tokens")
         if body.get("model") != MODEL or type(cap) is not int or not 0 < cap <= 1024:
             raise ValueError("smoke model or output bound rejected")
