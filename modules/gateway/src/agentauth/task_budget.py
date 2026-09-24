@@ -20,6 +20,11 @@ class TaskBudgetError(Exception):
     pass
 
 
+def _restore_target(value):
+    return ReservationTarget(**{**value, "headroom_usd": Decimal(str(value["headroom_usd"])),
+        "ttl_seconds": int(value["ttl_seconds"]) if value.get("ttl_seconds") is not None else None})
+
+
 class TaskBudget:
     def __init__(self, authority, *, reservations=None, qualification_id=None, clock=None):
         self.authority = authority
@@ -75,7 +80,7 @@ class TaskBudget:
             # A takeover reuses the exact hold and its original budget periods.
             # The original owner's acceptance is fenced by owner_token+lease.
             record.update({name: previous[name] for name in ("amount_usd", "qualification_id", "targets")})
-            targets = [ReservationTarget(**{**value, "headroom_usd": Decimal(value["headroom_usd"])}) for value in record["targets"]]
+            targets = [_restore_target(value) for value in record["targets"]]
             condition = "owner_token = :old AND #state = :state"
             values = {":old": {"S": previous["owner_token"]}, ":state": {"S": previous["state"]}}
         put = {"TableName": self.authority.table, "Item": {**key, **{name: serializer.serialize(value) for name, value in record.items()},
@@ -83,9 +88,13 @@ class TaskBudget:
         if values:
             put.update(ExpressionAttributeNames={"#state": "state"}, ExpressionAttributeValues=values)
         try:
-            self.authority.client.put_item(**put)
+            shard = int(hashlib.sha256(reservation_id.encode()).hexdigest()[:2], 16) % 16
+            cleanup = {"pk": {"S": f"TASK_ADMISSION_CLEANUP#v1#{shard:02d}"},
+                "sk": {"S": f"{now + 120:012d}#{owner}"}, "authority_pk": key["pk"], "owner_token": {"S": owner}}
+            self.authority.client.transact_write_items(TransactItems=[{"Put": put},
+                {"Put": {"TableName": self.authority.table, "Item": cleanup, "ConditionExpression": "attribute_not_exists(pk)"}}])
         except ClientError as exc:
-            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            if exc.response["Error"]["Code"] in {"ConditionalCheckFailedException", "TransactionCanceledException"}:
                 raise TaskBudgetError("task admission already pending") from None
             raise
         for target in targets:
@@ -99,37 +108,58 @@ class TaskBudget:
         key = {"pk": {"S": reservation["authority_pk"]}, "sk": {"S": reservation["authority_sk"]}}
         try:
             self.authority.client.update_item(TableName=self.authority.table, Key=key,
-                UpdateExpression="SET #state = :failed", ConditionExpression="#state = :preparing AND owner_token = :owner",
+                UpdateExpression="SET #state = :failed", ConditionExpression="(#state = :preparing OR #state = :failed) AND owner_token = :owner",
                 ExpressionAttributeNames={"#state": "state"}, ExpressionAttributeValues={":failed": {"S": "failed"},
                     ":preparing": {"S": "preparing"}, ":owner": {"S": reservation["owner_token"]}})
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return  # Accepted or taken over: this loser cannot release its hold.
             raise
-        await self.settle_admission(reservation, actual_usd=0)
+        await self.settle_admission(reservation, actual_usd=0, uncommitted=True)
         self.authority.client.update_item(TableName=self.authority.table, Key=key,
             UpdateExpression="SET #state = :released", ConditionExpression="#state = :failed AND owner_token = :owner",
             ExpressionAttributeNames={"#state": "state"}, ExpressionAttributeValues={":released": {"S": "released"},
                 ":failed": {"S": "failed"}, ":owner": {"S": reservation["owner_token"]}})
 
-    async def settle_admission(self, reservation, *, actual_usd):
+    async def reap_abandoned(self, *, shard, limit=16):
+        if shard not in {f"v1#{value:02d}" for value in range(16)}:
+            raise TaskBudgetError("invalid cleanup shard")
+        now = int(self.clock().timestamp())
+        page = self.authority.client.query(TableName=self.authority.table, ConsistentRead=True,
+            KeyConditionExpression="pk = :pk AND sk < :due", Limit=min(limit, 16),
+            ExpressionAttributeValues={":pk": {"S": "TASK_ADMISSION_CLEANUP#" + shard}, ":due": {"S": f"{now:012d}#"}})
+        decoder = TypeDeserializer()
+        for work in page.get("Items", []):
+            raw = self.authority._read(work["authority_pk"]["S"], "RESERVATION")
+            record = {key: decoder.deserialize(value) for key, value in raw.items()} if raw else None
+            if record and record.get("owner_token") == work["owner_token"]["S"] and record.get("state") in {"preparing", "failed"}:
+                if int(record["lease_expires_at"]) >= now:
+                    continue
+                # Expired lease and owner CAS fence acceptance and takeover.
+                # A failed Redis verification leaves this work indexed to retry.
+                await self.abort_admission(record)
+            self.authority.client.delete_item(TableName=self.authority.table, Key={"pk": work["pk"], "sk": work["sk"]})
+
+    async def settle_admission(self, reservation, *, actual_usd, uncommitted=False):
         if reservation["qualification_id"] != self.qualification_id:
             raise TaskBudgetError("task qualification budget changed")
-        targets = [ReservationTarget(**{**value, "headroom_usd": Decimal(str(value["headroom_usd"]))}) for value in reservation["targets"]]
+        targets = [_restore_target(value) for value in reservation["targets"]]
         amount = Decimal(str(actual_usd))
         if amount < 0 or amount > Decimal(reservation["amount_usd"]):
             raise TaskBudgetError("task settlement exceeds reservation")
         # Existing ledger reconciliation retains actual usage, releasing only
         # unspent headroom. A backend error preserves the original upper bound.
         await self.reservations.reconcile(reservation["reservation_id"], amount, targets)
-        await self.verify_settlement(reservation["reservation_id"], amount, targets)
+        await self.verify_settlement(reservation["reservation_id"], amount, targets, allow_missing_zero=uncommitted)
 
-    async def verify_settlement(self, operation_id, amount, targets):
+    async def verify_settlement(self, operation_id, amount, targets, allow_missing_zero=False):
         # The shared best-effort reconcile swallows backend failures. Task
         # terminalization must inspect the real strict ledger before releasing.
         client = await self.reservations._get_client()
         for target in targets:
             values = await client.hmget(target.key(), [operation_id, "pending:" + operation_id, "unbounded:" + operation_id])
+            if allow_missing_zero and Decimal(str(amount)) == 0 and not any(values):
+                continue  # A preparing admission never authorized any spend.
             if not values[0] or values[1] or values[2]:
                 raise TaskBudgetError("task budget settlement unconfirmed")
             value = values[0].decode() if isinstance(values[0], bytes) else values[0]

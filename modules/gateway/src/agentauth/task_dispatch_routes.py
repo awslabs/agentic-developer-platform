@@ -186,6 +186,9 @@ async def recovery_claim(
         roles_env=RECOVERY_ROLES_ENV, runtime=runtime,
     )
     try:
+        if not body.cursor and env.get("ADP_TASK_QUALIFICATION_ID"):
+            from src.agentauth.task_budget import task_budget
+            await task_budget(store.repository).reap_abandoned(shard=body.shard)
         claimed, next_cursor = await run_in_threadpool(
             store.claim_recovery, shard=body.shard, cursor=body.cursor, limit=body.limit,
         )

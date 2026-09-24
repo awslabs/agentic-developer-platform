@@ -102,3 +102,40 @@ async def test_task_budget_settlement_verifies_actual_redis_receipt(client):
     await budget.settle_model(operation_id="op", target=target, actual_usd="0.01")
     assert (await reservations.snapshot(target)).total_usd == Decimal("0.01")
     await reservations.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committed", [False, True])
+async def test_expired_preacceptance_hold_cleanup_is_owner_fenced(client, committed):
+    import hashlib
+    from datetime import timedelta
+
+    import fakeredis.aioredis
+
+    from src.agentauth.bootstrap import BootstrapStore
+    from src.agentauth.task_budget import TaskBudget
+    from src.budget.reservations import ReservationStore
+
+    now = [NOW]
+    reservations = ReservationStore(redis_url=None, ttl_seconds=86400, clock=lambda: now[0].timestamp(),
+        client=fakeredis.aioredis.FakeRedis(decode_responses=True))
+    budget = TaskBudget(BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client), reservations=reservations,
+        qualification_id="test-qualification", clock=lambda: now[0])
+    hold = await budget.reserve_admission(tenant="tenant", principal="principal", idempotency_key="abandoned", max_usd=1, request_digest="a"*64)
+    shard_number = int(hashlib.sha256(hold["reservation_id"].encode()).hexdigest()[:2], 16) % 16
+    shard = f"v1#{shard_number:02d}"
+    target = budget._target(scope="qualification:test-qualification", cap=25)
+    await budget.reap_abandoned(shard=shard)
+    assert (await reservations.snapshot(target)).total_usd == 1
+    if committed:
+        client.update_item(TableName=AUTHORITY_TABLE, Key={"pk": {"S": hold["authority_pk"]}, "sk": {"S": "RESERVATION"}},
+            UpdateExpression="SET #state = :committed", ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={":committed": {"S": "committed"}})
+    now[0] += timedelta(seconds=121)
+    await budget.reap_abandoned(shard=shard)
+    assert (await reservations.snapshot(target)).total_usd == (1 if committed else 0)
+    raw = budget.authority._read(hold["authority_pk"], "RESERVATION")
+    assert raw["state"] == {"S": "committed" if committed else "released"}
+    assert not client.query(TableName=AUTHORITY_TABLE, KeyConditionExpression="pk = :pk",
+        ExpressionAttributeValues={":pk": {"S": "TASK_ADMISSION_CLEANUP#"+shard}}).get("Items")
+    await reservations.close()

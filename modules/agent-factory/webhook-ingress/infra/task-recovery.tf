@@ -17,8 +17,8 @@ resource "aws_cloudwatch_event_rule" "task_recovery" {
 
   lifecycle {
     precondition {
-      condition     = !var.task_api_recovery_enabled || var.agent_authority_enabled
-      error_message = "Task recovery cannot be enabled before protected agent authority is enabled."
+      condition     = !var.task_api_recovery_enabled || var.task_api_worker_enabled
+      error_message = "Task recovery requires the Task API worker runtime to be enabled."
     }
   }
 }
@@ -65,31 +65,11 @@ resource "aws_iam_role_policy" "lambda_task_adapters" {
   })
 }
 
-resource "aws_iam_role_policy" "gateway_task_work" {
-  count = local.agent_authority_provisioned ? 1 : 0
-  name  = "adp-${var.environment}-policy-gateway-task-work"
-  role  = "adp-${var.environment}-role-gateway-service"
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "TaskWorkRecords"
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:TransactWriteItems"]
-        Resource = [aws_dynamodb_table.webhook_events.arn, "${aws_dynamodb_table.webhook_events.arn}/index/task-work-index"]
-      },
-      {
-        Sid      = "TaskWorkAuthority"
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:TransactWriteItems"]
-        Resource = [aws_dynamodb_table.agent_authority.arn]
-      },
-      {
-        Sid      = "TaskWorkEncryption"
-        Effect   = "Allow"
-        Action   = ["kms:Decrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
-        Resource = [aws_kms_key.dynamodb.arn]
-      }
-    ]
-  })
+# Gateway Task storage permissions are owned by gateway_task_storage in iam.tf.
+# Keep a single policy owner so this path cannot reintroduce table-wide access.
+
+variable "task_api_worker_enabled" {
+  type        = bool
+  default     = false
+  description = "Task API worker runtime readiness; independent of legacy agent authority rollout."
 }

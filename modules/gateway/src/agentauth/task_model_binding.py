@@ -69,9 +69,10 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
     if evidence is None or evidence.is_stale or not evidence.is_proven or not evidence.provider_request_id:
         raise ModelPolicyError("task_model_probe_required")
     state = await get_rate_state(db)
+    from pricing_policy import canonical_billing_model_id
     from pricing_policy.policy import model_rate_candidates, staleness_reasons
     from pricing_policy.storage import utc_now_iso
-    rates = model_rate_candidates(state.rows, model_id, served_service_tier="standard")
+    rates = model_rate_candidates(state.rows, canonical_billing_model_id(model_id), served_service_tier="standard")
     if (not state.from_database or state.reasons or not rates
             or any(staleness_reasons(row_verified_at=row.verified_at, now_iso=utc_now_iso()) for row in rates)):
         raise ModelPolicyError("task_model_pricing_unavailable")

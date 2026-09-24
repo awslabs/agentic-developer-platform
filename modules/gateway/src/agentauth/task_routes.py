@@ -20,14 +20,15 @@ router = APIRouter(prefix="/internal/v1/agent/task", tags=["agent-authority"], d
 def task_delivery(runtime: AgentRuntime = Depends(get_agent_runtime)) -> TaskDelivery:
     env = os.environ if runtime.env is None else runtime.env
     task_api_enabled = env.get("ADP_TASK_API_WORKER_ENABLED", "false").lower() == "true"
-    if not (enabled(env) or task_api_enabled) or not env.get("ADP_RUN_TASK_QUEUE_URL"):
+    queue_url = (env.get("ADP_TASK_API_QUEUE_URL") if task_api_enabled else None) or env.get("ADP_RUN_TASK_QUEUE_URL")
+    if not (enabled(env) or task_api_enabled) or not queue_url:
         raise HTTPException(503, "task service unavailable")
     return TaskDelivery(
         store=runtime.store,
         allow_task_api=task_api_enabled,
         allow_shared_legacy=task_api_enabled,
         allow_legacy=enabled(env),
-        queue_url=env["ADP_RUN_TASK_QUEUE_URL"],
+        queue_url=queue_url,
         sqs=boto3.client(
             "sqs",
             region_name=env.get("AWS_REGION", "us-east-1"),
