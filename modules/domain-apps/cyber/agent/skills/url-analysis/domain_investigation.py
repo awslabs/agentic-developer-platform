@@ -552,7 +552,7 @@ def step(
 
 
 def retained_findings(case):
-    """Retain validated browser findings from the latest rejected assessment."""
+    """Retain normalized, referenced findings from the latest rejected assessment."""
     retained = []
     for attempt in case.get("assessment_attempts", [])[-1:]:
         candidate = attempt["assessment"]
@@ -566,8 +566,10 @@ def retained_findings(case):
                     {**candidate, "findings": [finding], "context_assessment": None}
                 )
                 checked.validate_evidence(case["observations"])
-                if finding not in retained:
-                    retained.append(finding)
+                checked.validate_context(context_records(case))
+                normalized = checked.findings[0].model_dump()
+                if normalized not in retained:
+                    retained.append(normalized)
             except (ValueError, TypeError):
                 continue
     return retained[:30]
