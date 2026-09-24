@@ -6,8 +6,8 @@ version: 0.2
 # build context set to modules/agent-factory/ (so the Dockerfile can COPY
 # rules/personas/ from a sibling directory).
 #
-# Pushes to ECR repo adp-agent-gateway (the same repo used by the Python
-# worker). The image is dispatched at runtime by AGENT_ENTRYPOINT:
+# Pushes to the dedicated ECR repo adp-chat-agent so this build cannot
+# replace the Python agent-gateway artifact. The image is dispatched at runtime by AGENT_ENTRYPOINT:
 #   - AGENT_ENTRYPOINT=github         (default)  → runs the existing GH agent
 #   - AGENT_ENTRYPOINT=complex-task-chat         → runs the new chat agent
 #
@@ -29,7 +29,7 @@ phases:
           echo "All builds must use codebuild-run.sh or the codebuild-run composite action." >&2
           exit 1
         fi
-      - ECR_REPO="adp-agent-gateway"
+      - ECR_REPO="adp-chat-agent"
       - IMAGE_TAG="${IMAGE_TAG:-latest}"
       - |
         if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then

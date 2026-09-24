@@ -50,15 +50,7 @@ SCRIPT_PATH = (
 )
 NIGHTLY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "security-agent-nightly.yml"
 SCRIPT_TESTS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "script-tests.yml"
-RUNNER_IAM_TF = (
-    REPO_ROOT
-    / "modules"
-    / "agent-factory"
-    / "infra"
-    / "modules"
-    / "runner-iam"
-    / "main.tf"
-)
+SCAN_IAM_TF = REPO_ROOT / "platform" / "automation-infra" / "scan-dispatch.tf"
 
 BUCKET = "adp-dev-security-scans-000000000000"
 
@@ -576,14 +568,12 @@ def test_the_new_suite_is_pinned_in_the_script_tests_gate():
     )
 
 
-def test_the_runner_role_can_make_both_calls():
-    """The code-review job has no ``configure-aws-credentials`` step, so the new
-    step runs as the ARC runner identity, not the securityagent service role.
-    Missing either grant is the #4517 ``AccessDenied`` shape: a step that fails
-    for a permissions reason rather than a privacy one."""
-    tf = RUNNER_IAM_TF.read_text(encoding="utf-8")
+def test_the_scan_identity_can_make_both_calls():
+    """Privacy checks use the protected scan dispatcher, not ambient ARC IAM."""
+    tf = SCAN_IAM_TF.read_text(encoding="utf-8")
     for action in REQUIRED_RUNNER_ACTIONS:
-        assert f'"{action}"' in tf, (
-            f"the runner role is missing {action}; the nightly privacy step will "
-            "fail AccessDenied rather than report on the bucket"
-        )
+        assert f'"{action}"' in tf, f"The scan identity is missing {action}"
+    import yaml
+    job = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())["jobs"]["code-review"]
+    assert str(job["environment"]).startswith("adp-scan-")
+    assert any(step.get("uses") == "aws-e/adp/.github/actions/trusted-scan@main" for step in job["steps"])

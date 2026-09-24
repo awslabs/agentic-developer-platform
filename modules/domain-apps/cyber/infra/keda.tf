@@ -11,7 +11,8 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "cyber_keda_operator" {
-  name = "${local.name_prefix}-keda-operator-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.name_prefix}-keda-operator-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

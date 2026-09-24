@@ -63,9 +63,14 @@ env:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     name: Roll out Superplane manifests
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
 
     env:
@@ -75,21 +80,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install AWS CLI + kubectl
+      - name: Verify source belongs to reviewed main history
+        shell: bash
         run: |
-          set -e
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v kubectl >/dev/null 2>&1; then
-            curl -sL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
-          aws --version
-          kubectl version --client
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Verify reviewed runner tools
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl jq python3 psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+          python3 -c 'import yaml'
 
       - name: Preflight — are there manifests to apply?
         # U3 owns the manifests, and at the time this lane was written there are none: the

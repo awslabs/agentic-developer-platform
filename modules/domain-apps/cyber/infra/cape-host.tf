@@ -45,7 +45,8 @@ resource "aws_security_group" "cape_host" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "cape_host" {
-  name = "${local.name_prefix}-cape-host-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.name_prefix}-cape-host-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

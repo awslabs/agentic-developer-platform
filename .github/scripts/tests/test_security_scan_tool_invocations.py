@@ -516,15 +516,15 @@ def test_unproven_cleanup_is_never_reported_complete(tmp_path):
 
 
 def test_cleanup_stops_live_child_rechecks_terminal_state_and_deletes_source(tmp_path):
-    source_key = "codebuild/src/" + "a" * 40 + "-10-2-grype.zip"
-    write_json(tmp_path / "grype.json", {"build_id": "project:build", "source_key": source_key})
+    source_key = "codebuild/src/adp-dev-grype-scan/" + "a" * 40 + "-10-2-grype.zip"
+    write_json(tmp_path / "grype.json", {"build_id": "adp-dev-grype-scan:build", "source_key": source_key})
     statuses = iter(("IN_PROGRESS", "STOPPED"))
     calls = []
 
     def aws(args):
         calls.append(args)
         if args[:2] == ["codebuild", "batch-get-builds"]:
-            return {"builds": [{"id": "project:build", "buildStatus": next(statuses)}]}
+            return {"builds": [{"id": "adp-dev-grype-scan:build", "buildStatus": next(statuses)}]}
         return {}
 
     result = reconcile.cleanup_children(tmp_path, {"grype"}, "us-east-1", "state-bucket", aws=aws, sleep=lambda _: None)
@@ -604,14 +604,14 @@ def test_tampered_private_image_artifact_blocks_receipt(tmp_path):
 
 
 def test_missing_sibling_state_still_cleans_recorded_live_child(tmp_path):
-    source_key = "codebuild/src/" + "a" * 40 + "-10-2-grype.zip"
-    write_json(tmp_path / "grype.json", {"build_id": "project:build", "source_key": source_key})
+    source_key = "codebuild/src/adp-dev-grype-scan/" + "a" * 40 + "-10-2-grype.zip"
+    write_json(tmp_path / "grype.json", {"build_id": "adp-dev-grype-scan:build", "source_key": source_key})
     calls = []
 
     def aws(args):
         calls.append(args)
         if args[:2] == ["codebuild", "batch-get-builds"]:
-            return {"builds": [{"id": "project:build", "buildStatus": "IN_PROGRESS" if len([c for c in calls if c[:2] == ["codebuild", "batch-get-builds"]]) == 1 else "STOPPED"}]}
+            return {"builds": [{"id": "adp-dev-grype-scan:build", "buildStatus": "IN_PROGRESS" if len([c for c in calls if c[:2] == ["codebuild", "batch-get-builds"]]) == 1 else "STOPPED"}]}
         return {}
 
     result = reconcile.cleanup_children(tmp_path, {"grype", "syft"}, "us-east-1", "state-bucket", aws=aws, sleep=lambda _: None)
@@ -643,7 +643,7 @@ def _codebuild_idempotency_token(tmp_path: Path, **overrides: str) -> str:
         "STATE_BUCKET": "state-bucket",
         "AWS_REGION": "us-east-1",
         "PROJECT_NAME": "adp-dev-first-build",
-        "SOURCE_KEY": "codebuild/src/" + "a" * 40 + "-10-1-build.zip",
+        "SOURCE_KEY": "codebuild/src/adp-dev-grype-scan/" + "a" * 40 + "-10-1-build.zip",
         "SOURCE_REVISION": "a" * 40,
         "ENV_VARS": '"name=IMAGE_TAG,value=abc,type=PLAINTEXT"',
         "CHILD_STATE_URI": "",
@@ -676,7 +676,7 @@ def test_codebuild_idempotency_token_is_retry_stable_and_request_unique(tmp_path
 
     changed_requests = [
         {"PROJECT_NAME": "adp-dev-second-build"},
-        {"SOURCE_KEY": "codebuild/src/" + "b" * 40 + "-10-1-build.zip"},
+        {"SOURCE_KEY": "codebuild/src/adp-dev-grype-scan/" + "b" * 40 + "-10-1-build.zip"},
         {"SOURCE_REVISION": "b" * 40},
         {"ENV_VARS": '"name=IMAGE_TAG,value=def,type=PLAINTEXT"'},
     ]

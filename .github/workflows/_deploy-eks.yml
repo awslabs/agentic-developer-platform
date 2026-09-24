@@ -13,27 +13,43 @@ on:
         required: false
         type: string
         default: adp-dev-eks
-    secrets:
-      AWS_ROLE_ARN:
-        required: true
 
 jobs:
   deploy:
-    runs-on: arc-runner-org
+    permissions:
+      contents: read
+      id-token: write
+    if: github.ref == 'refs/heads/main'
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-dev
     steps:
       - uses: actions/checkout@v7
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Update kubeconfig
-        run: aws eks update-kubeconfig --name ${{ inputs.cluster_name }} --region us-east-1
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region us-east-1
 
       - name: Deploy
         working-directory: modules/${{ inputs.module }}/k8s
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          MODULE: ${{ inputs.module }}
         run: |
-          kubectl apply -f . -n ${{ inputs.namespace }}
-          kubectl rollout status deployment/${{ inputs.module }} -n ${{ inputs.namespace }} --timeout=300s
+          kubectl apply -f . -n "$NAMESPACE"
+          kubectl rollout status "deployment/$MODULE" -n "$NAMESPACE" --timeout=300s

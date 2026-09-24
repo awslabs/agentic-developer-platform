@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - arc-runner-org
+    - arc-runner-deployment

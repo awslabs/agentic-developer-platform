@@ -89,21 +89,8 @@ resource "aws_eks_access_entry" "runner" {
 # Fine-grained K8s RBAC is enforced via kubernetes_role resources below.
 # =============================================================================
 
-resource "aws_eks_access_policy_association" "runner_edit" {
-  cluster_name  = aws_eks_cluster.main.name
-  principal_arn = aws_iam_role.runner.arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+# Deployment access is owned by platform/automation-infra.
 
-  access_scope {
-    type       = "namespace"
-    namespaces = ["adp-gateway", "adp-gateway-agents", "adp-agents", "arc-systems", "arc-runners", "agent-context", "keda"]
-  }
-
-  depends_on = [aws_eks_access_entry.runner]
-}
-
-# Namespace-manage ClusterRole — only operation that legitimately requires
-# cluster-scope: creating/deleting specific named namespaces.
 resource "kubernetes_cluster_role" "runner_namespace_manage" {
   metadata {
     name = "adp-runner-namespace-manage"
@@ -141,8 +128,8 @@ resource "kubernetes_cluster_role_binding" "runner_namespace_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }

@@ -139,32 +139,49 @@ class ManifestViolation(Exception):
 
 
 def _iter_documents(directory: Path):
-    files = [p for p in sorted(directory.iterdir()) if p.suffix in {".yaml", ".yml"}]
+    # rglob, not iterdir (A18, #5674).
+    #
+    # iterdir() yields only the TOP level, so a manifest in a subdirectory of the
+    # rendered set was never validated — while the rollout lane's apply step
+    # globs `/tmp/rendered/*` and `kubectl apply -f <dir>` reads the files inside
+    # a directory it is handed. A ClusterRoleBinding to cluster-admin placed one
+    # level down therefore got applied, and this check printed
+    # "RBAC scope ... conform" and exited 0 over it. That is the same class of
+    # false green as the digest-only check this guard replaced: it reported on
+    # the subset it happened to look at as though that were the whole set.
+    #
+    # The path reported below is now relative to the rendered directory rather
+    # than a bare name, so two same-named files in different subdirectories are
+    # distinguishable in a violation message.
+    files = sorted(
+        p for p in directory.rglob("*") if p.is_file() and p.suffix in {".yaml", ".yml"}
+    )
     for path in files:
+        name = path.relative_to(directory).as_posix()
         text = path.read_text(encoding="utf-8")
         placeholder = PLACEHOLDER_RE.search(text)
         if placeholder:
             # kubectl accepts a namespace or annotation value of "REPLACE_WITH_..." without
             # complaint, so an unsubstituted placeholder is applied literally.
             raise ManifestViolation(
-                f"{path.name}: the placeholder {placeholder.group(0)} survived rendering. It "
+                f"{name}: the placeholder {placeholder.group(0)} survived rendering. It "
                 f"would be applied literally."
             )
         try:
             documents = list(yaml.safe_load_all(text))
         except yaml.YAMLError as exc:
             raise ManifestViolation(
-                f"{path.name}: not valid YAML after rendering: {exc}"
+                f"{name}: not valid YAML after rendering: {exc}"
             ) from exc
         for index, doc in enumerate(documents):
             if doc is None:
                 continue
             if not isinstance(doc, dict):
                 raise ManifestViolation(
-                    f"{path.name} document {index}: rendered to a {type(doc).__name__}, not a "
+                    f"{name} document {index}: rendered to a {type(doc).__name__}, not a "
                     f"Kubernetes object"
                 )
-            yield path.name, doc
+            yield name, doc
 
 
 def _pod_spec(doc: dict) -> dict | None:

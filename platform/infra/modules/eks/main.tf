@@ -311,7 +311,8 @@ locals {
 }
 
 resource "aws_iam_role" "gateway_service_irsa" {
-  name = "${var.name_prefix}-role-gateway-service"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-role-gateway-service"
 
   # Trust policy allows the gateway service account to assume this role via IRSA.
   # Issue #33: The gateway pods may run in either the "bedrockgw" namespace
@@ -757,8 +758,9 @@ resource "aws_security_group_rule" "cluster_ingress_node_https" {
 
 # IAM role for the CloudWatch Observability addon (IRSA)
 resource "aws_iam_role" "cloudwatch_observability" {
-  count = var.enable_container_insights ? 1 : 0
-  name  = "${var.name_prefix}-role-cw-observability"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  count                = var.enable_container_insights ? 1 : 0
+  name                 = "${var.name_prefix}-role-cw-observability"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

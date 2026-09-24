@@ -167,8 +167,9 @@ resource "aws_s3_bucket_policy" "logs" {
 }
 
 resource "aws_iam_role" "delivery" {
-  name = "${var.name_prefix}-bedrock-logging-${local.region}"
-  tags = local.tags
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-bedrock-logging-${local.region}"
+  tags                 = local.tags
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

@@ -1,0 +1,44 @@
+name: Automation trust contracts
+on:
+  pull_request:
+    paths:
+      - .github/workflows/**
+      - .github/actions/trusted-*/**
+      - modules/agent-factory/infra/**
+      - modules/agent-factory/runner-infra/**
+      - platform/automation-infra/**
+      - platform/infra/modules/codebuild/**
+      - modules/domain-apps/cyber/ci/**
+      - modules/domain-apps/cyber/codebuild/**
+  workflow_dispatch:
+concurrency:
+  group: automation-trust-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  policies-and-workflows:
+    runs-on: arc-runner-org
+    timeout-minutes: 20
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.2
+      - name: Verify workflow trust without cloud access
+        run: |
+          python -m venv /tmp/automation-contracts
+          /tmp/automation-contracts/bin/pip install pytest==8.3.5 PyYAML==6.0.2
+          /tmp/automation-contracts/bin/python -m pytest -q platform/automation-infra/tests
+      - name: Verify rendered IAM policies using mocked AWS providers
+        run: |
+          set -euo pipefail
+          for module in modules/agent-factory/infra/modules/runner-runtime-policy modules/agent-factory/infra/modules/runner-iam platform/infra/modules/codebuild platform/automation-infra; do
+            terraform -chdir="$module" init -backend=false -input=false
+            terraform -chdir="$module" test -no-color
+          done

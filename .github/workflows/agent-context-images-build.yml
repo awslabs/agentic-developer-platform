@@ -87,9 +87,13 @@ jobs:
   build:
     name: Build ${{ matrix.image }}
     needs: detect-changes
-    if: ${{ fromJson(needs.detect-changes.outputs.matrix).image[0] != null }}
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main' && (fromJson(needs.detect-changes.outputs.matrix).image[0] != null)
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-build-dev
     permissions:
+      id-token: write
       contents: read
     strategy:
       fail-fast: false
@@ -97,6 +101,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted build identity
+        uses: ./.github/actions/trusted-build
+        with:
+          role_arn: ${{ vars.ADP_BUILD_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config

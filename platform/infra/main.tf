@@ -146,6 +146,7 @@ locals {
     # attempting to create the same EKS entry when that role runs an upgrade.
     if(var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn) &&
     arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-release-deploy" &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-trusted-deployment" &&
     arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-authority-worker-role" &&
     (!var.agent_legacy_worker_admin_retired || arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-scaledjob-role")
   ]
@@ -193,7 +194,8 @@ module "networking" {
 # Base IAM Roles (cluster + node group service roles)
 # -----------------------------------------------------------------------------
 module "iam" {
-  source = "./modules/iam"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/iam"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -215,7 +217,8 @@ module "iam" {
 # EKS Cluster (Auto Mode)
 # -----------------------------------------------------------------------------
 module "eks" {
-  source = "./modules/eks"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/eks"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -327,6 +330,7 @@ module "codebuild" {
   security_scans_bucket_arn  = module.security_scans.bucket_arn
   security_scans_bucket_name = module.security_scans.bucket_name
   account_id                 = data.aws_caller_identity.current.account_id
+  aws_region                 = var.aws_region
   ecr_registry               = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
