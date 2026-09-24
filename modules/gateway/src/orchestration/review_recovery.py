@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import time
+import traceback
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
@@ -622,8 +623,22 @@ async def recover_stalled_stories(factory, *, resolver=None):
         except Exception as error:
             # A provider or policy failure never disables the other flows' tick.
             # Store only a bounded code, never provider exception text/credentials.
+            from httpx import HTTPStatusError
+
             code = error.reason if isinstance(error, CycleBlockedError) else "recovery_evidence_unavailable"
-            logging.getLogger(__name__).info("stalled review recovery blocked node=%s code=%s", node_id, code)
+            if isinstance(error, HTTPStatusError):
+                code = f"recovery_provider_http_{error.response.status_code}"
+            frames = traceback.extract_tb(error.__traceback__)
+            location = f"{frames[-1].name}:{frames[-1].lineno}" if frames else "unknown"
+            # Lambda installs a WARNING root handler. Keep the failure visible
+            # without printing provider bodies, request headers, or exception text.
+            logging.getLogger(__name__).warning(
+                "stalled review recovery blocked node=%s code=%s error_type=%s location=%s",
+                node_id,
+                code,
+                type(error).__name__,
+                location,
+            )
             async with factory() as session:
                 node = await session.get(OrchestrationNode, node_id)
                 if node is not None:

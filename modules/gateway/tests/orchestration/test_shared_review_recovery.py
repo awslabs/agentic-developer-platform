@@ -320,7 +320,10 @@ async def test_no_pr_creates_draft_from_checkpoint_and_reconciles_lost_response(
     monkeypatch.setattr("src.orchestration.pr_bindings.resolve_registration_target", AsyncMock(return_value=target))
     monkeypatch.setattr("src.orchestration.review_recovery.report_exit_resolver", lambda row: recovery.resolver)
     monkeypatch.setattr("src.knowledge.github_app_service.resolve_tenant_app_credentials", AsyncMock(return_value=("app", "key")))
-    monkeypatch.setattr("src.knowledge.github_app_service.mint_installation_token_with_expiry", AsyncMock(return_value=("fake-token", None)))
+    monkeypatch.setattr(
+        "src.knowledge.github_app_service.mint_installation_token_with_expiry",
+        AsyncMock(side_effect=lambda *a, **kw: ("readable-refs" if kw["permissions"].get("contents") == "read" else "unreadable-refs", None)),
+    )
     monkeypatch.setattr(
         "src.orchestration.pr_identity.resolve_pr_identity",
         AsyncMock(return_value=PullRequestIdentity(123, "PR_recovery", protocol.REPO, 78, ctx.head)),
@@ -340,6 +343,14 @@ async def test_no_pr_creates_draft_from_checkpoint_and_reconciles_lost_response(
             return httpx.Response(200, json=body, request=httpx.Request("GET", "https://api.github.com" + path))
 
         async def post(self, path, **kwargs):
+            # GitHub refuses PR creation when the token cannot read both refs,
+            # even with pull_requests:write ("not all refs are readable").
+            if kwargs["headers"]["Authorization"] != "Bearer readable-refs":
+                httpx.Response(
+                    422,
+                    json={"message": "not all refs are readable"},
+                    request=httpx.Request("POST", "https://api.github.com" + path),
+                ).raise_for_status()
             # The intent must be committed and visible on another connection
             # before GitHub receives a write.
             async with ctx.factory() as other:
