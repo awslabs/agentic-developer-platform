@@ -4,7 +4,7 @@ ADP remote control lets an authorized human or agent pause, resume, steer, or gr
 
 This is the current design and integration entry point for [epic #3959](https://github.com/aws-e/adp/issues/3959), including work that is not yet delivered. **Read the implementation status before depending on a capability.** A merged implementation, a deployed revision, and a passed live evaluation are three different milestones.
 
-**Reviewed:** September 24, 2026. Merged source baseline: [`4db839337`](https://github.com/aws-e/adp/tree/4db839337). The abort recovery described below is part of the S4 integration branch until its owning PR merges. The status below is a dated snapshot; linked issues and deployed evidence determine subsequent readiness.
+**Reviewed:** September 24, 2026. Merged source baseline: [`124ce31fbc`](https://github.com/aws-e/adp/tree/124ce31fbc871470829229ee54907048b0d4d75c). Graceful abort and its recovery merged in [PR #5858](https://github.com/aws-e/adp/pull/5858); deployment and live acceptance remain outstanding. The status below is a dated snapshot; linked issues and deployed evidence determine subsequent readiness.
 
 ## 1. Scope and current readiness
 
@@ -17,15 +17,15 @@ The target is hosted webhook/SQS/KEDA workers. Claude Agent SDK is the first pro
 | Pause/resume | S2 #3961 merged; Wave 2 #3968 still unaccepted | Source exists. End-to-end operational readiness is not established. |
 | Human command authority | #5222 source exists; additional refusal tests merged in #5828; issue remains open | Use the signed human-session path, not direct worker calls. Live acceptance is outstanding. |
 | Aborted vocabulary and counters | S5 #3964 merged | The status exists; that alone does not implement graceful abort. |
-| Graceful abort | S4 #3963 under development/review | Do not depend on an enabled abort capability on main. Failure recovery and terminal reconciliation remain under review. |
-| Steering | S6 #3965 pending abort dependency | Contract is defined; full worker integration is not delivered. |
+| Graceful abort | S4 #3963 source merged in PR #5858; live acceptance pending | Reuse signed abort receipts, protected finalization and retained-pod recovery. Source availability does not establish operational readiness. |
+| Steering | S6 #3965 abort source dependency satisfied; implementation pending | Contract is defined; full worker integration is not delivered. |
 | Dashboard controls | S7 #3966 pending runtime acceptance | API/state contract is reusable; the completed dashboard flow is not delivered. |
 | Dashboard explanations | S8 #4989; evaluation #5827 assigned | Planned follow-up after dashboard acceptance. |
 | Timeout evidence producer | #5841 merged as `f304ac1f14939dc884b07180bd56d1ddce39bbe2` | Test tooling is delivered; W2-05 live acceptance is still outstanding. |
 | Protected evaluation fixture and edge | #5836 edge merged in PR #5838; #3968 fixture integration still under development/review | The staged deployment below is the intended integration; its scripts are not yet accepted as an executable end-to-end path. |
 | General protected-worker rollout | #5195 open | Ordinary workload enablement remains gated. |
 
-At the source baseline, both gateway and worker implemented-verb sets contain **pause and resume only**. Every request is still subject to authorization, independent feature flags, adapter support, and current availability. Ordinary control flags remain off in the active epic rollout. There is no claim that all four controls are operational.
+At the source baseline, both gateway and worker implemented-verb sets contain **pause, resume and abort**. Every request is still subject to authorization, independent feature flags, adapter support, and current availability. Ordinary control flags remain off in the active epic rollout. There is no claim that all four controls are operational.
 
 Out of scope: chat/ARC integration, a new orchestration engine, durable cross-pod command recovery, cross-cluster control transport, and additional production adapters. Pause is not a rollback, process suspension, or token-saving guarantee.
 
@@ -142,13 +142,13 @@ Use one run-level bounded FIFO. Mid-tool or paused submissions remain pending un
 
 Reconnect only pending commands after an in-process retry. Never replay confirmed or ambiguously delivered input. Abort cancels queued input; normal completion drains or cancels deterministically. Update acknowledgements at actual handoff, not enqueue time.
 
-### Graceful abort — required behavior, implementation under review
+### Graceful abort — merged implementation, live acceptance pending
 
 Set `abort_requested`, stop new admission, cancel a held pause without releasing held work, and wait for admitted work to settle. Typed intentional cancellation must prevent another attempt from starting; it must not enter generic retry handling.
 
 The existing finalizer owns terminal reporting and SQS acknowledgement. The intended successful outcome includes an aborted terminal row, completed time, cancelled check conclusion, one final comment, revoked run control and confirmed queue acknowledgement. Bound retries by the remaining execution/visibility budget. Never claim successful acknowledgement when deletion was not confirmed.
 
-The current S4 branch adds durable accepted-abort intent and a signed receipt bound to the run and command. Intent is evidence that abort was accepted, **not that the original worker is quiescent**. Protected bootstrap already refuses a replacement pod for an active bound execution; redundant abort-specific admission checks are not required to establish that refusal. Original-pod credential renewal must remain possible while it finalizes.
+The merged S4 implementation records durable accepted-abort intent and a signed receipt bound to the run and command. Intent is evidence that abort was accepted, **not that the original worker is quiescent**. Protected bootstrap already refuses a replacement pod for an active bound execution; redundant abort-specific admission checks are not required to establish that refusal. Original-pod credential renewal must remain possible while it finalizes.
 
 The S4 integration retains the authenticated target pod with the `adp.aws/abort-terminal-report` finalizer **before** recording intent or issuing the receipt. The gateway checks pod UID, service account and resource version; it preserves other controllers' metadata. Retention failure returns a retryable error without an abort receipt. Intent writes and receipt retries require an active execution, preventing a delayed request from recording an abort after retirement.
 
@@ -206,7 +206,7 @@ flowchart LR
 
 The edge depends on the gateway Service; the worker depends on the edge. A shared ownership ledger binds account, region, run, nonce and Kubernetes UIDs across stages. Before continuing, verify original resource instances, both gateway and worker policies, edge identity and network reachability. Receipts must match the producer's real output schema and exact API host/region/stage/path. Operator credentials must not enter the worker. Transfer expected identity to the bound worker, execute there, and return artifacts tied to that execution. A local path or an idle Job is not evidence of that handoff.
 
-This lifecycle is still under review in #3968/#5836. Open findings include worker-policy observation, endpoint binding, protected composition and executable handoff/cleanup. The sequence above is the required integration, not an assertion that the current scripts can already complete it.
+The edge prerequisite #5836 is merged; the composed fixture lifecycle is still under development and review in #3968. Open findings include worker-policy observation, endpoint binding, protected composition and executable handoff/cleanup. The sequence above is the required integration, not an assertion that the current scripts can already complete it.
 
 Wave 2 requires all W2-01 through W2-10 checks and verified cleanup. W2-03/04/05 require real Claude tool-side-effect evidence. The merged timeout producer uses the same production heartbeat emitter and actual pause gate; launcher-scraped heartbeats cannot backfill missing experiment observations. Its bounded watchdog experiment records the injected completion-clock offset, proves suppression during pause and firing after release. Pod/container survival and exit observations still require authoritative launcher evidence.
 
