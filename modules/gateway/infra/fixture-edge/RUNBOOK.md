@@ -484,9 +484,9 @@ Do not edit the receipt; it is the record of what was reviewed, not a config fil
 ## 4.5 Hand #3968's fixture NetworkPolicy the ALB's traffic source
 
 **Do this before step 6, not after a failed step 6.** Skipping it produces a fixture
-that plans cleanly, reports its ALB targets healthy, and then refuses every request
-at the pod — which reads as "the protected worker failed its bootstrap", the exact
-conclusion Wave 2 exists to reach on its own merits.
+that plans cleanly but blocks both ALB health checks and requests at the pod.
+With IP targets these use the same pod port; targets become unhealthy and worker
+bootstrap fails. Establish network reachability before evaluating the worker.
 
 **Why it is needed.** #3968's `render_fixture.render_policies` gives the fixture
 gateway one ingress rule, and it admits sources **by namespace**:
@@ -557,12 +557,12 @@ two changes compose through that one output value. Neither side can widen the ot
 a rule built from this value admits exactly these addresses, on exactly the fixture
 gateway's pods, on exactly the container port.
 
-**Re-read it if the ALB is recreated.** The addresses are the ALB's *current*
-interfaces; one gained (a subnet or AZ added) makes the list stale. Staleness is safe
-in the direction that matters — a missing address is a denial, never an admission —
-but it is a denial that looks like a broken handshake, so re-run the output rather
-than trusting a value pasted from an earlier run. The `run_nonce` in the output is
-there to make a pasted stale value visibly not this run's.
+**Refresh before execution.** Observe the ALB's current interfaces from AWS and
+update/read back the matching owned NetworkPolicy before starting the worker.
+A missing new address denies traffic; a retired address can be reassigned and
+leave unintended access. A saved Terraform output and matching `run_nonce` do
+not prove freshness. Remove the owned allowance during cleanup and verify the
+resource instance using the ownership ledger.
 
 ---
 

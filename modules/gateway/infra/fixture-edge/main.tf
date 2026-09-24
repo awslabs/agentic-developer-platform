@@ -185,13 +185,10 @@ data "aws_vpc_security_group_rule" "reachability" {
 # belong to the load balancer and to no pod. So the policy admits exactly the
 # sources a pure in-cluster harness uses and denies the edge this component builds.
 #
-# That combination fails in the worst available way. The Terraform plan applies, the
-# ALB reports its targets healthy (the ALB's health check probes the pod on the
-# container port and is NOT the flow the policy blocks — health checks and request
-# traffic take the same path here, so a reader cannot even use "targets healthy" as
-# evidence), and the worker's bootstrap handshake never completes. The run reads as
-# "the protected worker failed its bootstrap", which is the conclusion Wave 2 exists
-# to establish or refute, arrived at from a networking artefact.
+# The Terraform plan can apply while the policy denies both health checks and
+# requests: with IP targets both reach the same pod port from the ALB interfaces.
+# The target becomes unhealthy and the worker cannot bootstrap. Establish this
+# network path before attributing a failed handshake to worker behavior.
 #
 # WHY THE ANSWER IS AN OBSERVATION AND NOT A SELECTOR
 # ---------------------------------------------------
@@ -223,11 +220,11 @@ data "aws_vpc_security_group_rule" "reachability" {
 # attribute of the discovered load balancer, so the filter cannot be pointed at
 # another ALB by a typo in a variable.
 #
-# A caveat is recorded rather than hidden: these addresses belong to the ALB's
-# CURRENT interfaces. An ALB can gain an interface (a subnet added, an AZ scaled)
-# and the set would then be stale. That is safe in the direction that matters — a
-# stale entry is a denial, not an admission — but it means the output must be
-# re-read if the fixture ALB is recreated, which the RUNBOOK says.
+# These addresses describe the ALB's current interfaces. A missing new address
+# denies traffic; a retired address can be reassigned and leave an unintended
+# allowance. Refresh the live observation and matching owned policy before each
+# execution, and remove the owned allowance during cleanup. A saved Terraform
+# output or matching run nonce alone does not prove address freshness.
 data "aws_network_interfaces" "fixture_alb" {
   count = local.enabled ? 1 : 0
 
@@ -544,10 +541,10 @@ resource "terraform_data" "run_binding_gate" {
         flows, and then it is a timeout. The previous revision checked only the
         egress side, so this exact state passed the gate.
 
-        Fix by pointing the fixture ALB at a group that already admits the link —
-        in dev the shared backend group does, which is why fixture-alb.yaml reuses
-        it. Do NOT add a rule to a shared group: #5836 forbids it and this
-        component cannot do it.
+        Select a group composition that admits the link and also passes the
+        listener isolation check across every attached group. Do NOT add a rule
+        to a shared group. If no reusable composition qualifies, use a separately
+        reviewed disposable link/group composition.
 
         Inspect the rules this gate read, read-only:
           aws ec2 describe-security-group-rules \

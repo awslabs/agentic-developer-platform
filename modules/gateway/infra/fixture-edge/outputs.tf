@@ -113,10 +113,9 @@ output "fixture_alb_network_policy_source" {
     WHY THIS IS NEEDED. The fixture gateway policy's only ingress rule admits pods
     by namespaceSelector (adp-gateway, adp-agents). With target-type `ip` the ALB
     connects from its OWN network interfaces, which belong to no pod and are in no
-    namespace, so that rule does not admit this edge. The plan applies, the ALB
-    reports its targets healthy, and the worker's bootstrap handshake never
-    completes — reported as "the protected worker failed", which is the very
-    question Wave 2 is answering.
+    namespace, so that rule does not admit this edge. The policy blocks both
+    health checks and requests to IP targets on the pod port. Targets become
+    unhealthy and the worker cannot bootstrap; establish the network path first.
 
     HOW TO USE IT. Add ONE ingress rule to the FIXTURE gateway policy (the
     run-scoped one #3968 renders — never the ordinary gateway's):
@@ -131,10 +130,10 @@ output "fixture_alb_network_policy_source" {
     Do NOT widen it to the subnet CIDR: both ordinary gateway ALBs share a subnet
     with this one, so a subnet rule would admit production's edge to the fixture.
 
-    RE-READ THIS IF THE FIXTURE ALB IS RECREATED. These are the ALB's CURRENT
-    interfaces. An ALB that gains one (a subnet or AZ added) makes the list stale.
-    Staleness is safe in the direction that matters — a missing address is a denial,
-    not an admission — but it is a denial that looks like a broken handshake.
+    Refresh the live interface observation and matching owned policy before
+    execution. New addresses missing from the policy deny traffic; retired
+    addresses can be reassigned and leave unintended access. Saved output and
+    a matching nonce do not prove freshness. Remove owned allowances on cleanup.
 
     Addresses are not secret.
   EOT
