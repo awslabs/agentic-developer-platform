@@ -1375,17 +1375,45 @@ def check_manifest(results: Results) -> None:
         group="manifest",
     )
 
+    # Issue #5795 (T2): the runnable set grows as stories land, so this is an
+    # explicit roster rather than a prefix rule. Equality, not a subset check —
+    # a story that flips a criterion to "runnable" without registering it here
+    # would otherwise silently widen what the wave claims to prove, which is the
+    # same failure as leaving a criterion unregistered. Add a prefix here in the
+    # commit that makes its commands actually run.
     runnable = sorted(
         cid for cid, entry in criteria.items() if entry["command_status"] == "runnable"
     )
+    implemented_prefixes = ("V0-", "T0-", "T2-")
     expected_runnable = sorted(
-        cid for cid in criteria if cid.startswith(("V0-", "T0-"))
+        cid for cid in criteria if cid.startswith(implemented_prefixes)
     )
     results.record(
-        "only the V0 validator and T0 criteria are runnable at this wave",
+        "exactly the implemented stories' criteria are runnable at this wave",
         runnable == expected_runnable,
         f"runnable: {runnable}",
         ["T0-AC03"],
+        group="manifest",
+    )
+
+    # A registered command must name a path that exists. The failure this
+    # prevents is a criterion marked runnable against a test file that was
+    # renamed or never added: the manifest reads as covered, and nothing runs.
+    missing_targets = []
+    for cid, entry in criteria.items():
+        if entry["command_status"] != "runnable":
+            continue
+        for token in entry["command"].split():
+            candidate = token.split("::", 1)[0]
+            if "/" not in candidate or candidate.startswith("-"):
+                continue
+            if not (REPO_ROOT / candidate).exists():
+                missing_targets.append(f"{cid}:{candidate}")
+    results.record(
+        "every runnable command points at a path that exists",
+        not missing_targets,
+        f"missing targets: {missing_targets[:6]}",
+        ["T0-AC03", "V0-08"],
         group="manifest",
     )
 

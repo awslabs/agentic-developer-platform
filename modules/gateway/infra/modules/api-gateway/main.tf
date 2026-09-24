@@ -417,6 +417,40 @@ resource "aws_api_gateway_rest_api" "main" {
             }
           }
         }
+      } : {},
+      # Issue #5795 (T2): POST /v1/tasks — Lambda proxy to the ingress Lambda.
+      #
+      # An explicit path with a single explicit method, which is what keeps this
+      # additive. API Gateway prefers an explicit resource over /{proxy+}, so
+      # this moves POST /v1/tasks off the pod path and changes the resolution of
+      # nothing else — including GET /v1/tasks and every other /v1/* path, which
+      # continue to reach the gateway pod through /{proxy+} exactly as before.
+      var.enable_task_api_route && var.task_api_lambda_invoke_arn != "" ? {
+        "/v1/tasks" = {
+          post = {
+            "x-amazon-apigateway-auth" = { type = "NONE" }
+            x-amazon-apigateway-integration = {
+              type                = "aws_proxy"
+              httpMethod          = "POST"
+              uri                 = var.task_api_lambda_invoke_arn
+              passthroughBehavior = "when_no_match"
+              contentHandling     = "CONVERT_TO_TEXT"
+              # Submission is an admission decision plus one internal call, not
+              # model work. 29s is API Gateway's ceiling for a Lambda proxy; the
+              # Lambda's own admission budget is well inside it, so a stuck
+              # gateway surfaces as a retryable refusal the Lambda chose rather
+              # than a 504 whose body nothing controls.
+              timeoutInMillis = 29000
+              # Issue #5653: BLANK both headers. This route is auth NONE, so a
+              # client-supplied X-Caller-Identity would otherwise be forwarded
+              # verbatim. The Lambda does not read it — it derives the caller
+              # token only from Authorization — but a forged identity header
+              # arriving at any auth-NONE integration is the pattern that check
+              # exists to prevent, and the postcondition below enforces it.
+              requestParameters = local.blank_caller_identity
+            }
+          }
+        }
       } : {}
     )
     }) : jsonencode({
@@ -473,23 +507,40 @@ resource "aws_api_gateway_rest_api" "main" {
   # Reading `self.body` checks the ACTUAL rendered document — after the
   # conditionals and merges — so it cannot drift from what is deployed the way a
   # parallel list of expected paths would.
+  #
+  # Issue #5795: the check iterates every METHOD key under each path, not just
+  # `x-amazon-apigateway-any-method`. It originally looked only at the any-method
+  # key, which was complete when every route used one — but it meant the first
+  # explicit method added (`post` on /v1/tasks) would have been skipped rather
+  # than checked, passing the invariant vacuously. A check that silently stops
+  # applying to new routes is worse than no check, because the deploy still goes
+  # green. Iterating the method map keeps it applying to any route shape.
   lifecycle {
     postcondition {
-      # The MOCK placeholder body (no ALB yet) has no integrations to the pod at
-      # all, so the invariant is vacuous there and the check is skipped.
-      condition = alltrue([
-        for path_key, path_item in try(jsondecode(self.body).paths, {}) :
-        alltrue([
-          for required_header in [
-            "integration.request.header.X-Caller-Identity",
-            "integration.request.header.X-Adp-Edge-Provenance",
-            ] : contains(
-            keys(try(path_item["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].requestParameters, {})),
-            required_header
-          )
-        ])
-        if can(path_item["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"])
-      ])
+      # MOCK integrations are exempt, and that exemption is now stated rather
+      # than incidental. The first-pass placeholder body (no ALB yet) serves
+      # /status from a MOCK integration: API Gateway answers it itself, so there
+      # is no backend for a header to be forwarded to and nothing to forge an
+      # identity at. Before the method-map widening above, that route was skipped
+      # only because it uses an explicit `get` — widening the check without this
+      # exemption would have failed every first-pass deploy.
+      condition = alltrue(flatten([
+        for path_key, path_item in try(jsondecode(self.body).paths, {}) : [
+          for method_key, method_item in path_item : [
+            for required_header in [
+              "integration.request.header.X-Caller-Identity",
+              "integration.request.header.X-Adp-Edge-Provenance",
+              ] : contains(
+              keys(try(method_item["x-amazon-apigateway-integration"].requestParameters, {})),
+              required_header
+            )
+          ]
+          # Only method objects carry an integration. Anything else under a path
+          # (a `parameters` list, for example) is not a route and is skipped.
+          if can(method_item["x-amazon-apigateway-integration"]) &&
+          try(method_item["x-amazon-apigateway-integration"].type, "") != "MOCK"
+        ]
+      ]))
       error_message = <<-EOT
         Issue #5653: every API Gateway route must map both caller identity and edge provenance headers.
 
@@ -760,6 +811,30 @@ resource "aws_lambda_permission" "broker_api_gateway" {
   function_name = var.broker_lambda_function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# =============================================================================
+# Task API Lambda Permission (Issue #5795, T2)
+# =============================================================================
+# Scoped to exactly POST /v1/tasks, not the `/*/*` the broker permission above
+# uses. That matters because this is the *ingress* Lambda: the same function
+# also serves the GitHub webhook route, which authenticates by HMAC over the
+# body. A `/*/*` grant would let any route on this API — present or added later
+# — invoke it, and a request arriving through some other path would reach the
+# ingress handler's router carrying whatever `resource` value that path
+# produced. Naming the one method and path keeps the grant matched to the one
+# route this module actually publishes.
+
+resource "aws_lambda_permission" "task_api_api_gateway" {
+  # Same plan-time-known flag rationale as the broker permission above: the
+  # invoke ARN is computed, so it cannot drive a count.
+  count = var.enable_task_api_route && var.task_api_lambda_function_name != "" ? 1 : 0
+
+  statement_id  = "AllowAPIGatewayInvokeTaskSubmit"
+  action        = "lambda:InvokeFunction"
+  function_name = var.task_api_lambda_function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/POST/v1/tasks"
 }
 
 # =============================================================================

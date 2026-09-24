@@ -487,8 +487,8 @@
         "fixtures/valid/submit-request.json",
         "fixtures/valid/submit-response.json"
       ],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py",
+      "command_status": "runnable"
     },
     "T2-AC02": {
       "title": "Unauthenticated/expired/revoked/wrong-scope calls and forged tenant/service names produce the specified denial with no dispatch",
@@ -504,8 +504,8 @@
         "fixtures/invalid/submit-request-nonfinite-number.json",
         "fixtures/valid/error-payload-too-large.json"
       ],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py",
+      "command_status": "runnable"
     },
     "T2-AC03": {
       "title": "Idempotent retries return the existing handle and storage/authority failure cannot return false acceptance",
@@ -514,8 +514,8 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py",
+      "command_status": "runnable"
     },
     "T2-AC04": {
       "title": "Task-disabled and task-import-failure cases leave existing handler fixtures functional",
@@ -524,8 +524,8 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+      "command_status": "runnable"
     },
     "T2-AC05": {
       "title": "Lambda and gateway agree on principal mapping; the external caller needs no worker/pod credentials",
@@ -534,8 +534,8 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+      "command_status": "runnable"
     },
     "T3-AC01": {
       "title": "Injected failures before/after record commit, queue send and acknowledgement recover without requiring another client request",
@@ -919,7 +919,7 @@
       "command_status": "not_implemented"
     },
     "V0-01": {
-      "title": "O1–O8 each have a concrete answer, rationale, evidence and downstream owner. Any departure from D01–D18 has an explicit accepted decision; unresolved choices are BLOCKED",
+      "title": "O1\u2013O8 each have a concrete answer, rationale, evidence and downstream owner. Any departure from D01\u2013D18 has an explicit accepted decision; unresolved choices are BLOCKED",
       "owner": "agent-developer (contract baseline)",
       "wave": "wave 1 - contract implementation",
       "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
@@ -1071,7 +1071,7 @@
       "command_status": "runnable"
     },
     "V0-06": {
-      "title": "A coverage manifest maps every existing T0–T8 and V1–V5 acceptance ID, plus V0-01–V0-08, to its owner, wave, evidence lane and fixture/test responsibility. No original criterion is removed, weakened, silently deferred or counted as passing from a skipped test",
+      "title": "A coverage manifest maps every existing T0\u2013T8 and V1\u2013V5 acceptance ID, plus V0-01\u2013V0-08, to its owner, wave, evidence lane and fixture/test responsibility. No original criterion is removed, weakened, silently deferred or counted as passing from a skipped test",
       "owner": "agent-developer (contract baseline)",
       "wave": "wave 1 - contract implementation",
       "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
