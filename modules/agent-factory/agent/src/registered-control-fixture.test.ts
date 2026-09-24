@@ -44,6 +44,11 @@ describe('registered control fixture with the real runtime and substituted SDK t
       const input = args.attemptInputFactory({ attemptNumber: 1, isResume: false, promptText: args.queryParams.prompt });
       try {
         await args.onAttemptHandle({ attemptNumber: 1, session: { interrupt, close } });
+        const hooks = input.options.hooks;
+        expect(hooks.PreToolUse[0].timeout).toBeGreaterThan(60);
+        const tool = { tool_name: 'Bash', tool_input: { command: 'sleep 2' }, tool_use_id: 'fixture-tool', session_id: 'fixture-session', cwd: dir };
+        await hooks.PreToolUse[0].hooks[0]({ ...tool, hook_event_name: 'PreToolUse' }, 'fixture-tool', { signal: new AbortController().signal });
+        await hooks.PostToolUse[0].hooks[0]({ ...tool, hook_event_name: 'PostToolUse', tool_response: 'done' }, 'fixture-tool', { signal: new AbortController().signal });
         if (withAssistant) yield { type: 'assistant', message: { content: [] } };
         if (fail) throw new Error('transport disconnected');
         yield { type: 'result', subtype: 'success', is_error: false };
@@ -58,6 +63,9 @@ describe('registered control fixture with the real runtime and substituted SDK t
     const report = JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8'));
     expect(report.invocation_id).toBe('invocation-test');
     expect(report.native_acknowledged).toBe(true);
+    const activeCounts = report.events.filter((event: { type: string }) => event.type === 'runtime_active_work').map((event: { count: number }) => event.count);
+    expect(activeCounts).toContain(1);
+    expect(activeCounts.at(-1)).toBe(0);
     const types = report.events.map((event: { type: string }) => event.type);
     expect(types.indexOf('sdk_message')).toBeLessThan(types.indexOf('native_interrupt_requested'));
     expect(types.indexOf('native_interrupt_acknowledged')).toBeLessThan(types.indexOf('sdk_result'));

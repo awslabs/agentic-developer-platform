@@ -3,6 +3,8 @@ import { mkdirSync, writeFileSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { startControlRuntime } from './control-runtime-factory';
 import { resilientQuery } from './utils/resilientQuery';
+import { createWorkerToolHooks } from './developer-checkpoints';
+import { TmpSpillStore } from './utils/spill';
 
 type NativeHandle = { interrupt(): Promise<void>; close(): void };
 type Event = { type: string; at: string; [key: string]: unknown };
@@ -68,7 +70,9 @@ export async function runRegisteredControlFixture(): Promise<number> {
       } },
       maxRetries: 0,
       idleTimeoutMs: 120_000,
-      attemptInputFactory: runtime.adapter.attemptInputFactory(hooks => ({ hooks })),
+      attemptInputFactory: runtime.adapter.attemptInputFactory(pauseHooks => ({
+        hooks: createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(cwd), pauseHooks }),
+      })),
       beforeOutput: () => runtime.gate.waitForOutput(),
       cancellation: runtime.adapter.cancellationSource(),
       idleSuspended: () => runtime.gate.isPauseActive(),
