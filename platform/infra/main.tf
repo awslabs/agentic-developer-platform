@@ -16,9 +16,30 @@ terraform {
   }
 
   required_providers {
+    # AWS >= 6.42.0 is a state-decoding floor, not a feature preference (#5831).
+    #
+    # `~> 5.0` resolves to 5.100.0, the final 5.x release. Provider 5.x publishes
+    # no *resource identity* schema for aws_eks_addon, so once the live state
+    # record carries the identity fields a newer provider writes
+    # (account_id, addon_name, cluster_name, region), Terraform can still plan
+    # but can no longer serialise that state to JSON:
+    #
+    #   Failed to marshal plan to json: error marshaling prior state:
+    #   no resource identity schema found for aws_eks_addon.coredns
+    #
+    # That breaks `terraform show -json <saved-plan>`, which is how a saved plan
+    # is inspected before apply — so the constraint, not the plan, was blocking
+    # scoped-plan review. Note a plain `terraform plan` still reports "no
+    # changes" here, which is why this surfaced only at the JSON-export step.
+    #
+    # 6.42.0 specifically: that release added aws_eks_addon `namespace_config`,
+    # a field already present in the dev state record. Verified empirically with
+    # Terraform 1.14.9 against a representative newer-provider state —
+    # 6.41.0 still fails with the message above; 6.42.0 decodes and exports.
+    # Do not lower this floor below 6.42.0.
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 6.42.0, < 7.0.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
