@@ -97,6 +97,22 @@ class FakeClient:
             "event_id": f"{body['attempt']['run']['task_id']}:1",
         }
 
+    def turn(self, body):
+        number = body["expected_transcript_version"]
+        return {
+            "schema_version": "1.0",
+            "operation_status": "committed",
+            "pending_input_count": 0,
+            "turn": {
+                "task_id": self.bootstrap_response["task_id"],
+                "turn_id": body["request_id"],
+                "turn_number": number,
+                "transcript_version": number + 1,
+                "command_ids": [],
+            },
+            "messages": [],
+        }
+
     def model(self, body):
         self.events.append("model")
         return copy.deepcopy(self.model_response)
@@ -690,3 +706,100 @@ def test_model_receipt_must_match_request_and_confirmed_handoff(
     host = TaskHost(client=FakeClient(bootstrap, [], model_response=receipt))
     with pytest.raises(TaskHostError, match="receipt"):
         host._model(assignment, {}, {"turn_id": turn_id, **request}, 32)
+
+
+def test_host_commits_model_turn_before_provider_call(assignment_and_bootstrap):
+    assignment, _, bootstrap = assignment_and_bootstrap
+    client = FakeClient(bootstrap, [])
+    observed = []
+
+    def turn(body):
+        observed.append(("turn", body["request_id"]))
+        return FakeClient.turn(client, body)
+
+    def model(body):
+        observed.append(("model", body["turn_id"]))
+        return {
+            "schema_version": "1.0",
+            "task_id": assignment.task_id,
+            "turn_id": body["turn_id"],
+            "request_digest": body["request_digest"],
+            "automatic_replay_permitted": False,
+            "operation_status": "confirmed",
+            "handoff": "confirmed",
+            "content": [{"type": "text", "text": "stored"}],
+            "stop_reason": "end_turn",
+        }
+
+    client.turn, client.model = turn, model
+    frame = {
+        "turn_id": str(__import__("uuid").uuid4()),
+        "messages": [{"role": "user", "content": "test"}],
+    }
+    host = TaskHost(client=client)
+    host._model(assignment, {}, frame, 32)
+    assert observed == [("turn", frame["turn_id"]), ("model", frame["turn_id"])]
+
+
+def test_host_delivers_only_committed_command_text_and_retains_turn_id(assignment_and_bootstrap):
+    import io
+    from types import SimpleNamespace
+    from lib.task_protocol import TaskProtocolError
+
+    assignment, _, bootstrap = assignment_and_bootstrap
+    client = FakeClient(bootstrap, [])
+    host = TaskHost(client=client)
+    host._turn_number = 1
+    command_id = str(__import__("uuid").uuid4())
+
+    def turn(body):
+        return {
+            "schema_version": "1.0",
+            "operation_status": "committed",
+            "pending_input_count": 0,
+            "turn": {
+                "task_id": assignment.task_id,
+                "turn_id": body["request_id"],
+                "turn_number": 2,
+                "transcript_version": 3,
+                "command_ids": [command_id],
+            },
+            "messages": [{"command_id": command_id, "text": "Include the timestamp."}],
+        }
+
+    client.turn = turn
+    process = SimpleNamespace(stdin=io.StringIO())
+    host._deliver_input(
+        assignment, {}, process, {"pending_input_count": 1, "cancel_requested": False}
+    )
+    frame = json.loads(process.stdin.getvalue())
+    assert frame["type"] == "turn"
+    assert frame["messages"] == [{"command_id": command_id, "text": "Include the timestamp."}]
+    assert host._pending_turn_id == frame["turn_id"]
+    before = process.stdin.getvalue()
+    host._deliver_input(
+        assignment, {}, process, {"pending_input_count": 1, "cancel_requested": False}
+    )
+    assert process.stdin.getvalue() == before
+    with pytest.raises(TaskProtocolError, match="skipped"):
+        host._model(
+            assignment, {}, {"turn_id": str(__import__("uuid").uuid4()), "messages": []}, 32
+        )
+
+
+def test_host_rejects_turn_text_not_in_committed_membership(assignment_and_bootstrap):
+    from lib.task_protocol import TaskProtocolError
+
+    assignment, _, bootstrap = assignment_and_bootstrap
+    client = FakeClient(bootstrap, [])
+
+    def turn(body):
+        result = FakeClient.turn(client, body)
+        result["messages"] = [
+            {"command_id": str(__import__("uuid").uuid4()), "text": "uncommitted"}
+        ]
+        return result
+
+    client.turn = turn
+    with pytest.raises(TaskProtocolError, match="membership"):
+        TaskHost(client=client)._turn(assignment, {}, str(__import__("uuid").uuid4()))

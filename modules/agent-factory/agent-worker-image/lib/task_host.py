@@ -152,6 +152,9 @@ class TaskHost:
         self.client = client or TaskRunClient()
         self.work_root = work_root or Path(os.environ.get("ADP_TASK_WORK_ROOT", "/work"))
         self.command_resolver = command_resolver
+        self._turn_number = 0
+        self._turns: dict[str, dict] = {}
+        self._pending_turn_id: str | None = None
 
     def _binding(self, assignment, runtime_attempt_id: str) -> dict:
         return {
@@ -194,7 +197,109 @@ class TaskHost:
             raise TaskRunClientError("task report receipt is invalid")
         return response
 
+    def _turn(self, assignment, attempt: dict, request_id: str) -> dict | None:
+        if request_id in self._turns:
+            return self._turns[request_id]
+        response = self.client.turn(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "attempt": attempt,
+                "request_id": request_id,
+                "expected_transcript_version": self._turn_number + 1,
+            }
+        )
+        if (
+            set(response)
+            != {"schema_version", "operation_status", "turn", "pending_input_count", "messages"}
+            or response["schema_version"] != SCHEMA_VERSION
+            or type(response["pending_input_count"]) is not int
+            or not 0 <= response["pending_input_count"] <= 10
+            or not isinstance(response["messages"], list)
+        ):
+            raise TaskProtocolError("task turn response is invalid")
+        turn = response["turn"]
+        if response["operation_status"] == "waiting":
+            if turn is not None or response["messages"]:
+                raise TaskProtocolError("waiting turn exposes uncommitted input")
+            return None
+        if response["operation_status"] not in {"committed", "existing"} or not isinstance(
+            turn, dict
+        ):
+            raise TaskProtocolError("task turn is not committed")
+        if (
+            turn.get("task_id") != assignment.task_id
+            or turn.get("turn_id") != request_id
+            or type(turn.get("turn_number")) is not int
+            or turn["turn_number"] != self._turn_number + 1
+            or not 1 <= turn["turn_number"] <= 8
+            or turn.get("transcript_version") != turn["turn_number"] + 1
+            or not isinstance(turn.get("command_ids"), list)
+        ):
+            raise TaskProtocolError("task turn identity or transcript is invalid")
+        messages = response["messages"]
+        if len(messages) > 10:
+            raise TaskProtocolError("task turn contains too many commands")
+        for message in messages:
+            if (
+                not isinstance(message, dict)
+                or not {"command_id", "text"}.issubset(message)
+                or set(message) - {"command_id", "text", "reply_to"}
+                or not isinstance(message["text"], str)
+                or not 1 <= len(message["text"]) <= 4000
+            ):
+                raise TaskProtocolError("task turn command text is invalid")
+        for message in messages:
+            for key in ("command_id", "reply_to"):
+                if key not in message:
+                    continue
+                try:
+                    identifier = uuid.UUID(message[key])
+                    if identifier.version != 4 or str(identifier) != message[key]:
+                        raise ValueError("invalid UUID")
+                except (ValueError, TypeError, AttributeError):
+                    raise TaskProtocolError("task turn command identifier is invalid") from None
+        ids = [message["command_id"] for message in messages]
+        if ids != turn["command_ids"] or len(set(ids)) != len(ids):
+            raise TaskProtocolError("task turn command membership is invalid")
+        self._turn_number = turn["turn_number"]
+        self._turns[request_id] = response
+        return response
+
+    def _deliver_input(self, assignment, attempt: dict, process, control: dict) -> None:
+        if (
+            not control["pending_input_count"]
+            or control["cancel_requested"]
+            or self._turn_number == 0
+            or self._pending_turn_id is not None
+        ):
+            return
+        turn_id = _request_id()
+        response = self._turn(assignment, attempt, turn_id)
+        if response is None:
+            return
+        if not response["messages"]:
+            raise TaskProtocolError("follow-up turn contains no committed input")
+        _write_frame(
+            process,
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "type": "turn",
+                "request_id": _request_id(),
+                "task_id": assignment.task_id,
+                "turn_id": turn_id,
+                "turn_number": response["turn"]["turn_number"],
+                "messages": response["messages"],
+            },
+        )
+        self._pending_turn_id = turn_id
+
     def _model(self, assignment, attempt: dict, frame: dict, max_tokens: int) -> dict:
+        if self._pending_turn_id is not None and frame["turn_id"] != self._pending_turn_id:
+            raise TaskProtocolError("child model request skipped its assigned input turn")
+        turn = self._turn(assignment, attempt, frame["turn_id"])
+        if turn is None:
+            raise TaskProtocolError("child requested a model without a committed turn")
+        self._pending_turn_id = None
         request = {
             "messages": frame["messages"],
             "max_tokens": frame.get("max_tokens", max_tokens),
@@ -284,11 +389,6 @@ class TaskHost:
             )
         if type(response["pending_input_count"]) is not int or response["pending_input_count"] < 0:
             raise TaskRunClientError("task control response is invalid")
-        if response["pending_input_count"]:
-            raise TaskHostError(
-                "pending input has no command text in the frozen turn/control contracts",
-                code="protocol_violation",
-            )
         return response
 
     def _finalize(
@@ -486,6 +586,7 @@ class TaskHost:
                     control = self._control(assignment, attempt, cursor)
                     cursor = control["last_receipt_cursor"]
                     next_control = now + _CONTROL_POLL_SECONDS
+                    self._deliver_input(assignment, attempt, process, control)
                     if control["cancel_requested"] and cancel_started is None:
                         cancel_command_id = control["cancel_command_id"]
                         if not isinstance(cancel_command_id, str):
@@ -556,15 +657,33 @@ class TaskHost:
                                 },
                             )
                         elif frame["type"] == "model.request":
-                            _write_frame(
-                                process,
-                                self._model(
-                                    assignment,
-                                    attempt,
-                                    frame,
-                                    bootstrap["limits"]["max_output_tokens_per_turn"],
-                                ),
+                            model_result = self._model(
+                                assignment,
+                                attempt,
+                                frame,
+                                bootstrap["limits"]["max_output_tokens_per_turn"],
                             )
+                            # Input arriving during the provider call must reach the
+                            # child before it can finish from the returned answer.
+                            control = self._control(assignment, attempt, cursor)
+                            if control["cancel_requested"] and cancel_started is None:
+                                cancel_command_id = control["cancel_command_id"]
+                                if not isinstance(cancel_command_id, str):
+                                    raise TaskProtocolError("task cancellation command is invalid")
+                                _write_frame(
+                                    process,
+                                    {
+                                        "protocol_version": PROTOCOL_VERSION,
+                                        "type": "cancel",
+                                        "request_id": _request_id(),
+                                        "task_id": assignment.task_id,
+                                        "command_id": cancel_command_id,
+                                        "intentional": True,
+                                    },
+                                )
+                                cancel_started = time.monotonic()
+                            self._deliver_input(assignment, attempt, process, control)
+                            _write_frame(process, model_result)
                         elif frame["type"] == "result":
                             if result_report is not None:
                                 raise TaskProtocolError("task child emitted more than one result")
