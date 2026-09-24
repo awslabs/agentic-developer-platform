@@ -24,6 +24,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -39,6 +40,12 @@ NAMESPACE = "adp-gateway"
 DEPLOY = "w2-fixture-gateway-5836"
 SECRET = f"w2-fixture-provenance-{NONCE}"
 PARAM = f"/adp/dev/gateway/fixture/{NONCE}/apigw-provenance-secret"
+
+# #3968's ACTUAL fixture labels (lib/render_fixture.py, branch agent/issue-3968).
+# Named here so a drift in that renderer breaks these tests loudly instead of
+# silently making the ownership checks vacuous again.
+W2_FIXTURE_LABEL = "adp.io/w2-fixture"
+W2_NONCE_LABEL = "adp.io/w2-nonce"
 
 # The nine secret-backed env refs #3968's renderer deliberately carries over. The
 # handoff patch must preserve eight and repoint one.
@@ -73,21 +80,32 @@ def denied(svc_msg="AccessDeniedException: User is not authorized to perform thi
     sys.stderr.write(svc_msg + "\n"); sys.exit(255)
 
 if args[:2] == ["sts", "get-caller-identity"]:
+    query = args[args.index("--query") + 1] if "--query" in args else "Account"
+    if query == "Arn":
+        # WHO a profile signs as. The wrong-role control must verify this: a 403
+        # observed while signing as an ALLOWLISTED role would otherwise be recorded
+        # as the Deny working, which is a false proof of the only control that
+        # exercises this component's own resource policy.
+        arn = os.environ.get("FAKE_PROBE_ARN_%s" % profile.replace("-", "_"),
+                             os.environ.get("FAKE_PROBE_ARN", ""))
+        if arn == "__unresolvable__":
+            sys.stderr.write("Unable to locate credentials\n"); sys.exit(255)
+        print(arn or "None"); sys.exit(0)
     print(os.environ.get("FAKE_LIVE_ACCOUNT", os.environ["FAKE_ACCOUNT"])); sys.exit(0)
 
-# `aws configure get` is how aws_sigv4_probe obtains signing material for the
-# wrong-role control. An unset key must come back EMPTY (exit 1), which is what
-# makes that probe return 000 rather than silently signing with the run's own
-# credential -- i.e. testing nothing.
+# `aws configure get` READS STATIC KEYS OUT OF A CONFIG FILE. The previous revision
+# used it to obtain signing material, which (a) returns nothing for the assumed-role
+# / SSO / credential_process profiles these actually are, and (b) then put the secret
+# into `curl --user`, i.e. into argv. Credentials must come from the SDK's own
+# provider chain instead, so this fake now FAILS LOUDLY if the script ever asks --
+# the alternative is a double that quietly keeps the broken interface alive.
 if args[:2] == ["configure", "get"]:
-    key = args[2] if len(args) > 2 else ""
-    have = os.environ.get("FAKE_SIGV4_PROFILE_HAS_KEYS", "") == profile and profile != ""
-    if not have:
-        sys.exit(1)
-    print({"aws_access_key_id": "AKIAFAKEWRONGROLE00",
-           "aws_secret_access_key": "fake-secret",
-           "aws_session_token": "fake-token"}.get(key, ""))
-    sys.exit(0)
+    sys.stderr.write(
+        "fake aws: the script called `aws configure get %s`. Signing material must be "
+        "resolved through the SDK credential provider chain (botocore), not read out "
+        "of a config file: static keys are absent for assumed-role/SSO profiles and "
+        "passing them to curl puts the secret in argv.\n" % (args[2] if len(args) > 2 else ""))
+    sys.exit(97)
 
 if args[:2] == ["ssm", "get-parameter"]:
     name = args[args.index("--name") + 1]
@@ -227,49 +245,104 @@ if args[:2] == ["create", "secret"]:
     sys.exit(0)
 
 if args[:2] == ["patch", "deployment"]:
+    # -----------------------------------------------------------------------
+    # REJECT FLAGS REAL kubectl DOES NOT HAVE.
+    #
+    # The previous version of this fake PARSED `--resource-version`, a flag that
+    # does not exist on `kubectl patch`. Real kubectl answers:
+    #   error: unknown flag: --resource-version     (exit 1)
+    # So the suite proved the script agreed with this fake rather than with kubectl,
+    # and the attach step always failed in a live run -- AFTER the Secret had been
+    # created and recorded. A permissive double is worse than no double: it converts
+    # a hard failure into a green test.
+    #
+    # The allowlist mirrors `kubectl patch --help`.
+    # -----------------------------------------------------------------------
+    KNOWN = {"-n", "--namespace", "-p", "--patch", "--type", "-o", "--output",
+             "--local", "-f", "--filename", "--dry-run", "--patch-file",
+             "--allow-missing-template-keys", "--field-manager", "--subresource"}
+    for a in args[3:]:
+        if a.startswith("-"):
+            base = a.split("=", 1)[0]
+            if base not in KNOWN:
+                die("error: unknown flag: %s\nSee 'kubectl patch --help' for usage." % base, 1)
     if os.environ.get("FAKE_PATCH_FAIL") == "1":
         die("Error from server: patch rejected")
     doc = json.loads(state.read_text())
-    # OPTIMISTIC CONCURRENCY, as the API server implements it: a --resource-version
-    # that no longer matches is a Conflict, which is what closes the window between
-    # "verified as this run's fixture" and "patched".
-    rv_flag = ""
-    for n, a in enumerate(args):
-        if a.startswith("--resource-version="):
-            rv_flag = a.split("=", 1)[1]
-        elif a == "--resource-version" and n + 1 < len(args):
-            rv_flag = args[n + 1]
-    live_rv = doc.get("metadata", {}).get("resourceVersion")
-    if rv_flag and live_rv and rv_flag != live_rv:
-        die('Error from server (Conflict): Operation cannot be fulfilled on '
-            'deployments.apps "%s": the object has been modified' % args[2], 1)
-    patch = json.loads(args[args.index("-p") + 1])
-    c = doc["spec"]["template"]["spec"]["containers"][0]
-    incoming = patch["spec"]["template"]["spec"]["containers"][0]["env"]
-    # Model the REAL semantics of the patch type, so choosing the wrong one in the
-    # script is caught here. container.env carries patchMergeKey=name (verified
-    # against the core/v1 API types), so only --type=strategic merges by name; a
-    # json-merge patch REPLACES the whole list and silently drops the other
-    # secret-backed refs. FAKE_PATCH_REPLACES_LIST additionally forces the bad
-    # outcome so the verification step itself can be tested.
-    # Accept BOTH "--type=merge" and "--type merge"; keying off only the space form
-    # made this fake blind to the equals form the script actually uses, so the
-    # mutation that switches patch type went undetected until the fake was fixed.
     ptype = "strategic"
     for n, a in enumerate(args):
         if a.startswith("--type="):
             ptype = a.split("=", 1)[1]
         elif a == "--type" and n + 1 < len(args):
             ptype = args[n + 1]
-    if ptype != "strategic" or os.environ.get("FAKE_PATCH_REPLACES_LIST") == "1":
-        c["env"] = incoming
+    patch = json.loads(args[args.index("-p") + 1])
+    c = doc["spec"]["template"]["spec"]["containers"][0]
+
+    if ptype == "json":
+        # ---------------------------------------------------------------
+        # RFC 6902 semantics, including `test`, as the API SERVER applies them:
+        # every op is evaluated against the live object and NOTHING is applied
+        # unless all of them succeed. This is what replaces the invented
+        # --resource-version flag, and it is stronger: it pins the uid too.
+        # ---------------------------------------------------------------
+        def resolve(path):
+            cur = doc
+            parts = [p.replace("~1", "/").replace("~0", "~") for p in path.split("/")[1:]]
+            for p in parts[:-1]:
+                cur = cur[int(p)] if isinstance(cur, list) else cur[p]
+            return cur, parts[-1]
+
+        working = json.loads(json.dumps(doc))   # apply atomically or not at all
+        saved, doc = doc, working
+        try:
+            for op in patch:
+                parent, key = resolve(op["path"])
+                if op["op"] == "test":
+                    actual = parent[int(key)] if isinstance(parent, list) else parent.get(key)
+                    if actual != op["value"]:
+                        doc = saved
+                        die("error: testing value %s failed: test failed" % op["path"], 1)
+                elif op["op"] == "replace":
+                    if isinstance(parent, list):
+                        parent[int(key)] = op["value"]
+                    else:
+                        if key not in parent:
+                            doc = saved
+                            die("error: replace operation does not apply: doc is missing "
+                                "path: %s" % op["path"], 1)
+                        parent[key] = op["value"]
+                elif op["op"] == "add":
+                    if key == "-" and isinstance(parent, list):
+                        parent.append(op["value"])
+                    elif isinstance(parent, list):
+                        parent.insert(int(key), op["value"])
+                    else:
+                        parent[key] = op["value"]
+                else:
+                    die("error: unsupported op %r" % op["op"], 1)
+        except (KeyError, IndexError, ValueError) as exc:
+            die("error: patch path does not apply: %s" % exc, 1)
+        c = doc["spec"]["template"]["spec"]["containers"][0]
     else:
-        index = {e["name"]: i for i, e in enumerate(c["env"])}
-        for entry in incoming:
-            if entry["name"] in index:
-                c["env"][index[entry["name"]]] = entry
-            else:
-                c["env"].append(entry)
+        incoming = patch["spec"]["template"]["spec"]["containers"][0]["env"]
+        # Model the REAL semantics of the patch type, so choosing the wrong one in
+        # the script is caught here. container.env carries patchMergeKey=name, so
+        # only --type=strategic merges by name; a json-merge patch REPLACES the whole
+        # list and silently drops the other secret-backed refs.
+        if ptype != "strategic" or os.environ.get("FAKE_PATCH_REPLACES_LIST") == "1":
+            c["env"] = incoming
+        else:
+            index = {e["name"]: i for i, e in enumerate(c["env"])}
+            for entry in incoming:
+                if entry["name"] in index:
+                    c["env"][index[entry["name"]]] = entry
+                else:
+                    c["env"].append(entry)
+    if os.environ.get("FAKE_PATCH_REPLACES_LIST") == "1" and ptype == "json":
+        # Force the whole-list-replacement outcome so the script's post-patch
+        # verification of the surviving refs is itself exercised.
+        c["env"] = [e for e in c["env"]
+                    if e["name"] in ("BG_APIGW_PROVENANCE_SECRET", "BG_TRUST_APIGW_HEADERS")]
     # Delete-and-recreate around the patch. resourceVersion cannot detect this (the
     # replacement can land on any version string); only the uid can, which is why
     # the post-patch recheck compares uids.
@@ -306,7 +379,22 @@ if args[:1] == ["output"]:
         print(os.environ.get("FAKE_PARAM", "")); sys.exit(0)
     if what == "rest_api_id":
         print(os.environ.get("FAKE_API_ID", "fixapi123")); sys.exit(0)
+    # The role ARNs the resource policy permits. verify needs them to prove its
+    # wrong-role probe is NOT signing as an allowlisted identity.
+    if what == "allowed_caller_role_arns":
+        if os.environ.get("FAKE_ALLOWLIST_UNREADABLE") == "1":
+            sys.stderr.write("Error: output not found\n"); sys.exit(1)
+        print(os.environ.get(
+            "FAKE_ALLOWLIST_JSON",
+            json.dumps(["arn:aws:iam::%s:role/w2-fixture-worker" % os.environ["FAKE_ACCOUNT"]])))
+        sys.exit(0)
     if what == "worker_control_endpoint":
+        # Pointed at a LOCAL http listener when one is running, so the SigV4 probe is
+        # exercised over a real socket with real botocore signing instead of against a
+        # curl double that cannot tell a signed request from an unsigned one.
+        port = os.environ.get("FAKE_EDGE_PORT", "")
+        if port:
+            print("http://127.0.0.1:%s/dev/internal/v1/agent" % port); sys.exit(0)
         print("https://fixapi123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent")
         sys.exit(0)
     sys.exit(1)
@@ -381,9 +469,19 @@ def _deployment_doc(uid=DEPLOY_UID, labels=None):
             "name": "bedrockgateway-secrets", "key": n.lower()}}}
         for n in NINE_SECRET_ENV
     ]
+    # #3968's REAL label schema, read from lib/render_fixture.py on branch
+    # agent/issue-3968. The previous version of this helper used
+    # "adp.fixture/run-nonce", a key that renderer never writes -- so the suite
+    # validated the script against an invented schema and every label check passed
+    # vacuously. `app` and `app.kubernetes.io/part-of` are carried over from the
+    # ordinary gateway by the renderer's deep copy, which is exactly why the run
+    # labels (not the shape) have to decide ownership.
     md = {"name": DEPLOY, "namespace": NAMESPACE, "uid": uid,
           "resourceVersion": "1234",
-          "labels": {"app": "bedrockgateway", "adp.fixture/run-nonce": NONCE}}
+          "labels": {"app": DEPLOY,
+                     "app.kubernetes.io/part-of": "bedrock-gateway",
+                     W2_FIXTURE_LABEL: RUN_ID,
+                     W2_NONCE_LABEL: NONCE}}
     if labels is not None:
         md["labels"] = labels
     return {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": md,
@@ -405,6 +503,79 @@ def _ledger_doc(rows=None, run_id=RUN_ID, nonce=NONCE):
     if nonce is not None:
         doc["run_nonce"] = nonce
     return doc
+
+
+class _LocalEdge:
+    """A REAL http listener standing in for the fixture edge, for the ONE probe that
+    cannot be faked at the curl level.
+
+    The unsigned and spoofed probes use curl, so a curl double can model them. The
+    wrong-role probe SIGNS, and a double that returns a canned status code cannot
+    distinguish a signed request from an unsigned one -- which is exactly how a probe
+    that could never sign was recorded as observing a refusal. So that probe is
+    pointed at this listener, which records the headers that actually arrived.
+
+    No cloud call and no credentials: botocore resolves static keys from a scratch
+    file through its ORDINARY provider chain (the same chain that serves
+    assume-role/SSO/credential_process), signs in memory, and answers locally.
+    """
+
+    ACCESS_KEY = "AKIAFIXTUREPROBE0001"
+    SECRET_KEY = "fixture-probe-secret-not-a-real-credential"
+
+    def __init__(self, tmp_path):
+        import http.server
+        import threading
+
+        self.requests = []
+        self.code = 403          # the refusal the control expects, by default
+        edge = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):                          # noqa: N802
+                edge.requests.append(dict(self.headers))
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                if edge.code == 0:                      # connection-level failure
+                    self.close_connection = True
+                    return
+                self.send_response(edge.code)
+                self.end_headers()
+                self.wfile.write(b'{"message":"User is not authorized"}')
+
+            def log_message(self, *a):
+                return
+
+        self._server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        self.port = self._server.server_port
+
+        self.cred_file = tmp_path / "aws-credentials"
+        self.cred_file.write_text(
+            "[wrongrole]\n"
+            f"aws_access_key_id = {self.ACCESS_KEY}\n"
+            f"aws_secret_access_key = {self.SECRET_KEY}\n"
+            "aws_session_token = fixture-probe-session-token\n"
+        )
+        self.cred_file.chmod(0o600)
+        self.empty_config = tmp_path / "aws-config-empty"
+        self.empty_config.write_text("")
+
+    @property
+    def env(self):
+        return {
+            "FAKE_EDGE_PORT": str(self.port),
+            # The provider chain's own file locations, visible only to the
+            # subprocess the test starts.
+            "AWS_SHARED_CREDENTIALS_FILE": str(self.cred_file),
+            "AWS_CONFIG_FILE": str(self.empty_config),
+        }
+
+    def close(self):
+        self._server.shutdown()
+        self._server.server_close()
 
 
 @pytest.fixture
@@ -450,6 +621,11 @@ def harness(tmp_path):
 
     write_backend()
 
+    # Started for every test so the SIGNED probe always has a real socket and real
+    # SDK-resolved credentials; the curl double still serves the unsigned/spoofed
+    # probes, which are the ones a canned status code can legitimately model.
+    edge = _LocalEdge(tmp_path)
+
     def run(subcmd, extra_env=None, args=None, with_tfvars=True):
         if with_tfvars:
             artifacts.mkdir(exist_ok=True)
@@ -463,6 +639,7 @@ def harness(tmp_path):
             FAKE_PARAM=PARAM, FAKE_DEPLOY_STATE=str(deploy_state),
             FAKE_SECRET_PAYLOAD=str(secret_payload), FAKE_NAMESPACE=NAMESPACE,
         )
+        env.update(edge.env)
         env.update(extra_env or {})
         argv = [str(SCRIPT), subcmd,
                 "--nonce", NONCE, "--account-id", ACCOUNT,
@@ -479,8 +656,13 @@ def harness(tmp_path):
     harness.secret_payload = secret_payload
     harness.artifacts = artifacts
     harness.tf_data = tf_data
+    harness.tmp = tmp_path
     harness.write_backend = write_backend
-    return harness
+    harness.edge = edge
+    try:
+        yield harness
+    finally:
+        edge.close()
 
 
 def recorded_rows(harness) -> list:
@@ -941,12 +1123,26 @@ def test_recover_secret_refuses_without_a_creation_intent(harness):
     assert recorded_rows(harness) == []
 
 
-def test_recover_secret_records_the_live_object_by_its_actual_uid(harness):
-    (harness.artifacts).mkdir(exist_ok=True)
+def _seed_recovery_artifacts(harness, intent=True, receipt_uid="ssss-1111-2222",
+                             **overrides):
+    """The two artifacts recover-secret consults. Split out because the interesting
+    tests are about what happens when they DISAGREE with the live object."""
+    harness.artifacts.mkdir(exist_ok=True)
     harness.artifacts.chmod(0o700)
-    (harness.artifacts / "secret-intent.json").write_text(json.dumps(
-        {"intent": "create-secret", "name": SECRET, "namespace": NAMESPACE,
-         "run_nonce": NONCE, "account_id": ACCOUNT, "state": "pending"}))
+    common = {"name": SECRET, "namespace": NAMESPACE,
+              "run_nonce": NONCE, "account_id": ACCOUNT}
+    common.update(overrides)
+    if intent:
+        (harness.artifacts / "secret-intent.json").write_text(json.dumps(
+            dict(common, intent="create-secret", state="pending")))
+    if receipt_uid is not None:
+        (harness.artifacts / "secret-receipt.json").write_text(json.dumps(
+            dict(common, kind="Secret", uid=receipt_uid, resourceVersion="77")))
+
+
+def test_recover_secret_records_the_live_object_by_its_actual_uid(harness):
+    """Positive control: an intent AND a uid receipt that matches the live object."""
+    _seed_recovery_artifacts(harness)
     r = harness.run("recover-secret", {"FAKE_SECRET_EXISTS": "1"})
     assert r.returncode == 0, r.stderr
     rows = recorded_rows(harness)
@@ -956,6 +1152,70 @@ def test_recover_secret_records_the_live_object_by_its_actual_uid(harness):
     for line in harness.log.read_text().splitlines():
         if line.startswith("kubectl get secret"):
             assert "jsonpath" in line, f"read the whole Secret object: {line}"
+
+
+def test_recover_secret_refuses_a_live_object_whose_uid_is_not_the_recorded_one(harness):
+    """ROOT'S EXECUTED FINDING, as a regression.
+
+    Root ran recovery with a receipt naming one uid while the live Secret answered a
+    DIFFERENT uid. It exited 0 and recorded the REPLACEMENT -- because the previous
+    revision checked only that an intent file EXISTED, then adopted whatever uid was
+    live. Recording is what authorises deletion, so that path could hand another
+    run's trust root to this run's teardown.
+
+    A uid changes only on delete-and-recreate, so a mismatch means the object under
+    this name is categorically not ours.
+    """
+    _seed_recovery_artifacts(harness, receipt_uid="original-uid-0000")
+    r = harness.run("recover-secret", {"FAKE_SECRET_EXISTS": "1"})
+    assert r.returncode != 0, (
+        "recovery adopted a Secret whose uid is not the one creation recorded")
+    assert "original-uid-0000" in r.stderr and "ssss-1111-2222" in r.stderr, (
+        "the refusal must show BOTH uids so the operator can investigate")
+    assert "NOT the object this run created" in r.stderr
+    assert recorded_rows(harness) == [], "a foreign object was recorded as ours"
+    # And it must not suggest a name-based deletion as the remedy.
+    assert "kubectl delete secret" not in r.stderr
+
+
+def test_recover_secret_refuses_when_no_uid_was_ever_captured(harness):
+    """Intent alone proves an attempt was MADE, not which object holds the name now.
+
+    The create may have hit AlreadyExists against an object this run never made, or
+    the name may have been recycled since. Unverifiable partial recovery is escalated
+    to a human, never adopted.
+    """
+    _seed_recovery_artifacts(harness, receipt_uid=None)
+    r = harness.run("recover-secret", {"FAKE_SECRET_EXISTS": "1"})
+    assert r.returncode != 0
+    assert "no uid receipt" in r.stderr
+    assert recorded_rows(harness) == []
+
+
+def test_recover_secret_refuses_an_empty_uid_in_the_receipt(harness):
+    """A receipt that exists but records no uid is the same evidential gap as none."""
+    _seed_recovery_artifacts(harness, receipt_uid="")
+    r = harness.run("recover-secret", {"FAKE_SECRET_EXISTS": "1"})
+    assert r.returncode != 0
+    assert "NO uid" in r.stderr or "no uid" in r.stderr
+    assert recorded_rows(harness) == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_nonce", "c0c0c0c0c0c0c0c0"),
+    ("account_id", "111111111111"),
+    ("name", "w2-fixture-provenance-someone-else"),
+    ("namespace", "kube-system"),
+])
+def test_recover_secret_refuses_artifacts_belonging_to_another_run(harness, field, value):
+    """The previous revision checked only that the intent file EXISTED, so a stale
+    artifact directory from another nonce, account, object or namespace satisfied it.
+    Each of those four fields is load-bearing, so each is asserted."""
+    _seed_recovery_artifacts(harness, **{field: value})
+    r = harness.run("recover-secret", {"FAKE_SECRET_EXISTS": "1"})
+    assert r.returncode != 0, f"a foreign {field} was accepted"
+    assert value in r.stderr and "REFUSING" in r.stderr
+    assert recorded_rows(harness) == []
 
 
 # --- 3. Cross-nonce / cross-account backend refusal -----------------------
@@ -1041,6 +1301,47 @@ def test_handoff_refuses_the_ordinary_gateway_deployment(harness):
     assert not harness.secret_payload.exists()
 
 
+def test_the_ownership_labels_are_3968s_actual_keys_not_guesses(harness):
+    """THE DEFECT THAT MADE THE CHECK ABOVE INERT.
+
+    The previous revision looked for label keys that do not exist in #3968's
+    renderer. Two consequences, both bad in the same direction: a REAL fixture was
+    refused (so the handoff could never run), and the ordinary-gateway refusal was
+    decided by a key nothing ever sets. Verified against lib/render_fixture.py on
+    branch agent/issue-3968, which emits exactly `adp.io/w2-fixture` and
+    `adp.io/w2-nonce`.
+
+    Asserted on the SCRIPT SOURCE, because the keys are a cross-component contract:
+    a behavioural test alone would pass against any pair of keys the fixture in this
+    file also happens to use.
+    """
+    src = SCRIPT.read_text()
+    for key in (W2_FIXTURE_LABEL, W2_NONCE_LABEL):
+        assert f'"{key}"' in src, (
+            f"the handoff does not look for {key}, which is what #3968 actually sets. "
+            "A label key nothing sets makes the ownership refusal vacuous.")
+    # And a Deployment carrying #3968's keys for THIS run must be accepted, so the
+    # check is satisfiable by a real fixture rather than being a wall.
+    r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+    assert r.returncode == 0, (
+        "a Deployment labelled exactly as #3968 labels it was REFUSED; the handoff "
+        f"cannot run against a real fixture:\n{r.stderr}")
+
+
+def test_handoff_refuses_a_deployment_missing_either_ownership_label(harness):
+    """BOTH keys are required. One alone cannot bind the object to this run: the
+    fixture label without the nonce does not say WHICH run, and the nonce without the
+    fixture label does not say the object is a fixture at all."""
+    for drop in (W2_FIXTURE_LABEL, W2_NONCE_LABEL):
+        labels = {"app": DEPLOY, "app.kubernetes.io/part-of": "bedrock-gateway",
+                  W2_FIXTURE_LABEL: RUN_ID, W2_NONCE_LABEL: NONCE}
+        del labels[drop]
+        harness.deploy_state.write_text(json.dumps(_deployment_doc(labels=labels)))
+        r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+        assert r.returncode != 0, f"accepted a Deployment with no {drop} label"
+        assert not harness.secret_payload.exists()
+
+
 def test_handoff_refuses_a_deployment_labelled_for_another_run(harness):
     harness.deploy_state.write_text(json.dumps(_deployment_doc()).replace(
         NONCE, "c0c0c0c0c0c0c0c0"))
@@ -1064,15 +1365,95 @@ def test_handoff_detects_a_deployment_replaced_around_the_patch(harness):
     assert "do not treat this as attached" in (r.stderr + r.stdout).lower()
 
 
-def test_handoff_binds_the_patch_to_the_verified_resource_version(harness):
-    """Without --resource-version there is a window in which the verified fixture is
-    deleted and a same-named object is patched instead."""
+def test_handoff_binds_the_patch_to_the_verified_object_with_json_patch_tests(harness):
+    """Without a server-enforced precondition there is a window in which the verified
+    fixture is deleted and a same-named object is patched instead.
+
+    The PREVIOUS revision closed it with `--resource-version=<rv>`, a flag
+    `kubectl patch` DOES NOT HAVE. Real kubectl v1.37.1 answers `unknown flag:
+    --resource-version` and exits 1, so the attach step could never succeed in a
+    live run -- and it failed AFTER the Secret was created and recorded, i.e. at the
+    worst moment. Only a permissive fake that parsed the invented flag made this look
+    tested.
+
+    RFC 6902 `test` operations are the supported mechanism and they are STRICTLY
+    STRONGER: the API server evaluates them against the live object and applies
+    nothing unless all pass, and they can pin the uid -- which a resourceVersion
+    check cannot, because a replacement can land on any version string.
+    """
     r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
     assert r.returncode == 0, r.stderr
     patch = next(l for l in harness.log.read_text().splitlines()
                  if l.startswith("kubectl patch deployment"))
-    assert "--resource-version=1234" in patch, (
-        f"patch is not bound to the verified resourceVersion: {patch}")
+    assert "--resource-version" not in patch, (
+        "patch still passes a flag kubectl does not have; a live run exits 1 here: "
+        f"{patch}")
+    assert "--type=json" in patch, f"not a JSON Patch: {patch}"
+    body = json.loads(patch.split("-p ", 1)[1])
+    tests = {op["path"]: op["value"] for op in body if op["op"] == "test"}
+    assert tests.get("/metadata/uid") == DEPLOY_UID, (
+        f"the patch does not pin the verified uid: {tests}")
+    assert tests.get("/metadata/resourceVersion") == "1234", (
+        f"the patch does not pin the verified resourceVersion: {tests}")
+
+
+def test_the_patch_body_and_flags_parse_under_the_real_kubectl(harness):
+    """THE REGRESSION FOR THE PERMISSIVE-DOUBLE CLASS ITSELF.
+
+    Every other test here runs against a fake. A fake can accept anything, and the
+    one in this file DID accept a nonexistent flag -- so the suite was green while
+    the script could not work at all. This test therefore hands the ACTUAL command
+    line to the REAL kubectl binary in `--local` mode, which parses flags and applies
+    the patch client-side without contacting any cluster (no credentials, no
+    mutation, safe in CI).
+
+    Skips rather than fails when kubectl is absent so the suite still runs, but the
+    dedicated CI workflow installs it, so the interface is checked there.
+    """
+    kubectl = shutil.which("kubectl")
+    if not kubectl:
+        pytest.skip("real kubectl not on PATH; the dedicated CI workflow installs it")
+    r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
+    assert r.returncode == 0, r.stderr
+    patch = next(l for l in harness.log.read_text().splitlines()
+                 if l.startswith("kubectl patch deployment"))
+    body = patch.split("-p ", 1)[1]
+
+    live = harness.tmp / "live-deployment.json"
+    live.write_text(json.dumps(_deployment_doc()))
+    # --local needs the object from -f; the flags and the body are otherwise exactly
+    # the ones the script emits.
+    out = subprocess.run(
+        [kubectl, "patch", "-f", str(live), "--local", "--type=json",
+         "-p", body, "-o", "json"],
+        capture_output=True, text=True)
+    assert out.returncode == 0, (
+        "real kubectl REJECTED the patch the script sends -- this is the failure "
+        f"class root reproduced by hand:\n{out.stderr}")
+    patched = json.loads(out.stdout)
+    env = {e["name"]: e for e in
+           patched["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["BG_APIGW_PROVENANCE_SECRET"]["valueFrom"]["secretKeyRef"]["name"] \
+        == SECRET
+    assert env["BG_TRUST_APIGW_HEADERS"]["value"] == "true"
+
+
+def test_the_real_kubectl_rejects_the_flag_the_previous_revision_used(harness):
+    """Pins WHY the above changed, so nobody reintroduces `--resource-version`
+    believing it is merely stylistic. Asserted against the real binary, because the
+    claim is about kubectl's interface and not about this repo."""
+    kubectl = shutil.which("kubectl")
+    if not kubectl:
+        pytest.skip("real kubectl not on PATH; the dedicated CI workflow installs it")
+    live = harness.tmp / "live-deployment.json"
+    live.write_text(json.dumps(_deployment_doc()))
+    out = subprocess.run(
+        [kubectl, "patch", "-f", str(live), "--local", "--resource-version=1234",
+         "--type=json", "-p", "[]"],
+        capture_output=True, text=True)
+    assert out.returncode != 0 and "unknown flag" in out.stderr.lower(), (
+        "kubectl accepted --resource-version on patch; if this ever becomes true the "
+        f"comments above are stale:\n{out.returncode} {out.stderr}")
 
 
 def test_handoff_asserts_the_kubectl_context_before_mutating(harness):
@@ -1197,7 +1578,15 @@ def test_destroy_fails_rather_than_skipping_the_api_probe_when_the_id_is_unreada
 # were executed by any test at all. That is why 63 green tests missed it.
 VERIFY_OK_ARGS = ["--wrong-role-profile", "wrongrole",
                   "--human-probe-path", "/dev/api/health"]
-VERIFY_OK_ENV = {"FAKE_SIGV4_PROFILE_HAS_KEYS": "wrongrole"}
+# A resolvable identity for the signer profile, whose role is NOT in the allowlist
+# the fake `terraform output allowed_caller_role_arns` publishes. Both halves are
+# required: without a resolved ARN the control cannot say WHO it signed as, and
+# without the allowlist comparison a 403 from a PERMITTED role would be recorded as
+# the Deny working.
+VERIFY_OK_ENV = {
+    "FAKE_PROBE_ARN_wrongrole":
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/w2-not-allowlisted/probe-session",
+}
 
 
 def test_verify_passes_only_when_every_control_actually_refused(harness):
@@ -1208,10 +1597,93 @@ def test_verify_passes_only_when_every_control_actually_refused(harness):
     assert "all refusals observed AND asserted" in r.stdout
 
 
+def test_verify_never_reads_signing_keys_out_of_the_aws_config_file(harness):
+    """`aws configure get aws_secret_access_key` was the previous signing path.
+
+    It is broken two ways at once: it returns NOTHING for the assumed-role/SSO
+    profiles these actually are (so the control could never pass), and the value it
+    does return was handed to `curl --user`, putting the secret in argv where any
+    process listing on the host can read it. The fake `aws` now exits 97 if asked,
+    so this fails if the interface is ever reintroduced.
+    """
+    r = harness.run("verify", VERIFY_OK_ENV, args=VERIFY_OK_ARGS)
+    log = harness.log.read_text()
+    assert "configure get" not in log, (
+        "signing material is being read out of the AWS config file again")
+    # And no credential material may appear in any command line that was logged.
+    assert "--user" not in log, "a secret was passed to curl in argv"
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_wrong_role_probe_signs_with_sdk_resolved_credentials(harness):
+    """END-TO-END PROOF THAT THE PROBE ACTUALLY SIGNS.
+
+    Every other verify test uses the curl double, which returns a canned status code
+    and therefore cannot tell a signed request from an unsigned one -- exactly the
+    blind spot that let an unsignable probe be recorded as a refusal. Here the
+    endpoint is a REAL local HTTP listener and the credentials come from the real
+    botocore provider chain (seeded via a temporary profile in a scratch config
+    file), so the assertion is on the Authorization header the server received.
+    """
+    r = harness.run("verify", VERIFY_OK_ENV, args=VERIFY_OK_ARGS)
+    assert r.returncode == 0, r.stderr
+    signed = [h for h in harness.edge.requests
+              if h.get("Authorization", "").startswith("AWS4-HMAC-SHA256")]
+    assert signed, (
+        "no request arrived with a SigV4 Authorization header, so the wrong-role "
+        f"control never signed anything. Received: {harness.edge.requests}")
+    auth = signed[0]["Authorization"]
+    assert "/execute-api/aws4_request" in auth, f"signed for the wrong service: {auth}"
+    assert f"Credential={harness.edge.ACCESS_KEY}/" in auth, (
+        "signed with a credential other than the one the named profile resolves to")
+    assert "x-amz-security-token" in {k.lower() for k in signed[0]}, (
+        "the session token was not sent, so an assumed-role credential could not work")
+    # The secret itself must never appear in a logged command line.
+    assert harness.edge.SECRET_KEY not in harness.log.read_text()
+
+
+def test_verify_refuses_a_probe_whose_identity_cannot_be_resolved(harness):
+    """An unsignable/unknown signer proves nothing.
+
+    A misspelled profile name previously satisfied the 'control was run' check while
+    testing nothing: the request went out unsigned, collected the ordinary 403, and
+    was recorded as 'the Deny works'.
+    """
+    r = harness.run("verify", {"FAKE_PROBE_ARN_wrongrole": "__unresolvable__"},
+                    args=VERIFY_OK_ARGS)
+    assert r.returncode != 0
+    assert "could not resolve the identity" in r.stderr
+    assert "all refusals observed" not in r.stdout
+
+
+def test_verify_refuses_a_probe_signing_as_an_allowlisted_role(harness):
+    """ROOT'S THIRD FINDING, as a regression.
+
+    The probe never checked WHO it signed as. Signing as a PERMITTED role and
+    observing a 403 (from any other cause) would be recorded as proof of the Deny --
+    a false proof of the only control that exercises this component's own resource
+    policy.
+    """
+    env = {"FAKE_PROBE_ARN_wrongrole":
+           f"arn:aws:sts::{ACCOUNT}:assumed-role/w2-fixture-worker/probe-session"}
+    r = harness.run("verify", env, args=VERIFY_OK_ARGS)
+    assert r.returncode != 0, "a probe signing as an allowlisted role was accepted"
+    assert "IS in" in r.stderr and "allowed_caller_role_arns" in r.stderr
+    assert "proves nothing about the Deny" in r.stderr
+
+
+def test_verify_refuses_when_the_allowlist_cannot_be_read(harness):
+    """Without the allowlist the probe MIGHT be a permitted role, so the control is
+    unverifiable rather than passing."""
+    env = dict(VERIFY_OK_ENV); env["FAKE_ALLOWLIST_UNREADABLE"] = "1"
+    r = harness.run("verify", env, args=VERIFY_OK_ARGS)
+    assert r.returncode != 0
+    assert "could not read allowed_caller_role_arns" in r.stderr
+
+
 @pytest.mark.parametrize("flag,label", [
     ("FAKE_UNSIGNED_CODE", "unsigned"),
     ("FAKE_SPOOFED_CODE", "spoofed"),
-    ("FAKE_SIGV4_CODE", "wrong role"),
 ])
 def test_verify_fails_when_a_refusal_probe_returns_200(harness, flag, label):
     env = dict(VERIFY_OK_ENV); env[flag] = "200"
@@ -1222,6 +1694,25 @@ def test_verify_fails_when_a_refusal_probe_returns_200(harness, flag, label):
     )
     assert "NOT REFUSED" in r.stderr
     assert "all refusals observed" not in r.stdout
+
+
+def test_verify_fails_when_the_signed_wrong_role_request_is_ACCEPTED(harness):
+    """The same assertion for the signed probe, driven by the REAL listener.
+
+    It cannot be expressed through the curl double at all: this probe no longer goes
+    through curl, because a double returning a canned code could not tell a signed
+    request from an unsigned one. Here the listener answers 200 to a genuinely
+    SigV4-signed request from a non-allowlisted role, which is the resource-policy
+    Deny being absent -- the single most important thing verify exists to catch.
+    """
+    harness.edge.code = 200
+    r = harness.run("verify", VERIFY_OK_ENV, args=VERIFY_OK_ARGS)
+    assert r.returncode != 0, (
+        "verify exited 0 while a correctly-signed request from a NON-allowlisted "
+        "role was ACCEPTED: the Deny is not in effect")
+    assert "NOT REFUSED" in r.stderr
+    assert "all refusals observed" not in r.stdout
+    assert harness.edge.requests, "the probe never reached the edge"
 
 
 @pytest.mark.parametrize("flag,label", [
@@ -1264,23 +1755,53 @@ def test_verify_fails_when_the_wrong_role_control_cannot_be_run(harness):
     assert "resource-policy Deny" in r.stderr
 
 
-def test_verify_fails_when_the_signer_profile_has_no_credentials(harness):
+def test_verify_fails_when_the_signer_profile_cannot_sign(harness):
     """An unsignable probe proves nothing, so it must not be recorded as a refusal.
 
-    Without this, --wrong-role-profile with a misspelled profile name would satisfy
-    the check above while testing nothing: the curl would go out unsigned, get the
-    ordinary 403, and be recorded as 'the Deny works'.
+    The identity resolves (so the control is 'run'), but the credential file has no
+    entry for the profile, so botocore cannot sign. The probe must report 000 and the
+    run must fail -- not send an unsigned request, collect the ordinary 403, and
+    record it as the Deny working.
     """
-    r = harness.run("verify", {}, args=VERIFY_OK_ARGS)
+    env = dict(VERIFY_OK_ENV)
+    env["AWS_SHARED_CREDENTIALS_FILE"] = str(harness.tmp / "no-such-credentials")
+    r = harness.run("verify", env, args=VERIFY_OK_ARGS)
     assert r.returncode != 0
     assert "no response (000)" in r.stderr
+    assert not harness.edge.requests, (
+        "an UNSIGNED request was sent to the edge; its 403 would have been recorded "
+        "as the wrong-role refusal")
 
 
-def test_skip_wrong_role_is_explicit_and_says_the_deny_is_unverified(harness):
+def test_skip_wrong_role_still_fails_because_the_deny_is_unverified(harness):
+    """ROOT EXECUTED THIS ONE: --skip-wrong-role exited 0 and printed "all refusals
+    observed AND asserted".
+
+    The skip suppressed the failure flag entirely, so the only control that exercises
+    this component's own resource policy could be switched off and the run still
+    reported full verification. A required control that was not run leaves acceptance
+    UNESTABLISHED, so the flag is documentation of why -- never a waiver.
+    """
     r = harness.run("verify", args=["--human-probe-path", "/dev/api/health",
                                     "--skip-wrong-role"])
-    assert r.returncode == 0, r.stderr
+    assert r.returncode != 0, (
+        "--skip-wrong-role still grants a green verification with the Deny unverified")
     assert "UNVERIFIED" in r.stdout + r.stderr
+    assert "EXPLICITLY SKIPPED" in r.stderr
+    assert "all refusals observed" not in r.stdout, (
+        "claimed every refusal was asserted while a required control was skipped")
+
+
+def test_no_skipped_control_can_reach_the_acceptance_claim(harness):
+    """Generalises the above: enumerated so a future skip/waiver flag cannot quietly
+    reopen the same hole for a different control."""
+    for extra in (["--skip-wrong-role"],                       # Deny unverified
+                  ["--wrong-role-profile", "wrongrole"],       # human control unrun
+                  []):                                         # both unrun
+        r = harness.run("verify", VERIFY_OK_ENV, args=extra)
+        assert r.returncode != 0, f"verify exited 0 with args {extra}"
+        assert "all refusals observed" not in r.stdout, (
+            f"acceptance claimed with args {extra}")
 
 
 def test_verify_requires_the_human_positive_control(harness):

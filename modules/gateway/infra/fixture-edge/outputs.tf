@@ -27,6 +27,21 @@ output "rest_api_id" {
   value       = try(aws_api_gateway_rest_api.fixture[0].id, "")
 }
 
+output "allowed_caller_role_arns" {
+  description = <<-EOT
+    The role ARNs the fixture API's resource policy permits on the internal plane.
+
+    Published so `fixture-lifecycle.sh verify` can prove its wrong-role probe signs
+    as an identity that is genuinely NOT allowlisted. Without that check, a 403
+    observed while signing as a PERMITTED role would be recorded as the Deny
+    working — a false proof of the one control that exercises this component's own
+    resource policy.
+
+    Role ARNs are not secret.
+  EOT
+  value       = var.allowed_caller_role_arns
+}
+
 output "worker_control_endpoint" {
   description = <<-EOT
     The exact value to set as ADP_AGENT_CONTROL_ENDPOINT on the fixture worker.
