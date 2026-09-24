@@ -24,7 +24,7 @@ export interface BatchInput { name: string; profile_id: string; batch_options: B
 export type WorkloadInput = ServingInput | BatchInput | { deploymentId: string };
 export type WorkloadKind = 'serving' | 'batch';
 export interface BatchProfile { profileId: string; options: BatchOptions }
-export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; canReviewTeardown: boolean; canCancel: boolean }
+export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; canReviewTeardown: boolean; canCancel: boolean; canObserve: boolean }
 
 export interface ServingDeployment {
   deploymentId: string | null;
@@ -62,6 +62,7 @@ export interface ServingCatalog {
   canSubmit: boolean;
   canReviewTeardown: boolean;
   canCancel: boolean;
+  canObserve: boolean;
 }
 
 const record = (raw: unknown): raw is Record<string, unknown> =>
@@ -91,7 +92,7 @@ export function getBatchCatalog(guard: ScopeGuard, workspaceId: string) {
       if (!options || options.image !== entry.image) return null;
       profiles.push({ profileId: entry.profile_id, options });
     }
-    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true };
+    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true, canObserve: raw.can_observe === true };
   });
 }
 
@@ -126,7 +127,7 @@ export function getServingCatalog(guard: ScopeGuard, workspaceId: string) {
         replicas: 1, gpu_per_replica: model.gpu_per_replica, tensor_parallel_size: model.tensor_parallel_size, max_model_len: model.max_model_len,
       } });
     }
-    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true };
+    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true, canObserve: raw.can_observe === true };
   });
 }
 

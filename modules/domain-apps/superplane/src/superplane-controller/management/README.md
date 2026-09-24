@@ -28,13 +28,15 @@ For read-only workspace inspections, supply a directory in
 and re-read every cycle. Its single context must name the registered EKS ARN and
 namespace; its TLS endpoint must match the durable registration. Ambient paths,
 exec plugins, authentication providers, proxies, impersonation and insecure TLS
-are refused. Removal/revocation never retains an active target. Namespace and
-namespaced Superplane-resource reads are the only Kubernetes operations.
+are refused. Removal/revocation never retains an active target. Namespace, node and namespaced Superplane-resource inspection uses the read identity.
+Authenticated `/workload-observation` additionally supports bounded original
+Job/Deployment status and Pod log windows; see
+[the permission and observation contract](../../../executor/WORKLOAD-OBSERVATIONS.md).
 
 This delivers management and target observation, **not governed provisioning**.
 Missing or retired registrations remain explicit; no direct SkyPilot/SDK path is
-activated. Story #5536 remains incomplete until the real operation/credential and
-fenced execution integration is reviewed and passes its workload criteria.
+activated. Governed execution uses the separate trusted execution composition. Management
+observations do not themselves establish successful authenticated workload use.
 
 Verification: `go test ./...` and `go test -race ./management`. The API's
 `test_controller_management.py` and `test_controller_management_postgres.py`

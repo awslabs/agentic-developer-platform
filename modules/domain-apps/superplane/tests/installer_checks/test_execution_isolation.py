@@ -13,6 +13,8 @@ from installation.execution import read_only_workspace_rules
     "resource,verb,allowed",
     [
         ("pods", "list", True),
+        ("pods/log", "get", True),
+        ("pods/proxy", "get", False),
         ("jobs", "create", False),
         ("secrets", "get", False),
         ("pods/exec", "get", False),
@@ -203,3 +205,15 @@ def test_workspace_permission_probes_match_actual_crd_scopes(tmp_path, refused):
         assert ["list", "nodepools.superplane.ai"] in probes
         assert ["watch", "nodepools.superplane.ai"] in probes
         assert ["list", "superplanenodes.superplane.ai", "-n", "tenant-a"] in probes
+
+
+@pytest.mark.parametrize(
+    "group,resource",
+    [("apps", "deployments"), ("apps", "replicasets"), ("batch", "jobs")],
+)
+def test_workload_reader_accepts_only_read_verbs(group, resource):
+    rule = {"apiGroups": [group], "resources": [resource], "verbs": ["get", "list"]}
+    status = {"incomplete": False, "resourceRules": [rule]}
+    assert read_only_workspace_rules(status)
+    rule["verbs"].append("patch")
+    assert not read_only_workspace_rules(status)

@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.routing import APIRoute
 from harness_jobs.identity import OperationRefused
 from sqlalchemy import select
@@ -357,7 +357,9 @@ async def cancel_batch(
 ):
     from app.services.workload_cancellation import cancel
 
-    result = await cancel(request, db, org_id, workspace_id, job_id, body.operation_id, kind="batch")
+    result = await cancel(
+        request, db, org_id, workspace_id, job_id, body.operation_id, kind="batch"
+    )
     return {**result, "job_id": result["deployment_id"]}
 
 
@@ -372,4 +374,58 @@ async def cancel_deployment(
 ):
     from app.services.workload_cancellation import cancel
 
-    return await cancel(request, db, org_id, workspace_id, dep_id, body.operation_id, kind="serving")
+    return await cancel(
+        request, db, org_id, workspace_id, dep_id, body.operation_id, kind="serving"
+    )
+
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}/observation")
+async def observe_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    logs: bool = False,
+    pod_uid: str | None = Query(
+        default=None, min_length=1, max_length=255, pattern="^[a-zA-Z0-9-]+$"
+    ),
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_observations import observe
+
+    return await observe(
+        request,
+        db,
+        org_id,
+        workspace_id,
+        job_id,
+        kind="batch",
+        logs=logs,
+        pod_uid=pod_uid,
+    )
+
+
+@router.get("/{workspace_id}/deployments/{dep_id}/observation")
+async def observe_serving(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    request: Request,
+    logs: bool = False,
+    pod_uid: str | None = Query(
+        default=None, min_length=1, max_length=255, pattern="^[a-zA-Z0-9-]+$"
+    ),
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_observations import observe
+
+    return await observe(
+        request,
+        db,
+        org_id,
+        workspace_id,
+        dep_id,
+        kind="serving",
+        logs=logs,
+        pod_uid=pod_uid,
+    )

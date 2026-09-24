@@ -8,7 +8,7 @@ import signal
 import subprocess
 import time
 from urllib.error import URLError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
 
 from playwright.sync_api import expect, sync_playwright
@@ -120,6 +120,7 @@ def main(kind="serving"):
                         "workspace_id": WORKSPACE,
                         "can_submit": True,
                         "can_cancel": True,
+                        "can_observe": True,
                         "can_review_teardown": True,
                         "profiles": [
                             {
@@ -141,6 +142,36 @@ def main(kind="serving"):
                             if batch
                             else {"deployments": rows}
                         ),
+                    }
+                elif (
+                    path == root + f"/{resource}/{DEPLOYMENT}/observation"
+                    and method == "GET"
+                ):
+                    query = parse_qs(parsed.query)
+                    logs = query.get("logs") == ["true"]
+                    assert not logs or query.get("pod_uid") == ["fixture-pod"]
+                    value = {
+                        "workspace_id": WORKSPACE,
+                        "deployment_id": DEPLOYMENT,
+                        "kind": kind,
+                        "uid": "fixture-original-uid",
+                        "state": "running" if batch else "ready",
+                        "checked_at": "2026-09-24T12:00:00Z",
+                        "pods": [
+                            {
+                                "uid": "fixture-pod",
+                                "phase": "Running",
+                                "ready": True,
+                                "restarts": 0,
+                                "exit_code": None,
+                            }
+                        ],
+                        "logs": "epoch 1 completed\nrequest token: [redacted]\n"
+                        + "bounded long output " * 20
+                        if logs
+                        else None,
+                        "logs_pod_uid": "fixture-pod" if logs else None,
+                        "logs_truncated": logs,
                     }
                 elif path.endswith(("/" + resource + "/preview", "/teardown-preview")):
                     action = (
@@ -299,6 +330,28 @@ def main(kind="serving"):
                     )
                     submit.focus()
                     submit.press("Enter")
+                    inspect = page.get_by_role(
+                        "button", name=f"Inspect status and logs for {workload_name}"
+                    )
+                    expect(inspect).to_be_visible()
+                    inspect.focus()
+                    inspect.press("Enter")
+                    pod_select = page.get_by_label("Pod log window")
+                    expect(pod_select).to_be_visible()
+                    pod_select.select_option("fixture-pod")
+                    expect(
+                        page.get_by_label(f"Logs for {workload_name}")
+                    ).to_contain_text("epoch 1 completed")
+                    for width in [360, 1280]:
+                        page.set_viewport_size({"width": width, "height": 900})
+                        assert page.evaluate(
+                            "document.documentElement.scrollWidth <= window.innerWidth"
+                        )
+                        page.screenshot(
+                            path=str(OUTPUT / f"{kind}-logs-{width}.png"),
+                            full_page=True,
+                        )
+                    page.set_viewport_size({"width": 360, "height": 800})
                     page.get_by_role(
                         "button", name=f"Review stop for {workload_name}"
                     ).click()

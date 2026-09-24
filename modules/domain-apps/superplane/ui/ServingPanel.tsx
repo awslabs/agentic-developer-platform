@@ -1,3 +1,4 @@
+import { WorkloadObservation } from './WorkloadObservation';
 import { WorkloadCancellation } from './WorkloadCancellation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -73,6 +74,7 @@ function ServingWorkspace(props: Props) {
         <h4 className="font-semibold">{row.name}</h4>
         <p>Status: {row.status}; operation: {row.operationState}</p>
         {row.operationId && <p>Operation reference: {row.operationId}</p>}
+      {catalog?.canObserve && row.deploymentId && !['Deleted', 'CancelledBeforeDispatch'].includes(row.status) && <WorkloadObservation workspaceId={props.workspaceId} row={row} kind="serving" />}
       {row.cancellationRequested && <p>Cancellation requested. Cleanup: {row.cleanupStatus}.</p>}
       {row.status === 'CancelledBeforeDispatch' && <p>Cancelled before dispatch; no workload cleanup is required.</p>}
       {catalog?.canCancel && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
@@ -90,7 +92,7 @@ function ServingWorkspace(props: Props) {
       input={{ deploymentId: stopping.deploymentId }} onProgress={() => void refresh()} />}
     {receipts.filter(({ receipt }) => receipt.submissionStage === 'submitted').map(({ intent, receipt }) =>
       <WorkloadReceipt key={receipt.idempotencyKey} {...props} intent={intent} initial={receipt} />)}
-    <p>Workload logs and authenticated endpoint access are not available in this view yet.</p>
+    <p>Inspect a workload for current status and bounded logs. Authenticated endpoint access is not available in this view yet.</p>
   </section>;
 }
 

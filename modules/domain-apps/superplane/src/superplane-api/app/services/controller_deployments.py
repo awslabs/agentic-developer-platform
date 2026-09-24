@@ -124,8 +124,19 @@ async def serving_catalog(
         "can_submit": False,
         "can_review_teardown": False,
         "can_cancel": False,
+        "can_observe": False,
     }
     try:
+        read_principal = await GrantBackedAuthority(async_session_factory).resolve(
+            org_id=str(org_id),
+            workspace_id=str(workspace_id),
+            permission="workspace:read",
+        )
+        result["can_observe"] = bool(
+            read_principal
+            and settings.controller_status_url
+            and settings.controller_registry_credential
+        )
         principal = await GrantBackedAuthority(async_session_factory).resolve(
             org_id=str(org_id),
             workspace_id=str(workspace_id),

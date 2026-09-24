@@ -1,3 +1,4 @@
+import { WorkloadObservation } from './WorkloadObservation';
 import { WorkloadCancellation } from './WorkloadCancellation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input } from '@/components/ui';
@@ -47,7 +48,7 @@ function BatchWorkspace(props: Props) {
     <h3 className="font-semibold">Batch jobs</h3>
     <p>Select a configured image and invocation, review the limits, then request approval.</p>
     <Button variant="secondary" onClick={() => void refresh()}>Refresh batch jobs</Button>
-    {observed && <p>Status retrieved at {observed}. Workload outcome, logs, result references and observed cost are not reported yet.</p>}
+    {observed && <p>Status retrieved at {observed}. Inspect a job for current workload status and bounded logs. Result references and observed cost are not reported yet.</p>}
     {problem && <Alert variant="warning" title="Batch status unavailable">{problem.detail}{observed ? ' Displayed status may be stale.' : ''}</Alert>}
     {!catalog?.canSubmit && <p>New batch submissions are unavailable. The server must confirm workspace permissions, batch profiles and operation transport.</p>}
     {observed && !problem && rows.length === 0 && <p>No batch jobs are listed. This does not prove cleanup of earlier requests.</p>}
@@ -56,6 +57,7 @@ function BatchWorkspace(props: Props) {
       <h4 className="font-semibold">{row.name}</h4>
       <p>Status: {row.status}; operation: {row.operationState}</p>
       {row.operationId && <p>Operation reference: {row.operationId}</p>}
+      {catalog?.canObserve && row.deploymentId && !['Deleted', 'CancelledBeforeDispatch'].includes(row.status) && <WorkloadObservation workspaceId={props.workspaceId} row={row} kind="batch" />}
       {row.cancellationRequested && <p>Cancellation requested. Cleanup: {row.cleanupStatus}.</p>}
       {row.status === 'CancelledBeforeDispatch' && <p>Cancelled before dispatch; no workload cleanup is required.</p>}
       {catalog?.canCancel && row.deploymentId && row.operationId && !['Deleting', 'Deleted', 'CancelledBeforeDispatch'].includes(row.status) &&
