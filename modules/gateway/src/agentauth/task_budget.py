@@ -122,6 +122,20 @@ class TaskBudget:
         # Existing ledger reconciliation retains actual usage, releasing only
         # unspent headroom. A backend error preserves the original upper bound.
         await self.reservations.reconcile(reservation["reservation_id"], amount, targets)
+        await self.verify_settlement(reservation["reservation_id"], amount, targets)
+
+    async def verify_settlement(self, operation_id, amount, targets):
+        # The shared best-effort reconcile swallows backend failures. Task
+        # terminalization must inspect the real strict ledger before releasing.
+        client = await self.reservations._get_client()
+        for target in targets:
+            values = await client.hmget(target.key(), [operation_id, "pending:" + operation_id, "unbounded:" + operation_id])
+            if not values[0] or values[1] or values[2]:
+                raise TaskBudgetError("task budget settlement unconfirmed")
+            value = values[0].decode() if isinstance(values[0], bytes) else values[0]
+            settled, expires = value.split(":", 1)
+            if Decimal(settled) != Decimal(str(amount)) or float(expires) <= self.clock().timestamp():
+                raise TaskBudgetError("task budget settlement unconfirmed")
 
     async def reserve_model(self, *, task_id, operation_id, cap, amount):
         target = self._target(scope="task:" + task_id, cap=cap)
@@ -133,6 +147,7 @@ class TaskBudget:
 
     async def settle_model(self, *, operation_id, target, actual_usd):
         await self.reservations.reconcile(operation_id, Decimal(str(actual_usd)), [target])
+        await self.verify_settlement(operation_id, actual_usd, [target])
 
 
 def task_budget(repository):

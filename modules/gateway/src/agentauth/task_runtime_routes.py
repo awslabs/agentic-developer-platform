@@ -15,6 +15,7 @@ from src.agentauth.run_credential import CredentialError
 from src.agentauth.task_routes import task_delivery
 from src.agentauth.task_runtime import TaskRuntime
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
+from src.shared.database import get_db
 from src.tasks.store import StaleAttemptError, StaleGenerationError, TaskStore, TaskStoreError, WorkBindingError
 
 UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -142,3 +143,45 @@ async def turn(body: TurnBody, request: Request, runtime=Depends(get_agent_runti
             identity=identity, request_id=body.request_id, expected_transcript_version=body.expected_transcript_version)
     except (TaskStoreError, WorkBindingError):
         raise HTTPException(409, "task turn refused") from None
+
+
+class ModelText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["text"]
+    text: str = Field(min_length=1, max_length=32000)
+
+
+class ModelMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["user", "assistant"]
+    content: list[ModelText] = Field(min_length=1, max_length=16)
+
+
+class ModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"]
+    attempt: TaskAttemptBody
+    turn_id: str = Field(pattern=UUID4)
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    messages: list[ModelMessage] = Field(min_length=1, max_length=32)
+    max_tokens: int = Field(ge=1, le=4096, strict=True)
+    system: str | None = Field(default=None, max_length=16000)
+
+
+@router.post("/model")
+async def model(body: ModelBody, request: Request, runtime=Depends(get_agent_runtime), db=Depends(get_db)):
+    from src.agentauth.model_policy import ModelPolicyError
+    from src.agentauth.task_budget import TaskBudgetError
+    from src.agentauth.task_model import TaskModel
+
+    identity = await authenticate_task_attempt(request)
+    require_body_attempt(identity, body.attempt)
+    invocation = body.model_dump(include={"messages", "max_tokens", "system"}, exclude_none=True)
+    import json
+    if len(json.dumps(invocation, ensure_ascii=False).encode()) > 65536:
+        raise HTTPException(413, "task model request too large")
+    try:
+        return await TaskModel(task_runtime(runtime).repository, db=db).execute(identity=identity,
+            turn_id=body.turn_id, request_digest=body.request_digest, request=invocation)
+    except (TaskStoreError, WorkBindingError, ModelPolicyError, TaskBudgetError):
+        raise HTTPException(409, "task model refused") from None

@@ -34,7 +34,7 @@ TASK_PROBE_BODY = {
 TASK_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version):
+async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version, include_context=False):
     policy = await _resolve_active_allowlist_policy(db, tenant_id=tenant,
         principal_kind="service_account", principal_id=principal, expires_at=deadline)
     if policy.principal_status != "active" or policy.service_policy_unavailable_reason:
@@ -69,14 +69,18 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
     if evidence is None or evidence.is_stale or not evidence.is_proven or not evidence.provider_request_id:
         raise ModelPolicyError("task_model_probe_required")
     state = await get_rate_state(db)
-    from pricing_policy.policy import model_rate_candidates
+    from pricing_policy.policy import model_rate_candidates, staleness_reasons
+    from pricing_policy.storage import utc_now_iso
     rates = model_rate_candidates(state.rows, model_id, served_service_tier="standard")
-    if not state.from_database or state.reasons or not rates:
+    if (not state.from_database or state.reasons or not rates
+            or any(staleness_reasons(row_verified_at=row.verified_at, now_iso=utc_now_iso()) for row in rates)):
         raise ModelPolicyError("task_model_pricing_unavailable")
     pricing_version = hashlib.sha256(json.dumps({"generation": state.generation_id,
         "pointer": state.pointer_revision, "model": model_id}, sort_keys=True).encode()).hexdigest()
-    return {
+    binding = {
         "model_id": model_id, "transport": TASK_TRANSPORT,
         "model_policy_version": str(preference.revision), "request_shape_version": TASK_REQUEST_SHAPE,
         "pricing_evidence_version": pricing_version, "invocability_verified": True,
     }
+
+    return (binding, policy, target) if include_context else binding

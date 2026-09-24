@@ -75,3 +75,30 @@ async def test_real_admission_reserves_once_and_failed_loser_cannot_release(clie
     target = budget._target(scope="qualification:test-qualification", cap=25)
     assert (await reservations.snapshot(target)).total_usd == 1
     await reservations.close()
+
+
+@pytest.mark.asyncio
+async def test_task_budget_settlement_verifies_actual_redis_receipt(client):
+    from decimal import Decimal
+    from unittest.mock import AsyncMock
+
+    import fakeredis.aioredis
+
+    from src.agentauth.bootstrap import BootstrapStore
+    from src.agentauth.task_budget import TaskBudget, TaskBudgetError
+    from src.budget.reservations import ReservationStore
+
+    reservations = ReservationStore(redis_url=None, ttl_seconds=86400, clock=lambda: NOW.timestamp(),
+        client=fakeredis.aioredis.FakeRedis(decode_responses=True))
+    budget = TaskBudget(BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client), reservations=reservations,
+        qualification_id="test-qualification", clock=lambda: NOW)
+    target = await budget.reserve_model(task_id="task", operation_id="op", cap=1, amount="0.2")
+    reconcile = reservations.reconcile
+    reservations.reconcile = AsyncMock()  # Shared implementation may return after swallowing a backend failure.
+    with pytest.raises(TaskBudgetError, match="unconfirmed"):
+        await budget.settle_model(operation_id="op", target=target, actual_usd="0.01")
+    assert (await reservations.snapshot(target)).total_usd == Decimal("0.2")
+    reservations.reconcile = reconcile
+    await budget.settle_model(operation_id="op", target=target, actual_usd="0.01")
+    assert (await reservations.snapshot(target)).total_usd == Decimal("0.01")
+    await reservations.close()
