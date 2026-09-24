@@ -23,6 +23,11 @@ a live grant. The tests below are organized around the two claims that makes:
 
 These run through the real HTTP route against moto, not against a stubbed store, so
 "the second acceptance is refused" is demonstrated by the conditional write itself.
+
+They also run against the **shipped** ``SUPPORTED_AGENT_ACTIONS``: ABORT is in the
+real constant as of #3963, and the ``abort_supported`` fixture asserts that rather
+than patching it in. That distinction is the difference between proving the route
+works and proving it would work if the deployment offered the verb.
 """
 
 from __future__ import annotations
@@ -71,19 +76,26 @@ BODY = json.dumps({"command_id": COMMAND, "reason": "wrong issue"}).encode()
 
 
 @pytest.fixture
-def abort_supported(monkeypatch):
-    """Let this deployment perform ABORT, for these tests only.
+def abort_supported():
+    """Assert — do not arrange — that this deployment performs ABORT.
 
-    Patched the same way ``test_adapter.py`` patches PAUSE, and for the same
-    reason: ``require_supported`` runs *before* the receipt is minted, so stubbing
-    it out with a no-op would hide the ordering this file depends on. Patching the
-    set keeps the real check executing. ``test_policy.py`` still pins the shipped
-    value of ``SUPPORTED_AGENT_ACTIONS``.
+    This fixture used to ``monkeypatch`` ``SUPPORTED_AGENT_ACTIONS`` to add ABORT,
+    which was honest while the verb was unimplemented but made every test in this
+    file prove something about a set no deployment had. ``require_supported`` runs
+    *before* the receipt is minted, so a patched set meant the whole receipt path
+    was exercised only under a configuration that did not ship: remove ABORT from
+    the real constant and each of these tests would keep passing while the live
+    route answered 501.
+
+    #3963 enables the verb for real, so the fixture inverts: it reads the shipped
+    constant and fails loudly if ABORT is absent. Every test below now runs against
+    the deployed policy, and ``require_supported`` is executing the real check on
+    the real value.
     """
-    monkeypatch.setattr(
-        policy_module,
-        "SUPPORTED_AGENT_ACTIONS",
-        frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT}),
+    assert AgentAction.ABORT in policy_module.SUPPORTED_AGENT_ACTIONS, (
+        "SUPPORTED_AGENT_ACTIONS no longer contains ABORT, so revalidate_command would refuse every "
+        "abort with 501 before minting a receipt. These tests describe the shipped deployment and must "
+        "not be made to pass by patching the set back in."
     )
 
 
