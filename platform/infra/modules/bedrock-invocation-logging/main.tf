@@ -1,9 +1,14 @@
 terraform {
   required_version = ">= 1.5"
   required_providers {
+    # Must stay compatible with the platform root's AWS floor (#5831).
+    # The root requires >= 6.42.0 so Terraform can decode aws_eks_addon state
+    # written by a newer provider; a child module still pinned to `~> 5.0` would
+    # make the two constraints unsatisfiable and fail `terraform init` outright.
+    # See platform/infra/main.tf for why 6.42.0 is the floor.
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 6.42.0, < 7.0.0"
     }
   }
 }
