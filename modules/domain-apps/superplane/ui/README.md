@@ -133,3 +133,12 @@ changed plans, revoked and mismatched approvals, cross-workspace responses, and
 read-only views. These are remote CI transport-fixture tests. Browser layout and
 live serving acceptance remain outstanding. Batch submission, bounded logs,
 result links, endpoint access and reconciled workload costs remain required for complete #5731 delivery.
+
+`Superplane UI Browser CI`, called by Gateway CI, starts the maintained Vite
+frontend on loopback and renders this component in Chromium with fixture HTTP
+responses. It checks keyboard submission, review/approval/stop interaction and
+horizontal overflow at360px and1280px, and uploads screenshots plus a fixture
+receipt. Browser requests outside the loopback origin are refused. This is
+isolated browser evidence, not a deployed onboarding or serving demonstration.
+Tailwind explicitly scans the domain UI so its classes are included in the
+shipped frontend bundle.

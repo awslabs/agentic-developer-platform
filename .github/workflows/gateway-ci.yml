@@ -97,6 +97,7 @@ on:
       - '.github/scripts/validate_loop_proposal.py'
       - 'aidlc/spaces/issue-4120/construction/loop-proposal/**'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/superplane-ui-browser-ci.yml'
       - '.github/workflows/gateway-deploy.yml'
       - '.github/workflows/gateway-smoke.yml'
       - 'codebuild/bs-gateway-build.yml'
@@ -132,6 +133,7 @@ on:
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/superplane-ui-browser-ci.yml'
       - '.github/workflows/gateway-deploy.yml'
       - 'codebuild/bs-gateway-build.yml'
       - 'codebuild/bs-gateway-smoke.yml'
@@ -144,6 +146,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  superplane-browser:
+    name: Superplane browser
+    uses: ./.github/workflows/superplane-ui-browser-ci.yml
+    permissions:
+      contents: read
+
   lint:
     name: Lint
     runs-on: arc-runner-org
