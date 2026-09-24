@@ -5,7 +5,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # --- Node schemas ---
 
 
@@ -37,6 +36,7 @@ class NodeListResponse(BaseModel):
 class CreateDeploymentRequest(BaseModel):
     """POST /workspaces/{id}/deployments — create a model deployment."""
 
+    operation_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     name: str = Field(
         ..., min_length=1, max_length=255, pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$"
     )

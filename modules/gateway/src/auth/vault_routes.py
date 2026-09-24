@@ -6,6 +6,7 @@ Issue #446: Vault Phase 2b — Magic-link identity linking flow
 Endpoints:
   GET    /auth/credentials                   — list caller's credentials (metadata only)
   POST   /auth/credentials                   — register a new credential
+  PUT    /auth/credentials/{id}              — idempotently register under a caller UUID
   PATCH  /auth/credentials/{id}              — update label / expires_at / strict
   DELETE /auth/credentials/{id}              — delete DB row + SM secret
   GET    /auth/identities                    — list caller's linked identities
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel
@@ -215,6 +217,47 @@ async def create_credential_endpoint(
         )
     except Exception:
         logger.exception("Unexpected error creating credential for user=%s", token_context.user_id)
+        raise HTTPException(status_code=500, detail={"error": "create_failed", "message": "Failed to create credential"})
+
+
+@router.put(
+    "/credentials/{credential_id}",
+    response_model=CredentialResponse,
+    status_code=201,
+    summary="Idempotently register a credential",
+    description=(
+        "Stores a credential under a caller-generated operation UUID. Repeating the same request "
+        "with the same UUID returns the original metadata without writing another secret."
+    ),
+)
+async def put_credential_endpoint(
+    credential_id: UUID = Path(..., description="Caller-generated credential operation UUID"),
+    data: CredentialCreate = ...,
+    token_context=Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+    sm: SecretsManagerHelper = Depends(get_secrets_manager),
+) -> CredentialResponse:
+    try:
+        await _resolve_user_id_in_context(token_context, db)
+        cred = await create_credential(data, db, token_context, sm, credential_id=str(credential_id))
+        return CredentialResponse.from_model(cred)
+    except InsufficientPrivilegesError as exc:
+        raise HTTPException(status_code=403, detail={"error": "insufficient_privileges", "message": str(exc)})
+    except InvalidScopeConfigError as exc:
+        raise HTTPException(status_code=422, detail={"error": "invalid_scope_config", "message": str(exc)})
+    except DuplicateCredentialError:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "operation_conflict",
+                "message": (
+                    "Credential operation conflicts with existing state. Its secret may already exist even if "
+                    "metadata is absent; retain the operation UUID and retry only this operation with the same inputs."
+                ),
+            },
+        )
+    except Exception:
+        logger.exception("Unexpected idempotent credential create for user=%s", token_context.user_id)
         raise HTTPException(status_code=500, detail={"error": "create_failed", "message": "Failed to create credential"})
 
 

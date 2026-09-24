@@ -68,6 +68,35 @@ on:
       # only hold for the commit that introduced them.
       - '.github/workflows/platform-infra-apply.yml'
       - 'platform/infra/modules/eks/main.tf'
+      # The AWS provider floor the constraint guard asserts against (#5831).
+      # `required_providers` is resolved by `init`, so no `terraform test` can
+      # see it; the guard reads these files as text and is the only merge-
+      # blocking check that the floor still admits nothing below 6.42.0 (below
+      # which aws_eks_addon state cannot be serialised to JSON, breaking
+      # saved-plan review). Both files are listed because the root and child
+      # constraints must stay identical or `init` fails on an empty
+      # intersection.
+      - 'platform/infra/main.tf'
+      - 'platform/infra/modules/bedrock-invocation-logging/main.tf'
+      - '.github/scripts/tests/test_platform_provider_constraint.py'
+      # The mixed-age state reproduction (#5831). The floor above was necessary
+      # but not sufficient: a targeted plan over state containing a record OLDER
+      # than the provider's schema still fails to export, because -target leaves
+      # untargeted records unupgraded while `show -json` serialises all of them.
+      # The runbook is listed because the suite asserts it still documents the
+      # refresh-only migration sequence — the only reviewed route that normalises
+      # schema without proposing resource changes. An ordinary full apply would
+      # propose destroying the undeclared CoreDNS add-on, so that advice drifting
+      # is a destructive-change risk, not a docs nit.
+      - '.github/scripts/tests/test_platform_mixed_state_export.py'
+      - '.github/scripts/tests/fixtures/platform-mixed-state-5831/**'
+      - 'docs/runbooks/platform-aws-provider-floor.md'
+      # The step-4 preservation guard for that migration (#5831). It is the gate in
+      # front of a state-WRITING apply, so its refusal legs are the safety property:
+      # the snippet it replaced printed counts and exited 0 regardless, which reads
+      # as a gate while stopping nothing. Needs no terraform binary.
+      - 'platform/scripts/refresh_only_migration_guard.py'
+      - '.github/scripts/tests/test_refresh_only_migration_guard.py'
       # The cross-module tag agreement for the shared CI runner access entry is
       # asserted against BOTH declarations, so an edit to either side must
       # re-run the gate. No workflow here runs `terraform test`, so the tftest
@@ -150,6 +179,35 @@ on:
       # only hold for the commit that introduced them.
       - '.github/workflows/platform-infra-apply.yml'
       - 'platform/infra/modules/eks/main.tf'
+      # The AWS provider floor the constraint guard asserts against (#5831).
+      # `required_providers` is resolved by `init`, so no `terraform test` can
+      # see it; the guard reads these files as text and is the only merge-
+      # blocking check that the floor still admits nothing below 6.42.0 (below
+      # which aws_eks_addon state cannot be serialised to JSON, breaking
+      # saved-plan review). Both files are listed because the root and child
+      # constraints must stay identical or `init` fails on an empty
+      # intersection.
+      - 'platform/infra/main.tf'
+      - 'platform/infra/modules/bedrock-invocation-logging/main.tf'
+      - '.github/scripts/tests/test_platform_provider_constraint.py'
+      # The mixed-age state reproduction (#5831). The floor above was necessary
+      # but not sufficient: a targeted plan over state containing a record OLDER
+      # than the provider's schema still fails to export, because -target leaves
+      # untargeted records unupgraded while `show -json` serialises all of them.
+      # The runbook is listed because the suite asserts it still documents the
+      # refresh-only migration sequence — the only reviewed route that normalises
+      # schema without proposing resource changes. An ordinary full apply would
+      # propose destroying the undeclared CoreDNS add-on, so that advice drifting
+      # is a destructive-change risk, not a docs nit.
+      - '.github/scripts/tests/test_platform_mixed_state_export.py'
+      - '.github/scripts/tests/fixtures/platform-mixed-state-5831/**'
+      - 'docs/runbooks/platform-aws-provider-floor.md'
+      # The step-4 preservation guard for that migration (#5831). It is the gate in
+      # front of a state-WRITING apply, so its refusal legs are the safety property:
+      # the snippet it replaced printed counts and exited 0 regardless, which reads
+      # as a gate while stopping nothing. Needs no terraform binary.
+      - 'platform/scripts/refresh_only_migration_guard.py'
+      - '.github/scripts/tests/test_refresh_only_migration_guard.py'
       # The cross-module tag agreement for the shared CI runner access entry is
       # asserted against BOTH declarations, so an edit to either side must
       # re-run the gate. No workflow here runs `terraform test`, so the tftest
@@ -237,8 +295,46 @@ jobs:
             tests/test_nightly_triage_wiring.py \
             tests/test_report_finalization.py \
             tests/test_verify_scoped_plan.py \
+            tests/test_platform_provider_constraint.py \
+            tests/test_refresh_only_migration_guard.py \
             tests/test_security_scan_tool_invocations.py \
             -v --tb=short --timeout=60
+
+      # The mixed-age state reproduction (#5831) runs separately from the pinned
+      # suite above for two reasons, both of which would otherwise make it
+      # decorative:
+      #
+      # 1. It needs a real `terraform` binary. Its Terraform-dependent legs skip
+      #    when one is absent, so without the setup step below this gate would
+      #    report green having asserted only the fixture's shape -- the exact
+      #    silent-coverage-loss this workflow exists to prevent. Terraform is set
+      #    up immediately before it rather than at job top so the dependency is
+      #    visible at the point of use.
+      # 2. Its legs run `init` (which downloads a provider) and six plan+export
+      #    cycles, so they exceed the 60s per-test timeout the pinned run uses.
+      #    Raising that run's timeout to suit one suite would weaken the bound on
+      #    twenty others; a separate step keeps 60s meaningful there.
+      # 3. Two of those legs drive platform/scripts/refresh_only_migration_guard.py
+      #    against plans Terraform really wrote. The guard's own suite in the pinned
+      #    run stubs `terraform show`, so only here is it shown to work on real
+      #    Terraform output -- which is why the guard's path is a trigger for this
+      #    step too, not just for the pinned one.
+      #
+      # No AWS access: the suite strips every AWS_*/BOTO_* variable and disables
+      # IMDS, so the self-hosted pool's ambient identity cannot satisfy its plans.
+      # Pinned to the Terraform version the platform workflows use.
+      - name: Setup Terraform for the mixed-state reproduction
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+
+      - name: Run platform mixed-age state reproduction
+        working-directory: .github/scripts
+        run: |
+          pytest \
+            tests/test_platform_mixed_state_export.py \
+            -v --tb=short --timeout=300
 
       # The container-scan inventory/coverage suite lives beside its subject in
       # codebuild/, not under .github/scripts/tests/, so the pinned run above

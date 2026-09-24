@@ -252,16 +252,28 @@ Read the delivery plan's dependency graph. Group units into waves:
 - **Wave 2**: units that depend only on Wave 1 units
 - **Wave N**: units that depend only on already-scheduled waves
 
+Choose the display text yourself from the delivery plan; do not ask the user to
+supply or approve names and descriptions separately. Make it easy to understand
+without removing technical meaning: retain terms such as authenticated dispatch,
+persistence, isolation and rollback where they explain the capability. Avoid
+vague labels such as "Setup", "Implementation" or "Validation" alone.
+
+Give every wave a short capability title and a one- or two-sentence description
+of the work delivered and what its evaluation proves. Name mixed work waves for
+their capability (for example, **API and persistence**), not just "Validation V1".
+A wave containing only release evaluation can be **Release acceptance**.
+Keep stable `epic_ref` and `wave_ref` identifiers separate from this display text.
+
 Record the wave assignment in a `wave-map.md` file:
 
 ```markdown
 # Wave Map
 
-| Wave | Story Issues | Depends on |
-|------|-------------|------------|
-| 1 | #<s1>, #<s2> | — |
-| 2 | #<s3>, #<s4> | Wave 1 |
-| ... | ... | ... |
+| Wave ref | Display name | Description | Story Issues | Depends on |
+|----------|--------------|-------------|--------------|------------|
+| wave-1 | Contracts and design | Freeze the contracts and verify the baseline. | #<s1>, #<s2> | — |
+| wave-2 | API and persistence | Build durable storage and APIs; qualify authorization and storage. | #<s3>, #<s4> | wave-1 |
+| ... | ... | ... | ... | ... |
 
 **Account ID**: <12-digit>
 **Credential label**: <adp-cred label>
@@ -443,6 +455,15 @@ assignment you already hold.
       {"name": "loop-proposal", "state": "open"}
     ]
   },
+  "epic_metadata": [
+    {"epic_ref": "epic-<EPIC>", "title": "<capability title, 1-200 chars>",
+     "description": "<what is being built, why it matters and the key boundaries, 1-3000 chars>"}
+  ],
+  "wave_metadata": [
+    {"epic_ref": "epic-<EPIC>", "wave_ref": "wave-<K>",
+     "title": "<capability display name, 1-120 chars>",
+     "description": "<work delivered and what the evaluation proves, 1-500 chars>"}
+  ],
   "nodes": [
     {"address": "<flow_slug>/epic-<EPIC>/wave-<K>/<node-ref>",
      "kind": "story", "title": "<story title>", "issue_ref": "<story issue number>"},
@@ -455,6 +476,28 @@ assignment you already hold.
   ]
 }
 ```
+
+**Epic description:** For every epic in a new plan, emit one `epic_metadata`
+entry keyed by its stable `epic_ref`. Write the title and description yourself
+from the intent, motivation and agreed requirements. Explain the user need,
+what the epic will deliver, why it is being built, and its key boundaries in a
+few short paragraphs. Keep technical terms that aid understanding; do not reduce
+the description to a vague slogan or invent scope. This text appears directly
+below the epic heading in the graph. Do not ask the user to supply it or add a
+separate naming approval. Keep it consistent with the GitHub epic and retain it
+in full replacement amendments. Duplicate and unknown epic references are
+rejected; legacy plans may omit metadata.
+
+**Wave display metadata:** For new AI-DLC plans, author one `wave_metadata`
+entry per `(epic_ref, wave_ref)` in the nodes, including evaluation-only waves.
+Use the same title and description in the wave map, gate brief and completion
+summary. The schema accepts omission for legacy plans, but new AI-DLC output
+should describe every wave. Titles and descriptions must be nonblank and within
+the limits above; duplicate or unknown wave references are rejected. These are
+plain display strings, not wave nodes, scheduling instructions or execution
+permissions. Keep node addresses, edges and evaluation issue links unchanged
+when improving wording. Full replacement amendments must retain metadata for
+retained waves, add it for new waves and remove it for deleted waves.
 
 **Rules — a document breaking any of these is refused by the engine:**
 

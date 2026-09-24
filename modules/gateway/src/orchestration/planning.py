@@ -15,11 +15,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits
-from src.orchestration.proposal import LoopProposal, ProposedEdge, ProposedNode
+from src.orchestration.proposal import EpicDisplay, EpicMetadata, LoopProposal, ProposedEdge, ProposedNode, WaveDisplay, WaveMetadata
 
 __all__ = [
     "MAX_OUTCOMES",
+    "MIN_POLICY_REMAINDER",
     "PLANNER_SPEC_REVISION",
+    "POLICY_LIFETIME",
     "PlanningError",
     "PlanningInputs",
     "ResolvedRepository",
@@ -51,6 +53,33 @@ DEFAULT_EPIC = "epic-1"
 # available failure. The number is generous — a plan needing more than this is
 # really several plans, and the refusal says so.
 MAX_OUTCOMES = 40
+
+# How long a proposed grant lasts, measured from the conversation's LAST ACTIVITY
+# rather than from its creation (#5331).
+#
+# The anchor is the whole point. Measured from creation, the 24 hours were spent by
+# the user thinking — and spent entirely by the disconnect-and-return this story
+# requires, so a conversation resumed on Thursday and approved produced a grant that
+# expired on Tuesday. Nothing refused it: the gate moved, the graph armed, and every
+# dispatch was then denied `policy_expired` on a plan the human had just authorized.
+#
+# Last activity is a real signal and not merely a convenient one. The ingest and
+# response Lambdas bump `updated_at` on every turn, and the conversation row's own
+# DynamoDB TTL is already `updated_at + 86400` — so this is the same horizon the
+# conversation itself is retained for, not a second lifetime invented here.
+#
+# Deliberately NOT `now + 1 day`, which is the obvious fix and breaks a different
+# requirement: the derivation has to be deterministic so that a caller whose response
+# was lost re-derives a byte-identical document and re-registers it as the server's
+# own `already_registered` case. A wall-clock expiry would make two attempts seconds
+# apart two different documents, and therefore two flows for one intent.
+POLICY_LIFETIME = timedelta(days=1)
+
+# The least usable life a proposed grant may be offered with. A grant with four
+# seconds left is not meaningfully different from an expired one — the human still has
+# to read the preview and answer the gate — so the derivation refuses rather than
+# emitting bounds that will be dead before they can be approved.
+MIN_POLICY_REMAINDER = timedelta(hours=1)
 
 # `owner/name`, the form `policy_admission` matches verbatim. Enforced rather than
 # normalized, for the reason that module gives: guessing which owner a bare name
@@ -120,8 +149,15 @@ class PlanningInputs:
     # sourcing it from the caller's own identity means the two can never disagree and
     # the refusal is unreachable rather than merely handled.
     org_id: str
+    wave_display: WaveDisplay | None = None
+    epic_display: EpicDisplay | None = None
     repository: ResolvedRepository | None = None
-    policy_epoch: int = 0
+    # The conversation's LAST ACTIVITY, as a unix epoch — the anchor a proposed
+    # grant's expiry is measured from. Named for what it must be rather than for
+    # where it comes from, because the defect this field's previous name
+    # (`policy_epoch`) permitted was a route passing creation time into it and
+    # producing a grant already spent. See `POLICY_LIFETIME`.
+    last_activity_epoch: int = 0
 
 
 def slugify(text: str, *, fallback: str) -> str:
@@ -261,7 +297,10 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
 
     With a resolved repository, propose a finite development/review policy.
     It grants no merge, deployment or credential authority. The acceptance gate is
-    inserted by the shared registration transform.
+    inserted by the shared registration transform. Its expiry is measured from the
+    conversation's last activity, and a conversation too idle to carry a usable grant
+    is refused rather than handed bounds that expire before they can be approved —
+    see `POLICY_LIFETIME`.
 
     Deterministic: the same draft yields a byte-identical document and therefore the
     same `plan_hash`. That is what makes the registration path's idempotency reachable
@@ -281,6 +320,20 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
             f"This intent declares {len(inputs.outcomes)} outcomes, above the {MAX_OUTCOMES} one plan carries. "
             "Outcomes are not dropped to fit, because a plan that silently omitted some would look complete. "
             "Split this into separate flows.",
+        )
+
+    # Resolved before any node is built, so a conversation that cannot carry a usable
+    # grant is refused without having produced a document first. Only consulted when a
+    # repository was resolved: with no repository there is no policy, so there is no
+    # grant to be spent, and refusing would break the module's own documented case of a
+    # plan whose missing binding the preview reports as a real prerequisite.
+    expires_at = datetime.fromtimestamp(inputs.last_activity_epoch, tz=UTC) + POLICY_LIFETIME
+    if inputs.repository and expires_at - datetime.now(tz=UTC) < MIN_POLICY_REMAINDER:
+        raise PlanningError(
+            "planning_session_idle",
+            "This conversation has been idle too long for the bounded authority a plan proposes to still be usable, so "
+            "a plan derived now would ask you to approve permissions that expire before they could be used. Continue "
+            "the conversation — say anything, or restate what you want — and then request the plan again.",
         )
 
     flow = inputs.flow_slug
@@ -350,6 +403,23 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
         # (`HASH_EXCLUDED_FIELDS`), so wording changes here cannot invalidate a
         # revision a human already bound their acceptance to.
         description=inputs.intent.strip()[:500] or None,
+        epic_metadata=[
+            EpicMetadata(
+                epic_ref=DEFAULT_EPIC,
+                title=inputs.epic_display.title if inputs.epic_display else inputs.title.strip()[:200],
+                description=inputs.epic_display.description if inputs.epic_display else inputs.intent.strip()[:3000] or inputs.title,
+            )
+        ],
+        wave_metadata=[
+            WaveMetadata(
+                epic_ref=DEFAULT_EPIC,
+                wave_ref=FIRST_WAVE,
+                # New conversations carry model-authored display text. Older
+                # drafts remain usable without a naming question or another call.
+                title=inputs.wave_display.title if inputs.wave_display else inputs.title.strip()[:120],
+                description=inputs.wave_display.description if inputs.wave_display else inputs.intent.strip()[:500] or None,
+            )
+        ],
         nodes=nodes,
         edges=edges,
         proposed_execution_policy=(
@@ -357,7 +427,7 @@ def plan_from_draft(inputs: PlanningInputs) -> LoopProposal:
                 org_id=inputs.org_id,
                 repository_ids=[inputs.repository.full_name],
                 allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.EVALUATE],
-                expires_at=datetime.fromtimestamp(inputs.policy_epoch, tz=UTC) + timedelta(days=1),
+                expires_at=expires_at,
                 limits=PolicyLimits(
                     max_spend_usd="5.00",
                     max_wall_clock_seconds=3600,

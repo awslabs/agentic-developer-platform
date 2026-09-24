@@ -111,6 +111,11 @@ class Clock:
 @pytest.fixture
 def gateway_cache(monkeypatch):
     """Load the maintained proxy and its real five-second cache, with only S3/HTTP faked."""
+    # This suite runs outside Gateway's conftest, but importing its proxy initializes
+    # the real authentication middleware. Supply a test-only signing key first.
+    monkeypatch.setenv(
+        "BG_TOKEN_SECRET_KEY", "installer-test-key-do-not-use-in-production"
+    )
     source = MODULE.parents[1] / "gateway/src/domain_proxy/superplane.py"
     spec = importlib.util.spec_from_file_location("installer_gateway_proxy", source)
     proxy = importlib.util.module_from_spec(spec)

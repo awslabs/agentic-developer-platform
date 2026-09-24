@@ -6,7 +6,7 @@ version: 0.2
 #
 # Used by .github/workflows/gateway-ci.yml "Build Container" via
 # `start-build --buildspec-override codebuild/bs-gateway-smoke.yml` on the
-# gateway-build project (privileged docker). ARC runners have no Docker
+# gateway-smoke project (nonpublishing, privileged Docker). ARC runners have no Docker
 # daemon, so docker builds run here — the platform convention.
 
 phases:

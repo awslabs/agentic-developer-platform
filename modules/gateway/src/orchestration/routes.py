@@ -89,6 +89,7 @@ from src.orchestration.dispatch_pass import (
     routing_blocker_for_node,
 )
 from src.orchestration.display_state import FlowStatus
+from src.orchestration.draft_revision_routes import router as draft_revision_router
 from src.orchestration.evaluation_acceptance_routes import router as evaluation_acceptance_router
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
@@ -106,7 +107,7 @@ from src.orchestration.pr_bindings import (
     recover_binding,
 )
 from src.orchestration.pr_identity import PrIdentityError, resolve_pr_identity
-from src.orchestration.proposal import LoopProposal, split_address
+from src.orchestration.proposal import EpicMetadata, LoopProposal, WaveMetadata, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.orchestration.run_report_read import MAX_REPORTS_PER_PAGE, FlowRunReportsResponse, load_flow_run_reports
 from src.orchestration.shared_amendment_routes import router as shared_amendment_router
@@ -1035,6 +1036,8 @@ class WaveSummaryResponse(BaseModel):
 
     epic_ref: str
     wave_ref: str
+    title: str | None = None
+    description: str | None = None
     total: int
     done: int
     story_count: int
@@ -1123,10 +1126,12 @@ class FlowListResponse(BaseModel):
     status_counts: dict[str, int]
 
 
-def _wave_summary(wave: WaveAggregate) -> WaveSummaryResponse:
+def _wave_summary(wave: WaveAggregate, metadata: dict | None = None) -> WaveSummaryResponse:
     return WaveSummaryResponse(
         epic_ref=wave.epic_ref,
         wave_ref=wave.wave_ref,
+        title=(metadata or {}).get("title"),
+        description=(metadata or {}).get("description"),
         total=wave.total,
         done=wave.done,
         story_count=wave.story_count,
@@ -1217,8 +1222,10 @@ async def list_flows_route(
             continue
         measured[flow_slug].append(node_cost)
 
+    display_metadata = await repo.display_metadata_for_flows(org_id=current_user.org_id, flow_ids=[aggregate.flow.id for aggregate in page.flows])
     flows: list[FlowSummaryResponse] = []
     for aggregate in page.flows:
+        wave_metadata = {(item["epic_ref"], item["wave_ref"]): item for item in display_metadata.get(aggregate.flow.id, {}).get("wave_metadata", [])}
         flows.append(
             FlowSummaryResponse(
                 id=aggregate.flow.id,
@@ -1243,7 +1250,7 @@ async def list_flows_route(
                 epic_count=aggregate.epic_count,
                 wave_count=len(aggregate.waves),
                 current_wave_ref=aggregate.current_wave_ref,
-                waves=[_wave_summary(wave) for wave in aggregate.waves],
+                waves=[_wave_summary(wave, wave_metadata.get((wave.epic_ref, wave.wave_ref))) for wave in aggregate.waves],
                 delivery_cost=_node_cost_response(_roll_up_delivery_cost(aggregate.flow.slug, measured.get(aggregate.flow.slug, []))),
                 created_at=aggregate.flow.created_at.isoformat(),
                 updated_at=aggregate.flow.updated_at.isoformat() if aggregate.flow.updated_at else None,
@@ -1402,6 +1409,8 @@ class FlowGraphResponse(BaseModel):
     updated_at: str | None
     nodes: list[GraphNodeResponse]
     edges: list[GraphEdgeResponse]
+    wave_metadata: list[WaveMetadata] = Field(default_factory=list)
+    epic_metadata: list[EpicMetadata] = Field(default_factory=list)
     cost: FlowCostResponse
     # What the owner authorized for this delivery, or `None` when no policy is in
     # force (#5128). `None` is a real and permanent state, not a transitional one:
@@ -1454,6 +1463,7 @@ async def get_flow_graph(
     # the version currently in force, which is what makes an amendment show up here
     # without a superseded version ever being shown as current.
     policy_inputs = await load_in_force_policy(db, org_id=current_user.org_id, flow_id=flow.id)
+    display_metadata = await repo.display_metadata_for_flows(org_id=current_user.org_id, flow_ids=[flow.id])
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
     display_states = await repo.node_display_states(org_id=current_user.org_id, flow_id=flow.id)
     stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
@@ -1631,6 +1641,8 @@ async def get_flow_graph(
         created_at=flow.created_at.isoformat(),
         updated_at=flow.updated_at.isoformat() if flow.updated_at else None,
         nodes=graph_nodes,
+        wave_metadata=display_metadata.get(flow.id, {}).get("wave_metadata", []),
+        epic_metadata=display_metadata.get(flow.id, {}).get("epic_metadata", []),
         edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
         cost=_flow_cost_response(flow.id, aggregate),
         execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
@@ -1911,3 +1923,5 @@ router.include_router(shared_concurrency_router)
 router.include_router(shared_retry_router)
 router.include_router(shared_window_router)
 router.include_router(evaluation_acceptance_router)
+
+router.include_router(draft_revision_router)

@@ -42,6 +42,16 @@ from src.shared.services.routing_probe import (
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
 from .aws_connect_setup import connect_setup_download
+from .aws_connection_authority import (
+    connection_binding,
+    connection_conflict,
+    connection_material,
+    invalidate_connection,
+    owned_aws_connection,
+    require_active_connection,
+    require_assumed_identity,
+    verified_connection_evidence,
+)
 from .cfn_template import build_launch_url, compute_role_arn, read_role_template
 from .middleware import get_current_user_context
 from .org_id_resolver import resolve_effective_org_id
@@ -74,7 +84,7 @@ async def _resolve_user_id(cognito_sub: str, db: AsyncSession, *, org_id: str = 
     return user.id
 
 
-async def _owned_connection(credential_id: str, db: AsyncSession, db_user_id: str, org_id: str) -> UserCredential:
+async def _owned_connection(credential_id: str, db: AsyncSession, db_user_id: str, org_id: str, *, lock=False) -> UserCredential:
     """Fetch one personal AWS connection **owned by this caller**, or 404.
 
     Ownership is expressed as part of the query rather than as a comparison
@@ -83,20 +93,7 @@ async def _owned_connection(credential_id: str, db: AsyncSession, db_user_id: st
     exactly this lookup on three paths (verify, setup, import reuse), and three
     hand-copied WHERE clauses is how one of them ends up missing a column.
     """
-    cred = await db.scalar(
-        select(UserCredential).where(
-            UserCredential.id == credential_id,
-            UserCredential.user_id == db_user_id,
-            UserCredential.org_id == org_id,
-            UserCredential.credential_type == "aws_role",
-        )
-    )
-    if cred is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "not_found", "message": "Credential not found"},
-        )
-    return cred
+    return await owned_aws_connection(db, credential_id, db_user_id, org_id, lock=lock)
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +337,8 @@ async def connect_verify(
     # (Issue #600: GitHub-federated users may have empty org_id in token)
     effective_org_id = await resolve_effective_org_id(token_context, db)
 
-    cred = await _owned_connection(data.credential_id, db, db_user_id, effective_org_id)
+    cred = await _owned_connection(data.credential_id, db, db_user_id, effective_org_id, lock=True)
+    require_active_connection(cred)
 
     # Idempotency: already verified → no-op. Replay the stored routing
     # classification rather than re-probing (rows written before #4742 simply
@@ -349,25 +347,55 @@ async def connect_verify(
     # Issue #5182: `fresh=True` opts out. `adp aws verify` is asked precisely
     # when the caller doubts the stored verdict, so replaying it would answer a
     # different question. The default keeps the UI path unchanged.
-    if not data.fresh and cred.scopes and cred.scopes.get("status") == "verified":
-        return ConnectVerifyResponse(
-            status="verified",
-            routing_capable=cred.scopes.get("routing_capable"),
-            routing_reason=cred.scopes.get("routing_reason"),
-        )
+    if not data.fresh:
+        try:
+            evidence = verified_connection_evidence(cred)
+        except HTTPException:
+            evidence = None
+        if evidence is not None:
+            try:
+                version = await asyncio.to_thread(sm.current_version_id, cred.secret_arn)
+            except Exception:
+                version = None
+            require_active_connection(cred)
+            if version == evidence[1]:
+                response = ConnectVerifyResponse(
+                    status="verified",
+                    routing_capable=cred.scopes.get("routing_capable"),
+                    routing_reason=cred.scopes.get("routing_reason"),
+                )
+                await db.commit()
+                return response
 
-    # Read secret payload to get role_arn and external_id
-    secret_value: str = await asyncio.to_thread(sm.get_secret, cred.secret_arn)
-    secret_data = json.loads(secret_value)
-
-    role_arn = secret_data["role_arn"]
-    external_id = secret_data.get("external_id")
+    # Publish a failed-closed generation before provider I/O. Later attempts and
+    # metadata changes fence this attempt, so a slow success cannot revive a
+    # connection after a newer check failed or its owner revoked it.
+    binding = connection_binding(cred)
+    secret_arn, label = cred.secret_arn, cred.label
+    scopes = dict(cred.scopes or {})
+    invalidate_connection(cred)
+    attempt = str(uuid.uuid4())
+    cred.aws_verification_attempt = attempt
+    await db.commit()
+    try:
+        version = await asyncio.to_thread(sm.current_version_id, secret_arn)
+        if not version:
+            raise connection_conflict("The current AWS connection version is unavailable.")
+        secret_value, served_version = await asyncio.to_thread(sm.get_secret_at_version, secret_arn, version)
+        if served_version != version:
+            raise connection_conflict()
+        secret_data = json.loads(secret_value)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, detail={"error": "connection_unavailable", "message": "The AWS connection could not be resolved."}) from None
+    role_arn, external_id, _account_id = connection_material(secret_data, scopes)
 
     # Attempt STS AssumeRole using the existing service. user_id here must
     # match what the trust policy's RequestTag condition expects — the
     # Postgres users.id, not the Cognito sub (same as connect_start).
     try:
-        await asyncio.to_thread(
+        assumed = await asyncio.to_thread(
             assume_role,
             role_arn=role_arn,
             external_id=external_id,
@@ -376,29 +404,21 @@ async def connect_verify(
             user_id=db_user_id,
             agent_id="connect-verify",
             task_id="verify",
-            label=cred.label,
+            label=label,
         )
     except STSAssumeError as exc:
         # Map STS error codes to user-friendly reasons
         reason = _sts_error_to_reason(exc.code)
         logger.warning(
             "AWS connect verify failed credential_id=%s code=%s",
-            cred.id,
+            data.credential_id,
             exc.code,
         )
-        # Issue #5182: a fresh check that fails on a row still labelled verified
-        # must clear the label, or the connection stays green on a pass that is
-        # no longer true and every consumer keeps trusting it. Only the fresh
-        # path does this — the cached path never gets here.
-        if data.fresh and cred.scopes and cred.scopes.get("status") == "verified":
-            downgraded = dict(cred.scopes)
-            downgraded["status"] = "pending"
-            downgraded.pop("verified_at", None)
-            downgraded["routing_capable"] = False
-            downgraded["routing_reason"] = ROUTING_REASON_PROBE_INCONCLUSIVE
-            cred.scopes = downgraded
-            await db.commit()
+        # The failed generation was already persisted. Do not overwrite a newer
+        # attempt that completed while this provider request was in flight.
         return ConnectVerifyResponse(status="failed", reason=reason)
+
+    require_assumed_identity(assumed, role_arn)
 
     # The assume works. Now classify WHICH kind of role it is — read-only v1
     # (single-user) or routing-capable v2 — so the routing registry and the admin
@@ -409,19 +429,34 @@ async def connect_verify(
         external_id=external_id,
         default_region=secret_data.get("default_region", "us-east-1"),
         user_id=db_user_id,
-        label=cred.label,
+        label=label,
     )
+
+    try:
+        current_version = await asyncio.to_thread(sm.current_version_id, secret_arn)
+    except Exception:
+        current_version = None
+    if current_version != version:
+        raise connection_conflict()
+    cred = await _owned_connection(data.credential_id, db, db_user_id, effective_org_id, lock=True)
+    require_active_connection(cred)
+    if cred.aws_verification_attempt != attempt or connection_binding(cred) != binding:
+        raise connection_conflict()
 
     # Success — update the scopes JSON to verified
     updated_scopes = dict(cred.scopes) if cred.scopes else {}
+    verified_at = datetime.now(UTC)
     updated_scopes["status"] = "verified"
-    updated_scopes["verified_at"] = datetime.now(UTC).isoformat()
+    updated_scopes["verified_at"] = verified_at.isoformat()
     updated_scopes["routing_capable"] = routing_capable
     if routing_reason is not None:
         updated_scopes["routing_reason"] = routing_reason
     else:
         updated_scopes.pop("routing_reason", None)
     cred.scopes = updated_scopes
+    cred.aws_verified_at = verified_at
+    cred.aws_verified_version_id = version
+    cred.aws_verified_binding = binding
     await db.commit()
 
     logger.info(

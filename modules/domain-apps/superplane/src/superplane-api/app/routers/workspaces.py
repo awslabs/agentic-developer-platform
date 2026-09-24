@@ -1,5 +1,6 @@
 """Workspace CRUD endpoints — scoped to org_id from JWT."""
 
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -7,12 +8,13 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.cluster import Cluster
-from app.models.workspace import Workspace
+from app.models.workspace import STATUS_ACTIVE, Workspace
 from app.schemas.workspace import (
     CreateWorkspaceRequest,
     KubeconfigResponse,
@@ -23,6 +25,8 @@ from app.schemas.workspace import (
 from app.services.provisioning import (
     ProvisioningError,
     ProvisioningRefused,
+    get_operation_facade,
+    observe,
     start_provision,
     start_teardown,
     summarize,
@@ -100,6 +104,160 @@ def _workspace_to_response(
     )
 
 
+def _operation_request(body: CreateWorkspaceRequest) -> str:
+    return json.dumps(
+        body.model_dump(mode="json", exclude={"operation_id"}),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+async def _workspace_for_operation(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    body: CreateWorkspaceRequest,
+    operation_request: str,
+    *,
+    for_update: bool = False,
+) -> Workspace | None:
+    query = (
+        select(Workspace)
+        .where(
+            Workspace.org_id == org_id,
+            Workspace.operation_id == body.operation_id,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if for_update:
+        query = query.with_for_update()
+    workspace = await db.scalar(query)
+    if workspace is None:
+        return None
+    if workspace.operation_request_json != operation_request:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Operation ID was already used for a different workspace request",
+        )
+    return workspace
+
+
+async def _reconcile_workspace_provisioning(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    body: CreateWorkspaceRequest,
+    operation_request: str,
+) -> WorkspaceResponse:
+    workspace = await _workspace_for_operation(
+        db, org_id, body, operation_request, for_update=True
+    )
+    if workspace is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workspace operation disappeared before it could be reconciled",
+        )
+    if workspace.status == "Failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "create_operation_failed",
+                "message": "Workspace operation failed; inspect the workspace and use a new operation ID for a new request",
+            },
+        )
+    if workspace.status != "Provisioning":
+        return _workspace_to_response(workspace)
+
+    opening = workspace.provisioning_operation_id is None
+    try:
+        if opening:
+            request = json.loads(workspace.operation_request_json or "{}")
+            progress = await start_provision(
+                operation_id=str(body.operation_id),
+                workspace_id=str(workspace.id),
+                org_id=str(org_id),
+                workspace_name=workspace.name,
+                isolation_mode=workspace.isolation_mode,
+                account=str(request.get("account") or ""),
+            )
+            workspace.provisioning_operation_id = progress.operation_id
+        else:
+            progress = await observe(workspace.provisioning_operation_id)
+    except ProvisioningRefused as exc:
+        if opening:
+            workspace.status = "Failed"
+            await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except ProvisioningError as exc:
+        logger.error("Provisioning unavailable for workspace %s: %s", workspace.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    if progress.is_conclusive_failure:
+        workspace.status = "Failed"
+    elif progress.is_conclusive_success:
+        workspace.status = STATUS_ACTIVE
+    await db.commit()
+    await db.refresh(workspace)
+    logger.info("Workspace %s provisioning: %s", workspace.id, summarize(progress))
+    if workspace.status == "Failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "create_operation_failed",
+                "message": "Workspace provisioning operation reported failure",
+            },
+        )
+    return _workspace_to_response(workspace)
+
+
+def _teardown_request_id(org_id: uuid.UUID, workspace_id: uuid.UUID) -> str:
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"adp:superplane:{org_id}:workspace:{workspace_id}:teardown",
+        )
+    )
+
+
+async def _reconcile_workspace_teardown(
+    workspace: Workspace,
+    org_id: uuid.UUID,
+    db: AsyncSession,
+    *,
+    open_if_missing: bool,
+) -> None:
+    await db.refresh(workspace, with_for_update=True)
+    if workspace.status != "Teardown":
+        return
+    try:
+        if workspace.teardown_operation_id:
+            progress = await observe(workspace.teardown_operation_id)
+        elif open_if_missing:
+            progress = await start_teardown(
+                operation_id=_teardown_request_id(org_id, workspace.id),
+                workspace_id=str(workspace.id),
+                org_id=str(org_id),
+                workspace_name=workspace.name,
+            )
+            workspace.teardown_operation_id = progress.operation_id
+        else:
+            return
+    except ProvisioningError:
+        if open_if_missing:
+            raise
+        return
+
+    if progress.is_conclusive_success:
+        workspace.status = "Deleted"
+    elif progress.is_conclusive_failure:
+        workspace.status = "Failed"
+    await db.commit()
+    await db.refresh(workspace)
+    logger.info("Workspace %s teardown: %s", workspace.id, summarize(progress))
+
+
 @router.post("", response_model=WorkspaceResponse, status_code=status.HTTP_201_CREATED)
 async def create_workspace(
     body: CreateWorkspaceRequest,
@@ -122,6 +280,18 @@ async def create_workspace(
     - Budget guardrails default to RESEARCH_DEFAULT_BUDGET if not provided
     - Agent IAM role is created during bootstrap with permissive policies
     """
+    operation_request = _operation_request(body)
+    existing = await _workspace_for_operation(db, org_id, body, operation_request)
+    if existing is not None:
+        return await _reconcile_workspace_provisioning(
+            db, org_id, body, operation_request
+        )
+
+    # Absence is known before any row/quota is committed. A transport failure
+    # after admission still preserves the existing operation's recovery record.
+    if get_operation_facade() is None:
+        raise HTTPException(503, "Workspace provisioning service is unavailable")
+
     await enforce_workspace_creation_quota(org_id, db)
 
     # Apply default budget guardrails for research workspaces
@@ -136,6 +306,8 @@ async def create_workspace(
     workspace = Workspace(
         org_id=org_id,
         name=body.name,
+        operation_id=body.operation_id,
+        operation_request_json=operation_request,
         isolation_mode=body.isolation_mode,
         quotas_json=body.quotas_json,
         budget_max_daily_usd=budget_max_daily_usd,
@@ -143,51 +315,18 @@ async def create_workspace(
         status="Provisioning",
     )
     db.add(workspace)
-    await db.commit()
-    await db.refresh(workspace)
-
-    # Begin provisioning under an authorized operation. The organization comes from
-    # the verified JWT (`get_current_org`), never from the request body; the
-    # authoritative principal is resolved by the facade from the operation binding.
     try:
-        progress = await start_provision(
-            workspace_id=str(workspace.id),
-            org_id=str(org_id),
-            workspace_name=workspace.name,
-            isolation_mode=workspace.isolation_mode,
-            account=body.account or "",
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await _workspace_for_operation(db, org_id, body, operation_request)
+        if existing is None:
+            raise
+        return await _reconcile_workspace_provisioning(
+            db, org_id, body, operation_request
         )
-    except ProvisioningRefused as exc:
-        # A refusal is the caller's fault (an identity-asserting parameter, say),
-        # so it is a 400 and the workspace row is marked Failed rather than left
-        # claiming to be provisioning.
-        workspace.status = "Failed"
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except ProvisioningError as exc:
-        # The facade is unavailable or breached its contract. Recorded as Failed
-        # and surfaced as 503 — the previous code logged a warning here and still
-        # returned 201 with status=Provisioning, telling the user their workspace
-        # was being built when nothing was building it.
-        workspace.status = "Failed"
-        await db.commit()
-        logger.error("Provisioning unavailable for workspace %s: %s", workspace.id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-
-    # Reflect the facade's report. `unknown` is deliberately NOT treated as
-    # failure: collapsing the two either leaks infrastructure the platform
-    # believes was never created, or retries a provision that actually succeeded.
-    if progress.is_conclusive_failure:
-        workspace.status = "Failed"
-        await db.commit()
-        await db.refresh(workspace)
-    logger.info("Workspace %s provisioning: %s", workspace.id, summarize(progress))
-
-    return _workspace_to_response(workspace)
+    await db.refresh(workspace)
+    return await _reconcile_workspace_provisioning(db, org_id, body, operation_request)
 
 
 @router.get("", response_model=WorkspaceListResponse)
@@ -230,6 +369,8 @@ async def get_workspace(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found"
         )
 
+    await _reconcile_workspace_teardown(workspace, org_id, db, open_if_missing=False)
+
     # Fetch associated cluster health if available
     cluster: Cluster | None = None
     if workspace.cluster_id:
@@ -249,9 +390,10 @@ async def delete_workspace(
 ) -> WorkspaceDeleteResponse:
     """Teardown a workspace — updates status and triggers teardown workflow."""
     result = await db.execute(
-        select(Workspace).where(
-            Workspace.id == workspace_id, Workspace.org_id == org_id
-        )
+        select(Workspace)
+        .where(Workspace.id == workspace_id, Workspace.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     workspace = result.scalar_one_or_none()
 
@@ -268,15 +410,30 @@ async def delete_workspace(
             "The default workspace is managed by the platform and cannot be removed via CLI.",
         )
 
-    if workspace.status in ("Teardown", "Deleted"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Workspace already in {workspace.status} state",
-        )
+    if workspace.status == "Deleted":
+        return WorkspaceDeleteResponse(id=workspace.id, status="Deleted")
+    if workspace.status == "Teardown":
+        try:
+            await _reconcile_workspace_teardown(
+                workspace, org_id, db, open_if_missing=True
+            )
+        except ProvisioningError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
+        if workspace.status == "Failed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Workspace teardown operation reported failure",
+            )
+        return WorkspaceDeleteResponse(id=workspace.id, status=workspace.status)
 
     # Captured before the transition so a refused or unavailable teardown can be
     # rolled back to the status the workspace actually had.
     previous_status = workspace.status
+
+    if get_operation_facade() is None:
+        raise HTTPException(503, "Workspace provisioning service is unavailable")
 
     workspace.status = "Teardown"
     await db.commit()
@@ -285,30 +442,38 @@ async def delete_workspace(
     # question as provisioning with the opposite effect, so it goes through the
     # same facade and the same permission rather than a weaker local check.
     try:
-        progress = await start_teardown(
-            workspace_id=str(workspace.id),
-            org_id=str(org_id),
-            workspace_name=workspace.name,
+        await _reconcile_workspace_teardown(
+            workspace,
+            org_id,
+            db,
+            open_if_missing=True,
         )
     except ProvisioningRefused as exc:
         # Restore the prior status: the workspace was not torn down, and leaving it
         # in Teardown would make a refused request look like one in progress.
-        workspace.status = previous_status
+        await db.refresh(workspace, with_for_update=True)
+        if workspace.status == "Teardown" and workspace.teardown_operation_id is None:
+            workspace.status = previous_status
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     except ProvisioningError as exc:
-        workspace.status = previous_status
-        await db.commit()
+        # Admission may have committed before its reply was lost. Keep the
+        # durable teardown intent, blocking new use until the same request is
+        # reconciled. Restoring Active here would advertise capacity being removed.
         logger.error("Teardown unavailable for workspace %s: %s", workspace.id, exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
-    logger.info("Workspace %s teardown: %s", workspace.id, summarize(progress))
+    if workspace.status == "Failed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workspace teardown operation reported failure",
+        )
 
-    return WorkspaceDeleteResponse(id=workspace.id, status="Teardown")
+    return WorkspaceDeleteResponse(id=workspace.id, status=workspace.status)
 
 
 @router.post("/{workspace_id}/kubeconfig", response_model=KubeconfigResponse)
@@ -341,7 +506,7 @@ async def generate_kubeconfig(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found"
         )
 
-    if workspace.status != "Active":
+    if workspace.status not in {STATUS_ACTIVE, "Active"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Workspace is not active (status: {workspace.status}). Kubeconfig requires an active workspace.",

@@ -1,5 +1,9 @@
 [
   [
+    "GET",
+    "/capabilities"
+  ],
+  [
     "POST",
     "/workspaces"
   ],

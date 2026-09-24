@@ -22,17 +22,20 @@ from app.routers import accounts
 from app.routers import provider_connections as router
 from app.services import provider_connections as service
 from app.services.credential_evidence import VerifiedCredentialEvidence
+from tests.test_installation_postgres import (
+    installation_postgres_url as installation_postgres_url,
+)
+from tests.test_installation_postgres import pytestmark as postgres_available
 from tests.test_provider_handles_postgres import wait_for_database_lock
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL"),
-    reason="requires a disposable PostgreSQL database",
-)
+# CI installs pgserver and must execute these races. A missing/broken disposable
+# server must fail fixture setup there, rather than turn the lane green with skips.
+pytestmark = [] if os.environ.get("CI") else postgres_available
 
 
 @pytest.fixture
-async def connection_db():
-    url = os.environ["SUPERPLANE_TEST_POSTGRES_URL"]
+async def connection_db(installation_postgres_url):  # noqa: F811 - pytest fixture injection
+    url = installation_postgres_url
     schema = "connection_test_" + uuid.uuid4().hex
     admin = create_async_engine(url)
     async with admin.begin() as connection:

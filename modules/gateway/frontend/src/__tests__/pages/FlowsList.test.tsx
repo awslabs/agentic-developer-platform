@@ -993,3 +993,19 @@ it('renders flow pause controls outside the navigation link', async () => {
   expect(button.closest('a')).toBeNull();
   expect(screen.getByText('Paused')).toBeInTheDocument();
 });
+
+
+it('shows the current capability description when two epics reuse the same wave ref', async () => {
+  mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({
+    wave_count: 2,
+    waves: [
+      makeWave({ title: 'Contracts', description: 'Old wave purpose.', done: 3 }),
+      makeWave({ epic_ref: 'epic-2', title: 'Worker execution', description: 'Build and qualify the worker.' }),
+    ],
+  })] }));
+  renderFlowsList();
+  expect(await screen.findByTestId('wave-rail-caption')).toHaveTextContent('Now on Worker execution');
+  expect(screen.getByText('Build and qualify the worker.')).toBeVisible();
+  expect(screen.getByTestId('wave-segment-epic-1-wave-1')).toHaveAttribute('data-current', 'false');
+  expect(screen.getByTestId('wave-segment-epic-2-wave-1')).toHaveAttribute('data-current', 'true');
+});

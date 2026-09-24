@@ -1,5 +1,13 @@
 # Mocked applies exercise the delivery wiring and disable transition without
 # AWS credentials, infrastructure changes or paid model invocations.
+#
+# Nested blocks are indexed ([0]) because AWS provider 6.x represents
+# logging_config -- and its nested s3_config, cloudwatch_config and
+# large_data_delivery_s3_config -- as lists of objects. Under 5.x these were
+# readable as bare attributes; keeping that form fails with "Block type
+# 'logging_config' is represented by a list of objects, so it must be indexed
+# using a numeric key". Updated alongside the provider floor raise in #5831.
+# The asserted wiring is unchanged -- only the traversal syntax.
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
     defaults = { account_id = "123456789012" }
@@ -37,21 +45,21 @@ run "default_delivery_includes_large_payloads" {
   assert {
     condition = (
       length(aws_bedrock_model_invocation_logging_configuration.this) == 1 &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.text_data_delivery_enabled &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.image_data_delivery_enabled &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.embedding_data_delivery_enabled &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.video_data_delivery_enabled
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].text_data_delivery_enabled &&
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].image_data_delivery_enabled &&
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].embedding_data_delivery_enabled &&
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].video_data_delivery_enabled
     )
     error_message = "Fresh deployments must log all four provider-supported modalities by default."
   }
 
   assert {
     condition = (
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.s3_config.bucket_name == aws_s3_bucket.logs.id &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.cloudwatch_config.log_group_name == aws_cloudwatch_log_group.invocations.name &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.cloudwatch_config.role_arn == aws_iam_role.delivery.arn &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.cloudwatch_config.large_data_delivery_s3_config.bucket_name == aws_s3_bucket.logs.id &&
-      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config.cloudwatch_config.large_data_delivery_s3_config.key_prefix == "large-data"
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].s3_config[0].bucket_name == aws_s3_bucket.logs.id &&
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].cloudwatch_config[0].log_group_name == aws_cloudwatch_log_group.invocations.name &&
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].cloudwatch_config[0].role_arn == aws_iam_role.delivery.arn &&
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].cloudwatch_config[0].large_data_delivery_s3_config[0].bucket_name == aws_s3_bucket.logs.id &&
+      aws_bedrock_model_invocation_logging_configuration.this[0].logging_config[0].cloudwatch_config[0].large_data_delivery_s3_config[0].key_prefix == "large-data"
     )
     error_message = "Both destinations and S3 overflow must be wired; large prompts must not lose their bodies."
   }

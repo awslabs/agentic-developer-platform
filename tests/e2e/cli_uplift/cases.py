@@ -20,6 +20,15 @@ is the point: three real deployment bindings do not exist yet, so these two grad
 BLOCKED, and because BLOCKED is not PASSED a `full` run stays red until the live
 multi-deployment evidence is actually collected. A checkpoint outside the matrix
 would instead have let full acceptance go green with those two never run.
+
+#5637 adds E18 (the `superplane` suite) on the same terms and for the same
+reason. Its live acceptance needs a deployed domain service behind the gateway,
+which no environment in this harness's config provides yet, so E18 grades BLOCKED
+and keeps `full` red until that evidence exists. The offline contract tests in
+`modules/gateway/tests/cli/test_superplane_contract.py` prove the requests match
+the gateway allowlist and the domain's request models; they cannot prove a live
+service accepts them, and E18 is where that distinction is recorded rather than
+assumed away.
 """
 
 from __future__ import annotations
@@ -49,6 +58,12 @@ SUITES = (
     # suite can express: every suite above runs a single deployment, so a crossed
     # endpoint, token or proxy is invisible to all of them.
     "multi-deployment",
+    # #5637. The served CLI's Superplane commands driven THROUGH the gateway to the
+    # real domain service. `parity` covers the routes ADP itself serves; this suite
+    # exists because the domain sits behind the gateway's forwarding allowlist, and
+    # a request that satisfies the allowlist can still be rejected by the domain's
+    # own schemas — which is exactly the class of defect #5637 repaired.
+    "superplane",
 )
 
 
@@ -89,6 +104,17 @@ THREE_DEPLOYMENTS = "three_deployments"
 # A capability requirement, deliberately never granted by current preflight.
 # Gateway availability does not prove enforcement of inference spend limits.
 MULTI_DEPLOYMENT_MODEL_LIMITS = "multi_deployment_model_limits"
+# #5637: a deployed Superplane domain service reachable through the gateway's
+# forwarding allowlist, plus an ordinary and an admin identity in it.
+#
+# Its own class, not an extension of PLATFORM: the gateway is deployed in dev and
+# still forwards to a domain service that may not be. Folding this into PLATFORM
+# would mark E18 runnable whenever the gateway answers, and the case would then
+# fail mid-journey on a 502 from the proxy — reporting "the product is broken" for
+# what is actually an absent fixture. And it cannot be inferred from the allowlist
+# either: the allowlist is checked-in source, so it is present on every revision
+# whether or not anything is listening behind it.
+SUPERPLANE_DOMAIN = "superplane_domain"
 
 CASES = (
     Case(
@@ -209,6 +235,13 @@ CASES = (
         "multi-deployment",
         "Live default switch, refresh, and logout of one deployment leave the other two correctly routed; the logged-out one fails labelled without borrowing a session; teardown leaves no deployment state",
         (EC2, PLATFORM, THREE_DEPLOYMENTS, MULTI_DEPLOYMENT_MODEL_LIMITS),
+    ),
+    Case(
+        "E18",
+        "#5637",
+        "superplane",
+        "Served CLI traverses the gateway to the real domain: workspace create/read/kubeconfig/cost/events/quota/deploy and the provider credential handoff carry both identifiers; a failed second-stage registration compensates only its own credential; account registration reports unavailable without writing",
+        (EC2, PLATFORM, SUPERPLANE_DOMAIN),
     ),
 )
 

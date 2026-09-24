@@ -354,10 +354,17 @@ class TestFailedBootstrapRetry:
 
             assert result == "retried"
             mock_trigger.assert_called_once_with(
+                operation_id=str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"adp:superplane:{ws.org_id}:workspace:{ws.id}:reconcile",
+                    )
+                ),
                 workspace_id=str(ws.id),
                 workspace_name=ws.name,
                 org_id=str(ws.org_id),
                 isolation_mode=ws.isolation_mode,
+                account="",
             )
 
     @pytest.mark.asyncio

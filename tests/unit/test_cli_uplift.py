@@ -462,6 +462,285 @@ def test_the_multi_deployment_cases_are_owned_by_5413_and_need_three_deployments
     assert all(cases.EC2 in case.requires for case in multi)
 
 
+def test_the_superplane_case_is_owned_by_5637_and_needs_a_deployed_domain():
+    """#5637's live acceptance sits INSIDE the matrix, for #5413's reason.
+
+    The offline contract suite proves every request matches the gateway allowlist
+    and the domain's request models. That is a claim about the REQUEST; whether a
+    deployed service accepts it is a different claim, and E18 is where the
+    difference is recorded. With no domain fixture it blocks, and because BLOCKED
+    is not PASSED a `full` run stays red until that evidence exists.
+
+    SUPERPLANE_DOMAIN is its own fixture class rather than part of PLATFORM
+    because the gateway is deployed where the domain may not be: folding them
+    together would mark E18 runnable whenever the gateway answers, and the case
+    would then fail mid-journey on a proxy error, reporting a broken product for
+    an absent fixture.
+    """
+    superplane = [case for case in cases.CASES if case.suite == "superplane"]
+
+    assert [case.id for case in superplane] == ["E18"]
+    assert {case.owner for case in superplane} == {"#5637"}
+    assert all(cases.SUPERPLANE_DOMAIN in case.requires for case in superplane)
+    assert all(cases.EC2 in case.requires for case in superplane)
+    assert cases.SUPERPLANE_DOMAIN != cases.PLATFORM
+
+
+def test_domain_reachability_cannot_enable_e18_without_durable_recovery():
+    """A responding gateway cannot supply the missing mutation recovery path."""
+    cfg = config.validate(
+        config_fixture(
+            superplane={
+                "base_path": "/superplane/v1",
+                "ordinary_session_secret_name": "adp/eval/superplane-ordinary",
+                "model_name": "synthetic/e18-model",
+                "aws_connection_id": "verified-connection-id",
+            }
+        )
+    )
+    assert cases.SUPERPLANE_DOMAIN in config.fixture_classes(cfg)
+
+    calls = []
+    for status in (200, 401, 403, 404, 502, 503):
+        record = {}
+        assert not preflight.check_superplane_domain(
+            cfg, record, probe=lambda url: calls.append(url) or status
+        )
+        assert record["superplane"]["configured"] is True
+        assert record["superplane"]["durable_recovery"] is False
+        assert (
+            record["superplane"]["blocker"]
+            == "superplane_durable_recovery_unimplemented"
+        )
+        assert record["superplane"]["problem"] == cleanup.SUPERPLANE_RECOVERY_BLOCKER
+    assert calls == []
+
+    # An unproven result is unavailable, exactly as for the other probed classes.
+    assert cases.SUPERPLANE_DOMAIN not in preflight.evaluate_fixtures(cfg)
+    assert cases.SUPERPLANE_DOMAIN not in preflight.evaluate_fixtures(
+        cfg, superplane_available=True
+    )
+
+
+def test_e18_only_run_blocks_before_allocating_an_instance(tmp_path):
+    result = run_live_stages(
+        tmp_path,
+        extra=("--suite", "superplane"),
+        superplane={
+            "base_path": "/superplane/v1",
+            "ordinary_session_secret_name": "adp/eval/superplane-ordinary",
+            "model_name": "synthetic/e18-model",
+            "aws_connection_id": "verified-connection-id",
+        },
+    )
+    assert result.code == 1
+    assert result.document["matrix"]["E18"]["status"] == cases.BLOCKED
+    assert not result.document.get("instance_id")
+    assert not any(call[1] == "run_instances" for call in result.ports["aws"].calls)
+    assert (
+        result.document["preflight"]["superplane"]["blocker"]
+        == "superplane_durable_recovery_unimplemented"
+    )
+
+
+def test_direct_e18_dispatch_refuses_before_identity_or_cli_access(
+    tmp_path, monkeypatch
+):
+    module, common = shipped_script(tmp_path, "superplane_domain")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError(
+            "an unsupported E18 dispatch reached identity or CLI access"
+        )
+
+    monkeypatch.setattr(common, "assert_owned_instance", unexpected)
+    monkeypatch.setattr(common, "load_session", unexpected)
+    monkeypatch.setattr(common, "Cli", unexpected)
+    evidence = {"resources": [["superplane_workspace", "historical-id"]], "removed": []}
+    with pytest.raises(common.RemoteError, match="durable recovery is not implemented"):
+        module.execute({"superplane": {"durable_recovery": True}}, evidence)
+
+    assert evidence["success"] is False
+    assert evidence["stage"] == "recovery_preflight"
+    assert evidence["resources"] == [["superplane_workspace", "historical-id"]]
+    assert evidence["removed"] == []
+    assert evidence["detail"]["message"] == cleanup.SUPERPLANE_RECOVERY_BLOCKER
+    assert evidence["detail"]["blocker"] == "superplane_durable_recovery_unimplemented"
+
+
+def test_historical_e18_resources_remain_outstanding_without_scoped_recovery(tmp_path):
+    cfg = config.validate(config_fixture())
+    aws = FakeAws()
+    deleters = live.wire(cfg, {"aws": aws})["deleters"](cfg)
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "run-e18")
+    for kind in cleanup.SUPERPLANE_KINDS:
+        manifest.record(kind, kind + "-historical-id")
+
+    ok, results = cleanup.sweep(manifest, deleters)
+
+    assert ok is False
+    assert len(results) == len(cleanup.SUPERPLANE_KINDS)
+    assert {item["kind"] for item in manifest.outstanding()} == set(
+        cleanup.SUPERPLANE_KINDS
+    )
+    assert all(item["status"] == cleanup.FAILED for item in results)
+    assert aws.calls == []
+
+
+def test_the_superplane_probe_is_refused_a_callable_like_the_others():
+    """Every function object is truthy, so a probe passed unrun would claim the
+    fixture is available on the strength of never having been checked."""
+    cfg = config.validate(config_fixture())
+    with pytest.raises(preflight.PreflightError):
+        preflight.evaluate_fixtures(cfg, superplane_available=lambda: True)
+
+
+def test_the_superplane_probe_never_carries_a_token_or_a_secret_name():
+    """The probe record goes into the run document, so it holds a status only."""
+    cfg = config.validate(
+        config_fixture(
+            superplane={
+                "base_path": "/superplane/v1",
+                "ordinary_session_secret_name": "adp/eval/superplane-ordinary",
+                "model_name": "synthetic/e18-model",
+                "aws_connection_id": "verified-connection-id",
+            }
+        )
+    )
+    record = {}
+    preflight.check_superplane_domain(cfg, record, probe=lambda _u: 401)
+
+    serialized = json.dumps(record)
+    assert "adp/eval/superplane-ordinary" not in serialized
+    assert "authorization" not in serialized.lower()
+    assert "token" not in serialized.lower()
+
+
+def test_a_pasted_ordinary_session_is_refused_by_the_config_guard():
+    """The fixture is a secret NAME. An ARN or a value must fail offline."""
+    for bad in ("arn:aws:secretsmanager:us-east-1:1:secret:x", "https://example/x"):
+        with pytest.raises(config.ConfigError):
+            config.validate(
+                config_fixture(
+                    superplane={
+                        "base_path": "/superplane/v1",
+                        "ordinary_session_secret_name": bad,
+                        "model_name": "synthetic/e18-model",
+                        "aws_connection_id": "verified-connection-id",
+                    }
+                )
+            )
+    # A relative base path would be assembled into a URL that silently resolved
+    # against the gateway root.
+    with pytest.raises(config.ConfigError):
+        config.validate(
+            config_fixture(
+                superplane={
+                    "base_path": "superplane/v1",
+                    "ordinary_session_secret_name": "adp/eval/ordinary",
+                    "model_name": "synthetic/e18-model",
+                    "aws_connection_id": "verified-connection-id",
+                }
+            )
+        )
+
+
+def test_e18_requires_distinct_non_admin_and_admin_principals(tmp_path):
+    import base64
+
+    module, _common = shipped_script(tmp_path, "superplane_domain")
+
+    def token(subject, role, groups=()):
+        claims = json.dumps(
+            {
+                "sub": subject,
+                "custom:org_id": "tenant-e18",
+                "custom:role": role,
+                "cognito:groups": list(groups),
+            }
+        ).encode()
+        encoded = base64.urlsafe_b64encode(claims).decode().rstrip("=")
+        return f"header.{encoded}.signature"
+
+    ordinary = module._identity({"id_token": token("ordinary-sub", "member")})
+    admin = module._identity(
+        {"id_token": token("admin-sub", "platform_admin", ["admins"])}
+    )
+
+    assert ordinary["principal_id"] != admin["principal_id"]
+    assert ordinary["tenant_id"] == admin["tenant_id"] == "tenant-e18"
+    assert ordinary["role"] == "member" and "admins" not in ordinary["groups"]
+    assert admin["role"] == "platform_admin" and "admins" in admin["groups"]
+
+
+def test_e18_reads_the_ordinary_session_before_any_product_mutation(
+    tmp_path, monkeypatch
+):
+    module, common = shipped_script(tmp_path, "superplane_domain")
+    values = {
+        "access_token": "ordinary-access",
+        "id_token": "ordinary-id",
+        "refresh_token": "ordinary-refresh",
+        "client_id": "ordinary-client",
+        "user_pool_id": "us-east-1_ordinary",
+        "region": "us-east-1",
+        "expires_at": str(int(time.time()) + 3600),
+    }
+    seen = []
+
+    def fixture_secret(config_value, _env, key):
+        seen.append((config_value["credential_secret"], key))
+        return values[key]
+
+    monkeypatch.setattr(common, "fixture_secret", fixture_secret)
+    fixture = config_fixture(
+        superplane={"ordinary_session_secret_name": "adp/eval/ordinary"}
+    )
+    fixture["sts_endpoint"] = "https://sts-fips.us-east-1.amazonaws.com"
+    session = module._ordinary_session(fixture)
+
+    assert session["access_token"] == "ordinary-access"
+    assert session["refresh_via"] == "gateway"
+    assert {key for _, key in seen} == set(values)
+    assert {secret for secret, _ in seen} == {"adp/eval/ordinary"}
+
+
+def test_e18_workspace_cleanup_waits_for_the_deleted_tombstone(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "superplane_domain")
+    responses = iter(
+        [
+            (200, {"id": "workspace-1", "status": "Teardown"}),
+            (200, {"id": "workspace-1", "status": "Deleted"}),
+        ]
+    )
+    calls = []
+
+    def api(config_value, path, token, **kwargs):
+        calls.append((config_value, path, token, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(common, "api", api)
+    config_value = {"gateway_url": "https://example.test"}
+    fixture = {"base_path": "/superplane/v1"}
+
+    assert not module._workspace_deletion_complete(
+        config_value, fixture, "token", "workspace-1"
+    )
+    assert module._workspace_deletion_complete(
+        config_value, fixture, "token", "workspace-1"
+    )
+    assert all(call[3]["expect"] == (200, 404) for call in calls)
+
+
+def test_e18_runs_a_superplane_command_from_the_rolled_back_copy():
+    source = (
+        pathlib.Path(__file__).parents[1] / "e2e/cli_uplift/remote/superplane_domain.py"
+    ).read_text()
+
+    assert "cli = rollback_cli" in source
+    assert 'cli.json(["superplane", "workspace", "list"])' in source
+
+
 def test_every_case_belongs_to_a_reachable_named_suite():
     """No case may be orphaned: each must be selectable without 'full'."""
     named = set()
@@ -588,7 +867,18 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
     available = {cases.EC2, cases.PLATFORM, cases.DESTINATION, cases.COGNITO}
     blocked = cases.block_missing_fixtures(matrix, available)
     # GitHub, hosted and multi-deployment cases block; install/admin/routing do not.
-    assert set(blocked) == {"E07", "E09", "E10", "E11", "E12", "E16", "E17"}
+    # #5637 adds E18 on the same footing: a domain service that is not deployed is
+    # an absent fixture, so it blocks here alongside the GitHub and hosted cases.
+    assert set(blocked) == {
+        "E07",
+        "E09",
+        "E10",
+        "E11",
+        "E12",
+        "E16",
+        "E17",
+        "E18",
+    }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
     assert blocked["E11"] == ["github_app", "github_repo"]
@@ -7954,6 +8244,9 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     # and describes no real environment, so it cannot name three reachable
     # gateways; E16/E17 therefore block here exactly as the GitHub cases do.
     assert cases.THREE_DEPLOYMENTS not in available
+    # #5637: and the Superplane domain. The example config names no deployed
+    # domain service, so E18 blocks for the same reason and by the same mechanism.
+    assert cases.SUPERPLANE_DOMAIN not in available
     matrix = cases.new_matrix(FULL)
     blocked = cases.block_missing_fixtures(matrix, available)
     assert set(blocked) == {
@@ -7968,6 +8261,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E12",
         "E16",
         "E17",
+        "E18",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.

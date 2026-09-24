@@ -6,10 +6,10 @@
 
 **Source baseline:** [`aws-e/adp` main at `3cb303b`](https://github.com/aws-e/adp/commit/3cb303b00ac50cf98586092c7e5d0119b8b822ce).
 
-**Validation plan:** [validation.md](validation.md).
+**Validation plan:** [validation.md](validation.md). **Wave plan:** [waves.md](waves.md).
 
 **Delivery epic:** [#5792](https://github.com/aws-e/adp/issues/5792) in the
-[ADP Platform Roadmap](https://github.com/orgs/aws-e/projects/4), with 14 native
+[ADP Platform Roadmap](https://github.com/orgs/aws-e/projects/4), with 15 native
 child stories linked in section 12 and the validation plan.
 
 This document records the design agreed in the Task API discussion. Section 2
@@ -506,16 +506,16 @@ changes so parallel agents do not redefine the same interface.
 | Slice | Scope / ownership | Dependencies |
 |---|---|---|
 | [T0 #5793](https://github.com/aws-e/adp/issues/5793) | Freeze v1 schema, auth/identity binding, record layout, event/command semantics and open decisions in section 13. Own shared fixtures. | This design. |
-| [T1 #5794](https://github.com/aws-e/adp/issues/5794) | Task persistence, protected ownership/input binding, idempotency and recoverable dispatch records in existing DynamoDB infrastructure. | T0. |
-| [T2 #5795](https://github.com/aws-e/adp/issues/5795) | New task handler, external authentication/authorization integration and main API Gateway POST integration to existing Lambda. | T0; integrate with T1 and T3. |
-| [T3 #5796](https://github.com/aws-e/adp/issues/5796) | Task-specific admission, SQS publisher/reconciler and execution-authority adapter. | T0; integrate with T1. |
-| [T4 #5797](https://github.com/aws-e/adp/issues/5797) | Early Python task flow, task assignment/credentials, process/event contract and isolated completion. Own shared entrypoint changes. | T0; integrate with T3. |
-| [T5 #5798](https://github.com/aws-e/adp/issues/5798) | First independent task-agent implementation and isolated build/package in the same image. | T0; integrate with T4. |
-| [T6 #5799](https://github.com/aws-e/adp/issues/5799) | Gateway task snapshot/results/artifacts APIs, run-bound event ingestion, ordered persistence and SSE/replay. | T0; integrate with T1/T4. |
-| [T7 #5800](https://github.com/aws-e/adp/issues/5800) | Durable clarification/input and cancellation delivery, receipts and lifecycle integration. | T0; integrate with T1/T4/T5/T6. |
-| [T8 #5801](https://github.com/aws-e/adp/issues/5801) | SDK-free external client example, configuration/deployment/rollback documentation and end-to-end qualification fixtures. | Contract T0; integrate with T2-T7. |
+| [T1 #5794](https://github.com/aws-e/adp/issues/5794) | Task persistence, protected ownership/input binding, idempotency and recoverable dispatch records in existing DynamoDB infrastructure. | T0/V0. |
+| [T2 #5795](https://github.com/aws-e/adp/issues/5795) | New task handler, external authentication/authorization integration and main API Gateway POST integration to existing Lambda. | T0/V0; integrate with T1 and T3. |
+| [T3 #5796](https://github.com/aws-e/adp/issues/5796) | Task-specific admission, SQS publisher/reconciler and execution-authority adapter. | T0/V0; integrate with T1. |
+| [T4 #5797](https://github.com/aws-e/adp/issues/5797) | Early Python task flow, task assignment/credentials, process/event contract and isolated completion. Own shared entrypoint changes. | T0/V0; integrate with T3. |
+| [T5 #5798](https://github.com/aws-e/adp/issues/5798) | First independent task-agent implementation and isolated build/package in the same image. | T0/V0; integrate with T4. |
+| [T6 #5799](https://github.com/aws-e/adp/issues/5799) | Gateway task snapshot/results/artifacts APIs, run-bound event ingestion, ordered persistence and SSE/replay. | T0/V0; integrate with T1/T4. |
+| [T7 #5800](https://github.com/aws-e/adp/issues/5800) | Durable clarification/input and cancellation delivery, receipts and lifecycle integration. | T0/V0; integrate with T1/T4/T5/T6. |
+| [T8 #5801](https://github.com/aws-e/adp/issues/5801) | SDK-free external client example, configuration/deployment/rollback documentation and end-to-end qualification fixtures. | Contract T0/V0; integrate with T2-T7. |
 
-After T0, T1/T2/T3/T4/T5/T6 can progress in parallel against fixtures. Integration
+After T0 and its independent [V0 contract evaluation](https://github.com/aws-e/adp/issues/5821), T1/T2/T3/T4/T5/T6 can progress in parallel against fixtures. Integration
 dependencies still gate acceptance; mocks do not demonstrate the combined path.
 T4 owns `entrypoint.py`, T5 owns task-package Dockerfile additions, T2 owns API
 Gateway/Lambda routing, T1 owns table/index changes, and T3 coordinates narrowly
@@ -525,7 +525,7 @@ links are recorded in the epic. For implementation stories, native blockers mark
 the contract prerequisite to start; the additional integration dependencies
 still gate acceptance. Validation blockers mark prerequisites to complete proof.
 
-Separate validation stories V1-V5 are specified in [validation.md](validation.md).
+The six waves and their independent V0-V5 evaluations are defined in [waves.md](waves.md). T0 supplies contract checks and the command/report manifest; component owners supply V1-V3 tooling in their own waves, and T8 supplies the external/live and rollout tooling. Detailed criteria are specified in [validation.md](validation.md).
 Do not close the epic merely because its implementation PRs merge.
 
 ## 13. Remaining decisions and implementation-review gates

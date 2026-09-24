@@ -567,3 +567,20 @@ class TestAPolicylessPlanIsReportedAsUnbounded:
         # `human_decisions` may legitimately be empty, so assert the key's presence
         # rather than a truthy value: what matters is that retained gates are stated.
         assert "human_decisions" in summary
+
+
+def test_preview_shows_model_authored_epic_and_wave_text(app_with_router, autonomy_default_unset):
+    from src.orchestration.proposal import EpicMetadata, WaveMetadata
+
+    proposal = gateless_proposal()
+    _, epic, wave, _ = proposal.nodes[0].address.split("/")
+    proposal = proposal.model_copy(
+        update={
+            "epic_metadata": [EpicMetadata(epic_ref=epic, title="External tasks", description="Services need tasks without GitHub.")],
+            "wave_metadata": [WaveMetadata(epic_ref=epic, wave_ref=wave, title="Task contracts", description="Freeze and verify the contract.")],
+        }
+    )
+    response = preview(app_with_router, proposal)
+    assert response.status_code == 200, response.text
+    assert response.json()["epic_metadata"][0]["title"] == "External tasks"
+    assert response.json()["waves"][0]["description"] == "Freeze and verify the contract."

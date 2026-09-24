@@ -39,7 +39,7 @@ from __future__ import annotations
 import pytest
 
 from .postgres_support import (
-    head_revision_module,
+    migration_directory,
     render_migration_ddl,
     require_asyncpg,
     require_pgserver,
@@ -138,18 +138,22 @@ def migrated(server, loop, request):
 # --- the revision is part of the chain -------------------------------------------
 
 
-def test_this_storys_migration_is_the_single_head_of_the_chain():
+def test_this_storys_migration_is_reachable_from_the_single_head():
     """An orphan revision creates nothing, and every offline assertion about it passes.
 
-    `render_migration_ddl` walks the chain Alembic resolves; a revision that is not the
-    head — or a chain with two heads — means `alembic upgrade head` either skips this table
-    or refuses to run at all. Checked without a database, so it runs in the offline lane
-    too.
+    Later migrations may extend or merge this branch without changing its bytes.
+    What matters is that `upgrade head` still reaches this revision, with its
+    original parent, and that there remains one unambiguous target.
     """
-    head = head_revision_module()
-
-    assert head.revision == REVISION
-    assert head.down_revision == "016_add_organization_grants"
+    directory = migration_directory()
+    heads = directory.get_heads()
+    assert len(heads) == 1, f"the migration chain must have one head; found {heads}"
+    ancestors = {
+        revision.revision: revision
+        for revision in directory.iterate_revisions(heads[0], "base")
+    }
+    assert REVISION in ancestors
+    assert ancestors[REVISION].down_revision == "016_add_organization_grants"
 
 
 def test_the_chain_renders_the_reservations_table_as_postgresql_ddl():
@@ -350,8 +354,12 @@ def test_the_downgrade_removes_the_table_and_its_indexes(migrated):
     dropped by a name that does not match the one created — which renders perfectly and
     fails only against a database that has the index.
     """
-    _, downgrade = render_migration_ddl(upgrade_only=False)
+    _, downgrade = render_migration_ddl(downgrade_revision=REVISION)
     migrated.execute(*_insert())
+    deployment_columns = migrated.fetch(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'deployments' ORDER BY ordinal_position"
+    )
 
     migrated.execute(downgrade)
 
@@ -362,4 +370,12 @@ def test_the_downgrade_removes_the_table_and_its_indexes(migrated):
     assert (
         migrated.fetch("SELECT indexname FROM pg_indexes WHERE tablename = $1", TABLE)
         == []
+    )
+    # This tests 017's own downgrade body, not a later revision's reverse step.
+    assert (
+        migrated.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'deployments' ORDER BY ordinal_position"
+        )
+        == deployment_columns
     )

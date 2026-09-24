@@ -667,6 +667,23 @@ class OrchestrationRepository:
 
     # -- accepted plans -----------------------------------------------------
 
+    async def display_metadata_for_flows(self, *, org_id: str, flow_ids: list[str]) -> dict[str, dict[str, list[dict]]]:
+        """One tenant-scoped read of current display text for the whole page."""
+        if not flow_ids:
+            return {}
+        rows = await self._session.execute(
+            select(
+                OrchestrationAcceptedPlan.flow_id,
+                OrchestrationAcceptedPlan.plan_document["wave_metadata"],
+                OrchestrationAcceptedPlan.plan_document["epic_metadata"],
+            ).where(
+                OrchestrationAcceptedPlan.org_id == org_id,
+                OrchestrationAcceptedPlan.flow_id.in_(flow_ids),
+                OrchestrationAcceptedPlan.superseded_at.is_(None),
+            )
+        )
+        return {flow_id: {"wave_metadata": waves or [], "epic_metadata": epics or []} for flow_id, waves, epics in rows}
+
     async def record_accepted_plan(
         self,
         *,

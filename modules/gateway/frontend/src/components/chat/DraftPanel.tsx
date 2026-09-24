@@ -18,6 +18,8 @@ interface DraftPanelProps {
 /** True when the draft has no content worth showing yet. */
 function isEmpty(draft: IntentDraft): boolean {
   return (
+    !draft.epicDisplay &&
+    !draft.waveDisplay &&
     !draft.intent &&
     !draft.motivation &&
     !draft.outcomes?.length &&
@@ -41,6 +43,8 @@ export function DraftPanel({ draft }: DraftPanelProps) {
         Draft intent
       </h2>
 
+      {draft.epicDisplay && <Field label={draft.epicDisplay.title} value={draft.epicDisplay.description} />}
+      {draft.waveDisplay && <Field label={draft.waveDisplay.title} value={draft.waveDisplay.description} />}
       {draft.intent && <Field label="Intent" value={draft.intent} />}
       {draft.motivation && <Field label="Motivation" value={draft.motivation} />}
       <ListField label="Outcomes" items={draft.outcomes} />

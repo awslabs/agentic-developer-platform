@@ -5,13 +5,31 @@ env:
   AWS_REGION: us-east-1
 jobs:
   fix:
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main'
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
     steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - run: |
-          if ! command -v kubectl >/dev/null; then
-            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
+          command -v kubectl >/dev/null
           aws eks update-kubeconfig --name adp-dev-eks-cluster --region "$AWS_REGION" >/dev/null
       - run: |
           set -euo pipefail

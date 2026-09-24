@@ -260,7 +260,22 @@ export interface PolicySummary {
   limits: PolicyLimits;
 }
 
+export interface EpicMetadata {
+  epic_ref: string;
+  title: string;
+  description: string;
+}
+
+export interface WaveMetadata {
+  epic_ref: string;
+  wave_ref: string;
+  title: string;
+  description?: string | null;
+}
+
 export interface FlowGraph {
+  wave_metadata?: WaveMetadata[];
+  epic_metadata?: EpicMetadata[];
   execution_paused?: boolean;
   flow_id: string;
   slug: string;
@@ -378,6 +393,8 @@ export interface FlowDisplayCounts {
 export interface WaveSummary {
   epic_ref: string;
   wave_ref: string;
+  title?: string | null;
+  description?: string | null;
   total: number;
   done: number;
   story_count?: number;
