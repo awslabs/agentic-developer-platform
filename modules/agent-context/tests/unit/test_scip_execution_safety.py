@@ -515,7 +515,10 @@ class TestNpmSourceIsPinned:
                 captured.append(cmd)
                 raise FileNotFoundError("npm absent in test env")
 
-            with patch("subprocess.run", side_effect=fake_run):
+            with (
+                patch("scip_indexer._resolve_tool", return_value="/trusted/bin/npm"),
+                patch("subprocess.run", side_effect=fake_run),
+            ):
                 _resolve_typescript_deps(repo)
 
             assert captured, "npm was never invoked"
