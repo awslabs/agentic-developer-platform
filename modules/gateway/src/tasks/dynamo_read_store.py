@@ -306,7 +306,10 @@ class DynamoTaskReadStore:
                         "Update": {
                             "TableName": self.repository.table_name,
                             "Key": durable._serialize({"event_id": task_partition(attempt.task_id), "arrived_at": META_SORT_KEY}),
-                            "UpdateExpression": "SET result_artifact_bytes = :next",
+                            "UpdateExpression": (
+                                "SET result_artifact_bytes = :next, #version = :next_version, "
+                                "result_artifact_ids = list_append(if_not_exists(result_artifact_ids, :empty), :artifact_ids)"
+                            ),
                             "ConditionExpression": (
                                 "#version = :version AND #state = :state AND runtime_attempt_id = :attempt AND "
                                 "(attribute_not_exists(result_artifact_bytes) OR result_artifact_bytes = :prior)"
@@ -315,6 +318,9 @@ class DynamoTaskReadStore:
                             "ExpressionAttributeValues": durable._serialize(
                                 {
                                     ":next": total + len(content),
+                                    ":next_version": int(task["version"]) + 1,
+                                    ":empty": [],
+                                    ":artifact_ids": [artifact_id],
                                     ":prior": total,
                                     ":version": int(task["version"]),
                                     ":state": task["state"],

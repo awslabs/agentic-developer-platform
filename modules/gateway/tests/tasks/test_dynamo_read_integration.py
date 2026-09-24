@@ -135,6 +135,16 @@ def test_result_upload_is_bound_idempotent_and_charges_aggregate_once(adapter, s
     assert adapter.read_artifact(record=record) == content
     assert adapter.put_run_artifact(attempt=attempt, content=content, content_type="text/plain", digest=digest) == record
     assert int(store.read_task(attempt.task_id)["result_artifact_bytes"]) == len(content)
+    snapshot = store.read_task(attempt.task_id)
+    assert snapshot["version"] == 3  # accept, attempt registration, one upload
+    assert snapshot["result_artifact_ids"] == [record.artifact_id]
+    # A finalizer which read the pre-upload version must retry and collect the
+    # committed artifact references before establishing retention.
+    from src.tasks.records import TaskState
+    from src.tasks.store import TaskStateConflictError
+
+    with pytest.raises(TaskStateConflictError):
+        store.transition(task_id=attempt.task_id, expected_version=2, target_state=TaskState.FAILED)
     large = b"y" * 800000
     with pytest.raises(TaskStoreError, match="Aggregate"):
         adapter.put_run_artifact(attempt=attempt, content=large, content_type="text/plain", digest=hashlib.sha256(large).hexdigest())
