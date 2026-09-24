@@ -44,7 +44,8 @@ class AuditWriteFailures:
     SDK and no StatsD/CloudWatch client anywhere in `app/` (checked). Adding one for this
     story would be a new dependency and a new failure mode on the request hot path.
     Instead the count is held here and emitted as a WARNING log line, which the existing
-    log pipeline already ships; the alert is configured on that line. The counter is
+    log pipeline already ships. The runbook specifies an alert for that line;
+    provisioning the alarm remains separate operational work. The counter is
     what the tests assert against, so the invariant "no silent return" is enforced
     mechanically rather than by reading the code.
 

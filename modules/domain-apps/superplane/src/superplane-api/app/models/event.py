@@ -54,7 +54,7 @@ class Event(Base):
         String(16),
         nullable=True,
         doc=(
-            "Whether the attempt was ALLOWED or DENIED. NULL on pre-#5673 rows, which "
+            "Whether the attempt was ALLOWED, DENIED or ERROR. NULL on pre-#5673 rows, which "
             "recorded successes only, so NULL must not be read as 'allowed'."
         ),
     )

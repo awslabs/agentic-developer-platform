@@ -12,7 +12,7 @@ infrastructure access logs carry request lines but no authenticated principal, s
 cannot answer "who did this" and are not a substitute.
 
 Since #5673 each record carries the acting **principal** (who), the **tenant** (whose
-resources), and an **outcome** of `allowed` or `denied`. Denied and unauthenticated
+resources), and an **outcome** of `allowed`, `denied` or `error`. Denied and unauthenticated
 attempts are recorded, which is the point: a probe against another tenant's workspace is
 the event the trail exists to surface.
 
@@ -72,17 +72,14 @@ for `<namespace>` below.
    `--prefix` names the pod on each line, which is what distinguishes one unhealthy
    replica from a database-wide problem.
 
-2. **Find the cause.** The alerting line carries only a fixed `reason`; the traceback is
-   on the companion line.
-
-   ```bash
-   kubectl logs -n <namespace> -l app.kubernetes.io/name=superplane-api \
-     --since=15m | grep -A 20 'audit persistence raised'
-   ```
+2. **Find the cause.** The warning carries a fixed `reason`. Driver exception
+   text is deliberately excluded because it can contain SQL parameters or connection
+   credentials. Inspect database health, connection-pool pressure and migration state
+   using the operator's existing observability tools.
 
    Most likely causes, in order: database connection exhaustion (the audit write opens
    its own session, so it competes for the pool), the events table being unwritable, or
-   a migration not yet applied — if `018_add_event_principal_outcome` has not run, every
+   a migration not yet applied — if `023_add_event_principal_outcome` has not run, every
    insert fails on the missing `principal`/`outcome` columns.
 
 3. **Check the migration state** if the failures started right after a rollout. Schema
@@ -96,7 +93,7 @@ for `<namespace>` below.
    ```
 
    The installer asserts the reported revision equals the head pinned in
-   `releases/superplane.lock.yaml` (`018_add_event_principal_outcome`) and refuses
+   `releases/superplane.lock.yaml` (`023_add_event_principal_outcome`) and refuses
    otherwise, so a mismatch surfaces as a failed install rather than a running pod with
    the wrong schema. If the Job succeeded and inserts still fail on the new columns,
    the API image and the applied schema are from different releases — see "Ordering".
@@ -149,7 +146,7 @@ visible in the data rather than needing to be remembered:
 | Column | Pre-#5673 rows | New rows |
 |---|---|---|
 | `principal` | `NULL` | the acting subject, or `unresolved` |
-| `outcome` | `NULL` | `allowed` or `denied` |
+| `outcome` | `NULL` | `allowed`, `denied` or `error` |
 | `user_id` | an **organization** id (not a person) | left to other writers |
 | `org_id` | always set | `NULL` when no identity was established |
 
@@ -165,7 +162,7 @@ Two consequences for anyone querying this table:
 
 ## Ordering: migration before image
 
-Migration `018_add_event_principal_outcome` must be applied **before or with** the image
+Migration `023_add_event_principal_outcome` must be applied **before or with** the image
 that writes the new columns. It is additive (two columns, one index) plus one constraint
 relaxation (`events.org_id` becomes nullable), so:
 
@@ -174,9 +171,10 @@ relaxation (`events.org_id` becomes nullable), so:
   safe.
 - **Rolling back the image does not require reversing the migration.** The old code
   ignores the new columns.
-- The **downgrade is destructive** and should not be run casually: restoring
-  `org_id NOT NULL` is impossible while unattributed rows exist, so `downgrade()` deletes
-  them — those are the audit records of unauthenticated attempts.
+- **Downgrade refuses while unattributed rows exist.** It preserves those records
+  rather than deleting evidence to restore `org_id NOT NULL`. Exporting, preserving
+  and cleaning up that evidence requires a separate operator decision. Reversing the
+  migration also removes the principal/outcome columns; prefer an image rollback.
 
 ## Volume and the read-coverage flag
 
@@ -209,4 +207,4 @@ outstanding follow-up work, not something this runbook can resolve.
 | `modules/domain-apps/superplane/src/superplane-api/app/middleware/audit.py` | The middleware, with the failure policy and content boundary documented inline |
 | `modules/domain-apps/superplane/src/superplane-api/app/services/audit.py` | `log_event` and the `audit_write_failures` counter |
 | `modules/domain-apps/superplane/src/superplane-api/tests/test_audit_middleware.py` | The invariants, including "no path returns without a row or a counted failure" |
-| `modules/domain-apps/superplane/src/superplane-api/alembic/versions/018_add_event_principal_outcome.py` | The schema change and why the downgrade is lossy |
+| `modules/domain-apps/superplane/src/superplane-api/alembic/versions/023_add_event_principal_outcome.py` | The schema change and evidence-preserving downgrade refusal |
