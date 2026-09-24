@@ -307,9 +307,9 @@ assert_fixture_service_is_ours() {
   # response. stdin has to carry the DOCUMENT, so the program comes in on its own
   # descriptor.
   printf '%s' "$svc_json" | python3 /dev/fd/3 \
-      "$RUN_ID" "$RUN_NONCE" "$NAMESPACE" "$PORT" "$SERVICE" 3<<'PY'
+      "$RUN_ID" "$RUN_NONCE" "$NAMESPACE" "$PORT" "$SERVICE" "$LEDGER" "$ACCOUNT" "$REGION" 3<<'PY'
 import json, sys
-run_id, nonce, namespace, port, name = sys.argv[1:6]
+run_id, nonce, namespace, port, name, ledger_path, account, region = sys.argv[1:9]
 try:
     doc = json.load(sys.stdin)
 except Exception as exc:                       # noqa: BLE001
@@ -318,6 +318,28 @@ except Exception as exc:                       # noqa: BLE001
 md = doc.get("metadata") or {}
 labels = md.get("labels") or {}
 spec = doc.get("spec") or {}
+
+# Bind the existing creation ledger before any Ingress mutation. Labels survive
+# object replacement; only the recorded UID identifies the original Service.
+try:
+    with open(ledger_path) as stream:
+        ledger = json.load(stream)
+    for field, expected in (("run_id", run_id), ("run_nonce", nonce),
+                            ("account_id", account), ("region", region)):
+        if ledger.get(field) != expected:
+            sys.exit(f"ledger {field} does not match this invocation; refusing before create")
+    entries = [entry for entry in ledger["k8s"]
+               if entry.get("kind") == "Service" and entry.get("name") == name
+               and entry.get("namespace") == namespace]
+except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+    sys.exit(f"invalid fixture creation ledger: {exc}")
+if len(entries) != 1 or entries[0].get("created_by_this_run") is not True:
+    sys.exit("Service is not uniquely recorded as created by this run; refusing before create")
+uid = entries[0].get("uid")
+if not uid or uid != md.get("uid") or md.get("name") != name or doc.get("kind") != "Service":
+    sys.exit("Service identity differs from the recorded original; refusing before create")
+if spec.get("selector") != {"app": name}:
+    sys.exit("Service selector does not target this fixture; refusing before create")
 
 # Namespace from the SERVER, not from the flag: -n could be satisfied while the
 # returned object names another namespace only if kubectl were lying, but reading
@@ -709,8 +731,8 @@ cat <<EOF
 
   and add its source_cidrs as ONE ipBlock ingress rule on the FIXTURE policy only,
   on container_port 8080 (NOT the listener port). RUNBOOK.md step 4.5 has the
-  rule and the four ways to get it wrong. Skipping it gives healthy ALB targets and
-  a bootstrap that never completes.
+  rule and the four ways to get it wrong. Skipping it blocks health checks and
+  requests to the pod, preventing bootstrap.
 
   TEARDOWN ORDER -- DESTROY THE EDGE FIRST, THEN THIS INGRESS.
   An earlier revision of this note had it backwards. ../main.tf READS this ALB

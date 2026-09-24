@@ -111,11 +111,11 @@ if args[:1] == ["get"] and args[1] == "service":
         labels[key] = value
     doc = {
         "apiVersion": "v1", "kind": "Service",
-        "metadata": {"name": args[2],
+        "metadata": {"name": args[2], "uid": os.environ.get("FAKE_SERVICE_UID", "service-original-uid"),
                      "namespace": os.environ.get("FAKE_SERVICE_NAMESPACE", "adp-gateway"),
                      "labels": labels},
         "spec": {"type": os.environ.get("FAKE_SERVICE_TYPE", "ClusterIP"),
-                 "selector": {"app": args[2]},
+                 "selector": {"app": os.environ.get("FAKE_SERVICE_SELECTOR", args[2])},
                  "ports": [{"name": "http",
                             "port": int(os.environ.get("FAKE_SERVICE_PORT", "80")),
                             "targetPort": 8080, "protocol": "TCP"}]},
@@ -243,7 +243,12 @@ def harness(tmp_path):
     log.write_text("")
     manifest_copy = tmp_path / "rendered.yaml"
     ledger = tmp_path / "ledger.json"
-    ledger.write_text("")
+    initial_ledger = json.dumps({
+        "run_id": RUN_ID, "run_nonce": RUN_NONCE, "account_id": ACCOUNT,
+        "region": "us-east-1", "k8s": [{"kind": "Service", "name": SERVICE,
+        "namespace": NAMESPACE, "uid": "service-original-uid", "created_by_this_run": True}]
+    })
+    ledger.write_text(initial_ledger)
     # The run's private artifact directory, where the creation intent and the uid
     # receipt land. Passed explicitly so a test never writes into the checkout.
     artifacts = tmp_path / "artifacts"
@@ -293,6 +298,7 @@ def harness(tmp_path):
     harness.run = run
     harness.log = log
     harness.manifest = manifest_copy
+    harness.initial_ledger = initial_ledger
     harness.ledger = ledger
     harness.artifacts = artifacts
     return harness
@@ -714,7 +720,7 @@ def test_refuses_to_adopt_an_existing_object_and_records_nothing(harness):
     assert r.returncode != 0
     assert "REFUSING to adopt" in r.stderr
     assert "ownership " not in harness.log.read_text()
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_never_uses_kubectl_apply(harness):
@@ -770,7 +776,7 @@ def test_fails_when_the_server_returns_no_uid(harness):
     r = harness.run({"FAKE_NO_UID": "1"})
     assert r.returncode != 0
     assert "no metadata.uid" in r.stderr
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
     # An object exists with no captured identity: the one case where deleting by
     # name is most tempting and most dangerous.
     assert "Do NOT delete by name" in r.stderr
@@ -794,7 +800,7 @@ def test_check_only_creates_nothing_and_records_nothing(harness):
     calls = harness.log.read_text()
     assert "--dry-run=server" in calls
     assert "ownership " not in calls
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_check_only_surfaces_a_server_rejection(harness):
@@ -882,7 +888,7 @@ def test_refuses_a_credential_for_another_account_before_creating_anything(harne
         "the account mismatch was discovered AFTER the Ingress was created -- which "
         "is the defect, not the check"
     )
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_refuses_when_the_acting_identity_cannot_be_resolved_at_all(harness):
@@ -1071,7 +1077,7 @@ def test_recovery_records_the_object_by_its_actual_uid(harness):
     or re-creating anything."""
     first = harness.run({"FAKE_LEDGER_FAIL": "1"})
     assert first.returncode != 0
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
     mark = create_count(harness)
 
     r = harness.run(args=["--recover"])
@@ -1094,7 +1100,7 @@ def test_recovery_refuses_a_same_named_replacement(harness):
     assert r.returncode != 0
     assert "NOT the object this run created" in r.stderr
     assert "Do NOT delete it by name" in r.stderr
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_recovery_refuses_without_a_uid_receipt(harness):
@@ -1109,7 +1115,7 @@ def test_recovery_refuses_without_a_uid_receipt(harness):
     assert r.returncode != 0
     assert "no uid receipt" in r.stderr
     assert "REFUSING to record any live Ingress as ours" in r.stderr
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_recovery_refuses_without_a_creation_intent(harness):
@@ -1117,7 +1123,7 @@ def test_recovery_refuses_without_a_creation_intent(harness):
     r = harness.run(args=["--recover"])
     assert r.returncode != 0
     assert "no creation intent" in r.stderr
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_recovery_refuses_an_intent_from_another_run(harness):
@@ -1131,7 +1137,7 @@ def test_recovery_refuses_an_intent_from_another_run(harness):
     r = harness.run(args=["--recover"])
     assert r.returncode != 0
     assert "creation intent's run_nonce" in r.stderr
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_recovery_reports_nothing_to_recover_when_the_object_is_absent(harness):
@@ -1140,7 +1146,7 @@ def test_recovery_reports_nothing_to_recover_when_the_object_is_absent(harness):
     r = harness.run({"FAKE_INGRESS_ABSENT": "1"}, args=["--recover"])
     assert r.returncode != 0
     assert "nothing to" in r.stderr
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_recovery_still_verifies_account_and_cluster(harness):
@@ -1150,7 +1156,7 @@ def test_recovery_still_verifies_account_and_cluster(harness):
     r = harness.run({"FAKE_ACCOUNT": "111122223333"}, args=["--recover"])
     assert r.returncode != 0
     assert "resolves to account 111122223333" in r.stderr
-    assert harness.ledger.read_text() == ""
+    assert harness.ledger.read_text() == harness.initial_ledger
 
 
 def test_recover_and_check_only_are_refused_together(harness):
@@ -1204,3 +1210,41 @@ def test_no_failure_path_advises_deleting_the_ingress_by_name(harness):
             assert not stripped.startswith("kubectl delete ingress"), (
                 f"{env} advises deleting by name: {stripped!r}"
             )
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_id", "foreign-run"), ("run_nonce", "ffffffffffffffff"),
+    ("account_id", "111111111111"), ("region", "us-west-2"),
+])
+def test_foreign_ledger_refuses_before_ingress_create(harness, field, value):
+    doc = json.loads(harness.ledger.read_text())
+    doc[field] = value
+    harness.ledger.write_text(json.dumps(doc))
+    result = harness.run()
+    assert result.returncode != 0
+    assert f"ledger {field}" in result.stderr
+    assert "kubectl create" not in harness.log.read_text()
+
+
+@pytest.mark.parametrize("env,reason", [
+    ({"FAKE_SERVICE_UID": "replacement-uid"}, "Service identity"),
+    ({"FAKE_SERVICE_UID": ""}, "Service identity"),
+    ({"FAKE_SERVICE_SELECTOR": "ordinary-gateway"}, "Service selector"),
+])
+def test_replaced_or_redirected_service_refuses_before_create(harness, env, reason):
+    result = harness.run(env)
+    assert result.returncode != 0
+    assert reason in result.stderr
+    assert "kubectl create" not in harness.log.read_text()
+
+
+@pytest.mark.parametrize("entries", [[], [False], [True, True]])
+def test_missing_unowned_or_ambiguous_service_record_refuses(harness, entries):
+    doc = json.loads(harness.ledger.read_text())
+    original = doc["k8s"][0]
+    doc["k8s"] = [dict(original, created_by_this_run=owned) for owned in entries]
+    harness.ledger.write_text(json.dumps(doc))
+    result = harness.run()
+    assert result.returncode != 0
+    assert "not uniquely recorded" in result.stderr
+    assert "kubectl create" not in harness.log.read_text()
