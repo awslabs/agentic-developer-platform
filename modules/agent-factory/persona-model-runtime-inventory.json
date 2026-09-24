@@ -83,6 +83,7 @@
       "modules/agent-factory/agent/src/complex-task-chat/context/summarize/bedrock-summarizer.ts",
       "modules/agent-factory/agent/src/invocability-probe/generate-manifest.ts",
       "modules/agent-factory/agent/src/invocability-probe/request-shape-manifest.json",
+      "modules/agent-factory/agent/src/registered-control-fixture.ts",
       "modules/agent-factory/gateway/lambdas/ingest/classifier.py",
       "modules/agent-factory/infra/modules/lambda-gateway/variables.tf",
       "modules/agent-factory/scripts/deepwiki-smoke-test.sh",
