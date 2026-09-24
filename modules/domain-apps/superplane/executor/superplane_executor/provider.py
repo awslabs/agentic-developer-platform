@@ -122,6 +122,10 @@ class Provider:
             or sky_identity.get("credential_source") != "web_identity"
             or sky_identity.get("allocation_tags")
             != ["instance", "volume", "network-interface"]
+            or (
+                data["version"] == 3
+                and sky_identity.get("capacity_constraints") != ["physical_gpu_limit"]
+            )
         ):
             raise OperationRefused("SkyPilot provider identity mismatch")
 

@@ -4,8 +4,10 @@ These tests are offline transport/provider-contract evidence, not live EKS accep
 """
 
 import asyncio
+import base64
 import hashlib
 import json
+import ssl
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -38,6 +40,8 @@ class Cloud:
         self.ever_created = False
         self.leaked_volume = False
         self.launches = 0
+        self.tasks = []
+        self.capacity_constraints = ["physical_gpu_limit"]
         self.sky_account = "123456789012"
         self.lose_launch_response = False
         # A kill AFTER the durable handle is journalled but BEFORE the launch is
@@ -206,7 +210,7 @@ class Kubernetes(Workspace):
 
 
 @pytest.fixture
-async def system(pool, tmp_path):
+async def system(pool, tmp_path, request):
     org, workspace, cluster, instance = [str(uuid4()) for _ in range(4)]
     data = {
         "version": 1,
@@ -238,6 +242,21 @@ async def system(pool, tmp_path):
         },
     }
     cloud = Cloud(data)
+    if getattr(request, "param", False):
+        certificate = min(
+            (
+                ssl.DER_cert_to_PEM_cert(value)
+                for value in ssl.create_default_context().get_ca_certs(binary_form=True)
+            ),
+            key=len,
+        )
+        data.update(
+            version=3,
+            certificate_authority=base64.b64encode(certificate.encode()).decode(),
+            accelerators=["A10G:1", "L4:1"],
+            max_gpus_per_node=4,
+        )
+        del data["instance_type"]
     kube = Kubernetes(cloud)
     async with pool.acquire() as c:
         await c.execute("""
@@ -308,12 +327,14 @@ async def system(pool, tmp_path):
                     "role_arn": "arn:aws:iam::123456789012:role/approved",
                     "credential_source": "web_identity",
                     "allocation_tags": ["instance", "volume", "network-interface"],
+                    "capacity_constraints": cloud.capacity_constraints,
                 },
             )
         if path == "/launch":
             payload = json.loads(request.content)
             assert isinstance(payload["task"], str)
             task = json.loads(payload["task"])
+            cloud.tasks.append(task)
             assert "SSM_ACTIVATION" not in payload["task"]
             assert "nodeadm init" in task["setup"] and "remaining=" in task["run"]
             assert payload["retry_until_up"] is False
@@ -390,12 +411,21 @@ async def system(pool, tmp_path):
             }
             for i, verb in enumerate(verbs)
         ]
+        wire = dict(data)
+        certificate_parameters = {}
+        if wire["version"] == 3:
+            certificate = wire.pop("certificate_authority")
+            wire["certificate_authority_sha256"] = hashlib.sha256(
+                certificate.encode()
+            ).hexdigest()
+            certificate_parameters["controller_certificate_authority"] = certificate
         req = OperationRequest(
             action=action,
             idempotency_key=key or action,
             parameters={
                 "allocation_id": "allocation",
-                "controller_plan": json.dumps(data),
+                "controller_plan": json.dumps(wire, separators=(",", ":")),
+                **certificate_parameters,
                 "execution_steps": json.dumps(steps),
                 "provider": "aws",
                 "provider_account_id": "123456789012",
@@ -442,6 +472,7 @@ async def system(pool, tmp_path):
 
 
 @pytest.mark.parametrize("leaked_volume", [False, True])
+@pytest.mark.parametrize("system", [False, True], indirect=True)
 async def test_real_governance_inventory_and_full_cleanup_decision(
     system, leaked_volume
 ):
@@ -453,6 +484,14 @@ async def test_real_governance_inventory_and_full_cleanup_decision(
         )
         assert result[1] == "settle"
     assert cloud.launches == 1
+    if cloud.data["version"] == 3:
+        resources = cloud.tasks[0]["resources"]
+        assert "instance_type" not in resources
+        assert resources["any_of"] == [
+            {"accelerators": "A10G:1"},
+            {"accelerators": "L4:1"},
+        ]
+        assert resources["labels"]["superplane-max-gpus-per-node"] == "4"
     async with pool.acquire() as c:
         assert (
             await c.fetchval(
@@ -503,6 +542,18 @@ async def test_real_governance_inventory_and_full_cleanup_decision(
             "settle" if leaked_volume else "release"
         )
     assert cloud.launches == 1 and not kube.stored
+
+
+@pytest.mark.parametrize("system", [True], indirect=True)
+async def test_gpu_selection_refuses_backend_without_physical_capacity_guard(system):
+    _, admit, server, cloud, kube, _, _ = system
+    cloud.capacity_constraints = []
+    _, token = await admit("provision")
+    with pytest.raises(OperationRefused):
+        await server.dispatch(
+            {"token": token, "method": "execute_step", "arguments": {"step_id": "1"}}
+        )
+    assert cloud.launches == 0 and not kube.stored
 
 
 async def test_revocation_between_steps_prevents_workload_creation(system):

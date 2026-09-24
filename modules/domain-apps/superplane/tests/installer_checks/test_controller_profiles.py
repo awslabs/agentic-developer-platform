@@ -17,6 +17,18 @@ from installation.controller_profiles import (
 from installation.manifests import render
 
 
+def test_installed_gpu_requirements_do_not_need_a_preselected_machine(
+    environment, release
+):
+    profile = selected_profiles(environment)["approved-model"]
+    del profile["instance_type"]
+    profile.update(accelerators=["A10G:1", "L4:1"], max_gpus_per_node=1)
+    validate(environment, release)
+    encoded = json.loads(policy(environment))
+    assert encoded == environment["controller_profiles"]
+    assert "instance_type" not in projection(environment)["content"]
+
+
 @pytest.mark.parametrize("invalid", [None, "port", "auth", "model"])
 def test_installed_batch_policy_cannot_expose_serving_or_mutable_model_options(
     environment, release, invalid

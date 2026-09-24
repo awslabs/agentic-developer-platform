@@ -6,7 +6,10 @@ install SkyPilot. Domain CI runs this explicitly in a separate pinned venv.
 
 import copy
 import importlib.util
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import sky
@@ -44,3 +47,48 @@ def test_actual_skypilot_parser_preserves_resource_choices(clouds):
             assert str(resource.cloud).lower() in clouds
         else:
             assert resource.cloud is None
+
+
+def test_actual_executor_task_preserves_choices_join_and_physical_limit(monkeypatch):
+    root = Path(__file__).resolve().parents[4]
+    monkeypatch.syspath_prepend(str(root / "modules/harness/jobs"))
+    monkeypatch.syspath_prepend(str(root / "modules/domain-apps/superplane/executor"))
+    from superplane_executor.plan import Plan
+
+    plan = Plan(
+        {
+            "version": 3,
+            "cluster_arn": "arn:aws:eks:us-east-1:123456789012:cluster/workspace",
+            "endpoint": "https://workspace.example.invalid",
+            "certificate_authority": "public-test-ca",
+            "service_cidr": "172.20.0.0/16",
+            "node_count": 2,
+            "region": "us-east-1",
+            "image_id": "ami-0123456789abcdef0",
+            "disk_size": 100,
+            "accelerators": ["A10G:1", "L4:1"],
+            "max_gpus_per_node": 4,
+        },
+        "sp-" + "a" * 32,
+        (),
+    )
+    operation = SimpleNamespace(
+        grant=SimpleNamespace(
+            lease=SimpleNamespace(
+                workspace_id="workspace",
+                runtime_deadline=datetime.now(UTC) + timedelta(seconds=900),
+            )
+        )
+    )
+    raw = json.loads(plan.task(operation))
+    parsed = sky.Task.from_yaml_config(copy.deepcopy(raw))
+    assert parsed.num_nodes == 2
+    assert "nodeadm init" in parsed.setup
+    assert "remaining=" in parsed.run
+    assert len(parsed.resources) == 2
+    for resource in parsed.resources:
+        assert resource.instance_type is None
+        assert resource.accelerators in ({"A10G": 1}, {"L4": 1})
+        assert str(resource.cloud).lower() == "aws"
+        assert resource.region == "us-east-1"
+        assert resource.labels["superplane-max-gpus-per-node"] == "4"
