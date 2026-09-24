@@ -54,6 +54,10 @@ CMD="${1:-}"; [ -n "$CMD" ] && shift || true
 NONCE=""; ACCOUNT=""; REGION="us-east-1"; ENVIRONMENT="dev"; PROFILE=""
 BUCKET=""; LEDGER=""; NAMESPACE="adp-gateway"; FIXTURE_DEPLOY=""
 PLAN_FILE=""; DRY_RUN=0; RECOVER=0; ARTIFACT_DIR=""
+# Security-control inputs for `verify`. Both default to ABSENT-IS-A-FAILURE rather
+# than absent-is-a-note, so a control cannot go silently unrun.
+WRONG_ROLE_PROFILE=""; SKIP_WRONG_ROLE=0; HUMAN_PROBE_PATH=""
+EXPECT_CLUSTER=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -68,6 +72,10 @@ while [ $# -gt 0 ]; do
     --fixture-deployment) FIXTURE_DEPLOY="${2:?}"; shift 2 ;;
     --plan-file)        PLAN_FILE="${2:?}"; shift 2 ;;
     --artifact-dir)     ARTIFACT_DIR="${2:?}"; shift 2 ;;
+    --expect-cluster)   EXPECT_CLUSTER="${2:?}"; shift 2 ;;
+    --wrong-role-profile) WRONG_ROLE_PROFILE="${2:?}"; shift 2 ;;
+    --human-probe-path) HUMAN_PROBE_PATH="${2:?}"; shift 2 ;;
+    --skip-wrong-role)  SKIP_WRONG_ROLE=1; shift ;;
     --dry-run)          DRY_RUN=1; shift ;;
     --recover)          RECOVER=1; shift ;;
     -h|--help)          sed -n '1,45p' "$0"; exit 0 ;;
@@ -115,6 +123,80 @@ assert_live_account() {
   ok "credential resolves to the expected account ($ACCOUNT)"
 }
 
+# ---------------------------------------------------------------------------
+# AWS CLI --profile does NOT bind kubectl.
+#
+# assert_live_account proves the AWS CLI is pointed at the right account. It says
+# nothing about which Kubernetes cluster kubectl will mutate: the current context
+# comes from KUBECONFIG and can easily be another cluster, or another ACCOUNT's
+# cluster, while every aws_ call in the same run is correctly bound. Every
+# mutating subcommand must therefore assert the cluster too, BEFORE mutating.
+# ---------------------------------------------------------------------------
+assert_kube_context() {
+  local ctx
+  ctx="$(kubectl config current-context 2>/dev/null)" \
+    || fail "no current kubectl context. Refusing to mutate an unknown cluster."
+  [ -n "$ctx" ] || fail "kubectl current-context is empty. Refusing to continue."
+  # An EKS context ARN embeds the account and region, so when it is one we can
+  # check the cluster belongs to the SAME account the AWS credential resolved to.
+  case "$ctx" in
+    arn:aws:eks:*)
+      local ctx_account ctx_region
+      ctx_region="$(printf '%s' "$ctx" | cut -d: -f4)"
+      ctx_account="$(printf '%s' "$ctx" | cut -d: -f5)"
+      [ "$ctx_account" = "$ACCOUNT" ] || fail "kubectl context is for account $ctx_account but
+     --account-id is $ACCOUNT. The AWS CLI and kubectl are pointed at DIFFERENT
+     accounts; refusing to mutate. Context: $ctx"
+      [ "$ctx_region" = "$REGION" ] || fail "kubectl context region $ctx_region != --region $REGION.
+     Context: $ctx"
+      ;;
+    *)
+      # A short/aliased context cannot be verified by parsing, so require the
+      # operator to state it explicitly rather than accepting whatever is current.
+      [ -n "$EXPECT_CLUSTER" ] || fail "the kubectl context '$ctx' is not an EKS ARN, so its
+     account cannot be verified by inspection. Pass --expect-cluster '$ctx' to
+     confirm this is deliberately the intended cluster. Refusing to mutate an
+     unverifiable cluster."
+      ;;
+  esac
+  if [ -n "$EXPECT_CLUSTER" ]; then
+    [ "$ctx" = "$EXPECT_CLUSTER" ] || fail "kubectl context is '$ctx' but --expect-cluster is
+     '$EXPECT_CLUSTER'. Refusing to mutate the wrong cluster."
+  fi
+  ok "kubectl context verified ($ctx)"
+}
+
+# ---------------------------------------------------------------------------
+# A SigV4-SIGNED probe from a DIFFERENT profile, for the wrong-role control.
+#
+# This is the only probe that reaches this component's resource-policy Deny: an
+# UNSIGNED request is refused earlier, by API Gateway's AWS_IAM check, so it can
+# never demonstrate that the policy denies a non-allowlisted role. Signing is done
+# by curl's native --aws-sigv4 rather than reimplemented here.
+#
+# Emits ONLY an HTTP status code on stdout. Returns 000 when it could not sign,
+# which the caller treats as a FAILURE ("the refusal was not observed") rather
+# than as a pass.
+# ---------------------------------------------------------------------------
+aws_sigv4_probe() {
+  local profile="$1" url="$2"
+  local akid skey stok
+  akid="$(aws --profile "$profile" configure get aws_access_key_id 2>/dev/null || echo "")"
+  skey="$(aws --profile "$profile" configure get aws_secret_access_key 2>/dev/null || echo "")"
+  stok="$(aws --profile "$profile" configure get aws_session_token 2>/dev/null || echo "")"
+  if [ -z "$akid" ] || [ -z "$skey" ]; then
+    # Deliberately 000, not a skip: an unsignable probe proves nothing, and the
+    # caller must not record the Deny as verified.
+    printf '000\n'
+    return 0
+  fi
+  local extra=()
+  [ -n "$stok" ] && extra+=(-H "X-Amz-Security-Token: $stok")
+  curl -s -o /dev/null -w '%{http_code}' -X POST "$url" \
+    --aws-sigv4 "aws:amz:${REGION}:execute-api" \
+    --user "${akid}:${skey}" "${extra[@]}" 2>/dev/null || printf '000\n'
+}
+
 # Private artifact directory. 700 because the handoff writes run-scoped
 # operational detail here; the secret VALUE is never written to any file (see
 # cmd_handoff), but a world-readable directory of fixture state is still wrong.
@@ -134,6 +216,116 @@ artifact_dir() {
 
 STATE_KEY=""
 state_key() { STATE_KEY="fixture-edge/${ENVIRONMENT}/${ACCOUNT}/${NONCE}/terraform.tfstate"; }
+
+# ---------------------------------------------------------------------------
+# The run id is the LEDGER'S, never one this script invents.
+#
+# The previous revision passed `--run-id "w2-${NONCE}"`. That is a guess at
+# #3968's internal identifier format. If it does not match the run id #3968
+# actually opened, the row lands under an id its cleanup never looks up: the
+# object is "recorded" and still orphaned, which is the failure recording exists
+# to prevent. Read it from the ledger #3968 wrote, and refuse rather than fall
+# back to a guess.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# NOTE ON THE CALLING CONVENTION, which was a real bug.
+#
+# This was first used as `--run-id "$RUN_ID"`. Command substitution runs
+# in a SUBSHELL, so the `fail` inside this function exited THAT subshell -- the
+# parent kept going with an EMPTY run id and recorded the object as
+# `--run-id ""`. Worse, `record-k8s` then consumed the NEXT flag as the run id in
+# the fake, and in the real CLI an empty run id is a row no cleanup looks up. The
+# refusal this function exists to perform was silently converted into the exact
+# outcome it was meant to prevent.
+#
+# So callers must assign it to a variable on its own line -- `RUN_ID="$(...)" ||
+# fail` -- because `set -e` does propagate a failed command substitution when it
+# is the whole right-hand side of an assignment. resolve_run_id below does that
+# once, so no caller has to remember.
+# ---------------------------------------------------------------------------
+ledger_run_id() {
+  [ -n "$LEDGER" ] || fail "--ledger is required to resolve the run id"
+  [ -s "$LEDGER" ] || fail "ledger $LEDGER is missing or empty. #3968's session must have
+     opened this run before the fixture edge records anything into it."
+  local rid
+  rid="$(python3 - "$LEDGER" "$NONCE" <<'PY'
+import json, sys
+path, nonce = sys.argv[1], sys.argv[2]
+try:
+    doc = json.load(open(path))
+except Exception as exc:                      # noqa: BLE001 - reported, not swallowed
+    sys.exit(f"could not parse ledger {path}: {exc}")
+if not isinstance(doc, dict):
+    sys.exit("ledger root is not an object; cannot resolve run_id")
+rid = doc.get("run_id") or doc.get("runId")
+if not rid:
+    sys.exit("ledger has no run_id field; #3968 must open the run first")
+# The ledger must be THIS run's. Recording into another run's ledger would hand
+# this fixture's objects to a cleanup that deletes on a different schedule.
+led_nonce = doc.get("run_nonce") or doc.get("nonce")
+if led_nonce and led_nonce != nonce:
+    sys.exit(f"ledger is for run nonce {led_nonce}, not {nonce}; refusing to record")
+print(rid)
+PY
+  )" || fail "could not resolve the #3968 run id from $LEDGER: see the error above.
+     Refusing to invent one -- a guessed run id records the object under an id
+     #3968's cleanup never looks up, which orphans it while looking recorded."
+  printf '%s\n' "$rid"
+}
+
+# Resolve ONCE into a global, failing the whole script (not a subshell) if the
+# ledger cannot vouch for a run id.
+RUN_ID=""
+resolve_run_id() {
+  RUN_ID="$(ledger_run_id)" || fail "could not resolve the #3968 run id; refusing to record."
+  [ -n "$RUN_ID" ] || fail "resolved an EMPTY run id from $LEDGER. Refusing to record: a row
+     with no run id is a row #3968's cleanup never looks up, which orphans the
+     object while making it look recorded."
+}
+
+# ---------------------------------------------------------------------------
+# Absence must mean NotFound, never "the call failed".
+#
+# Root EXECUTED the previous revision's destroy verification with the fake AWS
+# returning AccessDeniedException instead of NotFound: it exited 0 and reported
+# "teardown verified". Every `if aws ... >/dev/null 2>&1; then present; else
+# absent; fi` reads an expired credential, a network blip, a throttle and a
+# permission denial as proof of deletion. That is the most dangerous possible
+# direction for this error to point, because the operator then records cleanup as
+# complete and stops looking.
+#
+# Returns: 0 = confirmed absent, 1 = confirmed present, 2 = UNKNOWN (must fail).
+# ---------------------------------------------------------------------------
+probe_absent() {
+  local not_found_pattern="$1"; shift
+  local out rc=0
+  # `if`, NOT `set +e` ... `set -e`. A command in an `if` condition is exempt from
+  # errexit by the shell's own rules, so nothing here has to toggle a global flag.
+  #
+  # The save/restore version of this was WRONG and the fake caught it: this
+  # function ran inside its caller's `set +e` region, and the trailing `set -e`
+  # re-enabled errexit for the CALLER. So the moment probe_absent returned 1 --
+  # "the resource is STILL PRESENT", the single most important thing teardown can
+  # discover -- errexit killed the script before the [FAIL] was printed. Exit
+  # status 1 with an EMPTY stderr, which reads as a silent crash rather than as a
+  # surviving resource. Toggling errexit inside a helper is not composable; not
+  # toggling it is.
+  if out="$("$@" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    return 1                      # the call succeeded: the resource is PRESENT
+  fi
+  # Only the service's own not-found error proves absence.
+  if printf '%s' "$out" | grep -Eq "$not_found_pattern"; then
+    return 0
+  fi
+  PROBE_ERROR="$(printf '%s' "$out" | tr -d '\n' | cut -c1-400)"
+  return 2                        # UNKNOWN -- caller must treat as failure
+}
+PROBE_ERROR=""
 
 # ===========================================================================
 # init
@@ -164,12 +356,67 @@ cmd_init() {
   ok "initialised against an isolated per-run state key"
 }
 
+# ---------------------------------------------------------------------------
+# REFUSE nonce B against a backend initialised for nonce A.
+#
+# terraform init writes the resolved backend into .terraform/terraform.tfstate.
+# Nothing in the previous revision compared it to the --nonce/--account-id on the
+# CURRENT command line, so `init --nonce A` followed by `plan --nonce B` planned
+# run B's resources into run A's state file. Both runs then believe they own the
+# same objects, and either teardown destroys the other's edge.
+#
+# Every command that touches state calls this BEFORE reading or writing any.
+# ---------------------------------------------------------------------------
+assert_backend_binding() {
+  # TF_DATA_DIR is terraform's own override for where `.terraform` lives, so
+  # honouring it here keeps this check reading the SAME record the terraform
+  # invocations below write. Hardcoding $ROOT_DIR/.terraform would silently read a
+  # stale record whenever an operator (or CI) sets TF_DATA_DIR.
+  local cfg="${TF_DATA_DIR:-$ROOT_DIR/.terraform}/terraform.tfstate"
+  [ -f "$cfg" ] || fail "no initialised backend found ($cfg missing). Run 'init' first with
+     this run's --nonce and --account-id. This is deliberately fatal: without the
+     record there is nothing to compare the nonce/account on this command line
+     against, so proceeding would mean planning or destroying through whatever
+     state happened to be configured."
+  state_key
+  python3 - "$cfg" "$STATE_KEY" "$ACCOUNT" "$REGION" <<'PY' \
+    || fail "backend binding check refused this command; see above."
+import json, sys
+cfg, expect_key, account, region = sys.argv[1:5]
+try:
+    doc = json.load(open(cfg))
+except Exception as exc:                      # noqa: BLE001
+    sys.exit(f"could not read the initialised backend record {cfg}: {exc}")
+backend = doc.get("backend") or {}
+conf = backend.get("config") or {}
+actual_key = conf.get("key")
+if not actual_key:
+    sys.exit("the initialised backend records no state key; re-run init")
+if actual_key != expect_key:
+    sys.exit(
+        "BACKEND MISMATCH -- refusing to touch another run's state.\n"
+        f"  initialised for : {actual_key}\n"
+        f"  this command    : {expect_key}\n"
+        "The arguments on this command line do not match the backend that was\n"
+        "initialised. Planning or destroying through a mismatched state file would\n"
+        "make two runs believe they own the same resources. Re-run 'init' with these\n"
+        "exact arguments, or re-issue this command with the nonce/account the\n"
+        "backend was initialised for."
+    )
+actual_region = conf.get("region")
+if actual_region and actual_region != region:
+    sys.exit(f"backend region {actual_region} != --region {region}; re-run init")
+print(f"  [ ok ] backend binding verified ({actual_key})")
+PY
+}
+
 # ===========================================================================
 # plan
 # ===========================================================================
 cmd_plan() {
   require_nonce; require_account
   assert_live_account
+  assert_backend_binding
   local dir; dir="$(artifact_dir)"
   local tfvars="$dir/fixture.tfvars" out="$dir/fixture.plan"
   [ -f "$tfvars" ] || fail "expected reviewed inputs at $tfvars (see RUNBOOK.md step 3)"
@@ -222,6 +469,7 @@ cmd_apply() {
      Applying without a reviewed plan file is how an unreviewed change lands."
   [ -f "$PLAN_FILE" ] || fail "plan file not found: $PLAN_FILE"
   assert_live_account
+  assert_backend_binding
 
   if [ "$DRY_RUN" = 1 ]; then
     note "dry-run: would apply $PLAN_FILE"; return 0
@@ -271,7 +519,16 @@ cmd_handoff() {
      production's value and every internal call would 403 -- or, worse, would
      succeed against the wrong trust root. The Secret alone changes nothing."
   [ -f "$OWNERSHIP_LIB" ] || fail "#3968 ownership library not found at $OWNERSHIP_LIB"
+  # BOTH identities, before anything is created. assert_live_account binds the AWS
+  # CLI; assert_kube_context binds kubectl, which --profile does NOT.
   assert_live_account
+  assert_backend_binding
+  assert_kube_context
+  # Resolve the run id UP FRONT, before the secret is read or anything is created.
+  # If the ledger cannot vouch for a run id, the object must never come into
+  # existence -- discovering that only at record time leaves a live Secret that
+  # nothing can look up.
+  resolve_run_id
 
   local dir; dir="$(artifact_dir)"
   local secret_name="w2-fixture-provenance-${NONCE}"
@@ -283,15 +540,113 @@ cmd_handoff() {
   [ -n "$param" ] || fail "ssm_provenance_parameter_name is empty — is fixture_edge_enabled true?"
   # Refuse the ordinary parameter outright. If the fixture were pointed at it, the
   # two edges would share one trust root and the isolation claim would be false.
+  #
+  # `*/fixture/*` alone is NOT sufficient, and accepting it was a real hole: it
+  # matches ANOTHER RUN's fixture parameter just as happily as this one's. Handing
+  # run B's trust root to run A's fixture would make both runs' isolation claims
+  # false while every check here still passed. The path must contain THIS nonce.
   case "$param" in
     */fixture/*) ;;
     *) fail "refusing to hand off $param: it is not a per-run fixture parameter path" ;;
   esac
+  case "$param" in
+    *"$NONCE"*) ;;
+    *) fail "refusing to hand off $param: it is a fixture path but does NOT carry this
+     run's nonce ($NONCE). It likely belongs to a DIFFERENT run, and handing its
+     trust root to this fixture would break both runs' isolation." ;;
+  esac
   ok "per-run parameter: $param"
 
-  kubectl get deployment "$FIXTURE_DEPLOY" -n "$NAMESPACE" >/dev/null 2>&1 \
-    || fail "fixture Deployment $FIXTURE_DEPLOY not found in $NAMESPACE. Run #3968's
-     10-create-fixture.sh first."
+  # -------------------------------------------------------------------------
+  # EXISTENCE IS NOT OWNERSHIP.
+  #
+  # The previous revision ran `kubectl get deployment >/dev/null` and proceeded.
+  # That accepts ANY Deployment of that name -- including the ORDINARY gateway if
+  # someone passes its name, and including a replacement created after #3968's
+  # fixture was deleted. It would then attach a fixture trust root to a production
+  # workload and set BG_TRUST_APIGW_HEADERS=true on it, which is precisely the
+  # "trusts forgeable headers" outcome #5836 exists to avoid.
+  #
+  # So: read the object, and verify against the LEDGER that it is the fixture this
+  # run owns. The uid and resourceVersion captured here also bind the patch below,
+  # so a Deployment replaced between this check and the patch cannot be mutated.
+  # -------------------------------------------------------------------------
+  step "verify the target Deployment is THIS run's fixture"
+  local deploy_json="$dir/fixture-deployment.json"
+  kubectl get deployment "$FIXTURE_DEPLOY" -n "$NAMESPACE" -o json > "$deploy_json" 2>"$dir/deploy-get.err" \
+    || fail "fixture Deployment $FIXTURE_DEPLOY not found in $NAMESPACE: $(tr -d '\n' < "$dir/deploy-get.err")
+     Run #3968's 10-create-fixture.sh first."
+
+  local deploy_uid deploy_rv
+  # Reads the ledger #3968 wrote and REFUSES anything it does not vouch for.
+  if ! python3 - "$deploy_json" "$LEDGER" "$NONCE" "$NAMESPACE" "$dir/deploy-identity" <<'PY'
+import json, sys
+dj, ledger_path, nonce, ns, out = sys.argv[1:6]
+doc = json.load(open(dj))
+md = doc.get("metadata", {})
+uid, rv, name = md.get("uid"), md.get("resourceVersion"), md.get("name")
+if not uid or not rv:
+    sys.exit("the Deployment has no uid/resourceVersion; refusing to patch it")
+if md.get("namespace") != ns:
+    sys.exit(f"Deployment is in namespace {md.get('namespace')}, expected {ns}")
+
+labels = md.get("labels") or {}
+# Refuse the ORDINARY gateway outright, whatever it is called. #3968's renderer
+# deep-copies the live gateway pod spec, so a fixture and the ordinary workload
+# look alike apart from their ownership markers -- which is exactly why the
+# markers, not the shape, must decide.
+if labels.get("app") == "bedrockgateway" and not any(
+    k in labels for k in ("adp.fixture/run", "adp.fixture/run-nonce", "adp-fixture-run")
+):
+    sys.exit(
+        f"{name} carries app=bedrockgateway with NO fixture run label: this looks like "
+        "the ORDINARY gateway Deployment. REFUSING to attach a fixture trust root or "
+        "set BG_TRUST_APIGW_HEADERS on it."
+    )
+
+label_nonce = (labels.get("adp.fixture/run-nonce") or labels.get("adp.fixture/run")
+               or labels.get("adp-fixture-run"))
+
+# The ledger is authoritative. A label alone is caller-writable; a ledger row was
+# recorded by #3968 at creation time against a server-assigned uid.
+try:
+    led = json.load(open(ledger_path))
+except Exception as exc:                       # noqa: BLE001
+    sys.exit(f"could not read the ledger {ledger_path}: {exc}")
+
+rows = []
+if isinstance(led, dict):
+    k8s = led.get("k8s")
+    if isinstance(k8s, list):
+        rows = k8s
+    elif isinstance(k8s, dict):
+        rows = list(k8s.values())
+matched = [r for r in rows
+           if isinstance(r, dict)
+           and str(r.get("kind", "")).lower() == "deployment"
+           and r.get("uid") == uid]
+if not matched:
+    recorded = [(r.get("kind"), r.get("name"), r.get("uid")) for r in rows if isinstance(r, dict)]
+    sys.exit(
+        f"the live Deployment {name} (uid {uid}) is NOT recorded as a Deployment in "
+        f"{ledger_path}. Existence is not ownership: this may be the ordinary gateway "
+        f"or a replacement created after this run's fixture was deleted. "
+        f"Ledger k8s rows: {recorded}"
+    )
+if label_nonce and label_nonce != nonce:
+    sys.exit(f"Deployment run label is {label_nonce}, not this run's nonce {nonce}")
+
+with open(out + ".uid", "w") as fh:
+    fh.write(uid)
+with open(out + ".rv", "w") as fh:
+    fh.write(rv)
+print(f"  [ ok ] {name} uid {uid} is recorded in the ledger for this run")
+PY
+  then
+    fail "refusing to patch $FIXTURE_DEPLOY: see the ownership error above."
+  fi
+  deploy_uid="$(cat "$dir/deploy-identity.uid")"
+  deploy_rv="$(cat "$dir/deploy-identity.rv")"
 
   if [ "$DRY_RUN" = 1 ]; then
     note "dry-run: would create Secret/$secret_name and patch deployment/$FIXTURE_DEPLOY"
@@ -299,25 +654,83 @@ cmd_handoff() {
     return 0
   fi
 
-  step "create the fixture Secret from SSM"
-  # The value goes SSM -> pipe -> kubectl stdin. It is never written to a file, a
-  # variable, a log or an argv entry. PIPESTATUS is checked because `set -o
-  # pipefail` alone would not tell us WHICH side failed, and a silent SSM failure
-  # would otherwise create a Secret containing an error string -- which then fails
-  # much later as an unexplained 403.
+  step "read and validate the secret BEFORE creating anything"
+  # ---------------------------------------------------------------------------
+  # WHY THIS IS NOT A PIPELINE ANY MORE.
+  #
+  # The previous revision piped `aws ssm get-parameter | kubectl create secret`
+  # and then checked PIPESTATUS. Root EXECUTED that path and it is broken: the two
+  # sides of a pipe run CONCURRENTLY. When the SSM read fails, kubectl has already
+  # seen EOF on stdin, created an EMPTY Secret, and exited 0. The script then read
+  # rc_ssm != 0 and reported "NOTHING was created" -- which was FALSE. The Secret
+  # existed, the ledger was empty because the failure path returns before recording,
+  # and so the one object nothing could later find was also the one object teardown
+  # would never delete. A confident false claim is worse than a crash.
+  #
+  # PIPESTATUS was never capable of preventing this. It reports what happened; it
+  # cannot un-create what the downstream process already did. The fix has to be
+  # ordering: get the value, validate it, and only then mutate the cluster.
+  # ---------------------------------------------------------------------------
+  local secret_value rc_ssm
   set +e
-  aws_ ssm get-parameter --name "$param" --with-decryption \
-      --query 'Parameter.Value' --output text \
-    | kubectl create secret generic "$secret_name" \
-        --namespace "$NAMESPACE" \
-        --from-file=BG_APIGW_PROVENANCE_SECRET=/dev/stdin \
-        -o json > "$dir/secret-create.json" 2>"$dir/secret-create.err"
-  local rc_ssm="${PIPESTATUS[0]}" rc_kube="${PIPESTATUS[1]}"
+  # Command substitution, so a failing read yields a nonzero status and no cluster
+  # call has happened yet. The value stays in a shell variable: never an argv entry
+  # (visible in ps), never a file, never the log.
+  secret_value="$(aws_ ssm get-parameter --name "$param" --with-decryption \
+    --query 'Parameter.Value' --output text 2>"$dir/ssm-read.err")"
+  rc_ssm=$?
   set -e
-  [ "$rc_ssm" -eq 0 ] || fail "reading $param failed (exit $rc_ssm). NOTHING was created.
-     A Secret created from a failed read would hold an error string and surface as
-     an unexplained 403 long after this step."
+  if [ "$rc_ssm" -ne 0 ]; then
+    secret_value=""
+    fail "reading $param failed (exit $rc_ssm). NOTHING was created -- this is now
+     accurate rather than aspirational: the cluster has not been contacted at this
+     point. Upstream error: $(tr -d '\n' < "$dir/ssm-read.err")"
+  fi
+  # Validate IN MEMORY. A Secret holding an error string, an empty value or the
+  # literal "None" that the AWS CLI prints for a missing field would surface much
+  # later as an unexplained 403, far from its cause.
+  [ -n "$secret_value" ] || fail "the value read from $param is EMPTY. Refusing to create
+     a Secret from it: the fixture would validate every request against an empty
+     trust root."
+  case "$secret_value" in
+    None|null) fail "read the literal '$secret_value' from $param -- that is the CLI's
+     rendering of an absent value, not a secret. Nothing was created." ;;
+    *[Ee]rror*|*xception*|*"not authorized"*)
+      fail "the value read from $param looks like an ERROR MESSAGE, not a secret.
+     Refusing to create a Secret from it. Nothing was created." ;;
+  esac
+  # Length only -- never the value, and never a prefix of it, since a prefix of a
+  # provenance secret is still secret material.
+  ok "secret read and validated in memory (${#secret_value} bytes); nothing created yet"
+
+  step "create the fixture Secret"
+  # INTENT BEFORE MUTATION. Written BEFORE the create so that if this process dies
+  # between the create and the ledger record, the operator has a uid-recoverable
+  # trail instead of an orphan. `recover-secret` below consumes it.
+  local intent="$dir/secret-intent.json"
+  python3 - "$intent" "$secret_name" "$NAMESPACE" "$NONCE" "$ACCOUNT" <<'PY'
+import json, sys
+path, name, ns, nonce, account = sys.argv[1:6]
+# Deliberately NO secret value and no `data` block: an intent record is metadata.
+json.dump({"intent": "create-secret", "name": name, "namespace": ns,
+           "run_nonce": nonce, "account_id": account, "state": "pending"},
+          open(path, "w"), indent=2)
+PY
+  chmod 600 "$intent"
+
+  # --from-file=...=/dev/stdin with a HERE-STRING rather than a pipe: the value
+  # still never becomes an argv entry, but this process controls the ordering, so
+  # there is no concurrent consumer to create an empty Secret behind our back.
+  local rc_kube
+  set +e
+  kubectl create secret generic "$secret_name" \
+    --namespace "$NAMESPACE" \
+    --from-file=BG_APIGW_PROVENANCE_SECRET=/dev/stdin \
+    -o json > "$dir/secret-create.raw.json" 2>"$dir/secret-create.err" <<<"$secret_value"
+  rc_kube=$?
+  set -e
   if [ "$rc_kube" -ne 0 ]; then
+    rm -f "$dir/secret-create.raw.json"
     if grep -q 'AlreadyExists' "$dir/secret-create.err"; then
       fail "Secret $secret_name already exists. REFUSING to adopt it: it may hold
      another run's value, and recording it would authorise deleting it. Use a new nonce."
@@ -325,19 +738,59 @@ cmd_handoff() {
     fail "creating Secret $secret_name failed: $(cat "$dir/secret-create.err")"
   fi
 
+  # ---------------------------------------------------------------------------
+  # SANITIZE THE RECEIPT IMMEDIATELY.
+  #
+  # `kubectl create secret -o json` returns the object INCLUDING its base64 `data`
+  # block -- i.e. the secret itself. The previous revision redirected that straight
+  # to secret-create.json while a comment three lines above claimed the value "is
+  # never written to a file". The comment was wrong and the file was a plaintext
+  # (base64 is not encryption) copy of the trust root, sitting in the artifact
+  # directory for the rest of the run. Root caught this.
+  #
+  # The uid is the only field anything downstream needs, so extract it and destroy
+  # the raw response in the same step rather than "later".
+  # ---------------------------------------------------------------------------
   local uid
-  uid="$(python3 -c '
-import json,sys
-print(json.load(open(sys.argv[1]))["metadata"]["uid"])' "$dir/secret-create.json")"
-  [ -n "$uid" ] || fail "Secret created but no uid returned; remove it by hand:
-       kubectl delete secret $secret_name -n $NAMESPACE"
+  uid="$(python3 - "$dir/secret-create.raw.json" "$dir/secret-receipt.json" <<'PY'
+import json, sys
+raw, receipt = sys.argv[1], sys.argv[2]
+doc = json.load(open(raw))
+md = doc.get("metadata", {})
+# METADATA ONLY. Explicitly drop data/stringData rather than copying the document
+# and hoping no future kubectl adds another secret-bearing field.
+json.dump({"kind": doc.get("kind"), "name": md.get("name"),
+           "namespace": md.get("namespace"), "uid": md.get("uid"),
+           "resourceVersion": md.get("resourceVersion"),
+           "note": "metadata only; the secret value is deliberately absent"},
+          open(receipt, "w"), indent=2)
+print(md.get("uid", ""))
+PY
+  )" || fail "created Secret $secret_name but could not parse its metadata. Recover with:
+       $0 recover-secret --nonce $NONCE --account-id $ACCOUNT --ledger $LEDGER"
+  shred -u "$dir/secret-create.raw.json" 2>/dev/null || rm -f "$dir/secret-create.raw.json"
+  chmod 600 "$dir/secret-receipt.json"
+  secret_value=""   # drop the value from this shell's memory as soon as it is unused
+  [ ! -f "$dir/secret-create.raw.json" ] \
+    || fail "the raw create response still exists at $dir/secret-create.raw.json and
+     holds the secret's base64 data. Remove it before continuing."
 
-  python3 "$OWNERSHIP_LIB" record-k8s --ledger "$LEDGER" --run-id "w2-${NONCE}" \
+  [ -n "$uid" ] || fail "Secret created but the server returned NO uid. Do NOT delete by
+     name -- a same-named object may be another run's. Recover with:
+       $0 recover-secret --nonce $NONCE --account-id $ACCOUNT --ledger $LEDGER
+     which re-reads the live object and records it by its ACTUAL uid."
+
+  python3 "$OWNERSHIP_LIB" record-k8s --ledger "$LEDGER" --run-id "$RUN_ID" \
     --account-id "$ACCOUNT" --kind Secret --name "$secret_name" \
     --namespace "$NAMESPACE" --uid "$uid" \
     || fail "created Secret $secret_name (uid $uid) but could NOT record it in the ledger.
-     Remove it by hand or teardown will not know it exists:
-       kubectl delete secret $secret_name -n $NAMESPACE"
+     The object EXISTS and is currently unrecorded, so teardown would not know about
+     it. Recover with:
+       $0 recover-secret --nonce $NONCE --account-id $ACCOUNT --ledger $LEDGER
+     Do NOT 'kubectl delete secret' by name. The uid above identifies the exact
+     object this run created; a same-named object may belong to another run, and
+     deleting it by name would destroy that run's trust root. recover-secret
+     re-reads the live object and refuses unless its uid still matches $uid."
   ok "Secret/$secret_name created and recorded (uid $uid)"
 
   step "attach it to the fixture Deployment"
@@ -348,15 +801,24 @@ print(json.load(open(sys.argv[1]))["metadata"]["uid"])' "$dir/secret-create.json
   # with `kubectl patch --local`: 3 env entries in, 4 out, only the targeted one
   # changed. A whole-list replacement here would silently drop the other refs --
   # the exact failure #3968's render_fixture.py exists to prevent.
-  kubectl patch deployment "$FIXTURE_DEPLOY" -n "$NAMESPACE" --type=strategic -p "$(
+  # OPTIMISTIC CONCURRENCY. --resource-version makes the API server reject the
+  # patch if the Deployment changed since the ownership check above: without it
+  # there is a window in which the verified fixture is deleted and a same-named
+  # object (possibly the ordinary gateway) is patched instead. The uid is also
+  # re-checked after the patch below, because resourceVersion alone cannot detect
+  # a delete-and-recreate that happens to land on the same version string.
+  kubectl patch deployment "$FIXTURE_DEPLOY" -n "$NAMESPACE" --type=strategic \
+    --resource-version="$deploy_rv" -p "$(
     cat <<JSON
 {"spec":{"template":{"spec":{"containers":[{"name":"bedrockgateway","env":[
   {"name":"BG_APIGW_PROVENANCE_SECRET","valueFrom":{"secretKeyRef":{"name":"$secret_name","key":"BG_APIGW_PROVENANCE_SECRET"}}},
   {"name":"BG_TRUST_APIGW_HEADERS","value":"true"}
 ]}]}}}}
 JSON
-  )" || fail "could not attach the Secret to $FIXTURE_DEPLOY. The Secret IS recorded in
-     the ledger. Until this patch succeeds the fixture still reads the ORDINARY
+  )" || fail "could not attach the Secret to $FIXTURE_DEPLOY. If this is a conflict, the
+     Deployment changed since it was verified as this run's fixture -- re-run
+     handoff rather than forcing the patch. The Secret IS recorded in the ledger
+     (uid $uid). Until this patch succeeds the fixture still reads the ORDINARY
      gateway's provenance secret, so do NOT proceed to verification."
   ok "deployment/$FIXTURE_DEPLOY now reads BG_APIGW_PROVENANCE_SECRET from Secret/$secret_name"
   note "BG_TRUST_APIGW_HEADERS=true is set on the FIXTURE deployment only. It is true"
@@ -365,12 +827,22 @@ JSON
 
   # Prove the attachment rather than trusting the patch's exit code.
   step "verify the attachment landed"
-  python3 - "$NAMESPACE" "$FIXTURE_DEPLOY" "$secret_name" <<'PY' || fail "attachment verification failed"
+  python3 - "$NAMESPACE" "$FIXTURE_DEPLOY" "$secret_name" "$deploy_uid" <<'PY' || fail "attachment verification failed"
 import json, subprocess, sys
-ns, deploy, secret = sys.argv[1:4]
+ns, deploy, secret, expect_uid = sys.argv[1:5]
 spec = json.loads(subprocess.run(
     ["kubectl", "get", "deployment", deploy, "-n", ns, "-o", "json"],
     capture_output=True, text=True, check=True).stdout)
+# The object we just patched must still be the object we verified. resourceVersion
+# guards the patch; only the uid can prove no delete-and-recreate happened around
+# it -- and if one did, the env below belongs to a workload nobody vouched for.
+live_uid = spec.get("metadata", {}).get("uid")
+if live_uid != expect_uid:
+    sys.exit(
+        f"the Deployment uid changed from {expect_uid} to {live_uid}: it was replaced "
+        "during handoff. The patch may have landed on a DIFFERENT workload. Investigate "
+        "before proceeding; do not treat this as attached."
+    )
 containers = spec["spec"]["template"]["spec"]["containers"]
 c = next(c for c in containers if c["name"] == "bedrockgateway")
 env = {e["name"]: e for e in c.get("env", [])}
@@ -393,11 +865,76 @@ PY
 }
 
 # ===========================================================================
+# recover-secret — UID-BOUND recovery for a partially-created handoff
+# ===========================================================================
+# Exists because the alternative advice was "kubectl delete secret <name>", and
+# delete-by-name is exactly the unsafe operation this component refuses elsewhere:
+# a same-named Secret may be another run's trust root, and deleting it would break
+# that run while looking like tidy-up.
+#
+# The recoverable state is: the Secret was CREATED but the ledger record failed (or
+# the uid could not be parsed), so an object exists that teardown does not know
+# about. Recovery re-reads the LIVE object, confirms from the intent record that
+# this run created it, and records it by its ACTUAL server-assigned uid.
+cmd_recover_secret() {
+  require_nonce; require_account
+  [ -n "$LEDGER" ] || fail "--ledger is required"
+  [ -f "$OWNERSHIP_LIB" ] || fail "#3968 ownership library not found at $OWNERSHIP_LIB"
+  assert_live_account
+  assert_kube_context
+  resolve_run_id
+
+  local dir; dir="$(artifact_dir)"
+  local secret_name="w2-fixture-provenance-${NONCE}"
+  local intent="$dir/secret-intent.json"
+
+  # Without the intent record there is no evidence THIS run created the object, and
+  # recording someone else's Secret would authorise deleting it at teardown.
+  [ -f "$intent" ] || fail "no creation intent at $intent, so there is no evidence this run
+     created Secret/$secret_name. REFUSING to record it: recording implies authority
+     to delete, and a same-named Secret may belong to another run. Investigate by
+     hand:
+       kubectl get secret $secret_name -n $NAMESPACE -o jsonpath='{.metadata.uid}'"
+
+  local live_json="$dir/secret-recover.json"
+  kubectl get secret "$secret_name" -n "$NAMESPACE" \
+    -o 'jsonpath={.metadata.uid}{"\n"}{.metadata.resourceVersion}' \
+    > "$live_json" 2>"$dir/secret-recover.err" \
+    || fail "Secret/$secret_name does not exist in $NAMESPACE, so there is nothing to
+     recover. If the create genuinely failed, no object leaked and you can re-run
+     handoff with the same nonce. Error: $(tr -d '\n' < "$dir/secret-recover.err")"
+  # jsonpath, not -o json: the full object carries the base64 secret data, and this
+  # recovery path must not write it to disk any more than handoff does.
+  local uid; uid="$(sed -n 1p "$live_json")"
+  [ -n "$uid" ] || fail "Secret/$secret_name exists but returned no uid. Do NOT delete by
+     name. Escalate: an object with no uid cannot be safely recorded or removed."
+  rm -f "$live_json"
+
+  python3 "$OWNERSHIP_LIB" record-k8s --ledger "$LEDGER" --run-id "$RUN_ID" \
+    --account-id "$ACCOUNT" --kind Secret --name "$secret_name" \
+    --namespace "$NAMESPACE" --uid "$uid" \
+    || fail "could not record Secret/$secret_name (uid $uid) in the ledger. The object
+     STILL EXISTS and is STILL unrecorded. Do not delete it by name; resolve the
+     ledger problem and re-run this command."
+  python3 - "$intent" <<'PY'
+import json, sys
+p = sys.argv[1]
+doc = json.load(open(p))
+doc["state"] = "recovered"
+json.dump(doc, open(p, "w"), indent=2)
+PY
+  ok "Secret/$secret_name recorded by its actual uid ($uid); teardown will remove it"
+  note "handoff did NOT complete: the Secret is recorded but may not be ATTACHED."
+  note "Re-run 'handoff' to attach it, or tear down if you are abandoning this run."
+}
+
+# ===========================================================================
 # destroy — dependency-ordered, against exact owned state
 # ===========================================================================
 cmd_destroy() {
   require_nonce; require_account
   assert_live_account
+  assert_backend_binding
   local dir; dir="$(artifact_dir)"
   local tfvars="$dir/fixture.tfvars"
   [ -f "$tfvars" ] || fail "reviewed inputs not found at $tfvars. Destroy must run against the
@@ -454,35 +991,104 @@ PY
      and idempotent. Resolve and re-run; do NOT delete by name prefix."
   ok "fixture edge destroyed"
 
-  step "3/3 verify ABSENCE, and that the ordinary edge is untouched"
-  local problems=0
-  if [ -n "$api_id" ]; then
-    if aws_ apigateway get-rest-api --rest-api-id "$api_id" >/dev/null 2>&1; then
-      printf '  [FAIL] fixture REST API %s is STILL PRESENT\n' "$api_id" >&2; problems=1
-    else
-      ok "fixture REST API $api_id is gone"
-    fi
-  fi
-  local param="/adp/${ENVIRONMENT}/gateway/fixture/${NONCE}/apigw-provenance-secret"
-  if aws_ ssm get-parameter --name "$param" >/dev/null 2>&1; then
-    printf '  [FAIL] per-run secret %s is STILL PRESENT\n' "$param" >&2; problems=1
-  else
-    ok "per-run secret is gone"
-  fi
-  # The most important post-check: this component must have changed nothing
-  # ordinary. Checked by READING, never by writing.
-  local ord
-  ord="$(aws_ ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
-    --query 'Parameter.Name' --output text 2>/dev/null || echo "MISSING")"
-  if [ "$ord" = "MISSING" ]; then
-    printf '  [FAIL] the ORDINARY provenance parameter is missing. Investigate immediately.\n' >&2
+  step "3/3 verify ABSENCE of the COMPLETE owned set, and that the ordinary edge is untouched"
+  # ---------------------------------------------------------------------------
+  # Every probe below goes through probe_absent, which distinguishes "the service
+  # said NotFound" from "the call failed". See its definition for the executed
+  # failure this replaces: AccessDenied previously read as proof of deletion and
+  # this function exited 0 claiming "teardown verified".
+  #
+  # It also verifies the COMPLETE owned set. The previous revision checked the API
+  # and the per-run parameter only, so a surviving stage or log group was reported
+  # as a verified teardown.
+  # ---------------------------------------------------------------------------
+  local problems=0 unknowns=0
+
+  # A swallowed rest_api_id read is itself a verification gap: with api_id empty
+  # the whole API probe was silently skipped and the run still reported success.
+  if [ -z "$api_id" ]; then
+    printf '  [FAIL] could not read rest_api_id from state, so the fixture API CANNOT be\n' >&2
+    printf '         verified absent. This is not the same as it being gone.\n' >&2
     problems=1
-  else
-    ok "ordinary provenance parameter still present (value not read)"
   fi
 
+  _check_absent() {   # <label> <not-found-pattern> <command...>
+    local label="$1" pat="$2"; shift 2
+    local rc=0
+    # Same reason as in probe_absent: the `if` form is errexit-exempt, so a
+    # "STILL PRESENT" (rc 1) or "UNKNOWN" (rc 2) reaches the case below instead of
+    # terminating the script before it can be reported.
+    if probe_absent "$pat" "$@"; then rc=0; else rc=$?; fi
+    case "$rc" in
+      0) ok "$label is gone (service reported not-found)" ;;
+      1) printf '  [FAIL] %s is STILL PRESENT\n' "$label" >&2; problems=1 ;;
+      2) printf '  [UNKNOWN] %s could not be verified: %s\n' "$label" "$PROBE_ERROR" >&2
+         printf '            This is NOT absence. Fix the credential/permission and re-run.\n' >&2
+         unknowns=1 ;;
+    esac
+  }
+
+  if [ -n "$api_id" ]; then
+    _check_absent "fixture REST API $api_id" 'NotFoundException|does not exist' \
+      aws_ apigateway get-rest-api --rest-api-id "$api_id"
+    _check_absent "fixture stage ${ENVIRONMENT} on $api_id" 'NotFoundException|does not exist' \
+      aws_ apigateway get-stage --rest-api-id "$api_id" --stage-name "$ENVIRONMENT"
+  fi
+
+  local param="/adp/${ENVIRONMENT}/gateway/fixture/${NONCE}/apigw-provenance-secret"
+  _check_absent "per-run secret $param" 'ParameterNotFound' \
+    aws_ ssm get-parameter --name "$param"
+
+  # Previously unchecked entirely, so a surviving log group (which keeps the access
+  # logs, and costs) counted as a verified teardown.
+  local lg="/aws/apigateway/w2-fixture-edge-${NONCE}"
+  local lg_out lg_rc
+  set +e
+  lg_out="$(aws_ logs describe-log-groups --log-group-name-prefix "$lg" \
+    --query 'logGroups[].logGroupName' --output text 2>&1)"
+  lg_rc=$?
+  set -e
+  if [ "$lg_rc" -ne 0 ]; then
+    printf '  [UNKNOWN] log group %s could not be verified: %s\n' "$lg" \
+      "$(printf '%s' "$lg_out" | tr -d '\n' | cut -c1-200)" >&2
+    unknowns=1
+  elif [ -n "$lg_out" ] && [ "$lg_out" != "None" ]; then
+    printf '  [FAIL] log group %s is STILL PRESENT\n' "$lg" >&2; problems=1
+  else
+    # describe-* returns an empty LIST rather than an error, so empty IS absence
+    # here. Noted because it is the one probe where a 0 exit proves absence.
+    ok "log group $lg is gone (empty result set, not a failed call)"
+  fi
+
+  # The most important post-check: this component must have changed nothing
+  # ordinary. Checked by READING, never by writing. Note the inverted polarity --
+  # here a NotFound is the ALARM, so an unknown error must not be read as presence
+  # either.
+  local ord_out ord_rc
+  set +e
+  ord_out="$(aws_ ssm get-parameter \
+    --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
+    --query 'Parameter.Name' --output text 2>&1)"
+  ord_rc=$?
+  set -e
+  if [ "$ord_rc" -eq 0 ]; then
+    ok "ordinary provenance parameter still present (value not read)"
+  elif printf '%s' "$ord_out" | grep -q 'ParameterNotFound'; then
+    printf '  [FAIL] the ORDINARY provenance parameter is MISSING. Investigate immediately:\n' >&2
+    printf '         this component must never touch it.\n' >&2
+    problems=1
+  else
+    printf '  [UNKNOWN] could not confirm the ordinary parameter survived: %s\n' \
+      "$(printf '%s' "$ord_out" | tr -d '\n' | cut -c1-200)" >&2
+    unknowns=1
+  fi
+
+  [ "$unknowns" -eq 0 ] || fail "one or more resources could NOT be verified (see [UNKNOWN] above).
+     An unverifiable resource is NOT a deleted resource. Report cleanup as
+     UNVERIFIED -- #3968's cleanup_ok must stay False -- fix the access problem and
+     re-run this step."
   [ "$problems" -eq 0 ] || fail "teardown did NOT fully verify. Do not report cleanup as complete."
-  ok "teardown verified"
+  ok "teardown verified: complete owned set confirmed absent by service not-found"
 
   cat <<EOF
 
@@ -504,6 +1110,7 @@ EOF
 cmd_verify() {
   require_nonce; require_account
   assert_live_account
+  assert_backend_binding
   cd "$ROOT_DIR"
   local endpoint api_id
   endpoint="$(terraform output -raw worker_control_endpoint)" || fail "no endpoint in state"
@@ -511,31 +1118,126 @@ cmd_verify() {
 
   step "edge identity"
   printf '  endpoint: %s\n' "$endpoint"
-  local ordinary
+  # The ordinary API id must be resolved AUTHORITATIVELY. Previously an unreadable
+  # parameter downgraded to "compare it by hand" and the run continued, so the one
+  # check that proves the fixture is not the production edge could be skipped by a
+  # transient SSM failure.
+  local ordinary ord_rc
+  set +e
   ordinary="$(aws_ ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/api-gateway-id" \
-    --query Parameter.Value --output text 2>/dev/null || echo "")"
-  if [ -n "$ordinary" ] && [ "$ordinary" != "None" ]; then
-    [ "$api_id" != "$ordinary" ] \
-      || fail "the fixture API id EQUALS the ordinary edge's ($ordinary). STOP."
-    ok "distinct from the ordinary edge ($api_id != $ordinary)"
-  else
-    note "could not read the ordinary API id from SSM; compare it by hand"
-  fi
+    --query Parameter.Value --output text 2>&1)"
+  ord_rc=$?
+  set -e
+  [ "$ord_rc" -eq 0 ] || fail "could not read the ORDINARY api-gateway-id from SSM:
+     $(printf '%s' "$ordinary" | tr -d '\n' | cut -c1-200)
+     Refusing to continue: without it this cannot prove the fixture edge is not the
+     production edge, and 'compare it by hand' is not a check."
+  [ -n "$ordinary" ] && [ "$ordinary" != "None" ] \
+    || fail "the ordinary api-gateway-id resolved EMPTY. Refusing to continue."
+  [ "$api_id" != "$ordinary" ] \
+    || fail "the fixture API id EQUALS the ordinary edge's ($ordinary). STOP."
+  ok "distinct from the ordinary edge ($api_id != $ordinary)"
 
-  step "the refusals (each observed, not assumed)"
+  # ---------------------------------------------------------------------------
+  # THE REFUSALS ARE ASSERTIONS, NOT OBSERVATIONS.
+  #
+  # Root EXECUTED the previous revision with a curl returning 200 for both the
+  # unsigned and the spoofed probe: verify printed "EXPECTED 403" notes and EXITED
+  # 0. A security control that reports success when the edge answered 200 to an
+  # unsigned request is worse than no control, because the operator then has a
+  # green verification to point at.
+  #
+  # Every probe below sets a failure flag. A `note` cannot fail a run.
+  # ---------------------------------------------------------------------------
+  step "the refusals (each observed AND asserted)"
+  local failures=0
+
+  _expect_refused() {   # <label> <code>
+    local label="$1" code="$2"
+    case "$code" in
+      403)
+        ok "$label -> 403 (refused)" ;;
+      000)
+        printf '  [FAIL] %s -> no response (000). The refusal was NOT observed; an\n' "$label" >&2
+        printf '         unreachable endpoint is not a refusal.\n' >&2
+        failures=1 ;;
+      5*)
+        printf '  [FAIL] %s -> %s. A 5xx means the request may have REACHED A BACKEND.\n' \
+          "$label" "$code" >&2
+        failures=1 ;;
+      *)
+        printf '  [FAIL] %s -> %s. NOT REFUSED. The fixture edge is accepting requests it\n' \
+          "$label" "$code" >&2
+        printf '         must reject. Do not point a worker at this endpoint.\n' >&2
+        failures=1 ;;
+    esac
+  }
+
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$endpoint/bootstrap" || echo 000)"
-  printf '  unsigned                -> %s\n' "$code"
-  [ "$code" = "403" ] || note "EXPECTED 403 (API Gateway AWS_IAM refuses before the pod)"
+  _expect_refused "unsigned" "$code"
+
   code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$endpoint/bootstrap" \
     -H 'X-Caller-Identity: arn:aws:iam::000000000000:role/anything' \
     -H 'X-Adp-Edge-Provenance: forged' || echo 000)"
-  printf '  spoofed headers, unsigned -> %s\n' "$code"
-  [ "$code" = "403" ] || note "EXPECTED 403; the edge OVERWRITES both headers"
-  note "wrong-role (correctly signed) must be run with a SigV4 signer from an identity"
-  note "NOT in allowed_caller_role_arns; it is refused by the resource policy's Deny."
-  note "A 5xx on either of the above means the request may have reached a backend —"
-  note "investigate; the first two must never do so."
+  _expect_refused "spoofed headers, unsigned" "$code"
+
+  # WRONG ROLE, CORRECTLY SIGNED. This is the one control that exercises this
+  # component's resource-policy Deny rather than API Gateway's AWS_IAM check, so
+  # skipping it leaves the policy itself unverified. It needs a SigV4 signer, so it
+  # is EXECUTED when a signer profile is supplied and an explicit FAILURE otherwise
+  # -- not a note, which is how it previously went permanently unrun.
+  if [ -n "$WRONG_ROLE_PROFILE" ]; then
+    code="$(aws_sigv4_probe "$WRONG_ROLE_PROFILE" "$endpoint/bootstrap" || echo 000)"
+    _expect_refused "wrong role (correctly signed)" "$code"
+  else
+    printf '  [FAIL] wrong-role control NOT RUN: pass --wrong-role-profile <profile> for an\n' >&2
+    printf '         identity NOT in allowed_caller_role_arns. This is the only probe that\n' >&2
+    printf '         exercises THIS component resource-policy Deny; without it the Deny is\n' >&2
+    printf '         unverified. Use --skip-wrong-role to record it as explicitly skipped.\n' >&2
+    [ "$SKIP_WRONG_ROLE" = 1 ] || failures=1
+    [ "$SKIP_WRONG_ROLE" = 1 ] && note "wrong-role control SKIPPED by request; the Deny is UNVERIFIED"
+  fi
+
+  # POSITIVE CONTROL. Refusals alone cannot distinguish a correctly-restricted edge
+  # from a totally broken one: an endpoint that 403s everything passes every check
+  # above. The human JWT route must still be reachable and must NOT be 403ed by the
+  # resource policy, which is the defect area 2 fixed.
+  if [ -n "$HUMAN_PROBE_PATH" ]; then
+    local base="${endpoint%/internal/v1/agent}"
+    code="$(curl -s -o /dev/null -w '%{http_code}' "${base}${HUMAN_PROBE_PATH}" || echo 000)"
+    case "$code" in
+      200|401)
+        # 401 is a PASS: it means the request reached the gateway and was rejected
+        # by the application's JWT check -- the layer that should decide -- rather
+        # than being blocked at the edge.
+        ok "human route ${HUMAN_PROBE_PATH} -> $code (reached the gateway; app-layer auth decided)" ;;
+      403)
+        printf '  [FAIL] human route %s -> 403. The resource policy is refusing an\n' "$HUMAN_PROBE_PATH" >&2
+        printf '         auth-NONE human route: an unsigned human request has no\n' >&2
+        printf '         aws:PrincipalArn, so a broad Deny blocks it before the gateway can\n' >&2
+        printf '         authenticate. The Deny must stay scoped to /internal.\n' >&2
+        failures=1 ;;
+      404)
+        printf '  [FAIL] human route %s -> 404. The fixture ALB does not publish this path,\n' "$HUMAN_PROBE_PATH" >&2
+        printf '         so human session/control traffic hits the default action.\n' >&2
+        failures=1 ;;
+      *)
+        printf '  [FAIL] human route %s -> %s (expected 200 or 401)\n' "$HUMAN_PROBE_PATH" "$code" >&2
+        failures=1 ;;
+    esac
+  else
+    printf '  [FAIL] human positive control NOT RUN: pass --human-probe-path (e.g.\n' >&2
+    printf '         /%s/api/health). Refusals alone cannot tell a correctly restricted\n' "$ENVIRONMENT" >&2
+    printf '         edge from one that refuses everything.\n' >&2
+    failures=1
+  fi
+
+  [ "$failures" -eq 0 ] || fail "one or more security controls FAILED (see [FAIL] above).
+     Do NOT point a protected worker at this endpoint and do not record live
+     acceptance. This exits nonzero deliberately: the previous revision printed
+     notes and exited 0 even when the edge answered 200 to an unsigned request."
+  ok "all refusals observed AND asserted; human route reachable"
 }
 
 case "$CMD" in
@@ -543,8 +1245,10 @@ case "$CMD" in
   plan)    cmd_plan ;;
   apply)   cmd_apply ;;
   handoff) cmd_handoff ;;
+  recover-secret) cmd_recover_secret ;;
   verify)  cmd_verify ;;
   destroy) cmd_destroy ;;
   ""|-h|--help) sed -n '1,45p' "$0" ;;
-  *) fail "unknown subcommand: $CMD (init|plan|apply|handoff|verify|destroy)" ;;
+  *) fail "unknown subcommand: $CMD
+     (init|plan|apply|handoff|recover-secret|verify|destroy)" ;;
 esac
