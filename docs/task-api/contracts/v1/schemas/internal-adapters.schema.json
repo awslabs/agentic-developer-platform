@@ -307,7 +307,115 @@
         "max_tokens": { "type": "integer", "minimum": 1, "maximum": 4096 }
       }
     },
-    "model_response": { "$ref": "commands.schema.json#/$defs/model_receipt" },
+    "model_response": {
+      "type": "object",
+      "description": "Flat model receipt plus stored provider result. The response reuses all receipt identity and replay constraints. Repeating a confirmed operation returns the same durably stored content and stop reason without resending.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "turn_id",
+        "operation_status",
+        "handoff",
+        "request_digest",
+        "claimed_at",
+        "automatic_replay_permitted"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/schema_version"
+        },
+        "task_id": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/task_id"
+        },
+        "turn_id": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/turn_id"
+        },
+        "operation_status": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/operation_status"
+        },
+        "handoff": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/handoff"
+        },
+        "request_digest": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/request_digest"
+        },
+        "model_id": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/model_id"
+        },
+        "claimed_at": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/claimed_at"
+        },
+        "completed_at": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/completed_at"
+        },
+        "usage": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/usage"
+        },
+        "reservation_status": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/reservation_status"
+        },
+        "automatic_replay_permitted": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/automatic_replay_permitted"
+        },
+        "content": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "Stored Anthropic Messages content blocks; usable only when confirmed."
+        },
+        "stop_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "commands.schema.json#/$defs/model_receipt_constraints"
+        },
+        {
+          "if": {
+            "properties": {
+              "operation_status": {
+                "const": "confirmed"
+              }
+            },
+            "required": [
+              "operation_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "content",
+              "stop_reason"
+            ],
+            "properties": {
+              "content": {
+                "type": "array"
+              },
+              "stop_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "content": {
+                "type": "null"
+              },
+              "stop_reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
     "control_request": {
       "type": "object",
       "additionalProperties": false,
@@ -320,18 +428,117 @@
     },
     "control_response": { "$ref": "bootstrap.schema.json#/$defs/control_response" },
     "artifact_request": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema_version", "run", "content_type", "content_sha256", "content_base64"],
-      "properties": {
-        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
-        "run": { "$ref": "internal-adapters.schema.json#/$defs/run_binding" },
-        "content_type": { "$ref": "common.schema.json#/$defs/content_type" },
-        "content_sha256": { "$ref": "common.schema.json#/$defs/sha256_digest" },
-        "content_base64": { "type": "string", "minLength": 1, "maxLength": 1398104 }
-      }
+      "description": "Existing upload body or closed read operation. Read requires live run authority and an immutable input artifact bound to that task and approved scope. Caller cannot supply storage location or owner.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "run",
+            "content_type",
+            "content_sha256",
+            "content_base64"
+          ],
+          "properties": {
+            "schema_version": {
+              "$ref": "common.schema.json#/$defs/schema_version"
+            },
+            "run": {
+              "$ref": "internal-adapters.schema.json#/$defs/run_binding"
+            },
+            "content_type": {
+              "$ref": "common.schema.json#/$defs/content_type"
+            },
+            "content_sha256": {
+              "$ref": "common.schema.json#/$defs/sha256_digest"
+            },
+            "content_base64": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1398104
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "operation",
+            "run",
+            "artifact_id"
+          ],
+          "properties": {
+            "schema_version": {
+              "$ref": "common.schema.json#/$defs/schema_version"
+            },
+            "operation": {
+              "const": "read"
+            },
+            "run": {
+              "$ref": "internal-adapters.schema.json#/$defs/run_binding"
+            },
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/artifact_id"
+            }
+          }
+        }
+      ]
     },
-    "artifact_response": { "$ref": "public-api.schema.json#/$defs/artifact_upload_response" },
+    "artifact_response": {
+      "description": "Upload reference or bounded input bytes. Read responses echo the authorized run/artifact binding. Implementations must decode base64, verify decoded byte length and SHA-256, and enforce the task aggregate input limit; never return URLs or credentials.",
+      "oneOf": [
+        {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "operation",
+            "run",
+            "artifact_id",
+            "content_type",
+            "content_sha256",
+            "byte_length",
+            "content_base64"
+          ],
+          "properties": {
+            "schema_version": {
+              "$ref": "common.schema.json#/$defs/schema_version"
+            },
+            "operation": {
+              "const": "read"
+            },
+            "run": {
+              "$ref": "internal-adapters.schema.json#/$defs/run_binding"
+            },
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/artifact_id"
+            },
+            "content_type": {
+              "$ref": "common.schema.json#/$defs/content_type"
+            },
+            "content_sha256": {
+              "$ref": "common.schema.json#/$defs/sha256_digest"
+            },
+            "byte_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 262144
+            },
+            "content_base64": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 349528,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          }
+        }
+      ]
+    },
     "finalize_request": {
       "type": "object",
       "additionalProperties": false,

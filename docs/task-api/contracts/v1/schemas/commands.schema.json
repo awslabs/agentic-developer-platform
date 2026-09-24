@@ -396,6 +396,9 @@
           "description": "Fixed false. Automatic HTTP/SDK replay is disabled after a potentially sent request."
         }
       },
+      "allOf": [{ "$ref": "commands.schema.json#/$defs/model_receipt_constraints" }]
+    },
+    "model_receipt_constraints": {
       "allOf": [
         {
           "description": "LC-12: an unknown operation has no usage figure and no confirmed handoff, and must not be automatically resent.",

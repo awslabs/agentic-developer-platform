@@ -621,9 +621,9 @@ cannot supply another task ID to a run route.
 | `/internal/v1/agent/task/attempt` | Run binding, runtime attempt UUID, protocol version and supported input/cancel capabilities; atomically replaces current attempt after old endpoint invalidation. |
 | `/internal/v1/agent/task/report` | Current attempt, stable report UUID and typed event payload; returns committed sequence/receipt. |
 | `/internal/v1/agent/task/turn` | Current attempt, request UUID and expected transcript version; atomically commits eligible input to a turn or returns the existing turn/input-wait state. |
-| `/internal/v1/agent/task/model` | Turn ID, request digest and bounded Messages-format request; validates against immutable turn/model/limits and returns a stored result or operation receipt (`pending`, `confirmed`, `unknown`, `rejected`). Repeating this same request reads that receipt. One model operation per turn. |
+| `/internal/v1/agent/task/model` | Turn ID, request digest and bounded Messages-format request; validates against immutable turn/model/limits and returns a stored result or operation receipt (`pending`, `confirmed`, `unknown`, `rejected`). Confirmed responses include durably stored Messages-format `content` and `stop_reason` alongside the unchanged receipt identity/usage fields. Other outcomes omit these fields or return null. Repeating this same request reads the same stored result/receipt without another provider send. One model operation per turn. |
 | `/internal/v1/agent/task/control` | Current attempt and last receipt cursor; returns durable cancel/input state, never arbitrary signed control authority. Host polls every second while active. |
-| `/internal/v1/agent/task/artifact` | Run binding, content type, digest and bounded bytes; returns immutable task artifact reference. |
+| `/internal/v1/agent/task/artifact` | Existing upload body (run binding, content type, digest and bounded bytes) returns immutable task artifact reference. Closed `operation=read` body accepts only schema version, run binding and input artifact ID; returns the same run/artifact binding, content type, SHA-256, decoded byte length and base64 bytes. |
 | `/internal/v1/agent/task/finalize` | Final report UUID, child exit evidence, typed outcome and committed result references; returns terminal receipt after all fences/checks. |
 | `/internal/v1/agent/task/settlement` | Live workload token and assignment-bound stop/ack evidence, including after run-credential expiry; stop-only behavior as defined in section 8. |
 
@@ -634,6 +634,17 @@ Producer operations use versioned request digests, leases and idempotency keys;
 retrying a claimed operation returns its existing lease/receipt while valid; a
 new recovery owner can claim only after verified lease expiry and state checks.
 It never confers another model operation.
+Input artifact reads require live run authority and a stored immutable input
+artifact bound to this task and approved scope. Output or unrelated artifacts,
+caller-selected storage locations/owners and URL-based fetches are rejected.
+T6 implements this read variant on the existing artifact route; T4 consumes it.
+The adapter must validate base64, decoded byte length and SHA-256 before returning
+bytes, retaining the 256 KiB per-input and 1 MiB aggregate limits. These bounds
+apply to decoded bytes; no URL or credential is returned to the child. T3 owns
+the confirmed model response adapter, T6/T1 persist the result atomically with
+its receipt, and T4 maps that stored result to the child `model.result` frame.
+These adapter corrections do not change the child protocol or frame limits;
+large input delivery still requires a separately resolved framing amendment.
 T0 encodes these schemas; it does not choose alternate routes or authority models.
 
 V0 verifies schemas against the accepted design and executes the validator.
