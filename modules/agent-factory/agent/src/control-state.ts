@@ -107,10 +107,30 @@ export const DEFAULT_MAX_PENDING = 10;
 export const DEFAULT_MAX_TERMINAL = 100;
 export const DEFAULT_TERMINAL_RETENTION_MS = 30 * 60 * 1000;
 
+/**
+ * Statuses a command can be settled INTO. Excludes `pending` and `delivered`,
+ * which is what stops `settle` being used to move an entry backwards into a
+ * re-deliverable state.
+ *
+ * `unknown` belongs here, and its absence was a defect found by #3963's executor
+ * coverage. Two paths already write it directly (`deliverAuthorized`'s handoff
+ * throw, and `lookup` for an evicted id) and both set `settledAt`, so it was
+ * already terminal in practice — but `settle('unknown')` returned false and
+ * changed nothing. The abort path is where that mattered: an abort whose record
+ * did not land calls `settle(commandId, 'unknown', ...)` to say so honestly, and
+ * instead the command stayed `delivered` forever. That is the worst available
+ * outcome for the operator — a stopped run whose journal still shows its abort
+ * mid-flight — and it also leaked capacity, because a never-settled entry keeps
+ * its `maxPending` slot and is never pruned.
+ *
+ * Adding it cannot resurrect a command: `unknown` is not `pending` or
+ * `delivered`, so the backwards-move guard is unaffected.
+ */
 const TERMINAL_STATUSES: ReadonlySet<CommandStatus> = new Set<CommandStatus>([
   'applied',
   'cancelled',
   'rejected',
+  'unknown',
 ]);
 
 /** Internal entry: the record plus the payload fingerprint idempotency needs. */
