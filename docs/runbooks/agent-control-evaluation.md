@@ -1744,6 +1744,15 @@ maps DOM observations onto acceptance IDs is the evaluator's check rather than a
 recorded field). A criterion with neither source gets **no row**, and W4-10 then
 reports it missing.
 
+Supply `compile_index(read_capture=...)` with a reader for the artifact paths in
+that report. Browser rows require exactly one readable capture referenced by the
+check, `mode: live`, a matching bundle revision, a verified deployment asset
+manifest match, and an injection record without mocked command responses. A
+passing report alone cannot establish liveness. Missing provenance produces a
+refusal; the row retains the capture path for review. Consolidated source
+evaluation IDs are preserved, and a caller-supplied expectation cannot replace a
+different ID in the source document.
+
 Compile it **between** two evaluator runs: run the wave, compile from what that run
 observed, re-run so W4-10 can reconcile the index against the run in front of it.
 That is not circular — W4-10 compares the index against **this** run's own results
