@@ -114,12 +114,26 @@ variable "fixture_alb_arn" {
 }
 
 variable "fixture_alb_dns" {
-  description = "DNS name of the fixture's own internal ALB. Must be an internal (non-public) name."
+  description = <<-EOT
+    DNS name of the fixture's own internal ALB.
+
+    Both AWS ELB DNS layouts are accepted, because BOTH are present in the target
+    account today (verified by read-only discovery in us-east-1):
+      <name>.<region>.elb.amazonaws.com   e.g. the bedrockgateway ALBs
+      <name>.elb.<region>.amazonaws.com   e.g. the agent-context LiteLLM ALB
+    Accepting only one form would reject a legitimate fixture ALB depending on
+    which layout the controller happened to assign.
+
+    Internal-ness is deliberately NOT inferred from the name: an internal ALB does
+    not always carry an `internal-` prefix (the LiteLLM ALB above is internal and
+    does not). Scheme is a property of the load balancer, so it is verified in the
+    runbook preflight against the live resource rather than guessed from a string.
+  EOT
   type        = string
 
   validation {
-    condition     = can(regex("^[a-zA-Z0-9.-]+\\.elb\\.[a-z0-9-]+\\.amazonaws\\.com$", var.fixture_alb_dns))
-    error_message = "fixture_alb_dns must be an ELB DNS name."
+    condition     = can(regex("^[a-zA-Z0-9.-]+\\.[a-z0-9-]+\\.elb\\.amazonaws\\.com$", var.fixture_alb_dns)) || can(regex("^[a-zA-Z0-9.-]+\\.elb\\.[a-z0-9-]+\\.amazonaws\\.com$", var.fixture_alb_dns))
+    error_message = "fixture_alb_dns must be an ELB DNS name (<name>.<region>.elb.amazonaws.com or <name>.elb.<region>.amazonaws.com)."
   }
 }
 
