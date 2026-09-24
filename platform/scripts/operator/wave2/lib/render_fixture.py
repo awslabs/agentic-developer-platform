@@ -339,7 +339,13 @@ def render_gateway(
             "template": {
                 "metadata": {
                     "labels": dict(labels),
-                    "annotations": dict(live_meta.get("annotations") or {}),
+                    # Keep voluntary node consolidation from interrupting the
+                    # single-replica gateway during live control measurements.
+                    # The owned fixture Deployment is deleted during cleanup.
+                    "annotations": {
+                        **(live_meta.get("annotations") or {}),
+                        "karpenter.sh/do-not-disrupt": "true",
+                    },
                 },
                 "spec": pod_spec,
             },
