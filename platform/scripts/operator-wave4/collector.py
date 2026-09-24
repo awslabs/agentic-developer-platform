@@ -26,10 +26,25 @@ checks:
 * a REFUSAL carrying why, when it could not be taken;
 * and nothing else. There is no "default".
 
-`Artifact.build` then drops refused fields entirely. The evaluator's
-`REQUIRED_ARTIFACT_KEYS` sees a missing key and reports not_run naming it — which
-is how a collection gap arrives as "the harness could not look" instead of as a
-finding about the deployment.
+`Artifact.build` then drops refused fields entirely, and the evaluator's
+`REQUIRED_ARTIFACT_KEYS` check NAMES the missing key in its message — which is how a
+collection gap arrives as "this key was never measured" rather than as a finding
+about the deployment.
+
+**What that produces, precisely.** The evaluator distinguishes two gaps, and they are
+not the same severity:
+
+* an ABSENT ARTIFACT is `not_run` — nobody recorded this observation, and the harness
+  cannot make it from outside the cluster;
+* an artifact PRESENT but missing required keys is `failed` — "an incomplete artifact
+  is a claim without its evidence, so this is a failure rather than a skip", in the
+  evaluator's own words.
+
+So refusing a field does not soften a check to not_run; it fails the check with the
+key named. That is the right severity and worth being exact about: a collector that
+refused a field hoping for a skip would be reaching for leniency it does not get, and
+the reason refusal is still correct is that it keeps an UNMEASURED field from being
+reported as a measured one — not that it downgrades the outcome.
 """
 
 from __future__ import annotations
@@ -203,7 +218,9 @@ class Artifact:
 
     `build` is where the package's central rule is applied: refused fields are
     OMITTED. Not nulled, not defaulted — omitted, so the evaluator's required-key
-    check sees a gap and reports not_run naming it.
+    check fails the check with the missing key named, rather than reading a default
+    as an observation. (Failed, not not_run: a present-but-incomplete artifact is a
+    claim without its evidence. See the module docstring.)
 
     `refusals` accompanies the artifact rather than being written into it. Two
     reasons, and the second is the important one:
@@ -218,6 +235,8 @@ class Artifact:
 
     name: str
     fields: dict[str, Measured] = field(default_factory=dict)
+    # Reasons for gaps INSIDE a field that was still emitted. See `refuse_entry`.
+    partial: dict[str, str] = field(default_factory=dict)
 
     def set(self, key: str, measurement: Measured) -> Artifact:
         self.fields[key] = measurement
@@ -227,10 +246,45 @@ class Artifact:
         self.fields.update(values)
         return self
 
+    def refuse_entry(self, key: str, entry: str, reason: str) -> Artifact:
+        """Record why one ENTRY of a map-valued field could not be measured.
+
+        Several fields are maps whose entries are measured independently —
+        `prior_waves`, `merged_revisions`, `ci_gates`. When two of three entries
+        succeed, the right thing to emit is the partial map: the evaluator requires an
+        entry per wave/story/gate and names the one that is absent, which is far more
+        actionable than omitting the whole field.
+
+        But emitting the partial map used to make the missing entry's REASON disappear.
+        `refusals` only reported whole refused fields, so an operator saw the
+        evaluator's "no acceptance recorded for wave 2" with nothing to say why wave 2
+        could not be read — and the reason ("its result.json records no cleanup
+        outcome") is the entire actionable content. Losing it is a smaller version of
+        exactly the failure this package exists to prevent: an incomplete measurement
+        that does not announce itself.
+
+        So the reason is recorded here and surfaced through `refusals` under a
+        `field[entry]` key. It stays OUT of the built payload, for the same reason
+        whole-field refusals do: a refusal inside an artifact invites a reader to treat
+        the artifact as complete-with-caveats.
+        """
+        self.partial[f"{key}[{entry}]"] = reason
+        return self
+
     @property
     def refusals(self) -> dict[str, str]:
+        """Every gap this artifact has, whole-field and per-entry alike.
+
+        One map rather than two, because the caller's job is the same for both: report
+        them to the operator. Which kind a gap is shows in the key.
+        """
         return {
-            key: value.reason for key, value in self.fields.items() if is_refused(value)
+            **{
+                key: value.reason
+                for key, value in self.fields.items()
+                if is_refused(value)
+            },
+            **self.partial,
         }
 
     def build(self) -> dict:

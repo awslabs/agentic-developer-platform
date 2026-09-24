@@ -407,6 +407,10 @@ def collect(
         record = measure_prior_wave(wave, read_result=read_result)
         if is_refused(record):
             wave_refusals.append(record.reason)
+            # Recorded per-entry as well, so the reason survives the partial map below.
+            # Without this the evaluator's "no acceptance recorded for wave 2" reaches
+            # the operator with nothing saying why wave 2 was unreadable.
+            artifact.refuse_entry("prior_waves", str(wave), record.reason)
         else:
             wave_records[str(wave)] = record
     if wave_refusals and not wave_records:
@@ -422,26 +426,30 @@ def collect(
     for story, ref in story_refs.items():
         revision = measure_revision(ref, runner=git_runner, repo=repo)
         if is_refused(revision):
+            artifact.refuse_entry("merged_revisions", story, revision.reason)
             continue
         # "Merged" is a graph relation, not a claim: is this story's revision contained
         # in the default branch? Asked of git, so an unmerged branch cannot be recorded
         # as merged.
         contained = measure_containment(revision, "origin/main", runner=git_runner, repo=repo)
         if is_refused(contained):
+            artifact.refuse_entry("merged_revisions", story, contained.reason)
             continue
         merged[story] = {"merged": contained, "revision": revision}
     artifact.set("merged_revisions", merged if merged else Refused(
         "merged_revisions: no story revision could be resolved and placed in the commit graph"
     ))
 
+    gate_results: dict[str, Any] = {}
+    for gate in gates:
+        measured = measure_gate(gate, run_lookup=run_lookup, retrieved_at=retrieved_at)
+        if is_refused(measured):
+            artifact.refuse_entry("ci_gates", gate, measured.reason)
+        else:
+            gate_results[gate] = measured
     artifact.set(
         "ci_gates",
-        {
-            gate: measured
-            for gate in gates
-            if not is_refused(measured := measure_gate(gate, run_lookup=run_lookup, retrieved_at=retrieved_at))
-        }
-        or Refused("ci_gates: no gate's run response could be retrieved"),
+        gate_results or Refused("ci_gates: no gate's run response could be retrieved"),
     )
 
     artifact.set("browser_identity", _measure_identity(identity_lookup))
