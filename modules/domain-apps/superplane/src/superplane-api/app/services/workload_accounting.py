@@ -142,7 +142,10 @@ async def accounting(request, db, org_id, workspace_id, deployment_id, *, kind):
         "recorded_resources": [
             {"kind": row["category"], "count": row["count"]} for row in resources
         ],
-        "workspace_committed_budget_micros": str(total),
+        # PostgreSQL SUM(bigint) is numeric and asyncpg may return Decimal with
+        # exponent notation. The sum is integral micros; emit canonical digits
+        # without converting through float or rejecting valid large balances.
+        "workspace_committed_budget_micros": str(int(total)),
         "workspace_reservation_cap_micros": str(cap) if cap is not None else None,
         "workspace_budget_state": "unconfigured"
         if cap is None
