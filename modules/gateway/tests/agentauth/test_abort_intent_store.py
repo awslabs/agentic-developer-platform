@@ -197,6 +197,25 @@ class TestRecordAbortIntent:
             )
         assert "abort_command_id" not in read_execution(client)
 
+    @pytest.mark.parametrize("status", ["pending", "completed", "cancelled", "revoked"])
+    @pytest.mark.parametrize("existing_marker", [False, True])
+    def test_non_active_execution_cannot_accept_or_reattest_abort(self, store, client, status, existing_marker):
+        put_execution(client)
+        if existing_marker:
+            store.record_abort_intent(
+                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
+                command_id=COMMAND, body_digest=DIGEST, now=NOW,
+            )
+        row = read_execution(client)
+        row["status"] = {"S": status}
+        client.put_item(TableName=TABLE, Item=row)
+        with pytest.raises(AbortIntentConflictError):
+            store.record_abort_intent(
+                invocation_id=INVOCATION, tenant_id=TENANT, attempt=1,
+                command_id=COMMAND, body_digest=DIGEST, now=LATER,
+            )
+        assert read_execution(client) == row
+
     def test_missing_execution_is_refused(self, store):
         with pytest.raises(AbortIntentConflictError):
             store.record_abort_intent(

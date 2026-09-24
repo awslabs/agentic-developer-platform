@@ -541,9 +541,11 @@ class AgentAuthorityStore:
                 # it never authorized; `attribute_not_exists` makes the first accepted
                 # abort the durable one.
                 ConditionExpression=(
-                    "current_attempt = :attempt AND attribute_not_exists(abort_command_id)"
+                    "current_attempt = :attempt AND #status = :active AND attribute_not_exists(abort_command_id)"
                 ),
+                ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
+                    ":active": {"S": "active"},
                     ":command": {"S": command_id},
                     ":digest": {"S": body_digest},
                     ":now": {"S": requested_at},
@@ -563,6 +565,7 @@ class AgentAuthorityStore:
         existing = self._get(sort_key=f"{_EXEC_PREFIX}{invocation_id}", tenant_id=tenant_id)
         if (
             not existing
+            or existing.get("status") != {"S": "active"}
             or existing.get("current_attempt") != {"N": str(attempt)}
             or "abort_command_id" not in existing
             or existing.get("abort_command_id") != {"S": command_id}
