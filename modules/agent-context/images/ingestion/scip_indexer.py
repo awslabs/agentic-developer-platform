@@ -22,10 +22,12 @@ Design points:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -152,8 +154,14 @@ def detect_languages(clone_path: str) -> dict[str, int]:
 #      dependencies as "index anyway with degraded monikers", and refused
 #      languages still receive the lexical/static ingestion stages (code search
 #      and embeddings) which never execute repository content.
-#   3. Steps that only consume declarative metadata and fetch pre-built
-#      artifacts from a package registry stay enabled (see `_SAFE_*` notes).
+#   3. We never place a file WE control inside the clone, and never let a path
+#      inside the clone reach a tool's executable/plugin lookup. The clone is a
+#      directory the repository author fully controls; sharing a namespace with
+#      it is what made the first fix incomplete (see _scratch_dir / _safe_env).
+#   4. A tool configuration file that lives in the repository and can name a
+#      program, plugin or package source is itself repository-authored code
+#      loading. Either the loading is disabled on the command line (which
+#      overrides an in-repo config file) or the language refuses.
 #
 # Refusal detail strings are prefixed with REFUSAL_PREFIX so operators can tell
 # a deliberate security refusal apart from a genuine tooling failure.
@@ -166,6 +174,16 @@ _UNSAFE_DEP_RESOLUTION: dict[str, str] = {
     "java": "gradlew/mvnw wrapper scripts and build.gradle/pom.xml are repository-authored code",
     "ruby": "Gemfile is evaluated as Ruby and gem native extensions compile arbitrary code",
     "csharp": "dotnet restore evaluates repository-authored MSBuild targets and SDK resolvers",
+    # Python: a wheel chosen by the repository's requirements file still runs
+    # author-controlled code as soon as an interpreter starts with that
+    # environment importable — .pth files in site-packages are executed at
+    # startup, and scip-python starts exactly such an interpreter. Refusing only
+    # sdist builds (`--only-binary`) does NOT close that, so there is no Python
+    # dependency installation at all. Repo-internal symbols still resolve.
+    "python": (
+        "installing repository-chosen packages runs author-controlled import-time "
+        "and .pth startup hooks inside the worker"
+    ),
 }
 
 # Languages whose SCIP indexer drives a real project build (and therefore the
@@ -176,19 +194,160 @@ _UNSAFE_INDEXERS: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Clone-boundary helpers
+# ---------------------------------------------------------------------------
+#
+# The clone is attacker-writable. Two consequences drive every helper here:
+#
+#   * Anything WE create must live outside the clone. The original fix created
+#     a venv at `<clone>/.scip-venv`; a repository that commits files at that
+#     path keeps them (venv creation over an existing directory preserves its
+#     contents), and the indexer then prepended `<clone>/.scip-venv/bin` to
+#     PATH — so a committed `scip-python` ran instead of the real indexer.
+#   * Nothing inside the clone may reach an executable lookup. We resolve each
+#     indexer to an absolute path ourselves and scrub PATH, so a planted file
+#     cannot be selected even if one exists.
+
+# Directory names an indexer/toolchain resolves executables or packages from. If
+# the repository ships one, we cannot establish what the tool would load.
+_PLANTABLE_TOOL_DIRS: dict[str, tuple[str, ...]] = {
+    "python": (".scip-venv", ".venv", "venv"),
+    "typescript": ("node_modules",),
+    "ruby": ("vendor/bundle", ".bundle"),
+}
+
+# Repository-authored config files that can name a program, plugin or transform
+# for the indexer to load. Presence => refuse that language's structural index.
+_PLANTABLE_TOOL_CONFIGS: dict[str, tuple[str, ...]] = {
+    # Sorbet reads --dir/--file and plugin options from a config file in the repo
+    # and scip-ruby honours it; a plugin entry names an executable to run.
+    "ruby": ("sorbet/config",),
+}
+
+
+def _safe_env(clone_path: str) -> dict[str, str]:
+    """Build a subprocess environment that cannot resolve programs from the clone.
+
+    Drops PATH entries that are relative, empty or inside the clone, so a file
+    committed by the repository is never a candidate executable. Also clears the
+    interpreter/tooling variables that would otherwise let in-repo content be
+    loaded at process start.
+    """
+    env = os.environ.copy()
+
+    clone_real = os.path.realpath(clone_path)
+    kept: list[str] = []
+    for entry in env.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue  # empty entry means "current directory"
+        if not os.path.isabs(entry):
+            continue
+        real = os.path.realpath(entry)
+        if real == clone_real or real.startswith(clone_real + os.sep):
+            log.warning("Dropped PATH entry inside clone: %s", entry)
+            continue
+        kept.append(entry)
+    env["PATH"] = os.pathsep.join(kept)
+
+    # Never let the repository contribute importable/loadable content at startup.
+    #
+    # NODE_OPTIONS is deliberately NOT in this list. Every variable here is
+    # cleared because a *path* it names could resolve into the clone; but these
+    # variables are read from OUR process environment, which the repository
+    # cannot write. NODE_OPTIONS is operator configuration (#3149 sets the
+    # indexer heap size through it and allows an operator override), so clearing
+    # it would drop a legitimate setting without removing any repository-reachable
+    # capability. PATH is the one exception that is filtered rather than cleared,
+    # because we still need the trusted entries.
+    for var in (
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "NODE_PATH",
+        "RUBYOPT",
+        "RUBYLIB",
+        "GEM_HOME",
+        "GEM_PATH",
+        "BUNDLE_GEMFILE",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+    ):
+        env.pop(var, None)
+
+    # Python must not import from the current working directory (the clone).
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONSAFEPATH"] = "1"
+    # Go: `#cgo` directives in repository sources hand flags to a real compiler.
+    env["CGO_ENABLED"] = "0"
+    env["GOFLAGS"] = "-mod=mod"
+    env["GOPROXY"] = env.get("GOPROXY", "https://proxy.golang.org,direct")
+    return env
+
+
+def _resolve_tool(name: str, clone_path: str) -> str | None:
+    """Absolute path to a trusted indexer binary, or None if unavailable.
+
+    Looked up against the scrubbed PATH so a binary planted in the clone can
+    never satisfy the lookup.
+    """
+    env = _safe_env(clone_path)
+    found = shutil.which(name, path=env.get("PATH", ""))
+    if not found:
+        return None
+    real = os.path.realpath(found)
+    clone_real = os.path.realpath(clone_path)
+    if real == clone_real or real.startswith(clone_real + os.sep):
+        log.error("Refusing %s: resolved inside the clone (%s)", name, real)
+        return None
+    return real
+
+
+def _planted_tool_dir(clone_path: str, lang: str) -> str | None:
+    """Return the first tool directory the repository itself shipped, if any."""
+    for rel in _PLANTABLE_TOOL_DIRS.get(lang, ()):
+        if os.path.isdir(os.path.join(clone_path, rel)):
+            return rel
+    return None
+
+
+def _planted_tool_config(clone_path: str, lang: str) -> str | None:
+    """Return the first indexer config file the repository shipped, if any."""
+    for rel in _PLANTABLE_TOOL_CONFIGS.get(lang, ()):
+        if os.path.exists(os.path.join(clone_path, rel)):
+            return rel
+    return None
+
+
+# Package source for npm, pinned on the command line so a repository-committed
+# .npmrc cannot repoint it (the source-admission boundary is PR #5790's).
+NPM_REGISTRY = os.environ.get("SCIP_NPM_REGISTRY", "https://registry.npmjs.org/")
+
+
 def _refuse_dep_resolution(lang: str) -> tuple[bool, str]:
     """Return a fail-soft refusal for a language we will not build. No execution."""
     reason = _UNSAFE_DEP_RESOLUTION.get(lang, "dependency resolution is not execution-safe")
+    return _refuse_dep_resolution_reason(reason)
+
+
+def _refuse_dep_resolution_reason(reason: str) -> tuple[bool, str]:
+    """Return a fail-soft dep-resolution refusal with an explicit reason."""
     detail = f"{REFUSAL_PREFIX}: {reason}"
-    log.warning("Dep resolution refused for %s — %s", lang, reason)
+    log.warning("Dep resolution refused — %s", reason)
     return False, detail
 
 
 def _refuse_indexer(lang: str) -> tuple[str | None, str | None]:
     """Return a fail-soft refusal for an indexer that would build the repo. No execution."""
     reason = _UNSAFE_INDEXERS.get(lang, "indexer is not execution-safe")
+    return _refuse_indexer_reason(reason)
+
+
+def _refuse_indexer_reason(reason: str) -> tuple[str | None, str | None]:
+    """Return a fail-soft indexer refusal with an explicit reason."""
     detail = f"{REFUSAL_PREFIX}: {reason}"
-    log.warning("SCIP indexing refused for %s — %s", lang, reason)
+    log.warning("SCIP indexing refused — %s", reason)
     return None, detail
 
 
@@ -213,205 +372,122 @@ def _dep_status(dep_ok: bool, dep_detail: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-# requirements.txt directives that reintroduce repository-authored execution or
-# redirect where packages come from. `-e/--editable` and bare local paths build
-# the repo itself; VCS/URL entries build an arbitrary source tree; the index and
-# find-links options repoint resolution at a caller-named location, which is the
-# source-admission boundary PR #5790 owns and must not be bypassed here.
-_UNSAFE_REQ_PREFIXES = (
-    "-e",
-    "--editable",
-    "-f",
-    "--find-links",
-    "-i",
-    "--index-url",
-    "--extra-index-url",
-    "--trusted-host",
-    "--no-binary",
-    "--only-binary",
-    "--pre",
-    "-r",
-    "--requirement",
-    "-c",
-    "--constraint",
-)
-
-_VCS_SCHEMES = ("git+", "hg+", "svn+", "bzr+", "http://", "https://", "file:")
-
-
-def _is_unsafe_requirement(line: str) -> bool:
-    """True if a requirements.txt line would execute repo code or repoint resolution."""
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
-        return False
-
-    lowered = stripped.lower()
-
-    # Option lines: match the option token exactly (so a package literally named
-    # e.g. "requests" is never mistaken for the -r include option).
-    if stripped.startswith("-"):
-        token = lowered.replace("=", " ").split()[0]
-        return token in _UNSAFE_REQ_PREFIXES
-
-    # VCS / direct-URL / local-file requirements build from source.
-    if lowered.startswith(_VCS_SCHEMES):
-        return True
-
-    # PEP 508 direct reference, e.g. "pkg @ git+https://...".
-    if "@" in stripped and any(s in lowered for s in _VCS_SCHEMES):
-        return True
-
-    # Bare local paths (".", "..", "./pkg", "/abs/pkg") install the repo tree.
-    if stripped in (".", "..") or stripped.startswith(("./", "../", "/")):
-        return True
-
-    return False
-
-
-def _sanitize_requirements(req_file: str, venv_path: str) -> tuple[str | None, int]:
-    """Copy a requirements file keeping only declarative pinned requirements.
-
-    Returns (path_to_sanitized_file, count_of_dropped_lines). The sanitized copy
-    is written outside the clone so we never mutate the ingested repository.
-    """
-    try:
-        with open(req_file, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError as e:
-        log.warning("Could not read %s: %s", req_file, e)
-        return None, 0
-
-    kept, dropped = [], 0
-    for line in lines:
-        if _is_unsafe_requirement(line):
-            dropped += 1
-            log.info("Dropped non-declarative requirement line: %s", line.strip()[:120])
-        else:
-            kept.append(line)
-
-    sanitized_path = os.path.join(venv_path, "scip-sanitized-requirements.txt")
-    try:
-        with open(sanitized_path, "w", encoding="utf-8") as f:
-            f.writelines(kept)
-    except OSError as e:
-        log.warning("Could not write sanitized requirements: %s", e)
-        return None, dropped
-
-    return sanitized_path, dropped
-
-
 def _resolve_python_deps(clone_path: str) -> tuple[bool, str]:
-    """Resolve Python dependencies from requirements files, without building code.
+    """Refuse Python dependency installation — it runs author-controlled code.
 
-    Execution safety (#5614): pip is run with `--only-binary :all:` so no source
-    distribution is built — building an sdist executes its `setup.py`. Editable
-    and local-path requirements are dropped for the same reason: `-e .` would
-    evaluate the ingested repository's own `setup.py`. There is deliberately no
-    `pip install -e .` / `pyproject.toml` branch; that was the #4720 RCE.
+    Finding #4720 was `pip install -e .`, which evaluates the ingested
+    repository's own `setup.py`. Removing only that was not enough (#5614
+    review):
 
-    Returns (success, detail_message).
+      * The venv lived at `<clone>/.scip-venv`, a path the repository can
+        commit. `python3 -m venv` over an existing directory keeps whatever is
+        already there, and `_index_python` then prepended `<clone>/.scip-venv/bin`
+        to PATH — so a committed `scip-python` ran instead of the real indexer.
+      * Even with the venv relocated, installing a wheel named by the
+        repository's requirements file executes author-controlled code: a `.pth`
+        file dropped into site-packages runs at interpreter startup, and
+        scip-python starts an interpreter with that environment active.
+        `--only-binary :all:` prevents an sdist build, not this.
+
+    We cannot establish that preparing Python dependencies is execution-safe in
+    this worker, so we do not do it. Python is still indexed: symbols defined in
+    the repository resolve normally and only cross-package references degrade to
+    `local` monikers, which is the existing supported degraded mode. The
+    lexical/static stages (code search, embeddings) are unaffected.
     """
-    venv_path = os.path.join(clone_path, ".scip-venv")
-
-    # Create virtualenv
-    try:
-        subprocess.run(
-            ["python3", "-m", "venv", venv_path],
-            capture_output=True,
-            timeout=60,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        return False, f"venv creation failed: {e}"
-
-    pip = os.path.join(venv_path, "bin", "pip")
-
-    # Try requirements.txt first
-    req_file = None
-    for candidate in ["requirements.txt", "requirements/base.txt", "requirements/dev.txt"]:
-        path = os.path.join(clone_path, candidate)
-        if os.path.isfile(path):
-            req_file = path
-            break
-
-    if req_file:
-        sanitized, dropped = _sanitize_requirements(req_file, venv_path)
-        if sanitized is None:
-            return False, f"could not read {os.path.basename(req_file)}"
-        try:
-            subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-                [
-                    pip,
-                    "install",
-                    "-r",
-                    sanitized,
-                    # Never build a source distribution: building one executes
-                    # its setup.py inside the worker (#5614).
-                    "--only-binary",
-                    ":all:",
-                    "--quiet",
-                    "--no-warn-script-location",
-                ],
-                capture_output=True,
-                timeout=300,
-                cwd=clone_path,
-            )
-            detail = f"installed wheels from {os.path.basename(req_file)}"
-            if dropped:
-                detail += (
-                    f" ({dropped} non-declarative entr{'y' if dropped == 1 else 'ies'} dropped)"
-                )
-            return True, detail
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            log.warning("pip install from %s failed: %s", req_file, e)
-
-    # NOTE: no `pip install -e .` / pyproject.toml fallback. An editable install
-    # of the ingested repository evaluates its own setup.py — finding #4720.
-    # Python still indexes without it (degraded monikers), and the safe
-    # lexical/static stages are unaffected.
-    return False, "no requirements.txt found (declarative install only)"
+    return _refuse_dep_resolution("python")
 
 
 def _resolve_typescript_deps(clone_path: str) -> tuple[bool, str]:
-    """Resolve TypeScript/JavaScript dependencies: npm install.
+    """Install npm dependencies without running any repository-authored code.
 
-    Returns (success, detail_message).
+    Execution safety (#5614):
+      * `--ignore-scripts` suppresses the lifecycle hooks (preinstall/install/
+        postinstall) that npm packages conventionally use to run commands.
+      * The registry is pinned on the command line, which takes precedence over
+        an `.npmrc` committed in the repository. Without this, the repository
+        chooses where packages are fetched from, bypassing the source-admission
+        boundary owned by PR #5790.
+      * A repository that ships its own `node_modules` is refused: npm would
+        keep the existing tree, and scip-typescript loads code from it.
+      * npm itself is resolved against a scrubbed PATH, so an `npm` committed in
+        the clone is never selected.
+
+    Unlike the JVM/Python cases this stays enabled: no repository-authored file
+    is evaluated, only declarative `package.json` metadata is read, and the
+    downloaded packages are never imported by the indexer (scip-typescript
+    parses them, it does not execute them).
     """
     package_json = os.path.join(clone_path, "package.json")
     if not os.path.isfile(package_json):
         return False, "no package.json found"
 
+    planted = _planted_tool_dir(clone_path, "typescript")
+    if planted:
+        return _refuse_dep_resolution_reason(
+            f"repository ships its own {planted}/, which scip-typescript would load code from"
+        )
+
+    npm = _resolve_tool("npm", clone_path)
+    if not npm:
+        return False, "npm not found in PATH"
+
     try:
-        subprocess.run(
-            ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"],
+        subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
+            [
+                npm,
+                "install",
+                # Never run package lifecycle hooks — that is arbitrary execution.
+                "--ignore-scripts",
+                # Pin the source; overrides a repository-committed .npmrc.
+                "--registry",
+                NPM_REGISTRY,
+                "--no-audit",
+                "--no-fund",
+            ],
             capture_output=True,
             timeout=300,
             cwd=clone_path,
+            env=_safe_env(clone_path),
             check=True,
         )
-        return True, "npm install succeeded"
+        return True, "npm install succeeded (--ignore-scripts, pinned registry)"
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         return False, f"npm install failed: {e}"
 
 
 def _resolve_go_deps(clone_path: str) -> tuple[bool, str]:
-    """Resolve Go dependencies: go mod download.
+    """Download Go modules without compiling repository-authored code.
 
-    Returns (success, detail_message).
+    Execution safety (#5614): `go mod download` fetches modules and does not run
+    build logic — Go has no install hooks. Two controls matter anyway:
+    `CGO_ENABLED=0` (via `_safe_env`) stops `#cgo` directives in repository
+    sources from handing flags to a real C compiler, and the toolchain is pinned
+    to the container's own version so a `go.mod` `toolchain` directive cannot
+    make Go download and execute a different one.
     """
     go_mod = os.path.join(clone_path, "go.mod")
     if not os.path.isfile(go_mod):
         return False, "no go.mod found"
 
+    go = _resolve_tool("go", clone_path)
+    if not go:
+        return False, "go not found in PATH"
+
+    env = _safe_env(clone_path)
+    # Refuse a repository-requested toolchain download (it would then be run).
+    env["GOTOOLCHAIN"] = "local"
+
     try:
-        subprocess.run(
-            ["go", "mod", "download"],
+        subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
+            [go, "mod", "download"],
             capture_output=True,
             timeout=300,
             cwd=clone_path,
+            env=env,
             check=True,
         )
-        return True, "go mod download succeeded"
+        return True, "go mod download succeeded (CGO disabled, local toolchain)"
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         return False, f"go mod download failed: {e}"
 
@@ -495,28 +571,94 @@ def _ensure_pyright_section(clone_path: str) -> None:
     log.info("Appended empty [tool.pyright] section to %s", pyproject_path)
 
 
-def _index_python(clone_path: str) -> tuple[str | None, str | None]:
-    """Run scip-python on a Python repo.
+def _pyright_interpreter_override(clone_path: str) -> str | None:
+    """Return the repo-supplied pyright setting that would name an interpreter.
 
-    Note: scip-python is an npm package (@sourcegraph/scip-python), NOT pip.
-    Instead of passing --environment (which expects a JSON array of package
-    entries that's coupled to scip-python internals), we put the venv's bin/
-    on PATH so scip-python discovers packages via its own default flow.
+    scip-python is pyright-based and reads the repository's own pyright config.
+    `pythonPath` / `venvPath` / `venv` name an interpreter that pyright RUNS to
+    enumerate the environment, and `extraPaths` / `executionEnvironments` add
+    import roots inside the clone. All of them are repository-authored choices
+    about what code gets loaded, so their presence means we refuse (#5614).
     """
+    dangerous = ("pythonPath", "venvPath", "venv", "extraPaths", "executionEnvironments")
+
+    cfg = os.path.join(clone_path, "pyrightconfig.json")
+    if os.path.isfile(cfg):
+        try:
+            with open(cfg, "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for key in dangerous:
+                    if key in data:
+                        return f"pyrightconfig.json sets {key}"
+        except (OSError, ValueError):
+            # Unparseable config: we cannot establish what it asks pyright to
+            # load, so treat it as unsafe rather than guessing.
+            return "pyrightconfig.json is unreadable/malformed"
+
+    pyproject = os.path.join(clone_path, "pyproject.toml")
+    if os.path.isfile(pyproject):
+        try:
+            with open(pyproject, "rb") as f:
+                doc = tomllib.load(f)
+            section = doc.get("tool", {}).get("pyright", {})
+            if isinstance(section, dict):
+                for key in dangerous:
+                    if key in section:
+                        return f"pyproject.toml [tool.pyright] sets {key}"
+        except (OSError, ValueError, tomllib.TOMLDecodeError):
+            # A malformed pyproject.toml is not itself an execution risk here
+            # (we only fail to read settings); scip-python will report its own
+            # parse error. Do not refuse on it.
+            return None
+
+    return None
+
+
+def _index_python(clone_path: str) -> tuple[str | None, str | None]:
+    """Run scip-python on a Python repo, loading nothing the repository supplies.
+
+    scip-python is an npm package (@sourcegraph/scip-python), NOT pip. It is
+    pyright-based, so it both resolves an interpreter and honours the
+    repository's pyright configuration.
+
+    Execution safety (#5614). The previous implementation prepended
+    `<clone>/.scip-venv/bin` to PATH and set `VIRTUAL_ENV` to it. A repository
+    that commits a file at that path therefore had it executed as `scip-python`.
+    Now:
+      * PATH is scrubbed of every clone-relative entry and `scip-python` is
+        resolved to an absolute trusted path (`_safe_env` / `_resolve_tool`), so
+        a planted executable cannot be selected.
+      * We never add a clone path to PATH or `VIRTUAL_ENV`. There is no venv to
+        add: Python dependency installation is refused (`_resolve_python_deps`).
+      * A repository shipping its own interpreter/package directory, or a pyright
+        config naming an interpreter or extra import roots, is refused.
+
+    Still passes no `--environment` flag (#3132).
+    """
+    planted = _planted_tool_dir(clone_path, "python")
+    if planted:
+        return _refuse_indexer_reason(
+            f"repository ships its own {planted}/, which pyright would load an interpreter "
+            "and packages from"
+        )
+
+    override = _pyright_interpreter_override(clone_path)
+    if override:
+        return _refuse_indexer_reason(
+            f"{override}, which directs pyright at repository-controlled code"
+        )
+
+    scip_python = _resolve_tool("scip-python", clone_path)
+    if not scip_python:
+        return None, "scip-python not found in PATH"
+
     scip_output = os.path.join(clone_path, "index.scip")
 
     # Ensure pyproject.toml has [tool.pyright] if it exists (scip-python needs it)
     _ensure_pyright_section(clone_path)
 
-    # Build subprocess environment: put venv bin on PATH if venv exists,
-    # letting scip-python discover packages via its default discovery flow.
-    # This avoids the --environment JSON shape coupling that caused #3132.
-    venv_path = os.path.join(clone_path, ".scip-venv")
-    proc_env = os.environ.copy()
-    if os.path.isdir(venv_path):
-        venv_bin = os.path.join(venv_path, "bin")
-        proc_env["PATH"] = venv_bin + ":" + proc_env.get("PATH", "")
-        proc_env["VIRTUAL_ENV"] = venv_path
+    proc_env = _safe_env(clone_path)
 
     # Raise Node.js heap limit for scip-python: the default ~2 GB max-old-space-size
     # causes OOM on large repos (e.g. 1,202-file Vibe-Trading dies at 1,989 MB during
@@ -525,7 +667,7 @@ def _index_python(clone_path: str) -> tuple[str | None, str | None]:
     # via pod env. (#3149)
     proc_env.setdefault("NODE_OPTIONS", "--max-old-space-size=4096")
 
-    cmd = ["scip-python", "index", "--project-name", os.path.basename(clone_path)]
+    cmd = [scip_python, "index", "--project-name", os.path.basename(clone_path)]
     cmd.extend(["--output", scip_output, clone_path])
 
     try:
@@ -550,10 +692,22 @@ def _index_typescript(clone_path: str) -> tuple[str | None, str | None]:
     """Run scip-typescript on a TypeScript/JavaScript repo.
 
     Uses --infer-tsconfig for JavaScript repos without tsconfig.json.
+
+    Execution safety (#5614): scip-typescript is resolved to an absolute trusted
+    path and runs with a scrubbed environment, so neither a planted executable
+    nor `NODE_OPTIONS`/`NODE_PATH` from the repository's tooling can inject code.
+    A `tsconfig.json` may name compiler plugins, but scip-typescript uses the
+    TypeScript API rather than `tsc`'s plugin host, so plugins are not loaded;
+    the dependency step refuses a repository-supplied `node_modules`, which is
+    where a plugin would have to come from.
     """
+    scip_typescript = _resolve_tool("scip-typescript", clone_path)
+    if not scip_typescript:
+        return None, "scip-typescript not found in PATH"
+
     scip_output = os.path.join(clone_path, "index.scip")
 
-    cmd = ["scip-typescript", "index"]
+    cmd = [scip_typescript, "index"]
 
     # If no tsconfig.json, use --infer-tsconfig
     tsconfig = os.path.join(clone_path, "tsconfig.json")
@@ -568,6 +722,7 @@ def _index_typescript(clone_path: str) -> tuple[str | None, str | None]:
             capture_output=True,
             timeout=600,
             cwd=clone_path,
+            env=_safe_env(clone_path),
         )
         if result.returncode == 0 and os.path.isfile(scip_output):
             return scip_output, None
@@ -580,10 +735,24 @@ def _index_typescript(clone_path: str) -> tuple[str | None, str | None]:
 
 
 def _index_go(clone_path: str) -> tuple[str | None, str | None]:
-    """Run scip-go on a Go repo."""
+    """Run scip-go on a Go repo.
+
+    Execution safety (#5614): scip-go type-checks sources rather than running a
+    build, but it invokes the Go toolchain. `_safe_env` sets `CGO_ENABLED=0` so
+    `#cgo` directives in repository sources cannot pass flags to a C compiler,
+    and pins `GOTOOLCHAIN=local` so a `go.mod` toolchain directive cannot fetch
+    and run a different toolchain. scip-go itself is resolved absolutely.
+    """
+    scip_go = _resolve_tool("scip-go", clone_path)
+    if not scip_go:
+        return None, "scip-go not found in PATH"
+
     scip_output = os.path.join(clone_path, "index.scip")
 
-    cmd = ["scip-go", "--output", scip_output]
+    cmd = [scip_go, "--output", scip_output]
+
+    env = _safe_env(clone_path)
+    env["GOTOOLCHAIN"] = "local"
 
     try:
         result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
@@ -591,6 +760,7 @@ def _index_go(clone_path: str) -> tuple[str | None, str | None]:
             capture_output=True,
             timeout=600,
             cwd=clone_path,
+            env=env,
         )
         if result.returncode == 0 and os.path.isfile(scip_output):
             return scip_output, None
@@ -614,10 +784,35 @@ def _index_java(clone_path: str) -> tuple[str | None, str | None]:
 
 
 def _index_ruby(clone_path: str) -> tuple[str | None, str | None]:
-    """Run scip-ruby on a Ruby repo (Sorbet-based, best-effort on untyped)."""
+    """Run scip-ruby on a Ruby repo (Sorbet-based, best-effort on untyped).
+
+    Execution safety (#5614): scip-ruby statically analyses sources — it does not
+    evaluate the `Gemfile` (Ruby dependency resolution is refused separately).
+    Two repository-controlled loading paths are closed here: a committed
+    `sorbet/config` can pass plugin options naming an executable for Sorbet to
+    run, and a committed `vendor/bundle`/`.bundle` supplies gem code; either one
+    means we refuse. `_safe_env` also clears `RUBYOPT`/`RUBYLIB`/`GEM_*`, which
+    would otherwise let in-repo Ruby be required at startup.
+    """
+    planted = _planted_tool_dir(clone_path, "ruby")
+    if planted:
+        return _refuse_indexer_reason(
+            f"repository ships its own {planted}/, which supplies gem code to Sorbet"
+        )
+
+    planted_cfg = _planted_tool_config(clone_path, "ruby")
+    if planted_cfg:
+        return _refuse_indexer_reason(
+            f"repository ships {planted_cfg}, which can name a Sorbet plugin to execute"
+        )
+
+    scip_ruby = _resolve_tool("scip-ruby", clone_path)
+    if not scip_ruby:
+        return None, "scip-ruby not found in PATH"
+
     scip_output = os.path.join(clone_path, "index.scip")
 
-    cmd = ["scip-ruby", "--output", scip_output]
+    cmd = [scip_ruby, "--output", scip_output]
 
     try:
         result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
@@ -625,6 +820,7 @@ def _index_ruby(clone_path: str) -> tuple[str | None, str | None]:
             capture_output=True,
             timeout=600,
             cwd=clone_path,
+            env=_safe_env(clone_path),
         )
         if result.returncode == 0 and os.path.isfile(scip_output):
             return scip_output, None
@@ -810,11 +1006,17 @@ def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -
 
 
 def cleanup_indexing_artifacts(clone_path: str) -> None:
-    """Remove indexing artifacts (.scip-venv, node_modules added by us, etc.)."""
-    venv_path = os.path.join(clone_path, ".scip-venv")
-    if os.path.isdir(venv_path):
-        shutil.rmtree(venv_path, ignore_errors=True)
+    """Remove indexing artifacts left in the clone.
 
-    env_file = os.path.join(clone_path, ".scip-environment.json")
-    if os.path.isfile(env_file):
-        os.unlink(env_file)
+    We no longer create a `.scip-venv` inside the clone (#5614 — a repository can
+    commit that path, and we then put it on PATH). Both paths are still removed
+    if present: a repository may have committed them, and leaving repository-
+    supplied executables in a clone that later ingestion stages walk is exactly
+    what we are trying to avoid.
+    """
+    for rel in (".scip-venv", ".scip-environment.json"):
+        path = os.path.join(clone_path, rel)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.exists(path):
+            os.unlink(path)

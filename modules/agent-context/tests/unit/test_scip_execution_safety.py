@@ -18,6 +18,12 @@ reported success whether or not the build tooling did anything.
 Each test in TestNoRepositoryCodeExecution fails on the pre-fix implementation:
   - gradlew / mvnw / build.gradle  -> marker written, wrapper chmod'd to 0755
   - setup.py via `pip install -e .` -> marker written
+
+TestPlantedExecutableInClone covers the follow-up bypass found in review of the
+first fix: the venv lived at `<clone>/.scip-venv` (a path the repository can
+commit) and `_index_python` prepended its `bin/` to PATH, so a committed
+`scip-python` ran instead of the real indexer. Those tests fail on the
+intermediate fix as well as on the original code.
 """
 
 from __future__ import annotations
@@ -42,12 +48,17 @@ from scip_indexer import (  # noqa: E402
     _dep_status,
     _index_csharp,
     _index_java,
-    _is_unsafe_requirement,
+    _index_python,
+    _index_ruby,
+    _index_typescript,
     _resolve_csharp_deps,
     _resolve_java_deps,
     _resolve_python_deps,
     _resolve_ruby_deps,
-    _sanitize_requirements,
+    _resolve_tool,
+    _resolve_typescript_deps,
+    _safe_env,
+    cleanup_indexing_artifacts,
     index_repo,
     is_refusal,
 )
@@ -131,7 +142,7 @@ class TestNoRepositoryCodeExecution:
 
             assert not os.path.exists(marker), "repository setup.py was EVALUATED (RCE, #4720)"
             assert ok is False
-            assert "declarative" in detail
+            assert is_refusal(detail), detail
 
     def test_pyproject_build_backend_is_not_invoked(self):
         """A PEP 517 build backend in pyproject.toml must not be invoked either."""
@@ -231,81 +242,317 @@ class TestUnsafeIndexersRefuse:
             assert not os.path.exists(os.path.join(tmp, "index.scip"))
 
 
-class TestRequirementsSanitizer:
-    """requirements.txt must not smuggle execution or repoint package resolution."""
+class TestPlantedExecutableInClone:
+    """The clone is attacker-writable: nothing in it may become an executable.
 
-    def test_editable_and_local_path_entries_are_unsafe(self):
-        for line in ("-e .", "--editable .", ".", "./pkg", "../sibling", "/abs/pkg"):
-            assert _is_unsafe_requirement(line), f"should be refused: {line!r}"
+    Reviewer reproduction for #5614 (blocking bypass on head 4a5d6417). The first
+    fix left the Python venv at `<clone>/.scip-venv` and `_index_python`
+    prepended its `bin/` to PATH. A repository that COMMITS
+    `.scip-venv/bin/scip-python` therefore had that file executed in place of the
+    real indexer. `python3 -m venv` over an existing directory keeps its
+    contents, and a repo with no requirements file at all is enough.
+    """
 
-    def test_vcs_and_url_entries_are_unsafe(self):
-        for line in (
-            "git+https://example.invalid/x.git",
-            "pkg @ git+https://example.invalid/x.git",
-            "https://example.invalid/x.tar.gz",
-            "file:///tmp/x",
-        ):
-            assert _is_unsafe_requirement(line), f"should be refused: {line!r}"
+    def _repo_with_planted_scip_python(self, tmp: str, marker: str) -> str:
+        repo = os.path.join(tmp, "repo")
+        venv_bin = os.path.join(repo, ".scip-venv", "bin")
+        os.makedirs(venv_bin)
+        _write(os.path.join(repo, "example.py"), "def hello():\n    return 1\n")
+        _write(os.path.join(venv_bin, "scip-python"), _SH_PAYLOAD.format(marker=marker), mode=0o755)
+        return repo
 
-    def test_index_repointing_options_are_unsafe(self):
-        """Repointing the index bypasses the source-admission boundary (PR #5790)."""
-        for line in (
-            "--index-url https://evil.invalid/simple",
-            "--extra-index-url=https://evil.invalid/simple",
-            "-i https://evil.invalid/simple",
-            "--find-links /tmp/wheels",
-            "--no-binary :all:",
-        ):
-            assert _is_unsafe_requirement(line), f"should be refused: {line!r}"
-
-    def test_ordinary_pinned_requirements_are_kept(self):
-        for line in ("requests==2.31.0", "flask>=2,<3", "pkg[extra]==1.0", "", "# comment"):
-            assert not _is_unsafe_requirement(line), f"should be kept: {line!r}"
-
-    def test_package_named_like_an_option_is_not_misparsed(self):
-        """A package whose name starts with a kept option's letters stays kept."""
-        for line in ("requests==2.31.0", "editable-tools==1.0", "invoke==2.0"):
-            assert not _is_unsafe_requirement(line)
-
-    def test_sanitized_file_drops_unsafe_lines_and_keeps_safe_ones(self):
+    def test_planted_scip_python_is_not_executed_through_index_repo(self):
+        """The reviewer's reproduction, driven through the REAL orchestrator."""
         with tempfile.TemporaryDirectory() as tmp:
-            venv = os.path.join(tmp, "venv")
-            os.makedirs(venv)
-            req = _write(
-                os.path.join(tmp, "requirements.txt"),
-                "requests==2.31.0\n-e .\n--index-url https://evil.invalid/s\nflask==3.0.0\n",
+            marker = os.path.join(tmp, "MARKER")
+            repo = self._repo_with_planted_scip_python(tmp, marker)
+
+            report = index_repo(repo, "fixture/repo", languages=["python"])
+
+            assert not os.path.exists(marker), (
+                "repository-planted .scip-venv/bin/scip-python was EXECUTED (#5614 bypass)"
+            )
+            result = report.results[0]
+            assert result.success is False
+            assert is_refusal(result.error), result.error
+
+    def test_planted_venv_makes_python_indexer_refuse(self):
+        """Refusal happens at the indexer, with a reason naming the planted dir."""
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "MARKER")
+            repo = self._repo_with_planted_scip_python(tmp, marker)
+
+            scip_path, error = _index_python(repo)
+
+            assert scip_path is None
+            assert is_refusal(error), error
+            assert ".scip-venv" in error
+            assert not os.path.exists(marker)
+
+    def test_committed_dot_venv_is_also_refused(self):
+        """`.venv`/`venv` are interpreter dirs too, not just our old `.scip-venv`."""
+        for planted in (".venv", "venv"):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = os.path.join(tmp, "repo")
+                os.makedirs(os.path.join(repo, planted, "bin"))
+                _write(os.path.join(repo, "app.py"), "x = 1\n")
+
+                scip_path, error = _index_python(repo)
+
+                assert scip_path is None, f"{planted} was used"
+                assert is_refusal(error), error
+
+    def test_no_venv_is_created_inside_the_clone(self):
+        """We must not create a path in the clone that a repo can pre-seed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            _write(os.path.join(repo, "requirements.txt"), "requests==2.31.0\n")
+
+            _resolve_python_deps(repo)
+
+            assert not os.path.exists(os.path.join(repo, ".scip-venv")), (
+                "a venv was created inside the attacker-writable clone (#5614)"
+            )
+            assert os.listdir(repo) == ["requirements.txt"], "clone was mutated"
+
+    def test_planted_node_modules_refuses_typescript_deps(self):
+        """A committed node_modules supplies code scip-typescript would load."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(os.path.join(repo, "node_modules"))
+            _write(os.path.join(repo, "package.json"), '{"name":"x"}\n')
+
+            ok, detail = _resolve_typescript_deps(repo)
+
+            assert ok is False
+            assert is_refusal(detail), detail
+            assert "node_modules" in detail
+
+    def test_planted_vendor_bundle_refuses_ruby_indexer(self):
+        """A committed vendor/bundle supplies gem code to Sorbet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(os.path.join(repo, "vendor", "bundle"))
+            _write(os.path.join(repo, "app.rb"), "puts 1\n")
+
+            scip_path, error = _index_ruby(repo)
+
+            assert scip_path is None
+            assert is_refusal(error), error
+
+    def test_sorbet_config_refuses_ruby_indexer(self):
+        """sorbet/config can pass plugin options naming an executable to run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(os.path.join(repo, "sorbet"))
+            _write(os.path.join(repo, "sorbet", "config"), "--dsl-plugin-config=evil.yaml\n")
+
+            scip_path, error = _index_ruby(repo)
+
+            assert scip_path is None
+            assert is_refusal(error), error
+            assert "sorbet/config" in error
+
+
+class TestPyrightConfigCannotRedirectLoading:
+    """A repo-supplied pyright config names what pyright runs and imports."""
+
+    def test_pyrightconfig_python_path_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            _write(
+                os.path.join(repo, "pyrightconfig.json"),
+                '{"pythonPath": "./evil/python"}\n',
             )
 
-            sanitized, dropped = _sanitize_requirements(req, venv)
+            scip_path, error = _index_python(repo)
 
-            assert dropped == 2
-            content = Path(sanitized).read_text()
-            assert "requests==2.31.0" in content
-            assert "flask==3.0.0" in content
-            assert "-e ." not in content
-            assert "evil.invalid" not in content
+            assert scip_path is None
+            assert is_refusal(error), error
+            assert "pythonPath" in error
 
-    def test_sanitized_copy_is_written_outside_the_clone(self):
-        """We must never mutate the ingested repository."""
+    def test_pyproject_tool_pyright_venv_refuses(self):
         with tempfile.TemporaryDirectory() as tmp:
-            venv = os.path.join(tmp, "venv")
             repo = os.path.join(tmp, "repo")
-            os.makedirs(venv)
             os.makedirs(repo)
-            req = _write(os.path.join(repo, "requirements.txt"), "requests==2.31.0\n")
-            original = Path(req).read_text()
+            _write(
+                os.path.join(repo, "pyproject.toml"),
+                '[tool.pyright]\nvenvPath = "."\nvenv = "evil"\n',
+            )
 
-            sanitized, _ = _sanitize_requirements(req, venv)
+            scip_path, error = _index_python(repo)
 
-            assert not sanitized.startswith(repo), "sanitized copy written inside the clone"
-            assert Path(req).read_text() == original, "original requirements.txt was modified"
+            assert scip_path is None
+            assert is_refusal(error), error
+
+    def test_malformed_pyrightconfig_refuses_rather_than_guessing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            _write(os.path.join(repo, "pyrightconfig.json"), "{not json\n")
+
+            scip_path, error = _index_python(repo)
+
+            assert scip_path is None
+            assert is_refusal(error), error
+
+    def test_ordinary_pyproject_without_pyright_overrides_is_allowed(self):
+        """A normal pyproject.toml must NOT trigger a refusal (no over-blocking)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            _write(
+                os.path.join(repo, "pyproject.toml"),
+                '[project]\nname = "x"\n\n[tool.pyright]\nstrict = []\n',
+            )
+
+            scip_path, error = _index_python(repo)
+
+            # scip-python is absent in the test env, so we expect the plain
+            # not-found error — crucially NOT a refusal.
+            assert not is_refusal(error), f"over-blocked an ordinary repo: {error}"
+
+
+class TestSubprocessEnvironmentIsScrubbed:
+    """Indexers must not inherit loader/interpreter settings pointing into the clone."""
+
+    def test_clone_paths_are_removed_from_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(os.path.join(repo, "bin"))
+            original = os.environ.get("PATH", "")
+            os.environ["PATH"] = os.pathsep.join(
+                [os.path.join(repo, "bin"), repo, "", ".", "/usr/bin"]
+            )
+            try:
+                env = _safe_env(repo)
+            finally:
+                os.environ["PATH"] = original
+
+            entries = env["PATH"].split(os.pathsep)
+            assert entries == ["/usr/bin"], entries
+
+    def test_loader_and_interpreter_vars_are_cleared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            dangerous = {
+                "PYTHONPATH": repo,
+                "PYTHONSTARTUP": os.path.join(repo, "s.py"),
+                "VIRTUAL_ENV": repo,
+                "NODE_PATH": repo,
+                "RUBYOPT": "-rEvil",
+                "GEM_HOME": repo,
+                "BUNDLE_GEMFILE": os.path.join(repo, "Gemfile"),
+                "LD_PRELOAD": os.path.join(repo, "evil.so"),
+            }
+            saved = {k: os.environ.get(k) for k in dangerous}
+            os.environ.update(dangerous)
+            try:
+                env = _safe_env(repo)
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+            for key in dangerous:
+                assert key not in env, f"{key} leaked into the indexer environment"
+            assert env["CGO_ENABLED"] == "0", "cgo would hand repo flags to a C compiler"
+
+    def test_node_options_is_operator_config_not_a_repo_input(self):
+        """NODE_OPTIONS is intentionally preserved, unlike the loader vars above.
+
+        It is read from our own process environment, which the repository cannot
+        write, and #3149 uses it to set the indexer heap size (with an operator
+        override). Scrubbing it would drop operator configuration without taking
+        away any capability the repository could reach.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            with patch.dict(os.environ, {"NODE_OPTIONS": "--max-old-space-size=8192"}):
+                env = _safe_env(repo)
+            assert env["NODE_OPTIONS"] == "--max-old-space-size=8192"
+
+    def test_resolve_tool_rejects_a_binary_inside_the_clone(self):
+        """Even on PATH, a clone-resident binary must never be selected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            fake_bin = os.path.join(repo, "bin")
+            os.makedirs(fake_bin)
+            _write(os.path.join(fake_bin, "scip-python"), "#!/bin/sh\nexit 0\n", mode=0o755)
+
+            original = os.environ.get("PATH", "")
+            os.environ["PATH"] = fake_bin + os.pathsep + original
+            try:
+                assert _resolve_tool("scip-python", repo) is None
+            finally:
+                os.environ["PATH"] = original
+
+    def test_resolve_tool_returns_absolute_trusted_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            resolved = _resolve_tool("sh", tmp)
+            assert resolved is not None and os.path.isabs(resolved)
+
+
+class TestNpmSourceIsPinned:
+    """npm must not take its package source from a repository-committed .npmrc."""
+
+    def test_registry_is_pinned_on_the_command_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            _write(os.path.join(repo, "package.json"), '{"name":"x"}\n')
+            _write(os.path.join(repo, ".npmrc"), "registry=https://evil.invalid/\n")
+
+            captured: list[list[str]] = []
+
+            def fake_run(cmd, **kwargs):
+                captured.append(cmd)
+                raise FileNotFoundError("npm absent in test env")
+
+            with patch("subprocess.run", side_effect=fake_run):
+                _resolve_typescript_deps(repo)
+
+            assert captured, "npm was never invoked"
+            cmd = captured[0]
+            assert "--ignore-scripts" in cmd
+            assert "--registry" in cmd
+            registry = cmd[cmd.index("--registry") + 1]
+            assert "evil.invalid" not in registry, "repo .npmrc chose the package source"
+
+
+class TestCleanupRemovesPlantedToolDirs:
+    """Cleanup must remove a repository-committed tool dir, not just ours."""
+
+    def test_committed_scip_venv_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            planted = os.path.join(tmp, ".scip-venv", "bin")
+            os.makedirs(planted)
+            _write(os.path.join(planted, "scip-python"), "#!/bin/sh\nexit 0\n", mode=0o755)
+
+            cleanup_indexing_artifacts(tmp)
+
+            assert not os.path.exists(os.path.join(tmp, ".scip-venv"))
+
+    def test_committed_environment_json_file_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(os.path.join(tmp, ".scip-environment.json"), "[]\n")
+
+            cleanup_indexing_artifacts(tmp)
+
+            assert not os.path.exists(os.path.join(tmp, ".scip-environment.json"))
 
 
 class TestSafeFallbackPreserved:
     """Refusal must degrade indexing precision, not remove ingestion."""
 
     def test_safe_languages_still_have_resolvers(self):
-        """Go/TypeScript resolution uses registry metadata, not repo build logic."""
+        """Every language keeps a resolver entry (a refusing one still reports why)."""
         for lang in ("python", "typescript", "javascript", "go"):
             assert lang in DEP_RESOLVERS, f"{lang} lost its resolver"
 
@@ -330,6 +577,18 @@ class TestSafeFallbackPreserved:
         assert '"-e", "."' not in source, "`pip install -e .` reintroduced (#4720)"
         assert "os.chmod(gradlew" not in source, "gradlew chmod reintroduced (#4720)"
         assert "os.chmod(mvnw" not in source, "mvnw chmod reintroduced (#4720)"
+
+    def test_no_clone_path_is_prepended_to_path(self):
+        """Guard against the #5614 bypass: never put a clone dir on PATH."""
+        source = (
+            Path(__file__).resolve().parents[2] / "images" / "ingestion" / "scip_indexer.py"
+        ).read_text()
+        assert 'proc_env["PATH"] = venv_bin' not in source, (
+            "clone venv bin re-added to PATH (#5614 bypass)"
+        )
+        assert 'proc_env["VIRTUAL_ENV"] = venv_path' not in source, (
+            "VIRTUAL_ENV re-pointed at a clone path (#5614 bypass)"
+        )
 
     def test_refusal_is_reported_distinctly_from_failure(self):
         """Operators must be able to tell a security refusal from broken tooling."""
@@ -382,6 +641,37 @@ class TestEndToEndFailSoft:
             assert result.dep_resolution == "refused", result.dep_resolution
             assert result.success, "static indexing should still proceed"
             assert not os.path.exists(marker), "Gemfile was evaluated"
+
+    def test_ordinary_python_repo_still_indexes_with_refused_deps(self):
+        """Positive path: a clean Python repo indexes; only dep precision degrades."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _write(os.path.join(tmp, "app.py"), "def f():\n    return 1\n")
+            _write(os.path.join(tmp, "requirements.txt"), "requests==2.31.0\n")
+
+            def fake_python_indexer(clone_path):
+                return _write(os.path.join(clone_path, "index.scip"), "scip"), None
+
+            with patch.dict(INDEXERS, {"python": fake_python_indexer}):
+                report = index_repo(tmp, "org/py", languages=["python"])
+
+            result = report.results[0]
+            assert result.success, "a clean Python repo must still produce an index"
+            assert result.dep_resolution == "refused"
+            assert report.combined_scip_path is not None
+
+    def test_ordinary_typescript_repo_reaches_its_indexer(self):
+        """A clean TS repo (no planted node_modules) is not refused at the indexer."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            os.makedirs(repo)
+            _write(os.path.join(repo, "index.ts"), "export const x = 1\n")
+            _write(os.path.join(repo, "package.json"), '{"name":"x"}\n')
+
+            _, error = _index_typescript(repo)
+
+            # scip-typescript is absent in the test env; the point is that we get
+            # the plain not-found error rather than a security refusal.
+            assert not is_refusal(error), f"over-blocked a clean TS repo: {error}"
 
 
 class TestIngestionWorkerContainment:
