@@ -177,10 +177,23 @@ def initialised_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     result = _terraform(workdir, "init", "-input=false")
     if result.returncode != 0:
-        pytest.skip(
-            "terraform init could not resolve the AWS provider (no registry access?); "
-            f"stderr: {result.stderr[-400:]}"
+        # Same reasoning as a missing binary, and the same split. Locally, no
+        # registry access is a convenience skip. In CI it is a failure: every leg
+        # that reproduces #5831 depends on this init, so skipping here would report
+        # green having checked only the fixture's shape — the exact decorative-gate
+        # outcome this suite was added to prevent. A provider that stops resolving
+        # must be loud, not silently unexercised.
+        message = (
+            "terraform init could not resolve the AWS provider "
+            f"(no registry access?); stderr: {result.stderr[-400:]}"
         )
+        if os.environ.get("CI"):
+            pytest.fail(
+                f"{message}\n\nCI is set, so this is a failure rather than a skip: the "
+                "Terraform legs of this suite are the ones that reproduce the defect, "
+                "and they cannot run without a resolved provider."
+            )
+        pytest.skip(message)
     return workdir
 
 
@@ -291,17 +304,23 @@ def test_fixture_does_not_declare_the_add_on_it_records() -> None:
 
 
 @terraform_required
-def test_no_single_provider_version_satisfies_both_records(
+def test_resolved_provider_cannot_satisfy_both_records(
     initialised_workdir: Path,
 ) -> None:
-    """The two records' requirements are disjoint, so no bound resolves this.
+    """The *resolved* provider satisfies the newer record and not the older one.
 
-    #5831 asks for a compatible provider bound if one is smaller than a migration. This
-    is the evidence that none exists: the provider the floor resolves declares the
-    add-on identity schema the newer record needs (so it is required) AND a launch
-    template schema version above what the older record carries (so it cannot avoid the
-    mismatch). A lower provider inverts both. Read from the provider's own schema
-    output, not from release notes.
+    Scope, stated precisely because the previous name overclaimed: this inspects only
+    the provider that the platform's current constraint resolves. It does not, and
+    cannot, enumerate every published version. What it establishes is that the one
+    version in use declares the add-on identity schema the newer record needs (so it
+    is required) AND a launch-template schema version above what the older record
+    carries (so it cannot avoid that mismatch) — i.e. the conflict is present in the
+    configuration as shipped, which is what makes the state migration necessary here.
+
+    The cross-version comparison that shows the requirements are disjoint across the
+    5.x/6.x range is separately labelled observed research: it is recorded in the
+    runbook's Section 5a table, read from `terraform providers schema -json` per
+    version at the time of investigation, and is not re-derived by this assertion.
     """
     result = _terraform(initialised_workdir, "providers", "schema", "-json")
     assert result.returncode == 0, f"providers schema failed: {result.stderr[-400:]}"
