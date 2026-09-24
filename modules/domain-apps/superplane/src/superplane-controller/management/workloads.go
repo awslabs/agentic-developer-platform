@@ -25,7 +25,6 @@ import (
 const logLimit = 16384
 
 var workloadReads = make(chan struct{}, 4)
-var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type workloadQuery struct {
 	WorkspaceID  string
