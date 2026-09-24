@@ -30,6 +30,15 @@ output "private_subnet_cidr_blocks" {
   value       = aws_subnet.private[*].cidr_block
 }
 
+# Availability zones of private_subnet_ids, in the same order. Consumed by the
+# EKS module (#5830) to refuse an additional capacity subnet that sits in a zone
+# this VPC has no existing private subnet in. Reads the subnets already in state,
+# so it costs no extra API call.
+output "private_subnet_availability_zones" {
+  description = "Availability zones of the private subnets, ordered to match private_subnet_ids"
+  value       = aws_subnet.private[*].availability_zone
+}
+
 # Internet Gateway Output
 output "internet_gateway_id" {
   description = "ID of the Internet Gateway"

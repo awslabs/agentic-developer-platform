@@ -204,6 +204,14 @@ module "eks" {
   private_subnet_ids    = module.networking.private_subnet_ids
   eks_security_group_id = module.networking.eks_security_group_id
 
+  # Reviewed additional EXISTING private capacity subnets for the cluster's own
+  # subnet set (#5830). Empty by default — the cluster's subnet set is then
+  # exactly module.networking.private_subnet_ids, as before. The AZ list lets the
+  # module refuse a subnet in a zone the cluster has no existing capacity in,
+  # without an extra API read.
+  additional_private_subnet_ids_by_az = var.additional_private_subnet_ids_by_az
+  private_subnet_availability_zones   = module.networking.private_subnet_availability_zones
+
   eks_cluster_role_arn         = module.iam.eks_cluster_role_arn
   node_group_role_arn          = module.iam.eks_node_group_role_arn
   eks_public_access_cidrs      = var.eks_public_access_cidrs

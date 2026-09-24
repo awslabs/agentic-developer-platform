@@ -24,6 +24,75 @@ variable "private_subnet_ids" {
   description = "List of private subnet IDs"
 }
 
+variable "private_subnet_availability_zones" {
+  type        = list(string)
+  description = <<-DESC
+    Availability zones of var.private_subnet_ids, in the same order. Used only to
+    check that an entry in additional_private_subnet_ids_by_az names a zone the
+    cluster already has capacity in. Empty disables that one check (the VPC,
+    zone-membership, public-IP and private-routing checks still apply).
+  DESC
+  default     = []
+}
+
+variable "additional_private_subnet_ids_by_az" {
+  type        = map(string)
+  description = <<-DESC
+    Additional ALREADY-EXISTING private subnets to add to this cluster's subnet
+    set, keyed by the availability zone each subnet is expected to be in
+    (e.g. {"us-east-1a" = "subnet-0123456789abcdef0"}).
+
+    Why this exists (#5830): the cluster's original subnets can exhaust their
+    private IP addresses, at which point the CNI fails every new pod with
+    "failed to assign an IP address to container". EKS Auto Mode's AWS-managed
+    `default` NodeClass takes its subnets from the cluster's own
+    resourcesVpcConfig.subnetIds, so widening that set is the supported way to
+    give new nodes more addresses — the NodeClass itself must not be edited.
+
+    ADDITIVE, never a replacement: entries are appended to var.private_subnet_ids,
+    which always stays in the cluster's subnet set. Empty (the default, and the
+    shipped configuration) leaves the subnet set exactly as it is today.
+
+    This widens the CLUSTER's subnet set only. Every other subnet consumer
+    (RDS subnet group, load balancers, Lambda VPC config, VPC endpoints) selects
+    from var.private_subnet_ids / the networking module and is unaffected.
+
+    Creates nothing: no subnet, NAT gateway or VPC endpoint. Supply only subnets
+    that already exist, already have free addresses, and already route outbound
+    through the existing private path. Each entry is checked at plan time (see
+    the data-source postconditions in main.tf) and the plan FAILS unless the
+    subnet is in var.vpc_id, is really in the zone it is keyed by, assigns no
+    public IPs, and reaches 0.0.0.0/0 via NAT rather than an internet gateway.
+
+    Keyed by zone deliberately: it makes "one subnet per availability zone"
+    structural rather than something a later reviewer has to verify by eye, and
+    it turns a subnet pasted under the wrong zone into a refused plan instead of
+    silent loss of zone coverage.
+
+    Account-specific by nature, so it is NOT set in the shipped environment
+    files. Supply it per-invocation:
+      export TF_VAR_additional_private_subnet_ids_by_az='{"us-east-1a":"subnet-..."}'
+    For CI, set the ADDITIONAL_PRIVATE_SUBNETS_BY_AZ repository variable, which
+    platform-infra-apply.yml passes through. `--update` runs rediscover the live
+    cluster's extra subnets and retain them (platform/scripts/upgrade-state.py),
+    so a later routine update cannot silently shrink the subnet set back.
+
+    Existing nodes are not moved by this; only newly launched nodes can use the
+    added subnets.
+  DESC
+  default     = {}
+
+  validation {
+    condition     = alltrue([for id in values(var.additional_private_subnet_ids_by_az) : can(regex("^subnet-[0-9a-f]{8,17}$", id))])
+    error_message = "Every additional_private_subnet_ids_by_az value must be an AWS subnet id such as subnet-0123456789abcdef0."
+  }
+
+  validation {
+    condition     = length(values(var.additional_private_subnet_ids_by_az)) == length(distinct(values(var.additional_private_subnet_ids_by_az)))
+    error_message = "additional_private_subnet_ids_by_az must not name the same subnet under two availability zones."
+  }
+}
+
 variable "eks_security_group_id" {
   type        = string
   description = "Security group ID for EKS cluster"

@@ -2,6 +2,100 @@
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
+# ---------------------------------------------------------------------------
+# Additional existing private capacity subnets (#5830)
+# ---------------------------------------------------------------------------
+# The cluster's original subnets can run out of private IP addresses, at which
+# point the CNI fails every new pod with "failed to assign an IP address to
+# container" and nothing new can be scheduled. Auto Mode's AWS-managed `default`
+# NodeClass draws its subnets from the cluster's own resourcesVpcConfig.subnetIds
+# (it exposes no subnetSelectorTerms and must not be edited), so widening the
+# cluster's subnet set is the supported way to give new nodes more addresses.
+# UpdateClusterConfig permits exactly that on a live cluster — same VPC, >= 2 AZs
+# — and the provider plans it as an in-place vpc_config update, not a rebuild.
+#
+# ADDITIVE by construction: var.private_subnet_ids is always the head of the
+# list, so the original subnets can never be dropped by this input, and an empty
+# map (the default) reproduces today's subnet set exactly.
+locals {
+  additional_private_subnet_ids = [
+    for az in sort(keys(var.additional_private_subnet_ids_by_az)) :
+    var.additional_private_subnet_ids_by_az[az]
+  ]
+
+  # Order matters for plan stability, not for behaviour: existing subnets first
+  # (so a diff reads as "+ added"), then additions in a deterministic AZ order.
+  cluster_subnet_ids = concat(var.private_subnet_ids, local.additional_private_subnet_ids)
+}
+
+# Read each supplied subnet and REFUSE the plan unless it is genuinely safe to
+# add. These are diagnostic observations in an issue until proven against the
+# live account, so every property the caller asserts is checked here rather than
+# trusted: a subnet pasted from another VPC, a public subnet, or one in an
+# unexpected zone each turn an additive capacity fix into an outage or a silent
+# loss of zone coverage. Data sources + postconditions, so this adds no managed
+# resource to the plan and fails during plan, before anything is applied.
+data "aws_subnet" "additional_private" {
+  for_each = var.additional_private_subnet_ids_by_az
+
+  id = each.value
+
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_id == var.vpc_id
+      error_message = "additional_private_subnet_ids_by_az names a subnet that is not in this cluster's VPC; EKS cannot use a subnet from another VPC."
+    }
+
+    postcondition {
+      condition     = self.availability_zone == each.key
+      error_message = "additional_private_subnet_ids_by_az names a subnet that is not in the availability zone it is keyed by; fix the key or the subnet id rather than losing zone coverage."
+    }
+
+    postcondition {
+      condition     = !self.map_public_ip_on_launch
+      error_message = "additional_private_subnet_ids_by_az names a subnet that assigns public IPs on launch; cluster capacity subnets must be private."
+    }
+
+    postcondition {
+      # Empty list = check skipped (see private_subnet_availability_zones). When
+      # supplied, the added subnet must share a zone with existing capacity, so
+      # an addition widens the zones the cluster already runs in instead of
+      # introducing an unreviewed one.
+      condition     = length(var.private_subnet_availability_zones) == 0 || contains(var.private_subnet_availability_zones, self.availability_zone)
+      error_message = "additional_private_subnet_ids_by_az names a subnet in an availability zone this cluster has no existing private subnet in."
+    }
+  }
+}
+
+# Routing check, separate from the subnet read because it needs the subnet's
+# associated route table. A subnet whose default route is an internet gateway is
+# a public subnet however it is tagged, and a subnet with no 0.0.0.0/0 route at
+# all cannot pull images or reach the control plane, so nodes launched there
+# would fail to join instead of relieving the exhaustion.
+data "aws_route_table" "additional_private" {
+  for_each = var.additional_private_subnet_ids_by_az
+
+  subnet_id = each.value
+
+  lifecycle {
+    postcondition {
+      condition = length([
+        for route in self.routes : route
+        if route.cidr_block == "0.0.0.0/0" && route.nat_gateway_id != ""
+      ]) > 0
+      error_message = "additional_private_subnet_ids_by_az names a subnet whose route table has no 0.0.0.0/0 route via a NAT gateway; nodes there could not reach the control plane or pull images."
+    }
+
+    postcondition {
+      condition = length([
+        for route in self.routes : route
+        if route.cidr_block == "0.0.0.0/0" && route.gateway_id != ""
+      ]) == 0
+      error_message = "additional_private_subnet_ids_by_az names a subnet routed to an internet gateway; that is a public subnet and must not carry cluster capacity."
+    }
+  }
+}
+
 # KMS Key for EKS secrets encryption
 resource "aws_kms_key" "eks_secrets" {
   description             = "${var.name_prefix}-eks-secrets"
@@ -35,7 +129,10 @@ resource "aws_eks_cluster" "main" {
   }
 
   vpc_config {
-    subnet_ids              = var.private_subnet_ids
+    # var.private_subnet_ids plus any reviewed additional existing capacity
+    # subnets (#5830). Additive: the original subnets always remain. See the
+    # locals block at the top of this file.
+    subnet_ids              = local.cluster_subnet_ids
     endpoint_private_access = var.endpoint_private_access
     endpoint_public_access  = var.endpoint_public_access
     public_access_cidrs     = var.eks_public_access_cidrs
