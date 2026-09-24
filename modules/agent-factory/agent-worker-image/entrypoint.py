@@ -2883,10 +2883,14 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # on purpose, and `_handle_failure`'s status write would already have landed by
     # the time anything could correct it. One terminal handler runs, never two.
     abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+    # Only meaningful when `abort_outcome` is set; `_handle_abort` assigns the real
+    # value. Defaulted to False so a future edit that reads it on a non-abort path
+    # errs toward "not proven durable" rather than toward a silent claim.
+    abort_terminal_persisted = False
 
     # Step 11/12: Post-agent actions
     if abort_outcome is not None:
-        exit_code = _handle_abort(
+        exit_code, abort_terminal_persisted = _handle_abort(
             repo, issue, persona, message_id, arrived_at, abort_outcome, check_run_url,
             **review_options
         )
@@ -3075,13 +3079,19 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # the single thing the abort was issued to prevent. So the delete is retried
     # within a bound, and an unconfirmed acknowledgement does not report success:
     # AGENT_EXIT_RETRYABLE says "this pod did not finish handling the message", and
-    # the redelivery it invites is refused by the completion guard reading the
-    # terminal `aborted` status this run has already written. The operator-facing
-    # outcome (comment, status, check conclusion) is already in place either way.
+    # the redelivery it invites is refused by the completion guard — but only when
+    # the terminal `aborted` row actually landed, which is why `_handle_abort`
+    # reports whether it did instead of leaving that assumed (#3963 finding 3). The
+    # operator-facing outcome (comment, status, check conclusion) is already in
+    # place either way.
     if abort_outcome is not None:
-        if _acknowledge_abort(queue_url, region, receipt_handle):
-            return exit_code
-        return AGENT_EXIT_RETRYABLE
+        return _finalize_abort_acknowledgement(
+            queue_url=queue_url,
+            region=region,
+            receipt_handle=receipt_handle,
+            exit_code=exit_code,
+            terminal_persisted=abort_terminal_persisted,
+        )
 
     try:
         _delete_message(queue_url, region, receipt_handle)
@@ -3717,19 +3727,37 @@ def _handle_abort(
     sentinel: dict,
     check_run_url: str = "",
     review_note: str = "",
-) -> int:
+) -> tuple[int, bool]:
     """Report the terminal aborted outcome: one comment, one status.
 
-    Returns 0. An abort is neither a success nor a crash, but the *pod* handled it
-    exactly as asked, and the exit code is what Kubernetes retries on: the
-    ScaledJob runs with ``backoffLimit: 2``, so a non-zero exit here would start a
-    replacement pod for a run an operator deliberately stopped. The outcome the
+    Returns ``(exit_code, terminal_persisted)``.
+
+    The exit code is 0. An abort is neither a success nor a crash, but the *pod*
+    handled it exactly as asked, and the exit code is what Kubernetes retries on:
+    the ScaledJob runs with ``backoffLimit: 2``, so a non-zero exit here would start
+    a replacement pod for a run an operator deliberately stopped. The outcome the
     dashboard reads is the ``aborted`` status, not the exit code.
 
-    The reason is the operator's own text, already whitespace-collapsed and length-
-    bounded by both sentinel halves. It is interpolated into a GitHub comment, so
-    it is used only inside a fenced block — an operator reason must not be able to
-    forge markdown structure in a comment attributed to the platform.
+    ``terminal_persisted`` is the second half of the pair because this function used
+    to call a fail-soft status writer and then let its caller behave as though a
+    durable ``aborted`` row existed (#3963 review finding 3). It does not always
+    exist: ``update_invocation_status`` logs and returns on a refused status, an
+    absent row, an unavailable transport or a gateway error. That row is the thing
+    the completion guard reads to refuse a redelivery, so when it is missing AND the
+    queue acknowledgement also fails, nothing stops the stopped run from executing
+    again. The caller needs to know which of those two worlds it is in, and it can
+    only know by being told whether the write was observed to land.
+
+    Note what is deliberately NOT done here: the exit code does not change when the
+    write fails. Exiting non-zero would launch the replacement pod this abort exists
+    to prevent, so the honest signal travels in the return value instead, and the
+    caller decides the acknowledgement policy.
+
+    The reason is the operator's own text, derived from the gateway-signed request
+    bytes and already whitespace-collapsed and length-bounded by both sentinel
+    halves. It is interpolated into a GitHub comment, so it is used only inside a
+    fenced block — an operator reason must not be able to forge markdown structure
+    in a comment attributed to the platform.
     """
     reason = sentinel.get("reason")
     summary = f"Agent `{persona}` was aborted by an operator."
@@ -3737,14 +3765,76 @@ def _handle_abort(
     if reason:
         body = f"{summary}\n\n> Reason given:\n> ```\n> {reason}\n> ```"
     _post_comment(repo, issue, message_id, "aborted", _join_notes(body, review_note), check_run_url)
-    update_invocation_status(
+    # The comment is posted first and unconditionally: the operator asked for this
+    # and deserves to see it acknowledged even if the row write then fails. A
+    # published comment is not a redelivery guard, though, which is why the status
+    # result is what travels back rather than the fact that a comment exists.
+    terminal_persisted = update_invocation_status(
         message_id,
         arrived_at,
         "aborted",
         summary=summary,
         stop_reason="operator_aborted",
     )
-    return 0
+    if not terminal_persisted:
+        logger.error(
+            "The aborted run's terminal status did not persist; the completion guard "
+            "has nothing to read, so this run's queue acknowledgement must be "
+            "confirmed before the abort can be reported as handled"
+        )
+    return 0, bool(terminal_persisted)
+
+
+def _finalize_abort_acknowledgement(
+    *,
+    queue_url: str,
+    region: str,
+    receipt_handle: str,
+    exit_code: int,
+    terminal_persisted: bool,
+) -> int:
+    """Acknowledge an aborted run's message and return the pod's exit code.
+
+    Split out of ``main`` so the three outcomes below can be tested directly. They
+    are otherwise reachable only by driving an entire run, which is why the
+    dangerous one went uncovered (#3963 review finding 3).
+
+    ==================  ===========  ===========================================
+    terminal row        ack          result
+    ==================  ===========  ===========================================
+    either              confirmed    ``exit_code`` — clean; nothing to redeliver
+    persisted           unconfirmed  retryable; the guard refuses the redelivery
+    NOT persisted       unconfirmed  retryable, and logged as unprotected
+    ==================  ===========  ===========================================
+
+    Only the last row can end with the aborted work running again, so it is the one
+    that must not be reported as a clean abort. The exit code cannot express the
+    difference between the last two — a non-zero exit summons the replacement pod
+    the abort exists to prevent, so both are ``AGENT_EXIT_RETRYABLE`` — which is why
+    the distinction is made explicit in the log instead.
+    """
+    if _acknowledge_abort(queue_url, region, receipt_handle):
+        # The message is gone, so there is nothing to redeliver and nothing for a
+        # guard to have to refuse. This is the clean abort, and it holds even if the
+        # terminal row write failed: the dashboard may be stale, but the stopped run
+        # cannot restart, which is what the operator asked for. Inflating this to
+        # retryable would re-queue a run that is already incapable of restarting.
+        return exit_code
+    if terminal_persisted:
+        # The message survives and will redeliver, but the durable `aborted` row was
+        # observed to land, so the completion guard reads it and refuses the
+        # redelivered work. AGENT_EXIT_RETRYABLE is honest about this pod not having
+        # finished handling the message.
+        return AGENT_EXIT_RETRYABLE
+    # Neither the terminal row nor the acknowledgement landed. Nothing refuses the
+    # redelivery — the guard has no `aborted` status to read — so the run an operator
+    # stopped is queued to execute again. Say so as loudly as this process can.
+    logger.error(
+        "Abort finalization is unprotected: the terminal status did not persist AND "
+        "the queue acknowledgement is unconfirmed, so the redelivered message has no "
+        "terminal row to refuse it. The run may execute again despite being aborted"
+    )
+    return AGENT_EXIT_RETRYABLE
 
 
 def _acknowledge_abort(queue_url: str, region: str, receipt_handle: str) -> bool:

@@ -43,14 +43,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import boto3
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from moto import mock_aws
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import entrypoint  # noqa: E402
 from lib import abort_sentinel  # noqa: E402
+from lib import invocation_status  # noqa: E402
 from lib.abort_sentinel import (  # noqa: E402
     ACCEPTED_DELIVERY,
     CONTROL_ENVELOPE_AUDIENCE,
@@ -253,9 +256,7 @@ class TestResolvingTheAbortOutcome:
         # and leaves the perfectly valid envelope behind. Honouring it would finalize
         # an abort the platform had explicitly just denied.
         assert (
-            self._resolve(
-                monkeypatch, tmp_path, envelope=_mint(gateway_key), delivery="rejected"
-            )
+            self._resolve(monkeypatch, tmp_path, envelope=_mint(gateway_key), delivery="rejected")
             is None
         )
 
@@ -283,7 +284,10 @@ class TestResolvingTheAbortOutcome:
         # Genuinely signed, genuinely for this run — and an authorization for
         # something else entirely. Without the action check, an operator's pause
         # could be replayed as an abort.
-        assert self._resolve(monkeypatch, tmp_path, envelope=_mint(gateway_key, action="pause")) is None
+        assert (
+            self._resolve(monkeypatch, tmp_path, envelope=_mint(gateway_key, action="pause"))
+            is None
+        )
 
     def test_an_envelope_for_a_different_run_is_not_this_run_s_abort(
         self, monkeypatch, tmp_path, gateway_key
@@ -442,23 +446,28 @@ class TestResolvingTheAbortOutcome:
 class TestTheAbortedTerminalReport:
     """``_handle_abort``: one comment, one status, and an exit code that stops."""
 
-    def _finalize(self, monkeypatch, sentinel):
+    def _finalize(self, monkeypatch, sentinel, *, persisted=True):
         posted, statuses = [], []
         monkeypatch.setattr(
             entrypoint,
             "_post_comment",
             lambda repo, issue, mid, status, body, url="": posted.append((status, body)),
         )
-        monkeypatch.setattr(
-            entrypoint,
-            "update_invocation_status",
-            lambda mid, arrived, status, **kw: statuses.append((status, kw)),
+
+        def write(mid, arrived, status, **kw):
+            statuses.append((status, kw))
+            # The real writer's return value: True only when the row was observed to
+            # land. Tests that care about the unpersisted world pass persisted=False.
+            return persisted
+
+        monkeypatch.setattr(entrypoint, "update_invocation_status", write)
+        code, terminal_persisted = entrypoint._handle_abort(
+            "acme/app", 42, "developer", RUN_ID, ARRIVED_AT, sentinel
         )
-        code = entrypoint._handle_abort("acme/app", 42, "developer", RUN_ID, ARRIVED_AT, sentinel)
-        return code, posted, statuses
+        return code, posted, statuses, terminal_persisted
 
     def test_one_comment_and_one_aborted_status(self, monkeypatch):
-        code, posted, statuses = self._finalize(monkeypatch, {"reason": "wrong branch"})
+        code, posted, statuses, _ = self._finalize(monkeypatch, {"reason": "wrong branch"})
 
         assert len(posted) == 1
         assert posted[0][0] == "aborted"
@@ -472,12 +481,12 @@ class TestTheAbortedTerminalReport:
         # a non-zero exit here would launch a fresh pod for a run an operator
         # deliberately stopped — the precise opposite of the request. Kubernetes
         # reads this number; the dashboard reads the `aborted` status.
-        code, _, _ = self._finalize(monkeypatch, {"reason": None})
+        code, _, _, _ = self._finalize(monkeypatch, {"reason": None})
 
         assert code == 0
 
     def test_an_absent_reason_produces_no_empty_quote_block(self, monkeypatch):
-        _, posted, _ = self._finalize(monkeypatch, {"reason": None})
+        _, posted, _, _ = self._finalize(monkeypatch, {"reason": None})
 
         assert "Reason given" not in posted[0][1]
 
@@ -487,7 +496,7 @@ class TestTheAbortedTerminalReport:
         # inside a fenced block where it cannot append a heading or a fake status
         # line of its own.
         hostile = "see ``` ## Merged by platform"
-        _, posted, _ = self._finalize(monkeypatch, {"reason": hostile})
+        _, posted, _, _ = self._finalize(monkeypatch, {"reason": hostile})
         body = posted[0][1]
 
         assert "> ```" in body
@@ -717,6 +726,7 @@ class TestTheAbortReachesTheEndOfTheRun:
             "update_check_run",
             lambda *a, **kw: checks.append(kw) or events.append(("check", kw.get("conclusion"))),
         )
+
         # Stand-ins that do what the real handlers do to the operator's view: post
         # a comment and write a terminal status. Inert mocks would make the
         # "exactly one terminal handler" assertion unfalsifiable — a run that
@@ -731,12 +741,8 @@ class TestTheAbortReachesTheEndOfTheRun:
             record_status(RUN_ID, ARRIVED_AT, "failed")
             return 1
 
-        monkeypatch.setattr(
-            entrypoint, "_handle_success", MagicMock(side_effect=handle_success)
-        )
-        monkeypatch.setattr(
-            entrypoint, "_handle_failure", MagicMock(side_effect=handle_failure)
-        )
+        monkeypatch.setattr(entrypoint, "_handle_success", MagicMock(side_effect=handle_success))
+        monkeypatch.setattr(entrypoint, "_handle_failure", MagicMock(side_effect=handle_failure))
         acks = MagicMock()
         monkeypatch.setattr(entrypoint, "_delete_message", acks)
         monkeypatch.setattr(entrypoint.time, "sleep", lambda _: None)
@@ -870,3 +876,238 @@ class TestTheAbortReachesTheEndOfTheRun:
 
         entrypoint._handle_success.assert_called_once()
         assert [status for kind, status in run["events"] if kind == "status"][-1] == "complete"
+
+
+class TestTheTerminalRowIsObservedNotAssumed:
+    """Review finding 3: a fail-soft write is not evidence of a durable row.
+
+    ``_handle_abort`` previously called ``update_invocation_status`` — which logs and
+    returns on every failure — and its caller then behaved as though a terminal
+    ``aborted`` row existed. Two things depend on that row actually being there: the
+    dashboard's honest outcome, and (the load-bearing one) the completion guard that
+    refuses the redelivered message when the queue acknowledgement fails. If the
+    write was lost and the ack also failed, nothing refused the redelivery and the
+    run an operator stopped executed again.
+
+    These tests use a real emulated DynamoDB table rather than a mock writer, because
+    the property under test is precisely whether a row is *there* afterwards. A
+    ``MagicMock`` writer would have returned whatever it was told to and proved
+    nothing about persistence; faults are injected into the real main path instead.
+    """
+
+    TABLE = "adp-test-webhook-events"
+
+    @pytest.fixture
+    def table(self, monkeypatch):
+        """A real (emulated) webhook-events table with this run's row seeded."""
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", self.TABLE)
+        with mock_aws():
+            client = boto3.client("dynamodb", region_name="us-east-1")
+            client.create_table(
+                TableName=self.TABLE,
+                BillingMode="PAY_PER_REQUEST",
+                KeySchema=[
+                    {"AttributeName": "event_id", "KeyType": "HASH"},
+                    {"AttributeName": "arrived_at", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": name, "AttributeType": "S"}
+                    for name in ("event_id", "arrived_at")
+                ],
+            )
+            client.put_item(
+                TableName=self.TABLE,
+                Item={
+                    "event_id": {"S": RUN_ID},
+                    "arrived_at": {"S": ARRIVED_AT},
+                    "tenant_id": {"S": "tenant-a"},
+                    "repo": {"S": "acme/app"},
+                    "persona": {"S": "developer"},
+                    "status": {"S": "in_progress"},
+                },
+            )
+            monkeypatch.setattr(invocation_status, "_ddb", client)
+            monkeypatch.setattr(invocation_status, "_table_name", self.TABLE)
+            yield client
+
+    def _status(self, client):
+        item = client.get_item(
+            TableName=self.TABLE,
+            Key={"event_id": {"S": RUN_ID}, "arrived_at": {"S": ARRIVED_AT}},
+        ).get("Item", {})
+        return item.get("status", {}).get("S")
+
+    def _abort(self, monkeypatch, reason="wrong branch"):
+        monkeypatch.setattr(entrypoint, "_post_comment", lambda *a, **k: None)
+        return entrypoint._handle_abort(
+            "acme/app", 42, "developer", RUN_ID, ARRIVED_AT, {"reason": reason}
+        )
+
+    def test_a_landed_write_is_observed_as_a_durable_aborted_row(self, monkeypatch, table):
+        # The positive half, and it reads the row back rather than trusting the
+        # return value: the claim is "a durable terminal transition happened", so the
+        # evidence has to be the stored row, not the function's own word for it.
+        code, persisted = self._abort(monkeypatch)
+
+        assert code == 0
+        assert persisted is True
+        assert self._status(table) == "aborted"
+
+    def test_a_row_that_vanished_is_reported_unpersisted(self, monkeypatch, table):
+        # Fault injection on the real path: the conditional write requires the row to
+        # exist (`attribute_exists(event_id)`), so deleting it makes the genuine
+        # ConditionalCheckFailedException fire inside the real writer. No mock writer
+        # is involved — this is the actual DynamoDB expression failing.
+        table.delete_item(
+            TableName=self.TABLE,
+            Key={"event_id": {"S": RUN_ID}, "arrived_at": {"S": ARRIVED_AT}},
+        )
+        monkeypatch.setattr(entrypoint.time, "sleep", lambda _: None)
+
+        code, persisted = self._abort(monkeypatch)
+
+        # Still exits 0 — a non-zero exit would start the replacement pod the abort
+        # exists to prevent — but it no longer *claims* a durable terminal row.
+        assert code == 0
+        assert persisted is False
+        assert self._status(table) is None
+
+    def test_an_unavailable_transport_is_reported_unpersisted(self, monkeypatch, table):
+        # The other real-world shape: storage reachable for the seed, then failing at
+        # the moment of the terminal write.
+        def explode(*args, **kwargs):
+            raise RuntimeError("dynamodb unavailable")
+
+        monkeypatch.setattr(table, "update_item", explode)
+
+        code, persisted = self._abort(monkeypatch)
+
+        assert code == 0
+        assert persisted is False
+        # The pre-abort status is untouched, which is the honest record: no terminal
+        # transition happened, so the row must not imply one did.
+        assert self._status(table) == "in_progress"
+
+    def test_the_operator_still_gets_a_comment_when_the_row_write_fails(self, monkeypatch, table):
+        # The comment is posted before the row write and does not depend on it. An
+        # operator who asked for a stop should see it acknowledged even when the
+        # dashboard row is stale; what must NOT happen is the comment being taken as
+        # proof the redelivery guard is armed.
+        posted = []
+        monkeypatch.setattr(
+            entrypoint,
+            "_post_comment",
+            lambda repo, issue, mid, status, body, url="": posted.append(status),
+        )
+        monkeypatch.setattr(table, "update_item", MagicMock(side_effect=RuntimeError("down")))
+
+        _, persisted = entrypoint._handle_abort(
+            "acme/app", 42, "developer", RUN_ID, ARRIVED_AT, {"reason": "wrong branch"}
+        )
+
+        assert posted == ["aborted"]
+        assert persisted is False
+
+    def test_a_refused_status_value_is_not_reported_as_persisted(self, monkeypatch, table):
+        # The writer's allowlist rejects unknown statuses before either transport. If
+        # `aborted` were ever dropped from that set, this pair must report False
+        # rather than silently writing nothing and claiming success.
+        monkeypatch.setattr(
+            invocation_status,
+            "ALLOWED_WRITE_STATUSES",
+            frozenset({"in_progress", "complete", "failed"}),
+        )
+
+        code, persisted = self._abort(monkeypatch)
+
+        assert code == 0
+        assert persisted is False
+        assert self._status(table) == "in_progress"
+
+
+class TestTheUnprotectedAbortIsNotReportedAsClean:
+    """Review finding 3: persistence failure AND ack failure together.
+
+    The three combinations are what matter, because only one of them leaves the
+    stopped run genuinely able to restart:
+
+    ==================  ===========  =========================================
+    terminal row        ack          consequence
+    ==================  ===========  =========================================
+    persisted           confirmed    clean abort; nothing to redeliver
+    persisted           unconfirmed  message redelivers, guard refuses it
+    NOT persisted       unconfirmed  nothing refuses it — the dangerous case
+    ==================  ===========  =========================================
+
+    A run that reported the third case as a clean abort is the defect. The exit code
+    cannot carry the distinction (non-zero would summon a replacement pod), so the
+    requirement is that it is reported honestly as retryable and logged loudly.
+    """
+
+    def _main_tail(self, monkeypatch, *, persisted, ack, calls):
+        """Drive the real acknowledgement branch from `main`'s teardown."""
+        monkeypatch.setattr(
+            entrypoint,
+            "_acknowledge_abort",
+            lambda *a, **k: (calls.append("ack"), ack)[1],
+        )
+        monkeypatch.setattr(
+            entrypoint,
+            "_delete_message",
+            lambda *a, **k: calls.append("plain_delete"),
+        )
+        return entrypoint._finalize_abort_acknowledgement(
+            queue_url="q",
+            region="us-east-1",
+            receipt_handle="receipt",
+            exit_code=0,
+            terminal_persisted=persisted,
+        )
+
+    def test_a_confirmed_ack_is_a_clean_abort(self, monkeypatch):
+        calls = []
+        code = self._main_tail(monkeypatch, persisted=True, ack=True, calls=calls)
+
+        assert code == 0
+        assert calls == ["ack"]
+
+    def test_a_confirmed_ack_is_clean_even_if_the_row_write_was_lost(self, monkeypatch):
+        # Deliberate: the message is gone, so no redelivery can occur and no guard is
+        # needed. A stale dashboard row is a reporting problem, not a restart risk,
+        # and inflating it to retryable would re-queue a run that cannot restart.
+        calls = []
+        code = self._main_tail(monkeypatch, persisted=False, ack=True, calls=calls)
+
+        assert code == 0
+
+    def test_an_unconfirmed_ack_with_a_durable_row_is_retryable(self, monkeypatch):
+        calls = []
+        code = self._main_tail(monkeypatch, persisted=True, ack=False, calls=calls)
+
+        assert code == entrypoint.AGENT_EXIT_RETRYABLE
+
+    def test_the_unprotected_combination_is_retryable_and_logged(self, monkeypatch, caplog):
+        # The case the review asked to be proven. Both halves failed, so nothing
+        # refuses the redelivered message.
+        calls = []
+        with caplog.at_level("ERROR"):
+            code = self._main_tail(monkeypatch, persisted=False, ack=False, calls=calls)
+
+        assert code == entrypoint.AGENT_EXIT_RETRYABLE
+        # Not merely non-zero: an operator reading logs has to be able to tell this
+        # apart from the benign unconfirmed-ack case above, because only this one can
+        # end with the aborted work running again.
+        assert any("unprotected" in record.message.lower() for record in caplog.records), (
+            "the both-failed case must say that nothing refuses the redelivery"
+        )
+
+    def test_it_never_falls_through_to_the_plain_delete_path(self, monkeypatch):
+        # The ordinary path swallows delete failures because the work is already on
+        # GitHub. An abort must not reach it: that reasoning is what made an
+        # unconfirmed acknowledgement look successful.
+        for persisted, ack in ((True, True), (True, False), (False, False), (False, True)):
+            calls = []
+            self._main_tail(monkeypatch, persisted=persisted, ack=ack, calls=calls)
+            assert "plain_delete" not in calls
