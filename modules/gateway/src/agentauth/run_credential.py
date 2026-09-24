@@ -217,10 +217,24 @@ def mint_credential(
 
 
 def verify_credential(
-    token: str,
-    *,
-    now: datetime | None = None,
-    env: dict[str, str] | None = None,
+    token: str, *, now: datetime | None = None, env: dict[str, str] | None = None,
+) -> RunCredential:
+    return _verify_credential(token, now=now, env=env, allow_expired=False)
+
+
+def verify_credential_for_task_settlement(
+    token: str, *, now: datetime | None = None, env: dict[str, str] | None = None,
+) -> RunCredential:
+    """Authenticate an expired token only for workload-bound stop evidence.
+
+    This grants no live operation. The caller must additionally prove the live
+    TokenReview UID against the immutable task grant and current attempt.
+    """
+    return _verify_credential(token, now=now, env=env, allow_expired=True)
+
+
+def _verify_credential(
+    token: str, *, now: datetime | None, env: dict[str, str] | None, allow_expired: bool,
 ) -> RunCredential:
     """Verify a credential and return the execution identity it asserts.
 
@@ -270,7 +284,7 @@ def verify_credential(
     expires = _parse_iso(payload["expires_at"])
 
     current = now or datetime.now(UTC)
-    if current >= expires:
+    if current >= expires and not allow_expired:
         raise CredentialError("run credential has expired")
     if current + timedelta(seconds=_NBF_SKEW_SECONDS) < not_before:
         raise CredentialError("run credential is not yet valid")

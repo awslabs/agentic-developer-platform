@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
+from src.agentauth.task_service_policy import TaskServicePolicyError, TaskServicePolicyStore
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
@@ -41,6 +42,8 @@ from .schemas import (
     SetPreferenceRequest,
     StatusTransitionRequest,
     StatusTransitionResponse,
+    TaskPolicyPutRequest,
+    TaskPolicyResponse,
 )
 
 logger = logging.getLogger("bedrockgateway.persona_models.admin")
@@ -740,3 +743,57 @@ async def revoke_alias(
         is_active=alias.is_active,
         registered_by=alias.registered_by,
     )
+
+
+def task_policy_store() -> TaskServicePolicyStore:
+    return TaskServicePolicyStore()
+
+
+@router.get("/{canonical_id}/task-policy", response_model=TaskPolicyResponse)
+async def get_task_policy(
+    canonical_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    policy_store: Annotated[TaskServicePolicyStore, Depends(task_policy_store)],
+) -> TaskPolicyResponse:
+    await _require_human_org_admin(db, current_user)
+    try:
+        await service.validate_target_service_principal(db, canonical_id=canonical_id, org_id=current_user.org_id)
+        policy = policy_store.get(tenant_id=current_user.org_id, canonical_principal_id=canonical_id)
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+    except TaskServicePolicyError:
+        raise HTTPException(503, "task policy unavailable") from None
+    if policy is None:
+        raise HTTPException(404, "task policy not found")
+    return TaskPolicyResponse.model_validate(policy)
+
+
+@router.put("/{canonical_id}/task-policy", response_model=TaskPolicyResponse)
+async def put_task_policy(
+    canonical_id: str,
+    body: TaskPolicyPutRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    policy_store: Annotated[TaskServicePolicyStore, Depends(task_policy_store)],
+) -> TaskPolicyResponse:
+    await _require_human_org_admin(db, current_user)
+    try:
+        await service.validate_target_service_principal(db, canonical_id=canonical_id, org_id=current_user.org_id)
+        admin_id = await service.validate_human_principal(
+            db, user_id=current_user.user_id, org_id=current_user.org_id
+        )
+        values = body.model_dump(exclude={"expected_version"}, mode="python")
+        policy = policy_store.put(
+            tenant_id=current_user.org_id, canonical_principal_id=canonical_id,
+            expected_version=body.expected_version, policy=values, updated_by=admin_id,
+        )
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+    except TaskServicePolicyError as exc:
+        if exc.code == "version_conflict":
+            raise HTTPException(409, "task policy version conflict") from None
+        if exc.code == "invalid_policy":
+            raise HTTPException(422, "invalid task policy") from None
+        raise HTTPException(503, "task policy unavailable") from None
+    return TaskPolicyResponse.model_validate(policy)

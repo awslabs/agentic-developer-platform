@@ -40,10 +40,12 @@ def enabled(env) -> bool:
 
 
 class TaskDelivery:
-    def __init__(self, *, store, sqs, queue_url: str, clock=time.time):
+    def __init__(self, *, store, sqs, queue_url: str, clock=time.time, allow_task_api=False, allow_legacy=True, allow_shared_legacy=False):
         if not queue_url:
             raise TaskDeliveryError("unavailable")
         self.store, self.sqs, self.queue_url, self.clock = store, sqs, queue_url, clock
+        self.allow_task_api, self.allow_legacy = allow_task_api, allow_legacy
+        self.allow_shared_legacy = allow_shared_legacy
 
     def read(self, pod_uid: str) -> dict | None:
         raw = self.store._read(f"PODTASK#{pod_uid}", "DELIVERY")
@@ -109,12 +111,37 @@ class TaskDelivery:
             if not isinstance(body, str) or len(body.encode()) > MAX_MESSAGE_BYTES or not isinstance(receipt, str) or not receipt:
                 raise TaskDeliveryError("invalid_task")
             envelope = json.loads(body)
-            if not isinstance(envelope, dict) or not isinstance(envelope.get("message_id"), str) or not envelope["message_id"]:
+            if not isinstance(envelope, dict):
                 raise TaskDeliveryError("invalid_task")
+            shared_legacy = (self.allow_shared_legacy and "kind" not in envelope and envelope.get("version") == "1.0"
+                and all(isinstance(envelope.get(name), str) and envelope[name] for name in ("channel", "tenant_id", "persona"))
+                and isinstance(envelope.get("source_ref"), dict))
+            journal_id = envelope.get("message_id")
+            if not isinstance(journal_id, str) or not journal_id:
+                if not shared_legacy or not isinstance(message.get("MessageId"), str):
+                    raise TaskDeliveryError("invalid_task")
+                journal_id = message["MessageId"]  # Queue journal only; never mints an ADP run grant.
             digest = envelope_digest(envelope)
-            pending = self.store._read(f"INVOCATION#{envelope['message_id']}", "DISPATCH")
-            if not pending or pending.get("envelope_digest") != {"S": digest}:
-                raise TaskDeliveryError("invalid_task")
+            if envelope.get("kind") == "adp.task":
+                if not self.allow_task_api:
+                    raise TaskDeliveryError("invalid_task")
+                from src.tasks.store import TaskStore, TaskStoreError, WorkBindingError
+
+                try:
+                    work = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table).resolve_work(
+                        envelope.get("dispatch_id", ""), expected_kind="dispatch")
+                    if work.get("envelope") != envelope:
+                        raise TaskDeliveryError("invalid_task")
+                except (TaskStoreError, WorkBindingError):
+                    raise TaskDeliveryError("invalid_task") from None
+            elif shared_legacy:
+                pass  # Same normal legacy body the old shared consumer already received.
+            else:
+                if "kind" in envelope or not self.allow_legacy:
+                    raise TaskDeliveryError("invalid_task")
+                pending = self.store._read(f"INVOCATION#{envelope['message_id']}", "DISPATCH")
+                if not pending or pending.get("envelope_digest") != {"S": digest}:
+                    raise TaskDeliveryError("invalid_task")
             # Count from before receive: an underestimated visibility window is
             # safe; counting from a slow response could authorize an old receipt.
             assigned = {
@@ -123,7 +150,7 @@ class TaskDelivery:
                 "receipt": receipt,
                 "sqs_message_id": message.get("MessageId"),
                 "queue_url": self.queue_url,
-                "invocation_id": envelope["message_id"],
+                "invocation_id": journal_id,
                 "envelope_digest": digest,
                 "lease_until": now + VISIBILITY_SECONDS,
             }

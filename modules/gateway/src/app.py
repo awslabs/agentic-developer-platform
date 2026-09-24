@@ -61,6 +61,12 @@ UNIT_MODULES = [
     "src.agentauth.run_services",
     "src.agentauth.knowledge_service",
     "src.agentauth.task_routes",
+    # #5796: the publication protocol's claim/settle/sweep adapters. Separate
+    # from task_routes because these serve the platform's own publisher and
+    # scheduled reconciler (STS producer proof), not a TokenReview-bound pod, and
+    # recovery holds a distinct role allowlist from dispatch.
+    "src.agentauth.task_dispatch_routes",
+    "src.agentauth.task_runtime_routes",
     "src.agentauth.artifact_service",
     "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",
