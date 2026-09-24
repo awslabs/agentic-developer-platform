@@ -56,6 +56,9 @@ python3 scripts/task-api/check-readiness.py evidence/inventory.json --output evi
 2. Build and qualify the exact worker image and deploy task-capable queue consumers
    first. Inspect running pods and all restartable old Job templates as above.
    Apply the task-only projected token and narrow verifier image/SA binding.
+   Set `agent_authority_prepared=true` to provision gateway TokenReview/pod-read
+   RBAC while keeping `agent_authority_enabled=false`. Terraform blocks task
+   workers without this prepared (or explicitly enabled) verifier prerequisite.
 3. Deploy gateway/ingress/recovery versions; verify their source/image identities,
    configuration and required access. Keep `ADP_RUN_TASKS_ENABLED=false`; Task API
    uses `ADP_TASK_API_READ_ENABLED`, `ADP_TASK_API_SUBMIT_ENABLED`,

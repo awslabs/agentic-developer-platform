@@ -37,7 +37,9 @@ locals {
   agent_authority_env_block = var.agent_authority_enabled ? "                  ${indent(18, yamlencode(concat(local.agent_authority_pod.container.env, [
     { name = "ADP_AGENT_CONTROL_ENDPOINT", value = "${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent" },
     { name = "ADP_CONTROL_ENVELOPE_KEYS", value = jsonencode(local.agent_control_verification_keys) },
-    ])))}" : join("\n", concat([
+    ], var.task_api_worker_enabled ? [
+    { name = "ADP_TASK_API_WORKER_ENABLED", value = "true" },
+    ] : [])))}" : join("\n", concat([
     "                  - name: ADP_AGENT_CONTROL_ENDPOINT",
     "                    value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent",
     ], var.task_api_worker_enabled ? [
@@ -63,6 +65,10 @@ resource "kubernetes_secret" "agent_authority" {
     envelope-signing-key = local.agent_control_active_key.private_key_pem
   } : {})
   lifecycle {
+    precondition {
+      condition     = !var.task_api_worker_enabled || local.agent_authority_provisioned
+      error_message = "Task workers require agent_authority_prepared=true (or enabled) to provision gateway workload verification RBAC. Generic authority may remain disabled."
+    }
     precondition {
       condition     = !var.agent_authority_enabled || length(var.agent_authority_worker_image_digests) > 0
       error_message = "Enabling agent authority requires approved worker image digests."
