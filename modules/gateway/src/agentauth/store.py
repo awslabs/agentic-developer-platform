@@ -58,7 +58,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from src.agentauth.execution import ExecutionRecord, ExecutionStatus
 from src.agentauth.grants import (
@@ -468,6 +468,135 @@ class AgentAuthorityStore:
                 raise ExecutionAlreadyExistsError(record.invocation_id) from exc
             raise AuthorityStoreError("authority store unavailable") from exc
 
+    def record_abort_intent(
+        self,
+        *,
+        invocation_id: str,
+        tenant_id: str,
+        attempt: int,
+        command_id: str,
+        body_digest: str,
+        now: datetime | None = None,
+    ) -> dict[str, str]:
+        """Durably record that an authorized abort was accepted for this attempt (#3963).
+
+        This is the fact the whole graceful-abort story rests on, so it is worth
+        being precise about what it is and what it deliberately is *not*.
+
+        **It is intent, not a terminal outcome.** The run is still executing when
+        this lands — the operator's abort has been authorized and accepted, but
+        cancellation and quiescence have not happened yet. Reporting ``aborted``
+        here would claim an outcome that has not occurred. The terminal status is
+        written later, by the finalizing supervisor, after the run has actually
+        stopped.
+
+        **It must not disturb ``status``.** The obvious implementation — flip the
+        execution to ``CANCELLED`` — is wrong and is the reason this is a separate
+        marker rather than a lifecycle transition. ``evaluate_execution_state``
+        authorizes only an ``ACTIVE`` record, so cancelling here would immediately
+        invalidate the very run credential the worker needs to deliver the abort to
+        its listener, apply it, and finalize the outcome. The operator would be left
+        with an accepted command that can never reach the still-running task and a
+        run that reports nothing. So the marker sits *beside* the status: the
+        execution stays ``ACTIVE`` and keeps its channel until it genuinely ends.
+
+        **Why this table.** The marker has to be trustworthy against the worker it
+        constrains, and this table is the only one the worker role cannot address
+        (see the module docstring). A copy on ``webhook-events`` would be editable
+        by the run it describes, which is exactly the property an abort record
+        cannot have.
+
+        Idempotent by ``command_id``: a retried acceptance of the same command
+        re-reads and returns the stored marker rather than overwriting its
+        timestamp, so the recorded moment stays the first acceptance. A *different*
+        command_id does not overwrite either — the first accepted abort is the one
+        that stopped the run, and a later one cannot rewrite which.
+
+        Returns the effective marker (``command_id``, ``body_digest``,
+        ``requested_at``), which is what the caller signs into a receipt. It is
+        returned from the store rather than echoed from the arguments so the receipt
+        attests what is actually durable, not what the caller hoped to write.
+        """
+        if (
+            type(attempt) is not int
+            or attempt < 1
+            or not all(isinstance(value, str) and value for value in (invocation_id, tenant_id, command_id, body_digest))
+        ):
+            raise AuthorityStoreError("abort intent requires a complete accepted command")
+        requested_at = _iso(now or datetime.now(UTC))
+        key = {
+            "pk": {"S": f"{_TENANT_PREFIX}{tenant_id}"},
+            "sk": {"S": f"{_EXEC_PREFIX}{invocation_id}"},
+        }
+        try:
+            self._client.update_item(
+                TableName=self._table_name,
+                Key=key,
+                UpdateExpression=(
+                    "SET abort_command_id = :command, abort_body_digest = :digest, "
+                    "abort_requested_at = :now, abort_requested_attempt = :attempt"
+                ),
+                # Only for the attempt that is actually running, and only once. The
+                # attempt check stops a stale acceptance from marking a newer attempt
+                # it never authorized; `attribute_not_exists` makes the first accepted
+                # abort the durable one.
+                ConditionExpression=(
+                    "current_attempt = :attempt AND attribute_not_exists(abort_command_id)"
+                ),
+                ExpressionAttributeValues={
+                    ":command": {"S": command_id},
+                    ":digest": {"S": body_digest},
+                    ":now": {"S": requested_at},
+                    ":attempt": {"N": str(attempt)},
+                },
+            )
+            return {"command_id": command_id, "body_digest": body_digest, "requested_at": requested_at}
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise AuthorityStoreError("authority store unavailable") from exc
+        except BotoCoreError as exc:
+            raise AuthorityStoreError("authority store unavailable") from exc
+
+        # The write was refused. Either this attempt already has an abort marker
+        # (the retry case, which must return the stored one) or the attempt moved
+        # on (which must refuse rather than report an abort of something else).
+        existing = self._get(sort_key=f"{_EXEC_PREFIX}{invocation_id}", tenant_id=tenant_id)
+        if (
+            not existing
+            or existing.get("current_attempt") != {"N": str(attempt)}
+            or "abort_command_id" not in existing
+            or existing.get("abort_command_id") != {"S": command_id}
+            or existing.get("abort_body_digest") != {"S": body_digest}
+        ):
+            raise AbortIntentConflictError(invocation_id)
+        stored_at = existing.get("abort_requested_at", {}).get("S")
+        if not stored_at:
+            raise AbortIntentConflictError(invocation_id)
+        return {"command_id": command_id, "body_digest": body_digest, "requested_at": stored_at}
+
+    def abort_intent(self, *, invocation_id: str, tenant_id: str) -> dict[str, str] | None:
+        """Read this run's durable abort marker, if it has one (#3963).
+
+        Used by admission: a run an operator stopped must not be started again, and
+        this is the fact that says so independently of whether the aborted run
+        managed to write a terminal status or acknowledge its queue message. Those
+        are exactly the writes that can fail, which is why admission cannot depend
+        on them.
+        """
+        record = self._get(sort_key=f"{_EXEC_PREFIX}{invocation_id}", tenant_id=tenant_id)
+        if not record:
+            return None
+        command_id = record.get("abort_command_id", {}).get("S")
+        requested_at = record.get("abort_requested_at", {}).get("S")
+        if not command_id or not requested_at:
+            return None
+        return {
+            "command_id": command_id,
+            "body_digest": record.get("abort_body_digest", {}).get("S", ""),
+            "requested_at": requested_at,
+            "attempt": record.get("abort_requested_attempt", {}).get("N", ""),
+        }
+
     def rotate_credential_epoch(
         self,
         *,
@@ -651,6 +780,16 @@ class ExecutionTransitionConflictError(Exception):
 
 class EpochRotationConflictError(Exception):
     """The credential epoch moved, or the execution is no longer active."""
+
+
+class AbortIntentConflictError(Exception):
+    """Abort intent could not be established for the attempt it was accepted for.
+
+    Raised rather than returning ``None`` because the caller must not report an
+    accepted abort it could not make durable (#3963): a silent failure here would
+    let a run be told its abort was applied while nothing prevents it running
+    again.
+    """
 
 
 class GrantNotFoundError(Exception):
