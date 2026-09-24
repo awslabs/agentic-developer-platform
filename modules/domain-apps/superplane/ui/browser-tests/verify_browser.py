@@ -121,6 +121,7 @@ def main(kind="serving"):
                         "can_submit": True,
                         "can_cancel": True,
                         "can_observe": True,
+                        "can_read_accounting": True,
                         "can_review_teardown": True,
                         "profiles": [
                             {
@@ -172,6 +173,38 @@ def main(kind="serving"):
                         else None,
                         "logs_pod_uid": "fixture-pod" if logs else None,
                         "logs_truncated": logs,
+                    }
+                elif (
+                    path == root + f"/{resource}/{DEPLOYMENT}/accounting"
+                    and method == "GET"
+                ):
+                    value = {
+                        "workspace_id": WORKSPACE,
+                        "deployment_id": DEPLOYMENT,
+                        "kind": kind,
+                        "checked_at": "2026-09-24T12:00:00Z",
+                        "workspace_committed_budget_micros": "2000000",
+                        "workspace_reservation_cap_micros": "5000000",
+                        "workspace_budget_state": "available",
+                        "estimated_cost_micros": None,
+                        "observed_cost_micros": None,
+                        "cost_reconciliation": "unavailable",
+                        "recorded_resources": [
+                            {"kind": "compute", "count": 1},
+                            {"kind": "storage", "count": 1},
+                        ],
+                        "operations": [
+                            {
+                                "action": "provision",
+                                "operation_id": "fixture-create",
+                                "approved_max_cost_micros": "2000000",
+                                "budget_held_micros": "2000000",
+                                "budget_state": "retained",
+                                "shared_reservation_state": "retained",
+                                "accounting_consistent": True,
+                                "updated_at": "2026-09-24T11:59:00Z",
+                            }
+                        ],
                     }
                 elif path.endswith(("/" + resource + "/preview", "/teardown-preview")):
                     action = (
@@ -330,6 +363,17 @@ def main(kind="serving"):
                     )
                     submit.focus()
                     submit.press("Enter")
+                    budget = page.get_by_role(
+                        "button", name=f"View budget for {workload_name}"
+                    )
+                    expect(budget).to_be_visible()
+                    budget.focus()
+                    budget.press("Enter")
+                    expect(
+                        page.get_by_text(
+                            "Original workload: approved ceiling 2 USD; budget held 2 USD."
+                        )
+                    ).to_be_visible()
                     inspect = page.get_by_role(
                         "button", name=f"Inspect status and logs for {workload_name}"
                     )

@@ -125,6 +125,7 @@ async def serving_catalog(
         "can_review_teardown": False,
         "can_cancel": False,
         "can_observe": False,
+        "can_read_accounting": False,
     }
     try:
         read_principal = await GrantBackedAuthority(async_session_factory).resolve(
@@ -137,6 +138,8 @@ async def serving_catalog(
             and settings.controller_status_url
             and settings.controller_registry_credential
         )
+        owner = composition(request)
+        result["can_read_accounting"] = bool(read_principal)
         principal = await GrantBackedAuthority(async_session_factory).resolve(
             org_id=str(org_id),
             workspace_id=str(workspace_id),
@@ -144,7 +147,6 @@ async def serving_catalog(
         )
         if principal is None:
             return {**result, "reason": "not-permitted"}
-        owner = composition(request)
         result["can_cancel"] = getattr(owner, "ledger", None) is not None
         if "workspace:spend" not in principal.permissions:
             return {**result, "reason": "not-permitted"}

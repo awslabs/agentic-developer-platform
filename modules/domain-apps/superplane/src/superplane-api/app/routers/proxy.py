@@ -429,3 +429,29 @@ async def observe_serving(
         logs=logs,
         pod_uid=pod_uid,
     )
+
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}/accounting")
+async def batch_accounting(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_accounting import accounting
+
+    return await accounting(request, db, org_id, workspace_id, job_id, kind="batch")
+
+
+@router.get("/{workspace_id}/deployments/{dep_id}/accounting")
+async def serving_accounting(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_accounting import accounting
+
+    return await accounting(request, db, org_id, workspace_id, dep_id, kind="serving")

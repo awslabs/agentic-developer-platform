@@ -176,3 +176,5 @@ other cancellations remain pending reconciliation. Keyboard cancellation is
 included in the isolated Chromium scenarios for both workload kinds.
 
 Workload rows offer current status and bounded Pod log windows when the API advertises observation support. Current READ authorization, original resource identity and a current manager lease are required. These observations do not establish endpoint acceptance, cleanup or reconciled cost. See `executor/WORKLOAD-OBSERVATIONS.md` for limits and read credential requirements.
+
+The workload budget view shows original/stop reservation ceilings, held amounts, ledger freshness and workspace reservation capacity. Values use exact USD millionths; estimated and provider-reconciled cost remain unavailable until supported evidence exists. Historical allocation counts are not live presence or cleanup proof. See `executor/WORKLOAD-ACCOUNTING.md`.

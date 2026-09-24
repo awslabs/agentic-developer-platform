@@ -1,3 +1,4 @@
+import { WorkloadAccounting } from './WorkloadAccounting';
 import { WorkloadObservation } from './WorkloadObservation';
 import { WorkloadCancellation } from './WorkloadCancellation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -74,6 +75,7 @@ function ServingWorkspace(props: Props) {
         <h4 className="font-semibold">{row.name}</h4>
         <p>Status: {row.status}; operation: {row.operationState}</p>
         {row.operationId && <p>Operation reference: {row.operationId}</p>}
+      {catalog?.canReadAccounting && row.deploymentId && <WorkloadAccounting workspaceId={props.workspaceId} row={row} kind="serving" />}
       {catalog?.canObserve && row.deploymentId && !['Deleted', 'CancelledBeforeDispatch'].includes(row.status) && <WorkloadObservation workspaceId={props.workspaceId} row={row} kind="serving" />}
       {row.cancellationRequested && <p>Cancellation requested. Cleanup: {row.cleanupStatus}.</p>}
       {row.status === 'CancelledBeforeDispatch' && <p>Cancelled before dispatch; no workload cleanup is required.</p>}

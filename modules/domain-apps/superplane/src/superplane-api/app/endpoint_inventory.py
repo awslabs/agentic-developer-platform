@@ -231,7 +231,15 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.SPEND,
     ),
+    ("GET", "/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
     ("GET", "/workspaces/{workspace_id}/batch-jobs/{job_id}/observation"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
+    ("GET", "/workspaces/{workspace_id}/deployments/{dep_id}/accounting"): (
         Scope.WORKSPACE,
         Permission.READ,
     ),

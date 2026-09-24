@@ -90,6 +90,8 @@ export const ENDPOINTS = {
   listWorkspaces: { method: 'GET', path: '/workspaces', served: true },
   getWorkspace: { method: 'GET', path: '/workspaces/{workspace_id}', served: true },
   createWorkspace: { method: 'POST', path: '/workspaces', served: true },
+  batchAccounting: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting', served: true },
+  servingAccounting: { method: 'GET', path: '/workspaces/{workspace_id}/deployments/{dep_id}/accounting', served: true },
   observeBatchJob: { method: 'GET', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/observation', served: true },
   observeDeployment: { method: 'GET', path: '/workspaces/{workspace_id}/deployments/{dep_id}/observation', served: true },
   cancelBatchJob: { method: 'POST', path: '/workspaces/{workspace_id}/batch-jobs/{job_id}/cancellation', served: true },
