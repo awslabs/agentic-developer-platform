@@ -207,9 +207,18 @@ def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, a
     if attack is not None:
         assert response.status_code == 404, response.text
         service._http_client.request.assert_not_awaited()
+        if attack == "missing_key":
+            # The key is only read while minting, so this refusal is the one that
+            # legitimately reaches the signer; it still forwards nothing.
+            signer.assert_called_once()
+        else:
+            # Every session/ownership refusal must be decided BEFORE an envelope
+            # exists. Asserting only the 404 would still pass if the gateway minted
+            # human authority first and discarded it, which would leave a signed
+            # cross-tenant envelope on the failure path.
+            signer.assert_not_called()
         if attack == "expired_during_ownership_read":
             authority.live_grant.assert_called_once()
-            signer.assert_not_called()
         return
     assert response.status_code == 202, response.text
     assert response.json()["command_status"] == "pending"
