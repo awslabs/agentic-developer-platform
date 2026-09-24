@@ -46,6 +46,10 @@ class Deployment(Base):
     )
     operation_request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     operation_target_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    controller_request_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    controller_approval_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     provider_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     namespace: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -31,13 +31,13 @@ not exist", which sends the operator hunting for a missing resource instead of a
 missing route. So an endpoint the proxy does not serve is reported as
 *unavailable* without a request being sent at all.
 
-WHAT IS DELIBERATELY NOT AVAILABLE YET
---------------------------------------
-Capability reporting, plan preview, cluster adoption and durable operation
-lookup are not served at this revision. Every verb that needs one of them says
-so, names the capability in the user's terms, and exits 4 (`unavailable`) rather
-than 5 (`failed`): the environment is missing a feature, nothing was attempted
-and nothing broke. A script must be able to tell those apart.
+ROUTE AVAILABILITY AND DEPLOYMENT CAPABILITIES
+--------------------------------------------
+All mapped onboarding routes are mounted, allowlisted and inventoried by the
+composed API. Route availability alone does not confirm the deployment's
+capabilities or authorize submission: the reviewed plan, advertised operation
+identity and server approval checks still apply. Missing support exits 4
+(`unavailable`); a failed request exits 5 (`failed`).
 
 SECRETS
 -------
@@ -117,43 +117,43 @@ ENDPOINTS = {
     "listLifecycleProposals": {
         "method": "GET",
         "path": "/workspaces/{workspace_id}/lifecycle-proposals",
-        "served": False,
+        "served": True,
         "capability": "listing the next workspace lifecycle plan",
     },
     "previewLifecycleProposal": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview",
-        "served": False,
+        "served": True,
         "capability": "reviewing the next recorded workspace plan",
     },
     "continueLifecycleProposal": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue",
-        "served": False,
+        "served": True,
         "capability": "continuing an approved workspace lifecycle plan",
     },
     "requestApproval": {
         "method": "POST",
         "path": "/operation-approvals",
-        "served": False,
+        "served": True,
         "capability": "requesting approval for a reviewed operation",
     },
     "getApproval": {
         "method": "GET",
         "path": "/operation-approvals/{approval_id}",
-        "served": False,
+        "served": True,
         "capability": "reading a requested operation approval",
     },
     "decideApproval": {
         "method": "POST",
         "path": "/operation-approvals/{approval_id}/decision",
-        "served": False,
+        "served": True,
         "capability": "deciding an operation approval",
     },
     "adoptWorkspace": {
         "method": "POST",
         "path": "/workspaces/adopt",
-        "served": False,
+        "served": True,
         "capability": "adopting an existing cluster you already operate",
     },
     "capabilities": {
@@ -165,19 +165,19 @@ ENDPOINTS = {
     "previewWorkspace": {
         "method": "POST",
         "path": "/workspaces/preview",
-        "served": False,
+        "served": True,
         "capability": "reviewing the exact plan, capacity and cost before anything is created",
     },
     "getOperation": {
         "method": "GET",
         "path": "/operations/{operation_id}",
-        "served": False,
+        "served": True,
         "capability": "tracking a submitted operation through to completion",
     },
     "recoverOperation": {
         "method": "GET",
         "path": "/operations/by-idempotency/{idempotency_key}",
-        "served": False,
+        "served": True,
         "capability": "recovering the result of a submission whose reply was lost",
     },
 }

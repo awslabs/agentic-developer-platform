@@ -186,11 +186,16 @@ class OperationRequest(BaseModel):
 
 async def _authenticated(runtime: AgentRuntime, request: Request):
     """Both proofs, verified now: which run/attempt, and which pod."""
-    return await run_in_threadpool(
+    context = await run_in_threadpool(
         runtime.authenticate,
         request.headers.get("X-Adp-Run-Credential", ""),
         request.headers.get(WORKLOAD_HEADER, ""),
     )
+    from src.agentauth.grants import AUTHORITY_PAID_DOMAIN_OPERATION
+
+    if context[3].authority.kind == AUTHORITY_PAID_DOMAIN_OPERATION:
+        raise BootstrapRefusedError("paid domain worker has no GitHub authority")
+    return context
 
 
 @router.post("/github-operation")

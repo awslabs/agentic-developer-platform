@@ -276,7 +276,12 @@ async def _open(harness, plan, *, ledger=None, key="retire-ws-1"):
         workspace_id="ws-1",
         org_id="org-a",
         permission=REQUIRED_PERMISSION,
-        parameters={"execution_steps": plan.encode(), "idempotency_key": key},
+        parameters={
+            "execution_steps": plan.encode(),
+            "idempotency_key": key,
+            "allocation_id": "original-workspace-allocation",
+            "original_allocation_id": "original-workspace-allocation",
+        },
     )
 
 

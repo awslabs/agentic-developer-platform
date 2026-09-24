@@ -11,8 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from superplane_contracts.emission import install_log_redaction, redact_spans, scrub
 
-from app.adapters.adp_vault_client import build_vault_client
 from app.auth import build_domain_policy
+from app.composition import Composition, compose
 from app.config import require_database_url, resolve_cors_origins, settings
 from app.database import async_session_factory
 from app.domain_guard import enforce_domain_authorization
@@ -26,11 +26,15 @@ from app.routers.accounts import router as accounts_router
 from app.routers.auth import router as auth_router
 from app.routers.controller_management import router as controller_management_router
 from app.routers.bootstrap_observation import router as bootstrap_observation_router
+from app.routers.controller_recovery import router as controller_recovery_router
 from app.routers.cost import router as cost_router
 from app.routers.events import router as events_router
 from app.routers.heartbeat import router as heartbeat_router
 from app.routers.installation import router as installation_router
 from app.routers.internal import router as internal_router
+from app.routers.operation_approvals import router as operation_approvals_router
+from app.routers.onboarding import router as onboarding_router
+from app.routers.retirement import router as retirement_router
 from app.routers.orgs import router as orgs_router
 from app.routers.provider_connections import router as provider_connections_router
 from app.routers.provider_handles import router as provider_handles_router
@@ -39,10 +43,6 @@ from app.routers.quota import router as quota_router
 from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 from app.routers.workspaces import router as workspaces_router
-from app.services.credential_evidence import (
-    get_credential_evidence_reader,
-    install_credential_evidence_reader,
-)
 from app.services.vault_sync import VaultSyncReconciler
 from app.services.workspace_reconciler import WorkspaceReconciler
 
@@ -66,38 +66,32 @@ vault_sync_reconciler = VaultSyncReconciler(session_factory=async_session_factor
 workspace_reconciler = WorkspaceReconciler(session_factory=async_session_factory)
 
 
-def compose_vault_client() -> None:
-    """Install the ADP vault client as the credential-evidence reader (#5528, w6-05).
+def compose_vault_client() -> Composition:
+    """Compose this process's trust adapters, through the one shared factory.
 
-    Called from the lifespan rather than at import time, and that placement is the
-    point rather than a detail:
+    Delegates to `app.composition.compose`, which is also what the packaged image's
+    `python -m app.installation capabilities` and `readiness` commands call. That
+    sharing is the point of #5535 rather than a tidy-up: this function used to hold
+    the composition itself, and because `app/installation.py` does not import
+    `app.main`, the packaged preflight never ran it — so the preflight reported
+    every port uncomposed regardless of configuration, and the installer's
+    all-four-true requirement could not be met by any deployment.
+
+    Retained as a named function, with its call site unmoved, for two ordering rules
+    that are asserted against this lifespan's source:
 
     * **Not at import.** A module-level install would give every deployment and every
-      test process a vault dependency it never configured, and `install_...` refuses a
-      second call — so an importing test could not substitute its own reader.
-    * **Before the installation gate below.** The gate probes whatever is installed and
-      refuses to start an image whose trust adapters are absent. Installing after it
-      would mean the gate always saw an uncomposed port, so a real adapter could never
-      satisfy it and the gate would be permanently unsatisfiable rather than passed.
+      test process a vault dependency it never configured, and the ports'
+      single-install guards would then be unusable for substitution.
+    * **Before the installation gate below.** The gate probes whatever is installed.
+      Composing after it would mean the gate always saw an uncomposed port, so a real
+      adapter could never satisfy it and the gate would be permanently unsatisfiable
+      rather than passed.
 
-    Silent when nothing is configured. `build_vault_client` returns None for an
-    unconfigured deployment and logs that itself; no reader is installed, and the
-    provider-connection routes answer 503 "ADP vault evidence is unavailable" — the
-    honest answer, as opposed to a 403 that would blame the caller's permissions for
-    a missing setting.
-
-    A pre-existing reader is left alone. A test or an embedding host that installed
-    its own is the authority here, and overwriting it would let production
-    composition silently displace a deliberately substituted one — the reason
-    `install_credential_evidence_reader` refuses a second install in the first place.
+    A pre-existing adapter is left alone, and an unconfigured deployment composes
+    nothing rather than a stub. See `app/composition.py` for why both.
     """
-    if get_credential_evidence_reader() is not None:
-        return
-    client = build_vault_client(settings)
-    if client is None:
-        return
-    install_credential_evidence_reader(client)
-    logger.info("Installed the ADP vault credential-evidence reader")
+    return compose(settings)
 
 
 @asynccontextmanager
@@ -136,7 +130,21 @@ async def lifespan(app: FastAPI):
 
     # Before the installation gate: the gate probes installed adapters (see the
     # docstring above).
-    compose_vault_client()
+    composition = compose_vault_client()
+    app.state.trust_composition = composition
+
+    # Connect what composition built but deliberately did not open (issue #5535).
+    # `compose()` is synchronous and must run where there is no event loop and no
+    # network — the packaged capability preflight runs it under `--network=none` —
+    # so the harness operation store's pool is opened here, inside the lifespan.
+    #
+    # Before the capability gate below, and on the management branch as well: the
+    # harness-backed ports are composed in both modes, and a pool left unopened
+    # would make every operation answer 503 while the readout reported the ports
+    # composed. `aopen()` never raises — an unreachable store is logged and the
+    # ports answer their unavailable outcome — so this cannot turn a database
+    # outage into a process that will not start.
+    await composition.aopen()
     if management_only():
         from pathlib import Path
 
@@ -162,28 +170,44 @@ async def lifespan(app: FastAPI):
         logger.info(
             "Starting authenticated management service; workspace execution unavailable"
         )
-        yield
+        # `finally`, not a straight-line close, and on this branch too: management
+        # mode still composed whatever the deployment configured, so its transports
+        # are still this lifespan's to release. An early `return` that skipped the
+        # close would leak a connection pool per restart in exactly the mode a
+        # control-plane-first installation runs in.
+        try:
+            composition.start_dispatcher()
+            yield
+        finally:
+            await composition.aclose()
         return
-    if os.environ.get("SUPERPLANE_INSTALLATION_REQUIRED") == "true":
-        from app.installation import capabilities_async
+    try:
+        if os.environ.get("SUPERPLANE_INSTALLATION_REQUIRED") == "true":
+            from app.installation import capabilities_async
 
-        # `capabilities_async`, not `capabilities`: this runs inside the lifespan's
-        # event loop, and each capability is now established by calling the adapter
-        # and requiring it to refuse an unauthorized probe rather than by testing
-        # that the name is bound. Same refusal, better evidenced.
-        if not all((await capabilities_async()).values()):
-            raise RuntimeError(
-                "Production Superplane trust adapters are not composed in this image"
-            )
-    logger.info("Starting VaultSyncReconciler background task")
-    await vault_sync_reconciler.start()
-    logger.info("Starting WorkspaceReconciler background task")
-    await workspace_reconciler.start()
-    yield
-    logger.info("Stopping WorkspaceReconciler background task")
-    await workspace_reconciler.stop()
-    logger.info("Stopping VaultSyncReconciler background task")
-    await vault_sync_reconciler.stop()
+            # `capabilities_async`, not `capabilities`: this runs inside the lifespan's
+            # event loop, and each capability is now established by calling the adapter
+            # and requiring it to refuse an unauthorized probe rather than by testing
+            # that the name is bound. Same refusal, better evidenced.
+            if not all((await capabilities_async()).values()):
+                raise RuntimeError(
+                    "Production Superplane trust adapters are not composed in this image"
+                )
+        logger.info("Starting VaultSyncReconciler background task")
+        composition.start_dispatcher()
+        await vault_sync_reconciler.start()
+        logger.info("Starting WorkspaceReconciler background task")
+        await workspace_reconciler.start()
+        yield
+        logger.info("Stopping WorkspaceReconciler background task")
+        await workspace_reconciler.stop()
+        logger.info("Stopping VaultSyncReconciler background task")
+        await vault_sync_reconciler.stop()
+    finally:
+        # Reached when the gate above raises, too. A refused boot must not leave the
+        # transports composition opened dangling in a process that is about to be
+        # restarted by the orchestrator.
+        await composition.aclose()
 
 
 app = FastAPI(
@@ -214,6 +238,7 @@ app = FastAPI(
 app.state.domain_policy = build_domain_policy()
 app.include_router(controller_management_router)
 app.include_router(bootstrap_observation_router)
+app.include_router(controller_recovery_router)
 
 # Validate the browser origin allowlist at import, before serving requests.
 # Preserve the existing credentialed CORS contract for explicitly reviewed origins;
@@ -306,6 +331,9 @@ async def _scrubbed_validation_error(
 
 
 # Routers
+app.include_router(operation_approvals_router)
+app.include_router(onboarding_router)
+app.include_router(retirement_router)
 app.include_router(health.router, tags=["health"])
 app.include_router(auth_router)
 app.include_router(orgs_router)

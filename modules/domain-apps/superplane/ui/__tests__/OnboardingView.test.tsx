@@ -23,6 +23,7 @@ import {
   ENDPOINTS,
 } from '@superplane-ui/contract';
 import { AdminRole } from '@/types';
+import { withoutOnboardingEndpoints } from './endpoint-fixtures';
 
 // The same schema-derived vault fixtures the connection panel's tests use, for the
 // same reason: a credential row invented here would agree with whatever the client
@@ -120,9 +121,11 @@ function createIsAvailable(features: string[] = [CREATE_IDEMPOTENCY_FEATURE]) {
 }
 
 let restoreServed: (() => void) | null = null;
+let restoreDeployment: () => void;
 
 const baselineCapabilitiesServed = ENDPOINTS.capabilities.served;
 beforeEach(() => {
+  restoreDeployment = withoutOnboardingEndpoints();
   // This suite's default fixture is a deployment without capability reporting.
   (ENDPOINTS.capabilities as { served: boolean }).served = false;
   currentUser = { id: 'u-1', orgId: 'org-a', role: AdminRole.ORG_ADMIN };
@@ -132,6 +135,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreServed?.();
   restoreServed = null;
+  restoreDeployment();
   (ENDPOINTS.capabilities as { served: boolean }).served = baselineCapabilitiesServed;
   window.localStorage.clear();
 });
@@ -206,7 +210,7 @@ describe('AC-01: beginning onboarding with zero workspaces', () => {
 
 describe('AC-04: create is disabled, with the gap named, when it cannot be submitted safely', () => {
   it('disables create and explains that idempotency cannot be confirmed', async () => {
-    // Capability discovery is unserved on the current baseline (`#5535`), so the
+    // The fixture models a deployment without capability discovery, so the
     // client reports not-deployed without issuing a request. The screen must not
     // offer a create it cannot make idempotent.
     listReturns([]);

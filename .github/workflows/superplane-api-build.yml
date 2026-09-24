@@ -48,6 +48,7 @@ on:
       - 'modules/domain-apps/superplane/infra/account-factory/**'
       - 'modules/domain-apps/superplane/infra/account-provisioning/**'
       - 'modules/domain-apps/superplane/workspace_bootstrap/**'
+      - 'modules/domain-apps/superplane/executor/**'
       # The lifecycle distribution manifest is at the domain root; its source
       # package is workspace_provisioning/. Watch the declared source root.
       - 'modules/domain-apps/superplane/**'

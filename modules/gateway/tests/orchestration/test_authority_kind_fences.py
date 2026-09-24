@@ -66,6 +66,7 @@ from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.grants import (
     AUTHORITY_GATE_DECISION,
     AUTHORITY_GITHUB_EVENT,
+    AUTHORITY_PAID_DOMAIN_OPERATION,
     AUTHORITY_REPLAN_REQUEST,
     AUTHORITY_SERVICE_POLICY,
     RECOGNIZED_AUTHORITY_KINDS,
@@ -188,7 +189,7 @@ def _store_kind(store, invocation: str, kind: str, *, tenant: str = "tenant", at
 
 
 class TestRecognizedVocabulary:
-    def test_the_four_kinds_are_the_whole_vocabulary(self):
+    def test_recognized_kinds_are_the_whole_reviewed_vocabulary(self):
         """Pinned as a set so adding a kind is a deliberate, reviewable edit.
 
         `AuthorityReference.kind`'s docstring says a new initiation path "adds a kind
@@ -201,6 +202,7 @@ class TestRecognizedVocabulary:
             AUTHORITY_GITHUB_EVENT,
             AUTHORITY_SERVICE_POLICY,
             AUTHORITY_REPLAN_REQUEST,
+            AUTHORITY_PAID_DOMAIN_OPERATION,
         }
 
     def test_replan_request_cannot_root_an_execution_chain(self):
@@ -251,7 +253,7 @@ class TestCredentialFence:
         assert decision.permitted
         assert decision.reason is None
 
-    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, UNKNOWN_KIND])
+    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, AUTHORITY_PAID_DOMAIN_OPERATION, UNKNOWN_KIND])
     async def test_unrecognized_kind_is_denied_a_worker_credential(self, session, assignment, kind):
         """THE fence. Reverting the deny in `runtime_policy` fails exactly this test.
 
@@ -349,7 +351,7 @@ class TestDispatchFence:
         messages = child_dispatch.sqs.receive_message(QueueUrl=child_dispatch.queue, MaxNumberOfMessages=10)["Messages"]
         assert len(messages) == 1
 
-    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, UNKNOWN_KIND])
+    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, AUTHORITY_PAID_DOMAIN_OPERATION, UNKNOWN_KIND])
     def test_unrecognized_kind_cannot_dispatch_and_publishes_nothing(self, store, child_dispatch, kind):
         """THE fence. Reverting the deny in `dispatch.prepare` fails exactly this test.
 
@@ -539,7 +541,7 @@ class TestWorkAdmissionFence:
         assert receipt["invocation_id"] == pending_child
         assert receipt["claim_id"]
 
-    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, UNKNOWN_KIND])
+    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, AUTHORITY_PAID_DOMAIN_OPERATION, UNKNOWN_KIND])
     async def test_unrecognized_kind_cannot_take_an_exclusivity_lease(self, store, pending_child, claims_session, kind):
         """THE fence. Reverting the deny in `work_admission` fails exactly this test.
 
@@ -576,7 +578,7 @@ class TestWorkAdmissionFence:
             await admit_pending(store, pending_child, session=claims_session)
         assert (await claims_session.scalars(select(OrchestrationWorkClaim))).all() == []
 
-    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, UNKNOWN_KIND])
+    @pytest.mark.parametrize("kind", [AUTHORITY_REPLAN_REQUEST, AUTHORITY_PAID_DOMAIN_OPERATION, UNKNOWN_KIND])
     async def test_a_refused_kind_cannot_claim_by_deferring(self, store, pending_child, claims_session, kind):
         """`allow_defer` is not a way around the kind fence.
 

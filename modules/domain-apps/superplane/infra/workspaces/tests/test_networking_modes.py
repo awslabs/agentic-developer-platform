@@ -135,7 +135,8 @@ def _resource_blocks(path: Path) -> list[tuple[str, str, str]]:
 
 NETWORK_RESOURCES = [
     (t, n, body)
-    for t, n, body in _resource_blocks(NETWORK_TF)
+    for path in sorted(WORKSPACES.glob("*.tf"))
+    for t, n, body in _resource_blocks(path)
     if t in NETWORK_OWNING_TYPES
 ]
 

@@ -25,6 +25,7 @@ COPY vendor/account-factory ./vendor/account-factory
 COPY vendor/account-provisioning ./vendor/account-provisioning
 COPY vendor/superplane-bootstrap ./vendor/superplane-bootstrap
 COPY vendor/workspace-provisioning ./vendor/workspace-provisioning
+COPY vendor/superplane-executor ./vendor/superplane-executor
 # `set -e` plus one `if` per package rather than a chain of `||`/`&&`: those two
 # operators have equal precedence and associate left-to-right, so a mixed chain
 # guarding two tests reads as though each failure is caught independently when it
@@ -36,19 +37,18 @@ RUN set -eu; \
                "account-factory/account_factory/modes.py" \
                "account-provisioning/account_provisioning/creation_runner.py" \
                "superplane-bootstrap/superplane_bootstrap/workspace.py" \
-               "workspace-provisioning/workspace_provisioning/preview.py"; do \
+               "workspace-provisioning/workspace_provisioning/preview.py" \
+               "superplane-executor/superplane_executor/inventory.py"; do \
       if [ ! -f "vendor/$pkg" ]; then \
         echo "error: vendor/$pkg is missing; run scripts/stage-domain-auth.sh before docker build" >&2; \
         exit 1; \
       fi; \
     done; \
-    pip install --no-cache-dir --prefix=/install ./vendor/superplane-auth; \
-    pip install --no-cache-dir --prefix=/install ./vendor/superplane-contracts; \
-    pip install --no-cache-dir --prefix=/install ./vendor/harness-jobs; \
-    pip install --no-cache-dir --prefix=/install ./vendor/account-factory; \
-    pip install --no-cache-dir --prefix=/install ./vendor/account-provisioning; \
-    pip install --no-cache-dir --prefix=/install ./vendor/superplane-bootstrap; \
-    pip install --no-cache-dir --prefix=/install ./vendor/workspace-provisioning
+    pip install --no-cache-dir --prefix=/install \
+      ./vendor/superplane-auth ./vendor/superplane-contracts ./vendor/harness-jobs \
+      ./vendor/account-factory ./vendor/account-provisioning \
+      ./vendor/superplane-bootstrap ./vendor/workspace-provisioning \
+      ./vendor/superplane-executor
 
 # Exercise installed wheels and their maintained data during the remote image
 # build, without importing the source checkout or contacting a provider.

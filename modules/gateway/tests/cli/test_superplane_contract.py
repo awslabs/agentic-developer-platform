@@ -110,7 +110,7 @@ import pydantic  # noqa: E402
 
 with domain_app_importable():
     from app.schemas.account import RegisterAccountRequest, RegisterCredentialRequest
-    from app.schemas.proxy import CreateDeploymentRequest
+    from app.schemas.proxy import CreateDeploymentRequest, DeleteDeploymentRequest
     from app.schemas.quota import SetWorkspaceQuotaRequest
     from app.schemas.workspace import CreateWorkspaceRequest, KubeconfigResponse
 
@@ -146,6 +146,11 @@ ACCOUNT_RECORD = "33333333-4444-5555-6666-777777777777"
 ACCOUNT_NUMBER = "123456789012"
 DOMAIN_RECORD = "11111111-2222-3333-4444-555555555555"
 VAULT_REFERENCE = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+DEPLOY_REQUEST = "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
+DEPLOY_APPROVAL = "88888888-9999-4aaa-bbbb-cccccccccccc"
+DEPLOY_REVISION = "a" * 64
+DEPLOY_AUTH_FLAGS = ["--operation-id", DEPLOY_REQUEST, "--approval-id", DEPLOY_APPROVAL, "--plan-revision", DEPLOY_REVISION]
+DEPLOY_CREATE_FLAGS = [*DEPLOY_AUTH_FLAGS, "--profile-id", "fixture-serving"]
 
 DOMAIN_LIST = cli.API_BASE + cli.DOMAIN_CREDENTIALS
 
@@ -288,13 +293,32 @@ class Recorder:
                 "name": (body or {}).get("name"),
                 "status": "Active",
             }
+        if method == "POST" and (base.endswith("/deployments/preview") or base.endswith("/teardown-preview")):
+            return {
+                "deployment_id": DOMAIN_RECORD,
+                "request_id": body["operation_id"],
+                "revision": DEPLOY_REVISION,
+                "allocation_id": ACCOUNT_RECORD,
+                "controller_plan": {"kind": "controller-workload", "profile_id": "fixture-serving"},
+                "approval_request": {
+                    "workspace_id": WORKSPACE_ID,
+                    "action": "teardown" if base.endswith("/teardown-preview") else "provision",
+                    "idempotency_key": body["operation_id"],
+                    "parameters": {"allocation_id": ACCOUNT_RECORD, "controller_plan": "immutable-fixture"},
+                },
+            }
+        if (method, base) == ("POST", api + "/operation-approvals"):
+            return {"approval_id": DEPLOY_APPROVAL, "state": "pending"}
         if method == "DELETE" and "/deployments/" in base:
-            return {"name": "llama-8b", "status": "Deleted"}
+            return {"name": "llama-8b", "status": "Deleted", "operation_id": DEPLOY_REQUEST, "operation_state": "succeeded"}
         if method == "POST" and base.endswith("/deployments"):
             return {
                 "deployment_id": DOMAIN_RECORD,
                 "name": (body or {}).get("name"),
                 "status": "Pending",
+                "operation_id": DEPLOY_REQUEST,
+                "operation_state": "pending",
+                "provider_uid": None,
             }
         if (method, base) == ("GET", api + "/accounts"):
             return {"accounts": [{"id": ACCOUNT_RECORD, "account_id": ACCOUNT_NUMBER, "name": "prod"}], "total": 1}
@@ -402,6 +426,7 @@ def test_orgless_password_session_cannot_create_workspaces_or_deployments(
         [
             "deploy",
             "create",
+            *DEPLOY_CREATE_FLAGS,
             "--name",
             "llama-8b",
             "--model",
@@ -456,8 +481,8 @@ COMMANDS = [
     (["cost", "--org"], "cost --org"),
     (["events", "--resource-type", "workspace", "--limit", "10"], "events"),
     (["deploy", "list"], "deploy list"),
-    (["deploy", "create", "--name", "llama-8b", "--model", "meta-llama/Llama-3-8B", "--yes"], "deploy create"),
-    (["deploy", "delete", "--id", DOMAIN_RECORD, "--yes"], "deploy delete"),
+    (["deploy", "create", *DEPLOY_CREATE_FLAGS, "--name", "llama-8b", "--model", "meta-llama/Llama-3-8B", "--yes"], "deploy create"),
+    (["deploy", "delete", *DEPLOY_AUTH_FLAGS, "--id", DOMAIN_RECORD, "--yes"], "deploy delete"),
     (
         [
             "account",
@@ -566,7 +591,7 @@ def test_the_deployment_body_is_accepted_by_the_servers_own_model() -> None:
     are 422s against `CreateDeploymentRequest`: there is no `model` field, and
     `name` is required with no default, so nothing generated anything.
     """
-    api, _ = run(["deploy", "create", "--name", "llama-8b", "--model", "meta-llama/Llama-3-8B", "--precision", "bf16", "--yes"])
+    api, _ = run(["deploy", "create", *DEPLOY_CREATE_FLAGS, "--name", "llama-8b", "--model", "meta-llama/Llama-3-8B", "--precision", "bf16", "--yes"])
     body = api.body("POST", f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments")
 
     validated = CreateDeploymentRequest.model_validate(body)
@@ -682,7 +707,7 @@ def test_the_workspace_and_quota_bodies_are_accepted_by_their_real_models() -> N
     [
         (["workspace", "create", "--name", "new-ws", "--yes"], cli.API_BASE + "/workspaces"),
         (
-            ["deploy", "create", "--workspace", WORKSPACE_ID, "--name", "llama-8b", "--model", "model", "--yes"],
+            ["deploy", "create", *DEPLOY_CREATE_FLAGS, "--workspace", WORKSPACE_ID, "--name", "llama-8b", "--model", "model", "--yes"],
             f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments",
         ),
     ],
@@ -785,7 +810,7 @@ def test_completed_create_with_lost_output_reuses_the_original_resource(monkeypa
     id_field, resource_id, name = "id", WORKSPACE_ID, "new-ws"
     if resource == "deployment":
         path += f"/{WORKSPACE_ID}/deployments"
-        argv = ["deploy", "create", "--workspace", WORKSPACE_ID, "--name", "llama-8b", "--model", "model", "--yes"]
+        argv = ["deploy", "create", *DEPLOY_CREATE_FLAGS, "--workspace", WORKSPACE_ID, "--name", "llama-8b", "--model", "model", "--yes"]
         id_field, resource_id, name = "deployment_id", DOMAIN_RECORD, "llama-8b"
     overrides = {("POST", path): {id_field: resource_id, "name": name, "status": "Active"}}
     first = Recorder(overrides)
@@ -1007,6 +1032,7 @@ def test_failed_status_in_a_legacy_success_body_is_not_reported_as_ok(monkeypatc
     argv = [
         "deploy",
         "create",
+        *DEPLOY_CREATE_FLAGS,
         "--workspace",
         WORKSPACE_ID,
         "--name",
@@ -1030,11 +1056,35 @@ def test_failed_status_in_a_legacy_success_body_is_not_reported_as_ok(monkeypatc
     assert cli.create_recoveries()[failed_operation]["phase"] == "failed"
 
 
+@pytest.mark.parametrize("state", ["failed", "cancelled"])
+def test_governed_deployment_needing_recovery_preserves_identity_and_exposure(state):
+    path = f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments"
+    result = {
+        "deployment_id": DOMAIN_RECORD,
+        "name": "llama-8b",
+        "status": "NeedsRecovery",
+        "operation_id": DEPLOY_REQUEST,
+        "operation_state": state,
+        "provider_uid": "retained-provider-uid",
+    }
+    argv = ["deploy", "create", *DEPLOY_CREATE_FLAGS, "--workspace", WORKSPACE_ID, "--name", "llama-8b", "--model", "model", "--yes"]
+    for _ in range(2):
+        api, response = run(argv, {("POST", path): result})
+        assert api.body("POST", path)["operation_id"] == DEPLOY_REQUEST
+        assert response["status"] == "pending"
+        assert response["detail"] == result
+    receipt = cli.create_recoveries()[DEPLOY_REQUEST]
+    assert receipt["resource_id"] == DOMAIN_RECORD
+    assert receipt["phase"] == "accepted_pending"
+    assert len(cli.create_recoveries()) == 1
+
+
 def test_malformed_deployment_success_keeps_the_same_recovery_receipt() -> None:
     path = f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments"
     argv = [
         "deploy",
         "create",
+        *DEPLOY_CREATE_FLAGS,
         "--workspace",
         WORKSPACE_ID,
         "--name",
@@ -1162,7 +1212,7 @@ def test_a_failed_resolution_stops_before_the_operation_it_was_for() -> None:
     """
     api = Recorder({("GET", cli.API_BASE + "/workspaces"): {"workspaces": [], "total": 0}})
     with pytest.raises(cli.CliError) as raised:
-        cli.run(cli.parser().parse_args(["deploy", "delete", "--id", DOMAIN_RECORD, "--yes"]), api)
+        cli.run(cli.parser().parse_args(["deploy", "delete", *DEPLOY_AUTH_FLAGS, "--id", DOMAIN_RECORD, "--yes"]), api)
     assert raised.value.code == "workspace_not_found"
     assert api.paths() == [("GET", cli.API_BASE + "/workspaces")], "nothing may be deleted after a failed resolution"
 
@@ -1369,8 +1419,8 @@ def test_a_secret_on_the_command_line_is_still_refused() -> None:
     [
         ["workspace", "create", "--name", "preview", "--dry-run"],
         ["quota", "set", "--max-gpus", "1", "--dry-run"],
-        ["deploy", "create", "--name", "preview", "--model", "model", "--dry-run"],
-        ["deploy", "delete", "--id", DOMAIN_RECORD, "--dry-run"],
+        ["deploy", "create", *DEPLOY_CREATE_FLAGS, "--name", "preview", "--model", "model", "--dry-run"],
+        ["deploy", "delete", *DEPLOY_AUTH_FLAGS, "--id", DOMAIN_RECORD, "--dry-run"],
         ["account", "delete", ACCOUNT_NUMBER, "--dry-run"],
         ["provider", "add", "--name", "preview", "--provider", "nebius", "--dry-run"],
         ["provider", "delete", DOMAIN_RECORD, "--dry-run"],
@@ -1436,23 +1486,147 @@ def test_the_allowlist_is_not_widened_to_admit_the_retired_paths() -> None:
 def test_deployment_delete_uses_uuid_and_reports_pending():
     path = f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments/{DOMAIN_RECORD}"
     api, result = run(
-        ["deploy", "delete", "--id", DOMAIN_RECORD, "--yes"],
+        ["deploy", "delete", *DEPLOY_AUTH_FLAGS, "--id", DOMAIN_RECORD, "--yes"],
         {("DELETE", path): {"name": "llama-8b", "status": "Deleting"}},
     )
     assert any(method == "DELETE" and target == path for method, target, _ in api.sent)
     assert result["status"] == "pending"
     with pytest.raises(cli.CliError, match="deployment UUID"):
-        run(["deploy", "delete", "--id", "llama-8b", "--yes"])
+        run(["deploy", "delete", *DEPLOY_AUTH_FLAGS, "--id", "llama-8b", "--yes"])
 
 
 @pytest.mark.parametrize(
     "subcommand,flags",
     [
-        ("create", ["--name", "llama-8b", "--model", "model"]),
+        ("create", [*DEPLOY_CREATE_FLAGS, "--name", "llama-8b", "--model", "model"]),
+        ("preview", ["--operation-id", DEPLOY_REQUEST, "--profile-id", "fixture-serving", "--name", "llama-8b", "--model", "model"]),
         ("list", []),
-        ("delete", ["--id", DOMAIN_RECORD]),
+        ("delete", [*DEPLOY_AUTH_FLAGS, "--id", DOMAIN_RECORD]),
+        ("teardown-preview", ["--operation-id", DEPLOY_REQUEST, "--id", DOMAIN_RECORD]),
     ],
 )
 def test_deployment_namespace_is_server_owned(subcommand, flags):
     with pytest.raises(cli.CliError, match="unrecognized arguments"):
         cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])
+
+
+def deployment_preview_arguments(teardown=False):
+    flags = ["--workspace", WORKSPACE_ID, "--operation-id", DEPLOY_REQUEST]
+    if teardown:
+        return ["deploy", "teardown-preview", *flags, "--id", DOMAIN_RECORD]
+    return ["deploy", "preview", *flags, "--name", "llama-8b", "--model", "model", "--profile-id", "fixture-serving"]
+
+
+@pytest.mark.parametrize("teardown", [False, True])
+def test_deployment_review_issues_exact_approval_without_deciding_or_dispatching(teardown):
+    argv = deployment_preview_arguments(teardown)
+    path = f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments"
+    path += f"/{DOMAIN_RECORD}/teardown-preview" if teardown else "/preview"
+    api, review = run(argv)
+    assert api.paths() == [("POST", path)]
+    model = DeleteDeploymentRequest if teardown else CreateDeploymentRequest
+    assert str(model.model_validate(api.body("POST", path)).operation_id) == DEPLOY_REQUEST
+    assert review["detail"]["request_id"] == DEPLOY_REQUEST
+    assert review["detail"]["allocation_id"] == ACCOUNT_RECORD
+
+    api, issued = run([*argv, "--request-approval", "--plan-revision", DEPLOY_REVISION, "--yes"])
+    assert api.paths() == [("POST", path), ("POST", cli.API_BASE + "/operation-approvals")]
+    assert all(forwardable(method, target) for method, target in api.paths())
+    assert api.body("POST", cli.API_BASE + "/operation-approvals") == review["detail"]["approval_request"]
+    assert issued["detail"]["approval"] == {"approval_id": DEPLOY_APPROVAL, "state": "pending"}
+    assert cli.create_recoveries() == {}
+
+
+@pytest.mark.parametrize("teardown", [False, True])
+def test_deployment_submission_preserves_exact_preview_request(teardown):
+    argv = deployment_preview_arguments(teardown)
+    preview_api, _ = run(argv)
+    preview_body = preview_api.sent[-1][2]
+    mutation_argv = list(argv)
+    mutation_argv[1] = "delete" if teardown else "create"
+    api, result = run([*mutation_argv, "--approval-id", DEPLOY_APPROVAL, "--plan-revision", DEPLOY_REVISION, "--yes"])
+    method = "DELETE" if teardown else "POST"
+    body = next(body for sent_method, _, body in api.sent if sent_method == method)
+    assert body == {**preview_body, "approval_id": DEPLOY_APPROVAL, "plan_revision": DEPLOY_REVISION}
+    model = DeleteDeploymentRequest if teardown else CreateDeploymentRequest
+    validated = model.model_validate(body)
+    assert str(validated.approval_id) == DEPLOY_APPROVAL
+    assert validated.plan_revision == DEPLOY_REVISION
+    assert "operation_id" in result["detail"] and "operation_state" in result["detail"]
+
+
+@pytest.mark.parametrize("change", ["revision", "request_id", "deployment_id", "approval_request", "approval_key"])
+def test_changed_or_malformed_deployment_review_cannot_issue_approval(change):
+    path = f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments/preview"
+    review = Recorder()._default("POST", path, {"operation_id": DEPLOY_REQUEST})
+    if change == "approval_key":
+        review["approval_request"]["idempotency_key"] = DEPLOY_APPROVAL
+    else:
+        review[change] = "b" * 64 if change == "revision" else "changed"
+    api = Recorder({("POST", path): review})
+    argv = [*deployment_preview_arguments(), "--request-approval", "--plan-revision", DEPLOY_REVISION, "--yes"]
+    with pytest.raises(cli.CliError) as raised:
+        cli.run(cli.parser().parse_args(argv), api)
+    assert raised.value.code == ("plan_changed" if change == "revision" else "invalid_deployment_preview")
+    assert api.paths() == [("POST", path)]
+
+
+@pytest.mark.parametrize("teardown", [False, True])
+def test_deployment_preview_dry_run_requests_nothing(teardown):
+    api, result = run([*deployment_preview_arguments(teardown), "--request-approval", "--plan-revision", DEPLOY_REVISION, "--dry-run"])
+    assert api.sent == []
+    assert result["detail"]["performed"] == "nothing"
+
+
+def test_deployment_request_id_cannot_be_reused_for_changed_inputs():
+    argv = ["deploy", "create", *DEPLOY_CREATE_FLAGS, "--workspace", WORKSPACE_ID, "--name", "llama-8b", "--model", "model", "--yes"]
+    first, _ = run(argv)
+    assert next(body for method, _, body in first.sent if method == "POST")["operation_id"] == DEPLOY_REQUEST
+    changed = list(argv)
+    changed[changed.index("model")] = "another-model"
+    api = Recorder()
+    with pytest.raises(cli.CliError) as raised:
+        cli.run(cli.parser().parse_args(changed), api)
+    assert raised.value.code == "create_identity_conflict"
+    assert all(method == "GET" for method, _, _ in api.sent)
+    assert len(cli.create_recoveries()) == 1
+
+
+def test_uncertain_teardown_retry_keeps_original_request_body():
+    class LostReply(Recorder):
+        def request(self, method, path, body=None, **kwargs):
+            if method == "DELETE":
+                self.sent.append((method, path, body))
+                raise cli.CliError("reply lost", "gateway_unavailable")
+            return super().request(method, path, body, **kwargs)
+
+    argv = ["deploy", "delete", *DEPLOY_AUTH_FLAGS, "--workspace", WORKSPACE_ID, "--id", DOMAIN_RECORD, "--yes"]
+    first = LostReply()
+    with pytest.raises(cli.CliError) as raised:
+        cli.run(cli.parser().parse_args(argv), first)
+    assert raised.value.code == "teardown_delivery_uncertain"
+    assert DEPLOY_REQUEST in str(raised.value)
+    retry, _ = run(argv)
+    assert retry.sent == first.sent
+
+
+def test_deployment_list_preserves_durable_operation_and_provider_identity():
+    path = f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments"
+    row = {
+        "deployment_id": DOMAIN_RECORD,
+        "status": "Unknown",
+        "operation_id": DEPLOY_REQUEST,
+        "operation_state": "unknown",
+        "provider_uid": "original-provider-uid",
+    }
+    _, result = run(["deploy", "list", "--workspace", WORKSPACE_ID], {("GET", path): {"deployments": [row]}})
+    assert result["detail"]["deployments"] == [row]
+
+
+@pytest.mark.parametrize("flag", ["--operation-id", "--profile-id", "--approval-id", "--plan-revision"])
+def test_deployment_create_requires_explicit_review_and_identity(flag):
+    argv = ["deploy", "create", *DEPLOY_CREATE_FLAGS, "--name", "llama-8b", "--model", "model", "--yes"]
+    offset = argv.index(flag)
+    del argv[offset : offset + 2]
+    with pytest.raises(cli.CliError, match="required"):
+        cli.parser().parse_args(argv)

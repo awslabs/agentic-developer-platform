@@ -37,6 +37,9 @@ class CreateDeploymentRequest(BaseModel):
     """POST /workspaces/{id}/deployments — create a model deployment."""
 
     operation_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    profile_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    approval_id: uuid.UUID | None = None
+    plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     name: str = Field(
         ..., min_length=1, max_length=255, pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$"
     )
@@ -63,8 +66,18 @@ class CreateDeploymentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DeleteDeploymentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: uuid.UUID
+    approval_id: uuid.UUID | None = None
+    plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
 class DeploymentInfo(BaseModel):
     deployment_id: uuid.UUID | None = None
+    operation_id: str | None = None
+    operation_state: str | None = None
+    provider_uid: str | None = None
     """Single deployment info."""
 
     name: str
@@ -85,6 +98,9 @@ class DeploymentCreateResponse(BaseModel):
     replicas: int
     status: str
     deployment_id: uuid.UUID | None = None
+    operation_id: str | None = None
+    operation_state: str | None = None
+    provider_uid: str | None = None
 
 
 class DeploymentListResponse(BaseModel):
@@ -100,7 +116,9 @@ class DeploymentDeleteResponse(BaseModel):
 
     name: str
     namespace: str
-    status: str = "Deleted"
+    status: str = "Deleting"
+    operation_id: str | None = None
+    operation_state: str | None = None
 
 
 # --- Heartbeat schemas ---

@@ -1800,7 +1800,10 @@ def _genuine_network_context(plan, creating, networking):
         address = change["address"]
         detail = change["change"]
         expressions = {}
-        if address == "aws_security_group.cluster":
+        if address in {
+            "aws_security_group.cluster",
+            "aws_security_group.private_sts[0]",
+        }:
             expressions["vpc_id"] = {"references": ["local.vpc_id"]}
             for side in ("before", "after"):
                 if isinstance(detail.get(side), dict):
@@ -1810,6 +1813,32 @@ def _genuine_network_context(plan, creating, networking):
                         detail[side]["vpc_id"] = "vpc-0workspace"
             if networking == "owned" and creating:
                 detail["after_unknown"] = {"vpc_id": True}
+        elif address == "aws_vpc_endpoint.private_sts[0]":
+            expressions = {
+                "vpc_id": {"references": ["local.vpc_id"]},
+                "subnet_ids": {"references": ["local.private_subnet_ids"]},
+                "security_group_ids": {
+                    "references": [
+                        "aws_security_group.private_sts[0].id",
+                        "aws_security_group.private_sts",
+                    ]
+                },
+            }
+        elif address == "aws_vpc_security_group_ingress_rule.private_sts_nodes[0]":
+            expressions = {
+                "security_group_id": {
+                    "references": [
+                        "aws_security_group.private_sts[0].id",
+                        "aws_security_group.private_sts",
+                    ]
+                },
+                "referenced_security_group_id": {
+                    "references": [
+                        "aws_eks_cluster.workspace.vpc_config[0].cluster_security_group_id",
+                        "aws_eks_cluster.workspace",
+                    ]
+                },
+            }
         elif address == "aws_vpc_security_group_egress_rule.cluster_all":
             expressions["security_group_id"] = {
                 "references": [
@@ -1878,6 +1907,9 @@ def _genuine_network_context(plan, creating, networking):
                     vals["vpc_config"] = [{}]
                     if not creating:
                         vals["vpc_config"][0]["security_group_ids"] = ["sg-0cluster"]
+                        vals["vpc_config"][0]["cluster_security_group_id"] = (
+                            "sg-0123456789abcdef0"
+                        )
                     if not creating or networking == "supplied":
                         vals["vpc_config"][0]["subnet_ids"] = subnets
                 else:
@@ -2119,6 +2151,47 @@ def _genuine_plan(*, creating: bool, networking: str = "owned") -> dict:
         return _genuine_network_context(_plan(*changes), creating, networking)
 
     changes += [
+        _change(
+            "aws_security_group.private_sts[0]",
+            actions,
+            {"name": f"{PREFIX}-private-sts", **tags, **ident("sg-0private-sts")},
+        ),
+        _change(
+            "aws_vpc_endpoint.private_sts[0]",
+            actions,
+            {
+                **tags,
+                **ident("vpce-0private-sts"),
+                "vpc_endpoint_type": "Interface",
+                **(
+                    {}
+                    if creating
+                    else {
+                        "vpc_id": "vpc-0workspace",
+                        "subnet_ids": ["subnet-0private0", "subnet-0private1"],
+                        "security_group_ids": ["sg-0private-sts"],
+                    }
+                ),
+            },
+        ),
+        _change(
+            "aws_vpc_security_group_ingress_rule.private_sts_nodes[0]",
+            actions,
+            {
+                **ident("sgr-0private-sts"),
+                "ip_protocol": "tcp",
+                "from_port": 443,
+                "to_port": 443,
+                **(
+                    {}
+                    if creating
+                    else {
+                        "security_group_id": "sg-0private-sts",
+                        "referenced_security_group_id": "sg-0123456789abcdef0",
+                    }
+                ),
+            },
+        ),
         _change("aws_vpc.workspace[0]", actions, {**tags, **ident("vpc-0workspace")}),
         _change(
             "aws_internet_gateway.workspace[0]", actions, {**tags, **ident("igw-0ws")}

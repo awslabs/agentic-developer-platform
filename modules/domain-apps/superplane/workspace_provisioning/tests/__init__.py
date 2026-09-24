@@ -43,3 +43,13 @@ if str(HARNESS_JOBS_DIR) not in sys.path:
 ACCOUNT_FACTORY_DIR = Path(__file__).resolve().parents[2] / "infra" / "account-factory"
 if str(ACCOUNT_FACTORY_DIR) not in sys.path:
     sys.path.insert(0, str(ACCOUNT_FACTORY_DIR))
+
+EXECUTOR_DIR = Path(__file__).resolve().parents[2] / "executor"
+if str(EXECUTOR_DIR) not in sys.path:
+    sys.path.insert(0, str(EXECUTOR_DIR))
+
+ACCOUNT_PROVISIONING_DIR = (
+    Path(__file__).resolve().parents[2] / "infra" / "account-provisioning"
+)
+if str(ACCOUNT_PROVISIONING_DIR) not in sys.path:
+    sys.path.insert(0, str(ACCOUNT_PROVISIONING_DIR))

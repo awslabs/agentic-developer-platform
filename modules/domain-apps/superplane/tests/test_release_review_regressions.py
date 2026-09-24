@@ -132,6 +132,8 @@ def test_buildspec_runs_only_the_selected_domain_build(
             "infra/workspaces",
             "workspace_bootstrap",
             "workspace_provisioning",
+            "executor",
+            "src/superplane-controller/deploy",
         ):
             shutil.copytree(
                 ROOT / RELEASE.parent / package, script.parent.parent / package
@@ -150,7 +152,7 @@ def test_buildspec_runs_only_the_selected_domain_build(
             '#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$BUILD_TRACE"\n'
             'case "$*" in *get-login-password*) echo test-password;; login*) cat >/dev/null;; esac\n'
             'if [ "$1" = build ] && [ "$SOURCE_PATH" = src/superplane-api ]; then\n'
-            "  for package in superplane-auth superplane-contracts harness-jobs account-factory account-provisioning superplane-bootstrap workspace-provisioning; do\n"
+            "  for package in superplane-auth superplane-contracts harness-jobs account-factory account-provisioning superplane-bootstrap workspace-provisioning superplane-executor; do\n"
             '    test -f "modules/domain-apps/superplane/$SOURCE_PATH/vendor/$package/pyproject.toml" || exit 91\n'
             "  done\n"
             "fi\n"
@@ -205,6 +207,7 @@ def test_buildspec_runs_only_the_selected_domain_build(
                 ),
                 ("workspace_bootstrap", "superplane_bootstrap", "workspace.py"),
                 (".", "workspace_provisioning", "preview.py"),
+                ("executor", "superplane_executor", "inventory.py"),
             ):
                 assert (
                     context / "vendor" / package.replace("_", "-") / package / sentinel
@@ -216,6 +219,12 @@ def test_buildspec_runs_only_the_selected_domain_build(
                 / "vendor/superplane-bootstrap/superplane_bootstrap/_data/outputs.tf"
             ).read_bytes() == (
                 ROOT / RELEASE.parent / "infra/workspaces/outputs.tf"
+            ).read_bytes()
+            assert (
+                context
+                / "vendor/workspace-provisioning/workspace_provisioning/_data/crds.yaml"
+            ).read_bytes() == (
+                ROOT / RELEASE.parent / "src/superplane-controller/deploy/crds.yaml"
             ).read_bytes()
             assert (
                 context

@@ -87,11 +87,14 @@ async def test_zero_targets_then_registration_and_revocation(client, monkeypatch
     assert (await client.post(path, headers=headers, json=body)).status_code == 401
 
 
-async def test_management_admin_can_read_but_cannot_trigger_workspace_execution(
+async def test_management_reads_remain_available_without_execution_facade(
     client, monkeypatch, internal_token_header
 ):
+    from app.services import provisioning
+
     org, _, admin = await seed(monkeypatch)
     monkeypatch.setenv("SUPERPLANE_MANAGEMENT_ONLY", "true")
+    monkeypatch.setattr(provisioning, "_facade", None)
     assert (await client.get("/workspaces", headers=admin)).json() == {
         "workspaces": [],
         "total": 0,
@@ -102,7 +105,13 @@ async def test_management_admin_can_read_but_cannot_trigger_workspace_execution(
             "/orgs/current", headers=admin, json={"billing_email": "admin@example.com"}
         )
     ).status_code == 200
-    assert (await client.post("/workspaces", headers=admin, json={})).status_code == 503
+    assert (
+        await client.post(
+            "/workspaces",
+            headers=admin,
+            json={"name": "needs-admission", "isolation_mode": "dedicated"},
+        )
+    ).status_code == 503
     assert (
         await client.post(
             "/internal/vault-sync/trigger", headers=internal_token_header, json={}
@@ -148,3 +157,63 @@ async def test_legacy_full_installation_gate_still_refuses(monkeypatch):
     with pytest.raises(RuntimeError, match="trust adapters"):
         async with main.lifespan(app):
             pass
+
+
+async def test_assignment_metadata_is_bound_to_current_replica(client, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from app.models.controller_execution import ControllerExecution
+
+    org, _, _ = await seed(monkeypatch)
+    headers = grant(monkeypatch, org)
+    instance = str(uuid.uuid4())
+    workspace = uuid.uuid4()
+    async with async_session_test() as db:
+        cluster = Cluster(id=uuid.uuid4(), org_id=org, name="workspace", status="Ready")
+        db.add(cluster)
+        await db.flush()
+        db.add(
+            Workspace(
+                id=workspace,
+                org_id=org,
+                name="target",
+                cluster_id=cluster.id,
+                isolation_mode="dedicated",
+                namespace_name="tenant-a",
+                status="active",
+            )
+        )
+        await db.flush()
+        for suffix, holder in (
+            ("ours", "management:" + instance),
+            ("other", "management:" + str(uuid.uuid4())),
+        ):
+            db.add(
+                ControllerExecution(
+                    operation_id=suffix,
+                    org_id=str(org),
+                    workspace_id=str(workspace),
+                    controller_holder=holder,
+                    assignment={
+                        "operation_id": suffix,
+                        "org_id": str(org),
+                        "workspace_id": str(workspace),
+                        "credential_name": "token-reference-only",
+                    },
+                    expires_at=datetime.now(UTC) + timedelta(seconds=30),
+                )
+            )
+        await db.commit()
+    response = await client.post(
+        "/internal/controller/reconcile",
+        headers=headers,
+        json={"org_id": str(org), "instance_id": instance},
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["governed_provisioning"] is True
+    target = result["targets"][0]
+    assert target["execution_org_id"] == str(org)
+    assert [entry["operation_id"] for entry in target["execution_assignments"]] == [
+        "ours"
+    ]
+    assert "token" not in target["execution_assignments"][0]

@@ -182,6 +182,7 @@ from .execution_plan import PlanProgress, confirmed_plan_progress
 from .execution_rpc import ExecutionGrant
 from .identity import ContractViolation, OperationRefused, ResolvedPrincipal
 from .leases import ExecutionLease, lock_lease
+from .recovery_grant import RecoveryGrant, lock_recovery_grant
 from .store import Connection, OperationStore, stored_outcome
 
 __all__ = [
@@ -609,7 +610,7 @@ class InventoryAuthority:
     """
 
     connect: Callable[[], AbstractAsyncContextManager[Connection]]
-    authenticate: Callable[[str], Awaitable[ExecutionGrant]] = None  # type: ignore[assignment]
+    authenticate: Callable[[str], Awaitable[ExecutionGrant | RecoveryGrant]] = None  # type: ignore[assignment]
     store: OperationStore = None  # type: ignore[assignment]
     query_provider: Callable | None = None
 
@@ -1646,7 +1647,12 @@ class InventoryAuthority:
             return None
         try:
             async with self.connect() as connection, connection.transaction():
-                if not await lock_lease(connection, lease):
+                verified = (
+                    await lock_recovery_grant(connection, grant)
+                    if isinstance(grant, RecoveryGrant)
+                    else await lock_lease(connection, lease)
+                )
+                if not verified:
                     return None
                 record = await self.store.get(
                     connection, grant.principal, lease.operation_id
@@ -1780,7 +1786,9 @@ class InventoryAuthority:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _grant(self, operation_authority: str) -> ExecutionGrant | None:
+    async def _grant(
+        self, operation_authority: str
+    ) -> ExecutionGrant | RecoveryGrant | None:
         """Resolve the opaque authority, or `None`.
 
         A verifier that raises is an unverified authority, not an authorized one --
@@ -1797,7 +1805,7 @@ class InventoryAuthority:
             raise
         except Exception:
             return None
-        if not isinstance(grant, ExecutionGrant):
+        if not isinstance(grant, ExecutionGrant | RecoveryGrant):
             return None
         return grant
 

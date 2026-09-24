@@ -106,6 +106,17 @@ def load_bootstrap_retirement_inventory(*, registration_store, binding):
     """
     _check_binding(binding)
     workspace_id, org_id = binding.principal.workspace_id, binding.principal.org_id
+    return load_bootstrap_retirement_review(
+        registration_store=registration_store, workspace_id=workspace_id, org_id=org_id
+    )
+
+
+def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id):
+    """Read immutable ownership after the API verifies current workspace authority.
+
+    This read grants no execution binding. The running retirement must use the
+    binding-requiring loader above and compare this inventory's approved digest.
+    """
     db = registration_store.store
     with registration_lock(db, workspace_id):
         target = registration_store.read(workspace_id)

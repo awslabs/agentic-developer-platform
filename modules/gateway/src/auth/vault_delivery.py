@@ -316,6 +316,8 @@ async def authorize_delivery(
     granted_permissions: frozenset[str] | set[str],
     now: datetime | None = None,
     expected_authority: tuple | None = None,
+    operation_session=None,
+    vault_org_id: str | None = None,
 ) -> UserCredential:
     """Re-derive delivery authority from the Gateway's records, or refuse.
 
@@ -348,7 +350,7 @@ async def authorize_delivery(
     # Validate the full operation binding against the authenticated principal.
     # A mismatch on operation_id, attempt_id, or job_id refuses here before any
     # vault read — the same ordering as the recipient check above.
-    authority = await _validate_operation_binding(session, binding, authenticated_recipient)
+    authority = await _validate_operation_binding(operation_session if operation_session is not None else session, binding, authenticated_recipient)
     if expected_authority is not None and authority != expected_authority:
         raise DeliveryRefusedError(_REFUSED)
     admitted_id, admitted_service, admitted_label = authority[2]
@@ -367,7 +369,7 @@ async def authorize_delivery(
 
     credential = await resolve_exact_credential(
         session,
-        org_id=binding.org_id,
+        org_id=vault_org_id or binding.org_id,
         credential_id=credential_id,
         service=admitted_service,
         label=admitted_label,
@@ -379,7 +381,7 @@ async def authorize_delivery(
 
     delegation = await _active_delegation(
         session,
-        org_id=binding.org_id,
+        org_id=vault_org_id or binding.org_id,
         credential_id=credential.id,
         workspace_id=binding.workspace_id,
     )
@@ -474,6 +476,8 @@ async def deliver_credential(
     authenticated_recipient: str,
     granted_permissions: frozenset[str] | set[str],
     refresh_executor: Callable[[], Awaitable[frozenset[str] | set[str]]],
+    operation_session=None,
+    vault_org_id: str | None = None,
     preflight_only: bool = False,
     now: datetime | None = None,
 ) -> tuple[UserCredential, DeliveredSecret | None]:
@@ -492,8 +496,11 @@ async def deliver_credential(
     It exercises the same authorization and post-I/O refreshes while reading only
     provider version metadata, returning no secret and recording no delivery.
     """
+    from dataclasses import replace
+
+    vault_binding = replace(binding, org_id=vault_org_id) if vault_org_id else binding
     moment = now or datetime.now(UTC)
-    authority = await _validate_operation_binding(session, binding, authenticated_recipient)
+    authority = await _validate_operation_binding(operation_session if operation_session is not None else session, binding, authenticated_recipient)
     credential = await authorize_delivery(
         session,
         binding=binding,
@@ -504,6 +511,8 @@ async def deliver_credential(
         authenticated_recipient=authenticated_recipient,
         granted_permissions=granted_permissions,
         expected_authority=authority,
+        operation_session=operation_session,
+        vault_org_id=vault_org_id,
         now=moment,
     )
 
@@ -533,7 +542,7 @@ async def deliver_credential(
         logger.warning("Cannot determine current version for credential %s; refusing delivery", credential.id)
         raise DeliveryRefusedError(_REFUSED) from None
 
-    validation = await _validated_version(session, binding, credential.id, version_id)
+    validation = await _validated_version(session, vault_binding, credential.id, version_id)
 
     try:
         # Synchronous boto3 call offloaded to a thread, matching every other
@@ -570,7 +579,7 @@ async def deliver_credential(
         logger.warning("Version rotated during delivery for credential %s; refusing", credential.id)
         raise DeliveryRefusedError(_REVOKED) from None
 
-    if await _validated_version(session, binding, credential.id, version_id) != validation:
+    if await _validated_version(session, vault_binding, credential.id, version_id) != validation:
         raise DeliveryRefusedError(_REVOKED)
     granted_permissions = await refresh_executor()
 
@@ -586,6 +595,8 @@ async def deliver_credential(
         authenticated_recipient=authenticated_recipient,
         granted_permissions=granted_permissions,
         expected_authority=authority,
+        operation_session=operation_session,
+        vault_org_id=vault_org_id,
         now=datetime.now(UTC),
     )
     if (current.id, current.secret_arn, current.service, current.label, current.user_id, current.team_id, current.credential_type) != snapshot:

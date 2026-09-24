@@ -155,6 +155,7 @@ class BootstrapStore:
             "orchestration_correction_receipt",
             "parent_grant_id",
             "parent_grant_epoch",
+            "domain_operation",
         }:
             raise BootstrapRefusedError("invalid dispatch metadata")
         if set(grant_metadata) - {"dispatch_personas", "max_total_dispatches", "work_item_issue"}:

@@ -91,20 +91,18 @@ no frontend check at all, which is worse than no coverage because the check name
 The equivalent CLI surface is `adp superplane onboarding`, covered by
 `modules/gateway/tests/cli/test_superplane_onboarding.py`.
 
-## What is honestly not available yet
+## Route availability and live acceptance
 
-Five endpoints this feature needs are absent from the proxy allowlist at this revision, and
-`agent/issue-5535` (which owns them) does not yet add them:
+All mapped onboarding endpoints are mounted by the composed API, included in the gateway
+allowlist and recorded in the permission inventory. Both client contracts mark these routes
+served. Deployment feature gates, advertised capabilities, authorization and approval checks
+remain independent requirements; a served route does not establish workspace readiness.
 
-| Endpoint | Consequence |
-|----------|-------------|
-| `capabilities` | Capability reporting is unavailable, so create is refused rather than risking an unidempotent submit |
-| `previewWorkspace` | No reviewable plan, so creation cannot proceed past review |
-| `adoptWorkspace` | BYOC adoption is reported unavailable and sends no request |
-| `getOperation`, `recoverOperation` | Operation lookup and recovery are reported unavailable |
+Unavailable-deployment tests explicitly disable the relevant routes in test fixtures and
+continue asserting that no request is sent. Separate contract tests compare the shipped flags
+with the real proxy allowlist in both directions. Production paths use no fixture or demo
+fallbacks.
 
-These are surfaced as an honest `unavailable` state. **There are no fixture or demo fallbacks in
-production paths** — a synthesised success here would be a claim that infrastructure exists when
-it does not. When the routes land, the `served` flags flip; the create path is already
-implemented and tested against that state by
-`TestTheCreatePathOnceTheEndpointsAreServed` in the CLI suite and by the flow tests here.
+Live acceptance still requires the deployed release to complete an authorized onboarding
+journey, preserve its operation identity and report verified workspace readiness. Remote CI
+does not substitute for that demonstration or for browser layout verification.

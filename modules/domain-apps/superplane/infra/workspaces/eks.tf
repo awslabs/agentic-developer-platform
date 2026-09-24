@@ -577,5 +577,8 @@ resource "aws_eks_node_group" "default" {
     aws_iam_role_policy_attachment.node_worker,
     aws_iam_role_policy.node_image_pull,
     aws_eks_addon.vpc_cni,
+    aws_vpc_endpoint.private_sts,
+    aws_vpc_security_group_ingress_rule.private_sts_nodes,
+    data.aws_security_group.supplied_sts,
   ]
 }

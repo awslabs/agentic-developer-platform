@@ -267,6 +267,39 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
     if control_plane_only:
         api_env.append(variable("SUPERPLANE_MANAGEMENT_ONLY", "true"))
     api_pod = deployment("superplane-api", ns, 8000, "/health", api_env)
+    from .controller_profiles import DIRECTORY, FILENAME, PATH, projection
+
+    profiles = projection(env)
+    if profiles is not None:
+        docs.append(
+            obj(
+                "ConfigMap",
+                profiles["name"],
+                ns,
+                immutable=True,
+                data={FILENAME: profiles["content"]},
+            )
+        )
+        api_pod["volumes"].append(
+            {
+                "name": "controller-profiles",
+                "configMap": {
+                    "name": profiles["name"],
+                    "optional": False,
+                    "items": [{"key": FILENAME, "path": FILENAME}],
+                },
+            }
+        )
+        api_pod["containers"][0]["volumeMounts"].append(
+            {
+                "name": "controller-profiles",
+                "mountPath": DIRECTORY,
+                "readOnly": True,
+            }
+        )
+        api_pod["containers"][0]["env"].append(
+            variable("SUPERPLANE_CONTROLLER_PROFILES_FILE", PATH)
+        )
     api_pod["containers"][0]["readinessProbe"]["httpGet"]["path"] = "/readyz"
     api_url = f"http://superplane-api.{ns}.svc.cluster.local:8000"
     deployment(
@@ -290,87 +323,73 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
             },
         ],
     )
-    if control_plane_only:
-        controller = deployment(
-            "superplane-controller",
-            ns,
-            8081,
-            "/readyz",
-            [
-                variable("CONTROL_PLANE_API_URL", api_url),
-                variable("SUPERPLANE_ORG_ID", env["org_id"]),
-                variable("SUPERPLANE_REGISTRY_CREDENTIAL_FILE", "/registry/credential"),
-            ],
-            args=["--management-only"],
-            volumes=[
-                {
-                    "name": "registry",
-                    "secret": {
-                        "secretName": "superplane-observation",
-                        "defaultMode": 288,
-                        "items": [
-                            {"key": "controller-credential", "path": "credential"}
-                        ],
-                    },
-                }
-            ],
-            mounts=[{"name": "registry", "mountPath": "/registry", "readOnly": True}],
-        )
-        controller["containers"][0]["livenessProbe"]["httpGet"]["path"] = "/healthz"
-    else:
-        # The workspace controller requires workspace-specific identity fields that
-        # are deferred in control-plane-only mode.  Its deployment is generated only
-        # when those fields are present and workspace activation is authorized.
-        controller = deployment(
-            "superplane-controller",
-            ns,
-            8081,
-            "/readyz",
-            [
-                variable("KUBECONFIG", "/workspace/kubeconfig"),
-                variable("EKS_CLUSTER_NAME", env["workspace_cluster"]),
-                variable("SUPERPLANE_LEADER_NAMESPACE", env["workspace_namespace"]),
-                variable("CLUSTER_ID", env["cluster_id"]),
-                variable("WORKSPACE_ID", env["workspace_id"]),
-                variable("CONTROL_PLANE_API_URL", api_url),
-                variable(
-                    "SKYPILOT_URL",
-                    f"http://skypilot-api.{sky_ns}.svc.cluster.local:46580",
-                ),
-                secret(
-                    "OBSERVATION_CREDENTIAL",
-                    "superplane-observation",
-                    "controller-credential",
-                ),
-                secret(
-                    "OBSERVATION_SIGNING_KEY",
-                    "superplane-observation",
-                    "controller-signing-key",
-                ),
-                secret("SKYPILOT_SERVICE_TOKEN", "superplane-skypilot-auth", "token"),
-            ],
-            args=["--leader-elect=true"],
-            volumes=[
-                {
-                    "name": "workspace-access",
-                    "secret": {
-                        "secretName": "superplane-workspace-access",
-                        "defaultMode": 288,
-                    },
-                }
-            ],
-            mounts=[
-                {
-                    "name": "workspace-access",
-                    "mountPath": "/workspace",
-                    "readOnly": True,
-                }
-            ],
-        )
-        # No management-cluster RBAC, host access, node joins or GPU requests.
-        controller["containers"][0]["env"].append(
-            variable("SUPERPLANE_INSTALLATION_REQUIRED", "true")
-        )
+    # The same manager serves empty and registered installations. Credential
+    # volumes are optional so registration/rotation needs no second installation.
+    controller = deployment(
+        "superplane-controller",
+        ns,
+        8081,
+        "/readyz",
+        [
+            variable("CONTROL_PLANE_API_URL", api_url),
+            variable("SUPERPLANE_ORG_ID", env["org_id"]),
+            variable("SUPERPLANE_REGISTRY_CREDENTIAL_FILE", "/registry/credential"),
+            variable("SUPERPLANE_WORKSPACE_CREDENTIALS_DIR", "/workspace"),
+            variable("SUPERPLANE_WORKSPACE_OBSERVATIONS_DIR", "/observations"),
+            variable(
+                "SUPERPLANE_MANAGEMENT_API_SERVER", env.get("management_api_server", "")
+            ),
+        ],
+        args=["--management-only"],
+        volumes=[
+            {
+                "name": "registry",
+                "secret": {
+                    "secretName": "superplane-observation",
+                    "defaultMode": 288,
+                    "items": [{"key": "controller-credential", "path": "credential"}],
+                },
+            },
+            {
+                "name": "workspace-access",
+                "secret": {
+                    "secretName": "superplane-workspace-access",
+                    "defaultMode": 288,
+                    "optional": True,
+                },
+            },
+            {
+                "name": "workspace-observations",
+                "secret": {
+                    "secretName": "superplane-workspace-observations",
+                    "defaultMode": 288,
+                    "optional": True,
+                },
+            },
+        ],
+        mounts=[
+            {"name": "registry", "mountPath": "/registry", "readOnly": True},
+            {"name": "workspace-access", "mountPath": "/workspace", "readOnly": True},
+            {
+                "name": "workspace-observations",
+                "mountPath": "/observations",
+                "readOnly": True,
+            },
+        ],
+    )
+    controller["containers"][0]["livenessProbe"]["httpGet"]["path"] = "/healthz"
+    for doc in docs:
+        if (
+            doc["kind"] == "Deployment"
+            and doc["metadata"]["name"] == "superplane-controller"
+        ):
+            doc["spec"]["template"]["metadata"]["annotations"][
+                "eks.amazonaws.com/skip-containers"
+            ] = "superplane-controller"
+    if env.get("execution"):
+        from .execution import attach_executor
+
+        attach_executor(controller, docs, env, lock)
 
     # Retain the tested pinned SkyPilot entrypoint, writable HOME/config mounts,
     # durable PostgreSQL setting and resource envelope from U3.
@@ -398,6 +417,9 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                 config.pop("db", None)
                 doc["data"]["config.yaml"] = "{}\n"
                 doc["data"]["desired-config.yaml"] = yaml.safe_dump(config)
+                doc["data"]["sitecustomize.py"] = (
+                    MODULE / "installation/skypilot_runtime.py"
+                ).read_text()
                 doc["data"]["bootstrap.py"] = (
                     MODULE / "installation/skypilot_bootstrap.py"
                 ).read_text()
@@ -406,6 +428,9 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                 pod = doc["spec"]["template"]
                 pod["metadata"].setdefault("labels", {}).update(labels)
                 pod["metadata"]["annotations"] = runtime_annotations(release)
+                pod["metadata"]["annotations"]["eks.amazonaws.com/skip-containers"] = (
+                    "authenticated-transport"
+                )
                 pod["spec"]["automountServiceAccountToken"] = False
                 backend = pod["spec"]["containers"][0]
                 backend["command"] = ["python3", "/skypilot-bootstrap/bootstrap.py"]
@@ -418,6 +443,11 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                         # The pinned image has no passwd entry for non-root UID
                         # 1000. SkyPilot uses getpass.getuser() during import.
                         {"name": "USER", "value": "skypilot"},
+                        {"name": "PYTHONPATH", "value": "/skypilot-bootstrap"},
+                        {"name": "SUPERPLANE_SKYPILOT_GOVERNED", "value": "true"},
+                        {"name": "AWS_CONFIG_FILE", "value": "/dev/null"},
+                        {"name": "AWS_SHARED_CREDENTIALS_FILE", "value": "/dev/null"},
+                        {"name": "AWS_EC2_METADATA_DISABLED", "value": "true"},
                         {"name": "IS_SKYPILOT_SERVER", "value": "true"},
                         {"name": "PGSSLMODE", "value": "verify-full"},
                         {"name": "PGSSLROOTCERT", "value": "/database-ca/ca.pem"},
@@ -446,6 +476,12 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                         },
                     }
                 )
+                pod["spec"]["volumes"].append(
+                    {"name": "provider-identity", "emptyDir": {"sizeLimit": "1Mi"}}
+                )
+                backend["volumeMounts"].append(
+                    {"name": "provider-identity", "mountPath": "/provider-identity"}
+                )
                 backend["ports"] = [{"name": "backend", "containerPort": 46580}]
                 for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
                     backend[probe].pop("httpGet", None)
@@ -461,6 +497,13 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                     {
                         "name": "authenticated-transport",
                         "image": image(lock, "superplane-api"),
+                        "volumeMounts": [
+                            {
+                                "name": "provider-identity",
+                                "mountPath": "/provider-identity",
+                                "readOnly": True,
+                            }
+                        ],
                         "command": ["python", "-m", "app.skypilot_proxy"],
                         "ports": [{"name": "api", "containerPort": 46581}],
                         "env": [
@@ -585,7 +628,8 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
             doc["spec"]["selector"] = {**doc["spec"]["selector"], LABEL: owner}
         if (
             doc["kind"] == "ServiceAccount"
-            and doc["metadata"]["name"] != "superplane-platform-monitor"
+            and doc["metadata"]["name"]
+            not in {"superplane-platform-monitor", "superplane-controller"}
             and not control_plane_only
         ):
             role = (
@@ -596,6 +640,15 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
             doc["metadata"]["annotations"] = {
                 "eks.amazonaws.com/role-arn": f"arn:aws:iam::{env['account_id']}:role/adp-{env['environment']}-superplane-{role}"
             }
+    if env.get("execution"):
+        for doc in docs:
+            if (
+                doc["kind"] == "ServiceAccount"
+                and doc["metadata"]["name"] == "skypilot-api"
+            ):
+                doc["metadata"]["annotations"] = {
+                    "eks.amazonaws.com/role-arn": env["execution"]["provider_role_arn"]
+                }
     for deployment_doc in [d for d in docs if d["kind"] == "Deployment"]:
         name = deployment_doc["metadata"]["name"]
         docs.append(

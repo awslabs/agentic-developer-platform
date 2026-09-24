@@ -25,14 +25,11 @@
  *   2. an entry in the gateway proxy allowlist,
  *   3. an entry in the domain permission inventory.
  *
- * `served: true` below asserts only that the method/path pair is in the gateway
- * allowlist at the baseline revision this was written against. Discovery and
- * provider-connection management are served. **Capability/readiness reporting,
- * plan preview and durable operation status are not** — those are #5535's
- * composition work, and until they land this client reports them as
- * `unavailable` with a reason instead of fabricating an answer. That is the
- * honest state, and it is what keeps a green control-plane health check from
- * being rendered as workspace execution readiness.
+ * All mapped routes below are mounted, allowlisted and inventoried in the
+ * composed API. `served: true` records route availability; it does not advertise
+ * a deployment capability, authorize a mutation or establish execution
+ * readiness. The clients still require the server's capability, approval and
+ * readiness responses before presenting those claims.
  *
  * Changing `served` here is not how an endpoint becomes available. The allowlist
  * and the permission inventory are #5535-owned; this file follows them.
@@ -67,8 +64,8 @@ export interface EndpointDeclaration {
    */
   readonly served: boolean;
   /**
-   * Present when `served` is false: the product capability this endpoint
-   * provides, phrased for the person who hits the wall.
+   * Required when `served` is false and retained after activation: the product
+   * capability this endpoint provides, phrased for the person who hits the wall.
    *
    * This is deliberately NOT a story or ticket number. A diagnostic reading
    * "Tracked in #5535" tells the operator nothing they can act on and nothing
@@ -118,29 +115,24 @@ export const ENDPOINTS = {
   /** Vault credential references. Values are entered through ADP's vault, not here. */
   listCredentials: { method: 'GET', path: '/vault/credentials', served: true },
 
-  listLifecycleProposals: { method: 'GET', path: '/workspaces/{workspace_id}/lifecycle-proposals', served: false, capability: 'listing the next workspace lifecycle plan' },
-  previewLifecycleProposal: { method: 'POST', path: '/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview', served: false, capability: 'reviewing the next recorded workspace plan' },
-  continueLifecycleProposal: { method: 'POST', path: '/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue', served: false, capability: 'continuing an approved workspace lifecycle plan' },
+  listLifecycleProposals: { method: 'GET', path: '/workspaces/{workspace_id}/lifecycle-proposals', served: true, capability: 'listing the next workspace lifecycle plan' },
+  previewLifecycleProposal: { method: 'POST', path: '/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview', served: true, capability: 'reviewing the next recorded workspace plan' },
+  continueLifecycleProposal: { method: 'POST', path: '/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue', served: true, capability: 'continuing an approved workspace lifecycle plan' },
 
-  requestApproval: { method: 'POST', path: '/operation-approvals', served: false, capability: 'requesting approval for a reviewed operation' },
-  getApproval: { method: 'GET', path: '/operation-approvals/{approval_id}', served: false, capability: 'reading a requested operation approval' },
-  decideApproval: { method: 'POST', path: '/operation-approvals/{approval_id}/decision', served: false, capability: 'deciding an operation approval' },
-
-  // ---- Not served at the baseline revision. Backend composition work. ----
+  requestApproval: { method: 'POST', path: '/operation-approvals', served: true, capability: 'requesting approval for a reviewed operation' },
+  getApproval: { method: 'GET', path: '/operation-approvals/{approval_id}', served: true, capability: 'reading a requested operation approval' },
+  decideApproval: { method: 'POST', path: '/operation-approvals/{approval_id}/decision', served: true, capability: 'deciding an operation approval' },
 
   /**
    * Adopt a cluster the user already operates (bring-your-own-cluster).
    *
-   * The BYOC *implementation* landed with #5533, but as a library and CLI
-   * surface under `workspace_bootstrap/`, not as an HTTP route. There is
-   * therefore nothing for a browser or an `adp` invocation to call: adopt is
-   * offered in the UI only when the server advertises the mode, and until then
-   * it is reported as not-deployed rather than rendered as a broken button.
+   * The composed route is available. Adoption is offered only when the server
+   * advertises the mode and admission still enforces its policy and approvals.
    */
   adoptWorkspace: {
     method: 'POST',
     path: '/workspaces/adopt',
-    served: false,
+    served: true,
     capability: 'adopting an existing cluster you already operate',
   },
 
@@ -162,14 +154,14 @@ export const ENDPOINTS = {
   previewWorkspace: {
     method: 'POST',
     path: '/workspaces/preview',
-    served: false,
+    served: true,
     capability: 'reviewing the exact plan, capacity and cost before anything is created',
   },
   /** Durable operation state, addressed by operation ID. */
   getOperation: {
     method: 'GET',
     path: '/operations/{operation_id}',
-    served: false,
+    served: true,
     capability: 'tracking a submitted operation through to completion',
   },
   /**
@@ -180,7 +172,7 @@ export const ENDPOINTS = {
   recoverOperation: {
     method: 'GET',
     path: '/operations/by-idempotency/{idempotency_key}',
-    served: false,
+    served: true,
     capability: 'recovering the result of a submission whose reply was lost',
   },
 } as const satisfies Record<string, EndpointDeclaration>;

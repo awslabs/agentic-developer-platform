@@ -20,6 +20,7 @@ from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStateError
 from src.agentauth.grants import (
     AUTHORITY_GATE_DECISION,
+    AUTHORITY_PAID_DOMAIN_OPERATION,
     AUTHORITY_REPLAN_REQUEST,
     AUTHORITY_SERVICE_POLICY,
     RECOGNIZED_AUTHORITY_KINDS,
@@ -291,7 +292,7 @@ class AgentModelIdentityMiddleware:
             # budget binding, and `flow_id` dropped from its run binding. That last
             # part is the quiet one: spend still happened, it just was not attributed
             # to the flow that caused it, so it could not be seen or capped.
-            if grant.authority.kind not in RECOGNIZED_AUTHORITY_KINDS:
+            if grant.authority.kind not in RECOGNIZED_AUTHORITY_KINDS or grant.authority.kind == AUTHORITY_PAID_DOMAIN_OPERATION:
                 raise BootstrapRefusedError("unsupported authority source")
             root = grant.authority.human_id
             if grant.authority.kind != AUTHORITY_SERVICE_POLICY:

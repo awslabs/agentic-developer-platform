@@ -22,6 +22,18 @@
 # =============================================================================
 
 mock_provider "aws" {
+  mock_data "aws_vpc_security_group_rules" {
+    defaults = { ids = ["sgr-0123456789abcdef0"] }
+  }
+
+  mock_data "aws_vpc_endpoint" {
+    defaults = {
+      id                  = "vpce-0123456789abcdef0"
+      private_dns_enabled = true
+      security_group_ids  = ["sg-0123456789abcdef0"]
+    }
+  }
+
   mock_data "aws_vpc" {
     defaults = { enable_dns_support = true, enable_dns_hostnames = true }
   }

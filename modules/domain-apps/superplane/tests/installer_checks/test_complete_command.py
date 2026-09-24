@@ -30,6 +30,18 @@ class ExternalTools:
         # workspace_id may be absent in control-plane-only mode; use a placeholder
         # so the grants array is still structurally valid for observation checks.
         workspace = environment.get("workspace_id")
+        profiles = environment.get("controller_profiles")
+        self.workspace_ca = (
+            next(
+                iter(
+                    profiles["tenants"][environment["org_id"]]["workspaces"][
+                        workspace
+                    ].values()
+                )
+            )["certificate_authority"]
+            if profiles and workspace
+            else "CA"
+        )
         grants = [
             {
                 "submitter_id": component,
@@ -38,11 +50,7 @@ class ExternalTools:
                 "workspaces": [workspace] if workspace else [],
                 "lease_scopes": ["budget_monitor/global"]
                 if component == "monitor"
-                else (
-                    [f"controller_management/{environment['org_id']}"]
-                    if environment.get("control_plane_only")
-                    else []
-                ),
+                else [f"controller_management/{environment['org_id']}"],
             }
             for component in ("monitor", "controller")
         ]
@@ -61,7 +69,7 @@ class ExternalTools:
                     "name": "workspace",
                     "cluster": {
                         "server": "https://workspace.example.test",
-                        "certificate-authority-data": "CA",
+                        "certificate-authority-data": self.workspace_ca,
                     },
                 }
             ],
@@ -106,7 +114,7 @@ class ExternalTools:
                 "endpoint": "https://workspace.example.test"
                 if name == env.get("workspace_cluster")
                 else "https://management.example.test",
-                "certificateAuthority": {"data": "CA"},
+                "certificateAuthority": {"data": self.workspace_ca},
             }
             if self.auto_mode and name == env["cluster"]:
                 cluster_detail["computeConfig"] = {"enabled": True}
@@ -146,6 +154,15 @@ class ExternalTools:
             ]
         elif "management-capabilities" in args:
             result = {"controller_management": True, "governed_provisioning": False}
+        elif any("SUPERPLANE_INSTALLATION_PROFILES" in value for value in args):
+            from installation.controller_profiles import projection
+
+            result = {
+                "sha256": projection(env)["sha256"],
+                "profiles": 1,
+                "validated": True,
+                "workload_ready": False,
+            }
         elif "capabilities" in args:
             result = {
                 "capabilities": {
@@ -160,7 +177,8 @@ class ExternalTools:
             }
         elif "--installation-preflight" in args:
             result = {
-                "governed_provisioning": not env.get("control_plane_only"),
+                "governed_provisioning": False,
+                "governed_execution_supported": True,
                 "controller_management": True,
             }
         elif "get-secret-value" in args:
@@ -198,6 +216,19 @@ class ExternalTools:
                         ),
                     }
                 }
+        elif any(str(arg).endswith("/selfsubjectrulesreview.json") for arg in args):
+            result = {
+                "status": {
+                    "incomplete": False,
+                    "resourceRules": [
+                        {
+                            "verbs": ["get", "list", "watch"],
+                            "apiGroups": [""],
+                            "resources": ["nodes", "namespaces", "pods"],
+                        }
+                    ],
+                }
+            }
         elif "can-i" in args:
             text = "yes"
         elif "database" == args[-1]:
@@ -538,7 +569,9 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     # assertion that pins WHICH chain a receipt claims to have migrated, and deriving it
     # from the same lock the receipt is built from would pass for any value at all.
     # Advanced to 017 by w6-10 (#5533).
-    assert installer.receipt["migration"]["schema"] == "029_add_event_principal_outcome"
+    assert (
+        installer.receipt["migration"]["schema"] == "031_controller_deployment_registry"
+    )
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}
@@ -984,6 +1017,8 @@ def _cp_only_environment(environment):
     ):
         env.pop(key, None)
     env.pop("controller_ownership", None)
+    env.pop("execution", None)
+    env.pop("controller_profiles", None)
     env["secrets"] = {
         k: v for k, v in env["secrets"].items() if k != "workspace_access"
     }

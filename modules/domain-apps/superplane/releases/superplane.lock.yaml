@@ -80,6 +80,7 @@ maintained_source:
     superplane-api: src/superplane-api
     superplane-controller: src/superplane-controller
     superplane-platform-monitor: src/superplane-platform-monitor
+    superplane-executor: executor
 
 # ── How the pinned source is obtained ────────────────────────────────────────────────
 #
@@ -149,6 +150,14 @@ image_sources:
 # their own stories own (U13 migrations, U14 auth). Promotion to `images` remains a
 # reviewed commit, never an automated push.
 pending_images:
+  superplane-executor:
+    source_path: executor
+    ecr_repository: adp-superplane-executor
+    build_workflow: .github/workflows/superplane-executor-build.yml
+    blocked_by: reviewed Python base and remote image build required
+    origin:
+      repository: https://github.com/aws-e/adp
+      revision: 22f3e3fb540a4e4d37f3a4c9adfc6ad663a3ca50
   superplane-api:
     source_path: src/superplane-api
     ecr_repository: adp-superplane-api
@@ -278,12 +287,12 @@ schema:
     # CLI-24 adds three credential/operation revisions on the 016 branch. The
     # explicit 020 merge joins both histories without rewriting either parent.
     # 021 then adds durable deployment target and provider UID provenance.
-    version_files: 32
+    version_files: 45
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 029_add_event_principal_outcome
+    head: 031_controller_deployment_registry
     base: 001_initial
   compatible_with: null
   blocked_by:

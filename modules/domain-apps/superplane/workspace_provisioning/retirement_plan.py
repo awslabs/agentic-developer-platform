@@ -90,6 +90,7 @@ class RetirementPlan:
     preserved: tuple[str, ...]
     components_authorized: bool = True
     owned_namespace_remaining: bool = False
+    cluster_rbac_remaining: bool = False
 
     @property
     def preserves_cluster(self) -> bool:
@@ -109,6 +110,7 @@ class RetirementPlan:
             self.components_authorized
             and self.preserves_cluster
             and not self.owned_namespace_remaining
+            and not self.cluster_rbac_remaining
         )
 
     def deletion_steps(self) -> tuple[ExecutionStep, ...]:
@@ -173,10 +175,22 @@ def _component_steps(
             "complete)"
         )
         return steps, preserved
-    for index, component in enumerate(inventory.components):
+    priority = {"Deployment": 0, "RoleBinding": 1, "Role": 2, "ServiceAccount": 3}
+    for index, component in sorted(
+        enumerate(inventory.components),
+        key=lambda item: (priority.get(item[1].desired.get("kind"), 4), item[0]),
+    ):
         body = component.desired
         kind = body.get("kind", "")
         name = body.get("metadata", {}).get("name", "")
+        if kind in {"ClusterRole", "ClusterRoleBinding"}:
+            preserved.append(
+                f"{kind}/{name} (owned cluster-scoped controller RBAC; independent "
+                "exact-name cleanup authority is required; teardown remains incomplete)"
+                if component.owned
+                else f"{kind}/{name} (adopted cluster-scoped controller RBAC; not created by this bootstrap)"
+            )
+            continue
         if not component.owned:
             preserved.append(
                 f"{kind}/{name} (adopted; matched an object this platform did not "
@@ -222,13 +236,14 @@ def _grant_steps(
             body = spec.get("body", {})
             metadata = body.get("metadata", {})
             if body.get("kind") in {"ClusterRole", "ClusterRoleBinding"}:
-                # Cluster-scoped and shared between every workspace on this
-                # cluster. `retire.py` states the same rule for CRDs: idempotent to
-                # leave, unbounded to remove.
+                # Cluster scope does not imply shared ownership. In particular,
+                # supervisor-cluster grants are unique to a bootstrap generation.
+                # Namespaced cleanup authority cannot remove them, and preserving
+                # them must not make an otherwise incomplete teardown look done.
                 preserved.append(
                     f"{body.get('kind')}/{metadata.get('name', '')} (cluster-scoped "
-                    "and shared between every workspace on this cluster; removing it "
-                    "would revoke other workspaces' access)"
+                    "retained grant; exact ownership and independently provisioned "
+                    "revocation authority are required; teardown remains incomplete)"
                 )
                 continue
             identifier = identity.get("uid", "")
@@ -290,7 +305,9 @@ def _prerequisite_steps(
     return steps, preserved
 
 
-def compose_retirement_plan(inventory: RetirementInventory) -> RetirementPlan:
+def compose_retirement_plan(
+    inventory: RetirementInventory, *, managed_destroy=None
+) -> RetirementPlan:
     """Order the durable ownership record into an approvable deletion plan.
 
     The sequence is fixed here rather than chosen at execution time: block new
@@ -369,6 +386,25 @@ def compose_retirement_plan(inventory: RetirementInventory) -> RetirementPlan:
     steps.extend(prerequisite_steps)
     preserved.extend(prerequisite_preserved)
 
+    if managed_destroy is not None:
+        from .retirement_terraform import ReviewedDestroy
+
+        if (
+            not isinstance(managed_destroy, ReviewedDestroy)
+            or inventory.preserve_cluster
+        ):
+            raise BootstrapRefused(
+                "only managed infrastructure accepts a reviewed destroy artifact"
+            )
+        if (
+            managed_destroy.target.get("workspace_id"),
+            managed_destroy.target.get("org_id"),
+        ) != (workspace, org):
+            raise BootstrapRefused(
+                "reviewed destroy artifact describes another workspace"
+            )
+        steps.append(managed_destroy.step())
+
     # The cluster and its network. Never deleted by this plan in either mode: an
     # ADP-created cluster's lifecycle belongs to its Terraform state, and a supplied
     # one belongs to its owner. The reason differs, and for a supplied cluster the
@@ -379,7 +415,7 @@ def compose_retirement_plan(inventory: RetirementInventory) -> RetirementPlan:
             "retirement removes the workspace from it and never its cluster or "
             "network)"
         )
-    else:
+    elif managed_destroy is None:
         preserved.append(
             f"Cluster/{inventory.cluster_arn} (ADP-created; its lifecycle belongs "
             "to the workspace Terraform state, not to this deletion plan)"
@@ -416,6 +452,16 @@ def compose_retirement_plan(inventory: RetirementInventory) -> RetirementPlan:
         preserved=tuple(preserved),
         components_authorized=inventory.components_complete,
         owned_namespace_remaining=inventory.remove_namespace,
+        cluster_rbac_remaining=any(
+            grant.spec.get("body", {}).get("kind")
+            in {"ClusterRole", "ClusterRoleBinding"}
+            for grant in inventory.grants
+        )
+        or any(
+            component.owned
+            and component.desired.get("kind") in {"ClusterRole", "ClusterRoleBinding"}
+            for component in inventory.components
+        ),
     )
     encoded = plan.encode()
     if len(encoded.encode()) > MAX_EXECUTION_PLAN_BYTES:

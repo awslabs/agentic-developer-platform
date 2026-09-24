@@ -121,6 +121,11 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/internal/installation"),
         ("POST", "/internal/controller/reconcile"),
         ("GET", "/api/v1/workspaces/{workspace_id}/bootstrap-observation"),
+        ("POST", "/internal/controller/recovery/inventory"),
+        ("POST", "/internal/controller/recovery/observe"),
+        ("POST", "/internal/controller/recovery/lifecycle"),
+        ("POST", "/internal/controller/recovery/account-creation"),
+        ("POST", "/internal/controller/recovery/settlement"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
         ("POST", "/internal/workspaces/{workspace_id}/reconcile"),
@@ -213,6 +218,14 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.SPEND,
     ),
+    ("POST", "/workspaces/{workspace_id}/deployments/preview"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
+    ("POST", "/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview"): (
+        Scope.WORKSPACE,
+        Permission.SPEND,
+    ),
     # -- Quota ---------------------------------------------------------------
     ("GET", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.READ),
     ("PATCH", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.SPEND),
@@ -221,6 +234,44 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/workspaces/{workspace_id}/budget"): (Scope.WORKSPACE, Permission.READ),
     # -- Events: org collection, filtered to the caller's workspaces ---------
     ("GET", "/events"): (Scope.ORGANIZATION, Permission.READ),
+    ("POST", "/workspaces/preview"): (Scope.ORGANIZATION, Permission.PROVISION),
+    ("POST", "/workspaces/adopt"): (Scope.ORGANIZATION, Permission.PROVISION),
+    ("POST", "/workspaces/{workspace_id}/retirement/preview"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/retirement"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("GET", "/workspaces/{workspace_id}/lifecycle-proposals"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("POST", "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue"): (
+        Scope.WORKSPACE,
+        Permission.PROVISION,
+    ),
+    ("GET", "/operations/{operation_id}"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/operations/by-idempotency/{idempotency_key}"): (
+        Scope.ORGANIZATION,
+        Permission.READ,
+    ),
+    # The approval service additionally checks the requester's exact workspace
+    # grant and the selected distinct human approver on every read/decision.
+    ("POST", "/operation-approvals"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/operation-approvals/{approval_id}"): (
+        Scope.ORGANIZATION,
+        Permission.READ,
+    ),
+    ("POST", "/operation-approvals/{approval_id}/decision"): (
+        Scope.ORGANIZATION,
+        Permission.READ,
+    ),
     ("GET", "/events/{event_id}"): (Scope.ORGANIZATION, Permission.READ),
     # -- Organization records ------------------------------------------------
     ("GET", "/orgs/current"): (Scope.ORGANIZATION, Permission.READ),
