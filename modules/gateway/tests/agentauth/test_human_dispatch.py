@@ -328,14 +328,14 @@ def test_worker_or_service_claim_cannot_create_human_event(user_kind, sender_typ
         webhook.VerifiedHumanEvent.from_verified_webhook(
             body=b"body",
             event_type="issue_comment",
-            resolved=SimpleNamespace(user_kind=user_kind, user_id="claimed-human"),
+            resolved=resolved_human(user_kind=user_kind, user_id="claimed-human"),
             sender={"type": sender_type},
             tenant_id="tenant",
             repo="org/repo",
         )
 
 
-@pytest.mark.parametrize("method", [None, "", "self_asserted", "magic_link", "unknown_method"])
+@pytest.mark.parametrize("method", [None, "", "self_asserted", "channel_placement", "magic_link", "unknown_method"])
 def test_unproven_human_resolution_still_cannot_authorize_dispatch(store, method):
     with pytest.raises(webhook.AuthorityProvisionError, match="proven identity link"):
         webhook.VerifiedHumanEvent.from_verified_webhook(
