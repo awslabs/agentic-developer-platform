@@ -136,6 +136,7 @@ from dataclasses import dataclass
 from botocore.exceptions import BotoCoreError, ClientError
 
 from src.activity.liveness import ABORTED_STATUS, OBSERVED_TERMINAL_STATUSES
+from src.agentauth.registration import CONTROL_ATTRIBUTES
 
 logger = logging.getLogger("bedrockgateway.agentauth.abort_reconciliation")
 
@@ -265,7 +266,8 @@ def repair_aborted_terminal_status(
             Key={"event_id": {"S": invocation_id}, "arrived_at": {"S": arrived_at}},
             UpdateExpression=(
                 "SET #st = :status, stop_reason = :stop_reason, "
-                "abort_reconciled_by = :reconciled_by, abort_requested_at = :requested_at"
+                "abort_reconciled_by = :reconciled_by, abort_requested_at = :requested_at "
+                "REMOVE " + ", ".join(CONTROL_ATTRIBUTES)
             ),
             ConditionExpression=condition,
             ExpressionAttributeNames=names,
