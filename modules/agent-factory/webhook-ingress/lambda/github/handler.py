@@ -1287,6 +1287,15 @@ def handler(event: dict, context) -> dict:
 
         return handle_agent_trigger(event, context)
 
+    # Issue #5795: dispatch POST /v1/tasks to the Task API handler. The import
+    # is local to this branch so a task-only import or initialization failure
+    # cannot affect the GitHub, EventBridge or agent-trigger paths above
+    # (T2-AC04); the route is authenticated by the gateway, not by HMAC.
+    if resource == "/v1/tasks":
+        from task_api.handler import handle_task_submit
+
+        return handle_task_submit(event, context)
+
     start_time = time.time()
     print("DBG handler:start")
 
