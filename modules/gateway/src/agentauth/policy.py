@@ -40,9 +40,14 @@ policy.
 
 ## What this module does not do
 
-It does not implement pause/resume/steer/abort behaviour. An authorized request
-for an unimplemented verb returns :data:`UNSUPPORTED_STATUS` (501) *after*
-authorization, preserving the existing ladder. It does not enable any flag.
+It does not implement control behaviour — pause/resume live in
+``activity/control_service.py`` and abort's acceptance in
+``agentauth/revalidation.py``. This module only decides whether a caller may ask.
+An authorized request for a verb this deployment does not implement (STEER)
+returns :data:`UNSUPPORTED_STATUS` (501) *after* authorization, preserving the
+existing ladder. It does not enable any flag: ``FEATURE_AGENT_CONTROL_ENABLED``
+and ``AGENT_AUTHORITY_ENABLED`` still gate the route regardless of what
+:data:`SUPPORTED_AGENT_ACTIONS` contains.
 """
 
 from __future__ import annotations
@@ -72,7 +77,20 @@ logger = logging.getLogger("bedrockgateway.agentauth.policy")
 
 # Live controls with a signed forwarding and pre-delivery revalidation path.
 # This set stays in lockstep with the human service and worker runtime (#5222).
-SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME})
+#
+# ABORT joins the set with #3963 (S4), which supplied the three things the verb
+# was missing and that PAUSE/RESUME already had: a worker-side implementation
+# (``IMPLEMENTED_CONTROL_VERBS`` in control-runtime.ts), a revalidation path
+# that records durable abort intent *before* minting an acceptance receipt
+# (``revalidation._accept_abort``), and a terminal outcome the status vocabulary
+# can express (``aborted``, #3964 S5). Enabling it earlier would have advertised
+# a verb with no transport behind it; the human service's ``SUPPORTED_ACTIONS``
+# already carries ``abort`` for the same reason, so leaving it out here is now
+# the drift rather than the safe default.
+#
+# STEER stays out. It has no revalidation branch and no worker verb, so an
+# authorized STEER still lands on the 501 in ``require_supported``.
+SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT})
 
 # Status codes this policy produces. Named so the adapters cannot drift.
 REFUSED_STATUS = 404
@@ -460,8 +478,8 @@ class AgentAuthorizationService:
         matches the existing human path: an unauthorized caller must not learn
         which verbs this deployment implements, and an authorized caller asking
         for a verb that does not exist deserves the honest answer rather than a
-        silent success. This story implements no live-control verb, so every
-        control request lands here (AC's 501 requirement).
+        silent success. STEER is the verb that still lands here; MONITOR,
+        PAUSE, RESUME and ABORT pass.
         """
         if action not in SUPPORTED_AGENT_ACTIONS:
             raise PolicyError(UNSUPPORTED_STATUS, f"{action.value} is not implemented in this deployment")

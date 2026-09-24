@@ -70,6 +70,9 @@ function harness(options: { settleTimeoutMs?: number; defaultTimeoutMs?: number 
     currentAttempt: () => unitAttempt,
     activeWorkCount: () => gate.activeToolCount(),
     subscribe: (listener) => gate.subscribe(event => listener({ ...event, attemptId: unitAttempt })),
+    // This suite covers a live run; the cancelled case is in
+    // `agent-worker-abort.test.ts` with a real adapter (#3963).
+    isCancelled: () => false,
   }, store });
 
   let seq = 0;

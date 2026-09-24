@@ -2257,8 +2257,14 @@ async function main(): Promise<void> {
       // wire cannot be enabled without the transport behind it — there is only one
       // place left to say yes. Issue #3961 is what that buys: `pause`/`resume` are
       // now in the ADP set and this adapter carries a barrier, so the intersection
-      // yields them and the listener answers 202 instead of 501. `steer`/`abort`
-      // stay out on both sides.
+      // yields them and the listener answers 202 instead of 501. `abort` joined
+      // with #3963 on a different mechanism — cancellation rather than the
+      // barrier — which is why the adapter keeps claiming it even when the barrier
+      // is unusable. `steer` stays out on both sides.
+      //
+      // This is also what makes `abort` require a signed envelope: the listener's
+      // `requiresEnvelope` derives from this same set, so enabling the verb and
+      // demanding proof for it are one decision and cannot be separated.
       supportedActions: listenerActionsFor(controlAdapter),
       capabilityProvider: () => controlAdapter.capabilities(),
       revalidate: revalidateQueuedCommand,
@@ -2279,12 +2285,14 @@ async function main(): Promise<void> {
       store: controlStore,
       // Issue #3961: the seam that makes an accepted command actually happen.
       // Without it every 202 was a promise nothing kept.
-      executor: (action, commandId) =>
-        applyControlCommand({ action, commandId, adapter: controlAdapter, store: controlStore, log }),
+      executor: (action, commandId, reason) =>
+        applyControlCommand({ action, commandId, reason, adapter: controlAdapter, store: controlStore, log }),
       // Issue #5028: this run's own identity and the gateway's public verification
       // keys. Both are placed here by the entrypoint. An absent key map means
-      // live-control commands are refused — the read paths still work, and no verb
-      // is implemented yet, so that is the expected state today.
+      // live-control commands are refused while the read paths keep working. That
+      // was the unremarkable default when no verb was implemented; with
+      // pause/resume/abort live it is a real fail-closed state, and the right one —
+      // a pod that cannot verify authorization must refuse, not comply.
       runId: process.env.ADP_CONTROL_RUN_ID || '',
       envelopeKeys: parseVerificationKeys(process.env.ADP_CONTROL_ENVELOPE_KEYS),
       envelopeKeysFile: process.env.ADP_CONTROL_ENVELOPE_KEYS_FILE,

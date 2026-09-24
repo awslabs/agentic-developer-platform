@@ -28,6 +28,24 @@ from lib.invocation_status import _get_client
 from lib.status_gateway_client import authority_enabled
 
 
+#: A run an operator deliberately stopped is finished, and finished differently
+#: from `complete` — Issue #3963 (S4).
+#:
+#: It is read here as terminal for the same reason `complete` is: redelivering it
+#: would launch the work again. The abort path's acknowledgement is bounded and can
+#: legitimately end unconfirmed (an SQS delete that never succeeded), which is
+#: precisely when this row is redelivered — so this is the guard that makes the
+#: honest "unconfirmed" outcome safe rather than a way to resurrect an aborted run.
+#:
+#: Distinct from `complete` in the condition rather than folded in with it, because
+#: the two are different facts about the run and a future reader of this expression
+#: must be able to see that an abort was handled deliberately.
+#:
+#: Must match `ABORTED_STATUS` in the gateway's `src/activity/liveness.py` and the
+#: `aborted` member of `ALLOWED_WRITE_STATUSES` in `lib/invocation_status.py`.
+ABORTED_STATUS = "aborted"
+
+
 class InvocationCompletionError(Exception):
     """Completion could not be established; preserve the message for retry."""
 
@@ -79,18 +97,31 @@ def is_delivery_completed(envelope: dict) -> bool:
     worker completes between the two writes, the second fails and the caller
     retries the check on redelivery instead of launching duplicate work.
     Neither write reads row contents or changes its dashboard status.
+
+    A row whose status is ``aborted`` counts as completed (#3963). An operator
+    stopped that run on purpose, so redelivering it would restart exactly the work
+    the abort existed to prevent — and this is the path that actually gets
+    exercised, because the abort finalizer's queue acknowledgement is bounded and
+    may legitimately end unconfirmed. The abort's own terminal write lands before
+    its acknowledgement is attempted, so by the time a redelivery can happen the
+    status is already there for this guard to read.
     """
     request = _request(envelope)
     scope = request["ConditionExpression"]
     request["ExpressionAttributeNames"]["#legacy_done"] = "aidlc_delivery_completed"
     request["ExpressionAttributeNames"]["#status"] = "status"
     request["ExpressionAttributeValues"].update(
-        {":true": {"BOOL": True}, ":complete": {"S": "complete"}}
+        {
+            ":true": {"BOOL": True},
+            ":complete": {"S": "complete"},
+            ":aborted": {"S": ABORTED_STATUS},
+        }
     )
     request["UpdateExpression"] = "SET #done = :true"
     request["ConditionExpression"] = (
         scope
-        + " AND (#done = :true OR #legacy_done = :true OR #status = :complete)"
+        + " AND (#done = :true OR #legacy_done = :true OR #status = :complete"
+        " OR #status = :aborted)"
     )
     try:
         _get_client().update_item(**request)
@@ -112,6 +143,7 @@ def is_delivery_completed(envelope: dict) -> bool:
         scope + " AND (attribute_not_exists(#done) OR #done = :false)"
         " AND (attribute_not_exists(#legacy_done) OR #legacy_done = :false)"
         " AND (attribute_not_exists(#status) OR #status <> :complete)"
+        " AND (attribute_not_exists(#status) OR #status <> :aborted)"
     )
     try:
         _get_client().update_item(**request)

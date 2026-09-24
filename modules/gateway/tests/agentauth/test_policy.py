@@ -213,12 +213,20 @@ class TestLegitimateFlowStillWorks:
             target_run_id="run-developer-7",
         ).decision.allowed
 
-    def test_monitor_is_the_only_verb_this_deployment_implements(self):
-        """Authorization succeeds; behaviour does not exist yet, so 501."""
+    def test_authorization_and_implementation_are_separate_ladders(self):
+        """Authorization succeeds for a verb with no behaviour; 501 comes after.
+
+        STEER is the remaining unimplemented verb, so it carries this case now.
+        The property under test is not "which verb" but the *order*: a grant that
+        conveys STEER authorizes cleanly, and only ``require_supported`` refuses.
+        Collapsing the two would make an unauthorized caller's 404 and an
+        authorized caller's 501 indistinguishable, which is how a caller
+        enumerates the deployment's verbs by probing.
+        """
         svc = service(
             grants={
                 "inv-coordinator#1": coordinator_grant(
-                    allowed_actions=frozenset({AgentAction.MONITOR, AgentAction.ABORT}),
+                    allowed_actions=frozenset({AgentAction.MONITOR, AgentAction.STEER}),
                     target_run_ids=frozenset({"run-developer-7"}),
                 )
             },
@@ -226,17 +234,43 @@ class TestLegitimateFlowStillWorks:
         )
         authorized = svc.authorize(
             credential_token=credential(),
-            action=AgentAction.ABORT,
+            action=AgentAction.STEER,
             target_run_id="run-developer-7",
         )
         assert authorized.decision.allowed
 
         with pytest.raises(PolicyError) as exc:
-            svc.require_supported(AgentAction.ABORT)
+            svc.require_supported(AgentAction.STEER)
         assert exc.value.status_code == UNSUPPORTED_STATUS
 
-    def test_monitor_passes_the_supported_check(self):
-        service().require_supported(AgentAction.MONITOR)
+    @pytest.mark.parametrize(
+        "action",
+        [AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT],
+    )
+    def test_the_implemented_verbs_pass_the_supported_check(self, action):
+        """The shipped value of ``SUPPORTED_AGENT_ACTIONS``, with no patching.
+
+        ABORT is here because of #3963. Two test files patch this set to cover
+        signing and receipt paths, and a patched set proves nothing about what the
+        deployment actually offers — so this is the one place that reads the real
+        module attribute. If ABORT were removed from it, the whole abort path
+        would start returning 501 at ``require_supported`` and every test that
+        patches the set would keep passing.
+        """
+        service().require_supported(action)
+
+    def test_steer_is_the_only_verb_still_unimplemented(self):
+        """Pins the shipped set exactly, so a verb cannot join it silently.
+
+        A verb belongs in this set only once it has a revalidation branch and a
+        worker-side implementation. Adding one here without those makes the
+        gateway mint an envelope for a command the listener will refuse, which
+        surfaces as an opaque delivery failure rather than an honest 501.
+        """
+        from src.agentauth.policy import SUPPORTED_AGENT_ACTIONS
+
+        assert SUPPORTED_AGENT_ACTIONS == frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME, AgentAction.ABORT})
+        assert AgentAction.STEER not in SUPPORTED_AGENT_ACTIONS
 
 
 class TestTwoWorkersSharingOneRole:

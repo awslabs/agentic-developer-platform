@@ -4,7 +4,7 @@ ADP remote control lets an authorized human or agent pause, resume, steer, or gr
 
 This is the current design and integration entry point for [epic #3959](https://github.com/aws-e/adp/issues/3959), including work that is not yet delivered. **Read the implementation status before depending on a capability.** A merged implementation, a deployed revision, and a passed live evaluation are three different milestones.
 
-**Reviewed:** September 24, 2026. Source baseline: [`914e98813`](https://github.com/aws-e/adp/tree/914e98813), including timeout evidence PR [#5841](https://github.com/aws-e/adp/pull/5841). The status below is a dated snapshot; linked issues and deployed evidence determine subsequent readiness.
+**Reviewed:** September 24, 2026. Merged source baseline: [`4db839337`](https://github.com/aws-e/adp/tree/4db839337). The abort recovery described below is part of the S4 integration branch until its owning PR merges. The status below is a dated snapshot; linked issues and deployed evidence determine subsequent readiness.
 
 ## 1. Scope and current readiness
 
@@ -22,7 +22,7 @@ The target is hosted webhook/SQS/KEDA workers. Claude Agent SDK is the first pro
 | Dashboard controls | S7 #3966 pending runtime acceptance | API/state contract is reusable; the completed dashboard flow is not delivered. |
 | Dashboard explanations | S8 #4989; evaluation #5827 assigned | Planned follow-up after dashboard acceptance. |
 | Timeout evidence producer | #5841 merged as `f304ac1f14939dc884b07180bd56d1ddce39bbe2` | Test tooling is delivered; W2-05 live acceptance is still outstanding. |
-| Protected evaluation fixture and edge | #3968 and #5836 under development/review | The staged deployment below is the intended integration; its scripts are not yet accepted as an executable end-to-end path. |
+| Protected evaluation fixture and edge | #5836 edge merged in PR #5838; #3968 fixture integration still under development/review | The staged deployment below is the intended integration; its scripts are not yet accepted as an executable end-to-end path. |
 | General protected-worker rollout | #5195 open | Ordinary workload enablement remains gated. |
 
 At the source baseline, both gateway and worker implemented-verb sets contain **pause and resume only**. Every request is still subject to authorization, independent feature flags, adapter support, and current availability. Ordinary control flags remain off in the active epic rollout. There is no claim that all four controls are operational.
@@ -150,7 +150,19 @@ The existing finalizer owns terminal reporting and SQS acknowledgement. The inte
 
 The current S4 branch adds durable accepted-abort intent and a signed receipt bound to the run and command. Intent is evidence that abort was accepted, **not that the original worker is quiescent**. Protected bootstrap already refuses a replacement pod for an active bound execution; redundant abort-specific admission checks are not required to establish that refusal. Original-pod credential renewal must remain possible while it finalizes.
 
-Combined terminal-write and acknowledgement failure, actual startup refusal, and repair of stale terminal reporting are still being completed and reviewed. A dependent story must not assume those failure guarantees are live accepted.
+The S4 integration retains the authenticated target pod with the `adp.aws/abort-terminal-report` finalizer **before** recording intent or issuing the receipt. The gateway checks pod UID, service account and resource version; it preserves other controllers' metadata. Retention failure returns a retryable error without an abort receipt. Intent writes and receipt retries require an active execution, preventing a delayed request from recording an abort after retirement.
+
+The gateway's existing maintenance loop discovers retained pods in bounded pages, independently of SQL work claims. Pod annotations are discovery hints: recovery checks the protected execution's tenant, invocation, pod name and UID, then requires an observed terminated worker container. A deletion timestamp, missing pod, expired lease or elapsed timeout is not exit evidence. The finalizer preserves the pod status through ordinary job cleanup and reporting outages.
+
+After confirmed exit, recovery repairs the event row without overwriting an existing terminal outcome, clears control transport fields, retires active authority with conditional writes, releases the dispatch reservation idempotently, and removes its finalizer last. Recovery records the report-transition time and its provenance; it does not invent the exact container-exit time. A crash or failed write leaves the pod discoverable for another pass.
+
+If acceptance stopped between retention and the intent write, recovery must not invent an accepted abort. It atomically preserves an existing terminal outcome or records `failed` with `worker_exited_without_terminal_report`, and retires authority only while the abort marker remains absent. A concurrent abort marker or normal terminal report makes that transaction retry from fresh state.
+
+The gateway requires `get`, `list` and `patch` on pods in the configured worker namespace. Workers gain no Kubernetes permissions. The same Role requirements apply to the isolated evaluation fixture. Runtime implementation is in [exit_retention.py](../../modules/gateway/src/agentauth/exit_retention.py) and [retained_abort_recovery.py](../../modules/gateway/src/agentauth/retained_abort_recovery.py).
+
+**Rollback and cleanup:** stop admitting new control commands, but keep gateway authority, recovery code, event/authority table access and pod permissions available until retained pods have terminal evidence and their finalizers have been released. Disabling authority stops this recovery loop. Do not strip finalizers merely to make deletion finish; unresolved reporting must remain explicit. Fixture teardown must drain recovery before removing its gateway or Role.
+
+Local tests cover startup refusal, retention, reporting outages, recovery restart and concurrent terminal writes. The combined worker failure test covers both direct and protected gateway reporting. Broader integration checks and live acceptance remain outstanding; dependent stories must not treat local evidence as a deployed guarantee.
 
 ### Retry and teardown
 

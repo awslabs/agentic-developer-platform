@@ -800,13 +800,13 @@ describe('capability intersection', () => {
   });
 
   it('defaults to the ADP-implemented set rather than to everything the adapter claims', () => {
-    // Omitting the set permits pause/resume, but never steer or abort.
-    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual(['pause', 'resume']);
+    // Omitting the set permits what ADP implements, but never steer.
+    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual(['pause', 'resume', 'abort']);
     expect(intersectCapabilities({ adapter: bothSupported })).toEqual({
       pause: true,
       resume: true,
       steer: false,
-      abort: false,
+      abort: true,
     });
     // The veto is the *default*, not a hardcoded answer: the same adapter with an
     // explicit implemented set still yields its claimed verbs, so this test
@@ -880,8 +880,12 @@ describe('listener verb derivation', () => {
   it('advertises pause and resume for adapters with the proven boundary', () => {
     const claude = new ClaudeControlAdapter({ pauseGate: new PauseGate(), implementedVerbs: PAUSE_AND_RESUME });
     expect(claude.describe().capabilities.pause.supported).toBe(true);
-    expect([...listenerActionsFor(claude)]).toEqual(['pause', 'resume']);
-    expect([...listenerActionsFor(new EchoControlAdapter())]).toEqual(['pause', 'resume']);
+    // `PAUSE_AND_RESUME` is passed explicitly here, so abort is excluded by the
+    // ADP-set argument rather than by the adapter — the point of this case is the
+    // adapter's own boundary, not the current contents of the implemented set.
+    expect([...listenerActionsFor(claude, PAUSE_AND_RESUME)].sort()).toEqual(['pause', 'resume']);
+    expect([...listenerActionsFor(new EchoControlAdapter(), PAUSE_AND_RESUME)].sort())
+      .toEqual(['pause', 'resume']);
   });
 
   it('refuses to advertise a verb the adapter supports but ADP has not implemented', () => {
@@ -899,7 +903,12 @@ describe('listener verb derivation', () => {
     // ADP implements pause, but this run has no admission barrier hooked up, so
     // there is nothing to hold a tool at. A 501 is the honest answer; a 200 here
     // would accept a pause command whose only effect is a state label.
-    expect([...listenerActionsFor(new ClaudeControlAdapter())]).toEqual([]);
+    //
+    // Abort survives the same condition, and that asymmetry is the point (#3963):
+    // it is cancellation, not a gated tool boundary, so a run with no barrier can
+    // still be stopped. Advertising it here is the honest answer for the same
+    // reason refusing pause is — each claim tracks the mechanism actually present.
+    expect([...listenerActionsFor(new ClaudeControlAdapter())]).toEqual(['abort']);
   });
 
   it('refuses to advertise a verb ADP implemented but the adapter cannot perform', () => {
@@ -953,9 +962,10 @@ describe('listener verb derivation', () => {
 
   it('defaults to the ADP-implemented set, so a caller cannot widen it by omission', () => {
     // Omitting the second argument must not mean "trust the adapter". This adapter
-    // claims all four; the default admits only what ADP has implemented, which is
-    // currently nothing.
-    expect([...listenerActionsFor(adapterClaiming(allSupported))]).toEqual(['pause', 'resume']);
+    // claims all four; the default admits only what ADP has implemented, and
+    // `steer` — claimed here — is still excluded.
+    expect([...listenerActionsFor(adapterClaiming(allSupported))].sort())
+      .toEqual(['abort', 'pause', 'resume']);
     // ...and the default is genuinely the ADP set rather than a hardcoded empty
     // answer: the same adapter with an explicit set still derives those verbs.
     expect([...listenerActionsFor(adapterClaiming(allSupported), PAUSE_AND_RESUME)].sort())

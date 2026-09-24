@@ -329,6 +329,7 @@ class BootstrapStore:
         record = self.authority.load_execution(invocation_id=invocation_id, tenant_id=tenant_id)
         if record is None:
             raise BootstrapRefusedError("bootstrap refused")
+
         grant = self.live_grant(invocation_id=invocation_id, tenant_id=tenant_id, attempt=record.current_attempt, now=now)
         pod_item = {
             **_key(f"POD#{pod.uid}", "BINDING"),
@@ -341,6 +342,42 @@ class BootstrapStore:
             if existing != pod_item or record.workload_binding != pod.uid or record.status != ExecutionStatus.ACTIVE:
                 raise BootstrapRefusedError("bootstrap refused")
             return record
+
+        # An aborted run is not restarted here, and #3963 deliberately adds NO abort
+        # check to do it. The line below already does, and an `abort_intent` guard
+        # above it would be unreachable code that reads like the load-bearing one.
+        #
+        # The reasoning, because "it happens to work" is not a reason to omit a
+        # security check. An abort marker can only exist on a record that was ACTIVE
+        # and bound: `revalidation._accept_abort` is the sole writer, it runs behind
+        # `evaluate_execution_state`, and that authorizes only an ACTIVE record. So
+        # any invocation carrying a marker has `status == ACTIVE` and a
+        # `workload_binding`, and fails the PENDING check below twice over. Nothing
+        # restores PENDING either: `set_execution_status` refuses PENDING as a
+        # destination outright (`status is ExecutionStatus.PENDING` is rejected
+        # regardless of the transition table), and `provision_pending` writes under
+        # `attribute_not_exists(pk)`, so a committed record cannot be reset.
+        #
+        # Redelivery after a failed terminal write AND a failed DeleteMessage — the
+        # case that motivated the guard — is therefore refused by this line, with no
+        # marker read at all. `tests/agentauth/test_abort_redelivery_refusal.py` drives
+        # that flow with both failures injected at the transport under the shipped
+        # worker finalizer (a nonexistent events table, and a corrupted receipt handle
+        # that leaves the message genuinely enqueued), takes the redelivered MessageId
+        # through `TaskDelivery.acquire` into this method, and asserts the 404 plus no
+        # credential and no new BINDING row. Its paired control test writes a real
+        # `aborted` row through the same harness, so the injected failures are
+        # distinguishable from writes that were never attempted.
+        #
+        # What a guard here WOULD change is the aborting run's own finalization, and
+        # only for the worse. The renewal thread re-presents its binding every 300s and
+        # returns above on the `existing is not None` branch; a check placed before
+        # that branch revokes the credential the aborting pod needs to cancel the SDK,
+        # write its terminal row and delete its message — destroying the ability to
+        # complete the very abort the marker records. Placed after it, it is dead.
+        #
+        # The marker's real consumers are the abort receipt's claims and the operator's
+        # stated reason, not admission control.
         if record.status != ExecutionStatus.PENDING or record.workload_binding is not None:
             raise BootstrapRefusedError("bootstrap refused")
         try:

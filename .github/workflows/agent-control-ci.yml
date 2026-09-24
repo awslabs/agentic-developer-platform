@@ -415,6 +415,9 @@ jobs:
             test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py \
             test_run_services.py test_artifact_service.py \
             test_task_delivery.py test_task_routes.py \
+            test_abort_receipt.py test_abort_redelivery_refusal.py \
+            test_abort_intent_store.py test_abort_reconciliation.py \
+            test_exit_retention.py test_retained_abort_recovery.py \
             test_knowledge_service.py test_knowledge_service_postgres.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
@@ -444,6 +447,24 @@ jobs:
       # story exists to establish. `--cov-branch` is required: the interesting
       # failures here are all one-sided branches (a tenant check that only ever
       # sees the matching tenant is 100% line-covered and unproven).
+      - name: Enforce abort recovery coverage per module
+        working-directory: modules/gateway
+        run: |
+          pytest tests/agentauth/test_exit_retention.py tests/agentauth/test_retained_abort_recovery.py \
+            tests/agentauth/test_abort_reconciliation.py \
+            --cov=src.agentauth.exit_retention --cov=src.agentauth.retained_abort_recovery \
+            --cov=src.agentauth.abort_reconciliation --cov-branch \
+            --cov-report=json:abort-recovery-coverage.json --timeout=120
+          python - <<'PYCODE'
+          import json
+          report = json.load(open("abort-recovery-coverage.json"))
+          for name in ("exit_retention", "retained_abort_recovery", "abort_reconciliation"):
+              summary = report["files"][f"src/agentauth/{name}.py"]["summary"]
+              for covered, total in (("covered_lines", "num_statements"), ("covered_branches", "num_branches")):
+                  assert summary[total] > 0, f"{name}: no {total} measured"
+                  assert summary[covered] / summary[total] >= 0.85, f"{name}: {covered} below 85%"
+          PYCODE
+
       - name: Enforce control-module coverage (>=85% line and branch)
         working-directory: modules/gateway
         # `--cov=src.activity.control_service` (dotted module), NOT
@@ -472,9 +493,13 @@ jobs:
         # empty". S2/S4/S6 each deliver one verb, and against the old form their
         # only way forward was to delete the guard — which is how a gate that
         # cannot express "three of four" dies. It now compares against an explicit
-        # expected set (pause/resume at this stage) and
+        # expected set (pause/resume/abort at this stage) and
         # additionally pins the verb universe, so adding a fifth verb without
         # updating this list fails here rather than passing unexamined.
+        #
+        # #3963 added the second constant. The human service's SUPPORTED_ACTIONS and
+        # the agent policy's SUPPORTED_AGENT_ACTIONS are both read, because checking
+        # one of two sets that must agree is how they stop agreeing.
         env:
           # Importing control_service pulls in src/activity/__init__.py -> routes.py
           # -> src/auth/__init__.py, and the auth middleware constructs AuthService()
@@ -492,14 +517,16 @@ jobs:
           import sys
 
           from src.activity.control_service import SUPPORTED_ACTIONS
+          from src.agentauth.policy import SUPPORTED_AGENT_ACTIONS
 
           # The four public verbs. Pinned here so a fifth verb cannot appear
           # without a deliberate edit to this gate.
           ALL_VERBS = {"pause", "resume", "steer", "abort"}
 
           # Pause/resume: #3961 admission barrier plus #5222 signed human path.
+          # Abort: #3963 cancellation plus the terminal finalization that reports it.
           # Keep both language gates, gateway and worker in lockstep.
-          EXPECTED_SUPPORTED: set[str] = {"pause", "resume"}
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "abort"}
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
           # a truthiness check, so a refactor that drops the constant could report
@@ -526,11 +553,53 @@ jobs:
                   "Implementing a verb requires its transport, state contract and evaluation "
                   "in the same change; then add it to EXPECTED_SUPPORTED in this workflow."
               )
+          # The *agent* control path's set, added by #3963. Until then this gate
+          # read the human set alone, which is why ABORT could sit in
+          # `control_service.SUPPORTED_ACTIONS` and the worker's
+          # `IMPLEMENTED_CONTROL_VERBS` while the agent policy still answered 501 —
+          # a one-sided lag in the very direction the gate exists to catch. The two
+          # sets are compared but deliberately NOT merged: they are allowed to
+          # differ, because the human path authorizes a session and the agent path
+          # authorizes a delegated grant, and MONITOR exists only on the agent side.
+          # What must not differ is the live-control verbs.
+          agent_verbs = {action.value for action in SUPPORTED_AGENT_ACTIONS}
+
+          if not isinstance(SUPPORTED_AGENT_ACTIONS, frozenset):
+              sys.exit(
+                  f"SUPPORTED_AGENT_ACTIONS must be a frozenset, got {type(SUPPORTED_AGENT_ACTIONS).__name__}."
+              )
+
+          # MONITOR is a read, not a live control, so it is excluded from the
+          # comparison rather than added to ALL_VERBS — putting it there would let a
+          # *live* verb be advertised on one side and excused as "a read" on the other.
+          agent_live = agent_verbs - {"monitor", "dispatch"}
+          unknown_agent = agent_live - ALL_VERBS
+          if unknown_agent:
+              sys.exit(
+                  f"SUPPORTED_AGENT_ACTIONS contains verbs this gate does not know about: {sorted(unknown_agent)}."
+              )
+
+          if agent_live != EXPECTED_SUPPORTED:
+              sys.exit(
+                  "SUPPORTED_AGENT_ACTIONS does not match this stage's expected set.\n"
+                  f"  advertised without proof: {sorted(agent_live - EXPECTED_SUPPORTED)}\n"
+                  f"  expected but absent:      {sorted(EXPECTED_SUPPORTED - agent_live)}\n"
+                  "The agent and human control paths must enable a live verb together: one side "
+                  "authorizing a verb the other refuses with 501 is a caller-visible contradiction."
+              )
+
+          if "monitor" not in agent_verbs:
+              sys.exit(
+                  "SUPPORTED_AGENT_ACTIONS lost MONITOR. Every agent status read goes through "
+                  "require_supported(MONITOR), so dropping it breaks the read path silently."
+              )
+
           print(
               "OK: advertised verbs match this stage — "
               f"supported={sorted(EXPECTED_SUPPORTED)}, "
               f"unsupported={sorted(ALL_VERBS - EXPECTED_SUPPORTED)}"
           )
+          print(f"OK: agent path agrees — live={sorted(agent_live)}, reads={sorted(agent_verbs - agent_live)}")
           PY
 
       - name: Run pod-security manifest assertions
@@ -645,6 +714,17 @@ jobs:
         # mediated run — handing back the exact credential mediation exists to
         # withhold — could merge green.
         #
+        # The two abort suites are pinned here for #3963, and the pair is the point.
+        # control-abort-sentinel.test.ts holds the channel's "may lose an abort, may
+        # never invent one" direction; agent-worker-abort.test.ts holds the inverse —
+        # the run stops unconditionally while the *report* that it was deliberately
+        # stopped stays contingent on gateway-signed evidence. Between them they are
+        # the only place the ordering (record before cancel), the refusal to forward
+        # an unsigned operator reason, and the settle-to-`unknown` path are checked,
+        # and that last one already caught a real defect: `unknown` was missing from
+        # TERMINAL_STATUSES, so a failed-record abort silently leaked a `maxPending`
+        # slot. Unpinned, an abort that cancels but reports a clean stop it never
+        # achieved — the one outcome an operator cannot detect — merges green.
         # control-runtime-timeout.test.ts is pinned here (#5840) because it is the
         # ONLY automated check on the W2-05 pause_expiry producer. The measurement
         # half of that producer lives in a `.integration.ts` file that jest cannot
@@ -694,6 +774,7 @@ jobs:
             src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
             src/pause-attempt-fencing.test.ts \
             src/pause-output-race.test.ts src/control-deadline.test.ts \
+            src/control-abort-sentinel.test.ts src/agent-worker-abort.test.ts \
             src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
             src/control-runtime-timeout.assembly.test.ts \
             --coverage \
@@ -750,9 +831,10 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // #3961 pause barrier plus the #5222 signed human command path.
+          // #3961 pause barrier plus the #5222 signed human command path, and
+          // #3963's abort (cancellation plus reported terminal finalization).
           // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
-          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume']);
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'abort']);
 
           const fail = (msg: string): never => {
             console.error(msg);
