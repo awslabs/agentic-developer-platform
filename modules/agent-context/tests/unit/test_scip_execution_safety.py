@@ -23,10 +23,14 @@ Each test in TestNoRepositoryCodeExecution fails on the pre-fix implementation:
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
+
+import yaml
 
 # Add the ingestion image directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "images" / "ingestion"))
@@ -44,8 +48,11 @@ from scip_indexer import (  # noqa: E402
     _resolve_python_deps,
     _resolve_ruby_deps,
     _sanitize_requirements,
+    index_repo,
     is_refusal,
 )
+
+_MANIFESTS = Path(__file__).resolve().parents[2] / "manifests"
 
 # A payload that records that it ran, then exits cleanly. Inert: it only touches
 # a file inside the test's temp dir. {marker} is filled in per test.
@@ -334,3 +341,74 @@ class TestSafeFallbackPreserved:
         assert not is_refusal(None)
         assert not is_refusal("")
         assert not is_refusal("npm install failed: timeout")
+
+
+class TestEndToEndFailSoft:
+    """A refused language must not abort ingestion of the rest of the repository."""
+
+    def test_refused_java_does_not_block_python_indexing(self):
+        """Mixed Java+Python repo: Python still indexes, Java reports refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "MARKER")
+            _write(os.path.join(tmp, "gradlew"), _SH_PAYLOAD.format(marker=marker), mode=0o644)
+            _write(os.path.join(tmp, "build.gradle"), "// build\n")
+
+            def fake_python_indexer(clone_path):
+                return _write(os.path.join(clone_path, "index.scip"), "scip"), None
+
+            with patch.dict(INDEXERS, {"python": fake_python_indexer}):
+                report = index_repo(tmp, "org/mixed", languages=["java", "python"])
+
+            by_lang = {r.language: r for r in report.results}
+            assert by_lang["python"].success, "safe language lost its index"
+            assert by_lang["java"].success is False
+            assert by_lang["java"].dep_resolution == "refused"
+            assert is_refusal(by_lang["java"].error), by_lang["java"].error
+            assert not os.path.exists(marker), "gradlew executed through index_repo"
+
+    def test_refused_language_reports_refused_not_failed(self):
+        """Ruby is refused at dep resolution but its static indexer still runs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "MARKER")
+            _write(os.path.join(tmp, "Gemfile"), f'File.write("{marker}", "ran")\n')
+
+            def fake_ruby_indexer(clone_path):
+                return _write(os.path.join(clone_path, "index.scip"), "scip"), None
+
+            with patch.dict(INDEXERS, {"ruby": fake_ruby_indexer}):
+                report = index_repo(tmp, "org/ruby", languages=["ruby"])
+
+            result = report.results[0]
+            assert result.dep_resolution == "refused", result.dep_resolution
+            assert result.success, "static indexing should still proceed"
+            assert not os.path.exists(marker), "Gemfile was evaluated"
+
+
+class TestIngestionWorkerContainment:
+    """Defence in depth: the worker pod should hold no privilege it does not need.
+
+    This is a manifest assertion only. It proves what the repository declares,
+    NOT what a live cluster is running — applying it is a separate deploy step.
+    """
+
+    def _worker_container(self) -> dict:
+        raw = (_MANIFESTS / "ingestion-scaledjob.yaml").read_text()
+        # Substitute ${VAR} template placeholders so the template parses as YAML.
+        docs = [d for d in yaml.safe_load_all(re.sub(r"\$\{(\w+)\}", r"ph-\1", raw)) if d]
+        scaled_job = next(d for d in docs if d.get("kind") == "ScaledJob")
+        containers = scaled_job["spec"]["jobTargetRef"]["template"]["spec"]["containers"]
+        return next(c for c in containers if c["name"] == "worker")
+
+    def test_worker_declares_a_security_context(self):
+        assert "securityContext" in self._worker_container(), (
+            "ingestion worker has no securityContext (#5614 containment)"
+        )
+
+    def test_worker_cannot_escalate_privileges(self):
+        sc = self._worker_container()["securityContext"]
+        assert sc.get("allowPrivilegeEscalation") is False
+        assert sc.get("privileged") is False
+
+    def test_worker_drops_all_capabilities(self):
+        sc = self._worker_container()["securityContext"]
+        assert sc.get("capabilities", {}).get("drop") == ["ALL"]

@@ -37,6 +37,21 @@ spec:
           - name: worker
             image: ${INGESTION_IMAGE}
             command: ["python3", "/app/sqs-worker.py"]
+            # Defence in depth for ingestion of untrusted repositories (#5614,
+            # finding #4720). The primary control is in scip_indexer.py, which
+            # refuses to execute repository-authored build logic at all; this
+            # limits the damage if any execution path is ever reintroduced.
+            # Deliberately NOT readOnlyRootFilesystem: the worker clones repos
+            # and writes indexes under /tmp (CLONE_BASE=/tmp/repos).
+            # Deliberately NOT runAsNonRoot: the ingestion image declares no
+            # USER, so requiring a non-root UID here would fail the container at
+            # startup. Running the image as an unprivileged user is a separate,
+            # image-level change that needs its own deploy validation.
+            securityContext:
+              allowPrivilegeEscalation: false
+              privileged: false
+              capabilities:
+                drop: ["ALL"]
             envFrom:
               - configMapRef:
                   name: agent-context-config
