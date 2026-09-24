@@ -569,6 +569,17 @@ def test_confirmed_model_result_reaches_child_protocol(assignment_and_bootstrap)
             "stop_reason": "end_turn",
         },
     )
+    from lib.task_host import _canonical_digest
+
+    client.model_response.update(
+        {
+            "request_digest": _canonical_digest(
+                {"messages": [{"role": "user", "content": "évidence"}], "max_tokens": 32}
+            ),
+            "automatic_replay_permitted": False,
+            "handoff": "confirmed",
+        }
+    )
     host = TaskHost(client=client)
     response = host._model(
         assignment,
@@ -600,6 +611,17 @@ def test_nonconfirmed_model_result_cannot_leak_content(status, assignment_and_bo
             "operation_status": status,
             "content": [{"type": "text", "text": "unconfirmed"}],
         },
+    )
+    from lib.task_host import _canonical_digest
+
+    client.model_response.update(
+        {
+            "schema_version": "1.0",
+            "request_digest": _canonical_digest(
+                {"messages": [{"role": "user", "content": "test"}], "max_tokens": 32}
+            ),
+            "automatic_replay_permitted": False,
+        }
     )
     with pytest.raises(TaskHostError, match="unconfirmed"):
         TaskHost(client=client)._model(
@@ -634,3 +656,37 @@ def test_host_rejects_oversized_frame_before_writing():
     with pytest.raises(TaskProtocolError, match="byte limit"):
         _write_frame(process, {"content": "x" * 65536})
     assert process.stdin.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        {"request_digest": "0" * 64},
+        {"handoff": "unknown"},
+        {"automatic_replay_permitted": True},
+        {"schema_version": "wrong"},
+    ],
+)
+def test_model_receipt_must_match_request_and_confirmed_handoff(
+    corruption, assignment_and_bootstrap
+):
+    from lib.task_host import TaskHostError, _canonical_digest
+
+    assignment, _, bootstrap = assignment_and_bootstrap
+    turn_id = str(__import__("uuid").uuid4())
+    request = {"messages": [{"role": "user", "content": "test"}], "max_tokens": 32}
+    receipt = {
+        "schema_version": "1.0",
+        "task_id": assignment.task_id,
+        "turn_id": turn_id,
+        "operation_status": "confirmed",
+        "handoff": "confirmed",
+        "automatic_replay_permitted": False,
+        "request_digest": _canonical_digest(request),
+        "content": [{"type": "text", "text": "stored"}],
+        "stop_reason": "end_turn",
+        **corruption,
+    }
+    host = TaskHost(client=FakeClient(bootstrap, [], model_response=receipt))
+    with pytest.raises(TaskHostError, match="receipt"):
+        host._model(assignment, {}, {"turn_id": turn_id, **request}, 32)

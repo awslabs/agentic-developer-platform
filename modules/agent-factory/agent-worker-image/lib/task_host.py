@@ -201,12 +201,13 @@ class TaskHost:
         }
         if "system" in frame:
             request["system"] = frame["system"]
+        request_digest = _canonical_digest(request)
         response = self.client.model(
             {
                 "schema_version": SCHEMA_VERSION,
                 "attempt": attempt,
                 "turn_id": frame["turn_id"],
-                "request_digest": _canonical_digest(request),
+                "request_digest": request_digest,
                 **request,
             }
         )
@@ -215,7 +216,19 @@ class TaskHost:
             or response.get("turn_id") != frame["turn_id"]
         ):
             raise TaskRunClientError("task model receipt identity mismatch")
+        if (
+            response.get("schema_version") != SCHEMA_VERSION
+            or response.get("request_digest") != request_digest
+            or response.get("automatic_replay_permitted") is not False
+        ):
+            raise TaskHostError(
+                "task model receipt request binding is invalid", code="protocol_violation"
+            )
         status = response.get("operation_status")
+        if status == "confirmed" and response.get("handoff") != "confirmed":
+            raise TaskHostError(
+                "task model receipt handoff is not confirmed", code="protocol_violation"
+            )
         if status == "confirmed" and (
             not isinstance(response.get("content"), list)
             or not isinstance(response.get("stop_reason"), str)
