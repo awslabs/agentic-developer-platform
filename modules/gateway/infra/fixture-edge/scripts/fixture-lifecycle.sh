@@ -21,6 +21,20 @@
 #   verify    prove edge identity and the three refusals
 #   destroy   teardown in dependency order against exact owned state
 #
+# THE TWO EVIDENCE FRAGMENTS (#5825's W2-10 consumes them; RUNBOOK step 8.5)
+# -------------------------------------------------------------------------
+#   apply   -> <artifacts>/creation-ledger-fragment.json    (wave2_preflight
+#                                                            .creation_ledger)
+#   destroy -> <artifacts>/teardown-removals-fragment.json  (teardown_verification
+#                                                            .removals)
+# The merged evaluator reconciles the two in BOTH directions, so a resource this
+# component creates and does not contribute is outside W2-10's accounting entirely,
+# and a removal naming an identity the ledger lacks is refused. Both files are in the
+# evaluator's own key shapes; hand them to #3968's assembler. Never pre-create or
+# hand-edit the removals file: the evaluator digests it before and after teardown and
+# refuses one that did not change, because absence written ahead of the removal
+# describes the fixture while it still existed.
+#
 # WHAT THE ORDERING PROTECTS (verified, not assumed)
 # -------------------------------------------------
 # main.tf reads the fixture ALB (data.aws_lb.fixture) to derive its DNS name. A
@@ -39,6 +53,13 @@
 # paths and is what a non-deploying review can exercise.
 # =============================================================================
 set -euo pipefail
+
+# The whole file header, ending at its closing rule. Previously `sed -n '1,45p'`, a
+# hardcoded count that went stale as soon as the header grew: help output truncated
+# mid-sentence, which is exactly the moment a reader most needs the rest.
+print_header() {
+  awk '/^# =+$/ {n++} {print} n==3 {exit}' "$0"
+}
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$HERE/.." && pwd)"
@@ -78,7 +99,7 @@ while [ $# -gt 0 ]; do
     --skip-wrong-role)  SKIP_WRONG_ROLE=1; shift ;;
     --dry-run)          DRY_RUN=1; shift ;;
     --recover)          RECOVER=1; shift ;;
-    -h|--help)          sed -n '1,45p' "$0"; exit 0 ;;
+    -h|--help)          print_header; exit 0 ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
@@ -997,6 +1018,357 @@ record_terraform_ownership() {
   note "Terraform-owned resources are torn down by 'destroy' below, from exact state."
   note "The fixture Ingress and Secret ARE in the #3968 ledger (uid-gated), because"
   note "they are Kubernetes objects its existing k8s bucket already covers."
+  write_creation_ledger_fragment
+}
+
+# ---------------------------------------------------------------------------
+# THE #5825 EVALUATOR'S CREATION LEDGER — THIS COMPONENT'S CONTRIBUTION
+# ---------------------------------------------------------------------------
+# The merged #5825 evaluator (platform/scripts/agent-control-eval.py) reads
+# `wave2_preflight.creation_ledger` and reconciles the POST-teardown
+# `teardown_verification.removals` against it, entry by entry. Its reconciliation
+# runs in ONE direction on purpose (agent-control-eval.py, check_w2_10):
+#
+#   * every ledger entry with no absence observation is a FAILURE ("a resource
+#     nobody looked for is how a control-enabled workload outlives its evaluation");
+#   * a removal naming an identity the ledger does not contain is ALSO a failure.
+#
+# So a fixture resource this component creates and does NOT contribute to the
+# creation ledger is not merely unrecorded — its later absence observation is
+# REFUSED as describing something the fixture did not create. And if neither is
+# contributed, W2-10 passes with this component's resources entirely outside the
+# accounting. That is the integration defect: the edge's API, stage, policy, log
+# group and per-run parameter are created for the evaluation and were invisible to
+# the check that is supposed to prove the evaluation left nothing behind.
+#
+# WHY A FRAGMENT AND NOT THE ARTIFACT
+# -----------------------------------
+# `wave2_preflight` is ONE artifact covering the whole run (#3968's fixture
+# workload, its policies, its queues, and this edge). Writing the whole file here
+# would mean owning fields that are #3968's to observe (`merged_revisions`,
+# `ci_gates`, `deployed_components`, `fixture_only_flag_scope`). So this writes
+# ONLY the entries for the resources this component created, in the evaluator's own
+# entry shape, for #3968's assembler to concatenate into `creation_ledger`.
+#
+# The shape is LEDGER_ENTRY_KEYS = (kind, name, identity, created) exactly, and
+# every value is non-empty because the evaluator rejects a falsy one. `identity` is
+# the resource's PROVIDER-ASSIGNED id from state — the same identifier the destroy
+# guard matches plan lines on — because the evaluator's whole reason for wanting an
+# identity rather than a name is that a name cannot distinguish this object from a
+# same-named replacement. `kind` is deliberately the AWS resource type and NOT one
+# of LISTENER_LEDGER_KINDS/POLICY_LEDGER_KINDS: an API Gateway stage is neither the
+# control-enabled workload nor a NetworkPolicy, and mislabelling it would drag it
+# into the listener-before-policy ordering assertion, which is about #3968's pod.
+#
+# Parameterised on its inputs for ONE reason: `destroy` must be able to rebuild this
+# set from the state receipt it reads before deleting anything, when the apply-time
+# fragment is not in the artifact directory (see write_teardown_removals_fragment).
+# Sharing the code rather than restating the rules is deliberate — the identities in
+# the two fragments have to match exactly, and two implementations of the
+# shared-id qualification below would be a drift source with no symptom until the
+# evaluator rejected a removal as naming something uncreated.
+write_creation_ledger_fragment() {   # [receipt-json] [out-json] [provenance]
+  local dir; dir="$(artifact_dir)"
+  local receipt="${1:-$dir/ownership.json}"
+  local frag="${2:-$dir/creation-ledger-fragment.json}"
+  local provenance="${3:-recorded at apply time from the isolated Terraform state of this run}"
+  python3 - "$receipt" "$frag" "$NONCE" "$ACCOUNT" "$ENVIRONMENT" "$provenance" <<'PY' \
+    || fail "applied, but the creation-ledger fragment could not be written. The #5825
+     evaluator reconciles teardown completeness against wave2_preflight.creation_ledger,
+     so without this the edge's resources are outside W2-10's accounting entirely --
+     and their absence observations would be REFUSED as naming resources the fixture
+     did not create. Resolve before recording any acceptance."
+import json, sys
+
+owned_path, out_path, nonce, account, environment, provenance = sys.argv[1:7]
+owned = json.load(open(owned_path))
+if isinstance(owned, dict) and "value" in owned and "resources" not in owned:
+    owned = owned["value"]
+
+# The fragment must describe THIS run. Same reason the destroy guard checks it: a
+# receipt from another run would contribute another run's identities, and the
+# evaluator would then reconcile this run's teardown against them.
+for field, want in (("run_nonce", nonce), ("account_id", account),
+                    ("environment", environment)):
+    got = owned.get(field)
+    if got != want:
+        sys.exit(
+            f"the ownership receipt in state records {field}={got!r}, but this command is for "
+            f"{want!r}. Refusing to contribute another run's identities to the evaluation's "
+            "creation ledger."
+        )
+
+entries, incomplete = [], []
+for r in owned.get("resources") or []:
+    kind, name, identity = r.get("type"), r.get("name"), r.get("id")
+    # The evaluator rejects a falsy value in ANY of its four keys, and it does so
+    # with a message about the whole artifact. Naming the offender here instead means
+    # the operator learns which resource was unidentifiable at APPLY time, while the
+    # fixture still exists and the id can still be read.
+    if not (kind and name and identity):
+        incomplete.append(f"{r.get('kind', '?')}: type={kind!r} name={name!r} id={identity!r}")
+        continue
+    entries.append({"kind": kind, "name": name, "identity": identity, "created": True})
+
+if incomplete:
+    sys.exit(
+        "these applied resources cannot be contributed to the creation ledger because an "
+        "identifying field is empty:\n  " + "\n  ".join(incomplete) +
+        "\n\nThe evaluator requires kind/name/identity/created on every entry: without an "
+        "observed identity a resource cannot be distinguished from a same-named one that "
+        "already existed, so neither its ownership nor its later removal is establishable."
+    )
+if not entries:
+    sys.exit(
+        "the ownership receipt lists no resources, so this fragment would be empty. An empty "
+        "contribution makes 'everything this edge created was removed' vacuously true, which "
+        "is indistinguishable from an edge nobody inventoried. If the component was applied "
+        "with fixture_edge_enabled = false there is nothing to evaluate -- do not record a "
+        "fragment at all."
+    )
+
+# Identities must be unique WITHIN the fragment, because the evaluator refuses a
+# duplicate across the whole creation ledger and would name #3968's assembler rather
+# than the component that produced the collision. The REST API and its resource
+# policy legitimately SHARE an id (the policy is an attribute of the API), so this is
+# a real case, not a hypothetical: they are distinguished by their differing `kind`,
+# and a composite identity is used to keep both individually accounted for.
+seen, deduped = {}, []
+for entry in entries:
+    key = entry["identity"]
+    if key in seen:
+        # Same id, different resource type. Qualify BOTH so neither silently wins.
+        entry["identity"] = f"{entry['kind']}:{key}"
+        other = seen[key]
+        if other["identity"] == key:
+            other["identity"] = f"{other['kind']}:{key}"
+    else:
+        seen[key] = entry
+    deduped.append(entry)
+
+json.dump({
+    "schema": "fixture-edge/creation-ledger-fragment/v1",
+    "contributed_by": "modules/gateway/infra/fixture-edge (issue #5836)",
+    "consumed_as": "entries of wave2_preflight.creation_ledger in platform/scripts/agent-control-eval.py",
+    "run_nonce": nonce,
+    "account_id": account,
+    "environment": environment,
+    "provenance": provenance,
+    "note": ("Concatenate `entries` into wave2_preflight.creation_ledger. Each entry is "
+             "already in the evaluator's LEDGER_ENTRY_KEYS shape. `identity` is the "
+             "provider-assigned id read from this run's isolated state, which is also what "
+             "the destroy guard matches plan lines on -- so the same identifier proves "
+             "ownership at teardown and reconciles the removal here. Removal observations "
+             "for these entries are written by `destroy` into "
+             "teardown-removals-fragment.json."),
+    "entries": deduped,
+}, open(out_path, "w"), indent=2, sort_keys=True)
+print(f"  [ ok ] creation-ledger fragment written: {len(deduped)} resources -> {out_path}")
+PY
+  note "Hand $frag to #3968's preflight assembler: its entries belong in"
+  note "wave2_preflight.creation_ledger, or #5825's W2-10 cannot account for this edge."
+}
+
+# ---------------------------------------------------------------------------
+# THE OTHER HALF — POST-TEARDOWN ABSENCE OBSERVATIONS
+# ---------------------------------------------------------------------------
+# The creation fragment above only tells the evaluator what to look for. W2-10 then
+# requires, for EVERY entry, a removal observation in the evaluator's
+# LEDGER_REMOVAL_KEYS = (identity, absent, observed_by, removed_at) shape, and it
+# reconciles the two sets in both directions. This writes that half, from the probes
+# `destroy` actually ran, with these properties:
+#
+#   * It runs INSIDE teardown, after the deletion, never before. The evaluator
+#     digests the artifact before invoking teardown and refuses a byte-identical
+#     file afterwards, precisely because an absence observation written ahead of the
+#     removal describes the fixture while it still existed. A stale fragment from an
+#     earlier attempt is therefore removed at the START of destroy: a failed destroy
+#     must leave NO fragment rather than a previous run's.
+#   * `observed_by` is the read that actually established absence, recorded BY the
+#     probe at the moment it ran (see _record_observation), so it cannot drift from
+#     the command that was executed.
+#   * An UNKNOWN probe -- a call that failed rather than a resource that answered --
+#     contributes NO removal entry, and is reported here as unobserved. That is
+#     deliberate and it is the whole reason the reconciliation is bidirectional: the
+#     creation ledger still contains the resource, so the evaluator fails it as
+#     having "no post-teardown absence observation", which is exactly what an
+#     unverifiable resource is. Emitting `absent: false` instead would have the
+#     evaluator report it as STILL PRESENT, which is a different and unestablished
+#     claim; and emitting `absent: true` on a failed call is the AccessDenied-reads-
+#     as-deleted defect that probe_absent exists to prevent.
+#   * Two resources have no probe of their own and must not be given a fabricated
+#     one. aws_api_gateway_rest_api_policy is an ATTRIBUTE of the REST API (it even
+#     shares its id) and aws_api_gateway_deployment is a child of it; neither can
+#     exist once the API does not, and there is no API left to query them through.
+#     Their absence is derived from the API's own not-found, and `observed_by` says
+#     so in full -- an inference a reader can check is sound, an unattributed claim
+#     is not.
+#   * An applied resource whose type this function does not know is a REFUSAL, not a
+#     silent omission. Adding a resource to main.tf without adding its probe would
+#     otherwise produce a fragment that quietly accounts for less than the run
+#     created.
+write_teardown_removals_fragment() {   # <artifact-dir> <observations-tsv>
+  local dir="$1" observations="$2"
+  local created="$dir/creation-ledger-fragment.json"
+  local frag="$dir/teardown-removals-fragment.json"
+  # The apply-time fragment is the normal source, but its absence must not BLOCK a
+  # teardown -- a destroy that refuses to run because a reporting artifact is missing
+  # leaves the fixture up, which is the opposite of what this whole component is for.
+  # So it is REBUILT from the same place apply read it: the ownership receipt the
+  # destroy guard already pulled out of this run's isolated state BEFORE deleting
+  # anything. Same code, same identities, and the provenance says which read produced
+  # it so a reviewer can tell the two apart.
+  if [ ! -f "$created" ]; then
+    local receipt="$dir/owned-set.json"
+    [ -f "$receipt" ] || fail "cannot write the teardown removals fragment: neither this run's
+     creation-ledger fragment ($created) nor the ownership receipt the destroy guard
+     reads from state ($receipt) is present. Absence observations are reconciled
+     AGAINST that set, entry by entry, so without it there is no established set of
+     resources to account for and 'nothing was left behind' is unmeasurable rather
+     than true. The resources may be gone; that is not the same as shown to be gone."
+    note "no apply-time creation-ledger fragment; rebuilding it from the ownership"
+    note "receipt this destroy read from state before deleting anything."
+    write_creation_ledger_fragment "$receipt" "$created" \
+      "rebuilt during teardown from the ownership receipt read out of this run's isolated Terraform state BEFORE any deletion (the apply-time fragment was absent)"
+  fi
+  python3 - "$created" "$observations" "$frag" "$NONCE" "$ACCOUNT" "$ENVIRONMENT" \
+    <<'PY' || fail "the teardown removals fragment could not be written (see above). The
+     resources may well be gone, but #5825's W2-10 reconciles teardown completeness
+     against recorded observations -- do NOT report cleanup as verified on the
+     strength of this command's other output."
+import json, sys
+from datetime import datetime, timezone
+
+created_path, obs_path, out_path, nonce, account, environment = sys.argv[1:7]
+created = json.load(open(created_path))
+
+for field, want in (("run_nonce", nonce), ("account_id", account),
+                    ("environment", environment)):
+    got = created.get(field)
+    if got != want:
+        sys.exit(
+            f"the creation-ledger fragment records {field}={got!r} but this teardown is for "
+            f"{want!r}. Reconciling this run's absence observations against another run's "
+            "creation ledger would report a teardown of resources that were never created here."
+        )
+
+# What the probes observed, keyed by the probe key they were recorded under.
+observed = {}
+for line in open(obs_path).read().splitlines():
+    if not line.strip():
+        continue
+    key, status, at, target, how = line.split("\t", 4)
+    observed[key] = {"status": status, "at": at, "target": target, "observed_by": how}
+
+# Which probe establishes each applied resource type. DERIVED entries name the probe
+# whose not-found implies theirs, and the reason is carried into `observed_by` so the
+# inference is visible in the evidence rather than only here.
+PROBES = {
+    "aws_api_gateway_rest_api": ("rest_api", None),
+    "aws_api_gateway_stage": ("stage", None),
+    "aws_ssm_parameter": ("ssm_parameter", None),
+    "aws_cloudwatch_log_group": ("log_group", None),
+    "aws_api_gateway_rest_api_policy": (
+        "rest_api",
+        "the resource policy is an ATTRIBUTE of that REST API (it shares its id); once the "
+        "API is not found there is no policy and no API through which to query one",
+    ),
+    "aws_api_gateway_deployment": (
+        "rest_api",
+        "a deployment is a child of that REST API and cannot exist once the API does not; "
+        "there is no separate API through which to query it",
+    ),
+}
+
+removals, unobserved, mismatched, unmapped = [], [], [], []
+for entry in created.get("entries") or []:
+    kind, identity = entry.get("kind"), entry.get("identity")
+    if kind not in PROBES:
+        unmapped.append(f"{kind} ({identity})")
+        continue
+    probe_key, derivation = PROBES[kind]
+    obs = observed.get(probe_key)
+    if obs is None:
+        unobserved.append(f"{kind}/{entry.get('name')} ({identity}): probe {probe_key!r} did not run")
+        continue
+    if obs["status"] == "unknown":
+        unobserved.append(f"{kind}/{entry.get('name')} ({identity}): {obs['observed_by']}")
+        continue
+    # The probe must have addressed THIS object. For a derived entry the probe
+    # legitimately targets the REST API instead, so the check applies to the entries
+    # that carry their own probe. `identity` may be kind-qualified (<kind>:<id>) where
+    # two resources share a provider id, so compare on the bare id.
+    bare = identity.split(":", 1)[1] if identity.startswith(f"{kind}:") else identity
+    if derivation is None and obs["target"] != bare:
+        mismatched.append(
+            f"{kind} ({identity}) was to be established by probe {probe_key!r}, but that probe "
+            f"read {obs['target']!r}"
+        )
+        continue
+    observed_by = obs["observed_by"]
+    if derivation is not None:
+        observed_by = f"{observed_by}; DERIVED: {derivation}"
+    removals.append({
+        "identity": identity,
+        "absent": obs["status"] == "absent",
+        "observed_by": observed_by,
+        "removed_at": obs["at"],
+        # Beyond the four required keys, and deliberately: a reader of the merged
+        # artifact should not have to parse prose to see which entries were inferred.
+        "observation": "direct" if derivation is None else f"derived-from:{probe_key}",
+    })
+
+if unmapped:
+    sys.exit(
+        "these applied resources have no absence probe, so teardown cannot be shown to have "
+        "removed them:\n  " + "\n  ".join(unmapped) +
+        "\n\nA resource was added to main.tf without adding its probe to destroy. Omitting it "
+        "from this fragment would let W2-10 account for less than the run created."
+    )
+if mismatched:
+    sys.exit(
+        "an absence probe did not read the object it was meant to establish:\n  " +
+        "\n  ".join(mismatched) +
+        "\n\nA probe of a different object is not an observation of this one."
+    )
+
+all_absent = bool(removals) and all(r["absent"] for r in removals) and not unobserved
+json.dump({
+    "schema": "fixture-edge/teardown-removals-fragment/v1",
+    "contributed_by": "modules/gateway/infra/fixture-edge (issue #5836)",
+    "consumed_as": ("entries of teardown_verification.removals in "
+                    "platform/scripts/agent-control-eval.py"),
+    "run_nonce": nonce,
+    "account_id": account,
+    "environment": environment,
+    # Stamped as this fragment is written, i.e. AFTER the deletion and inside the
+    # teardown window the evaluator compares against teardown.started_at.
+    "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "verified_after_teardown": all_absent,
+    "unobserved": unobserved,
+    "note": ("Concatenate `removals` into teardown_verification.removals and take "
+             "captured_at/verified_after_teardown for this component from here. Each entry is "
+             "already in the evaluator's LEDGER_REMOVAL_KEYS shape and its `identity` matches "
+             "this run's creation-ledger fragment exactly. Entries in `unobserved` are "
+             "DELIBERATELY absent from `removals`: their probe failed or did not run, so "
+             "absence was never established. The evaluator will fail them as unaccounted "
+             "against the creation ledger, which is the correct outcome -- do not synthesise "
+             "removals for them, and do not report cleanup_ok true while this list is "
+             "nonempty."),
+    "removals": removals,
+}, open(out_path, "w"), indent=2, sort_keys=True)
+
+print(f"  [ ok ] teardown removals fragment written: {len(removals)} observations "
+      f"({sum(1 for r in removals if r['absent'])} absent) -> {out_path}")
+for item in unobserved:
+    print(f"  [UNOBSERVED] {item}", file=sys.stderr)
+if unobserved:
+    print("               These contribute NO removal entry. W2-10 will fail them as "
+          "unaccounted,", file=sys.stderr)
+    print("               which is what an unverifiable resource is.", file=sys.stderr)
+PY
+  note "Hand $frag to #3968's assembler alongside the creation fragment: its entries"
+  note "belong in teardown_verification.removals."
 }
 
 # ===========================================================================
@@ -1865,6 +2237,14 @@ PY
     return 0
   fi
 
+  # A fragment from an EARLIER attempt is removed before anything is deleted. It
+  # describes probes that ran against a different state of the world, and leaving it
+  # in place is how a failed destroy still hands the assembler a file saying the
+  # resources are gone. Absence evidence must be produced by the teardown that
+  # actually removed them, so no fragment at all is the correct state until this run
+  # has looked.
+  rm -f "$dir/teardown-removals-fragment.json"
+
   step "2/3 destroy the edge FIRST (stop the listeners/routes)"
   # ORDERING IS LOAD-BEARING. The edge must stop accepting and forwarding traffic
   # BEFORE the fixture ALB is removed, and main.tf READS that ALB, so removing it
@@ -1887,60 +2267,163 @@ PY
   # ---------------------------------------------------------------------------
   local problems=0 unknowns=0
 
+  # ---------------------------------------------------------------------------
+  # WHAT EACH PROBE ADDRESSES COMES FROM STATE, NOT FROM A NAME REBUILT HERE
+  # ---------------------------------------------------------------------------
+  # This is a correction, and the defect it fixes was silent in the worst way. The
+  # log-group probe reconstructed its target as "/aws/apigateway/w2-fixture-edge-
+  # <nonce>", while main.tf creates "/aws/api-gateway/<name_prefix>-fixture-edge"
+  # (note BOTH the hyphen in api-gateway and the entirely different stem). So the
+  # probe asked about a log group that has never existed under any run — and because
+  # describe-log-groups answers an unmatched prefix with an EMPTY LIST and exit 0,
+  # the one probe where a clean exit is read as absence, it reported the real log
+  # group "gone" every single time. A surviving log group could not have been
+  # detected. The same class of bug was latent in the SSM path: it happened to agree
+  # with main.tf, but only by two independently maintained strings coinciding.
+  #
+  # So the targets are now READ OUT OF THE OWNERSHIP RECEIPT that
+  # assert_destroy_deletes_only_owned already pulled from this run's isolated state
+  # before anything was deleted. State holds the provider-assigned id of the exact
+  # object created; a name rebuilt from variables holds an assumption about how
+  # main.tf composes it. The receipt is also the same source the creation-ledger
+  # fragment uses, which is what makes the two fragments' identities match by
+  # construction rather than by review.
+  local owned_receipt="$dir/owned-set.json"
+  _owned_id() {   # <terraform-resource-type>
+    [ -f "$owned_receipt" ] || return 1
+    python3 - "$owned_receipt" "$1" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+if isinstance(doc, dict) and "value" in doc and "resources" not in doc:
+    doc = doc["value"]
+for r in doc.get("resources") or []:
+    if r.get("type") == sys.argv[2] and r.get("id"):
+        print(r["id"]); raise SystemExit(0)
+raise SystemExit(1)
+PY
+  }
+
+  # Every probe below ALSO records what it observed, because the #5825 evaluator's
+  # W2-10 needs the observation itself and not this function's exit status. See
+  # write_teardown_removals_fragment for the contract; the recording is done here,
+  # at the probe, so `observed_by` names the read that actually ran rather than a
+  # command someone later asserted had run.
+  local observations="$dir/.teardown-observations.tsv"
+  : > "$observations"
+  _record_observation() {   # <probe-key> <absent|present|unknown> <target> <observed-by>
+    # `target` is WHAT was probed, recorded separately from HOW so the fragment
+    # writer can check the probe addressed the object the creation ledger names. A
+    # probe of a different object is not an absence observation of this one, and
+    # without the target that substitution is undetectable in the output.
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" "$4" \
+      >> "$observations"
+  }
+
   # A swallowed rest_api_id read is itself a verification gap: with api_id empty
   # the whole API probe was silently skipped and the run still reported success.
   if [ -z "$api_id" ]; then
     printf '  [FAIL] could not read rest_api_id from state, so the fixture API CANNOT be\n' >&2
     printf '         verified absent. This is not the same as it being gone.\n' >&2
     problems=1
+    # Deliberately NOT recorded as an observation. An unrun probe must leave a HOLE
+    # that write_teardown_removals_fragment reports as unmeasured — recording it as
+    # "unknown" here would turn a probe that never happened into evidence that it
+    # did, which is the difference between a gap and a finding.
   fi
 
-  _check_absent() {   # <label> <not-found-pattern> <command...>
-    local label="$1" pat="$2"; shift 2
+  _check_absent() {   # <probe-key> <target-id> <label> <not-found-pattern> <command...>
+    local key="$1" target="$2" label="$3" pat="$4"; shift 4
+    # The executed read, verbatim, for `observed_by`. `aws_` is this script's
+    # profile-binding wrapper, so it is reported under the name an operator would
+    # re-run it by.
+    local cmdline="$*"
+    case "$cmdline" in "aws_ "*) cmdline="aws ${cmdline#aws_ }" ;; esac
     local rc=0
     # Same reason as in probe_absent: the `if` form is errexit-exempt, so a
     # "STILL PRESENT" (rc 1) or "UNKNOWN" (rc 2) reaches the case below instead of
     # terminating the script before it can be reported.
     if probe_absent "$pat" "$@"; then rc=0; else rc=$?; fi
     case "$rc" in
-      0) ok "$label is gone (service reported not-found)" ;;
-      1) printf '  [FAIL] %s is STILL PRESENT\n' "$label" >&2; problems=1 ;;
+      0) ok "$label is gone (service reported not-found)"
+         _record_observation "$key" absent "$target" "$cmdline -- service reported not-found" ;;
+      1) printf '  [FAIL] %s is STILL PRESENT\n' "$label" >&2; problems=1
+         _record_observation "$key" present "$target" "$cmdline -- the resource still answers" ;;
       2) printf '  [UNKNOWN] %s could not be verified: %s\n' "$label" "$PROBE_ERROR" >&2
          printf '            This is NOT absence. Fix the credential/permission and re-run.\n' >&2
-         unknowns=1 ;;
+         unknowns=1
+         # Recorded as UNKNOWN, never as absent. The evaluator fails any removal
+         # whose `absent` is not exactly true, so an unverifiable resource stays a
+         # failure downstream as well as here.
+         _record_observation "$key" unknown "$target" \
+           "$cmdline -- CALL FAILED, absence NOT established: $(printf '%s' "$PROBE_ERROR" | tr -d '\n\t' | cut -c1-160)" ;;
     esac
   }
 
   if [ -n "$api_id" ]; then
-    _check_absent "fixture REST API $api_id" 'NotFoundException|does not exist' \
+    _check_absent rest_api "$api_id" "fixture REST API $api_id" \
+      'NotFoundException|does not exist' \
       aws_ apigateway get-rest-api --rest-api-id "$api_id"
-    _check_absent "fixture stage ${ENVIRONMENT} on $api_id" 'NotFoundException|does not exist' \
+    # The stage's identity is the provider's "ags-<api-id>-<stage-name>", NOT the
+    # bare stage name -- the same identifier the creation ledger and the destroy
+    # guard use. Probing by api id + stage name while REPORTING that identity is
+    # the point: the read AWS offers and the identity the evaluator reconciles are
+    # different strings for one object.
+    _check_absent stage "ags-${api_id}-${ENVIRONMENT}" \
+      "fixture stage ${ENVIRONMENT} on $api_id" 'NotFoundException|does not exist' \
       aws_ apigateway get-stage --rest-api-id "$api_id" --stage-name "$ENVIRONMENT"
   fi
 
-  local param="/adp/${ENVIRONMENT}/gateway/fixture/${NONCE}/apigw-provenance-secret"
-  _check_absent "per-run secret $param" 'ParameterNotFound' \
+  # The provider's id for an SSM parameter IS its name, so the receipt's id is
+  # exactly what get-parameter takes. Falls back to the composed name only if the
+  # receipt is unavailable, and SAYS SO -- a fallback that looks like a first-class
+  # read is how the log-group defect above stayed invisible.
+  local param param_src="state"
+  if ! param="$(_owned_id aws_ssm_parameter)"; then
+    param="/adp/${ENVIRONMENT}/gateway/fixture/${NONCE}/apigw-provenance-secret"
+    param_src="composed"
+    note "ownership receipt unavailable: probing the per-run parameter by its COMPOSED"
+    note "name, which assumes main.tf's naming rather than reading what was created."
+  fi
+  _check_absent ssm_parameter "$param" "per-run secret $param ($param_src)" 'ParameterNotFound' \
     aws_ ssm get-parameter --name "$param"
 
   # Previously unchecked entirely, so a surviving log group (which keeps the access
-  # logs, and costs) counted as a verified teardown.
-  local lg="/aws/apigateway/w2-fixture-edge-${NONCE}"
-  local lg_out lg_rc
-  set +e
-  lg_out="$(aws_ logs describe-log-groups --log-group-name-prefix "$lg" \
-    --query 'logGroups[].logGroupName' --output text 2>&1)"
-  lg_rc=$?
-  set -e
-  if [ "$lg_rc" -ne 0 ]; then
-    printf '  [UNKNOWN] log group %s could not be verified: %s\n' "$lg" \
-      "$(printf '%s' "$lg_out" | tr -d '\n' | cut -c1-200)" >&2
-    unknowns=1
-  elif [ -n "$lg_out" ] && [ "$lg_out" != "None" ]; then
-    printf '  [FAIL] log group %s is STILL PRESENT\n' "$lg" >&2; problems=1
-  else
-    # describe-* returns an empty LIST rather than an error, so empty IS absence
-    # here. Noted because it is the one probe where a 0 exit proves absence.
-    ok "log group $lg is gone (empty result set, not a failed call)"
+  # logs, and costs) counted as a verified teardown -- and then checked against a
+  # name that never existed, which was worse: it looked verified. See the note above
+  # the _owned_id helper. A log group's provider id IS its name.
+  local lg
+  if ! lg="$(_owned_id aws_cloudwatch_log_group)"; then
+    printf '  [FAIL] the ownership receipt does not record a log group, so the fixture log\n' >&2
+    printf '         group CANNOT be probed. Refusing to guess its name: the previous\n' >&2
+    printf '         revision guessed wrong and an unmatched prefix reads as absence.\n' >&2
+    problems=1
+    lg=""
+  fi
+  local lg_out lg_rc lg_probe
+  if [ -n "$lg" ]; then
+    set +e
+    lg_out="$(aws_ logs describe-log-groups --log-group-name-prefix "$lg" \
+      --query 'logGroups[].logGroupName' --output text 2>&1)"
+    lg_rc=$?
+    set -e
+    lg_probe="aws logs describe-log-groups --log-group-name-prefix $lg"
+    if [ "$lg_rc" -ne 0 ]; then
+      printf '  [UNKNOWN] log group %s could not be verified: %s\n' "$lg" \
+        "$(printf '%s' "$lg_out" | tr -d '\n' | cut -c1-200)" >&2
+      unknowns=1
+      _record_observation log_group unknown "$lg" \
+        "$lg_probe -- CALL FAILED, absence NOT established: $(printf '%s' "$lg_out" | tr -d '\n\t' | cut -c1-160)"
+    elif [ -n "$lg_out" ] && [ "$lg_out" != "None" ]; then
+      printf '  [FAIL] log group %s is STILL PRESENT\n' "$lg" >&2; problems=1
+      _record_observation log_group present "$lg" "$lg_probe -- returned a matching log group"
+    else
+      # describe-* returns an empty LIST rather than an error, so empty IS absence
+      # here -- but ONLY because $lg came from state. Against a guessed prefix this
+      # same clean exit is what silently passed a log group nobody had looked at.
+      ok "log group $lg is gone (empty result set, not a failed call)"
+      _record_observation log_group absent "$lg" \
+        "$lg_probe -- returned an empty result set (prefix read from this run's state)"
+    fi
   fi
 
   # The most important post-check: this component must have changed nothing
@@ -1966,6 +2449,14 @@ PY
     unknowns=1
   fi
 
+  # Written BEFORE the guards below, and on the failing paths too. The evidence of
+  # what was looked for and what was seen is most needed when the teardown did NOT
+  # verify: exiting nonzero with no fragment leaves the assembler with nothing to
+  # distinguish "not yet run" from "ran and found a survivor". The fragment carries
+  # verified_after_teardown and a nonempty `unobserved` list in that case, so it
+  # cannot be mistaken for a clean result.
+  write_teardown_removals_fragment "$dir" "$observations"
+
   [ "$unknowns" -eq 0 ] || fail "one or more resources could NOT be verified (see [UNKNOWN] above).
      An unverifiable resource is NOT a deleted resource. Report cleanup as
      UNVERIFIED -- #3968's cleanup_ok must stay False -- fix the access problem and
@@ -1979,11 +2470,21 @@ PY
    1. Delete the fixture Ingress (this is what removes the fixture ALB) and the
       fixture Secret, via #3968's 90-cleanup-ledger.sh. Both are uid-gated there,
       so a same-named replacement created by someone else is left alone.
-   2. Remove the private artifact directory $dir, which holds the reviewed inputs
-      and plan files.
-   3. #3968's cleanup_ok stays None for a dry run and False on any unverified
+   2. Hand BOTH evidence fragments to #3968's artifact assembler, BEFORE step 3
+      removes the directory that holds them:
+        $dir/creation-ledger-fragment.json   -> wave2_preflight.creation_ledger
+        $dir/teardown-removals-fragment.json -> teardown_verification.removals
+      #5825's W2-10 reconciles the two in BOTH directions, so contributing only one
+      is worse than contributing neither: a removal naming an identity the creation
+      ledger lacks is REFUSED as removing something the fixture did not create.
+      Do not hand-edit either file -- the evaluator digests the removals artifact
+      before and after teardown and refuses one that did not change.
+   3. Remove the private artifact directory $dir, which holds the reviewed inputs
+      and plan files. Copy the two fragments out first.
+   4. #3968's cleanup_ok stays None for a dry run and False on any unverified
       absence; do not record success on this component until step 1 reports
-      verified absence for both objects.
+      verified absence for both objects AND the removals fragment's \`unobserved\`
+      list is empty.
 EOF
 }
 
@@ -2277,7 +2778,7 @@ case "$CMD" in
   recover-secret) cmd_recover_secret ;;
   verify)  cmd_verify ;;
   destroy) cmd_destroy ;;
-  ""|-h|--help) sed -n '1,45p' "$0" ;;
+  ""|-h|--help) print_header ;;
   *) fail "unknown subcommand: $CMD
      (init|plan|apply|handoff|recover-secret|verify|destroy)" ;;
 esac
