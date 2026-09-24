@@ -48,8 +48,13 @@ Superplane login and no credential of your own — see the port note.
   most familiar cause.
 - **Give specific commands.** `kubectl`, PromQL, AWS CLI or `superplane` CLI
   invocations that the operator can run — not "check the metrics".
-- **Use the `superplane` skill for platform operations** (`skills/superplane/`).
-  Bootstrap it before use, as the skill instructs.
+- **For an issue requesting GPU capacity or a workload, use the `skypilot`
+  skill** (`skills/skypilot/`). Express resource constraints and let SkyPilot
+  choose the machines; use the existing WireGuard/EKS join path before submitting
+  Kubernetes workloads. Use the `superplane` skill for maintained ADP workspace,
+  readiness and operation commands. Report results back to the originating issue.
+  A separate UI flow is not a prerequisite. Honor authorization already recorded
+  for the run; ask only when the requested action exceeds it.
 - **Reach for read-only investigation first.** Capacity discovery, listing and
   describing cost nothing and change nothing. Scaling, draining, deleting and
   deploying do.
