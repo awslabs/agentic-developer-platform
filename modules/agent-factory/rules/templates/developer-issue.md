@@ -46,7 +46,8 @@ Do not add agent mentions/trigger labels when filing. -->
 - **Outputs and behavior:** <CLI/API/UI result, error cases, retry/rerun semantics.>
 - **Compatibility and data:** <Existing callers, schema/migration and auth/scope
   effects; relevant fresh/existing/pending states and conflicting inputs. For
-  multi-step flows, name producer/consumer identity and state handoffs.>
+  multi-step flows, name the shared schema, producer/consumer identity, real
+  caller handoff and integration owner.>
 
 ### Prerequisites and unresolved facts
 
@@ -66,7 +67,9 @@ with the developer. Do not present an unknown as a verified prerequisite.>
 - **Per-run work:** <What is created, used, removed and retained; or none.>
 - **Integration / rollout:** <Verified workflow + trigger; distinguish automatic
   from manual. Mark commands/interfaces still to be built as proposed.>
-- **Recovery:** <Rollback/cleanup/resume and its owner, where applicable.>
+- **Recovery:** <Rollback/cleanup/resume and its owner, where applicable. For
+  partial success, name the durable retry record, automatic trigger and retirement
+  condition; cover acknowledgement success with reporting failure and restart.>
 - **Handoff / stop condition:** <Who owns post-merge work and what evidence closes
   this issue. On an external blocker, provide exact owner/action and continue
   independent work. Preserve existing approvals; filing is not deployment approval.>
@@ -85,6 +88,10 @@ entry point/installed worker to the assertion; name a plausible wrong result
 that must fail. Split compound proof into explicit subclaims. For broad
 automation, name the first runnable checkpoint and remaining full acceptance.
 Link deep procedures at a revision.>
+
+**Finding closure owner:** <Who fixes review defects and integrates the final
+revision. Consolidate findings; direct in-scope fixes may be made by an authorized
+review/delivery owner. Keep substantial missing work explicit.>
 
 **Completion report:** Map every AC ID to pass/fail/blocked/not-run and evidence
 at the tested revision. State remaining rollout/handoff work. A required blocked
