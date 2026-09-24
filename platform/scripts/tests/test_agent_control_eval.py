@@ -12487,6 +12487,11 @@ def collect_index(
         report_sources=report_sources,
         artifacts=artifacts,
         prior_report=prior_report(config) if report is None else report,
+        read_capture=lambda path: {
+            "mode": "live", "bundle_revision": FRONTEND_REVISION,
+            "served_assets": {"verified": True, "method": "asset_manifest_match"},
+            "injected_conditions": [],
+        },
         bundle_revision=bundle_revision,
         compiled_revision=FRONTEND_REVISION,
         compiled_at=relative_time(0),
@@ -12697,14 +12702,9 @@ class TestTheCollectorToEvaluatorPathIsReal:
         assert {name: gaps for name, gaps in run.refusals.items() if gaps} == {}
 
     def test_wave_three_unregistered_keeps_the_wave_incomplete(self, tmp_path):
-        """The honest state of THIS revision, reached through the real path.
-
-        Not a contrived failure: the collection is complete and correct, the transports
-        all answer, and wave 4 is still incomplete because wave 3's manifest does not
-        exist here. The kickoff's "missing prerequisite acceptance ... must remain NOT
-        RUN/failure and nonzero" is this case.
-        """
-        run = collect_and_evaluate(tmp_path)
+        """An unavailable Wave 3 manifest prevents acceptance despite complete inputs."""
+        with patch.object(_mod, "WAVE_CHECKS", {k: v for k, v in _mod.WAVE_CHECKS.items() if k != 3}):
+            run = collect_and_evaluate(tmp_path)
         assert run.results["W4-01"].status == _mod.STATUS_NOT_RUN
         assert run.results["W4-10"].status == _mod.STATUS_NOT_RUN
         assert "wave 3" in run.results["W4-01"].message
@@ -13365,7 +13365,8 @@ class TestAFabricatedFullReportIsUnreachable:
         criteria are not in the consolidated set, and W4-10 refuses on that rather than
         on anything about the index.
         """
-        run = collect_and_evaluate(tmp_path)  # no wave-3 manifest in this revision
+        with patch.object(_mod, "WAVE_CHECKS", {k: v for k, v in _mod.WAVE_CHECKS.items() if k != 3}):
+            run = collect_and_evaluate(tmp_path)
         index = json.loads(run.paths["wave4_evidence_index"].read_text(encoding="utf-8"))
         assert set(index["criteria"]) == set(_mod.all_acceptance_ids()), (
             "the index is genuinely complete; the run is not"
@@ -13478,3 +13479,38 @@ class TestAFabricatedFullReportIsUnreachable:
         index = json.loads(run.paths["wave4_evidence_index"].read_text(encoding="utf-8"))
         assert reported <= set(index["criteria"])
         assert set(_mod.all_acceptance_ids()) == set(index["criteria"])
+
+
+class TestReportCaptureProvenance:
+    @pytest.mark.parametrize("case", ["missing_reader", "unreadable", "mocked", "wrong_revision", "local_assets", "mocked_command", "missing_injections"])
+    def test_report_cannot_upgrade_unproven_capture_to_live(self, tmp_path, case):
+        config = live_config(tmp_path)
+        source = _index.ReportSource("W4-02", "S7", ("AC-F3",))
+        capture = {"mode": "live", "bundle_revision": FRONTEND_REVISION,
+                   "served_assets": {"verified": True, "method": "asset_manifest_match"},
+                   "injected_conditions": []}
+        if case == "mocked": capture["mode"] = "mocked"
+        if case == "wrong_revision": capture["bundle_revision"] = "f" * 40
+        if case == "local_assets": capture["served_assets"]["method"] = "local_build_hash"
+        if case == "mocked_command": capture["injected_conditions"] = ["command_response:202"]
+        if case == "missing_injections": capture.pop("injected_conditions")
+        def read(path):
+            if case == "unreadable": raise FileNotFoundError(path)
+            assert path == "artifacts/W4-02.json"
+            return capture
+        row = _index._row_from_report(source, "AC-F3", prior_report(config),
+            bundle_revision=FRONTEND_REVISION, read_capture=None if case == "missing_reader" else read)
+        assert _collector.is_refused(row)
+
+    def test_live_capture_is_read_from_report_artifact_and_revision_bound(self, tmp_path):
+        config = live_config(tmp_path)
+        capture_path = tmp_path / "actual-capture.json"
+        capture_path.write_text(json.dumps({"mode": "live", "bundle_revision": FRONTEND_REVISION,
+            "served_assets": {"verified": True, "method": "asset_manifest_match"}, "injected_conditions": []}))
+        report = prior_report(config)
+        report["checks"]["W4-02"]["evidence"] = [{"artifact": str(capture_path)}]
+        row = _index._row_from_report(_index.ReportSource("W4-02", "S7", ("AC-F3",)), "AC-F3", report,
+            bundle_revision=FRONTEND_REVISION, read_capture=lambda path: json.loads(Path(path).read_text()))
+        assert row["live"] is True
+        assert row["capture_artifact"] == str(capture_path)
+        assert row["revision"] == FRONTEND_REVISION

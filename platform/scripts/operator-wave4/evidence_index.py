@@ -184,6 +184,7 @@ def _row_from_report(
     report: Mapping[str, Any] | None,
     *,
     bundle_revision: Measured,
+    read_capture: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> Measured:
     """One index row, derived from a prior evaluator run's verdict on a check."""
     if report is None:
@@ -235,16 +236,39 @@ def _row_from_report(
             f"{sorted(str(value) for value in declared)}, which do not include it. A verdict can "
             "only evidence the criteria its own check carries"
         )
+    if read_capture is None:
+        return Refused(f"{acceptance_id}: no reader supplied for the report's browser capture")
+    captures = []
+    for observation in evidence:
+        path = observation.get("artifact") if isinstance(observation, Mapping) else None
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            capture = read_capture(path)
+        except Exception:  # An unrelated or unavailable artifact is not a capture.
+            continue
+        if isinstance(capture, Mapping) and "mode" in capture and "bundle_revision" in capture:
+            captures.append((path, capture))
+    if len(captures) != 1:
+        return Refused(f"{acceptance_id}: expected one readable browser capture referenced by the report; found {len(captures)}")
+    capture_path, capture = captures[0]
+    if capture.get("mode") != "live":
+        return Refused(f"{acceptance_id}: report capture is {capture.get('mode')!r}, not live")
+    if capture.get("bundle_revision") != bundle_revision:
+        return Refused(f"{acceptance_id}: capture bundle_revision differs from the requested evidence revision")
+    assets = capture.get("served_assets")
+    if not isinstance(assets, Mapping) or assets.get("verified") is not True or assets.get("method") != "asset_manifest_match":
+        return Refused(f"{acceptance_id}: live capture has no verified deployment asset manifest match")
+    injected = capture.get("injected_conditions")
+    if not isinstance(injected, list) or any(not isinstance(x, str) or x.startswith("command_response:") for x in injected):
+        return Refused(f"{acceptance_id}: capture injection record is missing or contains mocked command responses")
     return {
         "owner": source.owner,
         "evaluation": str(report.get("evaluation") or ""),
         "revision": bundle_revision,
         "evidence": list(evidence),
-        # A Playwright run driving a deployed bundle is a live observation by
-        # construction: there is no mocked variant of it that could reach this branch,
-        # because the row is derived from the evaluator's verdict on a capture whose
-        # provenance it checked first (`_browser_run`).
-        "live": True,
+        "capture_artifact": capture_path,
+        "live": capture["mode"] == "live",
         "status": str(status),
     }
 
@@ -262,6 +286,7 @@ def compile_index(
     prior_waves: Sequence[int],
     read_result: Callable[[int], Mapping[str, Any]],
     fixture_identity: Mapping[str, Any],
+    read_capture: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> tuple[Artifact, dict[str, str]]:
     """Assemble `wave4_evidence_index`, plus the per-criterion refusals.
 
@@ -288,7 +313,7 @@ def compile_index(
     for source in report_sources:
         for acceptance_id in source.acceptance_ids:
             row = _row_from_report(
-                source, acceptance_id, prior_report, bundle_revision=bundle_revision
+                source, acceptance_id, prior_report, bundle_revision=bundle_revision, read_capture=read_capture
             )
             # A criterion claimed by both a consolidated artifact and a report-backed
             # check keeps the artifact's row: the artifact is the wave that made the
