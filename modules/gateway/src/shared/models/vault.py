@@ -223,6 +223,14 @@ class MagicLinkNonce(Base):
     # target_user_id: set when a signed-in user issues the link; NULL when an
     # internal Lambda issues it (user picks Cognito identity on landing page).
     target_user_id: Mapped[str | None] = mapped_column(String(255))
+    # HOW this link reached the account it claims (#5664, A10).
+    #
+    # Nullable with no default on purpose. The consume path treats NULL as
+    # "not privately delivered" via `delivery_proves_ownership`, so rows written
+    # before this column existed — and any future minter that forgets to set it —
+    # produce an unproven link rather than a trusted one. Backfilling a value here
+    # would be asserting a delivery nobody observed.
+    delivery_method: Mapped[str | None] = mapped_column(String(32))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -280,6 +288,22 @@ class ChannelTenantMap(Base):
 
     # Relationship
     organization = relationship("Organization", backref="channel_mappings", lazy="selectin", passive_deletes=True)
+
+
+class InstallationRevocation(Base):
+    """Durable local denial and authorized retry state; never removed by cleanup."""
+
+    __tablename__ = "installation_revocations"
+
+    installation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Intentionally no cascading FK: deleting a tenant/user must not erase denial.
+    org_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    authorized_user_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    provider_uninstall_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    provider_revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    cleanup_pending: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class InstallationOwnershipConflict(Base):

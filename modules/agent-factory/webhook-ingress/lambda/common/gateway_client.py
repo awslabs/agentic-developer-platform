@@ -8,9 +8,9 @@ Issue #702: Added resolve_user_by_identity() to call the existing
 POST /internal/v1/resolve-user endpoint as a Postgres safety-net for
 canonical user_id resolution.
 
-Issue #4046 (#2724 slice A): resolve_installation_by_id() returns three distinct
-states (resolved / not_found / error) so callers can tell "this installation is
-authoritatively not a known tenant" from "we could not reach the gateway".
+Issue #4046 (#2724 slice A): resolve_installation_by_id() returns distinct
+states (resolved / revoked / not_found / error) so callers can distinguish
+authoritative absence or revocation from gateway unavailability.
 
 Only invoked from the webhook Lambda when:
   1. Tenant is resolved (installation is known)
@@ -42,6 +42,23 @@ _internal_api_key: str | None = None
 INSTALLATION_RESOLVED = "resolved"
 INSTALLATION_NOT_FOUND = "not_found"
 INSTALLATION_ERROR = "error"
+INSTALLATION_REVOKED = "revoked"
+
+# resolve_user_state() result states (Issue #5664, A10). Same three-state contract
+# as the installation resolver above, and for the same reason: a caller deciding
+# whether a DDB row may still carry authority must distinguish "Postgres looked and
+# this link does not exist / is not proven" (authoritative — the stale DDB row must
+# not stand in for it) from "we could not ask" (an outage, which must not become a
+# platform-wide deny). `resolve_user_by_identity` collapsed all of these to None,
+# which is why the stale-row fallback could not be closed safely.
+USER_RESOLVED = "resolved"
+USER_NOT_FOUND = "not_found"
+USER_AMBIGUOUS = "ambiguous"
+USER_ERROR = "error"
+
+# The authoritative answers. On either of these Postgres has spoken, so a DDB row
+# that disagrees is stale and must not supply authority on its own.
+USER_AUTHORITATIVE_STATES = frozenset({USER_RESOLVED, USER_NOT_FOUND, USER_AMBIGUOUS})
 
 # Issue #2724 (slice B): organizations.created_via values. Provenance records
 # WHICH path created the tenant row — the signal the auto-register gate trusts,
@@ -100,28 +117,50 @@ def _resolve_internal_api_key() -> str:
     return _internal_api_key
 
 
-def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | None:
-    """Call POST /internal/v1/resolve-user to resolve canonical user via Postgres.
+def resolve_user_state(
+    provider: str, provider_user_id: str, org_id: str | None = None
+) -> dict:
+    """Resolve a canonical user, distinguishing "no such link" from "cannot ask".
 
-    Returns dict with keys {user_id, org_id, team_id, is_shadow} on success,
-    or None on 404 / error.
+    Issue #5664 (A10). Returns one of:
+
+        {"state": "resolved", "user": {...}}   # Postgres holds a proven link
+        {"state": "not_found"}                 # authoritative gateway 404
+        {"state": "ambiguous"}                 # authoritative gateway 409
+        {"state": "error", "reason": <str>}    # we could not find out
+
+    Why the split matters here specifically: the webhook resolver holds a DDB row
+    that may be stale and carries no provenance of its own. If the gateway
+    authoritatively says this identity does not exist, or is not proven, or is
+    ambiguous across tenants, then the DDB row must NOT stand in for that answer
+    when authority is being granted — that is the permissive legacy fallback this
+    issue removes. But if we simply could not reach the gateway, denying would turn
+    a gateway blip into a platform-wide refusal, so that case stays fail-open-loud.
+
+    ``not_found`` covers a gateway 404, which is returned both when no link exists
+    and when every candidate link is unproven — from the caller's perspective those
+    are the same fact: Postgres offers no proven identity here.
+
+    Callers must branch on ``state``; all four results are truthy dicts.
     """
     if not GATEWAY_API_URL:
         logger.warning("GATEWAY_API_URL not set — cannot resolve user via gateway")
-        return None
+        return {"state": USER_ERROR, "reason": "gateway_url_unset"}
 
     url = f"{GATEWAY_API_URL}/internal/v1/resolve-user"
     body = {
         "provider": provider,
         "provider_user_id": provider_user_id,
     }
+    if org_id:
+        body["org_id"] = org_id
 
     api_key = _resolve_internal_api_key()
     if not api_key:
         logger.warning(
             "Internal API key not available — cannot resolve user via gateway"
         )
-        return None
+        return {"state": USER_ERROR, "reason": "internal_api_key_unavailable"}
 
     headers = {
         "Content-Type": "application/json",
@@ -139,36 +178,87 @@ def resolve_user_by_identity(provider: str, provider_user_id: str) -> dict | Non
             if resp.status in (200, 201):
                 data = json.loads(resp.read().decode("utf-8"))
                 return {
-                    "user_id": data.get("user_id", ""),
-                    "org_id": data.get("org_id", ""),
-                    "team_id": data.get("team_id", ""),
-                    "is_shadow": data.get("is_shadow", False),
+                    "state": USER_RESOLVED,
+                    "user": {
+                        "user_id": data.get("user_id", ""),
+                        "org_id": data.get("org_id", ""),
+                        "team_id": data.get("team_id", ""),
+                        "is_shadow": data.get("is_shadow", False),
+                        # "" when the gateway has not been redeployed with the
+                        # field. Unknown provenance, NOT proof.
+                        "verification_method": data.get("verification_method", ""),
+                    },
                 }
-            return None
+            # A non-2xx status that did not raise: we do not know the answer.
+            return {"state": USER_ERROR, "reason": f"http_{resp.status}"}
     except urllib.error.HTTPError as e:
+        if e.code == 409:
+            # The gateway refuses to guess which tenant an ambiguous identity
+            # belongs to. Authoritative: the data is genuinely ambiguous, not
+            # transiently unavailable, so retrying returns the same 409.
+            logger.warning(
+                "resolve_user_state: 409 ambiguous identity for provider=%s "
+                "provider_user_id=%s org_id=%r — declining to resolve",
+                provider,
+                provider_user_id,
+                org_id,
+            )
+            return {"state": USER_AMBIGUOUS}
         if e.code == 404:
             logger.info(
-                "resolve_user_by_identity: 404 for provider=%s provider_user_id=%s",
+                "resolve_user_state: 404 for provider=%s provider_user_id=%s",
                 provider,
                 provider_user_id,
             )
-            return None
+            return {"state": USER_NOT_FOUND}
         logger.error(
-            "resolve_user_by_identity HTTP error %d for provider=%s provider_user_id=%s: %s",  # noqa: E501
+            "resolve_user_state HTTP error %d for provider=%s provider_user_id=%s: %s",
             e.code,
             provider,
             provider_user_id,
             e.reason,
         )
-        return None
+        return {"state": USER_ERROR, "reason": f"http_{e.code}"}
     except Exception as e:
         logger.error(
-            "resolve_user_by_identity failed for provider=%s provider_user_id=%s: %s",
+            "resolve_user_state failed for provider=%s provider_user_id=%s: %s",
             provider,
             provider_user_id,
             e,
         )
-        return None
+        return {"state": USER_ERROR, "reason": "request_failed"}
+
+
+def resolve_user_by_identity(
+    provider: str, provider_user_id: str, org_id: str | None = None
+) -> dict | None:
+    """Call POST /internal/v1/resolve-user to resolve canonical user via Postgres.
+
+    Returns dict with keys {user_id, org_id, team_id, is_shadow,
+    verification_method} on success, or None on 404 / error.
+
+    Issue #5664 (A10): retained as the flattened view over
+    :func:`resolve_user_state` for callers that only need "did we get a user".
+    A caller that must distinguish an authoritative "no proven link" from "we
+    could not ask" — which any caller granting authority must — has to use
+    ``resolve_user_state`` instead, because both collapse to ``None`` here.
+
+    Issue #5664 (A10): two additions.
+
+    ``org_id`` scopes the lookup to the tenant this webhook delivery is for.
+    ``user_identities`` is uniquely indexed per ``(provider, provider_user_id,
+    org_id)``, so one external account may legitimately hold rows in several
+    tenants; unscoped, the gateway cannot tell which one an event belongs to and
+    answers 409 rather than guessing. The installation already tells us the
+    tenant, so pass it and the question becomes answerable.
+
+    ``verification_method`` is the provenance of the link the answer rests on.
+    Callers that grant authority from this result must check it — see
+    ``identity_resolver``'s use of ``PROVEN_METHODS``. It is ``""`` when the
+    gateway predates the field, which is unknown provenance, NOT proof.
+    """
+    result = resolve_user_state(provider, provider_user_id, org_id=org_id)
+    return result["user"] if result["state"] == USER_RESOLVED else None
 
 
 def _emit_installation_resolve_error_metric(reason: str) -> None:
@@ -220,10 +310,11 @@ def resolve_installation_by_id(installation_id: str) -> dict:
     Issue #2769: Postgres is authoritative for the installation_id → tenant
     mapping.
 
-    Issue #4046 (#2724 slice A): returns one of three distinct states instead of
+    Issue #4046 (#2724 slice A): returns explicit states instead of
     collapsing everything except success into ``None``::
 
         {"state": "resolved",  "tenant_id": <org_id>, "created_via": <str>}
+        {"state": "revoked"}                            # authoritative gateway 410
         {"state": "not_found"}                          # authoritative gateway 404
         {"state": "error", "reason": <str>}             # we could not find out
 
@@ -233,15 +324,12 @@ def resolve_installation_by_id(installation_id: str) -> dict:
     as "unknown", never as "untrusted". Use :func:`installation_gate` rather than
     interpreting these fields directly.
 
-    ``not_found`` is returned ONLY for a gateway 404 — the one answer that
-    authoritatively means "this installation is not a known ADP tenant".
-    Everything else (missing config, missing internal API key, non-404 HTTP
-    status, timeout, malformed body) is ``error``: we do not know. Callers that
-    gate on "known tenant" must deny on ``not_found`` and fail open (loudly) on
-    ``error``, otherwise a gateway outage becomes a platform-wide deny.
-
-    Callers must branch on ``state``. Truthiness is NOT a success check — all
-    three results are truthy dicts.
+    Installation admission requires ``resolved`` plus ``revocation_checked=True``.
+    A 410 is durable denial; 404 is unknown ownership. Missing configuration,
+    other HTTP failures, timeouts and malformed responses are ``error`` and also
+    deny installation authority. An absent DDB marker cannot prove the gateway
+    did not commit a revocation whose marker publication failed.
+    Callers must branch on ``state``; all results are truthy dictionaries.
     """
     if not GATEWAY_API_URL:
         return _installation_error(installation_id, "gateway_url_not_configured")
@@ -273,6 +361,7 @@ def resolve_installation_by_id(installation_id: str) -> dict:
                     return {
                         "state": INSTALLATION_RESOLVED,
                         "tenant_id": tenant_id,
+                        "revocation_checked": data.get("revocation_checked") is True,
                         # Issue #2724: "" when the gateway has not been redeployed
                         # with the provenance field yet — the gate fails open on
                         # that, loudly.
@@ -285,6 +374,8 @@ def resolve_installation_by_id(installation_id: str) -> dict:
                 installation_id, "unexpected_status", str(resp.status)
             )
     except urllib.error.HTTPError as e:
+        if e.code == 410:
+            return {"state": INSTALLATION_REVOKED}
         if e.code == 404:
             logger.info(
                 "resolve_installation_by_id: 404 for installation_id=%s "
@@ -458,6 +549,9 @@ def installation_gate(result: dict | None) -> tuple[bool, str]:
         return True, GATE_UNAVAILABLE
 
     state = result.get("state")
+
+    if state == INSTALLATION_REVOKED:
+        return False, "installation_revoked"
 
     if state == INSTALLATION_NOT_FOUND:
         return False, GATE_NOT_A_KNOWN_TENANT

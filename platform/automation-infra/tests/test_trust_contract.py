@@ -14,6 +14,19 @@ spec = importlib.util.spec_from_file_location("cutover", AUTOMATION / "verify-cu
 cutover = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cutover)
 
+source_pin_spec = importlib.util.spec_from_file_location(
+    "gateway_source_pin", ROOT / ".github/scripts/tests/test_gateway_infra_reviewed_source.py"
+)
+source_pin = importlib.util.module_from_spec(source_pin_spec)
+source_pin_spec.loader.exec_module(source_pin)
+# Reuse the real-shell probes and restricted local Git/gh harness. These cases
+# remain collected when Automation trust runs without the separate Script Tests.
+local_history = source_pin.local_history
+test_gateway_pin_missing_or_malformed = source_pin.test_missing_or_malformed_pin_stops_before_any_command
+test_gateway_pin_mismatched_sources = source_pin.test_any_source_mismatch_blocks_including_old_ancestor
+test_gateway_pin_missing_run_sha = source_pin.test_missing_run_sha_fails_closed
+test_gateway_pin_matching_sources = source_pin.test_matching_reviewed_run_and_checkout_reach_deployment
+
 ENVIRONMENT = {
     "can_admins_bypass": False,
     "protection_rules": [{"type": "required_reviewers", "reviewers": [{"type": "User", "reviewer": {"id": 1}}], "prevent_self_review": True}],
@@ -54,6 +67,32 @@ def test_weakened_environment_refused(mutation):
         cutover.verify_environment(env)
 
 
+def assert_gateway_reviewed_source(workflow, job, authority_index):
+    """Gateway infra requires an exact source, stricter than ancestry alone."""
+    assert set(workflow["jobs"]) == {"apply"}
+    inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
+    pin = inputs["reviewed_source_sha"]
+    assert pin["required"] is True and pin["type"] == "string"
+    assert "default" not in pin
+    steps = job["steps"]
+    assert authority_index == 2
+    assert steps[0]["uses"].startswith("actions/checkout@")
+    assert "ref" not in steps[0].get("with", {})
+    assert steps[3]["uses"] == "./.github/actions/load-deploy-config"
+    assert not job.get("continue-on-error", False)
+    guard = steps[1]
+    assert guard["name"] == "Verify exact reviewed source before deployment"
+    assert guard["shell"] == "bash"
+    assert guard["env"] == {"REVIEWED_SOURCE_SHA": "${{ inputs.reviewed_source_sha }}"}
+    assert "if" not in guard and not guard.get("continue-on-error", False)
+    # Bind the placement check to the actual workflow step exercised by the
+    # shared behavioral probes above, not a copied implementation snapshot.
+    assert guard == source_pin.GUARD
+    for step in steps[authority_index:]:
+        if any(term in step.get("if", "") for term in ("always(", "failure(", "cancelled(")):
+            assert step["name"] == "Summary"
+
+
 @pytest.mark.parametrize("kind", ["deployment", "build"])
 def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
     inventory = json.loads((AUTOMATION / f"{kind}-workflows.json").read_text())
@@ -72,7 +111,11 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
             assert job["runs-on"] == {"group": "adp-deployment", "labels": "arc-runner-deployment"}, name
             assert job["environment"].startswith("adp-deploy-" if kind == "deployment" else "adp-build-"), name
             assert job["permissions"]["id-token"] == "write", name
-            assert any(s.get("name") == "Verify source belongs to reviewed main history" and "git merge-base --is-ancestor HEAD FETCH_HEAD" in s.get("run", "") for s in steps[:matching[0]]), name
+            if name == "gateway-infra-apply.yml":
+                assert kind == "deployment"
+                assert_gateway_reviewed_source(workflow, job, matching[0])
+            else:
+                assert any(s.get("name") == "Verify source belongs to reviewed main history" and "git merge-base --is-ancestor HEAD FETCH_HEAD" in s.get("run", "") for s in steps[:matching[0]]), name
             for step in steps:
                 assert "sudo " not in step.get("run", ""), name
                 assert not re.search(r"\$\{\{\s*(?:inputs\.|github\.event\.inputs\.)", step.get("run", "")), name

@@ -23,6 +23,65 @@ class AuthorityProvisionError(Exception):
     """Dispatch cannot publish without a matching protected authority record."""
 
 
+# ---------------------------------------------------------------------------
+# Requiring proven identity before minting human authority (issue #5664, A10)
+# ---------------------------------------------------------------------------
+# `from_verified_webhook` turns "we resolved this sender to a platform user" into
+# "this platform user authorized this dispatch". Those are different claims. The
+# first only says a row existed mapping the sender's GitHub id to a user_id; it
+# says nothing about whether anyone ever demonstrated that the sender controls
+# that account. Without this check, an identity link a user merely ASSERTED about
+# themselves mints human dispatch authority indistinguishably from an
+# OAuth-confirmed one.
+#
+# The check is now UNCONDITIONAL and denies. An earlier pass on this issue staged
+# it behind an allow-by-default flag because `verification_method` was not
+# projected onto the DynamoDB identity rows the resolver reads, so every
+# resolution carried "" and enforcing would have denied every human dispatch
+# platform-wide. That projection now exists on both identity tables (see
+# `identity_index.update_user_identity_core` /
+# `user_identity_index.put_user_identity` in the gateway), the canonical Postgres
+# lookup supplies provenance directly, and `scripts/backfill_identity_provenance.py`
+# fills historical rows — so a legitimate proven link has a real route through this
+# gate and denial no longer means an outage.
+#
+# Deploy ordering matters and is not optional: the writers and backfill must land
+# BEFORE this code, or proven senders are denied until the backfill runs. See
+# `docs/runbooks/identity-provenance-rollout.md` for the ordered procedure.
+#
+# There is deliberately no allow-on-unknown escape hatch. "We do not know how this
+# link was established" is exactly the case that must not mint authority; an env
+# var that re-permits it would reintroduce the vulnerability by configuration.
+UNPROVEN_IDENTITY_METRIC = "UnprovenIdentityAuthority"
+
+
+def _emit_unproven_identity_metric(tenant_id: str) -> None:
+    """Count refusals so a rollout gap is visible. Best-effort, never raises.
+
+    Emitted on the DENY path: a non-zero count after the backfill means real
+    senders are being refused and their rows still lack provenance, which is the
+    signal to check the backfill rather than to re-permit unproven links.
+    """
+    try:
+        boto3.client(
+            "cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        ).put_metric_data(
+            Namespace="ADP/AgentAuthority",
+            MetricData=[
+                {
+                    "MetricName": UNPROVEN_IDENTITY_METRIC,
+                    "Value": 1,
+                    "Unit": "Count",
+                    "Dimensions": [
+                        {"Name": "TenantId", "Value": tenant_id or "unknown"}
+                    ],
+                }
+            ],
+        )
+    except Exception:  # noqa: BLE001 — observability must not gate authorization
+        pass
+
+
 # Issue #5365: the server-only marker that lets a human-summoned root coordinator
 # dispatch to other stories in its own repository. Named constants because the
 # gateway reader must agree with this writer exactly; two string literals that
@@ -60,6 +119,38 @@ class VerifiedHumanEvent:
             or not repo
         ):
             raise AuthorityProvisionError("human authorization required")
+
+        # Issue #5664 (A10): the sender must be PROVEN to control the account, not
+        # merely resolvable to it. `identity_proven` fails closed on unknown
+        # provenance, so a missing attribute, an empty string, an unproven method
+        # and a method this code has never heard of all refuse.
+        #
+        # `getattr` with a False default is deliberate: a resolver object from an
+        # older deployment that lacks the property must deny, not silently pass.
+        if not getattr(resolved, "identity_proven", False):
+            _emit_unproven_identity_metric(tenant_id)
+            raise AuthorityProvisionError(
+                "human authorization requires a proven identity link"
+            )
+
+        # The provenance must belong to THIS resolution. A resolver that carried a
+        # proven method alongside a tenant it did not resolve for would be asserting
+        # provenance from one context into another; tenant_id is re-checked against
+        # the resolution rather than taken only from the caller's argument.
+        resolved_org = getattr(resolved, "org_id", None)
+        resolved_tenant = getattr(resolved, "tenant_id", None)
+        if resolved_tenant and resolved_tenant != tenant_id:
+            raise AuthorityProvisionError(
+                "human authorization requires a tenant-consistent identity link"
+            )
+        if resolved_org and resolved_org != tenant_id:
+            # Cross-tenant participation is decided by the resolver's own trigger
+            # policy, which has already run and either allowed or denied. Reaching
+            # here with a mismatch means the proven link belongs to a different
+            # tenant than the authority being minted.
+            raise AuthorityProvisionError(
+                "human authorization requires a tenant-consistent identity link"
+            )
         digest = hashlib.sha256(event_type.encode() + b"\0" + body).hexdigest()
         return cls(f"github-event:{digest}", resolved.user_id, tenant_id, repo)
 

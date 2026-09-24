@@ -29,9 +29,10 @@ def database(pg_url):
 
 
 def fresh(row, verified=None):
-    # Publication rejects older verification: fresh fixtures must follow the seed.
+    # A later migration may seed verification newer than a fixed fixture date.
+    # Each refreshed row must be newer than its active counterpart.
     if verified is None:
-        verified = (datetime.fromisoformat(row.verified_at.replace("Z", "+00:00")) + timedelta(days=1)).isoformat()
+        verified = (datetime.fromisoformat(row.verified_at.replace("Z", "+00:00")) + timedelta(seconds=1)).isoformat()
     return replace(row, source="bulk_catalog" if ".gpt-oss-" in row.model_id else "model_card", snapshot_version=None, verified_at=verified)
 
 

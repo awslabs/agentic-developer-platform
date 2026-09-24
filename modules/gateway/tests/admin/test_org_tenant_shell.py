@@ -16,7 +16,6 @@ Tests cover:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,7 +25,6 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
-    _PROVIDER_GITHUB_INSTALL,
     _build_app_manifest,
     _slugify_org_id,
     _upsert_org_tenant_shell,
@@ -37,16 +35,24 @@ from src.shared.models.base import Base
 from src.shared.models.onboarding import Tenant, TenantMembership
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce
+from tests.admin import install_setup_fixtures as setup_fixtures
+from tests.admin.install_setup_fixtures import (
+    bind_real_org_control,
+    issue_install_nonce,
+    issue_register_nonce,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+offline_setup_boundaries = setup_fixtures.offline_setup_boundaries
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(autouse=True)
-def _mock_env(monkeypatch):
+def _mock_env(monkeypatch, offline_setup_boundaries):
     """Set up environment for tests."""
     monkeypatch.setenv("BG_GITHUB_APP_SLUG", "test-adp-agent")
     monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "true")
@@ -61,7 +67,18 @@ def _mock_env(monkeypatch):
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_ddb:
-            yield mock_ddb
+            # Issue #5664 moved the "an App is already registered" guard into
+            # register_app_callback, before any secret write. It builds its own
+            # boto3 client from ambient config, so with live AWS credentials
+            # present (dev box, or a CI runner with a role attached) it reads the
+            # REAL deployment's App id and refuses — making these success-path
+            # tests pass or fail depending on the machine. Guard behaviour itself
+            # is covered in tests/admin/test_register_app_callback_authority.py.
+            with patch(
+                "src.admin.connections.service._check_existing_app_secret",
+                return_value=None,
+            ):
+                yield mock_ddb
 
 
 @pytest.fixture
@@ -141,7 +158,9 @@ def _mock_github_client(
         }
     )
     client.list_installation_repository_names = AsyncMock(return_value=["acme-corp/repo-one", "acme-corp/repo-two"])
-    return client
+    # These human-routing cases model an unavailable optional bot lookup.
+    client.get_bot_user = AsyncMock(return_value={})
+    return bind_real_org_control(client)
 
 
 async def _write_nonce(
@@ -150,19 +169,8 @@ async def _write_nonce(
     jti: str = "test-jti-001",
     target_user_id: str = "user-001",
 ) -> MagicLinkNonce:
-    now = datetime.now(UTC)
-    nonce = MagicLinkNonce(
-        jti=jti,
-        provider=_PROVIDER_GITHUB_INSTALL,
-        provider_user_id="sub-abc",
-        channel_context=None,
-        target_user_id=target_user_id,
-        expires_at=now + timedelta(minutes=15),
-        consumed_at=None,
-    )
-    db.add(nonce)
-    await db.commit()
-    return nonce
+    user = await db.get(User, target_user_id)
+    return await issue_install_nonce(db, user, jti=jti)
 
 
 # ---------------------------------------------------------------------------
@@ -312,25 +320,48 @@ class TestUpsertOrgTenantShell:
 # ---------------------------------------------------------------------------
 
 
-class TestRegisterAppCallbackOrgTenant:
-    async def _setup_nonce(self, db: AsyncSession) -> str:
-        """Write a register nonce and return the jti."""
-        from src.admin.connections.service import _PROVIDER_GITHUB_APP_REGISTER
+async def _seed_register_initiator(db: AsyncSession, *, user_id: str = "user-001") -> None:
+    """Seed the platform-admin who starts a GitHub App registration.
 
-        jti = "register-jti-001"
-        now = datetime.now(UTC)
-        nonce = MagicLinkNonce(
-            jti=jti,
-            provider=_PROVIDER_GITHUB_APP_REGISTER,
-            provider_user_id="sub-abc",
-            channel_context=None,
-            target_user_id="user-001",
-            expires_at=now + timedelta(minutes=15),
-            consumed_at=None,
+    Issue #5664: register_app_callback re-derives platform-admin authority from the
+    `users` row recorded on the state nonce, because the callback is a tokenless
+    browser redirect — there is no Authorization header, hence no `is_admin` claim
+    to read. These tests assert org-tenant-shell creation on the SUCCESS path, so
+    the initiator has to exist and hold the role. Refusal coverage lives in
+    tests/admin/test_register_app_callback_authority.py.
+    """
+    org_id = "register-initiator-org"
+    if await db.get(Organization, org_id) is None:
+        db.add(
+            Organization(
+                id=org_id,
+                name="Registrar Org",
+                aws_accounts=[],
+                role_mappings={},
+                settings={},
+            )
         )
-        db.add(nonce)
         await db.commit()
-        return jti
+    if await db.get(User, user_id) is None:
+        db.add(
+            User(
+                id=user_id,
+                org_id=org_id,
+                team_id="team-registrar",
+                email=f"{user_id}@registrar.local",
+                cognito_sub="sub-abc",
+                role="platform_admin",
+            )
+        )
+        await db.commit()
+
+
+class TestRegisterAppCallbackOrgTenant:
+    async def _setup_nonce(self, db: AsyncSession, *, owner_type="org") -> str:
+        """Write a register nonce and return the jti."""
+        await _seed_register_initiator(db)
+        user = await db.get(User, "user-001")
+        return await issue_register_nonce(db, user, jti="register-jti-001", owner_type=owner_type)
 
     @patch("src.admin.connections.service._store_app_credentials", new_callable=AsyncMock)
     @patch("src.admin.connections.service.get_github_app_provider")
@@ -422,7 +453,7 @@ class TestRegisterAppCallbackOrgTenant:
         mock_client.post = AsyncMock(return_value=mock_response)
         mock_httpx_cls.return_value = mock_client
 
-        jti = await self._setup_nonce(db_session)
+        jti = await self._setup_nonce(db_session, owner_type="user")
         await register_app_callback(code="test-code", state=jti, db=db_session)
 
         # No org created for personal account
@@ -540,7 +571,7 @@ class TestInstallCallbackOrgRouting:
             "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
             new_callable=AsyncMock,
         ) as mock_seed:
-            with pytest.raises(PermissionError):
+            with pytest.raises(PermissionError, match="not a member of"):
                 await install_callback(
                     installation_id=124731131,
                     setup_action="install",
@@ -634,7 +665,7 @@ class TestInstallCallbackOrgRouting:
 
         with patch.dict(os.environ, {"ORG_TENANT_AUTO_CREATE": "false"}):
             await _write_nonce(db_session)
-            gh = _mock_github_client(account_github_id=11111111)
+            gh = _mock_github_client(installation_id=999, account_github_id=11111111)
 
             with patch(
                 "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
@@ -664,7 +695,7 @@ class TestInstallCallbackOrgRouting:
     async def test_unknown_org_upserts_tenant_shell_on_install(self, db_session: AsyncSession, caller_org, caller_user, _mock_env):
         """Public-App install by unknown org creates the tenant shell."""
         await _write_nonce(db_session)
-        gh = _mock_github_client(account_login="new-org", account_github_id=55555555)
+        gh = _mock_github_client(installation_id=777, account_login="new-org", account_github_id=55555555)
 
         with patch(
             "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
@@ -703,6 +734,7 @@ class TestInstallCallbackOrgRouting:
         """Personal (User) installs still route to the caller's tenant."""
         await _write_nonce(db_session)
         gh = _mock_github_client(
+            installation_id=888,
             account_type="User",
             account_login="alice",
             account_github_id=12345,
@@ -765,7 +797,7 @@ class TestInstallCallbackOrgRouting:
         await db_session.commit()
 
         await _write_nonce(db_session)
-        gh = _mock_github_client(account_login="Target-Org", account_github_id=77777777)
+        gh = _mock_github_client(installation_id=555, account_login="Target-Org", account_github_id=77777777)
 
         with patch(
             "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
@@ -1063,7 +1095,7 @@ class TestCreatedViaProvenance:
     async def test_nonce_install_stamps_register_flow(self, db_session: AsyncSession, caller_org, caller_user, _mock_env):
         """The authenticated install-callback path stays trusted (no over-tightening)."""
         await _write_nonce(db_session)
-        gh = _mock_github_client(account_login="new-org", account_github_id=55555555)
+        gh = _mock_github_client(installation_id=777, account_login="new-org", account_github_id=55555555)
 
         with patch(
             "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
@@ -1115,21 +1147,9 @@ class TestCreatedViaProvenance:
         mock_httpx_cls.return_value = mock_client
 
         jti = "register-jti-prov"
-        now = datetime.now(UTC)
-        from src.admin.connections.service import _PROVIDER_GITHUB_APP_REGISTER
-
-        db_session.add(
-            MagicLinkNonce(
-                jti=jti,
-                provider=_PROVIDER_GITHUB_APP_REGISTER,
-                provider_user_id="sub-abc",
-                channel_context=None,
-                target_user_id="user-001",
-                expires_at=now + timedelta(minutes=15),
-                consumed_at=None,
-            )
-        )
-        await db_session.commit()
+        await _seed_register_initiator(db_session)
+        user = await db_session.get(User, "user-001")
+        await issue_register_nonce(db_session, user, jti=jti)
 
         await register_app_callback(code="test-code", state=jti, db=db_session)
 

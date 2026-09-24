@@ -41,8 +41,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
+
 from src.admin.installations.resolver import OwnerState, resolve_installation_owner
 from src.shared.exceptions import BedrockGatewayError
+from src.shared.models.organization import Organization
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,6 +104,15 @@ async def assert_installation_claimable_by(
         attest=attest,
         github_client=github_client,
     )
+
+    if state is OwnerState.REVOKED:
+        raise InstallationClaimError(
+            f"Installation {installation_id} was revoked. Explicit operator restoration is required.",
+            status_code=409,
+            state=state,
+            installation_id=installation_id,
+            org_id=org_id,
+        )
 
     if state is OwnerState.NOT_FOUND:
         # Nobody claims it — this write is the first claim. Allowed.
@@ -199,3 +211,13 @@ async def assert_new_installation_ids_claimable_by(
             )
             continue
         await assert_installation_claimable_by(org_id, installation_id, db=db)
+
+
+async def lock_installation_organization(db: AsyncSession, org_id: str) -> Organization | None:
+    """Serialize binding/list changes using the database's current organization.
+
+    FOR UPDATE alone does not refresh an ORM object loaded by earlier authority
+    resolution. Every lifecycle writer must derive its list after this refresh.
+    Call before claim guards and retain the transaction until mutation commits.
+    """
+    return await db.scalar(select(Organization).where(Organization.id == org_id).with_for_update().execution_options(populate_existing=True))

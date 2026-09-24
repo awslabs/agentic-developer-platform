@@ -17,9 +17,13 @@ def test_vault_fingerprint_migration_precedes_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    head = scripts.get_current_head()  # raises if histories have diverged again
-    assert head is not None
-    assert "069_aws_verification_binding" in {revision.revision for revision in scripts.iterate_revisions(head, "base")}
+    # One head, with this migration in its ancestry. Pinning the head's NAME made
+    # every subsequent migration fail this test (#5664 hit it with its own migration) without
+    # testing anything the two assertions below do not already cover.
+    heads = scripts.get_heads()
+    assert len(heads) == 1, f"expected a single migration head, found {heads}"
+    lineage = {revision.revision for revision in scripts.walk_revisions("base", heads[0])}
+    assert "066_vault_operation_fingerprint" in lineage
     revision = scripts.get_revision("066_vault_operation_fingerprint")
     assert revision.down_revision == "066_cred_evidence_delegation"
 

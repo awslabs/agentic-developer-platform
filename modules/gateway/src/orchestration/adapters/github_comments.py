@@ -69,6 +69,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.admin.exceptions import AccessDeniedError, InvalidScopeError
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.base import utcnow
 from src.shared.models.vault import UserIdentity
 from src.shared.schemas.auth import TokenContext
@@ -395,6 +396,7 @@ async def _resolve_platform_identity(
         await session.execute(
             select(UserIdentity).where(
                 UserIdentity.org_id == org_id,
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
                 UserIdentity.provider == _GITHUB_PROVIDER,
                 UserIdentity.provider_user_id == github_user_id,
             )

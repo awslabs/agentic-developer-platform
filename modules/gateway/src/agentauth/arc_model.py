@@ -30,6 +30,7 @@ from src.agentauth.store import AuthorityStoreError
 from src.agentauth.work_routes import PROOF_HEADER, verify_producer
 from src.agentauth.workload import VerifiedPod
 from src.shared.database import get_db
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.organization import User
 from src.shared.models.persona_models import ServicePrincipalAlias
 from src.shared.models.vault import UserIdentity
@@ -127,6 +128,7 @@ async def human_owner(session, *, tenant, actor_id) -> str:
                 UserIdentity.provider == "github",
                 UserIdentity.provider_user_id == actor_id,
                 UserIdentity.verified_at.is_not(None),
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
             )
         )
     ).all()

@@ -214,7 +214,7 @@ aws s3 sync dist/ "s3://${BUCKET}/" --delete
 |----------|---------|--------------|
 | `gateway-ci.yml` | PR to `src/`, `tests/`, `pyproject.toml` | Lint → Test → Docker build |
 | `gateway-deploy.yml` | Push to main | ECR push → EKS rollout → S3 sync → CF invalidation |
-| `gateway-infra-apply.yml` | Push to `infra/**` | Terraform plan (PR) / apply (merge) with two-pass ALB wiring |
+| `gateway-infra-apply.yml` | Dispatch on main with required `reviewed_source_sha` | Terraform apply with two-pass ALB wiring; the reviewed pin must equal the run and checkout commit |
 
 ## Local Development
 

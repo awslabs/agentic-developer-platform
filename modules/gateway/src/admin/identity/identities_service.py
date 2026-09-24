@@ -79,7 +79,11 @@ class IdentitiesService:
                     provider_user_id=req.provider_user_id,
                     user_id=user_id,
                     org_id=user.org_id,
+                    provider=identity.provider,
                     provider_username=req.provider_username,
+                    # #5664 (A10): project the provenance recorded above, so the
+                    # webhook resolver sees the same fact Postgres holds.
+                    verification_method=identity.verification_method,
                 )
             except Exception:
                 logger.exception(
@@ -118,13 +122,14 @@ class IdentitiesService:
             return False
 
         provider_user_id = identity.provider_user_id
+        provider = identity.provider
         await self._db.delete(identity)
         await self._db.commit()
 
         # Post-commit: remove channel_user entry from DDB (best-effort)
         if self._identity_writer:
             try:
-                await self._identity_writer.delete_user_identity(provider_user_id)
+                await self._identity_writer.delete_user_identity(provider_user_id, provider=provider)
             except Exception:
                 logger.exception(
                     "DDB delete failed for identity %s (non-fatal)",

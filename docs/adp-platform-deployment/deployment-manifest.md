@@ -212,6 +212,9 @@ Infrastructure changes are deployed via GitHub Actions workflows that run on ARC
 1. Open a PR that touches a module's infra path. The plan workflow runs and posts a comment on the PR with the plan output.
 2. Review the plan. Merge the PR. **Merging does NOT auto-apply.**
 3. When ready to deploy, the operator triggers the apply workflow manually: Actions → `<module> Infra Apply` → Run workflow → main.
+   Gateway Infra Apply requires `reviewed_source_sha`: the exact reviewed main
+   commit (40 lowercase hex characters). It must match the run and checkout;
+   if main advances before dispatch, review the new commit and dispatch again.
 4. Apply is gated by `environment: production` (requires reviewer approval in GitHub) AND by the `destructive-apply-approved` label gate: if resources would be destroyed, the source PR must have the label.
 
 **Why manual apply:** separates "reviewed" from "deployed" — prevents Friday-evening surprise applies on merge, lets operators batch multiple merged PRs into one apply, and matches the project's "carefully consider reversibility and blast radius" rule. For routine non-destructive changes this is one extra click; for anything risky, it's the right default.

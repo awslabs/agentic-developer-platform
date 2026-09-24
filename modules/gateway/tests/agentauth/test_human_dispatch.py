@@ -21,6 +21,11 @@ webhook = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = webhook
 _spec.loader.exec_module(webhook)
 
+_identity_spec = importlib.util.spec_from_file_location("adp_human_dispatch_identity", _path.with_name("identity_resolver.py"))
+identity_resolver = importlib.util.module_from_spec(_identity_spec)
+sys.modules[_identity_spec.name] = identity_resolver
+_identity_spec.loader.exec_module(identity_resolver)
+
 
 @pytest.fixture
 def store(monkeypatch):
@@ -36,11 +41,24 @@ def store(monkeypatch):
         yield BootstrapStore(table_name="authority", dynamodb_client=ddb)
 
 
+def resolved_human(**overrides):
+    """A provider-confirmed human in the tenant authorizing this dispatch."""
+    fields = {
+        "tenant_id": "tenant",
+        "org_id": "tenant",
+        "user_id": "human",
+        "user_provisioning_mode": "strict",
+        "user_kind": "human",
+        "verification_method": "oauth",
+    }
+    return identity_resolver.ResolvedIdentity(**(fields | overrides))
+
+
 def event():
     return webhook.VerifiedHumanEvent.from_verified_webhook(
         body=b'{"sender":{"type":"User"},"comment":{"id":1}}',
         event_type="issue_comment",
-        resolved=SimpleNamespace(user_kind="human", user_id="human"),
+        resolved=resolved_human(),
         sender={"type": "User"},
         tenant_id="tenant",
         repo="org/repo",
@@ -310,11 +328,52 @@ def test_worker_or_service_claim_cannot_create_human_event(user_kind, sender_typ
         webhook.VerifiedHumanEvent.from_verified_webhook(
             body=b"body",
             event_type="issue_comment",
-            resolved=SimpleNamespace(user_kind=user_kind, user_id="claimed-human"),
+            resolved=resolved_human(user_kind=user_kind, user_id="claimed-human"),
             sender={"type": sender_type},
             tenant_id="tenant",
             repo="org/repo",
         )
+
+
+@pytest.mark.parametrize("method", [None, "", "self_asserted", "channel_placement", "magic_link", "unknown_method"])
+def test_unproven_human_resolution_still_cannot_authorize_dispatch(store, method):
+    with pytest.raises(webhook.AuthorityProvisionError, match="proven identity link"):
+        webhook.VerifiedHumanEvent.from_verified_webhook(
+            body=b"body",
+            event_type="issue_comment",
+            resolved=resolved_human(verification_method=method),
+            sender={"type": "User"},
+            tenant_id="tenant",
+            repo="org/repo",
+        )
+    assert store.client.scan(TableName=store.table)["Count"] == 0
+
+
+def test_legacy_human_resolution_without_provenance_cannot_authorize_dispatch(store):
+    with pytest.raises(webhook.AuthorityProvisionError, match="proven identity link"):
+        webhook.VerifiedHumanEvent.from_verified_webhook(
+            body=b"body",
+            event_type="issue_comment",
+            resolved=SimpleNamespace(user_kind="human", user_id="human"),
+            sender={"type": "User"},
+            tenant_id="tenant",
+            repo="org/repo",
+        )
+    assert store.client.scan(TableName=store.table)["Count"] == 0
+
+
+@pytest.mark.parametrize("scope", [{"tenant_id": "foreign"}, {"org_id": "foreign"}])
+def test_proven_human_resolution_must_match_dispatch_tenant(store, scope):
+    with pytest.raises(webhook.AuthorityProvisionError, match="tenant-consistent identity link"):
+        webhook.VerifiedHumanEvent.from_verified_webhook(
+            body=b"body",
+            event_type="issue_comment",
+            resolved=resolved_human(**scope),
+            sender={"type": "User"},
+            tenant_id="tenant",
+            repo="org/repo",
+        )
+    assert store.client.scan(TableName=store.table)["Count"] == 0
 
 
 @pytest.fixture
