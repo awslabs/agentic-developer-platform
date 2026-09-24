@@ -139,3 +139,52 @@ def test_principal_execution_limit_is_atomic(runtime):
     task = service.repository.read_task(body["task_id"])
     for key in service._grant(task["scope"]["tenant"], task["invocation_id"], 1)["execution_capacity_keys"]:
         assert service.repository._get_authority(key, "ACTIVE")["active_count"] == 2
+
+
+def _attempt_identity(runtime):
+    service, pod, body, delivery = runtime
+    result = service.bootstrap(body=body, pod=pod, delivery=delivery)
+    identity = service.authenticate(credential=result["run_credential"], pod=pod, require_attempt=False)
+    service.register_attempt(identity=identity, body={"task_id": identity.task_id,
+        "invocation_id": identity.invocation_id, "generation": identity.generation, "runtime_attempt_id": str(uuid.uuid4())})
+    return service.authenticate(credential=result["run_credential"], pod=pod)
+
+
+def test_initial_turn_is_stable_empty_and_counts_once(runtime):
+    from src.agentauth.task_turns import TaskTurnStore
+    identity = _attempt_identity(runtime)
+    turns = TaskTurnStore(runtime[0].repository, clock=lambda: NOW)
+    turn_id = str(uuid.uuid4())
+    first = turns.commit(identity=identity, request_id=turn_id, expected_transcript_version=1)
+    replay = turns.commit(identity=identity, request_id=turn_id, expected_transcript_version=1)
+    assert first["turn"] == replay["turn"]
+    assert first["turn"]["command_ids"] == []
+    assert first["turn"]["transcript_version"] == 2
+    assert len(turns.list_turns(identity.task_id)) == 1
+    waiting = turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=2)
+    assert waiting["operation_status"] == "waiting"
+
+
+def test_turn_consumes_pending_input_with_event_atomically(runtime):
+    from src.agentauth.task_turns import TaskTurnStore
+    from src.tasks.records import command_sort_key, task_commands_partition
+    from src.tasks.store import _serialize
+    identity = _attempt_identity(runtime)
+    repository = runtime[0].repository
+    turns = TaskTurnStore(repository, clock=lambda: NOW)
+    turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=1)
+    command_id = str(uuid.uuid4())
+    repository._client.put_item(TableName=repository.table_name, Item=_serialize({
+        "event_id": task_commands_partition(identity.task_id), "arrived_at": command_sort_key(command_id),
+        "task_id": identity.task_id, "command_id": command_id, "kind": "input", "payload": {"text": "next question"},
+        "command_sequence": 1, "status": "accepted", "authority_expires_at": "2026-09-24T12:30:00Z"}))
+    turn_id = str(uuid.uuid4())
+    result = turns.commit(identity=identity, request_id=turn_id, expected_transcript_version=2)
+    assert result["messages"] == [{"command_id": command_id, "text": "next question"}]
+    stored = repository.read_commands(task_id=identity.task_id)[0]
+    assert stored["status"] == "consumed"
+    assert stored["turn_id"] == turn_id
+    events = repository.read_events(task_id=identity.task_id)
+    assert events[-1]["type"] == "input.consumed"
+    assert events[-1]["data"]["turn_id"] == turn_id
+    assert turns.commit(identity=identity, request_id=turn_id, expected_transcript_version=2)["turn"] == result["turn"]

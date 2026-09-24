@@ -102,3 +102,43 @@ async def attempt(body: AttemptBody, request: Request, runtime=Depends(get_agent
     except (BootstrapRefusedError, TaskStoreError):
         raise HTTPException(409, "task attempt refused") from None
     return {"schema_version": "1.0", "operation_status": "confirmed", "request_id": body.runtime_attempt_id}
+
+
+class TaskRunBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_id: str = Field(pattern=TASK_ID)
+    invocation_id: str = Field(pattern=UUID4)
+    generation: int = Field(ge=1, le=64, strict=True)
+
+
+class TaskAttemptBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run: TaskRunBody
+    runtime_attempt_id: str = Field(pattern=UUID4)
+
+
+class TurnBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"]
+    attempt: TaskAttemptBody
+    request_id: str = Field(pattern=UUID4)
+    expected_transcript_version: int = Field(ge=1, strict=True)
+
+
+def require_body_attempt(identity, attempt):
+    if (identity.task_id, identity.invocation_id, identity.generation, identity.runtime_attempt_id) != (
+            attempt.run.task_id, attempt.run.invocation_id, attempt.run.generation, attempt.runtime_attempt_id):
+        raise HTTPException(404, "not found")
+
+
+@router.post("/turn")
+async def turn(body: TurnBody, request: Request, runtime=Depends(get_agent_runtime)):
+    from src.agentauth.task_turns import TaskTurnStore
+
+    identity = await authenticate_task_attempt(request)
+    require_body_attempt(identity, body.attempt)
+    try:
+        return await run_in_threadpool(TaskTurnStore(task_runtime(runtime).repository).commit,
+            identity=identity, request_id=body.request_id, expected_transcript_version=body.expected_transcript_version)
+    except TaskStoreError:
+        raise HTTPException(409, "task turn refused") from None
