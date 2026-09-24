@@ -392,5 +392,151 @@
       "temporary_resources_removed": true,
       "ui_github_ingress_end_to_end_tested": false
     }
+  },
+  "cyber_maintenance_20260924": {
+    "scope": "Common Crawl workflow, broker and worker; rerun 19 user URLs",
+    "account_id": "879318057152",
+    "aws_profile": "embark1",
+    "region": "us-east-1",
+    "implementation_commit": "61b759bd773f8ab6f26015cc0840b8a173f498d3",
+    "merged_commit": "251d7d867f1284ac74b5864474032fe42703f15e",
+    "worker_base": "de3227b36c7956c181cfd486876c90c19bec354e",
+    "release_source": "bba34f36582af8fa2a901eeb7b86b7f572272c44",
+    "status": "deployed_analyses_complete",
+    "target_count": 19,
+    "updated_at": "2026-09-24T13:38:13.648842+00:00",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6ee9ad36ba31666872a6d653d1a3814a2f8308c99b8ac36778239dc88c7aa204",
+    "build_id": "adp-dev-agent-runtime:42050bb6-096d-412f-a385-7c3cc5d8fcc1",
+    "athena_workgroup": "adp-dev-cyber-common-crawl",
+    "canary": {
+      "status": "passed",
+      "identity": "arn:aws:sts::879318057152:assumed-role/adp-dev-agent-scaledjob-role/botocore-session-1790254562",
+      "checks": {
+        "archive_hit": {
+          "query_id": "93b2b855-da52-499a-b230-1ed8af8fb7a5",
+          "capture_count_returned": 30,
+          "bytes_scanned": 11565859,
+          "crawls": [
+            "CC-MAIN-2026-39",
+            "CC-MAIN-2026-34",
+            "CC-MAIN-2026-30"
+          ]
+        },
+        "archive_miss": {
+          "query_id": "0a4f6c58-ca19-4237-b4a3-e649ae5bc3e3",
+          "capture_count_returned": 0,
+          "bytes_scanned": 2422530
+        },
+        "browser": {
+          "status": "complete",
+          "evidence_items": 3
+        },
+        "direct_browser_denied": true
+      },
+      "sessions": [
+        {
+          "id": "01M39QSR03F6DVAZ0J9FWX8QPZ",
+          "status": "TERMINATED"
+        }
+      ],
+      "worker_verified_artifact_count": 7
+    },
+    "issues": [
+      {
+        "batch": 1,
+        "count": 5,
+        "number": 5880,
+        "url": "https://github.com/aws-e/adp/issues/5880",
+        "triggered": true,
+        "comment_id": 5814596164,
+        "trigger_url": "https://github.com/aws-e/adp/issues/5880#issuecomment-5814596164",
+        "run_id": "d7174cb6-23dc-465d-88e1-b0a769ffc1ae",
+        "check_id": 107642951966,
+        "artifact_publication": {
+          "trigger_comment_id": 5815123668,
+          "run_id": "fd5dbd85-5c62-4230-bb49-61d634eaf540",
+          "check_id": 107655822096,
+          "scope": "existing_artifact_index_only"
+        },
+        "status": "completed",
+        "conclusion": "success",
+        "completed_at": "2026-09-24T13:31:09Z",
+        "final_report_url": "https://github.com/aws-e/adp/issues/5880#issuecomment-5814602673",
+        "reported_target_count": 5
+      },
+      {
+        "batch": 2,
+        "count": 5,
+        "number": 5881,
+        "url": "https://github.com/aws-e/adp/issues/5881",
+        "triggered": true,
+        "comment_id": 5814596400,
+        "trigger_url": "https://github.com/aws-e/adp/issues/5881#issuecomment-5814596400",
+        "run_id": "319c7e2d-f194-4c7f-9f1f-d402d9d96a7a",
+        "check_id": 107642949910,
+        "status": "completed",
+        "conclusion": "success",
+        "completed_at": "2026-09-24T13:23:44Z",
+        "final_report_url": "https://github.com/aws-e/adp/issues/5881#issuecomment-5814963559",
+        "reported_target_count": 5
+      },
+      {
+        "batch": 3,
+        "count": 5,
+        "number": 5882,
+        "url": "https://github.com/aws-e/adp/issues/5882",
+        "triggered": true,
+        "comment_id": 5814609785,
+        "trigger_url": "https://github.com/aws-e/adp/issues/5882#issuecomment-5814609785",
+        "run_id": "58af2d10-009e-456b-b113-ac73064adaf6",
+        "check_id": 107643265711,
+        "status": "completed",
+        "conclusion": "success",
+        "completed_at": "2026-09-24T13:19:55Z",
+        "final_report_url": "https://github.com/aws-e/adp/issues/5882#issuecomment-5814905905",
+        "reported_target_count": 5
+      },
+      {
+        "batch": 4,
+        "count": 4,
+        "number": 5883,
+        "url": "https://github.com/aws-e/adp/issues/5883",
+        "triggered": true,
+        "comment_id": 5814610078,
+        "trigger_url": "https://github.com/aws-e/adp/issues/5883#issuecomment-5814610078",
+        "run_id": "c147b1a7-5701-486d-af50-02ade65d9e86",
+        "check_id": 107643520634,
+        "status": "completed",
+        "conclusion": "success",
+        "completed_at": "2026-09-24T13:26:43Z",
+        "final_report_url": "https://github.com/aws-e/adp/issues/5883#issuecomment-5814625573",
+        "reported_target_count": 4
+      }
+    ],
+    "configuration_pr": "https://github.com/aws-e/adp/pull/5885",
+    "owner_routing": "enabled_and_verified",
+    "synthetic_canary_resources_removed": true,
+    "stalled_process_canary": {
+      "status": "passed",
+      "elapsed_seconds": 20.28,
+      "session_id": "01M39RMXQZHVKV3W2HC7NEZQCN",
+      "aws_status": "TERMINATED",
+      "child_exited": true,
+      "active_sessions": 0
+    },
+    "owner_routing_canary": {
+      "check": "hosted_owner_routing",
+      "status": "passed",
+      "worker_identity": "arn:aws:sts::879318057152:assumed-role/adp-dev-agent-scaledjob-role/botocore-session-1790256980",
+      "owner_prefix_present": true,
+      "session_id": "01M39T3CCX4KASWJ0ZCXQ6KR7S",
+      "same_session_after_step": true,
+      "complete_observations": 2,
+      "cleanup_status": "stopped",
+      "independently_verified_aws_status": "TERMINATED"
+    },
+    "owner_routing_plan_sha256": "1bff84a4d2e30e889cc3e365debacbd75e94d1ac22a0a72f8b36764160d934ea",
+    "recorded_demo_sessions_independently_verified_terminated": 16,
+    "coverage_followup": "adp-6qg"
   }
 }
