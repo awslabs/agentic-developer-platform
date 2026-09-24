@@ -17,9 +17,9 @@ same-run evidence reuse and broadens historical archive discovery.
   The preserved worker base is `de3227b36c7956c181cfd486876c90c19bec354e`.
 - Successful CodeBuild `adp-dev-agent-runtime:cdded5ea-0a3f-4064-8443-2c903671618e`.
   Source packaging used committed `git archive`; `PUBLISH_LATEST=false`.
-- Worker/broker image:
+- Initial worker and current broker image:
   `879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24`.
-- Previous rollback image:
+- Rollback image preceding the initial release:
   `879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:bfac5d37d711bdd8a96b0a3c7fe3b542916dbd52afe4d7cc5d46798aeb168d21`.
 
 The whole-module webhook/security migration hold remains. Fresh saved Terraform
@@ -138,4 +138,88 @@ or repository memory as evidence. The preserved platform still injects recent
 memory summaries, so these live runs must not be described as fully isolated blind
 benchmarks. The controlled replay above excludes that memory.
 
-Final live outcomes and publication verification will be added after the runs finish.
+All 25 submitted URLs received model assessments. Superseded pending cases and a
+companion parent-domain case are excluded from these totals.
+
+| Run | Clean | Suspicious | Malicious | Inconclusive |
+|---|---:|---:|---:|---:|
+| #5919 | 4 | 1 | 0 | 0 |
+| #5920 | 1 | 3 | 0 | 1 |
+| #5921 | 1 | 1 | 0 | 3 |
+| #5922 | 1 | 1 | 0 | 3 |
+| #5923 | 2 | 2 | 0 | 1 |
+| **Total** | **9** | **8** | **0** | **8** |
+
+The earlier September pass reported five `no_specific_concern` and 20
+`inconclusive`; May reported nine clean, three suspicious and 13 malicious.
+The [complete 25-URL comparison](https://github.com/aws-e/adp/pull/5924#issuecomment-5818550683)
+preserves the original labels and links to each report. May is not ground truth:
+several original requests included incident narratives or expected labels, and
+the endpoints were revisited months later. The 13 May-malicious URLs now yield
+eight suspicious and five inconclusive. Fewer inconclusive results do not
+establish greater accuracy.
+
+The new runs did use archives and independently sourced context to reach
+decisions despite missing live content. They also retained reasoning limitations:
+unchanged versioned script filenames do not prove unchanged script bytes;
+registration holds do not establish their cause; and a timeout alone does not
+locate a network failure. One report claims an independent summarising fetch but
+cites an empty archive result. The [publication follow-up](https://github.com/aws-e/adp/issues/5920#issuecomment-5818622775)
+confirmed no original retrieval record was preserved and added a provenance note
+without changing the original case or verdict. Domain-authenticity records remain
+checkable; the asserted page content does not. Structural reference validation
+does not establish that a cited source supports the claim.
+
+Case reports and assets remain in AWS. Workers verified artifact readback and
+signed GET access; subsequent publication tasks add clickable indexes to the same
+issues without repeating the investigations. Temporary worker credentials cap
+the signed links at about one hour despite a requested seven-day signature.
+The issue indexes retain durable S3 paths, and the report-assets ZIPs contain
+relative assets that a directly opened signed HTML object cannot authenticate.
+
+At 17:00 UTC the operator enumerated all seven pages of the AWS Browser session
+API. All 31 sessions created since the runs began at 16:28 UTC were terminated;
+none of the 344 listed sessions was active. This includes one case-complete
+orphan from #5919 that the operator found READY, stopped at 16:52:32 UTC and
+independently verified terminated. Original case records retain their reported
+unknown cleanup states; the subsequent verification does not reconstruct missing
+session IDs or pretend cleanup succeeded immediately. No active investigation
+session was terminated.
+
+## Rejected-draft recovery correction
+
+The live run in #5923 exposed a report persistence defect: recovery retained raw
+source-only findings from a rejected assessment, omitting optional fields that the
+report renderer expected. A later close could fail with `KeyError: evidence_ids`.
+The agent recovered by creating a replacement case with explicit citation fields.
+
+[#5931](https://github.com/aws-e/adp/pull/5931) normalizes retained findings and
+checks their source references before preserving them. Three synthetic regressions
+exercise absent references, unknown sources and unknown observations through
+rejection, close, report/manifest verification and correction in the same case.
+Those tests, 18 existing workflow/evaluation tests and scoped Ruff checks passed.
+
+The correction's hybrid source is
+`2ac9af8aa209674ff77d0211f69a9e3768a14f0d`, changing only the recovery function and
+its tests from the original release. CodeBuild
+`adp-dev-agent-runtime:b443baf4-ca35-49d0-84c2-67adbbfdbe28` succeeded with committed
+archive input and `PUBLISH_LATEST=false`. Its image is
+`879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:9b07180e2304cd075bfb5d3309f010b8a458f2973a7cf034c0ef82a79b3900f4`.
+
+A normal AWS worker running that image corrected all three synthetic rejected
+drafts and uploaded/read back/hash checked 15 artifacts; all 15 signed GETs were
+also verified from the worker. No Browser sessions were started. Acceptance is
+stored at `tenant=adp-default/issue=0/run=assessment-recovery-20260924/canary/acceptance.json`.
+The temporary canary Job and ConfigMap were removed after successful completion.
+
+All applicable CI checks passed and #5931 merged as
+`fce54b09443e724fbe52ac74b3384de6713ca605`. The ScaledJob, zero-replica warm pool
+and image-prepull DaemonSet were patched with old-image and resource-version
+guards. The broker continues on the original release image because its code did
+not change; no Terraform apply was needed for this worker-only correction. The
+five comparison workers retain their original image identity; this correction
+changes no model, skill, assessment schema or browser transport.
+
+At the final cache check (17:09 UTC), all 12 currently scheduled prepull pods were
+updated and ready; node count changed during cluster autoscaling. The broker
+remained 2/2 ready. Unrelated historical workers were not restarted.

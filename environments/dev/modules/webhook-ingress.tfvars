@@ -27,7 +27,7 @@ persona_model_mapping_enabled = true
 
 # Evidence-led cyber analyst (#5917), preserving deployed worker source.
 # Worker and browser broker share this digest; protected-worker migration stays off.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24"
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:9b07180e2304cd075bfb5d3309f010b8a458f2973a7cf034c0ef82a79b3900f4"
 
 # The matching broker and worker support session-owner capabilities.
 domain_app_images = {
