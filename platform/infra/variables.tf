@@ -33,6 +33,54 @@ variable "single_nat_gateway" {
   default     = true
 }
 
+variable "additional_private_subnet_ids_by_az" {
+  description = <<-EOT
+    Additional ALREADY-EXISTING private subnets to add to the EKS cluster's
+    subnet set, keyed by the availability zone each is expected to be in:
+
+      {"us-east-1a" = "subnet-0123456789abcdef0"}
+
+    Why (#5830): when the cluster's original private subnets exhaust their IP
+    addresses, the CNI fails every new pod with "failed to assign an IP address
+    to container". Auto Mode's AWS-managed `default` NodeClass takes its subnets
+    from the cluster's resourcesVpcConfig.subnetIds, so widening that set is the
+    supported way to give new nodes addresses without editing the NodeClass.
+
+    ADDITIVE: appended to the networking module's private subnets, which always
+    remain in the set. Only the EKS cluster's own subnet set is affected — RDS,
+    load balancers, Lambdas and VPC endpoints are not.
+
+    Empty (the default) leaves an un-widened cluster as it is, but it is NOT a
+    no-op once subnets have been added: empty then plans their REMOVAL and
+    re-breaks pod IP assignment for nodes launched afterwards. That is why the
+    deployment paths resolve this against the live cluster (see CI, below).
+
+    Creates nothing. Every entry is checked at plan time and the plan FAILS
+    unless the subnet is in this VPC, is in the zone it is keyed by, assigns no
+    public IPs, and routes 0.0.0.0/0 via NAT rather than an internet gateway.
+
+    NOT assigned in environments/<env>/platform.tfvars, deliberately — same
+    reason as extra_cluster_admin_principal_arns below: these IDs are
+    account-specific, and a `-var-file` assignment (even `= {}`) OVERRIDES
+    TF_VAR_ environment variables, so an explicit assignment there would
+    silently defeat both the operator export and CI's passthrough. The declared
+    default ({}) already keeps the shipped repo portable.
+
+      export TF_VAR_additional_private_subnet_ids_by_az='{"us-east-1a":"subnet-..."}'
+
+    CI: set the ADDITIONAL_PRIVATE_SUBNETS_BY_AZ repository variable. It is NOT
+    passed straight through — on a cluster already widened, an unset or stale
+    variable would resolve to this default and plan the additions away. Both
+    platform-infra-apply.yml and `--update` runs resolve the effective map
+    against the LIVE cluster (platform/scripts/capacity_subnets.py): unset or
+    blank retains, a map omitting a live addition is REFUSED, and narrowing
+    needs an explicit authorisation. A bare `terraform apply` with the variable
+    unset bypasses that and WILL plan the additions away.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "eks_cluster_version" {
   description = "Kubernetes version for the EKS cluster"
   type        = string
