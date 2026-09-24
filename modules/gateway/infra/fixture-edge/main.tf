@@ -732,6 +732,39 @@ locals {
           }
         }
       }
+      # Paid SDK calls use the same IAM identity and per-run provenance as
+      # control calls. Publish only model routes, not a signed proxy to human APIs.
+      "/agent/model/{proxy+}" = {
+        x-amazon-apigateway-any-method = {
+          security                   = [{ sigv4 = [] }]
+          "x-amazon-apigateway-auth" = { type = "AWS_IAM" }
+          parameters = [
+            {
+              name     = "proxy"
+              in       = "path"
+              required = true
+              type     = "string"
+            }
+          ]
+          x-amazon-apigateway-integration = {
+            type                 = "http_proxy"
+            httpMethod           = "ANY"
+            uri                  = "http://${local.fixture_alb_dns_discovered}/model/{proxy}"
+            timeoutInMillis      = var.integration_timeout_ms
+            responseTransferMode = "STREAM"
+            passthroughBehavior  = "when_no_match"
+            connectionType       = "VPC_LINK"
+            connectionId         = var.vpc_link_id
+            integrationTarget    = var.fixture_alb_arn
+            requestParameters = merge(
+              {
+                "integration.request.path.proxy" = "method.request.path.proxy"
+              },
+              local.fixture_verified_caller_identity,
+            )
+          }
+        }
+      }
       # -------------------------------------------------------------------
       # The human-session plane, auth NONE: the fixture gateway authenticates
       # these on their JWT. #5836 requires these routes to BLANK caller and
@@ -860,29 +893,22 @@ resource "aws_api_gateway_rest_api" "fixture" {
 # at the edge, so "wrong-role calls are refused" is provable without weakening
 # production.
 locals {
-  # execute-api resource ARNs for the TRUSTED INTERNAL PLANE ONLY.
-  #
-  # Shape is <execution_arn>/<stage>/<METHOD>/<path>. Wildcards cover stage and
-  # method; the path segment is pinned to /internal so the role restriction cannot
-  # leak onto the human plane. This mirrors how the ordinary API scopes its own
-  # path-specific denies (modules/api-gateway/main.tf
-  # "DenyInternalRoutesOutsideAllowedSources" uses .../*/*/internal/*).
-  #
-  # Both forms are listed deliberately: `/internal/*` does not match the bare
-  # `/internal` resource itself, and omitting the bare form would leave one
-  # unrestricted internal resource behind.
-  internal_plane_policy_resources = local.enabled ? [
-    "${aws_api_gateway_rest_api.fixture[0].execution_arn}/*/*/internal",
-    "${aws_api_gateway_rest_api.fixture[0].execution_arn}/*/*/internal/*",
-  ] : []
+  # IAM wildcards cross slash boundaries. */*/agent/* also matches
+  # dev/GET/activity/invocations/id/agent/state and wrongly denies browser JWTs.
+  # Pin the stage AND enumerate methods so only the first path segment matches.
+  internal_plane_policy_resources = local.enabled ? flatten([
+    for method in ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"] : [
+      for path in ["internal", "internal/*", "agent", "agent/*"] :
+      "${aws_api_gateway_rest_api.fixture[0].execution_arn}/${var.environment}/${method}/${path}"
+    ]
+  ]) : []
 }
 
-resource "aws_api_gateway_rest_api_policy" "fixture" {
-  count = local.enabled ? 1 : 0
-
-  rest_api_id = aws_api_gateway_rest_api.fixture[0].id
-
-  policy = jsonencode({
+locals {
+  # Hash the configured policy, not the provider's normalized readback. AWS
+  # may reorder policy resources during apply, which otherwise changes a known
+  # deployment trigger midway through the plan and aborts the stage deployment.
+  fixture_resource_policy = local.enabled ? jsonencode({
     Version = "2012-10-17"
     Statement = [
       # -----------------------------------------------------------------------
@@ -955,7 +981,13 @@ resource "aws_api_gateway_rest_api_policy" "fixture" {
         }
       },
     ]
-  })
+  }) : null
+}
+
+resource "aws_api_gateway_rest_api_policy" "fixture" {
+  count       = local.enabled ? 1 : 0
+  rest_api_id = aws_api_gateway_rest_api.fixture[0].id
+  policy      = local.fixture_resource_policy
 }
 
 resource "aws_api_gateway_deployment" "fixture" {
@@ -970,7 +1002,7 @@ resource "aws_api_gateway_deployment" "fixture" {
   triggers = {
     redeployment = sha1(jsonencode([
       local.fixture_api_body,
-      try(aws_api_gateway_rest_api_policy.fixture[0].policy, ""),
+      local.fixture_resource_policy,
     ]))
   }
 

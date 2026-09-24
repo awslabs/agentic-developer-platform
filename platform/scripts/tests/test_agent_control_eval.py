@@ -3475,8 +3475,8 @@ class TestTheDocumentedFixtureConfig:
         assert "agent-control-evaluation.md" in index
 
 
-@pytest.mark.parametrize("implemented", [[], ["pause", "resume"]])
-def test_w2_02_accepts_each_wave2_stage(tmp_path, implemented):
+@pytest.mark.parametrize("implemented", [[], ["pause", "resume"], ["abort", "pause", "resume"], ["abort", "pause", "resume", "steer"]])
+def test_w2_02_accepts_each_implemented_stage(tmp_path, implemented):
     caps = {verb: verb in implemented for verb in _mod.CONTROL_VERBS}
     result = run_w2_02(
         tmp_path,
@@ -3486,10 +3486,20 @@ def test_w2_02_accepts_each_wave2_stage(tmp_path, implemented):
     assert result.status == _mod.STATUS_PASSED
 
 
-@pytest.mark.parametrize("implemented", [["abort"], ["steer"], "pause", None])
+@pytest.mark.parametrize("implemented", [["abort"], ["steer"], ["pause", "resume", "steer"], ["pause", "resume", "unknown"], ["pause", "resume", "resume"], [[]], "pause", None])
 def test_w2_02_rejects_invalid_stage_declaration(tmp_path, implemented):
     result = run_w2_02(tmp_path, contract=neutral_contract_payload(implemented_verbs=implemented))
     assert result.status == _mod.STATUS_FAILED
+
+
+@pytest.mark.parametrize("implemented", [["abort", "pause", "resume"], ["abort", "pause", "resume", "steer"]])
+def test_w2_02_later_stage_still_requires_matching_live_capabilities(tmp_path, implemented):
+    result = run_w2_02(
+        tmp_path, contract=neutral_contract_payload(implemented_verbs=implemented),
+        client=gateway_stub(capabilities={verb: verb in {"pause", "resume"} for verb in _mod.CONTROL_VERBS}),
+    )
+    assert result.status == _mod.STATUS_FAILED
+    assert "disagree" in result.message
 
 
 @pytest.mark.parametrize("second", [None, [], "echo"])

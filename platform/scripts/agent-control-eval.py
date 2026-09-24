@@ -4247,12 +4247,20 @@ class Driver:
                 )
 
         # --- the deployed surface must agree ----------------------------------
-        # S3 has no implemented verbs; S2 adds pause/resume later in this wave.
-        # Record the source build's expectations rather than freezing the final
-        # Wave 2 gate at S3's temporary capability surface.
+        # Prior-wave checks must remain runnable on later merged stages. This
+        # validates the declared surface, not acceptance of abort or steering;
+        # the live capability comparison below still has to match it exactly.
         implemented = contract.get("implemented_verbs", [])
-        if not isinstance(implemented, list) or implemented not in ([], ["pause", "resume"]):
-            raise AssertionError("implemented_verbs must be [] (S3) or ['pause', 'resume'] (S2)")
+        valid_stages = (
+            frozenset(), frozenset({"pause", "resume"}),
+            frozenset({"pause", "resume", "abort"}),
+            frozenset({"pause", "resume", "abort", "steer"}),
+        )
+        if (not isinstance(implemented, list)
+                or any(not isinstance(verb, str) for verb in implemented)
+                or len(set(implemented)) != len(implemented)
+                or frozenset(implemented) not in valid_stages):
+            raise AssertionError("implemented_verbs must name a valid S3/S2/S4/S6 stage without duplicates")
         live = self._require("live_run_id")
         owner = self._token("owner")
         for adapter, paths in ADAPTERS.items():

@@ -353,7 +353,7 @@ def test_reuses_a_security_group_the_vpc_link_can_reach(harness):
     assert r.returncode == 0, r.stderr
     ann = rendered(harness)["metadata"]["annotations"]
     assert ann["alb.ingress.kubernetes.io/security-groups"] == PERMITTED_SG
-    assert ann["alb.ingress.kubernetes.io/manage-backend-security-group-rules"] == "true"
+    assert ann["alb.ingress.kubernetes.io/manage-backend-security-group-rules"] == "false"
 
 
 def test_listens_only_on_the_port_the_vpc_link_permits(harness):
@@ -673,6 +673,10 @@ def test_publishes_exactly_the_reviewed_path_set_and_nothing_else(harness):
         "/admin/agent-run-stats": "Exact",
         "/health": "Exact",
         "/ready": "Exact",
+        "/model": "Prefix",
+        "/access/status": "Exact",
+        "/features": "Exact",
+        "/admin/agent-invocations": "Prefix",
     }
     rules = rendered(harness)["spec"]["rules"]
     for p in (p for rule in rules for p in rule["http"]["paths"]):
