@@ -148,8 +148,11 @@ RUN apt-get clean \
 # Back to runner user
 USER runner
 
-# Verify every tool is accessible as the runner user
-RUN test "$(/home/runner/bin/Runner.Listener --version)" = "2.337.0" \
+# The ARC base emits diagnostic lines alongside --version on stdout. Require
+# a successful command and the exact standalone version line.
+# Verify every tool is accessible as the runner user.
+RUN runner_version_output=$(/home/runner/bin/Runner.Listener --version) \
+    && printf '%s\n' "$runner_version_output" | grep -x '2\.337\.0' \
     && echo "=== ADP ARC Runner Tool Verification ===" \
     && node --version \
     && python3 --version \
