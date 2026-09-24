@@ -73,6 +73,26 @@ def collection_summary(case):
     }
 
 
+def browser_cleanup(case):
+    if case.get("unconfirmed_browser_start"):
+        return "unknown"
+    sessions = case.get("sessions", [])
+    if case.get("case_kind") == "domain_investigation" and not sessions:
+        return "not_started"
+    if sessions:
+        statuses = {s.get("cleanup_status", "unknown") for s in sessions}
+    else:
+        statuses = {
+            p.get("manifest", {}).get("cleanup_status", "unknown")
+            for p in case.get("probes", [])
+        }
+    if not statuses:
+        return "not_started"
+    if statuses == {"stopped"}:
+        return "stopped"
+    return ", ".join(sorted(statuses))
+
+
 def _write_json(path: Path, value) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
@@ -254,39 +274,14 @@ def assess_case(output: Path, assessment: dict) -> dict:
         parsed = Assessment.model_validate(assessment)
         for observation in case["observations"]:
             validate_inventory(observation)
-        if case.get("case_kind") == "domain_investigation" and (
-            not case.get("stop_reason")
-            or (
-                parsed.verdict != "inconclusive"
-                and (
-                    case.get("unconfirmed_browser_start", False)
-                    or not case.get("sessions")
-                    or any(s["cleanup_status"] != "stopped" for s in case["sessions"])
-                )
-            )
+        if case.get("case_kind") == "domain_investigation" and not case.get(
+            "stop_reason"
         ):
-            raise ValueError(
-                "Record the stopping reason; unconfirmed cleanup permits only inconclusive assessment"
-            )
+            raise ValueError("Record the stopping reason before saving the assessment")
         parsed.validate_evidence(case["observations"])
         from analyst_context import context_records
 
         parsed.validate_context(context_records(case))
-        if parsed.verdict == "no_adverse_behavior_observed" and any(
-            p["status"] != "complete" for p in case["probes"]
-        ):
-            raise ValueError("Incomplete probes cannot support clearance")
-        if (
-            parsed.verdict != "inconclusive"
-            and case.get("case_kind") != "domain_investigation"
-            and any(
-                p.get("manifest", {}).get("cleanup_status") != "stopped"
-                for p in case["probes"]
-            )
-        ):
-            raise ValueError(
-                "Non-inconclusive assessment requires confirmed browser cleanup"
-            )
         case["assessment"] = sanitize(parsed.model_dump())
         case["assessed_at"] = utcnow()
         save_case(output, case)
@@ -430,18 +425,23 @@ def _investigation_report(case):
         f"<li>{_escaped(x['url'])} <small>{_escaped(x['observation_id'])}</small></li>"
         for x in leads
     )
-    markup = "<h2>Investigation path and hypothesis updates</h2>" f"<p>Scope: {_escaped(case.get('scope', 'host'))}</p><ol>" + "".join(
-        items
-    ) + f"</ol><p><strong>Stopping reason:</strong> {_escaped(stop)}</p>" + (
-        f"<details><summary>External or unavailable leads ({len(leads)})</summary><ul>{lead_html}</ul></details>"
-        if leads
-        else ""
+    markup = (
+        "<h2>Investigation path and hypothesis updates</h2>"
+        f"<p>Scope: {_escaped(case.get('scope', 'host'))}</p><ol>"
+        + "".join(items)
+        + f"</ol><p><strong>Stopping reason:</strong> {_escaped(stop)}</p>"
+        + (
+            f"<details><summary>External or unavailable leads ({len(leads)})</summary><ul>{lead_html}</ul></details>"
+            if leads
+            else ""
+        )
     )
     return lines, markup
 
 
 def save_case(output: Path, case: dict) -> None:
     case["collection"] = collection_summary(case)
+    case["browser_cleanup"] = browser_cleanup(case)
     """JSON is authoritative. Reports are regenerated from the same captured evidence."""
     _write_json(output / CASE_FILE, case)
     rows = indicators(case)
@@ -507,13 +507,19 @@ def save_case(output: Path, case: dict) -> None:
         else ""
     )
     lines = [
-        f"# URL research case: {a['verdict']}",
+        f"# URL research assessment: {a['verdict']}",
         "",
         f"Target: {_md(case['target_url'])}",
         f"Execution: {case['collection']['execution']} · Coverage: {case['collection']['coverage']}",
+        f"Browser cleanup: {_md(case['browser_cleanup'])}",
         "",
         "Observed infrastructure is unassessed until a finding supports its relevance.",
         "",
+        *(
+            ["Context risk: " + _md(context_assessment["risk"]), ""]
+            if context_assessment
+            else []
+        ),
         "## Findings",
         "",
     ]
@@ -588,6 +594,8 @@ def save_case(output: Path, case: dict) -> None:
     lines += investigation_lines
     lines += ["", "## Limitations", ""] + [f"- {_md(x)}" for x in a["limitations"]]
     limits = set(a["limitations"])
+    if case["browser_cleanup"] not in {"stopped", "not_started"}:
+        limits.add("Browser cleanup is not confirmed: " + case["browser_cleanup"])
     for probe in case["probes"]:
         limits.update(probe.get("manifest", {}).get("limitations", []))
         if probe["status"] != "complete":
@@ -613,7 +621,13 @@ def save_case(output: Path, case: dict) -> None:
         "small{color:#57606a}</style>"
         f"<h1>{_escaped(a['verdict'])}</h1><p>{_escaped(case['target_url'])}</p>"
         f"<p>Execution: {_escaped(case['collection']['execution'])} · Coverage: {_escaped(case['collection']['coverage'])}</p>"
-        '<p><a href="case.json">Case JSON</a> · <a href="indicators.csv">Observed indicators CSV</a></p>'
+        f"<p>Browser cleanup: {_escaped(case['browser_cleanup'])}</p>"
+        + (
+            f"<p>Context risk: {_escaped(context_assessment['risk'])}</p>"
+            if context_assessment
+            else ""
+        )
+        + '<p><a href="case.json">Case JSON</a> · <a href="indicators.csv">Observed indicators CSV</a></p>'
         f"<h2>Findings</h2><ul>{findings}</ul><details><summary>Investigation choices and provenance</summary><pre>{_escaped(json.dumps(case['probes'], indent=2))}</pre></details>"
         + investigation_html
         + context_html

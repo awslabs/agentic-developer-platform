@@ -21,7 +21,13 @@ from botocore.exceptions import BotoCoreError, ClientError
 from case_contract import Assessment, utcnow
 from research_case import assess_case, collection_summary, verify_case
 
-VERDICTS = {"malicious", "suspicious", "no_adverse_behavior_observed", "inconclusive"}
+VERDICTS = {
+    "malicious",
+    "suspicious",
+    "no_specific_concern",
+    "no_adverse_behavior_observed",
+    "inconclusive",
+}
 
 
 def require_aws_runtime():
@@ -151,7 +157,10 @@ def score(manifest, results, split):
             counts["reachable_true_positives"] += positive and available
         elif label == "legitimate":
             counts["false_positives"] += positive
-            counts["true_negatives"] += verdict == "no_adverse_behavior_observed"
+            counts["true_negatives"] += verdict in {
+                "no_specific_concern",
+                "no_adverse_behavior_observed",
+            }
         if "human_evidence_correct" in result:
             counts["human_reviewed"] += 1
             counts["human_correct"] += result["human_evidence_correct"] is True
