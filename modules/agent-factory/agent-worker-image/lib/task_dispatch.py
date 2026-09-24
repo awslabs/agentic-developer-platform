@@ -319,7 +319,7 @@ def parse_task_envelope(envelope: object) -> TaskAssignment:
 
 
 def reject_task_persona_on_legacy_path(envelope: object) -> None:
-    """Refuse a task persona that arrived on the legacy branch.
+    """Refuse task-marked work that arrived on the legacy branch.
 
     The legacy branch mints a GitHub token and clones. A task persona has no
     repository and no repository grant, so reaching that branch means attempting
@@ -331,5 +331,13 @@ def reject_task_persona_on_legacy_path(envelope: object) -> None:
     """
     if not isinstance(envelope, dict):
         return
-    if is_task_persona(envelope.get("persona")):
-        raise _reject("task persona is not dispatchable on the GitHub path")
+    task_markers = {
+        "task_id",
+        "invocation_id",
+        "dispatch_id",
+        "request_digest",
+        "input_ref",
+        "assignment_ref",
+    }
+    if is_task_persona(envelope.get("persona")) or task_markers.intersection(envelope):
+        raise _reject("task-marked work is not dispatchable on the GitHub path")

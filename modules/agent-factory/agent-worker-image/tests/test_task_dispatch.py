@@ -146,6 +146,16 @@ def test_task_persona_on_the_legacy_path_is_refused():
         reject_task_persona_on_legacy_path(body)
 
 
+@pytest.mark.parametrize(
+    "marker",
+    ["task_id", "invocation_id", "dispatch_id", "request_digest", "input_ref", "assignment_ref"],
+)
+def test_task_run_marker_on_legacy_persona_is_refused(marker, legacy_envelope):
+    legacy_envelope[marker] = "untrusted-task-claim"
+    with pytest.raises(TaskDispatchError):
+        reject_task_persona_on_legacy_path(legacy_envelope)
+
+
 # --- Malformed and stale assignments ------------------------------------------
 
 

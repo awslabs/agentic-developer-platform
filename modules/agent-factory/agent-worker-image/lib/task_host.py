@@ -42,6 +42,10 @@ _MIN_PROGRESS_MARKERS = 2
 _CONTROL_POLL_SECONDS = 1.0
 _TERM_AFTER_SECONDS = 20.0
 _KILL_AFTER_SECONDS = 30.0
+_REPORT_BUFFER_MAX_REPORTS = 128
+_REPORT_BUFFER_MAX_BYTES = 262144
+_REPORT_BUFFER_MAX_SECONDS = 10.0
+_REPORT_RETRY_SECONDS = 0.25
 
 
 class TaskHostError(Exception):
@@ -168,7 +172,7 @@ class TaskHost:
             "runtime_attempt_id": runtime_attempt_id,
         }
 
-    def _report(self, assignment, attempt: dict, frame: dict) -> None:
+    def _report_payload(self, attempt: dict, frame: dict) -> dict:
         event_type = "progress.updated" if frame["type"] == "progress" else "input.required"
         if event_type == "progress.updated":
             data = {"message": frame["message"], "stage": frame.get("stage", "analysis")}
@@ -179,16 +183,19 @@ class TaskHost:
                 "prompt": frame["prompt"],
             }
             report_id = frame["request_id"]
-        response = self.client.report(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "attempt": attempt,
-                "report_id": report_id,
-                "event_type": event_type,
-                "producer_timestamp": frame.get("producer_timestamp"),
-                "data": data,
-            }
-        )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "attempt": attempt,
+            "report_id": report_id,
+            "event_type": event_type,
+            "producer_timestamp": frame.get("producer_timestamp"),
+            "data": data,
+        }
+
+    def _report(self, assignment, attempt: dict, frame: dict) -> dict:
+        payload = self._report_payload(attempt, frame)
+        report_id = payload["report_id"]
+        response = self.client.report(payload)
         if (
             set(response) != {"schema_version", "report_id", "sequence", "event_id"}
             or response["schema_version"] != SCHEMA_VERSION
@@ -593,7 +600,7 @@ class TaskHost:
                     "generation": assignment.generation,
                     "runtime_attempt_id": runtime_attempt_id,
                     "protocol_version": PROTOCOL_VERSION,
-                    "capabilities": bootstrap.get("capabilities") or ["cancel"],
+                    "capabilities": ["cancel"],
                     "old_attempt_invalidated": True,
                 }
             )
@@ -657,12 +664,105 @@ class TaskHost:
             next_control = time.monotonic()
             cancel_started: float | None = None
             cancel_command_id: str | None = None
+            pending_reports: list[dict] = []
+            pending_report_bytes = 0
+            report_outage_started: float | None = None
+            next_report_retry = 0.0
+            deferred_model: dict | None = None
+
+            def deliver_model(model_frame: dict) -> None:
+                nonlocal cancel_started, cancel_command_id
+                model_result = self._model(
+                    assignment,
+                    attempt,
+                    model_frame,
+                    bootstrap["limits"]["max_output_tokens_per_turn"],
+                )
+                # Input arriving during the provider call must reach the
+                # child before it can finish from the returned answer.
+                control = self._control(assignment, attempt, cursor)
+                if control["cancel_requested"] and cancel_started is None:
+                    cancel_command_id = control["cancel_command_id"]
+                    if not isinstance(cancel_command_id, str):
+                        raise TaskProtocolError("task cancellation command is invalid")
+                    _write_frame(
+                        process,
+                        {
+                            "protocol_version": PROTOCOL_VERSION,
+                            "type": "cancel",
+                            "request_id": _request_id(),
+                            "task_id": assignment.task_id,
+                            "command_id": cancel_command_id,
+                            "intentional": True,
+                        },
+                    )
+                    cancel_started = time.monotonic()
+                self._deliver_input(assignment, attempt, process, control)
+                _write_frame(process, model_result)
+
+            def acknowledge_report(frame: dict, receipt: dict) -> None:
+                if frame["type"] == "progress":
+                    progress_messages.add(frame["message"])
+                _write_frame(
+                    process,
+                    {
+                        "protocol_version": PROTOCOL_VERSION,
+                        "type": "report.ack",
+                        "request_id": _request_id(),
+                        "task_id": assignment.task_id,
+                        "report_id": receipt["report_id"],
+                        "sequence": receipt["sequence"],
+                    },
+                )
+
+            def buffer_report(frame: dict, now: float) -> None:
+                nonlocal pending_report_bytes, report_outage_started
+                report_bytes = len(
+                    json.dumps(
+                        self._report_payload(attempt, frame),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                if (
+                    len(pending_reports) >= _REPORT_BUFFER_MAX_REPORTS
+                    or pending_report_bytes + report_bytes > _REPORT_BUFFER_MAX_BYTES
+                ):
+                    raise TaskRunClientError("task report recovery buffer exhausted")
+                if report_outage_started is None:
+                    report_outage_started = now
+                pending_reports.append(frame)
+                pending_report_bytes += report_bytes
             try:
                 deadline = datetime.fromisoformat(bootstrap["limits"]["deadline_at"])
             except (AttributeError, TypeError, ValueError):
                 raise TaskProtocolError("task deadline is invalid") from None
-            while process.poll() is None or selector.get_map():
+            while process.poll() is None or selector.get_map() or pending_reports:
                 now = time.monotonic()
+                if report_outage_started is not None:
+                    if now - report_outage_started >= _REPORT_BUFFER_MAX_SECONDS:
+                        raise TaskRunClientError("task report storage did not recover in time")
+                    if now >= next_report_retry:
+                        try:
+                            while pending_reports:
+                                frame = pending_reports[0]
+                                receipt = self._report(assignment, attempt, frame)
+                                pending_report_bytes -= len(
+                                    json.dumps(
+                                        self._report_payload(attempt, frame),
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    ).encode("utf-8")
+                                )
+                                pending_reports.pop(0)
+                                acknowledge_report(frame, receipt)
+                            report_outage_started = None
+                        except TaskRunClientError:
+                            next_report_retry = now + _REPORT_RETRY_SECONDS
+                        else:
+                            if deferred_model is not None:
+                                deliver_model(deferred_model)
+                                deferred_model = None
                 if process.poll() is None and datetime.now(UTC) >= deadline:
                     raise TaskHostError("Task deadline exceeded", code="deadline_exceeded")
                 if process.poll() is None and now >= next_control:
@@ -725,48 +825,26 @@ class TaskHost:
                                 raise TaskProtocolError("task child emitted ready twice")
                             ready = True
                         elif frame["type"] in {"progress", "input.required"}:
-                            receipt = self._report(assignment, attempt, frame)
-                            if frame["type"] == "progress":
-                                progress_messages.add(frame["message"])
-                            _write_frame(
-                                process,
-                                {
-                                    "protocol_version": PROTOCOL_VERSION,
-                                    "type": "report.ack",
-                                    "request_id": _request_id(),
-                                    "task_id": assignment.task_id,
-                                    "report_id": receipt["report_id"],
-                                    "sequence": receipt["sequence"],
-                                },
-                            )
+                            if report_outage_started is not None:
+                                buffer_report(frame, now)
+                            else:
+                                try:
+                                    receipt = self._report(assignment, attempt, frame)
+                                except TaskRunClientError:
+                                    buffer_report(frame, now)
+                                    next_report_retry = now + _REPORT_RETRY_SECONDS
+                                else:
+                                    acknowledge_report(frame, receipt)
                         elif frame["type"] == "model.request":
-                            model_result = self._model(
-                                assignment,
-                                attempt,
-                                frame,
-                                bootstrap["limits"]["max_output_tokens_per_turn"],
-                            )
-                            # Input arriving during the provider call must reach the
-                            # child before it can finish from the returned answer.
-                            control = self._control(assignment, attempt, cursor)
-                            if control["cancel_requested"] and cancel_started is None:
-                                cancel_command_id = control["cancel_command_id"]
-                                if not isinstance(cancel_command_id, str):
-                                    raise TaskProtocolError("task cancellation command is invalid")
-                                _write_frame(
-                                    process,
-                                    {
-                                        "protocol_version": PROTOCOL_VERSION,
-                                        "type": "cancel",
-                                        "request_id": _request_id(),
-                                        "task_id": assignment.task_id,
-                                        "command_id": cancel_command_id,
-                                        "intentional": True,
-                                    },
-                                )
-                                cancel_started = time.monotonic()
-                            self._deliver_input(assignment, attempt, process, control)
-                            _write_frame(process, model_result)
+                            if report_outage_started is not None:
+                                if deferred_model is not None:
+                                    raise TaskProtocolError(
+                                        "task child emitted concurrent model requests"
+                                    )
+                                deferred_model = frame
+                            else:
+                                deliver_model(frame)
+
                         elif frame["type"] == "result":
                             if result_report is not None:
                                 raise TaskProtocolError("task child emitted more than one result")
@@ -827,10 +905,10 @@ class TaskHost:
             return 0 if exit_code == 0 and cancel_started is None else TASK_EXIT_FAILED
         except TaskRunClientError as error:
             logger.error("Task runtime reporting unavailable: %s", error)
-            if process is not None:
-                _stop_process(process)
+            stopped_exit_code = _stop_process(process) if process is not None else None
             self._settle_unknown(
-                assignment, child_exit_confirmed=process is None or process.poll() is not None
+                assignment,
+                child_exit_confirmed=process is None or stopped_exit_code is not None,
             )
             return TASK_EXIT_RETRYABLE
         except (
@@ -841,10 +919,13 @@ class TaskHost:
             UnknownTaskPersonaError,
             ValueError,
         ) as error:
-            if process is not None:
-                _stop_process(process)
+            stopped_exit_code = _stop_process(process) if process is not None else None
             if attempt is None:
                 logger.error("Task bootstrap failed: %s", type(error).__name__)
+                return TASK_EXIT_RETRYABLE
+            if process is not None and stopped_exit_code is None:
+                logger.error("Task child exit could not be confirmed; deferring finalization")
+                self._settle_unknown(assignment, child_exit_confirmed=False)
                 return TASK_EXIT_RETRYABLE
             code = (
                 error.code
@@ -857,7 +938,7 @@ class TaskHost:
                 self._finalize(
                     assignment,
                     attempt,
-                    exit_code=process.returncode if process is not None else None,
+                    exit_code=stopped_exit_code,
                     outcome="failed",
                     report=None,
                     error_code=code,
@@ -870,7 +951,8 @@ class TaskHost:
             except (TaskGatewayError, TaskProtocolError, TaskRunClientError):
                 logger.error("Task failure could not be durably finalized")
                 self._settle_unknown(
-                    assignment, child_exit_confirmed=process is None or process.poll() is not None
+                    assignment,
+                    child_exit_confirmed=process is None or stopped_exit_code is not None,
                 )
                 return TASK_EXIT_RETRYABLE
         finally:

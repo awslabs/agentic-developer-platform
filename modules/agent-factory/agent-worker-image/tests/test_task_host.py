@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.task_dispatch import parse_task_envelope
 from lib.task_gateway_client import TaskGatewayError
-from lib.task_host import TASK_EXIT_FAILED, TASK_EXIT_RETRYABLE, TaskHost
+from lib.task_host import TASK_EXIT_FAILED, TASK_EXIT_RETRYABLE, TaskHost, _stop_process
 
 CONTRACTS = Path(__file__).resolve().parents[4] / "docs/task-api/contracts/v1/fixtures/valid"
 
@@ -62,6 +62,7 @@ class FakeClient:
         self.report_failure = report_failure
         self.model_response = model_response
         self.cancel = cancel
+        self.attempt_body = None
         self.finalize_body = None
         self.settlements = []
 
@@ -71,6 +72,7 @@ class FakeClient:
 
     def attempt(self, body):
         self.events.append("attempt")
+        self.attempt_body = copy.deepcopy(body)
         return {"operation_status": "confirmed"}
 
     def control(self, body):
@@ -195,6 +197,31 @@ BEHAVIOR
     return script
 
 
+def burst_child_script(path: Path, *, progress_count: int, include_model: bool = False) -> Path:
+    script = path / "task-burst-child.py"
+    model_frame = ""
+    model_reads = ""
+    if include_model:
+        model_frame = "model = base('model.request'); model.update({'turn_id': str(uuid.uuid4()), 'messages': [{'role': 'user', 'content': 'analyze'}]}); send(model)"
+        model_reads = "while json.loads(sys.stdin.readline())['type'] != 'model.result': pass"
+    script.write_text(
+        f"""
+import json, sys, uuid
+start = json.loads(sys.stdin.readline()); task_id = start['task_id']
+def base(kind): return {{'protocol_version': 1, 'type': kind, 'request_id': str(uuid.uuid4()), 'task_id': task_id}}
+def send(value): print(json.dumps(value), flush=True)
+ready = base('ready'); ready['capabilities'] = ['cancel']; send(ready)
+for index in range({progress_count}):
+    progress = base('progress'); progress.update({{'report_id': str(uuid.uuid4()), 'message': f'burst evidence {{index}}', 'stage': 'analysis'}}); send(progress)
+{model_frame}
+{model_reads}
+report = {{'summary': 'Burst fixture completed', 'findings': [{{'statement': 'Evidence was processed.', 'evidence_refs': ['fixture:L1']}}], 'uncertainties': [], 'recommendations': [], 'evidence_refs': [{{'ref': 'fixture:L1', 'source': 'inputs'}}]}}
+result = base('result'); result['report'] = report; send(result)
+"""
+    )
+    return script
+
+
 def batched_child_script(path: Path) -> Path:
     script = path / "task-batched-child.py"
     script.write_text(
@@ -249,6 +276,7 @@ def test_progress_and_result_are_durable_before_acknowledgement(
     assert events.index("report:inspected evidence 1") < events.index("finalize:completed")
     assert events.index("finalize:completed") < events.index("heartbeat.stop") < events.index("ack")
     assert client.finalize_body["result"]["process_exit_validated"] is True
+    assert client.attempt_body["capabilities"] == ["cancel"]
     assert list((tmp_path / "work").iterdir()) == []
 
 
@@ -284,6 +312,10 @@ def test_multiple_ndjson_frames_buffered_in_one_pipe_read_are_all_processed(
 def test_reporting_failure_terminates_child_leaves_assignment_unacked_and_cleans_workspace(
     tmp_path, monkeypatch, assignment_and_bootstrap
 ):
+    monkeypatch.setattr("lib.task_host._REPORT_BUFFER_MAX_SECONDS", 0.05)
+    monkeypatch.setattr("lib.task_host._REPORT_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host._TERM_AFTER_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host._KILL_AFTER_SECONDS", 0.02)
     assignment, envelope, bootstrap = assignment_and_bootstrap
     events = []
     client = FakeClient(bootstrap, events, report_failure=True)
@@ -309,6 +341,221 @@ def test_reporting_failure_terminates_child_leaves_assignment_unacked_and_cleans
     assert "ack" not in events
     assert "settlement" in events
     assert list((tmp_path / "work").iterdir()) == []
+
+
+def test_transient_reporting_outage_replays_reports_before_completion(
+    tmp_path, monkeypatch, assignment_and_bootstrap
+):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events)
+    failures = 2
+    successful_report = client.report
+
+    def flaky_report(body):
+        nonlocal failures
+        if failures:
+            failures -= 1
+            events.append("report.failed")
+            from lib.task_run_client import TaskRunClientError
+
+            raise TaskRunClientError("report unavailable")
+        events.append("report.recovered")
+        return successful_report(body)
+
+    client.report = flaky_report
+    executable = child_script(tmp_path)
+    monkeypatch.setattr("lib.task_host._REPORT_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
+    host = TaskHost(
+        client=client,
+        work_root=tmp_path / "work",
+        command_resolver=lambda persona: [sys.executable, str(executable)],
+    )
+    assert host.run(
+        assignment,
+        envelope,
+        heartbeat=FakeHeartbeat(events),
+        acknowledge=lambda: events.append("ack"),
+    ) == 0
+    assert events.count("report.failed") == 2
+    assert events.index("report.recovered") < events.index("finalize:completed")
+    assert events.index("finalize:completed") < events.index("ack")
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit"),
+    [("_REPORT_BUFFER_MAX_REPORTS", 2), ("_REPORT_BUFFER_MAX_BYTES", 1)],
+)
+def test_report_buffer_overflow_stops_without_finalizing_or_acknowledging(
+    tmp_path, monkeypatch, assignment_and_bootstrap, limit_name, limit
+):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events, report_failure=True)
+    executable = burst_child_script(tmp_path, progress_count=3)
+    monkeypatch.setattr(f"lib.task_host.{limit_name}", limit)
+    monkeypatch.setattr("lib.task_host._TERM_AFTER_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host._KILL_AFTER_SECONDS", 0.02)
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
+    host = TaskHost(
+        client=client,
+        work_root=tmp_path / "work",
+        command_resolver=lambda persona: [sys.executable, str(executable)],
+    )
+    assert host.run(
+        assignment,
+        envelope,
+        heartbeat=FakeHeartbeat(events),
+        acknowledge=lambda: events.append("ack"),
+    ) == TASK_EXIT_RETRYABLE
+    assert client.finalize_body is None
+    assert "ack" not in events
+    assert client.settlements[-1]["stop_evidence"]["child_exit_confirmed"] is True
+
+
+def test_terminal_result_does_not_consume_nonterminal_report_capacity(
+    tmp_path, monkeypatch, assignment_and_bootstrap
+):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events, report_failure=True)
+    executable = burst_child_script(tmp_path, progress_count=2)
+    monkeypatch.setattr("lib.task_host._REPORT_BUFFER_MAX_REPORTS", 2)
+    monkeypatch.setattr("lib.task_host._REPORT_BUFFER_MAX_SECONDS", 0.3)
+    monkeypatch.setattr("lib.task_host._REPORT_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host._TERM_AFTER_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host._KILL_AFTER_SECONDS", 0.02)
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
+    host = TaskHost(
+        client=client,
+        work_root=tmp_path / "work",
+        command_resolver=lambda persona: [sys.executable, str(executable)],
+    )
+    assert host.run(
+        assignment,
+        envelope,
+        heartbeat=FakeHeartbeat(events),
+        acknowledge=lambda: events.append("ack"),
+    ) == TASK_EXIT_RETRYABLE
+    assert len([event for event in events if event.startswith("report:")]) > 1
+    assert client.finalize_body is None
+    assert "ack" not in events
+
+
+def test_model_admission_waits_for_report_storage_recovery(
+    tmp_path, monkeypatch, assignment_and_bootstrap
+):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events)
+    failures = 1
+    successful_report = client.report
+
+    def flaky_report(body):
+        nonlocal failures
+        if failures:
+            failures -= 1
+            events.append("report.failed")
+            from lib.task_run_client import TaskRunClientError
+
+            raise TaskRunClientError("report unavailable")
+        events.append("report.recovered")
+        return successful_report(body)
+
+    client.report = flaky_report
+    client.model_response = {
+        "schema_version": "1.0",
+        "task_id": assignment.task_id,
+        "turn_id": "placeholder",
+        "operation_status": "pending",
+    }
+
+    def model(body):
+        client.model_response.update(turn_id=body["turn_id"], request_digest=body["request_digest"], automatic_replay_permitted=False)
+        return FakeClient.model(client, body)
+
+    client.model = model
+    executable = burst_child_script(tmp_path, progress_count=1, include_model=True)
+    monkeypatch.setattr("lib.task_host._REPORT_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host._MIN_PROGRESS_MARKERS", 1)
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
+    host = TaskHost(
+        client=client,
+        work_root=tmp_path / "work",
+        command_resolver=lambda persona: [sys.executable, str(executable)],
+    )
+    assert host.run(
+        assignment,
+        envelope,
+        heartbeat=FakeHeartbeat(events),
+        acknowledge=lambda: events.append("ack"),
+    ) == 0
+    assert events.index("report.recovered") < events.index("model")
+
+
+def test_stop_process_reports_unknown_after_term_kill_and_wait_timeout(monkeypatch):
+    class UnstoppableProcess:
+        pid = 1234
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*, timeout):
+            raise subprocess.TimeoutExpired("task-child", timeout)
+
+    signals = []
+    monkeypatch.setattr("lib.task_host._TERM_AFTER_SECONDS", 0)
+    monkeypatch.setattr("lib.task_host._KILL_AFTER_SECONDS", 0)
+    monkeypatch.setattr(
+        "lib.task_host.os.killpg", lambda pid, sent_signal: signals.append((pid, sent_signal))
+    )
+    assert _stop_process(UnstoppableProcess()) is None
+    assert signals == [(1234, __import__("signal").SIGTERM), (1234, __import__("signal").SIGKILL)]
+
+
+def test_unconfirmed_child_stop_never_finalizes_or_acknowledges(
+    tmp_path, monkeypatch, assignment_and_bootstrap
+):
+    monkeypatch.setattr("lib.task_host._REPORT_BUFFER_MAX_SECONDS", 0.05)
+    monkeypatch.setattr("lib.task_host._REPORT_RETRY_SECONDS", 0.01)
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events, report_failure=True)
+    executable = child_script(tmp_path)
+    monkeypatch.setattr("lib.task_host._stop_process", lambda process: None)
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity",
+        lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
+    )
+    host = TaskHost(
+        client=client,
+        work_root=tmp_path / "work",
+        command_resolver=lambda persona: [sys.executable, str(executable)],
+    )
+    assert host.run(
+        assignment,
+        envelope,
+        heartbeat=FakeHeartbeat(events),
+        acknowledge=lambda: events.append("ack"),
+    ) == TASK_EXIT_RETRYABLE
+    assert client.finalize_body is None
+    assert "ack" not in events
+    assert client.settlements[-1]["stop_evidence"]["child_exit_confirmed"] is False
 
 
 def test_unknown_persona_is_terminally_failed_without_starting_a_legacy_runtime(
@@ -357,7 +604,7 @@ def test_confirmed_model_receipt_without_content_fails_honestly(
     )
 
     def model(body):
-        client.model_response["turn_id"] = body["turn_id"]
+        client.model_response.update(turn_id=body["turn_id"], request_digest=body["request_digest"], automatic_replay_permitted=False)
         return FakeClient.model(client, body)
 
     client.model = model
@@ -847,3 +1094,53 @@ def test_verified_artifact_chunks_roundtrip_at_per_artifact_limit(assignment_and
     client.artifact = lambda body: {**read(body), "content_sha256": "0" * 64}
     with pytest.raises(TaskProtocolError, match="mismatch"):
         host._input_artifacts(assignment, bootstrap)
+
+@pytest.mark.parametrize("report_outage", [False, True])
+def test_cancel_during_model_precedes_response_after_normal_or_deferred_delivery(
+    tmp_path, monkeypatch, assignment_and_bootstrap, report_outage
+):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events)
+    original_report = client.report
+    report_ids = []
+    fail_once = report_outage
+
+    def report(body):
+        nonlocal fail_once
+        report_ids.append(body["report_id"])
+        if fail_once:
+            fail_once = False
+            from lib.task_run_client import TaskRunClientError
+            raise TaskRunClientError("transient outage")
+        return original_report(body)
+
+    def model(body):
+        client.cancel = True
+        return {"schema_version": "1.0", "task_id": assignment.task_id,
+                "turn_id": body["turn_id"], "operation_status": "pending",
+                "request_digest": body["request_digest"], "automatic_replay_permitted": False}
+
+    client.report, client.model = report, model
+    executable = burst_child_script(tmp_path, progress_count=2, include_model=True)
+    source = executable.read_text().replace(
+        "while json.loads(sys.stdin.readline())['type'] != 'model.result': pass",
+        """seen = []
+while True:
+    frame = json.loads(sys.stdin.readline()); seen.append(frame['type'])
+    if frame['type'] == 'model.result': break
+assert 'cancel' in seen, seen
+""",
+    )
+    executable.write_text(source)
+    monkeypatch.setattr("lib.task_host._REPORT_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {
+        "pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"})
+    host = TaskHost(client=client, work_root=tmp_path / "work",
+                    command_resolver=lambda persona: [sys.executable, str(executable)])
+    assert host.run(assignment, envelope, heartbeat=FakeHeartbeat(events),
+                    acknowledge=lambda: events.append("ack")) == TASK_EXIT_FAILED
+    assert client.finalize_body["outcome"] == "cancelled"
+    assert client.finalize_body["child_exit"]["exit_code"] == 0
+    if report_outage:
+        assert report_ids[0] == report_ids[1]
