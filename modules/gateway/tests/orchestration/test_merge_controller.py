@@ -304,12 +304,65 @@ async def test_external_merge_completes_with_current_verified_evidence_without_m
         assert delivery_receipt == receipt
 
 
+@pytest.mark.parametrize("rest_rules_available", [False, True])
+async def test_merged_pr_without_required_or_applicable_checks_completes(merge, rest_rules_available):
+    merge.remote["rules"] = []
+    if not rest_rules_available:
+        unavailable = unavailable_rules_data()
+        merge.remote.update(rules=unavailable["rules"], capability=unavailable["capability"])
+        merge.remote["capability"]["data"]["repository"]["databaseId"] = merge.binding.provider_repository_id
+    merge.remote["checks"] = {"total_count": 0, "check_runs": []}
+    record = merge.remote["graphql"]["data"]["repository"]["pullRequest"]
+    record["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
+    merge.merge_remote()
+
+    result = await tick(merge)
+    execution, _, node, _ = await state(merge)
+    assert node.state == "passed", (result, execution.block_detail)
+    assert merge.mutations == []
+    actions = await merge_actions(merge)
+    verification = actions[0].detail["post_merge_verification"]
+    assert verification["checks_state"] == "NOT_REQUIRED"
+    assert verification["check_requirements"]["complete"] is True
+    assert verification["checks"] == []
+    assert verification["check_sources"]
+    await tick(merge)
+    assert len(await merge_actions(merge)) == 1
+
+
+@pytest.mark.parametrize("defect", ["missing", "pending", "failed", "wrong_app", "rules_unavailable", "check_head_changed"])
+async def test_merged_pr_successful_rollup_cannot_hide_unmet_check_policy(merge, defect):
+    # The legacy aggregate is green in every case; canonical requirements and
+    # current-head provider evidence must still prevent completion.
+    check = merge.remote["checks"]["check_runs"][0]
+    if defect == "missing":
+        merge.remote["checks"] = {"total_count": 0, "check_runs": []}
+    elif defect == "pending":
+        check.update(status="in_progress", conclusion=None)
+    elif defect == "failed":
+        check["conclusion"] = "failure"
+    elif defect == "wrong_app":
+        check["app"]["id"] = 99
+    elif defect == "rules_unavailable":
+        merge.remote["rules"] = httpx.Response(403, json={"message": "Resource not accessible by integration"})
+    elif defect == "check_head_changed":
+        check["head_sha"] = "e" * 40
+    merge.merge_remote()
+
+    result = await tick(merge)
+    execution, _, node, _ = await state(merge)
+    assert node.state == "running" and execution.phase == "merge_ready", result
+    assert merge.mutations == []
+    assert not await merge_actions(merge)
+
+
 @pytest.mark.parametrize("defect", ["checks", "review", "stale_review", "head", "repository", "merge_sha", "review_artifact", "timestamp"])
 async def test_external_merge_requires_real_matching_review_checks_and_provider_evidence(merge, defect):
     merge.merge_remote()
     record = merge.remote["graphql"]["data"]["repository"]["pullRequest"]
     if defect == "checks":
         record["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "FAILURE"
+        merge.remote["checks"]["check_runs"][0]["conclusion"] = "failure"
     elif defect == "review":
         record["reviewDecision"] = "CHANGES_REQUESTED"
     elif defect == "stale_review":
