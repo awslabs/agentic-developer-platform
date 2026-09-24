@@ -247,6 +247,34 @@ def _is_unique_violation(error: BaseException) -> bool:
     return False
 
 
+def stored_outcome(value: object) -> str:
+    """The `CallOutcome` value from a stored `harness_provider_call_intent.outcome`.
+
+    `execution._outcome_detail` writes one column for both the enum and the provider's
+    free text, as `"<enum>: <detail>"` when a detail was given -- deliberately, so the
+    machine-readable and human-readable halves cannot disagree about the same call. The
+    contract that makes it safe is that the enum comes first, so a prefix match decides
+    it. Code branching on the outcome must therefore use this function and never compare
+    the raw column, because an equality test against `"succeeded"` silently stops
+    matching the moment a provider returns any detail text at all.
+
+    This lives in `store` rather than in `execution` because the three readers that
+    branch on it (`execution_plan.confirmed_plan_progress`,
+    `inventory._creation_complete`, `allocation.creating_calls_unaccounted_for`) all
+    already import this module, while `execution_plan` cannot import `execution` without
+    a cycle (`execution` -> `leases`/`recovery` -> `execution_plan`). A single decoder
+    shared by the writer's peers is what keeps the "enum first" contract from being
+    re-derived, inconsistently, at each call site -- which is exactly how the defect
+    this function fixes arose: `allocation` split the prefix and the other two did not.
+
+    Returns `""` for NULL or a non-string, so a missing outcome is falsy and never
+    compares equal to a real one.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.split(":", 1)[0]
+
+
 class OperationStore:
     """Durable create/get/status for operations, plus the admission transaction.
 

@@ -407,7 +407,10 @@ def _check_parameters(parameters: dict[str, str]) -> None:
                 f"parameter key {key[:32]!r} exceeds "
                 f"{MAX_PARAMETER_KEY_LENGTH} characters"
             )
-        if len(value) > MAX_PARAMETER_VALUE_LENGTH:
+        # The full lifecycle contains account, infrastructure, bootstrap and
+        # retirement descriptors. It is one approval-bound JSON parameter, not
+        # an ordinary scalar. It shares the unchanged aggregate byte ceiling.
+        if key != "execution_steps" and len(value) > MAX_PARAMETER_VALUE_LENGTH:
             raise ContractViolation(
                 f"parameter {key!r} value exceeds "
                 f"{MAX_PARAMETER_VALUE_LENGTH} characters"
@@ -419,6 +422,15 @@ def _check_parameters(parameters: dict[str, str]) -> None:
         raise ContractViolation(
             f"parameters exceed {MAX_TOTAL_PARAMETER_BYTES} bytes in total"
         )
+    if len(parameters.get("execution_steps", "")) > MAX_PARAMETER_VALUE_LENGTH:
+        from .execution_descriptors import parse_execution_steps
+
+        try:
+            parse_execution_steps(parameters["execution_steps"])
+        except (ValueError, TypeError) as exc:
+            raise ContractViolation(
+                "An approved execution-step plan is required"
+            ) from exc
 
 
 def payload_digest(request: OperationRequest) -> str:

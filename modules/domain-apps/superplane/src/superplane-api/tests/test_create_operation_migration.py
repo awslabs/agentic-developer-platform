@@ -13,7 +13,11 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["021_deployment_identity"]
+    assert scripts.get_heads() == ["027_cli_bootstrap_foundation"]
+    assert set(scripts.get_revision("027_cli_bootstrap_foundation").down_revision) == {
+        "021_deployment_identity",
+        "018_bootstrap_read_tokens",
+    }
     assert (
         scripts.get_revision("021_deployment_identity").down_revision
         == "020_merge_workspace_cli"

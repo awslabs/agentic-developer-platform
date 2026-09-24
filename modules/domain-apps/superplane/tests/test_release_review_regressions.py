@@ -123,10 +123,23 @@ def test_buildspec_runs_only_the_selected_domain_build(
         shutil.copytree(
             ROOT / RELEASE.parent / "src/superplane-api/scripts", context / "scripts"
         )
-        for package in ("auth", "contracts"):
+        for package in (
+            "auth",
+            "contracts",
+            "../../harness/jobs",
+            "infra/account-factory",
+            "infra/account-provisioning",
+            "infra/workspaces",
+            "workspace_bootstrap",
+            "workspace_provisioning",
+        ):
             shutil.copytree(
                 ROOT / RELEASE.parent / package, script.parent.parent / package
             )
+        shutil.copy(
+            ROOT / RELEASE.parent / "pyproject.toml",
+            script.parent.parent / "pyproject.toml",
+        )
         assert not (context / "vendor").exists()
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -137,8 +150,8 @@ def test_buildspec_runs_only_the_selected_domain_build(
             '#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$BUILD_TRACE"\n'
             'case "$*" in *get-login-password*) echo test-password;; login*) cat >/dev/null;; esac\n'
             'if [ "$1" = build ] && [ "$SOURCE_PATH" = src/superplane-api ]; then\n'
-            "  for package in auth contracts; do\n"
-            '    test -f "modules/domain-apps/superplane/$SOURCE_PATH/vendor/superplane-$package/pyproject.toml" || exit 91\n'
+            "  for package in superplane-auth superplane-contracts harness-jobs account-factory account-provisioning superplane-bootstrap workspace-provisioning; do\n"
+            '    test -f "modules/domain-apps/superplane/$SOURCE_PATH/vendor/$package/pyproject.toml" || exit 91\n'
             "  done\n"
             "fi\n"
         )
@@ -183,12 +196,33 @@ def test_buildspec_runs_only_the_selected_domain_build(
             for source, package, sentinel in (
                 ("auth", "superplane_auth", "policy.py"),
                 ("contracts", "superplane_contracts", "emission.py"),
+                ("../../harness/jobs", "harness_jobs", "facade.py"),
+                ("infra/account-factory", "account_factory", "modes.py"),
+                (
+                    "infra/account-provisioning",
+                    "account_provisioning",
+                    "creation_runner.py",
+                ),
+                ("workspace_bootstrap", "superplane_bootstrap", "workspace.py"),
+                (".", "workspace_provisioning", "preview.py"),
             ):
                 assert (
                     context / "vendor" / package.replace("_", "-") / package / sentinel
                 ).read_bytes() == (
                     ROOT / RELEASE.parent / source / package / sentinel
                 ).read_bytes()
+            assert (
+                context
+                / "vendor/superplane-bootstrap/superplane_bootstrap/_data/outputs.tf"
+            ).read_bytes() == (
+                ROOT / RELEASE.parent / "infra/workspaces/outputs.tf"
+            ).read_bytes()
+            assert (
+                context
+                / "vendor/account-factory/account_factory/_data/dependencies.lock.yaml"
+            ).read_bytes() == (
+                ROOT / RELEASE.parent / "infra/account-factory/dependencies.lock.yaml"
+            ).read_bytes()
         calls = trace.read_text()
         # Tagged by the ADP commit; the origin revision rides along as a label. Both are
         # asserted because collapsing them is the regression this guards.
@@ -233,4 +267,5 @@ def test_api_build_watches_every_staged_source_package():
     paths = workflow.get("on", workflow.get(True))["push"]["paths"]
     assert sources
     for source in sources:
-        assert f"{RELEASE.parent}/{source}/**" in paths
+        normalized = (ROOT / RELEASE.parent / source).resolve().relative_to(ROOT)
+        assert f"{normalized.as_posix()}/**" in paths

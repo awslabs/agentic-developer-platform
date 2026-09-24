@@ -15,8 +15,8 @@ requires-python = ">=3.11"
 # `tests/test_provisioning_adapter.py:828`) -- composing it is #5535's (w6-12) decision,
 # not this story's. Declaring it here would defeat both.
 #
-# `account_factory` is a sibling directory rather than a distribution, so it is put on
-# `sys.path` by `account_provisioning_tests/__init__.py` exactly as that module's own suite does.
+# `account_factory` is installed from its maintained sibling distribution by the
+# API/worker staging step. It is never resolved from an unrelated public index.
 dependencies = []
 
 [project.optional-dependencies]

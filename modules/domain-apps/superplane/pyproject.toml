@@ -1,0 +1,15 @@
+[project]
+name = "workspace-provisioning"
+version = "0.1.0"
+description = "Approved Superplane workspace planning and lifecycle composition"
+requires-python = ">=3.12"
+# Sibling source distributions are installed from the same reviewed checkout by
+# stage-domain-auth.sh, never resolved as public package-index replacements.
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["workspace_provisioning"]

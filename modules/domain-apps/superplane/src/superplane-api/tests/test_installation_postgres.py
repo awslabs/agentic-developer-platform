@@ -76,6 +76,8 @@ async def isolated_database(monkeypatch, installation_postgres_url):
         "017_add_workspace_bootstrap_reservations",
         "019_workspace_operation_state",
         "020_merge_workspace_cli",
+        "021_deployment_identity",
+        "018_bootstrap_read_tokens",
     ],
 )
 async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_head):
@@ -94,6 +96,16 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
         )
         assert previous.returncode == 0, previous.stderr
     deployment_id = None
+    if initial_head == "018_bootstrap_read_tokens":
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO workspace_bootstrap_read_tokens "
+                    "(workspace_id,org_id,operation_id,registration_claim,token_hash,lease_holder,lease_attempt_id,lease_fence_token,expires_at) "
+                    "VALUES ('preserved-ws','preserved-org','preserved-operation',:claim,:hash,'preserved-worker','preserved-attempt',7,now()+interval '1 hour')"
+                ),
+                {"claim": "a" * 64, "hash": "b" * 64},
+            )
     if initial_head == "020_merge_workspace_cli":
         org_id, cluster_id, deployment_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
         async with engine.begin() as conn:
@@ -131,8 +143,21 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "021_deployment_identity"
+    assert observed["revision"] == "027_cli_bootstrap_foundation"
     async with engine.connect() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT to_regclass('workspace_bootstrap_read_tokens')")
+            )
+        ).scalar_one() is not None
+        if initial_head == "018_bootstrap_read_tokens":
+            assert (
+                await conn.execute(
+                    text(
+                        "SELECT operation_id,lease_fence_token FROM workspace_bootstrap_read_tokens WHERE workspace_id='preserved-ws'"
+                    )
+                )
+            ).one() == ("preserved-operation", 7)
         assert (
             await conn.execute(
                 text("SELECT to_regclass('workspace_bootstrap_reservations')")

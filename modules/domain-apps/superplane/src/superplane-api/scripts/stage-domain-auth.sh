@@ -53,13 +53,18 @@ set -euo pipefail
 component_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 vendor_dir="$component_dir/vendor"
 
-# Each entry: <source dir under the module root>:<import package>:<sentinel module>
+# Each entry: <source dir relative to the module root>:<import package>:<sentinel module>
 # The sentinel is a file that must exist for the copy to be worth making — a
 # directory that exists but is missing the module the app imports is the failure
 # this guard is for, and it is not the same as the directory being absent.
 packages=(
   "auth:superplane_auth:policy.py"
   "contracts:superplane_contracts:emission.py"
+  "../../harness/jobs:harness_jobs:facade.py"
+  "infra/account-factory:account_factory:modes.py"
+  "infra/account-provisioning:account_provisioning:creation_runner.py"
+  "workspace_bootstrap:superplane_bootstrap:workspace.py"
+  ".:workspace_provisioning:preview.py"
 )
 
 stage_one() {
@@ -68,6 +73,14 @@ stage_one() {
 
   src="$(cd "$component_dir/../../$src_name" 2>/dev/null && pwd)" || {
     echo "error: $src_name is not at $component_dir/../../$src_name" >&2
+    exit 1
+  }
+
+  # Packages may live outside the domain module (the shared harness does), but
+  # every reviewed source must remain within this checkout.
+  repo_root="$(cd "$component_dir/../../../.." && pwd)"
+  [[ "$src" == "$repo_root"/* ]] || {
+    echo "error: $pkg resolves outside the repository" >&2
     exit 1
   }
 
@@ -90,6 +103,17 @@ stage_one() {
   mkdir -p "$staged"
   cp "$src/pyproject.toml" "$staged/"
   cp -R "$src/$pkg" "$staged/$pkg"
+
+  # Preserve the authoritative non-Python runtime inputs inside the wheel.
+  # They remain generated build scratch, refreshed from source on every stage.
+  if [[ "$pkg" == "account_factory" ]]; then
+    mkdir -p "$staged/$pkg/_data"
+    cp "$src/dependencies.lock.yaml" "$staged/$pkg/_data/"
+    cp -R "$src/policies" "$src/manifests" "$src/vendor" "$staged/$pkg/_data/"
+  elif [[ "$pkg" == "superplane_bootstrap" ]]; then
+    mkdir -p "$staged/$pkg/_data"
+    cp "$src/../infra/workspaces/outputs.tf" "$staged/$pkg/_data/outputs.tf"
+  fi
 
   echo "Staged $pkg from $src into $staged"
 }

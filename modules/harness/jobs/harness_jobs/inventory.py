@@ -182,7 +182,7 @@ from .execution_plan import PlanProgress, confirmed_plan_progress
 from .execution_rpc import ExecutionGrant
 from .identity import ContractViolation, OperationRefused, ResolvedPrincipal
 from .leases import ExecutionLease, lock_lease
-from .store import Connection, OperationStore
+from .store import Connection, OperationStore, stored_outcome
 
 __all__ = [
     "MAX_INVENTORY_RESOURCES",
@@ -2054,7 +2054,13 @@ class InventoryAuthority:
         known = {(item.provider, item.provider_reference) for item in resources}
         for call in calls:
             stage = str(call["stage"])
-            outcome = call["outcome"] or ""
+            # Decoded, not compared raw: the column carries the provider's free text
+            # after the enum. Clause (3) below is the one that must not be skipped --
+            # an `outcome == "succeeded"` test against the raw column stops matching as
+            # soon as the provider supplies any detail, and then a succeeded call whose
+            # provider reference is absent from membership reads as accounted for. That
+            # releases the hold on an allocation with an unenumerated billable resource.
+            outcome = stored_outcome(call["outcome"])
             if stage in ("intended", "unresolved") or outcome == "unknown":
                 # The `may_have_happened` rule, applied to the stored row. Spelled
                 # against the columns rather than by rebuilding a `ProviderCall` so this
