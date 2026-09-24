@@ -53,4 +53,5 @@ phases:
 
   post_build:
     commands:
+      - test "$CODEBUILD_BUILD_SUCCEEDING" = 1
       - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (PUBLISH_LATEST=${PUBLISH_LATEST:-true})"

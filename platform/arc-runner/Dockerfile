@@ -44,7 +44,15 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
     && node --version && npm --version
 
 # ── Fix GHSA-73rr-hfp2-rc4v: override npm's bundled diff with >=5.2.2 ────────
-RUN npm --prefix /usr/local/lib/node_modules/npm install diff@5.2.2 \
+# Pack the pinned dependency independently: installing inside npm's package
+# directory also resolves npm's unpublished development dependencies.
+RUN patch_dir=$(mktemp -d) \
+    && npm pack diff@5.2.2 --ignore-scripts --pack-destination "$patch_dir" \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/diff \
+    && mkdir -p /usr/local/lib/node_modules/npm/node_modules/diff \
+    && tar -xzf "$patch_dir/diff-5.2.2.tgz" --strip-components=1 \
+        -C /usr/local/lib/node_modules/npm/node_modules/diff \
+    && rm -rf "$patch_dir" \
     && node -e "const v = require('/usr/local/lib/node_modules/npm/node_modules/diff/package.json').version; \
        if (v !== '5.2.2') { console.error('diff version mismatch: ' + v); process.exit(1); } \
        console.log('diff=' + v);"
