@@ -9,6 +9,7 @@
     "global.anthropic.claude-*"
   ],
   "aliases": {
+    "opus55": "global.anthropic.claude-opus-5-5",
     "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
     "opus47": "global.anthropic.claude-opus-4-7",
@@ -20,6 +21,7 @@
     "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
   },
   "canonical_model_ids": [
+    "global.anthropic.claude-opus-5-5",
     "global.anthropic.claude-opus-5",
     "global.anthropic.claude-opus-4-8",
     "global.anthropic.claude-opus-4-7",

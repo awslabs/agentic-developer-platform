@@ -17,11 +17,18 @@ from pathlib import Path
 from analyst_context import SOURCES, context_records, incident_records, lookup
 from browser_client import investigation_request
 from browser_guard import DestinationRefused
-from case_contract import Assessment, content_digest, digest, sanitize, utcnow
+from case_contract import (
+    Assessment,
+    assessment_schema,
+    content_digest,
+    digest,
+    sanitize,
+    utcnow,
+)
 from evidence_items import evidence_coverage, validate_inventory
 from research_case import (
     CASE_FILE,
-    _inconclusive,
+    _pending,
     assess_case,
     collection_summary,
     new_case,
@@ -93,7 +100,7 @@ def _new_probe(case, action, decision):
         "decision": sanitize(decision),
     }
     case["probes"].append(probe)
-    case["assessment"] = _inconclusive("New evidence requires researcher assessment")
+    case["assessment"] = _pending("New evidence requires researcher assessment")
     return probe
 
 
@@ -126,7 +133,10 @@ def _accept(output, case, probe, packet):
         if raw.get("status") not in {"complete", "partial", "failed"}:
             raise ValueError("Invalid observation status")
         if raw["status"] == "complete" and (
-            not raw.get("screenshot_base64")
+            (
+                not raw.get("screenshot_base64")
+                and raw.get("screenshot_status") != "not_requested"
+            )
             or not raw.get("dom_snapshot")
             or not raw.get("visible_text", "").strip()
             or raw.get("errors")
@@ -230,12 +240,12 @@ def _failure(output, case, probe, error):
             and getattr(error, "browser_start_unattempted", False) is True
         ):
             case["unconfirmed_browser_start"] = False
-    case["assessment"] = _inconclusive(f"{probe['id']} failed; retain earlier evidence")
+    case["assessment"] = _pending(f"{probe['id']} failed; retain earlier evidence")
     if not case["observations"]:
         case["stop_reason"] = (
             "Initial collection failed; no observation exists to assess"
         )
-        case["assessment"] = _inconclusive(
+        case["assessment"] = _pending(
             f"No page evidence collected ({probe.get('reason_code', probe['error'])}). "
             "Unavailable or blocked collection does not establish safety or maliciousness."
         )
@@ -447,24 +457,36 @@ def review(output, finding):
 
 
 def _decision(case, value):
+    # One concise rationale is sufficient; separate review files remain optional.
+    if isinstance(value, str):
+        return {"reason": _text(value, "reason"), "evidence_ids": []}
     if (
-        not case["reviews"]
-        or case["reviews"][-1]["probe_id"] != case["probes"][-1]["id"]
+        not isinstance(value, dict)
+        or "reason" not in value
+        or set(value)
+        - {"question", "reason", "expected_signal", "evidence_ids", "source_ids"}
     ):
-        raise ValueError("Review the latest evidence before selecting the next action")
-    if not isinstance(value, dict) or set(value) != {
-        "question",
-        "reason",
-        "expected_signal",
-        "evidence_ids",
-    }:
         raise ValueError(
-            "Decision requires question, reason, expected_signal and evidence_ids"
+            "Decision requires a reason and optional evidence/source references"
         )
-    return {
-        **{k: _text(value[k], k) for k in ("question", "reason", "expected_signal")},
-        "evidence_ids": _citations(case, value["evidence_ids"]),
+    result = {
+        k: _text(value[k], k)
+        for k in ("question", "reason", "expected_signal")
+        if k in value
     }
+    result["evidence_ids"] = (
+        _citations(case, value["evidence_ids"], latest=False)
+        if value.get("evidence_ids")
+        else []
+    )
+    ids = value.get("source_ids", [])
+    known = {r["id"] for r in context_records(case)}
+    if not isinstance(ids, list) or not all(
+        isinstance(i, str) and i in known for i in ids
+    ):
+        raise ValueError("Decision cites an unknown source")
+    result["source_ids"] = ids
+    return result
 
 
 def _close_after_failure(output, case, lease, request):
@@ -490,6 +512,7 @@ def step(
     *,
     candidate_id=None,
     seconds=None,
+    url=None,
     request=investigation_request,
 ):
     with _case(output) as case:
@@ -508,6 +531,11 @@ def step(
             payload["candidate_id"] = candidate_id
         if seconds is not None:
             payload["seconds"] = seconds
+        if url is not None:
+            from research_case import _validate_input
+
+            _validate_input(url)
+            payload["url"] = url
         probe = _new_probe(
             case,
             action,
@@ -571,7 +599,7 @@ def close(output, reason, *, request=investigation_request):
             "assessment_attempts"
         ):
             case["assessment"] = {
-                **_inconclusive(
+                **_pending(
                     "Assessment did not validate; preserve individually supported findings and rejected attempts"
                 ),
                 "findings": retained_findings(case),
@@ -661,7 +689,7 @@ def finish(
 
 
 def assessment_contract(case=None):
-    result = {"assessment_schema": Assessment.model_json_schema()}
+    result = {"assessment_schema": assessment_schema()}
     if case is not None:
         result.update(
             valid_evidence_ids=[o["id"] for o in case["observations"]],
@@ -673,9 +701,9 @@ def assessment_contract(case=None):
             },
             valid_context_ids=[r["id"] for r in context_records(case) if "id" in r],
             archive_candidates=archive_candidates(case),
-            empty_evidence_assessment=_inconclusive(
-                "No page observations were captured"
-            ),
+            assessment_status="pending"
+            if case["assessment"].get("verdict") is None
+            else "complete",
         )
     return result
 
@@ -696,7 +724,12 @@ def status(case):
         "objective": case["objective"],
         "collection": collection_summary(case),
         "browser_cleanup": case.get("browser_cleanup", "unknown"),
-        "assessment": case["assessment"],
+        "assessment": case["assessment"]
+        if case["assessment"].get("verdict") is not None
+        else None,
+        "assessment_status": "pending"
+        if case["assessment"].get("verdict") is None
+        else "complete",
         "assessment_required": bool(case["observations"] or context_records(case)),
         "terminal": bool(case.get("stop_reason")) and not view.get("session_open"),
         "valid_evidence_ids": [o["id"] for o in case["observations"]],
@@ -738,9 +771,13 @@ def status(case):
 
 def _append_context(case, record):
     records = case.setdefault("corroboration", [])
-    if len(records) >= 10:
-        raise ValueError("Corroboration budget exhausted")
+    if len(records) >= 48:
+        raise ValueError("Combined source budget exhausted")
     records.append({**sanitize(record), "id": f"corroboration-{len(records) + 1:03d}"})
+    if record.get("status") in {"available", "reported", "fetching"}:
+        case["assessment"] = _pending(
+            "New source evidence requires researcher assessment"
+        )
 
 
 def archive_candidates(case):
@@ -883,6 +920,91 @@ def archive(output, source_id, capture_id, reason, *, fetch_fn=None):
         return case
 
 
+def discover(output, reason, *, match="host", crawls=None, lookup_fn=None):
+    """Model-selected archive query; keep failed and successful attempts distinct."""
+    from dataclasses import replace
+    from common_crawl import CrawlConfig, lookup_common_crawl
+
+    with _case(output) as case:
+        if sum(r.get("kind") == "archive_index" for r in context_records(case)) >= 8:
+            raise ValueError("Archive discovery budget exhausted")
+        config = CrawlConfig.from_env()
+        if crawls:
+            if config is None or not set(crawls) <= set(config.crawls):
+                raise ValueError(
+                    "Select historical partitions from configured archive coverage"
+                )
+            config = replace(config, crawls=tuple(crawls))
+        lease = json.loads(_lease_path(output).read_text())
+        record = (lookup_fn or lookup_common_crawl)(
+            lease["url"], config=config, match=match
+        )
+        _append_context(case, {**record, "request_reason": _text(reason, "reason")})
+        save_case(output, case)
+        return case
+
+
+def import_evidence(output, source, reason):
+    """Copy verified same-run observations as sourced context, never verdicts."""
+    import copy
+
+    output, source = Path(output).resolve(), Path(source).resolve()
+    if output == source or output.parent != source.parent:
+        raise ValueError(
+            "Evidence imports must be from another case in the same run directory"
+        )
+    verify_case(source)
+    original = json.loads((source / CASE_FILE).read_text())
+    source_manifest = json.loads((source / "manifest.json").read_text())
+    with _case(output) as case:
+        if any(
+            r.get("source_case_id") == original["case_id"]
+            for r in context_records(case)
+        ):
+            raise ValueError("This case's observations were already imported")
+        if (
+            len(original["observations"])
+            + sum(
+                r.get("kind") == "imported_observation" for r in context_records(case)
+            )
+            > 24
+        ):
+            raise ValueError("Same-run observation import budget exhausted")
+        if len(case.get("corroboration", [])) + len(original["observations"]) > 48:
+            raise ValueError("Combined source budget exhausted")
+        for observation in original["observations"]:
+            validate_inventory(observation)
+            retained = copy.deepcopy(observation)
+            stem = f"import-{len(case.get('corroboration', [])) + 1:03d}"
+            for field in ("screenshot", "dom_snapshot"):
+                name = retained.get(field)
+                if not name:
+                    continue
+                if name not in source_manifest["files"] or Path(name).name != name:
+                    raise ValueError(
+                        "Imported observation file is not in the verified manifest"
+                    )
+                copied = stem + "-" + name
+                (output / copied).write_bytes((source / name).read_bytes())
+                retained[field] = copied
+            _append_context(
+                case,
+                {
+                    "kind": "imported_observation",
+                    "source": "same_run_browser_evidence",
+                    "status": "available",
+                    "checked_at": utcnow(),
+                    "source_case_id": original["case_id"],
+                    "source_created_at": original["created_at"],
+                    "source_case_sha256": source_manifest["files"][CASE_FILE]["sha256"],
+                    "reason": _text(reason, "reason"),
+                    "observation": retained,
+                },
+            )
+        save_case(output, case)
+        return case
+
+
 def enrich(output, source, reason, *, lookup_fn=lookup):
     """One model-selected provider lookup for the seed; browser state is preserved."""
     reason = _text(reason, "enrichment reason")
@@ -890,7 +1012,7 @@ def enrich(output, source, reason, *, lookup_fn=lookup):
         raise ValueError("Unsupported enrichment source")
     with _case(output) as case:
         if (
-            sum(r.get("kind") != "archived_page" for r in case.get("corroboration", []))
+            sum(bool(r.get("requested_source")) for r in case.get("corroboration", []))
             >= 10
         ):
             raise ValueError("Corroboration budget exhausted")
@@ -900,7 +1022,11 @@ def enrich(output, source, reason, *, lookup_fn=lookup):
             raise ValueError("This source was already queried; use its recorded result")
         lease = json.loads(_lease_path(output).read_text())
         record = lookup_fn(
-            source, lease["url"], api_key=os.environ.get("CYBER_VT_API_KEY")
+            source,
+            lease["url"],
+            api_key=os.environ.get(
+                "CYBER_URLHAUS_AUTH_KEY" if source == "urlhaus" else "CYBER_VT_API_KEY"
+            ),
         )
         _append_context(case, {**record, "requested_source": source, "reason": reason})
         save_case(output, case)
@@ -939,6 +1065,8 @@ def main(argv=None):
         "hypothesize",
         "browse",
         "archive",
+        "discover",
+        "import-evidence",
     ):
         p = commands.add_parser(command)
         p.add_argument("--case", required=True, type=Path)
@@ -947,13 +1075,26 @@ def main(argv=None):
         if command == "hypothesize":
             p.add_argument("--hypothesis", required=True, type=Path)
         if command in {"step", "profile"}:
-            p.add_argument("--decision", required=True, type=Path)
+            choice = p.add_mutually_exclusive_group(required=True)
+            choice.add_argument("--decision", type=Path)
+            choice.add_argument("--reason")
         if command == "step":
             p.add_argument(
-                "action", choices=["follow", "expand", "root", "back", "scroll", "wait"]
+                "action",
+                choices=[
+                    "follow",
+                    "expand",
+                    "root",
+                    "back",
+                    "scroll",
+                    "wait",
+                    "navigate",
+                    "screenshot",
+                ],
             )
             p.add_argument("--candidate-id")
             p.add_argument("--seconds", type=int)
+            p.add_argument("--url")
         if command == "profile":
             p.add_argument("name", choices=["desktop", "mobile"])
         if command in {"close", "finish"}:
@@ -967,6 +1108,13 @@ def main(argv=None):
             p.add_argument("--virustotal-url")
         if command == "enrich":
             p.add_argument("--source", choices=SOURCES, required=True)
+            p.add_argument("--reason", required=True)
+        if command == "discover":
+            p.add_argument("--match", choices=["host", "exact"], default="host")
+            p.add_argument("--crawls", help="Comma-separated configured partitions")
+            p.add_argument("--reason", required=True)
+        if command == "import-evidence":
+            p.add_argument("--from-case", required=True, type=Path)
             p.add_argument("--reason", required=True)
         if command == "archive":
             p.add_argument("--source-id", required=True)
@@ -1041,6 +1189,15 @@ def main(argv=None):
         result = hypothesize(args.case, json.loads(args.hypothesis.read_text()))
     elif args.command == "browse":
         result = browse(args.case)
+    elif args.command == "discover":
+        result = discover(
+            args.case,
+            args.reason,
+            match=args.match,
+            crawls=args.crawls.split(",") if args.crawls else None,
+        )
+    elif args.command == "import-evidence":
+        result = import_evidence(args.case, args.from_case, args.reason)
     elif args.command == "enrich":
         result = enrich(args.case, args.source, args.reason)
     elif args.command == "archive":
@@ -1051,14 +1208,19 @@ def main(argv=None):
         result = step(
             args.case,
             args.action,
-            json.loads(args.decision.read_text()),
+            json.loads(args.decision.read_text()) if args.decision else args.reason,
             candidate_id=args.candidate_id,
             seconds=args.seconds,
+            url=args.url,
         )
     elif args.command == "close":
         result = close(args.case, args.reason)
     elif args.command == "profile":
-        result = profile(args.case, args.name, json.loads(args.decision.read_text()))
+        result = profile(
+            args.case,
+            args.name,
+            json.loads(args.decision.read_text()) if args.decision else args.reason,
+        )
     elif args.command == "assess":
         result = assess_case(args.case, json.loads(args.assessment.read_text()))
     elif args.command == "finish":

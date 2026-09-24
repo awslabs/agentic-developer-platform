@@ -83,8 +83,9 @@ class Finding(Contract):
         "other",
     ]
     statement: str = Field(min_length=1, max_length=2000)
-    basis: Literal["observation", "hypothesis"]
-    evidence_ids: list[str] = Field(min_length=1, max_length=10)
+    basis: Literal["observation", "reported", "hypothesis"]
+    evidence_ids: list[str] = Field(default_factory=list, max_length=10)
+    source_ids: list[str] = Field(default_factory=list, max_length=10)
     evidence_refs: list[EvidenceReference] = Field(default_factory=list, max_length=30)
 
 
@@ -101,13 +102,20 @@ class ContextFinding(Contract):
 
 
 class ContextAssessment(Contract):
-    risk: Literal["suspicious", "inconclusive", "no_specific_concern"]
+    # Read older reports without imposing a second, weaker verdict vocabulary.
+    risk: (
+        Literal[
+            "clean", "suspicious", "malicious", "inconclusive", "no_specific_concern"
+        ]
+        | None
+    ) = None
     findings: list[ContextFinding] = Field(default_factory=list, max_length=20)
     limitations: list[str] = Field(min_length=1, max_length=20)
 
 
 class Assessment(Contract):
     verdict: Literal[
+        "clean",
         "no_specific_concern",
         "no_adverse_behavior_observed",
         "suspicious",
@@ -118,15 +126,21 @@ class Assessment(Contract):
     limitations: list[str] = Field(default_factory=list, max_length=30)
     recommended_actions: list[str] = Field(default_factory=list, max_length=20)
     assessor: str = Field(min_length=1, max_length=200)
+    confidence: Literal["high", "medium", "low"] | None = None
     model_version: str = Field(default="", max_length=200)
     context_assessment: ContextAssessment | None = None
 
     def validate_context(self, records):
         """Check source references only; the model evaluates their meaning and quality."""
-        if self.context_assessment is None:
-            return
         known = {r["id"] for r in records if "id" in r}
-        for finding in self.context_assessment.findings:
+        for finding in self.findings:
+            if not finding.evidence_ids and not finding.source_ids:
+                raise ValueError("Finding requires an observation or source reference")
+            if not set(finding.source_ids) <= known:
+                raise ValueError("Finding cites an unknown source ID")
+        for finding in (
+            self.context_assessment.findings if self.context_assessment else []
+        ):
             if not set(finding.source_ids) <= known:
                 raise ValueError("Context finding cites an unknown source ID")
 
@@ -147,3 +161,15 @@ class Assessment(Contract):
 def content_digest(observation: dict) -> str:
     content = {k: observation.get(k) for k in ("visible_text", "forms", "frames")}
     return digest(json.dumps(content, sort_keys=True, ensure_ascii=False))
+
+
+def assessment_schema():
+    """New assessments use four labels; the reader still accepts legacy records."""
+    schema = Assessment.model_json_schema()
+    schema["properties"]["verdict"]["enum"] = [
+        "clean",
+        "suspicious",
+        "malicious",
+        "inconclusive",
+    ]
+    return schema

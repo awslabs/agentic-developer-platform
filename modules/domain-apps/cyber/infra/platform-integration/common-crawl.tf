@@ -3,10 +3,10 @@
 variable "common_crawl_partitions" {
   type        = list(string)
   default     = []
-  description = "One to three existing CC-MAIN-YYYY-WW index partitions. Empty disables Athena discovery until configured."
+  description = "One to twelve existing CC-MAIN-YYYY-WW index partitions. Empty disables Athena discovery until configured."
   validation {
-    condition     = length(var.common_crawl_partitions) <= 3 && alltrue([for p in var.common_crawl_partitions : can(regex("^CC-MAIN-20[0-9]{2}-[0-9]{2}$", p))])
-    error_message = "Supply at most three explicit Common Crawl partition names."
+    condition     = length(var.common_crawl_partitions) <= 12 && alltrue([for p in var.common_crawl_partitions : can(regex("^CC-MAIN-20[0-9]{2}-[0-9]{2}$", p))])
+    error_message = "Supply at most twelve explicit Common Crawl partition names."
   }
 }
 

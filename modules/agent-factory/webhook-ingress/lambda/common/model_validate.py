@@ -55,6 +55,7 @@ LEGACY_MODEL_ALIASES: dict[str, str] = {
     # metadata and local SDK request capture, not a paid invoke receipt.
     # Bare/ambiguous aliases (opus/sonnet/haiku) were removed so a
     # /model choice can't silently drift to a different model over time.
+    "opus55": "global.anthropic.claude-opus-5-5",
     "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
     "opus47": "global.anthropic.claude-opus-4-7",

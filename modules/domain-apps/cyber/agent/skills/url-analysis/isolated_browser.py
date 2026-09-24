@@ -19,8 +19,7 @@ from pathlib import Path
 
 from case_contract import MAX_RESPONSE_BYTES, content_digest
 
-STARTUP_SECONDS = 60
-ACTION_SECONDS = 45
+from runtime_limits import STARTUP_SECONDS, ACTION_SECONDS
 
 
 def stop_session(session_id):

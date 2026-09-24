@@ -41,6 +41,8 @@ class FakeCLI:
         self.published = False
         self.function_error = False
         self.refresh_status = "published"
+        self.partial = False
+        self.failed_sources = []
         self.timeout = 180
         self.confirm_enable = True
         self.pods = [pod("new"), pod("old", "old:sha", terminating=True)]
@@ -93,7 +95,18 @@ class FakeCLI:
         elif cmd[2] == "invoke":
             self.published = True
             Path(cmd[cmd.index("--payload") + 2]).write_text(
-                json.dumps({"status": self.refresh_status, "generation_id": 2, "pointer_revision": 2, "variants": 330})
+                json.dumps(
+                    {
+                        "status": self.refresh_status,
+                        "generation_id": 2,
+                        "pointer_revision": 2,
+                        "variants": 330,
+                        "partial": self.partial,
+                        "fresh_variants": 300,
+                        "retained_variants": 30 if self.partial else 0,
+                        "failed_sources": self.failed_sources,
+                    }
+                )
             )
             result = {"StatusCode": 200, **({"FunctionError": "Unhandled"} if self.function_error else {})}
         else:
@@ -406,3 +419,25 @@ def test_readiness_wait_cannot_hide_wrong_release(cli, args, monkeypatch):
     monkeypatch.setattr(rollout.time, "sleep", unexpected_sleep)
     with pytest.raises(RuntimeError, match="expected release image"):
         rollout.ready_pods(args)
+
+
+@pytest.mark.parametrize("approved", [False, True])
+def test_partial_finalization_requires_explicit_recovery_option(cli, args, approved):
+    cli.partial = True
+    args.allow_partial_refresh = approved
+    if approved:
+        rollout.finalize(args)
+        assert cli.state == "ENABLED"
+    else:
+        with pytest.raises(RuntimeError, match="retained older rates"):
+            rollout.finalize(args)
+        assert cli.state == "DISABLED"
+
+
+def test_partial_recovery_cannot_hide_transport_failure(cli, args):
+    cli.partial = True
+    cli.failed_sources = ["https://aws.example/failed"]
+    args.allow_partial_refresh = True
+    with pytest.raises(AssertionError, match="Transport failures"):
+        rollout.finalize(args)
+    assert cli.state == "DISABLED"

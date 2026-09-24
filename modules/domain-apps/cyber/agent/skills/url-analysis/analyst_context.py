@@ -5,13 +5,13 @@ from __future__ import annotations
 import ipaddress
 import json
 from types import SimpleNamespace
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlencode
 
 from browser_guard import DestinationRefused, PinnedHTTPTransport, vet_destination
 from case_contract import IncidentReport, sanitize, utcnow
 from corroboration import lookup_virustotal
 
-SOURCES = ("rdap", "dns", "cert_transparency", "virustotal", "common_crawl")
+SOURCES = ("rdap", "dns", "cert_transparency", "virustotal", "urlhaus", "common_crawl")
 
 
 def incident_records(reports):
@@ -50,7 +50,7 @@ class ProviderJSON:
             max_analysis_bytes=2 * 1024 * 1024,
         )
 
-    def __call__(self, url):
+    def __call__(self, url, *, data=None, headers=None):
         parsed = urlsplit(url)
         if (
             parsed.scheme != "https"
@@ -62,8 +62,9 @@ class ProviderJSON:
         response = self.transport.fetch(
             SimpleNamespace(
                 url=url,
-                method="GET",
-                all_headers=lambda: {"Accept": "application/json"},
+                method="POST" if data is not None else "GET",
+                post_data_buffer=data,
+                all_headers=lambda: {"Accept": "application/json", **(headers or {})},
             ),
             vet_destination(url),
         )
@@ -95,7 +96,7 @@ def lookup(source, url, *, api_key=None, get_json=None):
         "status": "unavailable",
         "verdict_effect": "model_assessed",
     }
-    if literal:
+    if literal and source != "urlhaus":
         return {
             **record,
             "status": "skipped",
@@ -139,6 +140,40 @@ def lookup(source, url, *, api_key=None, get_json=None):
                     "Certificate issuance does not establish legitimacy; records may be incomplete."
                 ],
             }
+        if source == "urlhaus":
+            if not api_key:
+                return {
+                    **record,
+                    "status": "skipped",
+                    "reason": "URLhaus Auth-Key is not configured",
+                }
+            data = get_json(
+                "https://urlhaus-api.abuse.ch/v1/url/",
+                data=urlencode({"url": url}).encode(),
+                headers={
+                    "Auth-Key": api_key,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            return {
+                **record,
+                "status": "available",
+                "query_status": data.get("query_status"),
+                "reported": {
+                    k: data.get(k)
+                    for k in (
+                        "url_status",
+                        "threat",
+                        "tags",
+                        "date_added",
+                        "last_online",
+                        "blacklists",
+                    )
+                },
+                "limitations": [
+                    "Provider-reported reputation, not proof of current page behavior."
+                ],
+            }
         bootstrap = get_json("https://data.iana.org/rdap/dns.json")
         endpoints = next(
             (
@@ -155,9 +190,21 @@ def lookup(source, url, *, api_key=None, get_json=None):
                 "status": "skipped",
                 "reason": "No HTTPS registry endpoint in IANA bootstrap",
             }
-        # Do not guess a registrable parent; subdomain misses are reported as gaps.
+        import tldextract
+
+        parsed_domain = tldextract.TLDExtract(
+            suffix_list_urls=(), cache_dir=None, include_psl_private_domains=False
+        )(host)
+        registered = parsed_domain.top_domain_under_public_suffix
+        if not registered:
+            return {
+                **record,
+                "status": "skipped",
+                "reason": "Registrable domain unavailable in bundled public suffix data",
+            }
+        record["queried_domain"] = registered
         data = get_json(
-            urljoin(base.rstrip("/") + "/", "domain/" + quote(host, safe=""))
+            urljoin(base.rstrip("/") + "/", "domain/" + quote(registered, safe=""))
         )
         return {
             **record,
@@ -167,11 +214,13 @@ def lookup(source, url, *, api_key=None, get_json=None):
             "events": data.get("events", [])[:20],
             "domain_status": data.get("status", [])[:20],
             "limitations": [
-                "Exact-host registry lookup; a subdomain may have no registration record. Domain age does not establish intent."
+                "Public-suffix-derived registration lookup; parent registration does not identify a hosted page operator."
             ],
         }
-    except (DestinationRefused, OSError, ValueError, KeyError, TypeError):
+    except (DestinationRefused, OSError, ValueError, KeyError, TypeError) as error:
         return {
             **record,
             "reason": "Provider lookup failed, was refused, or exceeded its budget",
+            "error_type": type(error).__name__,
+            "diagnostic": sanitize(str(error))[:500],
         }

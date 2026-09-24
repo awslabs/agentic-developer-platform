@@ -27,7 +27,9 @@ class Cloud:
         self.instance = {
             "InstanceId": "i-0123456789abcdef0",
             "ImageId": data["image_id"],
-            "InstanceType": data["instance_type"],
+            # The simulated SkyPilot transport chooses this machine for GPU
+            # requirement plans; the producer itself no longer picks one.
+            "InstanceType": data.get("instance_type", "g6.xlarge"),
             "State": {"Name": "running"},
             "BlockDeviceMappings": [{"Ebs": {"VolumeId": "vol-0123456789abcdef0"}}],
             "NetworkInterfaces": [{"NetworkInterfaceId": "eni-0123456789abcdef0"}],

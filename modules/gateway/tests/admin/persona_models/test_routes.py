@@ -78,7 +78,12 @@ class TestModelCatalogueEndpoint:
             assert resp.status_code == 200
             body = resp.json()
             assert body["compatibility_class"] == "codex-sdk"
-            assert body["models"] == []
+            assert {model["canonical_model_id"] for model in body["models"]} == {
+                "openai.gpt-6-astra",
+                "openai.gpt-6-sol",
+                "openai.gpt-6-luna",
+            }
+            assert all(model["compatibility_class"] == "codex-sdk" for model in body["models"])
 
     @pytest.mark.asyncio
     async def test_model_row_shape(self, session):

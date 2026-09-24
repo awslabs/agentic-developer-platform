@@ -99,10 +99,17 @@ def _write_json(path: Path, value) -> None:
     os.replace(temporary, path)
 
 
-def _inconclusive(reason: str) -> dict:
-    return Assessment(
-        verdict="inconclusive", assessor="collection-system", limitations=[reason]
-    ).model_dump()
+def _pending(reason: str) -> dict:
+    """Collection has no threat opinion. Only the analyst supplies a verdict."""
+    return {
+        "verdict": None,
+        "assessor": "collection-system",
+        "findings": [],
+        "limitations": [reason],
+        "recommended_actions": [],
+        "model_version": "",
+        "context_assessment": None,
+    }
 
 
 def _validate_input(url: str) -> None:
@@ -129,7 +136,7 @@ def new_case(output: Path, url: str) -> dict:
         "subject_sha256": digest(url),
         "probes": [],
         "observations": [],
-        "assessment": _inconclusive("No browser evidence has been collected"),
+        "assessment": _pending("No browser evidence has been collected"),
     }
     save_case(output, case)
     return case
@@ -174,7 +181,7 @@ def add_probe(
             "status": "running",
         }
         case["probes"].append(probe)
-        case["assessment"] = _inconclusive("New evidence requires assessment")
+        case["assessment"] = _pending("New evidence requires assessment")
         save_case(output, case)
         try:
             bundle = capture(url, profile=profile, wait_seconds=wait_seconds)
@@ -257,9 +264,7 @@ def add_probe(
                 )
             elif isinstance(exc, (ValueError, BrowserBrokerError)):
                 probe["diagnostic"] = sanitize(str(exc))[:1000]
-            case["assessment"] = _inconclusive(
-                f"{probe['id']} failed: {type(exc).__name__}"
-            )
+            case["assessment"] = _pending(f"{probe['id']} failed: {type(exc).__name__}")
         finally:
             probe["completed_at"] = utcnow()
             save_case(output, case)
@@ -440,6 +445,9 @@ def _investigation_report(case):
 
 
 def save_case(output: Path, case: dict) -> None:
+    case["assessment_status"] = (
+        "pending" if case["assessment"].get("verdict") is None else "complete"
+    )
     case["collection"] = collection_summary(case)
     case["browser_cleanup"] = browser_cleanup(case)
     """JSON is authoritative. Reports are regenerated from the same captured evidence."""
@@ -465,7 +473,7 @@ def save_case(output: Path, case: dict) -> None:
     context_assessment = a.get("context_assessment")
     context_lines = [
         "",
-        "## Incident and intelligence context (not observed page behavior)",
+        "## Sourced evidence and provenance",
         "",
     ]
     if context_assessment:
@@ -489,7 +497,7 @@ def save_case(output: Path, case: dict) -> None:
     context_lines += [f"- {_md(json.dumps(r, ensure_ascii=False))}" for r in context]
     context_html = (
         (
-            "<h2>Incident and intelligence context (not observed page behavior)</h2>"
+            "<h2>Sourced evidence and provenance</h2>"
             + (
                 "<h3>Initial hypothesis before live browsing</h3>"
                 + f"<pre>{_escaped(json.dumps(initial_hypothesis, indent=2))}</pre>"
@@ -507,9 +515,10 @@ def save_case(output: Path, case: dict) -> None:
         else ""
     )
     lines = [
-        f"# URL research assessment: {a['verdict']}",
+        f"# URL research assessment: {a['verdict'] or 'assessment pending'}",
         "",
         f"Target: {_md(case['target_url'])}",
+        f"Confidence: {_md(a.get('confidence') or 'not specified')}",
         f"Execution: {case['collection']['execution']} · Coverage: {case['collection']['coverage']}",
         f"Browser cleanup: {_md(case['browser_cleanup'])}",
         "",
@@ -525,7 +534,11 @@ def save_case(output: Path, case: dict) -> None:
     ]
     cards = []
     for f in a["findings"]:
-        citations = ", ".join(f"[{i}](#{i})" for i in f["evidence_ids"])
+        citations = ", ".join(f"[{i}](#{i})" for i in f["evidence_ids"]) + (
+            "; sources: " + _escaped(", ".join(f.get("source_ids", [])))
+            if f.get("source_ids")
+            else ""
+        )
         if f.get("evidence_refs"):
             citations += "; items: " + ", ".join(
                 _md(r["observation_id"] + "/" + r["item_id"])
@@ -610,6 +623,11 @@ def save_case(output: Path, case: dict) -> None:
     findings = "".join(
         f"<li>{_escaped(f['statement'])} <small>({_escaped(f['basis'])})</small> "
         + " ".join(f'<a href="#{i}">{i}</a>' for i in f["evidence_ids"])
+        + (
+            "; sources: " + _escaped(", ".join(f.get("source_ids", [])))
+            if f.get("source_ids")
+            else ""
+        )
         + "</li>"
         for f in a["findings"]
     )
@@ -619,9 +637,10 @@ def save_case(output: Path, case: dict) -> None:
         "<title>URL research case</title><style>body{font:16px system-ui;max-width:1100px;margin:40px auto;padding:20px;background:#f6f8fa;color:#17212b;overflow-wrap:anywhere}"
         "section{background:white;padding:24px;margin:24px 0;border:1px solid #d0d7de;overflow-wrap:anywhere}img{max-width:100%;max-height:420px;border:1px solid #ddd}pre{white-space:pre-wrap;overflow-wrap:anywhere}"
         "small{color:#57606a}</style>"
-        f"<h1>{_escaped(a['verdict'])}</h1><p>{_escaped(case['target_url'])}</p>"
+        f"<h1>{_escaped(a['verdict'] or 'assessment pending')}</h1><p>{_escaped(case['target_url'])}</p>"
         f"<p>Execution: {_escaped(case['collection']['execution'])} · Coverage: {_escaped(case['collection']['coverage'])}</p>"
         f"<p>Browser cleanup: {_escaped(case['browser_cleanup'])}</p>"
+        f"<p>Confidence: {_escaped(a.get('confidence') or 'not specified')}</p>"
         + (
             f"<p>Context risk: {_escaped(context_assessment['risk'])}</p>"
             if context_assessment

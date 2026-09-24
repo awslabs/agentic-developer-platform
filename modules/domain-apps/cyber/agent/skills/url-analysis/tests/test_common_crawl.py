@@ -176,7 +176,7 @@ def test_preparation_requires_hypothesis_before_browser_and_preserves_archive_on
     saved = json.loads((path / "case.json").read_text())
     assert saved["initial_hypothesis"]["source_ids"] == ["corroboration-001"]
     assert saved["corroboration"][0]["found"] is False
-    assert saved["assessment"]["verdict"] == "inconclusive"
+    assert saved["assessment"]["verdict"] is None
     with pytest.raises(ValueError, match="do not replay"):
         cli.browse(path, request=failure)
 

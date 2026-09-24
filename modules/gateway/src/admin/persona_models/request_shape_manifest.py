@@ -40,7 +40,7 @@ def request_shape_manifest() -> dict[str, str]:
         for model, digest in models.items()
     ):
         raise RuntimeError("probe request-shape manifest contains an invalid digest")
-    catalogue_models = {model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE}
+    catalogue_models = {model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE if model.compatibility_class == COMPATIBILITY_CLASS_CLAUDE}
     if set(models) != catalogue_models:
         raise RuntimeError("probe request-shape manifest and platform catalogue model sets differ")
     return models

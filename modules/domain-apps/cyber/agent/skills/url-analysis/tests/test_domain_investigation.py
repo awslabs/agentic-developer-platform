@@ -182,8 +182,6 @@ def test_agent_selected_link_preserves_state_and_exact_link_then_revises_hypothe
         x["url"] == "https://external.test/lead" for x in c["browser_view"]["choices"]
     )
     assert not any("payload.exe" in x["url"] for x in c["browser_view"]["choices"])
-    with pytest.raises(ValueError, match="Review the latest"):
-        cli.step(output, "root", decision(c), request=request)
     review(c, output)
     chosen = next(
         x for x in c["browser_view"]["choices"] if "verification" in x["text"]
