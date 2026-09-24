@@ -357,6 +357,19 @@ async def disconnect_github(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # #5664 (A10): GitHub could not complete the uninstall, so nothing was
+        # changed locally. 502 with the real reason, not the generic 500 below:
+        # the failure is upstream and the operator's next action is to retry, and
+        # `str(exc)` states that nothing changed — which is the whole point of
+        # surfacing it instead of swallowing it as this path used to.
+        logger.warning(
+            "disconnect-github provider revoke failed installation_id=%d org=%s: %s",
+            installation_id,
+            current_user.org_id,
+            exc,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
         logger.error(
             "disconnect-github failed installation_id=%d org=%s: %s",

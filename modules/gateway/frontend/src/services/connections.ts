@@ -119,6 +119,16 @@ export interface ConnectionsListResponse {
 export interface DeleteConnectionResponse {
   deleted: boolean;
   installation_id: number;
+  /**
+   * #5664 (A10): GitHub confirmed the uninstall. A successful revoke is a
+   * precondition of any local change, so this is true whenever the request
+   * resolves — a provider failure surfaces as a 502 instead.
+   */
+  provider_revoked?: boolean;
+  /** Named index cleanups that did not complete. Empty in the normal case. */
+  residual?: string[];
+  /** Operator-facing note when `residual` is non-empty. */
+  warning?: string | null;
 }
 
 // ---------------------------------------------------------------------------

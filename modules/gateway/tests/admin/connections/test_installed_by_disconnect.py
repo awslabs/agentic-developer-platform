@@ -181,10 +181,19 @@ async def _seed_mapping(
     scope_id: str = "98765",
     installation_id: int = 124731131,
 ) -> ChannelTenantMap:
-    """Seed a ChannelTenantMap row directly."""
+    """Seed a ChannelTenantMap row directly.
+
+    #5664 (A10): sets the ``installation_id`` COLUMN, not just the id inside
+    ``install_metadata``. That column is the canonical installation -> tenant key
+    (#4070, migration 026) and is what ``resolve_installation_owner`` reads. This
+    helper predated the column, so every row it built was invisible to the
+    canonical resolver — which is exactly the shape migration 026's backfill
+    exists to eliminate, so it no longer represents any reachable live row.
+    """
     mapping = ChannelTenantMap(
         provider="github",
         provider_scope_id=scope_id,
+        installation_id=str(installation_id),
         org_id=org_id,
         install_metadata={
             "installation_id": installation_id,

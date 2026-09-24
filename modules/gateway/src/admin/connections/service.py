@@ -2672,99 +2672,386 @@ async def delete_connection(
     caller_user_id: str | None = None,
     caller_is_admin: bool = True,
 ) -> DeleteConnectionResponse:
-    """Revoke a GitHub App installation and remove the tenant mapping.
+    """Revoke a GitHub App installation and every local record of its authority.
 
     Steps:
-    1. Verify the caller's ADP tenant owns this installation (via ChannelTenantMap).
-    2. Verify the caller is authorized (workspace admin OR the installer).
-    3. Call GitHub API DELETE /app/installations/{id}.
-    4. Remove the ChannelTenantMap row.
+    1. Resolve the owning tenant from ``installation_id`` and authorize the caller.
+    2. Revoke at GitHub. Abort, changing nothing, unless it succeeds.
+    3. Delete the local authority records, in ONE transaction.
+    4. Best-effort: drop the projections and caches that mirror the deleted claims.
 
     Issue #3073: Non-admin callers are allowed if their Postgres user ID matches
     the connection's installed_by_user_id. This lets the installer manage their
     own connection without role elevation.
 
+    #5664 (A10) rewrote steps 1-4. Three defects, each of which alone left an
+    installation's authority intact after a "successful" disconnect:
+
+    **It keyed ownership on the wrong column.** Both the check and the delete
+    matched ``provider_scope_id`` — the GitHub ACCOUNT id — which
+    ``internal/routes.py`` documents as explicitly NOT the installation key
+    ("the installation id now lives in its own column,
+    ``channel_tenant_map.installation_id``, which is where uniqueness is
+    enforced"). Two consequences: reinstalling an account produced a row whose
+    account id matched but whose ``installation_id`` was a different, still-live
+    installation, so disconnecting id A deleted the mapping for id B; and rows
+    written with ``provider_scope_id == installation_id`` (by
+    ``identity/organizations_service.py``) were invisible to the delete entirely.
+    Ownership now comes from ``resolve_installation_owner``, the canonical resolver
+    that unions both records of ownership and fails closed on a quarantined
+    cross-tenant conflict.
+
+    **It deleted one of several records of the same fact.** Only the
+    ``ChannelTenantMap`` row went; ``organizations.github_installation_ids``
+    survived. That JSON list is what ``internal/routes.py::resolve_installation``
+    answers from, which is the oracle the webhook Lambda's auto-register gate
+    consults — so the Lambda re-created the DynamoDB routing rows from it on the
+    very next webhook. Deleting the projection without clearing the Postgres claim
+    it is derived from is self-undoing, which is why order matters here: Postgres
+    first, in a transaction, and only then the projections.
+
+    **It reported success it had not achieved.** The GitHub revoke was wrapped in
+    ``except Exception: logger.warning(...)`` and execution continued to
+    ``deleted=True``. The one step an operator cannot perform locally could fail
+    silently. Now it is a precondition: no revoke, no disconnect, nothing changed.
+
+    Idempotent and recoverable by construction. The provider call comes first
+    precisely so that recovery is possible — the local claims are the only thing
+    that authorizes this operation, so deleting them before the revoke would leave
+    a failed attempt with no authority to retry under (the retry resolves
+    NOT_FOUND and raises, while the installation stays live at GitHub). Because
+    ``delete_installation`` treats 404 as success, a retry after a crash at any
+    point finds the provider side already done and completes the local half, and
+    every local step is "delete if present".
+
+    ``residual`` marks the honest limit of that. Once the Postgres claims are gone
+    the installation no longer resolves, so re-running raises ``NOT_FOUND`` and
+    CANNOT retry a failed projection cleanup. That is why the security-critical
+    forward routing row gets its own in-line fallback rather than relying on a
+    retry, and why anything still listed is reported for operator action instead of
+    being described as self-healing. What remains is safe to leave pending:
+    Postgres is authoritative, so a surviving projection is a stale cache rather
+    than a live grant.
+
+    Note what this does NOT do. It does not delete the per-tenant App secret, the
+    bot identity, or the installer's ``org_admin`` membership. Those are shared
+    across a tenant's installations, or are records of something that genuinely
+    happened, and destroying them here would exceed "disconnect this
+    installation". They are listed in the runbook as operator follow-ups.
+
     Raises:
         PermissionError — installation not owned by caller's tenant, or caller
                           lacks permission (not admin and not installer)
-        ValueError      — installation not found
+        ValueError      — installation not found, or App credentials unavailable
+                          so the provider revoke cannot be attempted
+        RuntimeError    — GitHub refused or could not complete the uninstall.
+                          Nothing was changed locally; the call is retryable.
     """
     from sqlalchemy import delete as sa_delete
     from sqlalchemy import select
 
+    from src.admin.installations.resolver import OwnerState, resolve_installation_owner
+    from src.shared.models.organization import Organization
     from src.shared.models.vault import ChannelTenantMap
 
-    # 1. Verify ownership — find the ChannelTenantMap row for this org that matches
-    #    the installation. Since ChannelTenantMap stores GitHub org ID (or login) not
-    #    installation_id, we fetch metadata from GitHub first to get the org ID.
     app_id, private_key = _get_github_app_credentials()
     if github_client is None and app_id and private_key:
         github_client = GitHubAppClient(app_id=app_id, private_key_pem=private_key)
 
-    github_scope_id: str | None = None
-    if github_client is not None:
-        try:
-            meta = await github_client.get_installation(installation_id)
-            account = meta.get("account", {})
-            org_id_github = account.get("id")
-            login = account.get("login", "")
-            github_scope_id = str(org_id_github) if org_id_github else login
-        except Exception as exc:
-            logger.warning("Could not fetch installation metadata for delete: %s", exc)
+    scope_id = str(installation_id)
 
-    if github_scope_id is None:
-        raise ValueError(f"Installation {installation_id} not found or GitHub API unavailable")
+    # 1. Ownership, from the canonical resolver rather than a hand-rolled lookup.
+    #    `attest=False`: this is a REVOCATION. Requiring a network attestation
+    #    would make a disconnect impossible exactly when it is most needed — the
+    #    App already deleted at GitHub, credentials rotated, or the API down — and
+    #    a local claim is sufficient authority to delete a local claim.
+    owner, state = await resolve_installation_owner(installation_id, db=db)
 
-    stmt = select(ChannelTenantMap).where(
-        ChannelTenantMap.provider == "github",
-        ChannelTenantMap.provider_scope_id == github_scope_id,
-    )
-    result = await db.execute(stmt)
-    mapping = result.scalar_one_or_none()
-
-    if mapping is None:
+    if state is OwnerState.NOT_FOUND:
         raise ValueError(f"Installation {installation_id} is not connected to any ADP tenant")
+    if state is OwnerState.AMBIGUOUS:
+        # Two tenants claim it and migration 026 deliberately did not pick a
+        # winner. Deleting "the" mapping here would resolve that conflict by
+        # guessing, and in the caller's favour.
+        raise PermissionError(
+            f"Installation {installation_id} is claimed by more than one ADP tenant and is quarantined. An operator must resolve the conflict first."
+        )
 
-    if mapping.org_id != caller_org_id:
+    if state is OwnerState.UNATTESTABLE:
+        # The only claim is a tenant's own `github_installation_ids` assertion with
+        # no server-written map row behind it. The resolver withholds ownership
+        # there because a self-assertion must not GRANT authority — but this
+        # operation only ever REMOVES it. Refusing here would make a
+        # self-asserted claim permanently undeletable, leaving the tenant listed
+        # as an owner with no way to stop being one, which is the opposite of the
+        # security property the resolver is protecting. So: a caller may always
+        # retract their OWN tenant's assertion, and only their own.
+        org_claiming = await db.get(Organization, caller_org_id)
+        claimed = [str(i) for i in (org_claiming.github_installation_ids or [])] if org_claiming else []
+        if scope_id not in claimed:
+            raise PermissionError(f"Installation {installation_id} belongs to a different ADP tenant")
+        if not caller_is_admin:
+            # No map row exists, so there is no recorded installer to fall back
+            # on; admin is the only standing that can retract a tenant-level claim.
+            raise PermissionError(
+                f"You do not have permission to disconnect installation {installation_id}. "
+                "Only workspace admins or the user who installed it can disconnect."
+            )
+    elif owner is None or owner.tenant_id != caller_org_id:
         raise PermissionError(f"Installation {installation_id} belongs to a different ADP tenant")
+
+    # The map rows this installation owns, keyed on installation_id. Fetched before
+    # the delete both for the installer authorization below and because
+    # `provider_scope_id` is needed to clear the account-keyed rows that predate
+    # the installation_id column (migration 026 backfilled it, but a row written
+    # before that backfill can still carry NULL).
+    mapped = (
+        (
+            await db.execute(
+                select(ChannelTenantMap).where(
+                    ChannelTenantMap.provider == "github",
+                    ChannelTenantMap.org_id == caller_org_id,
+                    ChannelTenantMap.installation_id == scope_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     # Issue #3073: Authorization — workspace admin OR the installer who created
     # this connection. The tenant ownership check above is a hard precondition
     # (unchanged); this is AND-ed on top.
     if not caller_is_admin:
-        is_installer = caller_user_id is not None and mapping.installed_by_user_id is not None and caller_user_id == mapping.installed_by_user_id
-        if not is_installer:
+        installers = {m.installed_by_user_id for m in mapped if m.installed_by_user_id}
+        if not (caller_user_id is not None and caller_user_id in installers):
             raise PermissionError(
                 f"You do not have permission to disconnect installation {installation_id}. "
                 "Only workspace admins or the user who installed it can disconnect."
             )
 
-    # 2. Revoke on GitHub
-    if github_client is not None:
-        try:
-            await github_client.delete_installation(installation_id)
-        except Exception as exc:
-            logger.warning("GitHub installation delete API call failed: %s", exc)
-            # Continue — we still clean up locally to avoid orphan state
+    # 2. Revoke at the provider FIRST, and abort if it does not succeed.
+    #
+    #    Ordering is the whole of item 3's "retry must be recoverable". The local
+    #    claims are the only thing that authorizes this operation, so deleting
+    #    them before the provider call destroys the authority a retry would need:
+    #    the second attempt resolves NOT_FOUND, raises, and the installation stays
+    #    live at GitHub forever with no local record that it was ever ours. That
+    #    is the unrecoverable direction. Provider-first inverts it — every failure
+    #    leaves the local claims intact, so the operation is simply retryable.
+    #
+    #    Aborting rather than continuing is also what makes the report honest. The
+    #    old code swallowed the failure and returned `deleted=True`; returning
+    #    "partially revoked" instead would still leave the caller to reason about
+    #    a half-state. Nothing changed, so there is nothing to reconcile.
+    #
+    #    `delete_installation` already treats 404 as success, which is what makes
+    #    a retry after a mid-operation crash idempotent: the second call finds the
+    #    installation already gone at GitHub and proceeds to finish the local half.
+    #
+    #    An operator who needs to cut local routing while GitHub is unreachable is
+    #    not blocked: that is `org_connections.detach_github`, which is explicitly
+    #    a local-only detach.
+    if github_client is None:
+        raise ValueError(
+            f"Cannot revoke installation {installation_id}: GitHub App credentials are unavailable, "
+            "so the installation cannot be uninstalled at GitHub. Nothing has been changed."
+        )
+    try:
+        await github_client.delete_installation(installation_id)
+    except Exception as exc:
+        logger.warning(
+            "event=github_installation_revoke_failed installation_id=%s org=%s error=%s outcome=aborted_nothing_changed",
+            scope_id,
+            caller_org_id,
+            exc,
+        )
+        raise RuntimeError(
+            f"GitHub could not uninstall installation {installation_id} ({exc}). Nothing has been changed — retry the disconnect."
+        ) from exc
 
-    # 3. Remove local mapping
-    del_stmt = sa_delete(ChannelTenantMap).where(
-        ChannelTenantMap.provider == "github",
-        ChannelTenantMap.provider_scope_id == github_scope_id,
-        ChannelTenantMap.org_id == caller_org_id,
-    )
-    await db.execute(del_stmt)
+    # 3. Remove the local authority records, together. Both are independently
+    #    sufficient to grant ownership (see `resolve_installation_owner`, which
+    #    unions them), so a commit that dropped one and not the other would leave
+    #    the installation fully routable while presenting as disconnected.
+    org = await db.get(Organization, caller_org_id)
+    old_github_ids = [str(i) for i in (org.github_installation_ids or [])] if org else []
+    remaining = [i for i in old_github_ids if i != scope_id]
+    if org is not None:
+        org.github_installation_ids = remaining
+        # Per-account, not per-installation: cleared only once nothing is left, or
+        # the surviving installations would become UNATTESTABLE and lose routing.
+        # Same rule as `org_connections.detach_github`.
+        if not remaining:
+            org.github_org_id = None
+            org.github_app_id = None
+
+    if mapped:
+        await db.execute(
+            sa_delete(ChannelTenantMap).where(
+                ChannelTenantMap.provider == "github",
+                ChannelTenantMap.org_id == caller_org_id,
+                ChannelTenantMap.installation_id == scope_id,
+            )
+        )
+
     await db.commit()
 
-    _cache_invalidate(installation_id)
-
-    logger.info(
-        "GitHub installation %d disconnected from tenant %s",
-        installation_id,
+    logger.warning(
+        "event=github_installation_disconnected installation_id=%s org=%s map_rows=%d remaining=%d outcome=local_authority_revoked",
+        scope_id,
         caller_org_id,
+        len(mapped),
+        len(remaining),
     )
 
-    return DeleteConnectionResponse(deleted=True, installation_id=installation_id)
+    # 4. Projections and caches. Best-effort and individually reported: each
+    #    mirrors a Postgres claim that is already gone, so a reader that still
+    #    sees one is stale rather than authoritative — but a stale routing row is
+    #    how a disconnected installation keeps delivering events, so an operator
+    #    must be told which cleanup to retry.
+    residual = await _revoke_installation_projections(
+        installation_id=installation_id,
+        org_id=caller_org_id,
+        remaining_github_ids=remaining,
+        old_github_ids=old_github_ids,
+        cognito_client_ids=[str(c) for c in (org.cognito_client_ids or [])] if org else [],
+    )
+
+    _cache_invalidate(installation_id)
+    _repo_cache_invalidate(installation_id)
+    # The verification caches key on the tenant, not the installation, and their
+    # own docstring says they clear "after register / rotate / disconnect" — the
+    # disconnect half was never wired up, so the connections card kept reporting
+    # this installation as seeded and indexed for up to its TTL.
+    _invalidate_verification_cache()
+
+    warning = None
+    if residual:
+        warning = "Access is revoked. Some index cleanups did not complete; re-running this disconnect retries exactly those."
+
+    return DeleteConnectionResponse(
+        deleted=True,
+        installation_id=installation_id,
+        # Unconditionally True: step 2 aborts the whole operation unless GitHub
+        # confirmed the uninstall, so reaching here means it succeeded. The field
+        # stays in the response because it is the fact a caller needs to know and
+        # the guarantee behind it may change; what it must never do is report True
+        # on a call that did not revoke, which is the defect this replaced.
+        provider_revoked=True,
+        residual=residual,
+        warning=warning,
+    )
+
+
+async def _revoke_installation_projections(
+    *,
+    installation_id: int,
+    org_id: str,
+    remaining_github_ids: list[str],
+    old_github_ids: list[str],
+    cognito_client_ids: list[str],
+) -> list[str]:
+    """Drop the DDB projections that mirror a now-deleted installation claim.
+
+    #5664 (A10). Split out of ``delete_connection`` so each cleanup can fail on its
+    own and be named in the response, rather than one exception skipping the rest.
+
+    Returns the names of the cleanups that did NOT complete. An empty list means
+    every projection is consistent with Postgres.
+
+    Ordering note: this runs strictly AFTER the Postgres claims are committed.
+    The webhook Lambda re-derives these rows from the gateway's
+    ``resolve_installation`` (which reads ``organizations.github_installation_ids``)
+    and writes them back on a miss, so deleting a projection while its source claim
+    still exists is undone by the next inbound event.
+    """
+    residual: list[str] = []
+    scope_id = str(installation_id)
+
+    # Forward row: github_installation_id -> org. The webhook hot path reads DDB
+    # FIRST, so this is the row that keeps delivering events to the tenant after a
+    # disconnect — the one cleanup that is itself a security property rather than
+    # mere tidiness. It therefore gets two independent attempts.
+    try:
+        from src.admin.identity.identity_index_writer import IdentityIndexWriter
+
+        writer = IdentityIndexWriter()
+        await writer.sync_org_channels(
+            org_id=org_id,
+            github_installation_ids=remaining_github_ids,
+            cognito_client_ids=cognito_client_ids,
+            old_github_installation_ids=old_github_ids,
+        )
+    except Exception:
+        logger.exception(
+            "event=github_installation_projection_cleanup_failed installation_id=%s org=%s phase=forward_row",
+            scope_id,
+            org_id,
+        )
+        # Fall back to deleting just the revoked row. `sync_org_channels` does a
+        # whole-org diff (both channel families, upserts for survivors), so it has
+        # many more ways to fail than this single targeted DeleteItem — and the
+        # only part that must happen for routing to stop is this one key. Both
+        # paths are idempotent, so trying the narrow one after the broad one costs
+        # nothing and is not merely a duplicate attempt.
+        try:
+            from src.admin.identity_index import IdentityIndexClient
+
+            if not await IdentityIndexClient().delete_identity("github_installation_id", scope_id):
+                residual.append("identity_index_forward_row")
+        except Exception:
+            residual.append("identity_index_forward_row")
+            logger.exception(
+                "event=github_installation_projection_cleanup_failed installation_id=%s org=%s phase=forward_row_fallback",
+                scope_id,
+                org_id,
+            )
+
+    # Reverse row: org -> installation_id, read by `resolve_installation_for_tenant`
+    # (adp-trigger, scheduled work). Nothing in the repo deleted this row on any
+    # path, so a revoked installation stayed the tenant's chosen credential for
+    # outbound dispatch. Touched only when it still names the installation being
+    # revoked — a row naming a SURVIVING installation is correct and must be left
+    # exactly as it is, including its `auto_registered` flag.
+    try:
+        from src.admin.identity_index import IdentityIndexClient
+
+        index = IdentityIndexClient()
+        existing = await index.get_reverse_installation_identity(org_id)
+        current = (existing or {}).get("installation_id", {}).get("N")
+        if current is not None and str(current) == scope_id:
+            # Delete first, unconditionally, even when a survivor will inherit the
+            # row. `write_reverse_installation_identity` refuses to clobber a row
+            # that lacks `auto_registered` (it is Postgres-owned) and returns True
+            # for that no-op — so repointing in place would report success while
+            # leaving the revoked installation as the tenant's dispatch
+            # credential. Deleting first makes the subsequent write a create,
+            # which that guard permits.
+            if await index.delete_identity("org_installation", org_id):
+                if remaining_github_ids and not await index.write_reverse_installation_identity(org_id, int(remaining_github_ids[0])):
+                    # The revoked id is gone, which is the security-relevant half.
+                    # A survivor simply has no reverse row yet; the Lambda's #3860
+                    # self-heal re-derives it from the forward row.
+                    residual.append("identity_index_reverse_row_repoint")
+            else:
+                residual.append("identity_index_reverse_row")
+    except Exception:
+        residual.append("identity_index_reverse_row")
+        logger.exception(
+            "event=github_installation_projection_cleanup_failed installation_id=%s org=%s phase=reverse_row",
+            scope_id,
+            org_id,
+        )
+
+    if residual:
+        logger.warning(
+            "event=github_installation_residual_state installation_id=%s org=%s residual=%s",
+            scope_id,
+            org_id,
+            ",".join(residual),
+        )
+    return residual
 
 
 # ---------------------------------------------------------------------------

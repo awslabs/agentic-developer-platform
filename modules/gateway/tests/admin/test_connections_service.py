@@ -654,9 +654,14 @@ class TestDeleteConnection:
             settings={},
         )
         db_session.add(other_org)
+        # #5664 (A10): `installation_id` is the canonical installation -> tenant
+        # column (#4070, migration 026). Setting it is what makes this row
+        # visible to `resolve_installation_owner`; keyed on `provider_scope_id`
+        # alone the row represented an installation nobody owned.
         mapping = ChannelTenantMap(
             provider="github",
             provider_scope_id="98765",
+            installation_id="124731131",
             org_id="org-other-003",
         )
         db_session.add(mapping)
@@ -687,6 +692,7 @@ class TestDeleteConnection:
         mapping = ChannelTenantMap(
             provider="github",
             provider_scope_id="98765",
+            installation_id="124731131",
             org_id="org-test-001",
         )
         db_session.add(mapping)
@@ -715,6 +721,7 @@ class TestDeleteConnection:
         mapping = ChannelTenantMap(
             provider="github",
             provider_scope_id="98765",
+            installation_id="124731131",
             org_id="org-test-001",
         )
         db_session.add(mapping)
