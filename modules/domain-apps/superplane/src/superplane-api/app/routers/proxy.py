@@ -99,6 +99,18 @@ async def preview_deployment(
     return review.public(str(workspace_id))
 
 
+@router.get("/{workspace_id}/deployment-profiles")
+async def deployment_profiles(
+    workspace_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.controller_deployments import serving_catalog
+
+    return await serving_catalog(request, db, org_id, workspace_id)
+
+
 @router.post(
     "/{workspace_id}/deployments",
     response_model=DeploymentCreateResponse,

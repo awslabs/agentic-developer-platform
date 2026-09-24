@@ -110,15 +110,20 @@ does not substitute for that demonstration or for browser layout verification.
 ## Serving workload operations
 
 `ServingPanel.tsx` uses the maintained deployment preview, create, list and
-UUID-scoped teardown routes. Model options must match an installed serving
-profile. The review renders the plan carried by the exact approval request,
+UUID-scoped teardown routes. Profile discovery checks current workspace grants,
+canonical target/credential bindings, the maintained plan producer and dispatcher
+readiness before enabling submission. The form selects validated model options
+from this catalog. Teardown review remains available to an authorized caller even
+when the original serving profile is no longer installed. The review renders the plan carried by the exact approval request,
 including its immutable workload image, target, resource ceiling, runtime and
 maximum additional cost. Approval is checked again immediately before submission.
 
 Create and stop have separate durable request receipts, scoped to deployment,
 organization and workspace. Receipts contain identifiers and a payload fingerprint,
 not model inputs, images or credential values. A lost reply retains its identity;
-reviewing the same inputs recovers the approval and retries that same request.
+saved requests recover their operation status by idempotency key without re-entering
+model inputs or replaying a mutation. Reviewing the same inputs can also recover
+the approval and retry that same request.
 Lists refresh every ten seconds; inaccessible results are removed and late results
 from a previous workspace are discarded. Operation success, missing list entries
 and accepted stop requests never establish provider absence or cost settlement.
@@ -127,5 +132,4 @@ and accepted stop requests never establish provider absence or cost settlement.
 changed plans, revoked and mismatched approvals, cross-workspace responses, and
 read-only views. These are remote CI transport-fixture tests. Browser layout and
 live serving acceptance remain outstanding. Batch submission, bounded logs,
-result links, endpoint access, reconciled workload costs, profile discovery and
-live capability-driven controls remain required for complete #5731 delivery.
+result links, endpoint access and reconciled workload costs remain required for complete #5731 delivery.

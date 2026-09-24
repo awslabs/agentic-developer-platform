@@ -430,7 +430,7 @@ export function OnboardingView() {
             onSelect={setSelectedId}
           />
           <ReadinessPanel report={readiness} workspaceName={selected?.display_name} />
-          {selected && <ServingPanel workspaceId={selected.id} scope={scope} store={store} mayManage={mayOnboard} />}
+          {selected && <ServingPanel workspaceId={selected.id} scope={scope} store={store} />}
           {ENDPOINTS.listLifecycleProposals.served && selected && <LifecycleProposalPanel
             key={`${scope.orgId}:${selected.id}`}
             workspaceId={selected.id} scope={scope} store={store} mayManage={mayOnboard}

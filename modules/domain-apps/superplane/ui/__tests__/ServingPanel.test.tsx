@@ -7,7 +7,7 @@ import { server } from '@/mocks/server';
 import { ServingPanel } from '@superplane-ui/ServingPanel';
 import { ScopeGuard } from '@superplane-ui/client';
 import { DOMAIN_BASE } from '@superplane-ui/contract';
-import { memoryReceiptStore, readReceipt, type ReceiptStore } from '@superplane-ui/operations';
+import { claimPreviewIdentity, markSubmissionStage, memoryReceiptStore, readReceipt, type ReceiptStore } from '@superplane-ui/operations';
 import { listDeployments, parseServingReview } from '@superplane-ui/workloads';
 
 const api = (path: string) => `/api${DOMAIN_BASE}${path}`;
@@ -43,6 +43,13 @@ beforeEach(() => {
   store = memoryReceiptStore();
   reviewedRequest = review('unset').approval_request;
   server.use(
+    http.get(api('/workspaces/:workspaceId/deployment-profiles'), ({ params }) => HttpResponse.json({
+      workspace_id: params.workspaceId, can_submit: true, can_review_teardown: true,
+      profiles: [{ profile_id: 'gpu-profile', image: 'test/serving@sha256:' + 'b'.repeat(64), model_options: {
+        model_name: 'organization/model', precision: 'fp16', serving_framework: 'vllm', replicas: 1,
+        gpu_per_replica: 1, tensor_parallel_size: 1, max_model_len: null,
+      } }],
+    })),
     http.get(api(root), () => HttpResponse.json({ workspace_id: 'ws-1', deployments: [workload] })),
     http.post(api(`${root}/preview`), async ({ request }) => {
       const body = await request.json() as { operation_id: string };
@@ -56,15 +63,19 @@ beforeEach(() => {
     }),
     http.post(api('/operation-approvals'), () => HttpResponse.json(approval())),
     http.get(api('/operation-approvals/approval-one'), () => HttpResponse.json(approval())),
+    http.get(api('/operations/by-idempotency/:requestId'), () => new HttpResponse(null, { status: 503 })),
+    http.get(api('/operations/:operationId'), () => new HttpResponse(null, { status: 503 })),
   );
 });
-const panel = (workspaceId = 'ws-1', mayManage = true) =>
-  <ServingPanel workspaceId={workspaceId} scope={scope} store={store} mayManage={mayManage} />;
+function panel(workspaceId = 'ws-1', mayManage = true) {
+  if (!mayManage) server.use(http.get(api(`/workspaces/${workspaceId}/deployment-profiles`), () =>
+    HttpResponse.json({ workspace_id: workspaceId, profiles: [], can_submit: false, can_review_teardown: false })));
+  return <ServingPanel workspaceId={workspaceId} scope={scope} store={store} />;
+}
 
 async function prepare(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText(/Deployment name/), 'new-model');
-  await user.type(screen.getByLabelText(/Serving profile/), 'gpu-profile');
-  await user.type(screen.getByLabelText(/Model name/), 'organization/model');
+  await user.type(await screen.findByLabelText(/Deployment name/), 'new-model');
+  await user.selectOptions(screen.getByLabelText('Serving profile'), 'gpu-profile');
   await user.click(screen.getByRole('button', { name: 'Prepare serving review' }));
   await user.click(screen.getByRole('button', { name: 'Review serving plan' }));
   await screen.findByText('Maximum additional cost: 2 USD. Observed cost: unknown.');
@@ -176,4 +187,26 @@ it('rejects another workspace list and malformed or mismatched approval plans', 
   const malformed = review('request');
   malformed.approval_request.parameters.max_cost_micros = 'unknown';
   expect(parseServingReview(malformed, 'ws-1', 'request', 'provision')).toBeNull();
+});
+
+it('recovers an accepted operation after reload without re-entering model inputs or replaying create', async () => {
+  const intent = 'serving:ws-1:create:new-model';
+  await claimPreviewIdentity(store, scope, intent, {}, () => 'saved-request', new Date().toISOString());
+  await markSubmissionStage(store, scope, intent, 'saved-request', 'submitted', 'approval-one');
+  const submit = vi.fn();
+  server.use(
+    http.get(api(root), () => HttpResponse.json({ workspace_id: 'ws-1', deployments: [] })),
+    http.post(api(root), () => { submit(); return HttpResponse.json(workload); }),
+    http.get(api('/operations/by-idempotency/saved-request'), () => HttpResponse.json({
+      request_id: 'saved-request', provisioning_operation_id: 'paid-create', workspace_id: 'ws-1', state: 'running',
+    })),
+    http.get(api('/operations/paid-create'), () => HttpResponse.json({
+      request_id: 'saved-request', provisioning_operation_id: 'paid-create', workspace_id: 'ws-1', state: 'succeeded',
+    })),
+  );
+  render(panel());
+  await screen.findByText('Operation reference: paid-create; last response: succeeded');
+  expect(readReceipt(store, scope, intent)).toMatchObject({ idempotencyKey: 'saved-request', operationId: 'paid-create', state: 'succeeded' });
+  expect(submit).not.toHaveBeenCalled();
+  expect(screen.getByLabelText(/Deployment name/)).toHaveValue('');
 });

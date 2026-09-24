@@ -206,6 +206,10 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ),
     ("GET", "/workspaces/{workspace_id}/nodes"): (Scope.WORKSPACE, Permission.READ),
     # -- Deployments spend money --------------------------------------------
+    ("GET", "/workspaces/{workspace_id}/deployment-profiles"): (
+        Scope.WORKSPACE,
+        Permission.READ,
+    ),
     ("GET", "/workspaces/{workspace_id}/deployments"): (
         Scope.WORKSPACE,
         Permission.READ,

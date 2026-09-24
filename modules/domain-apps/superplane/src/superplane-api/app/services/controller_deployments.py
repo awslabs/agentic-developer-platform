@@ -58,7 +58,7 @@ async def require_current_approval(*, org_id, workspace_id, request, approval_id
         raise ProvisioningRefused(decision.reason)
 
 
-def profile_for(path, org_id, workspace_id, profile_id):
+def profiles_for(path, org_id, workspace_id):
     if not path:
         raise ProvisioningUnavailable(
             "controller deployment profiles are not configured"
@@ -79,17 +79,114 @@ def profile_for(path, org_id, workspace_id, profile_id):
         if set(tenant) != {"adp_org_id", "workspaces"}:
             raise ValueError("unsupported organization policy")
         profiles = tenant["workspaces"].get(str(workspace_id), {})
-        if profile_id not in profiles:
-            raise ProvisioningRefused(
-                "controller deployment profile is not authorized for this workspace"
-            )
-        return tenant["adp_org_id"], profiles[profile_id]
+        if not isinstance(profiles, dict) or len(profiles) > 128:
+            raise ValueError("invalid or oversized workspace profile catalog")
+        return tenant["adp_org_id"], profiles
     except ProvisioningRefused:
         raise
     except (OSError, KeyError, TypeError, ValueError, AttributeError):
         raise ProvisioningUnavailable(
             "controller deployment policy is unreadable"
         ) from None
+
+
+def profile_for(path, org_id, workspace_id, profile_id):
+    adp_org_id, profiles = profiles_for(path, org_id, workspace_id)
+    if profile_id not in profiles:
+        raise ProvisioningRefused(
+            "controller deployment profile is not authorized for this workspace"
+        )
+    return adp_org_id, profiles[profile_id]
+
+
+async def serving_catalog(request, db, org_id, workspace_id):
+    """Expose only profiles accepted by the maintained producer for this caller.
+
+    Preview validates canonical workspace/account/credential and installed profile
+    bindings without opening an operation, delivering credentials or contacting a
+    provider. Discovery is configuration eligibility, not live workload health.
+    """
+    import uuid
+
+    from app.config import settings
+    from app.services.deployment_operations import composition
+    from app.services.proxy import get_workspace_cluster
+    from app.services.workspace_namespace import resolve_workspace_namespace
+
+    workspace, _ = await get_workspace_cluster(workspace_id, org_id, db)
+    resolve_workspace_namespace(workspace)
+    result = {
+        "workspace_id": str(workspace_id),
+        "profiles": [],
+        "can_submit": False,
+        "can_review_teardown": False,
+    }
+    try:
+        principal = await GrantBackedAuthority(async_session_factory).resolve(
+            org_id=str(org_id),
+            workspace_id=str(workspace_id),
+            permission="workspace:provision",
+        )
+        if principal is None or "workspace:spend" not in principal.permissions:
+            return {**result, "reason": "not-permitted"}
+        owner = composition(request)
+        ready = owner.dispatcher is not None and await owner.dispatcher.ready(
+            str(org_id)
+        )
+        result["can_review_teardown"] = bool(ready)
+        _, profiles = profiles_for(
+            settings.superplane_controller_profiles_file, org_id, workspace_id
+        )
+        for profile_id, profile in sorted(profiles.items()):
+            if not isinstance(profile, dict) or not isinstance(
+                profile.get("model_options"), dict
+            ):
+                raise ProvisioningUnavailable(
+                    "controller deployment policy is unreadable"
+                )
+            # This identity belongs only to a transient preview; no request is
+            # registered and it can never be submitted as the user's operation.
+            preview = await preview_controller_deployment(
+                db,
+                policy_path=settings.superplane_controller_profiles_file,
+                org_id=org_id,
+                workspace_id=workspace_id,
+                request_id=uuid.uuid4(),
+                profile_id=profile_id,
+                name="profile-review",
+                model_options=profile["model_options"],
+            )
+            parameters = preview.request.parameters
+            plan = json.loads(parameters["controller_plan"])
+            result["profiles"].append(
+                {
+                    "profile_id": profile_id,
+                    "model_options": dict(profile["model_options"]),
+                    "image": plan["workload"]["image"],
+                    "max_resource_units": int(parameters["max_resource_units"]),
+                    "max_runtime_seconds": int(parameters["max_runtime_seconds"]),
+                    "max_cost_micros": int(parameters["max_cost_micros"]),
+                }
+            )
+        return {
+            **result,
+            "can_submit": bool(ready and result["profiles"]),
+            "reason": None if ready and result["profiles"] else "unavailable",
+        }
+    except ProvisioningRefused:
+        return {
+            **result,
+            "profiles": [],
+            "can_submit": False,
+            "reason": "not-permitted",
+        }
+    except ProvisioningUnavailable:
+        return {
+            **result,
+            "profiles": [],
+            "can_submit": False,
+            "reason": "unavailable",
+        }
 
 
 async def preview_controller_deployment(

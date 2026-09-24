@@ -1343,3 +1343,87 @@ async def test_allocation_membership_from_another_operation_is_not_original_uid_
             == 0
         )
     assert worker_runtime.cloud.exists
+
+
+@pytest.mark.parametrize(
+    "change",
+    [None, "dispatcher", "revoked", "provision-only", "target", "unconfigured"],
+)
+async def test_serving_catalog_checks_current_grants_profiles_and_transport_without_admission(
+    workload, monkeypatch, change
+):
+    from datetime import UTC, datetime
+    from app.config import settings
+    from app.routers.proxy import deployment_profiles
+
+    if change == "dispatcher":
+
+        async def unavailable(_):
+            return False
+
+        workload.composition.dispatcher.ready = unavailable
+    elif change in {"revoked", "provision-only"}:
+        async with workload.sessions() as db:
+            grant = await db.scalar(
+                select(WorkspaceGrantRecord).where(
+                    WorkspaceGrantRecord.workspace_id == workload.workload_id,
+                    WorkspaceGrantRecord.principal == "requester",
+                )
+            )
+            if change == "revoked":
+                grant.revoked_at = datetime.now(UTC)
+            else:
+                grant.permissions = "workspace:provision"
+            await db.commit()
+    elif change == "target":
+        document = json.loads(workload.policy_path.read_text())
+        document["tenants"][str(workload.org_id)]["workspaces"][
+            str(workload.workload_id)
+        ]["approved-model"]["namespace"] = "another-workspace"
+        workload.policy_path.write_text(json.dumps(document))
+    elif change == "unconfigured":
+        monkeypatch.setattr(settings, "superplane_controller_profiles_file", "")
+    with workload.actor(workspace_id=workload.workload_id):
+        async with workload.sessions() as db:
+            result = await deployment_profiles(
+                workspace_id=workload.workload_id,
+                request=workload.api_request,
+                org_id=workload.org_id,
+                db=db,
+            )
+    assert result["workspace_id"] == str(workload.workload_id)
+    assert result["can_submit"] is (change is None)
+    assert result["can_review_teardown"] is (change not in {"dispatcher", "revoked", "provision-only"})
+    if change in {None, "dispatcher"}:
+        assert len(result["profiles"]) == 1
+        profile = result["profiles"][0]
+        assert profile["profile_id"] == "approved-model"
+        assert profile["model_options"]["model_name"] == "fixture/model"
+        assert profile["image"].endswith("@sha256:" + "a" * 64)
+        assert profile["max_runtime_seconds"] == 900
+        assert profile["max_cost_micros"] == 1_000_000
+        assert not any(
+            name in json.dumps(result)
+            for name in (
+                "credential_id",
+                "auth_secret",
+                "certificate_authority",
+                "instance_profile",
+            )
+        )
+    else:
+        assert not result["profiles"]
+    async with workload.connections.connect() as connection:
+        assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 0
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM controller_deployment_operations"
+            )
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 0
+        )

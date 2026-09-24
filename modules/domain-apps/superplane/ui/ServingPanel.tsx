@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input } from '@/components/ui';
 
 import { ApprovalPanel } from './ApprovalPanel';
-import { getApproval, isSuperseded, requestApproval, ScopeGuard } from './client';
+import { getApproval, getOperation, isSuperseded, recoverOperation, requestApproval, ScopeGuard } from './client';
 import type { OperationApproval, Unavailable } from './contract';
 import {
   claimPreviewIdentity, fingerprint, markSubmissionStage,
@@ -12,15 +12,14 @@ import {
 } from './operations';
 import { useFreshnessClock } from './readiness';
 import {
-  listDeployments, previewServing, submitServing,
-  type ServingDeployment, type ServingInput, type ServingReview,
+  getServingCatalog, listDeployments, previewServing, submitServing,
+  type ServingCatalog, type ServingDeployment, type ServingInput, type ServingProfile, type ServingReview,
 } from './workloads';
 
 interface Props {
   workspaceId: string;
   scope: ReceiptScope;
   store: ReceiptStore;
-  mayManage: boolean;
 }
 
 export function ServingPanel(props: Props) {
@@ -33,14 +32,16 @@ function ServingWorkspace(props: Props) {
   const [rows, setRows] = useState<ServingDeployment[]>([]);
   const [problem, setProblem] = useState<Unavailable | null>(null);
   const [observed, setObserved] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<ServingCatalog | null>(null);
   const [candidate, setCandidate] = useState<ServingInput | null>(null);
   const [stopping, setStopping] = useState<ServingDeployment | null>(null);
   const [receipts, setReceipts] = useState<Array<{ intent: string; receipt: StoredReceipt }>>([]);
   const latest = useRef(0);
   const refresh = useCallback(async () => {
     const request = ++latest.current;
-    const result = await listDeployments(guard, props.workspaceId);
+    const [result, available] = await Promise.all([listDeployments(guard, props.workspaceId), getServingCatalog(guard, props.workspaceId)]);
     if (isSuperseded(result) || request !== latest.current) return;
+    setCatalog(available.ok ? available.value : null);
     if (result.ok) { setRows(result.value); setProblem(null); setObserved(new Date().toLocaleTimeString()); }
     else if ('unavailable' in result) {
       setProblem(result.unavailable);
@@ -63,6 +64,7 @@ function ServingWorkspace(props: Props) {
     <Button variant="secondary" onClick={() => void refresh()}>Refresh serving workloads</Button>
     {observed && <p>Status retrieved at {observed}. Endpoint health and observed cost are not reported by this view.</p>}
     {problem && <Alert variant="warning" title="Workload status unavailable">{problem.detail}{observed ? ' Displayed status may be stale.' : ''}</Alert>}
+    {!catalog?.canSubmit && <p>New serving submissions are unavailable. The server must confirm your workspace permissions, installed profiles and operation transport.</p>}
     {observed && !problem && rows.length === 0 && <p>No serving deployments are listed. An absent list entry does not prove cleanup of an earlier request.</p>}
     <ul className="space-y-3">
       {rows.map((row, index) => <li className="rounded border p-4 break-words" key={row.deploymentId ?? `${row.name}:${index}`}>
@@ -71,59 +73,90 @@ function ServingWorkspace(props: Props) {
         {row.operationId && <p>Operation reference: {row.operationId}</p>}
         {row.providerUid && <p>Recorded resource: {row.providerUid}</p>}
         <p>Cleanup and observed cost: not reported</p>
-        {props.mayManage && row.deploymentId && row.operationId && row.status !== 'Deleted' &&
+        {catalog?.canReviewTeardown && row.deploymentId && row.operationId && row.status !== 'Deleted' &&
           <Button variant="secondary" onClick={() => setStopping(row)}>Review stop for {row.name}</Button>}
       </li>)}
     </ul>
-    {props.mayManage && <ServingForm onReview={(input) => { setCandidate(input); setStopping(null); }} />}
-    {candidate && props.mayManage && <ServingAction key={fingerprint(candidate)} {...props}
+    {catalog?.canSubmit && <ServingForm profiles={catalog.profiles} onReview={(input) => { setCandidate(input); setStopping(null); }} />}
+    {candidate && catalog?.canSubmit && <ServingAction key={fingerprint(candidate)} {...props} mayManage={catalog.canSubmit}
       input={candidate} onProgress={() => void refresh()} />}
-    {stopping?.deploymentId && props.mayManage && <ServingAction key={stopping.deploymentId} {...props}
+    {stopping?.deploymentId && catalog?.canReviewTeardown && <ServingAction key={stopping.deploymentId} {...props} mayManage={catalog.canReviewTeardown}
       input={{ deploymentId: stopping.deploymentId }} onProgress={() => void refresh()} />}
     {receipts.filter(({ receipt }) => receipt.submissionStage === 'submitted').map(({ intent, receipt }) =>
-      <p className="break-all" key={intent}>Saved workload request: {receipt.idempotencyKey}; operation reference: {receipt.operationId ?? 'awaiting response'}; last response: {receipt.state}. Cleanup requires a separate provider observation.</p>)}
+      <ServingReceipt key={receipt.idempotencyKey} {...props} intent={intent} initial={receipt} />)}
     <p>Batch submission, workload logs and authenticated endpoint access are not available in this view yet.</p>
   </section>;
 }
 
-function ServingForm({ onReview }: { onReview: (input: ServingInput) => void }) {
+function ServingReceipt({ initial, intent, ...props }: Props & { initial: StoredReceipt; intent: string }) {
+  const [guard] = useState(() => new ScopeGuard());
+  const [receipt, setReceipt] = useState(initial);
+  const [problem, setProblem] = useState<Unavailable | null>(null);
+  const pending = useRef(false);
+  const refresh = useCallback(async () => {
+    if (pending.current) return;
+    pending.current = true;
+    const generation = guard.current();
+    try {
+      const result = receipt.operationId ? await getOperation(guard, receipt.operationId) : await recoverOperation(guard, receipt.idempotencyKey);
+      if (isSuperseded(result)) return;
+      if (!result.ok) { if ('unavailable' in result) setProblem(result.unavailable); return; }
+      if (result.value.idempotencyKey !== receipt.idempotencyKey || result.value.workspaceId !== props.workspaceId) {
+        setProblem({ reason: 'unknown', detail: 'The operation response does not match this workspace and saved request.' }); return;
+      }
+      const saved = await recordObservationExclusive(props.store, props.scope, intent, result.value);
+      if (!guard.isCurrent(generation)) return;
+      if (saved) setReceipt(saved);
+      setProblem(null);
+    } catch {
+      if (guard.isCurrent(generation)) setProblem({ reason: 'unknown', detail: 'The operation response could not be saved. Keep the existing request reference.' });
+    } finally { pending.current = false; }
+  }, [guard, receipt.operationId, receipt.idempotencyKey, props.workspaceId, props.store, props.scope, intent]);
+  useEffect(() => () => guard.supersede(), [guard]);
+  useEffect(() => {
+    if (receipt.state === 'succeeded' || receipt.state === 'failed' || problem?.reason === 'not-permitted') return;
+    void refresh();
+    const timer = setInterval(() => void refresh(), 10000);
+    return () => clearInterval(timer);
+  }, [refresh, receipt.state, problem?.reason]);
+  return <article className="rounded border p-4 break-all" aria-label="Saved serving request">
+    <p>Saved workload request: {receipt.idempotencyKey}</p>
+    <p>Operation reference: {receipt.operationId ?? 'awaiting response'}; last response: {receipt.state}</p>
+    <p>Cleanup requires a separate provider observation.</p>
+    <Button variant="secondary" onClick={() => void refresh()}>Recover workload status</Button>
+    {problem && <Alert variant="warning" title="Saved workload status unavailable">{problem.detail}</Alert>}
+  </article>;
+}
+
+function ServingForm({ profiles, onReview }: { profiles: ServingProfile[]; onReview: (input: ServingInput) => void }) {
   const [name, setName] = useState('');
-  const [profile, setProfile] = useState('');
-  const [model, setModel] = useState('');
-  const [precision, setPrecision] = useState('fp16');
-  const [framework, setFramework] = useState('vllm');
-  const [gpus, setGpus] = useState('1');
-  const [parallel, setParallel] = useState('1');
-  const [length, setLength] = useState('');
+  const [profileId, setProfileId] = useState('');
+  const profile = profiles.find((entry) => entry.profileId === profileId);
   return <form className="rounded border p-4 space-y-3" aria-label="New serving deployment" onSubmit={(event) => {
     event.preventDefault();
-    onReview({ name: name.trim(), profile_id: profile.trim(), model_name: model.trim(), precision,
-      serving_framework: framework, replicas: 1, gpu_per_replica: Number(gpus),
-      tensor_parallel_size: Number(parallel), max_model_len: length === '' ? null : Number(length) });
+    if (profile) onReview({ name: name.trim(), profile_id: profile.profileId, ...profile.modelOptions });
   }}>
     <h4 className="font-semibold">New serving deployment</h4>
-    <p>Use a profile provided by your workspace administrator. The server checks that model options match its installed profile; approval includes its runtime and cost limits.</p>
+    <p>Select a profile validated for this workspace. Review its exact target, image, resource limits and cost before requesting approval.</p>
     <div className="grid gap-3 sm:grid-cols-2">
       <Input name="serving-name" label="Deployment name" required pattern="[a-z][a-z0-9-]{0,49}[a-z0-9]" maxLength={51} value={name} onChange={(event) => setName(event.target.value)} />
-      <Input name="serving-profile" label="Serving profile" required pattern="[a-z][a-z0-9-]{0,62}" value={profile} onChange={(event) => setProfile(event.target.value)} />
-      <Input name="serving-model" label="Model name" required maxLength={500} value={model} onChange={(event) => setModel(event.target.value)} />
-      <label>Precision<select className="block w-full rounded border p-2" value={precision} onChange={(event) => setPrecision(event.target.value)}>
-        {['fp16', 'bf16', 'fp8', 'awq', 'int8'].map((value) => <option key={value}>{value}</option>)}
+      <label>Serving profile<select required className="block w-full rounded border p-2" value={profile?.profileId ?? ''} onChange={(event) => setProfileId(event.target.value)}>
+        <option value="">Select a serving profile</option>
+        {profiles.map((entry) => <option key={entry.profileId} value={entry.profileId}>{entry.profileId}: {entry.modelOptions.model_name}</option>)}
       </select></label>
-      <label>Serving framework<select className="block w-full rounded border p-2" value={framework} onChange={(event) => setFramework(event.target.value)}>
-        {['vllm', 'sglang'].map((value) => <option key={value}>{value}</option>)}
-      </select></label>
-      <Input name="serving-gpus" label="GPUs per replica" type="number" required min={1} max={8} value={gpus} onChange={(event) => setGpus(event.target.value)} />
-      <Input name="serving-parallel" label="Tensor parallel size" type="number" required min={1} max={8} value={parallel} onChange={(event) => setParallel(event.target.value)} />
-      <Input name="serving-length" label="Maximum model length (optional)" type="number" min={256} max={1048576} value={length} onChange={(event) => setLength(event.target.value)} />
     </div>
-    <p>Replicas: 1</p>
-    <Button type="submit" variant="secondary">Prepare serving review</Button>
+    {profile && <div>
+      <p>Model: {profile.modelOptions.model_name}; precision: {profile.modelOptions.precision}; framework: {profile.modelOptions.serving_framework}</p>
+      <p>Replicas: 1; GPUs per replica: {profile.modelOptions.gpu_per_replica}; tensor parallel size: {profile.modelOptions.tensor_parallel_size}</p>
+      <p>Maximum model length: {profile.modelOptions.max_model_len ?? 'profile default'}</p>
+      <p className="break-all">Image: {profile.image}</p>
+    </div>}
+    <Button type="submit" variant="secondary" disabled={!profile}>Prepare serving review</Button>
   </form>;
 }
 
 function ServingAction({ input, onProgress, ...props }: Props & {
-  input: ServingInput | { deploymentId: string }; onProgress: () => void;
+  input: ServingInput | { deploymentId: string }; onProgress: () => void; mayManage: boolean;
 }) {
   const [guard] = useState(() => new ScopeGuard());
   const [review, setReview] = useState<ServingReview | null>(null);
