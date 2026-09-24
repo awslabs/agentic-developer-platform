@@ -41,12 +41,12 @@ locals {
     "                  - name: ADP_AGENT_CONTROL_ENDPOINT",
     "                    value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent",
     ], var.task_api_worker_enabled ? [
-      "                  - name: ADP_TASK_API_WORKER_ENABLED",
-      "                    value: \"true\"",
-      "                  - name: ADP_WORKLOAD_TOKEN_FILE",
-      "                    value: /var/run/adp-workload/token",
+    "                  - name: ADP_TASK_API_WORKER_ENABLED",
+    "                    value: \"true\"",
+    "                  - name: ADP_WORKLOAD_TOKEN_FILE",
+    "                    value: /var/run/adp-workload/token",
   ] : []))
-  agent_authority_mount_block = var.agent_authority_enabled ? "                ${indent(16, yamlencode({ volumeMounts = local.agent_authority_pod.container.volumeMounts }))}" : var.task_api_worker_enabled ? "                ${indent(16, yamlencode({ volumeMounts = [local.agent_authority_pod.container.volumeMounts[0]] }))}" : ""
+  agent_authority_mount_block  = var.agent_authority_enabled ? "                ${indent(16, yamlencode({ volumeMounts = local.agent_authority_pod.container.volumeMounts }))}" : var.task_api_worker_enabled ? "                ${indent(16, yamlencode({ volumeMounts = [local.agent_authority_pod.container.volumeMounts[0]] }))}" : ""
   agent_authority_volume_block = var.agent_authority_enabled ? "            ${indent(12, yamlencode({ volumes = local.agent_authority_pod.volumes }))}" : var.task_api_worker_enabled ? "            ${indent(12, yamlencode({ volumes = [local.agent_authority_pod.volumes[0]] }))}" : ""
 
 }
