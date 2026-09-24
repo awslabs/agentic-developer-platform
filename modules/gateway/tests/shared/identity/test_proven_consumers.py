@@ -5,6 +5,7 @@ import pytest
 from src.budget.person_ledger import resolve_person_identity
 from src.orchestration.adapters.github_comments import _resolve_platform_identity
 from src.shared.identity.resolver import UnresolvableUserEntityError, _resolve_via_github_identity
+from src.shared.identity.verification import is_proven
 from src.shared.identity.workspaces import linked_user_ids
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
@@ -12,7 +13,10 @@ from src.shared.models.vault import UserIdentity
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["self_asserted", "magic_link", "manual", "unknown", "oauth", "admin_manual"])
+@pytest.mark.parametrize(
+    "method",
+    ["self_asserted", "magic_link", "manual", "unknown", "channel_placement", "oauth", "admin_manual", "org_placement", "magic_link_confirmed"],
+)
 async def test_only_proven_claims_link_authority_across_consumers(db_session, method):
     db = db_session
     db.add_all([Organization(id="proof-home", name="Home"), Organization(id="proof-work", name="Work")])
@@ -29,7 +33,13 @@ async def test_only_proven_claims_link_authority_across_consumers(db_session, me
         ]
     )
     await db.commit()
-    trusted = method in {"oauth", "admin_manual"}
+    # Derived from the policy module, not a hard-coded pair (#5664, A10). The
+    # literal set predated `org_placement` and `magic_link_confirmed` and so
+    # asserted nothing about them, and it would have silently kept passing when
+    # `channel_placement` — the auto-provisioned value this test most needs to
+    # cover — was moved out of PROVEN_METHODS. Asking the module means a method
+    # that changes sides is re-checked against every consumer below automatically.
+    trusted = is_proven(method)
     linked = await linked_user_ids(db, login, username="GitHub_932")
     assert (target.id in linked) is trusted
     context = await _resolve_platform_identity(db, org_id=target.org_id, github_user_id="932")

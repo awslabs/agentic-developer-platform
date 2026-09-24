@@ -71,11 +71,17 @@ class TestIdentitiesWriteThrough:
 
         assert result is not None
         assert result.provider_user_id == "gh-999"
+        # #5664 (A10): the projected row must carry the SAME provenance Postgres
+        # recorded. An administrator adding an identity is `admin_manual` — genuine,
+        # accountable proof — and the webhook authority gate reads this projected
+        # attribute, so a write-through that dropped it would leave the hot path
+        # seeing "unknown" and refusing a link the platform considers proven.
         mock_identity_writer.put_user_identity.assert_awaited_once_with(
             provider_user_id="gh-999",
             user_id=seeded_user.id,
             org_id="id-org",
             provider_username="testuser-gh",
+            verification_method="admin_manual",
         )
 
     @pytest.mark.asyncio
@@ -95,6 +101,7 @@ class TestIdentitiesWriteThrough:
             user_id=seeded_user.id,
             org_id="id-org",
             provider_username=None,
+            verification_method="admin_manual",
         )
 
     @pytest.mark.asyncio

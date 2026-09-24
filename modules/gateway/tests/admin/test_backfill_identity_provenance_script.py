@@ -218,9 +218,7 @@ class TestProjectionQuery:
 
         result = await script.get_identity_provenance(db_url, provider_user_id="456")
 
-        assert result == [
-            {"provider_user_id": "456", "provider": "github", "methods": ["self_asserted"], "verification_method": "self_asserted"}
-        ]
+        assert result == [{"provider_user_id": "456", "provider": "github", "methods": ["self_asserted"], "verification_method": "self_asserted"}]
 
     async def test_user_id_filter_still_reduces_over_the_accounts_full_set(self, script, db_url):
         """--user-id picks WHICH account to repair; the reduction is still total.

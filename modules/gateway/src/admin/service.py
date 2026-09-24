@@ -1859,15 +1859,33 @@ class AdminService:
                 "This account also holds membership in another organization. Remove those memberships before deleting this account."
             )
 
-        github_ids = set(
-            (
-                await self.db.execute(
-                    select(UserIdentity.provider_user_id).where(
-                        UserIdentity.user_id == user_id, UserIdentity.provider == "github", UserIdentity.verification_method.in_(PROVEN_METHODS)
-                    )
+        # Two snapshots of "this user's GitHub ids", because the two consumers below
+        # ask different questions (#5664, A10).
+        #
+        # `github_ids` is the PROVEN set, and feeds the shared-login removal guard:
+        # "does deleting this account strand another tenant's sign-in?" — an
+        # authority question, so an unproven claim must not be able to block, or to
+        # authorize, a deletion.
+        #
+        # `projected_github_ids` is EVERY GitHub id the user holds, and feeds the
+        # `member_org_ids` projection refresh. That is an identification question,
+        # and it must use the same population `project_member_org_ids` recomputes
+        # over — which applies no verification filter at all, deliberately, since the
+        # DDB key is per GitHub ACCOUNT and the projected list is a union across every
+        # user row holding it. Passing the filtered set here silently skipped the
+        # refresh for accounts whose only row is unproven (auto-provisioned channel
+        # placements), leaving `member_org_ids` advertising an org whose membership
+        # row this function just deleted — stale in the PERMISSIVE direction for the
+        # fail-closed reader in `lambda/shared/membership_eligibility.py`.
+        identity_rows = (
+            await self.db.execute(
+                select(UserIdentity.provider_user_id, UserIdentity.verification_method).where(
+                    UserIdentity.user_id == user_id, UserIdentity.provider == "github"
                 )
-            ).scalars()
-        )
+            )
+        ).all()
+        github_ids = {pid for pid, method in identity_rows if pid and method in PROVEN_METHODS}
+        projected_github_ids = {pid for pid, _ in identity_rows if pid}
         username = user.cognito_username
         if user.cognito_sub:
             from src.shared.identity.workspaces import PLACEMENT_VERIFICATION
@@ -1920,7 +1938,7 @@ class AdminService:
                 "This member has related records that must be retained and cannot be deleted. No membership changes were saved."
             ) from exc
 
-        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=github_ids, writer=identity_writer)
+        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=projected_github_ids, writer=identity_writer)
 
         # Never remove the login for a database deletion that rolled back.
         if cognito_service and username:

@@ -60,7 +60,11 @@ from src.knowledge.github_app_service import (
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.identity.providers import is_linkable_provider
-from src.shared.identity.verification import DELIVERY_SHARED_CHANNEL, PROVEN_METHODS
+from src.shared.identity.verification import (
+    CHANNEL_PLACEMENT,
+    DELIVERY_SHARED_CHANNEL,
+    IDENTIFYING_METHODS,
+)
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import new_uuid
 from src.shared.models.organization import Organization, User
@@ -129,13 +133,17 @@ class ResolveUserResponse(BaseModel):
     org_id: str
     team_id: str
     is_shadow: bool
-    # How the link this answer rests on was established (#5664, A10). The lookup
-    # already filters to PROVEN_METHODS, so every value here is proof — but the
-    # webhook reader must not have to INFER that from the endpoint's filtering
-    # policy. Stating it makes the reader's authority check read the same fact the
-    # writer recorded, so a future relaxation of the filter cannot silently widen
-    # what a caller treats as proven. Empty string means a caller is talking to a
-    # gateway that predates the field: unknown provenance, which is not proof.
+    # How the link this answer rests on was established (#5664, A10).
+    #
+    # A 200 does NOT mean "proven". The lookup filters to IDENTIFYING_METHODS, which
+    # deliberately includes the unproven `channel_placement` rows the
+    # auto-provision path creates, because this endpoint answers "which platform
+    # user is this account" rather than "may this account act". A caller that grants
+    # authority MUST read this field and apply `is_proven` to it; inferring proof
+    # from the status code is the bug this field exists to prevent.
+    #
+    # Empty string means a caller is talking to a gateway that predates the field:
+    # unknown provenance, which is not proof.
     verification_method: str = ""
 
 
@@ -386,10 +394,18 @@ async def resolve_user(
     # Ambiguity is now an explicit refusal. Picking any one row would be guessing
     # which tenant an event belongs to, and the safe answer to "which of these
     # is it?" is to decline rather than to choose.
+    #
+    # The filter is IDENTIFYING_METHODS, not PROVEN_METHODS. This endpoint answers
+    # "which platform user is this account", which an auto-provisioned channel
+    # placement legitimately answers even though it proves nothing — and filtering
+    # it out would make every subsequent resolve miss, re-provisioning a shadow user
+    # and re-issuing a magic link on every inbound message. The authority decision
+    # is made by the CALLER from `verification_method` in the response, which is
+    # reported truthfully below; it is not implied by having resolved at all.
     stmt = select(UserIdentity).where(
         UserIdentity.provider == body.provider,
         UserIdentity.provider_user_id == body.provider_user_id,
-        UserIdentity.verification_method.in_(PROVEN_METHODS),
+        UserIdentity.verification_method.in_(IDENTIFYING_METHODS),
     )
     if body.org_id:
         stmt = stmt.where(UserIdentity.org_id == body.org_id)
@@ -461,19 +477,23 @@ async def resolve_user(
 
         # Create the identity link.
         #
-        # #5664 (A10), noted not changed: `admin_manual` is not an accurate label
-        # here. No administrator asserted that THIS external account belongs to
-        # this platform user; an administrator mapped the workspace to the tenant
-        # via channel_tenant_map, and the account id came from the request body.
-        # Those are different facts, and the trust filter above now treats this
-        # label as proof, so the mislabel matters more than it did.
+        # #5664 (A10): this is `channel_placement`, an UNPROVEN method. It used to
+        # say `admin_manual`, which is in PROVEN_METHODS, and that was the second
+        # half of the finding: an administrator mapped the workspace to the tenant
+        # via channel_tenant_map — an accountable act, but a fact about the
+        # WORKSPACE. The account id itself arrived in this request's body and
+        # nobody verified it. Labelling that as an administrator's assertion about
+        # a specific account manufactured proof out of a routing decision.
         #
-        # It is left alone deliberately rather than quietly relabelled: making it
-        # unproven would make every subsequent resolve of an auto-provisioned
-        # shadow user miss, re-issuing a magic link forever and breaking the
-        # auto-provision flow for tenants that opted into it. That is a behavior
-        # change needing its own analysis and rollout, not a side effect of this
-        # one. Recorded as an adjacent finding on #5664 instead.
+        # The previous slice left the mislabel in place because relabelling it
+        # unproven would have made every subsequent resolve miss the trust filter
+        # and re-issue a magic link forever. That is now handled at the seam rather
+        # than by mislabelling: resolution filters on IDENTIFYING_METHODS (which
+        # includes this value, so the row keeps routing) while everything that
+        # mints authority asks `is_proven` (which refuses it). The flow is
+        # preserved; only the unearned authority claim is withdrawn.
+        #
+        # `verified_at` stays NULL — nothing was verified.
         link = UserIdentity(
             org_id=tenant_map.org_id,
             user_id=shadow.id,
@@ -481,7 +501,7 @@ async def resolve_user(
             provider=body.provider,
             provider_user_id=body.provider_user_id,
             provider_username=None,
-            verification_method="admin_manual",
+            verification_method=CHANNEL_PLACEMENT,
         )
         db.add(link)
 
