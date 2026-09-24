@@ -78,8 +78,9 @@ and the investigation narrative alongside screenshots and evidence. File hashes,
 indicator CSV and provenance are retained. Long target URLs wrap in the HTML report.
 
 A declared form action is configuration, not observed transmission. Manual link
-navigation is identified separately from site redirects. Non-inconclusive findings
-still require complete cited evidence and confirmed cleanup; no-adverse requires
+navigation is identified separately from site redirects. Adverse findings on a
+partial page require intact, hash-checked evidence item references, explicit
+coverage limitations and confirmed cleanup; no-adverse requires
 all steps/observations complete and describes only the tested views. Counterevidence
 and legitimate identity-provider relationships must be considered. Semantic accuracy
 still requires researcher review; reference validation cannot prove every sentence.
