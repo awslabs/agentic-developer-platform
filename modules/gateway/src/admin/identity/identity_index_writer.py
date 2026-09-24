@@ -92,6 +92,7 @@ class IdentityIndexWriter:
         member_org_ids: list[str] | None = None,
         user_kind: str | None = None,
         bot_kind: str | None = None,
+        verification_method: str | None = None,
     ) -> bool:
         """Write a channel_user entry to DDB for a single identity.
 
@@ -116,6 +117,14 @@ class IdentityIndexWriter:
         Read by the webhook Lambda's identity_resolver to route bot senders
         through the loop guards instead of the default human path.
 
+        Issue #5664 (A10): Optional verification_method projects the provenance of
+        the Postgres `user_identities` row this entry mirrors. The webhook resolver
+        reads it to decide whether resolving a sender also entitles a caller to act
+        as them; without it every resolution looked equally trustworthy and the
+        authority gate could only be advisory. Callers that hold the ORM row should
+        always pass it — omitting it leaves the row's provenance unknown, which is
+        treated as NOT proof downstream.
+
         Returns True if the OLD-table write succeeded, False if exhausted retries.
         """
         logger.info(
@@ -133,6 +142,7 @@ class IdentityIndexWriter:
                 "provider_username": provider_username,
                 "user_kind": user_kind,
                 "bot_kind": bot_kind,
+                "verification_method": verification_method,
             }
             old_success = await self._client.put_identity(
                 identity_type=GITHUB_USER_TYPE,
@@ -150,6 +160,7 @@ class IdentityIndexWriter:
                 provider_username=provider_username,
                 user_kind=user_kind,
                 bot_kind=bot_kind,
+                verification_method=verification_method,
             )
 
         if not old_success:
@@ -168,6 +179,7 @@ class IdentityIndexWriter:
                         member_org_ids=member_org_ids,
                         user_kind=user_kind,
                         bot_kind=bot_kind,
+                        verification_method=verification_method,
                     )
                 else:
                     new_success = await self._user_identity_client.update_user_core_attrs(
@@ -178,6 +190,7 @@ class IdentityIndexWriter:
                         provider_username=provider_username,
                         user_kind=user_kind,
                         bot_kind=bot_kind,
+                        verification_method=verification_method,
                     )
                 if not new_success:
                     logger.warning(
@@ -299,8 +312,14 @@ class IdentityIndexWriter:
     ) -> None:
         """Write channel_user entries for all identities of a user.
 
-        Each identity dict must have: provider_user_id, and optionally provider_username, provider.
+        Each identity dict must have: provider_user_id, and optionally
+        provider_username, provider, verification_method.
         Best-effort — failures are logged but don't propagate.
+
+        Issue #5664 (A10): verification_method is forwarded when the caller supplies
+        it. This helper previously kept only provider_user_id and provider_username,
+        so identities created through it reached DDB with no provenance and could
+        not authorize anything once the authority gate started requiring proof.
         """
         import asyncio
 
@@ -314,6 +333,7 @@ class IdentityIndexWriter:
                 org_id=org_id,
                 provider=ident.get("provider", "github"),
                 provider_username=ident.get("provider_username"),
+                verification_method=ident.get("verification_method"),
             )
             for ident in identities
         ]

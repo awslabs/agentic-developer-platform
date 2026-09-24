@@ -288,6 +288,7 @@ class IdentityIndexClient:
         provider_username: str | None = None,
         user_kind: str | None = None,
         bot_kind: str | None = None,
+        verification_method: str | None = None,
     ) -> bool:
         """Update a github_user identity row using SET semantics (UpdateItem).
 
@@ -300,6 +301,15 @@ class IdentityIndexClient:
         not None). user_kind/bot_kind (Issue #780) mark a row as a known bot
         identity — read by the webhook Lambda's identity_resolver to route bot
         senders through the loop guards instead of the default human path.
+
+        Issue #5664 (A10): ``verification_method`` projects the Postgres column of
+        the same name onto this row. Without it the webhook resolver reads no
+        provenance at all and cannot tell a provider-confirmed link from one the
+        user asserted about themselves — which is why the authority gate had to
+        default to allow. It is written whenever the caller knows it; a caller that
+        does not pass it leaves any existing value alone (SET semantics) rather
+        than blanking it, so a backfilled row is not un-backfilled by an unrelated
+        update.
 
         Returns True if update succeeded, False if all retries exhausted.
         """
@@ -326,6 +336,10 @@ class IdentityIndexClient:
         if bot_kind is not None:
             set_parts.append("bot_kind = :bkind")
             expression_values[":bkind"] = {"S": bot_kind}
+
+        if verification_method is not None:
+            set_parts.append("verification_method = :vmethod")
+            expression_values[":vmethod"] = {"S": verification_method}
 
         update_expression = "SET " + ", ".join(set_parts)
 

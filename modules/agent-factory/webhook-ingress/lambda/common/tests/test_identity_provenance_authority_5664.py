@@ -148,11 +148,22 @@ class TestProvenanceTravelsWithTheResolution:
 
 
 class TestAuthorityRequiresProvenIdentity:
-    """``from_verified_webhook`` is where a resolution becomes authority."""
+    """``from_verified_webhook`` is where a resolution becomes authority.
+
+    The check is UNCONDITIONAL. A previous slice staged it behind
+    ``REQUIRE_PROVEN_IDENTITY_FOR_AUTHORITY``, defaulting to allow-and-count,
+    because ``verification_method`` was not projected onto the DynamoDB rows the
+    resolver reads, so enforcing would have denied every human dispatch. That
+    projection now exists end to end (gateway writers -> both identity tables ->
+    resolver), so there is no longer a rollout reason to permit unproven links and
+    no env var can re-permit them. The flag, its parser and its tests are gone
+    deliberately: a switch that turns a security check off is itself the
+    vulnerability once the data gap it covered for is closed.
+    """
 
     SENDER = {"type": "User"}
 
-    def _mint(self, resolved):
+    def _mint(self, resolved, *, tenant_id="org-acme"):
         from common import agent_authority, identity_resolver  # noqa: F401
 
         return agent_authority.VerifiedHumanEvent.from_verified_webhook(
@@ -160,50 +171,63 @@ class TestAuthorityRequiresProvenIdentity:
             event_type="issue_comment",
             resolved=resolved,
             sender=self.SENDER,
-            tenant_id="org-acme",
+            tenant_id=tenant_id,
             repo="acme/widgets",
         )
 
-    def test_proven_identity_mints_authority(self, monkeypatch):
-        """The legitimate path, with enforcement ON — an OAuth-confirmed sender is
-        unaffected by the new gate."""
-        from common import agent_authority, identity_resolver  # noqa: F401
-
-        monkeypatch.setenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, "true")
-        event = self._mint(_identity(verification_method="oauth"))
+    @pytest.mark.parametrize(
+        "method", ["oauth", "org_placement", "admin_manual", "magic_link_confirmed"]
+    )
+    def test_proven_identity_mints_authority(self, method):
+        """The legitimate path. Every method the policy calls proof must still mint
+        authority with no flag set — this is the "legitimate current provider proof
+        has a tested route through the new contract" half, and it is parametrized
+        over the whole proven set so closing the hole cannot silently narrow it."""
+        event = self._mint(_identity(verification_method=method))
         assert event.human_id == "user-alice"
         assert event.tenant_id == "org-acme"
 
-    def test_unproven_identity_is_refused_when_enforced(self, monkeypatch):
-        """The finding, closed. A self-asserted link mints no human authority."""
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "self_asserted",  # the squatting path: user asserted it, nobody checked
+            "magic_link",  # legacy/ambiguous: could be either, so it is not proof
+            "",  # un-backfilled DDB row / gateway predating the response field
+            None,  # attribute absent entirely
+            "oauth_",  # near-miss, guards a prefix/substring match
+            "OAUTH",  # case variation, guards a casefolded comparison
+            "totally_new_scheme",  # never classified: inert until declared proven
+        ],
+    )
+    def test_unproven_or_unknown_provenance_is_refused(self, method):
+        """The finding, closed by default. No env var is set in this test: refusal is
+        the behaviour of the shipped configuration, which is what the previous slice
+        did not deliver."""
         from common import agent_authority, identity_resolver  # noqa: F401
 
-        monkeypatch.setenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, "true")
         with pytest.raises(agent_authority.AuthorityProvisionError):
-            self._mint(_identity(verification_method="self_asserted"))
+            self._mint(_identity(verification_method=method))
 
-    def test_unknown_provenance_is_refused_when_enforced(self, monkeypatch):
-        """Refusal covers the value every un-backfilled row carries, not just the
-        explicitly-unproven ones. If "" were allowed through, enforcing the flag
-        would change nothing in practice."""
+    def test_a_resolver_without_the_property_is_refused(self):
+        """Mixed-version deploy: a resolution object from an older Lambda layer has
+        no ``identity_proven`` at all. Absent must read as unproven, not as pass."""
         from common import agent_authority, identity_resolver  # noqa: F401
 
-        monkeypatch.setenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, "true")
+        class LegacyResolved:
+            user_kind = "human"
+            user_id = "user-alice"
+            tenant_id = "org-acme"
+            org_id = "org-acme"
+
         with pytest.raises(agent_authority.AuthorityProvisionError):
-            self._mint(_identity(verification_method=""))
+            self._mint(LegacyResolved())
 
-    def test_default_is_fail_open_but_counted(self, monkeypatch):
-        """Documents the staged rollout as a deliberate decision, not an oversight.
-
-        ``verification_method`` is not projected onto the DDB rows the resolver reads
-        on the hot path, so enforcing by default would deny EVERY human dispatch
-        platform-wide — an outage, not a fix. The default therefore allows, but emits
-        ``UnprovenIdentityAuthority`` so the residual exposure is measurable. The
-        metric call is what makes this posture defensible, so it is asserted.
-        """
+    def test_refusal_is_counted(self, monkeypatch):
+        """The metric moved to the DENY path. A non-zero count means real senders are
+        being refused because their rows lack provenance — the signal to check the
+        backfill, which is only actionable if the refusal is actually counted."""
         from common import agent_authority, identity_resolver  # noqa: F401
 
-        monkeypatch.delenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, raising=False)
         emitted: list[str] = []
         monkeypatch.setattr(
             agent_authority,
@@ -211,18 +235,15 @@ class TestAuthorityRequiresProvenIdentity:
             lambda tenant: emitted.append(tenant),
         )
 
-        event = self._mint(_identity(verification_method="self_asserted"))
+        with pytest.raises(agent_authority.AuthorityProvisionError):
+            self._mint(_identity(verification_method="self_asserted"))
 
-        assert event.human_id == "user-alice"
-        assert emitted == ["org-acme"], (
-            "an unproven grant must be counted, or the residual risk is invisible"
-        )
+        assert emitted == ["org-acme"]
 
     def test_proven_identity_emits_nothing(self, monkeypatch):
         """The metric must mean what its name says, or it cannot be alerted on."""
         from common import agent_authority, identity_resolver  # noqa: F401
 
-        monkeypatch.delenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, raising=False)
         emitted: list[str] = []
         monkeypatch.setattr(
             agent_authority,
@@ -234,25 +255,9 @@ class TestAuthorityRequiresProvenIdentity:
 
         assert emitted == []
 
-    def test_observability_failure_never_blocks_dispatch(self, monkeypatch):
-        """A CloudWatch outage must not become a dispatch outage."""
-        from common import agent_authority, identity_resolver  # noqa: F401
-
-        monkeypatch.delenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, raising=False)
-
-        def _boom(_tenant):
-            raise RuntimeError("cloudwatch is down")
-
-        monkeypatch.setattr(agent_authority, "_emit_unproven_identity_metric", _boom)
-
-        with pytest.raises(RuntimeError):
-            # Guard on the real helper's own swallowing rather than assuming it:
-            # this asserts the raise is genuinely reachable, so the next assertion
-            # below is meaningful.
-            _boom("org-acme")
-
     def test_real_metric_helper_swallows_failures(self, monkeypatch):
-        """The helper itself is the thing that must not raise into the auth path."""
+        """Observability must not raise into the authorization path: on the deny path
+        an exception here would replace a clean refusal with an unhandled error."""
         from common import agent_authority, identity_resolver  # noqa: F401
 
         monkeypatch.setattr(
@@ -263,42 +268,99 @@ class TestAuthorityRequiresProvenIdentity:
         # Must not raise.
         agent_authority._emit_unproven_identity_metric("org-acme")
 
-    def test_pre_existing_gates_still_apply(self, monkeypatch):
+    def test_metric_failure_still_yields_a_clean_refusal(self, monkeypatch):
+        """End-to-end of the above: CloudWatch down during a refusal still produces
+        AuthorityProvisionError, not RuntimeError. Asserted through the real helper
+        rather than a stub, so it tests the shipped swallow."""
+        from common import agent_authority, identity_resolver  # noqa: F401
+
+        monkeypatch.setattr(
+            agent_authority.boto3,
+            "client",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("cloudwatch is down")),
+        )
+        with pytest.raises(agent_authority.AuthorityProvisionError):
+            self._mint(_identity(verification_method=""))
+
+    def test_pre_existing_gates_still_apply(self):
         """The provenance check is additive. A bot with a PROVEN link is still
         refused human authority — proving ownership of a bot account does not make
         the bot a human, and the two checks must not be collapsed."""
         from common import agent_authority, identity_resolver  # noqa: F401
 
-        monkeypatch.setenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, "true")
         with pytest.raises(agent_authority.AuthorityProvisionError):
             self._mint(_identity(verification_method="oauth", user_kind="bot"))
 
+    def test_no_env_var_can_re_permit_unproven_links(self, monkeypatch):
+        """The removed escape hatch stays removed.
 
-class TestEnforcementFlagParsing:
-    """The flag decides whether a security check runs, so parsing is load-bearing."""
-
-    @pytest.mark.parametrize("value", ["true", "TRUE", "True"])
-    def test_enabled_values(self, value, monkeypatch):
-        from common import agent_authority, identity_resolver  # noqa: F401
-
-        monkeypatch.setenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, value)
-        assert agent_authority._require_proven_identity() is True
-
-    @pytest.mark.parametrize("value", ["false", "", "1", "yes", "no", "TrUe ", "on"])
-    def test_everything_else_is_disabled(self, value, monkeypatch):
-        """Only an exact "true" enables it. "1"/"yes"/"on" are NOT accepted: this
-        matches every other flag in this package (``_v2_read_enabled``,
-        ``_resolve_canonical_via_gateway_enabled``), and one flag in a family that
-        parses differently is how a deployment ends up in a posture nobody intended.
-        Note "TrUe " with a trailing space is also rejected — no implicit trimming.
+        Setting the old flag name — in either direction — must not change the
+        outcome. This is the regression guard for re-introducing the vulnerability
+        by configuration, and it also fails loudly if someone restores the parser.
         """
         from common import agent_authority, identity_resolver  # noqa: F401
 
-        monkeypatch.setenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, value)
-        assert agent_authority._require_proven_identity() is False
+        assert not hasattr(agent_authority, "REQUIRE_PROVEN_IDENTITY_ENV")
+        assert not hasattr(agent_authority, "_require_proven_identity")
 
-    def test_absent_flag_defaults_to_disabled(self, monkeypatch):
+        for value in ("false", "true", ""):
+            monkeypatch.setenv("REQUIRE_PROVEN_IDENTITY_FOR_AUTHORITY", value)
+            with pytest.raises(agent_authority.AuthorityProvisionError):
+                self._mint(_identity(verification_method="self_asserted"))
+
+
+class TestProvenanceMustBelongToThisResolution:
+    """A proven link proves control of an account in ONE tenant.
+
+    ``user_identities`` is unique per (provider, provider_user_id, org_id), so the
+    same GitHub account can hold a proven link in tenant A and none in tenant B.
+    Checking only "is this resolution proven" would let provenance earned in A mint
+    authority in B. The tenant the authority is minted for is therefore re-checked
+    against the resolution that carried the provenance, not taken solely from the
+    caller's argument.
+    """
+
+    SENDER = {"type": "User"}
+
+    def _mint(self, resolved, *, tenant_id):
         from common import agent_authority, identity_resolver  # noqa: F401
 
-        monkeypatch.delenv(agent_authority.REQUIRE_PROVEN_IDENTITY_ENV, raising=False)
-        assert agent_authority._require_proven_identity() is False
+        return agent_authority.VerifiedHumanEvent.from_verified_webhook(
+            body=b'{"action":"created"}',
+            event_type="issue_comment",
+            resolved=resolved,
+            sender=self.SENDER,
+            tenant_id=tenant_id,
+            repo="acme/widgets",
+        )
+
+    def test_matching_tenant_is_allowed(self):
+        event = self._mint(
+            _identity(verification_method="oauth"), tenant_id="org-acme"
+        )
+        assert event.tenant_id == "org-acme"
+
+    def test_resolved_tenant_mismatch_is_refused(self):
+        from common import agent_authority, identity_resolver  # noqa: F401
+
+        resolved = _identity(
+            verification_method="oauth",
+            tenant_id="org-victim",
+            org_id="org-victim",
+        )
+        with pytest.raises(agent_authority.AuthorityProvisionError):
+            self._mint(resolved, tenant_id="org-attacker")
+
+    def test_resolved_org_mismatch_is_refused(self):
+        """``org_id`` is checked independently of ``tenant_id``: a resolution whose
+        two fields disagree must not pass by satisfying only the one that happens to
+        be compared first."""
+        from common import agent_authority, identity_resolver  # noqa: F401
+
+        resolved = _identity(
+            verification_method="oauth",
+            tenant_id="org-attacker",
+            org_id="org-victim",
+        )
+        with pytest.raises(agent_authority.AuthorityProvisionError):
+            self._mint(resolved, tenant_id="org-attacker")

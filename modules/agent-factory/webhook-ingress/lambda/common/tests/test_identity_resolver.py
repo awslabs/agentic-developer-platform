@@ -86,7 +86,17 @@ PG_RESULT_CANONICAL = {
     "org_id": "pranavsharma1000",
     "team_id": "",
     "is_shadow": False,
+    # #5664 (A10): the canonical lookup now carries provenance, and it is the
+    # field human authority is decided from. A fixture without it would resolve
+    # as unproven and quietly stop exercising the legitimate proven path.
+    "verification_method": "oauth",
 }
+
+# The resolver consumes the tri-state `resolve_user_state` rather than the
+# collapse-to-None wrapper, so that a 404 (authoritative "no proven link") is
+# distinguishable from an unreachable gateway. Tests patch the same seam the
+# resolver calls; patching the wrapper would pass while asserting nothing.
+PG_STATE_CANONICAL = {"state": "resolved", "user": PG_RESULT_CANONICAL}
 
 
 def _mock_ddb_get_item(items_by_table):
@@ -136,8 +146,8 @@ class TestResolveUsesV2WhenFlagOn:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -167,8 +177,8 @@ class TestResolveFallsBackToPostgresWhenV2Misses:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -207,8 +217,8 @@ class TestResolveTrustsPostgresOnDrift:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch("boto3.client", return_value=mock_cw):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     identity_resolver._cloudwatch = None
                     result, reason = identity_resolver.resolve(
@@ -255,7 +265,7 @@ class TestKillSwitchDisablesGatewayCall:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
+                "common.gateway_client.resolve_user_state",
             ) as mock_resolve:
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -319,8 +329,8 @@ class TestEnvelopeUsesCanonicalUserId:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -380,8 +390,8 @@ class TestPostgres404TreatedAsNoMatch:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=None,  # 404 from gateway
+                "common.gateway_client.resolve_user_state",
+                return_value={"state": "not_found"},  # 404 from gateway
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -438,8 +448,8 @@ class TestInstallationPostgresFallback:
                 },
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
@@ -563,8 +573,8 @@ class TestInstallationPostgresFallback:
                 return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
@@ -621,13 +631,8 @@ class TestInstallationTenantDriftSafetyNet:
                     side_effect=_resolve_installation,
                 ):
                     with patch(
-                        "common.gateway_client.resolve_user_by_identity",
-                        return_value={
-                            "user_id": CANONICAL_USER_ID,
-                            "org_id": "pranavsharma1000",
-                            "team_id": "",
-                            "is_shadow": False,
-                        },
+                        "common.gateway_client.resolve_user_state",
+                        return_value=PG_STATE_CANONICAL,
                     ):
                         identity_resolver._cloudwatch = None
                         result, reason = identity_resolver.resolve(
@@ -683,8 +688,8 @@ class TestInstallationTenantDriftSafetyNet:
                 return_value=pg_result,
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
@@ -868,8 +873,8 @@ class TestInstallationNegativeCache:
                 return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
@@ -899,8 +904,8 @@ class TestInstallationNegativeCache:
                 return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
@@ -1034,8 +1039,8 @@ class TestInstallationBackfillGate:
                 },
             ),
             patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ),
         ):
             result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
@@ -1069,8 +1074,8 @@ class TestInstallationBackfillGate:
                 },
             ),
             patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ),
         ):
             result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
@@ -1104,8 +1109,8 @@ class TestInstallationBackfillGate:
                 return_value={"state": "resolved", "tenant_id": "pranavsharma1000"},
             ),
             patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ),
         ):
             result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
@@ -1149,8 +1154,8 @@ class TestInstallationBackfillGate:
                 },
             ),
             patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ),
         ):
             result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)

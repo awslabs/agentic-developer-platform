@@ -527,7 +527,11 @@ def resolve(
         # Cross-validate against Postgres via POST /internal/v1/resolve-user.
         # Trusts Postgres on disagreement (canonical source of truth).
         if _resolve_canonical_via_gateway_enabled():
-            from common.gateway_client import resolve_user_by_identity
+            from common.gateway_client import (
+                USER_ERROR,
+                USER_RESOLVED,
+                resolve_user_state,
+            )
 
             # Issue #5664 (A10): scope the lookup to the tenant this installation
             # belongs to. `user_identities` is unique per (provider,
@@ -535,9 +539,8 @@ def resolve(
             # ambiguous unscoped and the gateway declines to guess. The
             # installation already told us the tenant, so the question is
             # answerable — asking it unscoped was throwing away the answer.
-            pg_result = resolve_user_by_identity(
-                "github", str(sender_id), org_id=org_id
-            )
+            pg_state = resolve_user_state("github", str(sender_id), org_id=org_id)
+            pg_result = pg_state["user"] if pg_state["state"] == USER_RESOLVED else None
 
             if pg_result and user_item:
                 # Both returned a result — check for drift
@@ -553,6 +556,20 @@ def resolve(
                     # Trust Postgres for canonical fields but preserve DDB-only
                     # attrs (member_org_ids, user_kind) that PG doesn't carry.
                     user_item = {**user_item, **pg_result}
+                else:
+                    # Same user. Postgres still owns provenance: the DDB row's
+                    # projected value can be stale in the permissive direction
+                    # (a link downgraded or re-created as unproven), and this is
+                    # the field authority is decided from.
+                    # `.get` with an empty default, not `[...]`: a gateway that
+                    # omits the field must yield unproven, not raise into the
+                    # caller's error path (which keeps the stale DDB value).
+                    user_item = {
+                        **user_item,
+                        "verification_method": pg_result.get(
+                            "verification_method", ""
+                        ),
+                    }
             elif pg_result and not user_item:
                 # v2/legacy missed but Postgres has it (write-through lag)
                 logger.info(
@@ -562,8 +579,32 @@ def resolve(
                     pg_result["user_id"],
                 )
                 user_item = pg_result
-            # If pg_result is None but user_item exists: Postgres miss/error,
-            # keep using the DDB result (fail-open, same as today).
+            elif user_item and pg_state["state"] != USER_ERROR:
+                # Issue #5664 (A10): Postgres answered AUTHORITATIVELY that there
+                # is no proven link for this sender (404), or that the identity is
+                # ambiguous across tenants (409) — while a DDB row still exists.
+                #
+                # Previously the DDB row was kept wholesale ("fail-open, same as
+                # today"), which is the permissive legacy authority fallback: a row
+                # projected before a link was revoked, or a row whose Postgres link
+                # is self-asserted, kept answering as though it were proof.
+                #
+                # The row still IDENTIFIES the sender, so routing and loop guards
+                # are unchanged and this is not an outage. What it loses is
+                # provenance: any projected value is discarded, so `identity_proven`
+                # is False and nothing downstream can mint authority from it.
+                logger.warning(
+                    "Canonical lookup returned %s for sender_id=%d org=%s while a "
+                    "DDB row exists — identifying the sender but withholding "
+                    "provenance",
+                    pg_state["state"],
+                    sender_id,
+                    org_id,
+                )
+                user_item = {**user_item, "verification_method": ""}
+            # If the gateway could not be reached (state == error) and a DDB row
+            # exists, keep it as-is: an outage must not become a platform-wide
+            # deny. The row's own projected provenance then decides authority.
 
         if not user_item:
             logger.info("Unknown sender_id=%d — no identity-index entry", sender_id)

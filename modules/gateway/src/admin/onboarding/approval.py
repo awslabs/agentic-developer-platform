@@ -229,6 +229,9 @@ async def approve_request(
                 provider="cognito",
                 provider_username=request.target_login,
                 member_org_ids=all_org_ids,
+                # #5664 (A10): mirror the provenance of the Postgres row created
+                # above — an approved onboarding completed a provider sign-in.
+                verification_method=cognito_identity.verification_method,
             )
         except Exception:
             logger.exception("DDB write-through failed for cognito identity (onboarding approval)")
@@ -242,6 +245,7 @@ async def approve_request(
                 provider="github",
                 provider_username=request.target_login,
                 member_org_ids=all_org_ids,
+                verification_method=github_identity.verification_method,
             )
         except Exception:
             logger.exception("DDB write-through failed for github identity (onboarding approval)")

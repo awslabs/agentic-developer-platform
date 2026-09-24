@@ -126,6 +126,10 @@ class UsersService:
                         {
                             "provider_user_id": ident.provider_user_id,
                             "provider_username": ident.provider_username,
+                            # #5664 (A10): must match the verification_method the
+                            # UserIdentity rows above were created with, so the
+                            # projected row carries the same provenance Postgres has.
+                            "verification_method": "admin_manual",
                         }
                         for ident in req.identities
                     ],

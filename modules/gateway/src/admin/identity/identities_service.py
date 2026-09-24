@@ -80,6 +80,9 @@ class IdentitiesService:
                     user_id=user_id,
                     org_id=user.org_id,
                     provider_username=req.provider_username,
+                    # #5664 (A10): project the provenance recorded above, so the
+                    # webhook resolver sees the same fact Postgres holds.
+                    verification_method=identity.verification_method,
                 )
             except Exception:
                 logger.exception(

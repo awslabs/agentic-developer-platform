@@ -30,32 +30,38 @@ class AuthorityProvisionError(Exception):
 # "this platform user authorized this dispatch". Those are different claims. The
 # first only says a row existed mapping the sender's GitHub id to a user_id; it
 # says nothing about whether anyone ever demonstrated that the sender controls
-# that account. Before this flag, an identity link a user merely ASSERTED about
-# themselves minted human dispatch authority indistinguishably from an
+# that account. Without this check, an identity link a user merely ASSERTED about
+# themselves mints human dispatch authority indistinguishably from an
 # OAuth-confirmed one.
 #
-# Why this is a flag rather than an unconditional check: `verification_method` is
-# not projected onto the DynamoDB identity rows that the resolver reads on the hot
-# path, so today essentially every resolution carries "" (unknown provenance).
-# Enforcing immediately would fail closed on EVERY human dispatch, platform-wide,
-# which is an outage rather than a fix. The projection has to land and backfill
-# first.
+# The check is now UNCONDITIONAL and denies. An earlier pass on this issue staged
+# it behind an allow-by-default flag because `verification_method` was not
+# projected onto the DynamoDB identity rows the resolver reads, so every
+# resolution carried "" and enforcing would have denied every human dispatch
+# platform-wide. That projection now exists on both identity tables (see
+# `identity_index.update_user_identity_core` /
+# `user_identity_index.put_user_identity` in the gateway), the canonical Postgres
+# lookup supplies provenance directly, and `scripts/backfill-identity-provenance.py`
+# fills historical rows — so a legitimate proven link has a real route through this
+# gate and denial no longer means an outage.
 #
-# So the default is fail-open-but-LOUD, the same posture `installation_gate` takes
-# for an unavailable gate: allow, but emit `UnprovenIdentityAuthority` so the
-# residual exposure is measurable instead of assumed. Once that metric reads zero
-# for a deployment, REQUIRE_PROVEN_IDENTITY_FOR_AUTHORITY=true closes it for good.
-# The flag exists only to sequence that rollout; it is not a supported permanent
-# posture.
-REQUIRE_PROVEN_IDENTITY_ENV = "REQUIRE_PROVEN_IDENTITY_FOR_AUTHORITY"
-
-
-def _require_proven_identity() -> bool:
-    return os.environ.get(REQUIRE_PROVEN_IDENTITY_ENV, "false").lower() == "true"
+# Deploy ordering matters and is not optional: the writers and backfill must land
+# BEFORE this code, or proven senders are denied until the backfill runs. See
+# `docs/runbooks/identity-provenance-rollout.md` for the ordered procedure.
+#
+# There is deliberately no allow-on-unknown escape hatch. "We do not know how this
+# link was established" is exactly the case that must not mint authority; an env
+# var that re-permits it would reintroduce the vulnerability by configuration.
+UNPROVEN_IDENTITY_METRIC = "UnprovenIdentityAuthority"
 
 
 def _emit_unproven_identity_metric(tenant_id: str) -> None:
-    """Make the residual exposure countable. Best-effort, never blocks dispatch."""
+    """Count refusals so a rollout gap is visible. Best-effort, never raises.
+
+    Emitted on the DENY path: a non-zero count after the backfill means real
+    senders are being refused and their rows still lack provenance, which is the
+    signal to check the backfill rather than to re-permit unproven links.
+    """
     try:
         boto3.client(
             "cloudwatch", region_name=os.environ.get("AWS_REGION", "us-east-1")
@@ -63,7 +69,7 @@ def _emit_unproven_identity_metric(tenant_id: str) -> None:
             Namespace="ADP/AgentAuthority",
             MetricData=[
                 {
-                    "MetricName": "UnprovenIdentityAuthority",
+                    "MetricName": UNPROVEN_IDENTITY_METRIC,
                     "Value": 1,
                     "Unit": "Count",
                     "Dimensions": [
@@ -116,14 +122,35 @@ class VerifiedHumanEvent:
 
         # Issue #5664 (A10): the sender must be PROVEN to control the account, not
         # merely resolvable to it. `identity_proven` fails closed on unknown
-        # provenance. See REQUIRE_PROVEN_IDENTITY_ENV above for why enforcement is
-        # staged rather than immediate.
+        # provenance, so a missing attribute, an empty string, an unproven method
+        # and a method this code has never heard of all refuse.
+        #
+        # `getattr` with a False default is deliberate: a resolver object from an
+        # older deployment that lacks the property must deny, not silently pass.
         if not getattr(resolved, "identity_proven", False):
-            if _require_proven_identity():
-                raise AuthorityProvisionError(
-                    "human authorization requires a proven identity link"
-                )
             _emit_unproven_identity_metric(tenant_id)
+            raise AuthorityProvisionError(
+                "human authorization requires a proven identity link"
+            )
+
+        # The provenance must belong to THIS resolution. A resolver that carried a
+        # proven method alongside a tenant it did not resolve for would be asserting
+        # provenance from one context into another; tenant_id is re-checked against
+        # the resolution rather than taken only from the caller's argument.
+        resolved_org = getattr(resolved, "org_id", None)
+        resolved_tenant = getattr(resolved, "tenant_id", None)
+        if resolved_tenant and resolved_tenant != tenant_id:
+            raise AuthorityProvisionError(
+                "human authorization requires a tenant-consistent identity link"
+            )
+        if resolved_org and resolved_org != tenant_id:
+            # Cross-tenant participation is decided by the resolver's own trigger
+            # policy, which has already run and either allowed or denied. Reaching
+            # here with a mismatch means the proven link belongs to a different
+            # tenant than the authority being minted.
+            raise AuthorityProvisionError(
+                "human authorization requires a tenant-consistent identity link"
+            )
         digest = hashlib.sha256(event_type.encode() + b"\0" + body).hexdigest()
         return cls(f"github-event:{digest}", resolved.user_id, tenant_id, repo)
 
