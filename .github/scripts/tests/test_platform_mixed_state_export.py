@@ -81,6 +81,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -759,64 +760,224 @@ def test_runbook_steps_are_not_invoked_with_a_failure_swallowing_handler() -> No
     )
 
 
-def test_runbook_orchestration_chain_cannot_reach_a_later_step_after_a_refusal() -> None:
-    """Execute the runbook's chaining pattern and prove a refusal is terminal.
+SECTION_5_HEADING = "## Section 5 — The supported rollout sequence"
+# The account the runbook's step 0 pins. Read from the runbook rather than restated,
+# so this test follows the document instead of a copy of it.
+ACCOUNT = re.search(
+    r"export ADP_ACCOUNT=(\d{12})",
+    (Path(__file__).resolve().parents[3] / "docs" / "runbooks"
+     / "platform-aws-provider-floor.md").read_text(),
+).group(1)
+REVIEW_STEP_FUNCTIONS = (
+    "confirm_account",
+    "resolve_backend",
+    "preserve",
+    "plan_migration",
+    "inspect_migration",
+)
 
-    The content assertion above says the bad pattern is gone; this says the replacement
-    actually works. The runbook chains its steps with `&&` inside one function, so this
-    runs that exact shape with a deliberately failing first step and asserts that
-    neither a later step nor a sentinel standing in for the apply is ever reached.
 
-    Without this, "the sequence stops" is a claim about shell semantics that nobody
-    checked — and the previous version of the runbook is proof that such claims can be
-    wrong.
-    """
+def _section_5_bash_blocks() -> list[str]:
+    """The ```bash blocks of Section 5, in document order."""
     body = RUNBOOK.read_text()
-    assert re.search(r"review_migration\(\) \{", body), (
-        "the runbook must define a single orchestration function; invoking steps "
-        "line by line is what allowed a handled failure to fall through."
+    start = body.index(SECTION_5_HEADING)
+    end = body.find("\n## ", start + 1)
+    section = body[start : end if end != -1 else len(body)]
+    return re.findall(r"```bash\n(.*?)```", section, re.S)
+
+
+def _extracted_review_script() -> str:
+    """Concatenate Section 5's blocks up to and including the review chain.
+
+    This is what an operator actually assembles by following the runbook: the
+    definition blocks in order, then the chain that runs them. Extracting it rather
+    than restating it is the whole point — a hand-written copy of the chain passes
+    even when the real runbook is broken, which is exactly how an earlier version of
+    this test missed eagerly-invoked steps in the definition blocks.
+    """
+    blocks = _section_5_bash_blocks()
+    chain = next(
+        (i for i, block in enumerate(blocks) if "review_migration() {" in block), None
     )
-
-    script = """
-set -euo pipefail
-confirm_account() { echo "REFUSED-ACCOUNT"; return 1; }
-resolve_backend() { echo "REACHED-RESOLVE"; }
-preserve()        { echo "REACHED-PRESERVE"; }
-plan_migration()  { echo "REACHED-PLAN"; }
-inspect_migration() { echo "REACHED-INSPECT"; }
-
-review_migration() {
-  confirm_account \\
-    && resolve_backend \\
-    && preserve \\
-    && plan_migration \\
-    && inspect_migration
-}
-
-if review_migration; then
-  echo "REACHED-APPLY"
-else
-  echo "STOPPED" >&2
-  exit 1
-fi
-"""
-    outcome = subprocess.run(
-        ["bash"], input=script, text=True, capture_output=True, timeout=60, check=False
+    assert chain is not None, (
+        "Section 5 must contain a block defining review_migration(); the review "
+        "sequence has to be runnable as written."
     )
+    return "\n".join(blocks[: chain + 1])
 
-    assert outcome.returncode == 1, (
-        "a refused first step must make the whole sequence exit non-zero. "
-        f"Got {outcome.returncode}; stdout: {outcome.stdout!r}"
-    )
-    assert "REFUSED-ACCOUNT" in outcome.stdout, "the failing step must still report."
-    for unreachable in (
-        "REACHED-RESOLVE",
-        "REACHED-PRESERVE",
-        "REACHED-PLAN",
-        "REACHED-INSPECT",
-        "REACHED-APPLY",
-    ):
-        assert unreachable not in outcome.stdout, (
-            f"{unreachable} was reached after a refusal. The chain does not stop, so "
-            "every check downstream of the refusal is decorative."
+
+def test_runbook_definition_blocks_do_not_invoke_their_own_steps() -> None:
+    """A definition block must not run its function. Ordering breaks if it does.
+
+    Steps 0–4 are collected by the operator and run by the chain in step 5. If a
+    definition block also invokes its function, that step executes *while the later
+    functions are still being defined* — so `resolve_backend` would run before
+    `confirm_account` had ever been called, reading a backend in an unverified
+    account. `resolve_backend` also changes directory, so the chain would then
+    re-enter it from the wrong cwd.
+
+    Asserted against the real extracted blocks: the prose claim "defining functions
+    above does not run them" must actually be true of them.
+    """
+    script = _extracted_review_script()
+    chain_start = script.index("review_migration() {")
+    definitions = script[:chain_start]
+
+    premature = [
+        line.strip()
+        for line in definitions.splitlines()
+        if line.strip() in REVIEW_STEP_FUNCTIONS
+        or re.match(
+            rf"^({'|'.join(REVIEW_STEP_FUNCTIONS)}) *(\|\||&&|$)", line.strip()
         )
+    ]
+    assert not premature, (
+        "these step functions are invoked inside the definition blocks, so they run "
+        "out of order — before the account is confirmed. Remove the invocation and "
+        f"let the step-5 chain call them: {premature}"
+    )
+
+
+def test_extracted_runbook_chain_stops_on_refusal_and_runs_each_step_once() -> None:
+    """Execute the runbook's OWN extracted blocks, with stubs, and check both paths.
+
+    Root's finding: a test that restates the chain cannot catch a defect in the
+    runbook's actual text. So this concatenates Section 5's real blocks and runs them
+    with every external command stubbed — no terraform, no aws, no network.
+
+    Two paths, both of which a broken runbook fails:
+
+    * account refusal → exits non-zero, and `terraform` is never invoked at all.
+      (Not merely "a later function was skipped": if any step ran, the stub records
+      it, so a fall-through that reaches a real command is visible.)
+    * success → each of the five steps runs exactly once. Twice means a definition
+      block invoked its own function as well as the chain calling it.
+    """
+    script = _extracted_review_script()
+
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = Path(raw_tmp)
+        bin_dir = tmp / "bin"
+        bin_dir.mkdir()
+        log = tmp / "calls.log"
+        # `resolve_backend` does `cd "$REPO_ROOT/platform/infra"`. The directory must
+        # exist for the success path to be meaningful — and the absolute form is what
+        # makes the chain re-enterable, which a relative `cd platform/infra` was not.
+        (tmp / "platform" / "infra").mkdir(parents=True)
+
+        # Stub every external command the blocks reach. Each records its own name, so
+        # an unexpected invocation is evidence rather than a silent success.
+        for command in ("terraform", "aws", "python3", "git", "shred", "chmod"):
+            stub = bin_dir / command
+            stub.write_text(
+                "#!/bin/sh\n"
+                # Log the subcommand too, so `terraform init` and `terraform plan` are
+                # distinguishable and a step can be counted rather than merely detected.
+                f'echo "CALL {command} $1 $2" >> "$CALL_LOG"\n'
+                # `git rev-parse --show-toplevel` must return a usable path, and
+                # `aws sts get-caller-identity` the account under test. `terraform
+                # state pull` must emit parseable state, since `preserve` redirects it
+                # to the snapshot and then reads it back.
+                'case "$1 $2" in\n'
+                '  "rev-parse --show-toplevel") echo "$FAKE_REPO_ROOT" ;;\n'
+                '  "sts get-caller-identity") echo "$FAKE_ACCOUNT" ;;\n'
+                '  "state pull") echo \'{"serial":84,"lineage":"l","resources":[]}\' ;;\n'
+                "esac\n"
+                'exit "${STUB_EXIT:-0}"\n'
+            )
+            stub.chmod(0o755)
+
+        # The runbook's OWN functions run here -- deliberately not replaced by stubs.
+        # Replacing them would test a restatement again, which is the mistake this
+        # test exists to correct. Only the external commands are stubbed, and failure
+        # is injected the way it would really arrive: `aws sts get-caller-identity`
+        # resolving an account other than the intended one.
+        def run(*, wrong_account: bool) -> subprocess.CompletedProcess[str]:
+            log.write_text("")
+            return subprocess.run(
+                ["bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                timeout=60,
+                check=False,
+                env={
+                    "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+                    "HOME": str(tmp),
+                    "CALL_LOG": str(log),
+                    "FAKE_REPO_ROOT": str(tmp),
+                    "FAKE_ACCOUNT": "111111111111" if wrong_account else ACCOUNT,
+                },
+            )
+
+        refused = run(wrong_account=True)
+        refused_log = log.read_text()
+        assert refused.returncode != 0, (
+            "a wrong account must make the extracted sequence exit non-zero. "
+            f"stdout: {refused.stdout[-400:]} stderr: {refused.stderr[-400:]}"
+        )
+        assert "CALL terraform" not in refused_log, (
+            "terraform ran despite the account being wrong, so the sequence does not "
+            "stop at step 0. Either a definition block invokes its own function, or "
+            f"the chain does not short-circuit. Calls: {refused_log!r}"
+        )
+
+        passed = run(wrong_account=False)
+        passed_log = log.read_text()
+        assert passed.returncode == 0, (
+            "the chain must succeed when the account matches and every command exits "
+            f"0. stdout: {passed.stdout[-400:]} stderr: {passed.stderr[-400:]}"
+        )
+        # Each step's distinctive command, exactly once. Twice means a definition block
+        # invokes its own function as well as the chain calling it -- the defect that
+        # made `resolve_backend` run before `confirm_account`.
+        for step, marker in (
+            ("resolve_backend", "CALL terraform init"),
+            ("preserve", "CALL terraform state pull"),
+            ("plan_migration", "CALL terraform plan"),
+        ):
+            count = passed_log.count(marker)
+            assert count == 1, (
+                f"{step}'s `{marker[5:]}` ran {count} times, expected exactly once. "
+                "More than once means it is invoked in its definition block as well "
+                f"as by the chain. Calls: {passed_log!r}"
+            )
+        assert "CALL terraform apply" not in passed_log, (
+            "the review chain must not reach an apply. The state write is a separate "
+            f"deliberate step, outside the collected read-only script. Calls: {passed_log!r}"
+        )
+
+
+def test_runbook_does_not_direct_the_scoped_plan_at_a_guard_without_a_matching_scope(
+) -> None:
+    """The runbook must not send the EKS-cluster plan to `verify_scoped_plan.py`.
+
+    That guard's `SCOPES` table carries only the two `network-policy-controller`
+    entries, and it refuses an unknown scope name rather than defaulting to
+    permissive — so it has nothing for the capacity-subnet change to the cluster, as
+    merged #5830 documents. An earlier revision of this runbook told operators to
+    enforce the scope with it anyway, which invites either a bypass or a false sense
+    of having been gated.
+
+    Asserted against the guard's own source so it stays true if a scope is added
+    later: if someone adds a cluster entry, this test stops applying and says so.
+    """
+    guard = (REPO_ROOT / ".github" / "scripts" / "verify_scoped_plan.py").read_text()
+    scopes = guard[guard.index("SCOPES: dict") : guard.index("FULL_SCOPE = ")]
+    if "aws_eks_cluster" in scopes:
+        pytest.skip(
+            "verify_scoped_plan.py now carries an aws_eks_cluster scope; the runbook "
+            "may legitimately cite it again — update this test deliberately."
+        )
+
+    body = RUNBOOK.read_text()
+    directive = re.search(
+        r"[Tt]hen enforce the narrow resource-action scope with\s*\n?`?\.?/?\.github/"
+        r"scripts/verify_scoped_plan\.py`?",
+        body,
+    )
+    assert directive is None, (
+        "the runbook still directs the operator to enforce this plan's scope with "
+        "verify_scoped_plan.py, which has no scope entry covering the EKS cluster. "
+        "Root must inspect that saved plan directly instead."
+    )

@@ -276,7 +276,7 @@ directory. Do not use a predictable world-readable path such as
 caller. And `step || echo "STOP"` does not stop anything at all — `||` *handles* the
 failure, so the compound command succeeds and `set -e` has nothing to act on:
 
-```bash
+```console
 $ bash -c 'set -euo pipefail; f() { return 1; }; f || echo STOP; echo WOULD_APPLY'
 STOP
 WOULD_APPLY        # <-- reached, and the script exits 0
@@ -285,9 +285,14 @@ WOULD_APPLY        # <-- reached, and the script exits 0
 So each step below is invoked with `|| exit 1`, and the whole sequence must run in a
 **dedicated shell** — a script file, or `bash <<'EOF' ... EOF` — never pasted at your
 own interactive prompt, where `exit` would close your session and where a typo in one
-line still lets the next run. Define the functions, then run the orchestration
-function in step 7, which chains them with `&&` so no later step can be reached after
-an earlier refusal. Start the script with `set -euo pipefail`.
+line still lets the next run.
+
+**Steps 0–4 below only DEFINE functions. None of them runs anything.** That is
+deliberate and load-bearing: a definition block that also invoked its own function
+would run it while the later functions are still being collected, so `resolve_backend`
+would execute before `confirm_account` had ever been called. Read steps 0–4 as one
+script to assemble, then run the chain in **step 5**, which is the only place anything
+executes. Start the script with `set -euo pipefail`.
 
 **0. Establish the task directory and confirm the account.** Everything keys off
 the account the active profile resolves, so confirm it before touching the backend
@@ -299,6 +304,7 @@ export AWS_PROFILE=embark1          # the mapped profile for the target account
 export ADP_ACCOUNT=879318057152     # the intended target
 export ADP_ENV=dev
 export TASK_DIR="$HOME/.adp/migrate-5831"
+export REPO_ROOT="$(git rev-parse --show-toplevel)"
 export STATE_BUCKET="adp-terraform-state-${ADP_ACCOUNT}"
 export STATE_KEY="${ADP_ENV}/platform/terraform.tfstate"
 
@@ -331,7 +337,9 @@ provider that produced it (Section 3).
 
 ```bash
 resolve_backend() {
-  cd platform/infra || return 1
+  # Absolute, so this is idempotent: the chain may re-enter it, and a relative
+  # `cd platform/infra` from inside platform/infra fails.
+  cd "$REPO_ROOT/platform/infra" || return 1
   terraform init -reconfigure -input=false \
     -backend-config="../../environments/${ADP_ENV}/backend.tfvars" \
     -backend-config="bucket=${STATE_BUCKET}" \
@@ -348,7 +356,6 @@ print(f"backend confirmed: s3://{got[0]}/{got[1]}")
 EOF
   terraform version   # confirm the AWS provider is >= 6.42.0
 }
-resolve_backend || exit 1
 ```
 
 **2. Preserve, and retain the inputs.** Now that the backend is the confirmed one,
@@ -365,7 +372,6 @@ preserve() {
   chmod 600 "$TASK_DIR/pre-migration.tfstate" || return 1
   python3 -c "import json,os;s=json.load(open(os.environ['TASK_DIR']+'/pre-migration.tfstate'));print('serial',s['serial'],'lineage',s.get('lineage'),'managed',sum(len(r.get('instances',[])) for r in s['resources'] if r.get('mode')=='managed'))"
 }
-preserve || exit 1
 ```
 
 `prepare` writes `platform.tfvars.json` into `$TASK_DIR`, carrying the retained
@@ -391,7 +397,6 @@ plan_migration() {
     -out="$TASK_DIR/migrate.tfplan" || return 1
   chmod 600 "$TASK_DIR/migrate.tfplan"
 }
-plan_migration || exit 1
 ```
 
 There is deliberately no `terraform show` here. Step 4 performs the export itself,
@@ -409,7 +414,6 @@ inspect_migration() {
     --preserved-snapshot "$TASK_DIR/pre-migration.tfstate" \
     --expect-resources 136 || return 1
 }
-inspect_migration || exit 1   # REFUSED: do not apply this plan
 ```
 
 The guard takes **only the saved plan**, and runs `terraform show -json` on that
@@ -465,18 +469,63 @@ exist in the account; the drift leg is Terraform's observation, passed through. 
 pass means "safe to apply *this file*", not "safe to apply a freshly generated
 one".
 
-**5. Apply the saved refresh-only plan — root only.** Apply *that exact saved
-file*, never a freshly generated one, so what was reviewed is what is applied.
-This writes **state only**; it makes no cloud change.
+**5. Run the review chain — this is the only step above that executes anything.**
+Steps 0–4 defined functions; nothing has run yet. Chain them with `&&` in **one**
+function so a refusal at any step makes every later step unreachable rather than
+merely un-recommended, and run it in a **dedicated shell** — a script file or
+`bash <<'EOF'` — never pasted at your own prompt, where `exit` would close your
+session.
+
+The apply is deliberately **not** in this chain, and neither is the scoped plan.
+Everything here is read-only; step 6 is the state write, and it is root's decision
+after reading step 4's output, not something a passing guard should trigger.
 
 ```bash
+review_migration() {
+  confirm_account \
+    && resolve_backend \
+    && preserve \
+    && plan_migration \
+    && inspect_migration
+}
+
+if review_migration; then
+  echo "REVIEWED: $TASK_DIR/migrate.tfplan is safe to apply. Apply THAT file only."
+else
+  echo "REFUSED at the first failing step above. Do not apply. Do not edit state." >&2
+  exit 1
+fi
+```
+
+Verify the chain stops before you trust it — with a deliberately failing step, no
+later step may run:
+
+```console
+bash <<'EOF'
+set -euo pipefail
+confirm_account() { echo "wrong account"; return 1; }
+resolve_backend() { echo "REACHED-RESOLVE"; }     # must NOT appear
+review_migration() { confirm_account && resolve_backend; }
+review_migration || { echo "stopped correctly"; exit 1; }
+echo "REACHED-APPLY"                              # must NOT appear
+EOF
+# expected: "wrong account", "stopped correctly", exit 1 — and neither REACHED- line.
+```
+
+**6. Apply the saved refresh-only plan — root only, and outside the script above.**
+Apply *that exact saved file*, never a freshly generated one, so what was reviewed is
+what is applied. This writes **state only**; it makes no cloud change. Run it as a
+separate deliberate command after reading step 4's output.
+
+```bash
+cd "$REPO_ROOT/platform/infra"
 terraform apply "$TASK_DIR/migrate.tfplan"
 ```
 
-**6. Now the targeted rollout plan.** Generate a fresh targeted plan with the same
+**7. Now the targeted rollout plan.** Generate a fresh targeted plan with the same
 retained inputs and export it. With the schema normalised, the export succeeds and
-the scoped-plan guard can read it. Use the same var files as step 3 — a scoped plan
-built from defaults is not the deployment that was reviewed.
+the plan becomes reviewable. Use the same var files as step 3 — a scoped plan built
+from defaults is not the deployment that was reviewed.
 
 ```bash
 plan_scoped() {
@@ -492,56 +541,23 @@ plan_scoped() {
 plan_scoped || exit 1   # export failed: the schema is not normalised
 ```
 
-Unlike step 4, the `terraform show` here is written out because the scoped-plan
-guard consumes the JSON. Keep the `|| return 1`: a failed export at this point means
-the migration did not achieve what it was for, and a truncated `scoped.json` must
-not be handed to the next check as though it were complete.
+Unlike step 4, the `terraform show` here is written out because the export is what
+you review. Keep the `|| return 1`: a failed export at this point means the migration
+did not achieve what it was for, and a truncated `scoped.json` must not be read as
+though it were complete.
 
-Then enforce the narrow resource-action scope with
-`.github/scripts/verify_scoped_plan.py` before any apply.
+**Do not expect `verify_scoped_plan.py` to gate this plan.** An earlier revision of
+this runbook said to enforce the narrow scope with it; that was wrong. Its `SCOPES`
+table carries only the two `network-policy-controller` entries for
+`module.eks.kubernetes_config_map.amazon_vpc_cni[0]`, and it **refuses** any scope
+name without an entry rather than defaulting to permissive — so there is nothing in it
+for the capacity-subnet change to the EKS cluster, as merged #5830 documents. Pointing
+an operator at a guard that cannot cover their plan is worse than pointing at none: it
+invites either a bypass or a false sense of having been gated.
 
-**7. The orchestration — this is what you actually run.** Defining the functions
-above does not run them, and invoking them line by line reintroduces the failure this
-section opened with: any handled failure lets the next line run. Chain them with
-`&&` in **one** function, in a dedicated shell, so a refusal at any step makes every
-later step unreachable rather than merely un-recommended.
-
-Steps 5 and 6 are deliberately **not** in this chain: step 5 is the state-writing
-apply and is root's decision to make after reading step 4's output, not something to
-trigger automatically off a passing guard.
-
-```bash
-review_migration() {
-  confirm_account \
-    && resolve_backend \
-    && preserve \
-    && plan_migration \
-    && inspect_migration
-}
-
-# In a script (with `set -euo pipefail`) or `bash <<'EOF'` — never at your own prompt.
-if review_migration; then
-  echo "REVIEWED: $TASK_DIR/migrate.tfplan is safe to apply. Apply THAT file only."
-else
-  echo "REFUSED at the first failing step above. Do not apply. Do not edit state." >&2
-  exit 1
-fi
-```
-
-Verify the chain stops before you trust it — with a deliberately failing step, no
-later step may run:
-
-```bash
-bash <<'EOF'
-set -euo pipefail
-confirm_account() { echo "wrong account"; return 1; }
-resolve_backend() { echo "REACHED-RESOLVE"; }     # must NOT appear
-review_migration() { confirm_account && resolve_backend; }
-review_migration || { echo "stopped correctly"; exit 1; }
-echo "REACHED-APPLY"                              # must NOT appear
-EOF
-# expected: "wrong account", "stopped correctly", exit 1 — and neither REACHED- line.
-```
+So for this target, **root inspects that exact saved plan directly** and confirms it
+carries the single in-place cluster change and nothing else. No new guard scope is
+requested here; extending `SCOPES` is out of scope for #5831.
 
 **8. Clean up.** The task directory holds state and plans.
 
