@@ -278,10 +278,23 @@ def repair_aborted_terminal_status(
         )
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            # Already terminal, or not this tenant's row. Idempotent by design: two
-            # gateway processes may run this pass against the same claim, and the
-            # second one losing the race is the correct outcome, not an error.
-            return AbortRepair(False, "already_terminal")
+            # A failed condition also covers missing and foreign-tenant rows.
+            # Read the exact key before claiming another reporter completed it.
+            try:
+                row = authority_client.get_item(
+                    TableName=events_table,
+                    Key={"event_id": {"S": invocation_id}, "arrived_at": {"S": arrived_at}},
+                    ConsistentRead=True,
+                ).get("Item", {})
+            except (ClientError, BotoCoreError):
+                return AbortRepair(False, TRANSIENT_REPAIR_FAILURE)
+            if not row:
+                return AbortRepair(False, "event_row_missing")
+            if row.get("tenant_id") != {"S": tenant_id}:
+                return AbortRepair(False, "event_tenant_mismatch")
+            if row.get("status", {}).get("S") in OBSERVED_TERMINAL_STATUSES:
+                return AbortRepair(False, "already_terminal")
+            return AbortRepair(False, "event_row_not_repairable")
         logger.error(
             "Could not repair an aborted run's terminal status",
             extra={"invocation_id": invocation_id, "code": exc.response.get("Error", {}).get("Code")},

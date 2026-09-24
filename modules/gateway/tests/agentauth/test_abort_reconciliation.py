@@ -292,8 +292,28 @@ class TestWhatItRefusesToOverwrite:
         result = repair(client, execution())
 
         assert result.repaired is False
-        assert result.reason == "already_terminal"
+        assert result.reason == "event_row_missing"
         assert read_event(client) == {}
+
+    def test_a_foreign_event_row_is_not_reported_as_terminal(self, client):
+        put_event(client, tenant_id={"S": "other-tenant"})
+        result = repair(client, execution())
+        assert result.repaired is False
+        assert result.reason == "event_tenant_mismatch"
+        assert read_event(client)["status"] == {"S": "in_progress"}
+
+    def test_failed_readback_does_not_claim_a_terminal_row(self, client, monkeypatch):
+        from botocore.exceptions import ClientError
+
+        put_event(client, status="complete")
+
+        def unavailable(**_kwargs):
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "GetItem")
+
+        monkeypatch.setattr(client, "get_item", unavailable)
+        result = repair(client, execution())
+        assert result.repaired is False
+        assert result.reason == TRANSIENT_REPAIR_FAILURE
 
 
 class TestTheGateOnReporting:
