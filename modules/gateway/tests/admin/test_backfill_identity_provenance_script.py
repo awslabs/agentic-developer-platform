@@ -290,3 +290,51 @@ class TestWriters:
         assert script.update_new_table(client, "123", "oauth", dry_run=True) is True
         assert script.update_old_table(client, "123", "oauth", dry_run=True) is True
         client.update_item.assert_not_called()
+
+
+class TestMainReportsWhatActuallyHappened:
+    """`main()` must act on the writers' return values, not just on exceptions.
+
+    `_update` reports a row it did not touch as False rather than raising, so a run
+    against the wrong table or a wrong environment writes nothing at all while
+    every call "succeeds". Counting those as successes made the script print
+    "N succeeded, 0 failed" and exit 0 — which the runbook instructs an operator to
+    read as "the backfill completed", so they would publish the enforcing Lambda
+    over a table with no provenance on it. That is the code-before-data outage the
+    whole rollout ordering exists to prevent, reintroduced by a miscount.
+    """
+
+    async def _run_main(self, script, monkeypatch, db_url, *, wrote: bool):
+        monkeypatch.setattr(script, "IDENTITY_INDEX_TABLE", "old-table")
+        monkeypatch.setattr(script, "USER_IDENTITY_INDEX_TABLE", "new-table")
+        monkeypatch.setattr(script, "update_old_table", lambda *a, **k: wrote)
+        monkeypatch.setattr(script, "update_new_table", lambda *a, **k: wrote)
+        # Module-level constant, read at import — setenv is too late.
+        monkeypatch.setattr(script, "DATABASE_URL", db_url)
+        monkeypatch.setattr(script.sys, "argv", ["backfill_identity_provenance.py"])
+        monkeypatch.setattr(script.boto3, "client", lambda *a, **k: MagicMock())
+
+        records = []
+        monkeypatch.setattr(script.logger, "info", lambda msg, *args: records.append(msg % args if args else msg))
+        await script.main()
+        return records
+
+    async def test_a_run_that_projected_nothing_is_not_reported_as_succeeding(self, script, monkeypatch, db_url):
+        await _seed(db_url, [{"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"}])
+
+        records = await self._run_main(script, monkeypatch, db_url, wrote=False)
+
+        summary = next(r for r in records if "Projection complete" in r)
+        assert "0 succeeded" in summary
+        assert "1 skipped" in summary
+
+    async def test_a_run_that_did_project_is_counted_as_a_success(self, script, monkeypatch, db_url):
+        """The other direction, so the stricter count cannot silently report zero
+        for a backfill that genuinely worked — which would block a real rollout."""
+        await _seed(db_url, [{"id": "i1", "user_id": "u1", "pid": "123", "org_id": "org-a", "method": "oauth"}])
+
+        records = await self._run_main(script, monkeypatch, db_url, wrote=True)
+
+        summary = next(r for r in records if "Projection complete" in r)
+        assert "1 succeeded" in summary
+        assert "0 skipped" in summary

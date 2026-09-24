@@ -103,6 +103,23 @@ python scripts/backfill_identity_provenance.py
 It is idempotent and safe to re-run. It **exits non-zero on any failure** — treat a
 non-zero exit as "the backfill did not complete" and do not proceed to step 3.
 
+Read the summary line, not just the exit code. It reports four counts:
+
+```
+Projection complete: 412 succeeded, 7 skipped (no existing row), 0 failed, 2 ambiguous (projected unknown), 421 total
+```
+
+* **succeeded** — provenance now on the row in both tables. This is the number that
+  must be non-trivial before you proceed.
+* **skipped** — no such row in a projection table, so there was nothing to update.
+  Not a failure (the normal write-through creates those rows carrying provenance
+  already), but it is *not* progress either. A run that is nearly all skips means
+  you are pointed at the wrong table or the wrong environment — check before
+  proceeding, because the exit code will still be 0.
+* **failed** — non-zero exit. Fix and re-run.
+* **ambiguous** — one account whose tenants disagree; projected as unknown on
+  purpose, and decided per-request by the tenant-scoped canonical lookup.
+
 The script only copies what Postgres recorded. It never upgrades a value: legacy
 ambiguous `magic_link` rows stay `magic_link` (unproven), because rewriting them to
 a proven value would be inventing evidence that was never collected.

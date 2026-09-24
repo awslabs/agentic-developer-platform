@@ -287,8 +287,10 @@ async def main():
     ddb_client = boto3.client("dynamodb", region_name=AWS_REGION)
 
     success_count = 0
+    skipped_count = 0
     error_count = 0
     ambiguous_count = 0
+    attempted = 0
 
     for account in accounts:
         provider_user_id = account["provider_user_id"]
@@ -307,21 +309,38 @@ async def main():
                 ", ".join(account["methods"]),
             )
 
+        attempted += 1
         try:
-            update_old_table(ddb_client, provider_user_id, verification_method, args.dry_run)
-            update_new_table(ddb_client, provider_user_id, verification_method, args.dry_run)
-            success_count += 1
+            # The return values decide the outcome; `_update` reports a row it did
+            # not touch (ConditionExpression failed => no such row) as False rather
+            # than raising. Ignoring them made a run where NOTHING was projected
+            # print "N succeeded, 0 failed" and exit 0 — which the runbook tells an
+            # operator to read as "the backfill completed", so they would publish
+            # the enforcing Lambda over an unbackfilled table.
+            wrote_old = update_old_table(ddb_client, provider_user_id, verification_method, args.dry_run)
+            wrote_new = update_new_table(ddb_client, provider_user_id, verification_method, args.dry_run)
+            if wrote_old and wrote_new:
+                success_count += 1
+            else:
+                # Not an error: a row absent from a projection table is created
+                # carrying provenance by the normal write-through. It is also not a
+                # success, and it must not be reported as one.
+                skipped_count += 1
         except Exception:
             logger.exception("Failed to project provenance for account %s", provider_user_id)
             error_count += 1
 
         # Throttle to avoid DDB throughput issues, matching backfill_member_org_ids.py.
-        if not args.dry_run and success_count % 25 == 0:
+        # Counted on rows ATTEMPTED, not rows that succeeded: `success_count` only
+        # advances inside the try, so keying the modulus on it desynchronises after
+        # the first skip or error and can stop throttling entirely.
+        if not args.dry_run and attempted % 25 == 0:
             await asyncio.sleep(0.1)
 
     logger.info(
-        "Projection complete: %d succeeded, %d failed, %d ambiguous (projected unknown), %d total",
+        "Projection complete: %d succeeded, %d skipped (no existing row), %d failed, %d ambiguous (projected unknown), %d total",
         success_count,
+        skipped_count,
         error_count,
         ambiguous_count,
         len(accounts),
