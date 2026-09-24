@@ -80,7 +80,18 @@ def verify_handoff(request: dict, *, handoff: Path, pod_uid: str) -> None:
 
 def run_evaluation(request: dict, envelope: dict, *, start_proxy: Callable,
                    stop_proxy: Callable, handoff: Path = HANDOFF,
-                   identity_dir: Path = IDENTITY) -> int:
+                   identity_dir: Path = IDENTITY, control_env: dict | None = None) -> int:
+    """Run the evidence-collection subprocess with the production control channel open.
+
+    ``control_env`` carries whatever ``_setup_agent_control`` placed into a
+    fresh child-env dict for this run (issue #5891, LF-01) — the same
+    ``ADP_CONTROL_*`` values the ordinary path places into its own agent
+    subprocess's environment. Empty when control registration failed or the
+    feature flag is off, in which case the evidence collector runs exactly as
+    it did before this parameter existed. Never merged into ``os.environ``:
+    like the ordinary path, only the *evaluation subprocess's* environment
+    carries the token.
+    """
     handoff.mkdir(mode=0o700, parents=True, exist_ok=True)
     pod_uid = (identity_dir / "pod-uid").read_text().strip()
     (handoff / "bootstrap-ready.json").write_text(json.dumps({
@@ -106,6 +117,8 @@ def run_evaluation(request: dict, envelope: dict, *, start_proxy: Callable,
         "CLAUDE_CODE_DISABLE_BEDROCK_CONTENT_TYPE_GUARD": "1",
         "ANTHROPIC_BEDROCK_BASE_URL": "http://127.0.0.1:9090", "SIGV4_PROXY_PORT": "9090",
     })
+    if control_env:
+        env.update(control_env)
     for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "ANTHROPIC_BASE_URL"):
         env.pop(key, None)
     proxy = start_proxy(env, envelope["tenant_id"])

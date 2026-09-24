@@ -1633,12 +1633,28 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if evaluation is not None:
         bootstrap_log.step_success(1, "control_evaluation_authenticated")
         bootstrap_log.close()
+        # Issue #5891 (LF-01): register the SAME production control channel an
+        # ordinary run registers, before the evaluation's SDK process starts.
+        # Before this, the fixture branch returned above `_setup_agent_control`
+        # (line ~2816 in the ordinary path) entirely — no token was minted, no
+        # listener address was written to the invocation row, so the gateway's
+        # dashboard had nothing to reach. `control_env` carries the ADP_CONTROL_*
+        # values `run_evaluation` places into the evaluation subprocess's own
+        # environment; `os.environ` is left untouched, exactly as the ordinary
+        # path leaves it for its own agent subprocess (#3960's separation between
+        # this process's env and the child's).
+        control_env: dict = {}
+        control_registered = _setup_agent_control(control_env, message_id, arrived_at)
         try:
             rc = run_evaluation(evaluation, envelope, start_proxy=_start_sigv4_proxy,
-                                stop_proxy=_stop_sigv4_proxy)
+                                stop_proxy=_stop_sigv4_proxy, control_env=control_env)
         except Exception:
             logger.exception("Authenticated control evaluation failed")
             rc = 1
+        finally:
+            # Symmetric with the ordinary path: the credential must not outlive
+            # the process it was minted for, whether the run succeeded or raised.
+            _teardown_agent_control(message_id, arrived_at, control_registered)
         if task_heartbeat is not None:
             task_heartbeat.stop()
         recorded = update_invocation_status(

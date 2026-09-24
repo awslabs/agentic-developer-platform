@@ -148,6 +148,109 @@ def test_entrypoint_authenticates_before_eval_and_records_before_ack(fixture, mo
         assert order == ['bootstrap', 'evaluation', 'status'] + (['ack'] if recorded else [])
 
 
+def test_entrypoint_registers_and_tears_down_the_production_control_channel(fixture, monkeypatch):
+    """Issue #5891 (LF-01): the fixture path must register the SAME control
+    channel an ordinary run registers, before the evaluation subprocess starts,
+    and tear it down afterward — not skip registration entirely, which is what
+    the branch did before this fix (it returned above `_setup_agent_control`).
+    """
+    from unittest.mock import MagicMock
+    import entrypoint
+    import lib.control_evaluation as evaluation
+    import lib.run_identity as identity_module
+    identity, request, env = fixture
+    envelope = {'message_id': 'invocation-one', 'tenant_id': 'tenant-one', 'persona': 'developer',
+                'arrived_at': '2026-09-24T12:00:00Z',
+                'source_ref': {'installation_id': 0, 'repo': 'fixture/repo', 'issue': 0},
+                'payload': {'control_evaluation': request}}
+    for name, value in env.items(): monkeypatch.setenv(name, value)
+    monkeypatch.setenv('QUEUE_URL', 'fixture-queue')
+    monkeypatch.setattr(entrypoint, '_receive_one_message', lambda *args: (json.dumps(envelope), 'receipt'))
+    monkeypatch.setattr(entrypoint, 'BootstrapLogger', MagicMock())
+    monkeypatch.setattr(entrypoint.run_report, 'configure', lambda *args: None)
+    monkeypatch.setattr(entrypoint.run_report, 'enabled', lambda: False)
+    monkeypatch.setattr(identity_module, 'bootstrap_run_identity', lambda actual: object())
+    real_request = evaluation.evaluation_request
+    monkeypatch.setattr(evaluation, 'evaluation_request', lambda actual, **kwargs: real_request(actual, **kwargs, identity_dir=identity))
+    monkeypatch.setattr(entrypoint, 'update_invocation_status', lambda *args, **kwargs: True)
+    monkeypatch.setattr(entrypoint, '_delete_message', lambda *args: None)
+
+    setup_calls = []
+    teardown_calls = []
+    evaluation_calls = []
+
+    def fake_setup(agent_env, message_id, arrived_at):
+        setup_calls.append((dict(agent_env), message_id, arrived_at))
+        agent_env['ADP_CONTROL_TOKEN'] = 'fixture-token'
+        agent_env['ADP_CONTROL_PORT'] = '8770'
+        return True
+
+    def fake_teardown(message_id, arrived_at, was_registered):
+        teardown_calls.append((message_id, arrived_at, was_registered))
+
+    def fake_run_evaluation(actual_request, actual_envelope, *, start_proxy, stop_proxy, control_env=None):
+        evaluation_calls.append(dict(control_env or {}))
+        return 0
+
+    monkeypatch.setattr(entrypoint, '_setup_agent_control', fake_setup)
+    monkeypatch.setattr(entrypoint, '_teardown_agent_control', fake_teardown)
+    monkeypatch.setattr(evaluation, 'run_evaluation', fake_run_evaluation)
+
+    assert entrypoint._main(task_heartbeat=MagicMock()) == 0
+
+    # Registration happened for THIS run's id/arrived_at, before the evaluation ran.
+    assert len(setup_calls) == 1
+    assert setup_calls[0][1:] == ('invocation-one', '2026-09-24T12:00:00Z')
+    # The token minted by registration reached the evaluation subprocess's env —
+    # this is what makes the listener the fixture starts reachable, rather than
+    # a registration that happened and was then discarded.
+    assert evaluation_calls == [{'ADP_CONTROL_TOKEN': 'fixture-token', 'ADP_CONTROL_PORT': '8770'}]
+    # Teardown ran with the registration's own outcome, so a real credential is
+    # always revoked and a registration that never happened is never "torn down".
+    assert teardown_calls == [('invocation-one', '2026-09-24T12:00:00Z', True)]
+
+
+def test_entrypoint_tears_down_control_even_when_evaluation_raises(fixture, monkeypatch):
+    """Teardown must run on the same path an ordinary run's does: unconditionally,
+    even when the evaluation itself raises — a credential must not outlive the
+    process it was minted for.
+    """
+    from unittest.mock import MagicMock
+    import entrypoint
+    import lib.control_evaluation as evaluation
+    import lib.run_identity as identity_module
+    identity, request, env = fixture
+    envelope = {'message_id': 'invocation-one', 'tenant_id': 'tenant-one', 'persona': 'developer',
+                'arrived_at': '2026-09-24T12:00:00Z',
+                'source_ref': {'installation_id': 0, 'repo': 'fixture/repo', 'issue': 0},
+                'payload': {'control_evaluation': request}}
+    for name, value in env.items(): monkeypatch.setenv(name, value)
+    monkeypatch.setenv('QUEUE_URL', 'fixture-queue')
+    monkeypatch.setattr(entrypoint, '_receive_one_message', lambda *args: (json.dumps(envelope), 'receipt'))
+    monkeypatch.setattr(entrypoint, 'BootstrapLogger', MagicMock())
+    monkeypatch.setattr(entrypoint.run_report, 'configure', lambda *args: None)
+    monkeypatch.setattr(entrypoint.run_report, 'enabled', lambda: False)
+    monkeypatch.setattr(identity_module, 'bootstrap_run_identity', lambda actual: object())
+    real_request = evaluation.evaluation_request
+    monkeypatch.setattr(evaluation, 'evaluation_request', lambda actual, **kwargs: real_request(actual, **kwargs, identity_dir=identity))
+    monkeypatch.setattr(entrypoint, 'update_invocation_status', lambda *args, **kwargs: True)
+    monkeypatch.setattr(entrypoint, '_delete_message', lambda *args: None)
+
+    teardown_calls = []
+    monkeypatch.setattr(entrypoint, '_setup_agent_control', lambda agent_env, message_id, arrived_at: True)
+    monkeypatch.setattr(entrypoint, '_teardown_agent_control',
+                        lambda message_id, arrived_at, was_registered: teardown_calls.append(was_registered))
+
+    def raising_run_evaluation(*args, **kwargs):
+        raise RuntimeError('evaluation subprocess crashed')
+    monkeypatch.setattr(evaluation, 'run_evaluation', raising_run_evaluation)
+
+    # entrypoint._main catches the exception (logger.exception) and reports rc=1
+    # rather than propagating — asserting only that teardown still ran.
+    entrypoint._main(task_heartbeat=MagicMock())
+    assert teardown_calls == [True]
+
+
 def test_unprotected_evaluation_marker_cannot_bypass_installation_guard(monkeypatch):
     from unittest.mock import MagicMock
     import entrypoint
