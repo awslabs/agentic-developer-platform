@@ -22,6 +22,7 @@ import base64
 import binascii
 import datetime as dt
 import json
+import math
 
 from . import contract, errors
 
@@ -73,9 +74,16 @@ def decode_body(data: bytes) -> dict:
     def _no_nonfinite(token):
         raise ValueError(f"nonfinite number: {token}")
 
+    def _finite_float(token):
+        value = float(token)
+        if not math.isfinite(value):
+            raise ValueError("nonfinite number")
+        return value
+
     try:
         decoded = json.loads(
-            text, object_pairs_hook=_no_duplicates, parse_constant=_no_nonfinite
+            text, object_pairs_hook=_no_duplicates, parse_constant=_no_nonfinite,
+            parse_float=_finite_float,
         )
     except ValueError:
         # The caller's body is never echoed back; only the fixed reason.

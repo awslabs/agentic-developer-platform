@@ -54,6 +54,7 @@ UNIT_MODULES = [
     "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
     "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
+    "src.agentauth.task_admission_routes",  # Task ingress proof, caller identity and durable admission.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.

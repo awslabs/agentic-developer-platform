@@ -413,3 +413,16 @@ def test_every_error_body_matches_the_contract_error_shape(enabled):
         assert body["http_status"] == contract.ERROR_STATUS[body["code"]]
         assert 1 <= len(body["message"]) <= contract.MAX_SAFE_MESSAGE_CHARACTERS
         assert body["request_id"] == "apigw-request-id"
+
+
+@pytest.mark.parametrize("literal", ["1e400", "-1e400"])
+def test_overflowing_json_number_is_rejected_before_admission(enabled, literal):
+    raw = (
+        '{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect","inputs":{"number":'
+        + literal
+        + "}}"
+    )
+    with patch("task_api.handler.admit_client.admit") as admit:
+        response = handler.handle_task_submit(_event(body=raw), None)
+    assert response["statusCode"] == 400
+    admit.assert_not_called()
