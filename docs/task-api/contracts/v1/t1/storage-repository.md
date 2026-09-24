@@ -56,6 +56,34 @@ report nor event. Generic transitions cannot rewrite owner, input, generation,
 digest, artifact or attempt fields, and result/outcome fields require a current
 attempt binding.
 
+## Commands and turns
+
+`TaskStore.insert_command` accepts only the closed `input` and `cancel` shapes.
+It enforces the 4,000-character input, 1,000-character cancellation reason, and
+16,384-byte canonical command limits before persistence. The metadata counters
+conditionally cap pending input at ten and lifetime input at 100 while preserving
+cancellation capacity. Command/event insertion atomically checks the protected
+owner, active task binding, current policy version, immutable run grant, and the
+server-derived `input` or `cancel` capability. A revocation race therefore commits
+neither the command nor its event. Turn commitment requires the complete current
+invocation, generation, and runtime-attempt binding, repeats the protected input
+authority fence, advances exactly one contiguous turn no higher than immutable
+`limits.max_turns`, consumes each command once, and decrements the pending counter
+in the same transaction. Every terminal transition conditionally requires zero
+pending acknowledged input, so input-versus-finalization races cannot strand a
+command on a terminal task.
+
+## Recovery retention
+
+Terminal cleanup and work compaction condition on the exact task version and
+`recovery_required=false` in the same transaction as every TTL or envelope
+mutation. Marking recovery required atomically removes expiry from task metadata,
+the idempotency tombstone, bound artifacts, and uncompacted work, then performs a
+bounded primary-key sweep of task evidence partitions to remove any previously
+stamped child TTLs. Active recovery work and its evidence remain non-expiring
+until explicit settlement; already-compacted evidence cannot be relabeled as
+recoverable. No cleanup path scans the table.
+
 ## Separate leases
 
 Recovery uses `recovery_lease_token` and `recovery_lease_expires_at` for 45

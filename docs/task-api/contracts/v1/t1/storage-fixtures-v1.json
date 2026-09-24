@@ -1,5 +1,5 @@
 {
-  "fixture_version": "1.1.0",
+  "fixture_version": "1.3.0",
   "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
   "issue": 5794,
   "description": "Reusable T1 storage scenarios for V1 and V3. These identify deterministic source tests and the separate real-IAM lane; they are fixtures, not an evaluation report.",
@@ -121,6 +121,56 @@
       "lane": "moto DynamoDB cross-table authority transactions"
     },
     {
+      "id": "T1-COMMAND-AUTHORITY-01",
+      "criteria": [
+        "T1-AC04",
+        "T1-AC05",
+        "V1-07"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_command_schema_and_byte_limits_are_enforced_before_persistence",
+        "tests/tasks/test_store.py::test_pending_and_lifetime_input_limits_preserve_a_reserved_cancel_slot",
+        "tests/tasks/test_store.py::test_input_lifetime_limit_is_conditionally_enforced",
+        "tests/tasks/test_store.py::test_revoked_or_foreign_command_authority_cannot_mutate_task",
+        "tests/tasks/test_store.py::test_policy_revocation_racing_input_aborts_command_and_event",
+        "tests/tasks/test_store.py::test_task_owner_change_racing_a_command_aborts_command_and_event",
+        "tests/tasks/test_store.py::test_command_capability_revocation_race_aborts_command_and_event"
+      ],
+      "assertions": [
+        "only closed input/cancel payloads within character and canonical-byte limits persist",
+        "ten pending and 100 lifetime input limits are conditional while cancellation retains capacity",
+        "the protected owner, current binding, policy, and operation capability are checked in the command transaction",
+        "racing revocation commits neither command nor event"
+      ],
+      "lane": "moto DynamoDB cross-table authority and limit transactions"
+    },
+    {
+      "id": "T1-TURN-FENCING-01",
+      "criteria": [
+        "T1-AC04",
+        "T1-AC05",
+        "V1-07",
+        "V3-02"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_commit_a_turn",
+        "tests/tasks/test_store.py::test_attempt_replacement_racing_turn_commit_aborts_consumption",
+        "tests/tasks/test_store.py::test_turn_numbers_must_be_sequential",
+        "tests/tasks/test_store.py::test_turn_commit_enforces_the_protected_maximum",
+        "tests/tasks/test_store.py::test_terminal_transition_refuses_acknowledged_pending_input",
+        "tests/tasks/test_store.py::test_input_winning_race_blocks_terminal_completion",
+        "tests/tasks/test_store.py::test_terminal_completion_winning_race_rejects_input_admission"
+      ],
+      "assertions": [
+        "only the current invocation, generation, and runtime attempt can consume a command into a turn",
+        "attempt replacement racing turn commitment leaves the command accepted and unconsumed",
+        "turn numbers are contiguous and cannot exceed the immutable accepted max_turns limit",
+        "terminal transition requires zero acknowledged pending input in the same transaction",
+        "input-versus-completion races leave either a live task with accepted input or a terminal task with no admitted input"
+      ],
+      "lane": "moto DynamoDB attempt, limit, and terminal race transactions"
+    },
+    {
       "id": "T1-TWO-LEASE-01",
       "criteria": [
         "T1-AC02",
@@ -178,6 +228,9 @@
         "tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone",
         "tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention",
         "tests/tasks/test_store.py::test_marking_recovery_required_clears_any_expiry",
+        "tests/tasks/test_store.py::test_recovery_required_clears_ttl_from_artifacts_work_idempotency_and_child_evidence",
+        "tests/tasks/test_store.py::test_content_cleanup_racing_recovery_required_leaves_no_ttl",
+        "tests/tasks/test_store.py::test_work_compaction_racing_recovery_required_preserves_envelope",
         "tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically",
         "tests/tasks/test_store.py::test_foreign_owner_cannot_claim_artifact",
         "tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key",
@@ -187,7 +240,8 @@
       "assertions": [
         "active task/work/idempotency/artifact bindings have no TTL",
         "unclaimed uploads expire after 24 hours",
-        "recovery-required metadata clears TTL",
+        "recovery-required metadata, idempotency, artifact, work, and child evidence carry no TTL",
+        "content-page cleanup and work compaction lose a race to recovery retention without deleting evidence",
         "artifact object keys remain gateway-derived and immutable",
         "artifact content type is conditionally bound with owner, version, and digest",
         "server-resolved artifacts cannot exceed or differ from caller-requested artifact IDs"

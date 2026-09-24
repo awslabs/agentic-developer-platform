@@ -57,7 +57,7 @@ def test_command_event_and_terminal_result_preserve_json(store):
     request = storage_tests._request()
     store.accept(request)
     command_id = str(uuid.uuid4())
-    payload = {"text": "more", "evidence": {"number": 1e-200}}
+    payload = {"text": "more: 1e-200"}
     store.insert_command(
         task_id=request.task_id,
         command_id=command_id,
@@ -82,6 +82,12 @@ def test_command_event_and_terminal_result_preserve_json(store):
             task_id=request.task_id, invocation_id=request.invocation_id, generation=1, runtime_attempt_id=attempt_id, expected_version=4
         )
         attempt_arguments = {"invocation_id": request.invocation_id, "generation": 1, "runtime_attempt_id": attempt_id}
+        store.commit_turn(
+            task_id=request.task_id, invocation_id=request.invocation_id,
+            generation=1, runtime_attempt_id=attempt_id, turn_number=1,
+            turn_id=str(uuid.uuid4()), command_ids=[command_id],
+            expected_version=store.read_task(request.task_id)["version"],
+        )
     store.transition(
         task_id=request.task_id,
         expected_version=store.read_task(request.task_id)["version"],

@@ -35,12 +35,14 @@ from src.tasks.records import (
     payload_digest,
     task_artifact_partition,
     task_authority_partition,
+    task_binding_sort_key,
     task_commands_partition,
     task_events_partition,
     task_partition,
     task_policy_sort_key,
     task_report_partition,
     task_run_grant_sort_key,
+    task_turns_partition,
     task_work_locator_partition,
     task_work_partition,
     work_shard,
@@ -593,7 +595,7 @@ def test_legacy_invocation_queries_are_byte_identical_before_and_after_task_reco
             "event_id": {"S": invocation_id},
             "arrived_at": {"S": "2026-09-24T11:00:00Z"},
             "tenant_id": {"S": "tenant-a"},
-            "user_id": {"S": "user-1"},
+            "user_id": {"S": "svc-principal-1"},
             "correlation_id": {"S": "corr-1"},
             "root_human_id": {"S": "human-1"},
             "engine_command_status": {"S": "pending"},
@@ -971,14 +973,14 @@ def test_a_state_transition_and_its_event_are_atomic(store, client):
 # ---------------------------------------------------------------------------
 
 
-def _bind_attempt(store, task_id: str, invocation_id: str, generation: int = 1) -> str:
+def _bind_attempt(store, task_id: str, invocation_id: str, generation: int = 1, expected_version: int = 1) -> str:
     attempt_id = str(uuid.uuid4())
     store.bind_runtime_attempt(
         task_id=task_id,
         invocation_id=invocation_id,
         generation=generation,
         runtime_attempt_id=attempt_id,
-        expected_version=1,
+        expected_version=expected_version,
     )
     return attempt_id
 
@@ -1108,6 +1110,30 @@ def _running_task(store) -> str:
     return accepted.task_id
 
 
+def _bind_turn_attempt(store, task_id: str) -> dict:
+    snapshot = store.read_task(task_id)
+    attempt_id = _bind_attempt(
+        store,
+        task_id,
+        str(snapshot["invocation_id"]),
+        generation=int(snapshot["generation"]),
+        expected_version=int(snapshot["version"]),
+    )
+    return {
+        "invocation_id": str(snapshot["invocation_id"]),
+        "generation": int(snapshot["generation"]),
+        "runtime_attempt_id": attempt_id,
+    }
+
+
+def _running_attempt_context(store, request=None) -> tuple[AcceptanceRequest, dict]:
+    request = request or _request()
+    store.accept(request)
+    store.transition(task_id=request.task_id, expected_version=1, target_state=TaskState.QUEUED)
+    store.transition(task_id=request.task_id, expected_version=2, target_state=TaskState.RUNNING)
+    return request, _bind_turn_attempt(store, request.task_id)
+
+
 def test_a_command_is_inserted_once_however_many_times_it_is_retried(store, client):
     task_id = _running_task(store)
     command_id = str(uuid.uuid4())
@@ -1116,7 +1142,7 @@ def test_a_command_is_inserted_once_however_many_times_it_is_retried(store, clie
         "command_id": command_id,
         "kind": "input",
         "payload": {"text": "more"},
-        "author": "user-1",
+        "author": "svc-principal-1",
         "authority_expires_at": NOW + timedelta(minutes=30),
     }
 
@@ -1140,7 +1166,7 @@ def test_concurrent_identical_commands_insert_exactly_one(concurrent_store, clie
                 command_id=command_id,
                 kind="input",
                 payload={"text": "more"},
-                author="user-1",
+                author="svc-principal-1",
                 authority_expires_at=NOW + timedelta(minutes=30),
                 expected_version=3,
             )
@@ -1161,7 +1187,7 @@ def test_reusing_a_command_id_with_different_content_is_refused(store):
         command_id=command_id,
         kind="input",
         payload={"text": "one"},
-        author="user-1",
+        author="svc-principal-1",
         authority_expires_at=NOW + timedelta(minutes=30),
         expected_version=3,
     )
@@ -1172,7 +1198,7 @@ def test_reusing_a_command_id_with_different_content_is_refused(store):
             command_id=command_id,
             kind="input",
             payload={"text": "two"},
-            author="user-1",
+            author="svc-principal-1",
             authority_expires_at=NOW + timedelta(minutes=30),
             expected_version=4,
         )
@@ -1189,7 +1215,7 @@ def test_new_input_is_refused_once_cancellation_is_requested(store):
             command_id=str(uuid.uuid4()),
             kind="input",
             payload={"text": "sneak"},
-            author="user-1",
+            author="svc-principal-1",
             authority_expires_at=NOW + timedelta(minutes=30),
             expected_version=4,
         )
@@ -1205,26 +1231,274 @@ def test_new_input_is_refused_on_a_terminal_task(store):
             command_id=str(uuid.uuid4()),
             kind="input",
             payload={"text": "late"},
-            author="user-1",
+            author="svc-principal-1",
             authority_expires_at=NOW + timedelta(minutes=30),
             expected_version=4,
         )
 
 
+def test_command_schema_and_byte_limits_are_enforced_before_persistence(store, client):
+    task_id = _running_task(store)
+    base = {
+        "task_id": task_id,
+        "author": "svc-principal-1",
+        "authority_expires_at": NOW + timedelta(minutes=30),
+        "expected_version": 3,
+    }
+    invalid = [
+        {"command_id": str(uuid.uuid4()), "kind": "unknown", "payload": {}},
+        {"command_id": str(uuid.uuid4()), "kind": "input", "payload": {"text": "x" * 4_001}},
+        {"command_id": str(uuid.uuid4()), "kind": "input", "payload": {"text": "ok", "tenant_id": "forged"}},
+        {"command_id": str(uuid.uuid4()), "kind": "cancel", "payload": {"reason": "x" * 1_001}},
+        {"command_id": str(uuid.uuid4()), "kind": "input", "payload": {"text": "\x01" * 4_000}},
+    ]
+    for command in invalid:
+        with pytest.raises(TaskStoreError):
+            store.insert_command(**base, **command)
+    assert _query_count(client, task_commands_partition(task_id)) == 0
+    assert store.read_task(task_id)["command_sequence"] == 0
+
+
+def test_pending_and_lifetime_input_limits_preserve_a_reserved_cancel_slot(store):
+    task_id = _running_task(store)
+    for index in range(10):
+        store.insert_command(
+            task_id=task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": f"message-{index}"},
+            author="svc-principal-1",
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=3 + index,
+        )
+    with pytest.raises(TaskStoreError, match="pending input"):
+        store.insert_command(
+            task_id=task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": "one too many"},
+            author="svc-principal-1",
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=13,
+        )
+
+    cancel = store.insert_command(
+        task_id=task_id,
+        command_id=str(uuid.uuid4()),
+        kind="cancel",
+        payload={"reason": "stop"},
+        author="svc-principal-1",
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=13,
+    )
+    snapshot = store.read_task(task_id)
+    assert cancel["kind"] == "cancel"
+    assert snapshot["state"] == TaskState.CANCEL_REQUESTED.value
+    assert snapshot["pending_input_count"] == 10
+    assert snapshot["input_command_count"] == 10
+
+
+def test_input_lifetime_limit_is_conditionally_enforced(store, client):
+    task_id = _running_task(store)
+    turn_binding = _bind_turn_attempt(store, task_id)
+    client.update_item(
+        TableName=TABLE,
+        Key={"event_id": {"S": task_partition(task_id)}, "arrived_at": {"S": META_SORT_KEY}},
+        UpdateExpression="SET input_command_count = :count",
+        ExpressionAttributeValues={":count": {"N": "99"}},
+    )
+    command = store.insert_command(
+        task_id=task_id,
+        command_id=str(uuid.uuid4()),
+        kind="input",
+        payload={"text": "last allowed"},
+        author="svc-principal-1",
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=4,
+    )
+    store.commit_turn(
+        task_id=task_id,
+        turn_number=1,
+        turn_id=str(uuid.uuid4()),
+        command_ids=[command["command_id"]],
+        expected_version=5,
+        **turn_binding,
+    )
+    with pytest.raises(TaskStoreError, match="lifetime"):
+        store.insert_command(
+            task_id=task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": "too late"},
+            author="svc-principal-1",
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=6,
+        )
+
+
+def test_revoked_or_foreign_command_authority_cannot_mutate_task(store, client):
+    request = _request()
+    store.accept(request)
+    with pytest.raises(WorkBindingError, match="owner"):
+        store.insert_command(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": "foreign"},
+            author="svc-other",
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=1,
+        )
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={
+            "pk": {"S": task_authority_partition(request.tenant)},
+            "sk": {"S": task_binding_sort_key(request.task_id)},
+        },
+        UpdateExpression="SET #status = :revoked",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":revoked": {"S": "revoked"}},
+    )
+    with pytest.raises(TaskStateConflictError):
+        store.insert_command(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind="cancel",
+            payload={"reason": "must not land"},
+            author=request.canonical_principal,
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=1,
+        )
+    assert _query_count(client, task_commands_partition(request.task_id)) == 0
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
+    assert store.read_task(request.task_id)["state"] == TaskState.ACCEPTED.value
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload"),
+    [("input", {"text": "must not land"}), ("cancel", {"reason": "must not land"})],
+)
+def test_task_owner_change_racing_a_command_aborts_command_and_event(store, client, kind, payload):
+    request = _request()
+    store.accept(request)
+
+    def change_owner():
+        client.update_item(
+            TableName=AUTHORITY_TABLE,
+            Key={
+                "pk": {"S": task_authority_partition(request.tenant)},
+                "sk": {"S": task_binding_sort_key(request.task_id)},
+            },
+            UpdateExpression="SET canonical_principal = :principal",
+            ExpressionAttributeValues={":principal": {"S": "svc-other"}},
+        )
+
+    store._client = _InterleavingClient(client, before="transact_write_items", action=change_owner)
+    with pytest.raises(TaskStateConflictError):
+        store.insert_command(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind=kind,
+            payload=payload,
+            author=request.canonical_principal,
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=1,
+        )
+    store._client = client
+    assert _query_count(client, task_commands_partition(request.task_id)) == 0
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
+
+
+def test_command_capability_revocation_race_aborts_command_and_event(store, client):
+    request = _request()
+    store.accept(request)
+
+    def revoke_cancel_capability():
+        client.update_item(
+            TableName=AUTHORITY_TABLE,
+            Key={
+                "pk": {"S": task_authority_partition(request.tenant)},
+                "sk": {
+                    "S": task_run_grant_sort_key(
+                        invocation_id=request.invocation_id,
+                        generation=request.generation,
+                    )
+                },
+            },
+            UpdateExpression="SET capabilities = :capabilities",
+            ExpressionAttributeValues={":capabilities": {"L": [{"S": "input"}]}},
+        )
+
+    store._client = _InterleavingClient(client, before="transact_write_items", action=revoke_cancel_capability)
+    with pytest.raises(TaskStateConflictError):
+        store.insert_command(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind="cancel",
+            payload={"reason": "must not land"},
+            author=request.canonical_principal,
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=1,
+        )
+    store._client = client
+    assert _query_count(client, task_commands_partition(request.task_id)) == 0
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
+
+
+def test_policy_revocation_racing_input_aborts_command_and_event(store, client):
+    request = _request()
+    store.accept(request)
+
+    def revoke_policy():
+        client.update_item(
+            TableName=AUTHORITY_TABLE,
+            Key={
+                "pk": {"S": task_authority_partition(request.tenant)},
+                "sk": {"S": task_policy_sort_key(request.canonical_principal)},
+            },
+            UpdateExpression="SET #status = :revoked",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":revoked": {"S": "revoked"}},
+        )
+
+    store._client = _InterleavingClient(client, before="transact_write_items", action=revoke_policy)
+    with pytest.raises(TaskStateConflictError):
+        store.insert_command(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": "must not land"},
+            author=request.canonical_principal,
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=1,
+        )
+    store._client = client
+    assert _query_count(client, task_commands_partition(request.task_id)) == 0
+    assert [event["sequence"] for event in store.read_events(task_id=request.task_id)] == [1]
+
+
 def test_a_command_is_consumed_by_exactly_one_turn(store, client):
     task_id = _running_task(store)
+    turn_binding = _bind_turn_attempt(store, task_id)
     command_id = str(uuid.uuid4())
     store.insert_command(
         task_id=task_id,
         command_id=command_id,
         kind="input",
         payload={"text": "go"},
-        author="user-1",
+        author="svc-principal-1",
         authority_expires_at=NOW + timedelta(minutes=30),
-        expected_version=3,
+        expected_version=4,
     )
 
-    store.commit_turn(task_id=task_id, turn_number=1, turn_id=str(uuid.uuid4()), command_ids=[command_id], expected_version=4)
+    store.commit_turn(
+        task_id=task_id,
+        turn_number=1,
+        turn_id=str(uuid.uuid4()),
+        command_ids=[command_id],
+        expected_version=5,
+        **turn_binding,
+    )
 
     command = _item(client, task_commands_partition(task_id), command_sort_key(command_id))
     assert command["status"]["S"] == "consumed"
@@ -1232,27 +1506,49 @@ def test_a_command_is_consumed_by_exactly_one_turn(store, client):
 
     # A second turn cannot claim the same command.
     with pytest.raises(TaskStateConflictError):
-        store.commit_turn(task_id=task_id, turn_number=2, turn_id=str(uuid.uuid4()), command_ids=[command_id], expected_version=5)
+        store.commit_turn(
+            task_id=task_id,
+            turn_number=2,
+            turn_id=str(uuid.uuid4()),
+            command_ids=[command_id],
+            expected_version=6,
+            **turn_binding,
+        )
 
 
 def test_recovery_reads_an_existing_turn_instead_of_re_inserting_it(store, client):
     """Idempotent turn creation — the crash-recovery property V3 depends on."""
     task_id = _running_task(store)
+    turn_binding = _bind_turn_attempt(store, task_id)
     command_id = str(uuid.uuid4())
     store.insert_command(
         task_id=task_id,
         command_id=command_id,
         kind="input",
         payload={"text": "go"},
-        author="user-1",
+        author="svc-principal-1",
         authority_expires_at=NOW + timedelta(minutes=30),
-        expected_version=3,
+        expected_version=4,
     )
     turn_id = str(uuid.uuid4())
-    first = store.commit_turn(task_id=task_id, turn_number=1, turn_id=turn_id, command_ids=[command_id], expected_version=4)
+    first = store.commit_turn(
+        task_id=task_id,
+        turn_number=1,
+        turn_id=turn_id,
+        command_ids=[command_id],
+        expected_version=5,
+        **turn_binding,
+    )
 
     # Retry after a simulated crash: same turn number, freshly generated turn ID.
-    second = store.commit_turn(task_id=task_id, turn_number=1, turn_id=str(uuid.uuid4()), command_ids=[command_id], expected_version=5)
+    second = store.commit_turn(
+        task_id=task_id,
+        turn_number=1,
+        turn_id=str(uuid.uuid4()),
+        command_ids=[command_id],
+        expected_version=6,
+        **turn_binding,
+    )
 
     assert second["turn_id"] == first["turn_id"] == turn_id
     assert second["command_ids"] == [command_id]
@@ -1260,8 +1556,276 @@ def test_recovery_reads_an_existing_turn_instead_of_re_inserting_it(store, clien
 
 def test_an_empty_turn_is_refused(store):
     task_id = _running_task(store)
+    turn_binding = _bind_turn_attempt(store, task_id)
     with pytest.raises(TaskStoreError, match="at least one command"):
-        store.commit_turn(task_id=task_id, turn_number=1, turn_id=str(uuid.uuid4()), command_ids=[], expected_version=3)
+        store.commit_turn(
+            task_id=task_id,
+            turn_number=1,
+            turn_id=str(uuid.uuid4()),
+            command_ids=[],
+            expected_version=4,
+            **turn_binding,
+        )
+
+
+def test_replaced_runtime_attempt_cannot_commit_a_turn(store, client):
+    request, old_binding = _running_attempt_context(store)
+    command = store.insert_command(
+        task_id=request.task_id,
+        command_id=str(uuid.uuid4()),
+        kind="input",
+        payload={"text": "fresh input"},
+        author=request.canonical_principal,
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=4,
+    )
+    new_attempt = str(uuid.uuid4())
+    store.bind_runtime_attempt(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=request.generation,
+        runtime_attempt_id=new_attempt,
+        expected_version=5,
+        expected_runtime_attempt_id=old_binding["runtime_attempt_id"],
+    )
+
+    with pytest.raises(StaleAttemptError):
+        store.commit_turn(
+            task_id=request.task_id,
+            turn_number=1,
+            turn_id=str(uuid.uuid4()),
+            command_ids=[command["command_id"]],
+            expected_version=6,
+            **old_binding,
+        )
+
+    assert _query_count(client, task_turns_partition(request.task_id)) == 0
+    assert store.read_commands(task_id=request.task_id)[0]["status"] == "accepted"
+    assert store.read_task(request.task_id)["pending_input_count"] == 1
+
+
+def test_attempt_replacement_racing_turn_commit_aborts_consumption(store, client):
+    request, old_binding = _running_attempt_context(store)
+    command = store.insert_command(
+        task_id=request.task_id,
+        command_id=str(uuid.uuid4()),
+        kind="input",
+        payload={"text": "fresh input"},
+        author=request.canonical_principal,
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=4,
+    )
+    protector = TaskStore(
+        table_name=TABLE,
+        authority_table_name=AUTHORITY_TABLE,
+        dynamodb_client=client,
+        clock=lambda: NOW,
+    )
+    new_attempt = str(uuid.uuid4())
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: protector.bind_runtime_attempt(
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=request.generation,
+            runtime_attempt_id=new_attempt,
+            expected_version=5,
+            expected_runtime_attempt_id=old_binding["runtime_attempt_id"],
+        ),
+    )
+
+    with pytest.raises(StaleAttemptError):
+        store.commit_turn(
+            task_id=request.task_id,
+            turn_number=1,
+            turn_id=str(uuid.uuid4()),
+            command_ids=[command["command_id"]],
+            expected_version=5,
+            **old_binding,
+        )
+    store._client = client
+
+    assert _query_count(client, task_turns_partition(request.task_id)) == 0
+    assert store.read_commands(task_id=request.task_id)[0]["status"] == "accepted"
+    assert store.read_task(request.task_id)["pending_input_count"] == 1
+
+
+def test_turn_numbers_must_be_sequential(store):
+    request, turn_binding = _running_attempt_context(store)
+    command = store.insert_command(
+        task_id=request.task_id,
+        command_id=str(uuid.uuid4()),
+        kind="input",
+        payload={"text": "fresh input"},
+        author=request.canonical_principal,
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=4,
+    )
+
+    with pytest.raises(TaskStoreError, match="next sequential"):
+        store.commit_turn(
+            task_id=request.task_id,
+            turn_number=2,
+            turn_id=str(uuid.uuid4()),
+            command_ids=[command["command_id"]],
+            expected_version=5,
+            **turn_binding,
+        )
+
+
+def test_turn_commit_enforces_the_protected_maximum(store, client):
+    request = _request(
+        run_limits={
+            "max_turns": 1,
+            "max_output_tokens_per_turn": 4096,
+            "max_usd": 1,
+            "deadline_at": "2026-09-24T13:00:00Z",
+        }
+    )
+    request, turn_binding = _running_attempt_context(store, request)
+    first = store.insert_command(
+        task_id=request.task_id,
+        command_id=str(uuid.uuid4()),
+        kind="input",
+        payload={"text": "first"},
+        author=request.canonical_principal,
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=4,
+    )
+    store.commit_turn(
+        task_id=request.task_id,
+        turn_number=1,
+        turn_id=str(uuid.uuid4()),
+        command_ids=[first["command_id"]],
+        expected_version=5,
+        **turn_binding,
+    )
+    second = store.insert_command(
+        task_id=request.task_id,
+        command_id=str(uuid.uuid4()),
+        kind="input",
+        payload={"text": "second"},
+        author=request.canonical_principal,
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=6,
+    )
+
+    with pytest.raises(TaskStoreError, match="max_turns"):
+        store.commit_turn(
+            task_id=request.task_id,
+            turn_number=2,
+            turn_id=str(uuid.uuid4()),
+            command_ids=[second["command_id"]],
+            expected_version=7,
+            **turn_binding,
+        )
+
+    assert _query_count(client, task_turns_partition(request.task_id)) == 1
+    assert store.read_task(request.task_id)["turn_count"] == 1
+    assert store.read_task(request.task_id)["pending_input_count"] == 1
+
+
+def test_terminal_transition_refuses_acknowledged_pending_input(store):
+    request, turn_binding = _running_attempt_context(store)
+    store.insert_command(
+        task_id=request.task_id,
+        command_id=str(uuid.uuid4()),
+        kind="input",
+        payload={"text": "must be consumed"},
+        author=request.canonical_principal,
+        authority_expires_at=NOW + timedelta(minutes=30),
+        expected_version=4,
+    )
+
+    with pytest.raises(TaskStateConflictError) as raised:
+        store.transition(
+            task_id=request.task_id,
+            expected_version=5,
+            target_state=TaskState.COMPLETED,
+            **turn_binding,
+        )
+
+    assert raised.value.reason == "pending_input"
+    snapshot = store.read_task(request.task_id)
+    assert snapshot["state"] == TaskState.RUNNING.value
+    assert snapshot["pending_input_count"] == 1
+
+
+def test_input_winning_race_blocks_terminal_completion(store, client):
+    request, turn_binding = _running_attempt_context(store)
+    protector = TaskStore(
+        table_name=TABLE,
+        authority_table_name=AUTHORITY_TABLE,
+        dynamodb_client=client,
+        clock=lambda: NOW,
+    )
+    command_id = str(uuid.uuid4())
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: protector.insert_command(
+            task_id=request.task_id,
+            command_id=command_id,
+            kind="input",
+            payload={"text": "wins the race"},
+            author=request.canonical_principal,
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=4,
+        ),
+    )
+
+    with pytest.raises(TaskStateConflictError) as raised:
+        store.transition(
+            task_id=request.task_id,
+            expected_version=4,
+            target_state=TaskState.COMPLETED,
+            **turn_binding,
+        )
+    store._client = client
+
+    assert raised.value.reason == "pending_input"
+    snapshot = store.read_task(request.task_id)
+    assert snapshot["state"] == TaskState.RUNNING.value
+    assert snapshot["pending_input_count"] == 1
+    assert store.read_commands(task_id=request.task_id)[0]["command_id"] == command_id
+
+
+def test_terminal_completion_winning_race_rejects_input_admission(store, client):
+    request, turn_binding = _running_attempt_context(store)
+    protector = TaskStore(
+        table_name=TABLE,
+        authority_table_name=AUTHORITY_TABLE,
+        dynamodb_client=client,
+        clock=lambda: NOW,
+    )
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: protector.transition(
+            task_id=request.task_id,
+            expected_version=4,
+            target_state=TaskState.COMPLETED,
+            **turn_binding,
+        ),
+    )
+
+    with pytest.raises(TaskStateConflictError):
+        store.insert_command(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": "loses the race"},
+            author=request.canonical_principal,
+            authority_expires_at=NOW + timedelta(minutes=30),
+            expected_version=4,
+        )
+    store._client = client
+
+    snapshot = store.read_task(request.task_id)
+    assert snapshot["state"] == TaskState.COMPLETED.value
+    assert snapshot["pending_input_count"] == 0
+    assert store.read_commands(task_id=request.task_id) == []
 
 
 def test_protected_grant_mutation_racing_a_report_aborts_report_and_event(store, client):
@@ -1964,6 +2528,157 @@ def test_marking_recovery_required_clears_any_expiry(store, client):
     assert TTL_ATTRIBUTE not in task
     assert task["recovery_required"] is True
     assert task["execution_health"] == "unknown"
+
+
+def test_recovery_required_clears_ttl_from_artifacts_work_idempotency_and_child_evidence(store, client):
+    artifact_id = f"art_{uuid.uuid4()}"
+    digest = "9" * 64
+    store.create_artifact_binding(
+        artifact_id=artifact_id,
+        tenant="tenant-a",
+        canonical_principal="svc-principal-1",
+        version=1,
+        content_sha256=digest,
+        content_type="text/plain",
+        size_bytes=64,
+    )
+    payload = {"instructions": "investigate", "inputs": {}, "artifact_ids": [artifact_id]}
+    input_ref = {
+        "record_type": "TASK",
+        "input_digest": payload_digest(payload),
+        "artifact_refs": [{"artifact_id": artifact_id, "version": 1, "content_sha256": digest}],
+    }
+    request = _request(
+        request_payload=payload,
+        input_reference=input_ref,
+        artifact_ids=(artifact_id,),
+        immutable_input={
+            "instructions": payload["instructions"],
+            "inputs": payload["inputs"],
+            "artifacts": [
+                {
+                    "artifact_id": artifact_id,
+                    "version": 1,
+                    "content_sha256": digest,
+                    "content_type": "text/plain",
+                }
+            ],
+            "input_digest": input_ref["input_digest"],
+        },
+    )
+    request = _request(**{**request.__dict__, "envelope": {**request.envelope, "input_ref": input_ref}})
+    store.accept(request)
+    store.transition(task_id=request.task_id, expected_version=1, target_state=TaskState.QUEUED)
+    store.transition(task_id=request.task_id, expected_version=2, target_state=TaskState.RUNNING)
+    store.transition(task_id=request.task_id, expected_version=3, target_state=TaskState.FAILED)
+    cleanup_at = NOW + timedelta(days=31)
+    store.expire_content_page(task_id=request.task_id, record_type="TASK_EVENTS", now=cleanup_at)
+    client.update_item(
+        TableName=TABLE,
+        Key={
+            "event_id": {"S": task_work_partition(request.task_id)},
+            "arrived_at": {"S": f"DISPATCH#{request.dispatch_id}"},
+        },
+        UpdateExpression="SET expires_at = :expires",
+        ExpressionAttributeValues={":expires": {"N": str(int((NOW + timedelta(days=90)).timestamp()))}},
+    )
+
+    store.mark_recovery_required(task_id=request.task_id, reason="outcome_unconfirmed", expected_version=4)
+
+    snapshot = store.read_task(request.task_id)
+    idempotency = _item(
+        client,
+        idempotency_partition(
+            tenant=request.tenant,
+            canonical_principal=request.canonical_principal,
+            idempotency_key=request.idempotency_key,
+        ),
+        META_SORT_KEY,
+    )
+    artifact = _item(client, task_artifact_partition(artifact_id), META_SORT_KEY)
+    assert TTL_ATTRIBUTE not in snapshot
+    assert TTL_ATTRIBUTE not in idempotency
+    assert TTL_ATTRIBUTE not in artifact
+    assert TTL_ATTRIBUTE not in store.resolve_work(request.dispatch_id)
+    assert TTL_ATTRIBUTE not in store.read_events(task_id=request.task_id)[0]
+    assert snapshot["recovery_required"] is True
+
+
+def test_content_cleanup_racing_recovery_required_leaves_no_ttl(store, client):
+    request = _request()
+    store.accept(request)
+    store.transition(task_id=request.task_id, expected_version=1, target_state=TaskState.QUEUED)
+    store.transition(task_id=request.task_id, expected_version=2, target_state=TaskState.RUNNING)
+    store.transition(task_id=request.task_id, expected_version=3, target_state=TaskState.FAILED)
+    protector = TaskStore(
+        table_name=TABLE,
+        authority_table_name=AUTHORITY_TABLE,
+        dynamodb_client=client,
+        clock=lambda: NOW,
+    )
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: protector.mark_recovery_required(
+            task_id=request.task_id,
+            reason="cleanup_race",
+            expected_version=4,
+        ),
+    )
+    with pytest.raises(TaskStoreError, match="recovery retention"):
+        store.expire_content_page(
+            task_id=request.task_id,
+            record_type="TASK_EVENTS",
+            now=NOW + timedelta(days=31),
+        )
+    store._client = client
+    assert store.read_task(request.task_id)["recovery_required"] is True
+    assert all(TTL_ATTRIBUTE not in event for event in store.read_events(task_id=request.task_id))
+
+
+def test_work_compaction_racing_recovery_required_preserves_envelope(store, client):
+    request = _request()
+    store.accept(request)
+    recovery = store.claim_due_work(shard=work_shard(request.task_id), now=NOW)[0]
+    publication = store.claim_dispatch(dispatch_id=request.dispatch_id, now=NOW)
+    store.settle_dispatch(
+        dispatch_id=request.dispatch_id,
+        lease_token=publication["lease_token"],
+        publication_outcome="confirmed",
+        sqs_message_id="sqs-message-1",
+        now=NOW,
+    )
+    store.settle_recovery(
+        work_id=request.dispatch_id,
+        lease_token=recovery["lease_token"],
+        evidence_kind="publication",
+        observed=True,
+        observed_at=NOW,
+    )
+    store.transition(task_id=request.task_id, expected_version=2, target_state=TaskState.RUNNING)
+    store.transition(task_id=request.task_id, expected_version=3, target_state=TaskState.COMPLETED)
+    protector = TaskStore(
+        table_name=TABLE,
+        authority_table_name=AUTHORITY_TABLE,
+        dynamodb_client=client,
+        clock=lambda: NOW,
+    )
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: protector.mark_recovery_required(
+            task_id=request.task_id,
+            reason="compaction_race",
+            expected_version=4,
+        ),
+    )
+    with pytest.raises(WorkBindingError):
+        store.compact_settled_work(work_id=request.dispatch_id, now=NOW + timedelta(days=31))
+    store._client = client
+    work = store.resolve_work(request.dispatch_id)
+    assert "envelope" in work
+    assert "envelope_compacted" not in work
+    assert store.read_task(request.task_id)["recovery_required"] is True
 
 
 def test_marking_recovery_required_is_version_fenced(store):

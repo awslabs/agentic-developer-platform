@@ -64,11 +64,11 @@ def contract() -> dict:
 
 def test_t1_storage_fixture_manifest_is_versioned_and_non_vacuous():
     fixture = json.loads(STORAGE_FIXTURE_PATH.read_text())
-    assert fixture["fixture_version"] == "1.1.0"
+    assert fixture["fixture_version"] == "1.3.0"
     assert fixture["design_revision"] == "b5761a4a2502aceaa9133afef552b567a19cb46e"
     assert set(fixture["commands"]) == {"storage", "infrastructure", "contract_regression", "terraform_validate"}
     scenarios = fixture["scenarios"]
-    assert len(scenarios) == 9
+    assert len(scenarios) == 11
     assert all(scenario["tests"] and scenario["assertions"] and scenario["criteria"] for scenario in scenarios)
     iam = next(scenario for scenario in scenarios if scenario["id"] == "T1-IAM-01")
     assert iam["required_followup_lane"] == "deployed AWS IAM simulation and attempted legacy/task writes"

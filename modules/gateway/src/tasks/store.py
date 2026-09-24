@@ -177,6 +177,9 @@ WORK_LEASE_SECONDS: Final = 45
 MAX_WORK_PER_CLAIM: Final = 100
 MAX_TASK_EVENTS: Final = 10_000
 FINAL_EVENT_RESERVE: Final = 100
+MAX_COMMAND_BYTES: Final = 16_384
+MAX_PENDING_INPUTS: Final = 10
+MAX_INPUT_COMMANDS: Final = 100
 _REPORT_EVENT_TYPES: Final = frozenset(
     {
         "run.started",
@@ -504,6 +507,8 @@ class TaskStore:
             # transaction, so the counter starts consistent with durable history.
             "event_sequence": 1,
             "command_sequence": 0,
+            "pending_input_count": 0,
+            "input_command_count": 0,
             "turn_count": 0,
             "created_at": now_iso,
             "updated_at": now_iso,
@@ -1094,6 +1099,8 @@ class TaskStore:
         *,
         snapshot: dict[str, Any],
         runtime_attempt_id: str | None = None,
+        required_capability: str | None = None,
+        required_turn_number: int | None = None,
     ) -> list[dict[str, Any]]:
         """Build exact current-policy/task/run fences for a cross-table mutation."""
         scope = snapshot.get("scope")
@@ -1137,6 +1144,28 @@ class TaskStore:
             validate_uuid(runtime_attempt_id, "runtime_attempt_id")
             grant_condition += " AND runtime_attempt_id = :attempt"
             grant_values[":attempt"] = runtime_attempt_id
+        if required_capability is not None:
+            if required_capability not in {"input", "cancel"}:
+                raise WorkBindingError("required task capability is invalid")
+            grant_condition += " AND contains(#capabilities, :required_capability)"
+            grant_values[":required_capability"] = required_capability
+        grant_names = {
+            "#status": "status",
+            "#input": "input",
+            "#model_binding": "model_binding",
+            "#limits": "limits",
+            "#capabilities": "capabilities",
+        }
+        if required_turn_number is not None:
+            limits = grant.get("limits")
+            maximum_turns = limits.get("max_turns") if isinstance(limits, dict) else None
+            if not isinstance(required_turn_number, int) or isinstance(required_turn_number, bool) or required_turn_number < 1:
+                raise TaskStoreError("turn_number must be a positive integer")
+            if not isinstance(maximum_turns, int) or isinstance(maximum_turns, bool) or required_turn_number > maximum_turns:
+                raise TaskStoreError("turn_number exceeds the protected max_turns limit")
+            grant_condition += " AND #limits.#max_turns >= :required_turn_number"
+            grant_values[":required_turn_number"] = required_turn_number
+            grant_names["#max_turns"] = "max_turns"
         return [
             {
                 "ConditionCheck": {
@@ -1157,13 +1186,7 @@ class TaskStore:
                     "TableName": self._authority_table_name,
                     "Key": _serialize_authority({"pk": authority_pk, "sk": grant_sk}),
                     "ConditionExpression": grant_condition,
-                    "ExpressionAttributeNames": {
-                        "#status": "status",
-                        "#input": "input",
-                        "#model_binding": "model_binding",
-                        "#limits": "limits",
-                        "#capabilities": "capabilities",
-                    },
+                    "ExpressionAttributeNames": grant_names,
                     "ExpressionAttributeValues": _serialize_authority(grant_values),
                 }
             },
@@ -1407,6 +1430,8 @@ class TaskStore:
         # idempotency row are tombstones through day 90; task content becomes
         # logically unavailable at day 30 and is compacted asynchronously.
         if is_terminal(target_state):
+            condition += " AND pending_input_count = :zero_pending"
+            values[":zero_pending"] = 0
             set_parts.append("content_expires_at = :content_expires")
             values[":content_expires"] = int((self._clock() + timedelta(days=CONTENT_RETENTION_DAYS)).timestamp())
             set_parts.append(f"{TTL_ATTRIBUTE} = :tombstone_expires")
@@ -1522,6 +1547,7 @@ class TaskStore:
             self._raise_transition_failure(
                 exc,
                 task_id=task_id,
+                target_state=target_state,
                 generation=generation,
                 runtime_attempt_id=runtime_attempt_id,
             )
@@ -1533,6 +1559,7 @@ class TaskStore:
         exc: Exception,
         *,
         task_id: str,
+        target_state: TaskState,
         generation: int | None,
         runtime_attempt_id: str | None,
     ) -> None:
@@ -1555,6 +1582,13 @@ class TaskStore:
             raise StaleGenerationError(task_id=task_id, supplied=generation, current=current_generation) from None
         if runtime_attempt_id is not None and snapshot.get("runtime_attempt_id") != runtime_attempt_id:
             raise StaleAttemptError("runtime attempt is stale") from None
+        if is_terminal(target_state) and int(snapshot.get("pending_input_count", 0)) > 0:
+            raise TaskStateConflictError(
+                task_id=task_id,
+                current_state=str(snapshot.get("state")),
+                current_version=int(snapshot.get("version", 0)),
+                reason="pending_input",
+            ) from None
         if runtime_attempt_id is not None:
             raise StaleAttemptError("runtime attempt authority was revoked or changed") from None
 
@@ -1900,47 +1934,60 @@ class TaskStore:
         authority_expires_at: datetime,
         expected_version: int,
     ) -> dict[str, Any]:
-        """Insert one command exactly once, with its event, in one transaction.
-
-        Keyed by the caller's command UUID under ``attribute_not_exists``, so a
-        retry of the same command cannot enqueue it twice — the durable half of
-        "one command is appended once and included once in its assigned turn".
-
-        Reusing a command ID with a different kind or payload is a conflict, not a
-        silent no-op: the stored digest is compared so a caller cannot smuggle new
-        content under an already-accepted ID.
-
-        Commands carry a monotonic ``command_sequence`` because FIFO order cannot
-        come from the key — command IDs are random UUIDs and sort arbitrarily.
-        """
+        """Persist one schema-valid command under task, authority, and limit fences."""
+        validate_task_id(task_id)
         validate_uuid(command_id, "command_id")
+        _validate_command_payload(command_id=command_id, kind=kind, payload=payload)
+        if authority_expires_at.tzinfo is None:
+            raise TaskStoreError("command authority expiry must be timezone-aware")
+
         snapshot = self.read_task(task_id)
         if snapshot is None:
             raise TaskStateConflictError(task_id=task_id, current_state=None)
-
-        state = TaskState(str(snapshot["state"]))
-        if is_terminal(state) or state is TaskState.CANCEL_REQUESTED:
-            # The design: after cancellation or a terminal state, new input is
-            # refused (409). Cancellation latching blocks new admission.
-            raise TaskStateConflictError(task_id=task_id, current_state=state.value, current_version=int(snapshot.get("version", 0)))
+        scope = snapshot.get("scope")
+        if not isinstance(scope, dict) or author != scope.get("canonical_principal"):
+            raise WorkBindingError("command author does not match the protected task owner")
 
         digest = payload_digest({"kind": kind, "payload": payload})
         existing = self._get(task_commands_partition(task_id), command_sort_key(command_id))
         if existing is not None:
-            if str(existing.get("command_digest")) != digest:
-                raise IdempotencyConflictError(task_id=task_id, stored_digest=str(existing.get("command_digest", "")), supplied_digest=digest)
-            return existing  # Already durable; return the committed receipt.
+            if str(existing.get("command_digest")) != digest or existing.get("author") != author:
+                raise IdempotencyConflictError(
+                    task_id=task_id,
+                    stored_digest=str(existing.get("command_digest", "")),
+                    supplied_digest=digest,
+                )
+            return existing
 
-        now_iso = _iso(self._clock())
+        state = TaskState(str(snapshot["state"]))
+        if is_terminal(state) or state is TaskState.CANCEL_REQUESTED:
+            raise TaskStateConflictError(
+                task_id=task_id,
+                current_state=state.value,
+                current_version=int(snapshot.get("version", 0)),
+            )
+
+        now = self._clock()
+        if authority_expires_at <= now:
+            raise WorkBindingError("command authority is expired")
+        current_event_sequence = int(snapshot.get("event_sequence", 0))
+        maximum_events = MAX_TASK_EVENTS if kind == "cancel" else MAX_TASK_EVENTS - FINAL_EVENT_RESERVE
+        if current_event_sequence >= maximum_events:
+            raise TaskStoreError("task event budget is exhausted")
+        if kind == "input":
+            if int(snapshot.get("pending_input_count", 0)) >= MAX_PENDING_INPUTS:
+                raise TaskStoreError("pending input command limit is exhausted")
+            if int(snapshot.get("input_command_count", 0)) >= MAX_INPUT_COMMANDS:
+                raise TaskStoreError("input command lifetime limit is exhausted")
+
+        now_iso = _iso(now)
         sequence = int(snapshot.get("command_sequence", 0)) + 1
-        event_sequence = int(snapshot.get("event_sequence", 0)) + 1
-        scope = dict(snapshot.get("scope") or {})
-
+        event_sequence = current_event_sequence + 1
         command = base_item(
             partition=task_commands_partition(task_id),
             sort_key=command_sort_key(command_id),
             record_type="TASK_COMMANDS",
-            scope=scope,
+            scope=dict(scope),
         ) | {
             "task_id": task_id,
             "command_id": command_id,
@@ -1948,21 +1995,19 @@ class TaskStore:
             "command_digest": digest,
             "payload": payload,
             "author": author,
+            "policy_version": int(snapshot["policy_version"]),
             "authority_expires_at": _iso(authority_expires_at),
             "command_sequence": sequence,
-            # status/handoff are independent fields per the design: a command can
-            # be accepted while its model handoff is still not_started, and an
-            # unknown handoff must never read as confirmed.
             "status": "accepted",
             "handoff": "not_started",
+            "turn_id": None,
             "turn_number": None,
             "created_at": now_iso,
             "updated_at": now_iso,
         }
-
         event = self._event_item(
             task_id=task_id,
-            scope=scope,
+            scope=dict(scope),
             sequence=event_sequence,
             kind="cancel.requested" if kind == "cancel" else "input.accepted",
             invocation_id=str(snapshot.get("invocation_id", "")),
@@ -1971,72 +2016,88 @@ class TaskStore:
             data={"command_id": command_id},
         )
 
+        update_expression = "SET command_sequence = :sequence, event_sequence = :event_sequence, #version = :next_version, updated_at = :now"
+        condition_expression = "#version = :expected_version AND command_sequence = :prior AND event_sequence = :prior_event"
+        expression_names = {"#version": "version"}
+        expression_values: dict[str, Any] = {
+            ":sequence": sequence,
+            ":prior": sequence - 1,
+            ":event_sequence": event_sequence,
+            ":prior_event": current_event_sequence,
+            ":next_version": expected_version + 1,
+            ":expected_version": expected_version,
+            ":now": now_iso,
+        }
+        if kind == "input":
+            update_expression += ", pending_input_count = :pending_inputs, input_command_count = :input_commands"
+            condition_expression += " AND pending_input_count < :max_pending AND input_command_count < :max_inputs"
+            expression_values |= {
+                ":pending_inputs": int(snapshot.get("pending_input_count", 0)) + 1,
+                ":input_commands": int(snapshot.get("input_command_count", 0)) + 1,
+                ":max_pending": MAX_PENDING_INPUTS,
+                ":max_inputs": MAX_INPUT_COMMANDS,
+            }
+        else:
+            update_expression += ", #state = :cancel_requested"
+            condition_expression += " AND #state = :current_state"
+            expression_names["#state"] = "state"
+            expression_values |= {":cancel_requested": TaskState.CANCEL_REQUESTED.value, ":current_state": state.value}
+
+        transaction = [
+            {
+                "Put": {
+                    "TableName": self._table_name,
+                    "Item": _serialize(command),
+                    "ConditionExpression": "attribute_not_exists(event_id)",
+                }
+            },
+            {
+                "Update": {
+                    "TableName": self._table_name,
+                    "Key": {"event_id": {"S": task_partition(task_id)}, "arrived_at": {"S": META_SORT_KEY}},
+                    "UpdateExpression": update_expression,
+                    "ConditionExpression": condition_expression,
+                    "ExpressionAttributeNames": expression_names,
+                    "ExpressionAttributeValues": _serialize_authority(expression_values),
+                }
+            },
+            {
+                "Put": {
+                    "TableName": self._table_name,
+                    "Item": _serialize(event),
+                    "ConditionExpression": "attribute_not_exists(event_id)",
+                }
+            },
+            *self._authority_condition_checks(snapshot=snapshot, required_capability=kind),
+        ]
         try:
-            self._client.transact_write_items(
-                TransactItems=[
-                    {
-                        "Put": {
-                            "TableName": self._table_name,
-                            "Item": _serialize(command),
-                            # Exactly-once insert for this command ID. A retry of
-                            # the same command fails here rather than enqueuing it
-                            # a second time.
-                            "ConditionExpression": "attribute_not_exists(event_id)",
-                        }
-                    },
-                    {
-                        "Update": {
-                            "TableName": self._table_name,
-                            "Key": {"event_id": {"S": task_partition(task_id)}, "arrived_at": {"S": META_SORT_KEY}},
-                            "UpdateExpression": (
-                                "SET command_sequence = :sequence, event_sequence = :event_sequence, version = :next_version, updated_at = :now"
-                            ),
-                            # Same META version fence as a state transition, which
-                            # is what makes "completion cannot bypass an input
-                            # already committed to the next turn" hold.
-                            "ConditionExpression": "version = :expected_version AND command_sequence = :prior",
-                            "ExpressionAttributeValues": {
-                                k: _SERIALIZER.serialize(v)
-                                for k, v in {
-                                    ":sequence": sequence,
-                                    ":prior": sequence - 1,
-                                    ":event_sequence": event_sequence,
-                                    ":next_version": expected_version + 1,
-                                    ":expected_version": expected_version,
-                                    ":now": now_iso,
-                                }.items()
-                            },
-                        }
-                    },
-                    {
-                        "Put": {
-                            "TableName": self._table_name,
-                            "Item": _serialize(event),
-                            "ConditionExpression": "attribute_not_exists(event_id)",
-                        }
-                    },
-                ]
-            )
+            self._client.transact_write_items(TransactItems=transaction)
         except (ClientError, BotoCoreError) as exc:
             if not _is_conditional_failure(exc):
                 raise TaskStoreError("task store unavailable") from exc
-            # Confirm from storage: a concurrent identical insert may have won.
             committed = self._get(task_commands_partition(task_id), command_sort_key(command_id))
-            if committed is not None and str(committed.get("command_digest")) == digest:
+            if committed is not None and str(committed.get("command_digest")) == digest and committed.get("author") == author:
                 return committed
             live = self.read_task(task_id)
+            if kind == "input" and live is not None:
+                if int(live.get("pending_input_count", 0)) >= MAX_PENDING_INPUTS:
+                    raise TaskStoreError("pending input command limit is exhausted") from None
+                if int(live.get("input_command_count", 0)) >= MAX_INPUT_COMMANDS:
+                    raise TaskStoreError("input command lifetime limit is exhausted") from None
             raise TaskStateConflictError(
                 task_id=task_id,
                 current_state=str(live.get("state")) if live else None,
                 current_version=int(live.get("version", 0)) if live else None,
             ) from None
-
         return command
 
     def commit_turn(
         self,
         *,
         task_id: str,
+        invocation_id: str,
+        generation: int,
+        runtime_attempt_id: str,
         turn_number: int,
         turn_id: str,
         command_ids: list[str],
@@ -2053,19 +2114,40 @@ class TaskStore:
         boundary checkable: there is no window where a turn exists but its
         commands still look pending, or where a command is consumed twice.
         """
+        validate_task_id(task_id)
+        validate_uuid(invocation_id, "invocation_id")
+        validate_uuid(runtime_attempt_id, "runtime_attempt_id")
         validate_uuid(turn_id, "turn_id")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            raise TaskStoreError("generation must be a positive integer")
         if not command_ids:
             raise TaskStoreError("a turn must contain at least one command")
+        if len(command_ids) > MAX_PENDING_INPUTS or len(command_ids) != len(set(command_ids)):
+            raise TaskStoreError("a turn may contain at most ten unique input commands")
+        for command_id in command_ids:
+            validate_uuid(command_id, "command_id")
+
+        snapshot = self.read_task(task_id)
+        if snapshot is None:
+            raise TaskStateConflictError(task_id=task_id, current_state=None)
+        if snapshot.get("invocation_id") != invocation_id or int(snapshot.get("generation", 0)) != generation:
+            raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(snapshot.get("generation", 0)))
+        if snapshot.get("runtime_attempt_id") != runtime_attempt_id:
+            raise StaleAttemptError("runtime attempt is not current")
+        authority_checks = self._authority_condition_checks(
+            snapshot=snapshot,
+            runtime_attempt_id=runtime_attempt_id,
+            required_capability="input",
+            required_turn_number=turn_number,
+        )
 
         existing = self._get(task_turns_partition(task_id), turn_sort_key(turn_number))
         if existing is not None:
             # Idempotent recovery. Returning the committed turn is what stops a
             # retry from re-inserting the same commands.
             return existing
-
-        snapshot = self.read_task(task_id)
-        if snapshot is None:
-            raise TaskStateConflictError(task_id=task_id, current_state=None)
+        if turn_number != int(snapshot.get("turn_count", 0)) + 1:
+            raise TaskStoreError("turn_number must be the next sequential turn")
 
         now_iso = _iso(self._clock())
         scope = dict(snapshot.get("scope") or {})
@@ -2094,14 +2176,27 @@ class TaskStore:
                 "Update": {
                     "TableName": self._table_name,
                     "Key": {"event_id": {"S": task_partition(task_id)}, "arrived_at": {"S": META_SORT_KEY}},
-                    "UpdateExpression": "SET turn_count = :turn, version = :next_version, updated_at = :now",
-                    "ConditionExpression": "version = :expected_version",
+                    "UpdateExpression": (
+                        "SET turn_count = :turn, #version = :next_version, updated_at = :now ADD pending_input_count :pending_delta"
+                    ),
+                    "ConditionExpression": (
+                        "#version = :expected_version AND invocation_id = :invocation_id AND generation = :generation AND "
+                        "runtime_attempt_id = :runtime_attempt_id AND turn_count = :prior_turn AND "
+                        "pending_input_count >= :command_count"
+                    ),
+                    "ExpressionAttributeNames": {"#version": "version"},
                     "ExpressionAttributeValues": {
                         k: _SERIALIZER.serialize(v)
                         for k, v in {
                             ":turn": turn_number,
+                            ":prior_turn": turn_number - 1,
+                            ":invocation_id": invocation_id,
+                            ":generation": generation,
+                            ":runtime_attempt_id": runtime_attempt_id,
                             ":next_version": expected_version + 1,
                             ":expected_version": expected_version,
+                            ":pending_delta": -len(command_ids),
+                            ":command_count": len(command_ids),
                             ":now": now_iso,
                         }.items()
                     },
@@ -2118,23 +2213,30 @@ class TaskStore:
                             "event_id": {"S": task_commands_partition(task_id)},
                             "arrived_at": {"S": command_sort_key(command_id)},
                         },
-                        "UpdateExpression": "SET #status = :consumed, turn_number = :turn, updated_at = :now",
+                        "UpdateExpression": (
+                            "SET #status = :consumed, turn_id = :turn_id, turn_number = :turn, consumed_at = :now, updated_at = :now"
+                        ),
                         # Only a command still in `accepted` may be consumed, so a
                         # command already consumed by an earlier turn fails here
                         # and cannot be assigned to a second turn. This is the
                         # durable half of "each command appears in exactly one
                         # turn, once".
-                        "ConditionExpression": "#status = :accepted",
+                        "ConditionExpression": ("#status = :accepted AND kind = :input AND author = :author AND authority_expires_at >= :now"),
                         "ExpressionAttributeNames": {"#status": "status"},
                         "ExpressionAttributeValues": {
                             ":consumed": {"S": "consumed"},
                             ":accepted": {"S": "accepted"},
+                            ":input": {"S": "input"},
+                            ":author": {"S": str(snapshot["scope"]["canonical_principal"])},
+                            ":turn_id": {"S": turn_id},
                             ":turn": _SERIALIZER.serialize(turn_number),
                             ":now": {"S": now_iso},
                         },
                     }
                 }
             )
+
+        transact.extend(authority_checks)
 
         try:
             self._client.transact_write_items(TransactItems=transact)
@@ -2145,6 +2247,10 @@ class TaskStore:
             if committed is not None:
                 return committed
             live = self.read_task(task_id)
+            if live is not None and int(live.get("generation", 0)) != generation:
+                raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(live.get("generation", 0))) from None
+            if live is not None and live.get("runtime_attempt_id") != runtime_attempt_id:
+                raise StaleAttemptError("runtime attempt is stale") from None
             raise TaskStateConflictError(
                 task_id=task_id,
                 current_state=str(live.get("state")) if live else None,
@@ -2833,15 +2939,8 @@ class TaskStore:
         limit: int = 100,
         exclusive_start_key: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Stamp one bounded, exact-partition page for asynchronous TTL cleanup."""
-        partitions = {
-            "TASK_RUN": task_run_partition,
-            "TASK_EVENTS": task_events_partition,
-            "TASK_COMMANDS": task_commands_partition,
-            "TASK_TURNS": task_turns_partition,
-            "TASK_OPS": task_ops_partition,
-            "TASK_REPORT": task_report_partition,
-        }
+        """Stamp one bounded partition page under the live recovery-retention fence."""
+        partitions = dict(_task_content_partitions(task_id))
         if record_type not in partitions:
             raise TaskStoreError("record type is not eligible for content-page cleanup")
         if limit < 1 or limit > 100:
@@ -2856,7 +2955,7 @@ class TaskStore:
         query: dict[str, Any] = {
             "TableName": self._table_name,
             "KeyConditionExpression": "event_id = :partition",
-            "ExpressionAttributeValues": {":partition": {"S": partitions[record_type](task_id)}},
+            "ExpressionAttributeValues": {":partition": {"S": partitions[record_type]}},
             "Limit": limit,
             "ConsistentRead": True,
         }
@@ -2864,23 +2963,56 @@ class TaskStore:
             query["ExclusiveStartKey"] = _serialize_authority(exclusive_start_key)
         try:
             response = self._client.query(**query)
-            for raw_item in response.get("Items", []):
-                item = _deserialize(raw_item)
-                self._client.update_item(
-                    TableName=self._table_name,
-                    Key=_serialize_authority({"event_id": item["event_id"], "arrived_at": item["arrived_at"]}),
-                    UpdateExpression="SET terminal_at = :terminal, expires_at = :expires",
-                    ConditionExpression="task_id = :task_id AND record_type = :record_type",
-                    ExpressionAttributeValues=_serialize_authority(
-                        {
-                            ":terminal": snapshot["terminal_at"],
-                            ":expires": content_expires_at,
-                            ":task_id": task_id,
-                            ":record_type": record_type,
+            raw_items = response.get("Items", [])
+            for offset in range(0, len(raw_items), 99):
+                transaction = [
+                    {
+                        "ConditionCheck": {
+                            "TableName": self._table_name,
+                            "Key": _serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
+                            "ConditionExpression": (
+                                "#version = :version AND recovery_required = :false AND terminal_at = :terminal AND "
+                                "content_expires_at = :content_expires AND content_expires_at <= :now_epoch"
+                            ),
+                            "ExpressionAttributeNames": {"#version": "version"},
+                            "ExpressionAttributeValues": _serialize_authority(
+                                {
+                                    ":version": int(snapshot["version"]),
+                                    ":false": False,
+                                    ":terminal": snapshot["terminal_at"],
+                                    ":content_expires": content_expires_at,
+                                    ":now_epoch": int(now.timestamp()),
+                                }
+                            ),
                         }
-                    ),
-                )
-        except (ClientError, BotoCoreError) as exc:
+                    }
+                ]
+                for raw_item in raw_items[offset : offset + 99]:
+                    item = _deserialize(raw_item)
+                    transaction.append(
+                        {
+                            "Update": {
+                                "TableName": self._table_name,
+                                "Key": _serialize_authority({"event_id": item["event_id"], "arrived_at": item["arrived_at"]}),
+                                "UpdateExpression": "SET terminal_at = :terminal, expires_at = :expires",
+                                "ConditionExpression": "task_id = :task_id AND record_type = :record_type",
+                                "ExpressionAttributeValues": _serialize_authority(
+                                    {
+                                        ":terminal": snapshot["terminal_at"],
+                                        ":expires": content_expires_at,
+                                        ":task_id": task_id,
+                                        ":record_type": record_type,
+                                    }
+                                ),
+                            }
+                        }
+                    )
+                self._client.transact_write_items(TransactItems=transaction)
+        except ClientError as exc:
+            if _is_conditional_failure(exc):
+                raise TaskStoreError("task recovery retention changed during content cleanup") from None
+            raise TaskStoreError("task content cleanup unavailable") from exc
+        except BotoCoreError as exc:
             raise TaskStoreError("task content cleanup unavailable") from exc
         last_key = response.get("LastEvaluatedKey")
         return {"updated": len(response.get("Items", [])), "next_key": _deserialize(last_key) if last_key else None}
@@ -2937,6 +3069,24 @@ class TaskStore:
         try:
             self._client.transact_write_items(
                 TransactItems=[
+                    {
+                        "ConditionCheck": {
+                            "TableName": self._table_name,
+                            "Key": _serialize_authority({"event_id": task_partition(str(snapshot["task_id"])), "arrived_at": META_SORT_KEY}),
+                            "ConditionExpression": (
+                                "#version = :version AND recovery_required = :false AND terminal_at = :terminal AND content_expires_at <= :now_epoch"
+                            ),
+                            "ExpressionAttributeNames": {"#version": "version"},
+                            "ExpressionAttributeValues": _serialize_authority(
+                                {
+                                    ":version": int(snapshot["version"]),
+                                    ":false": False,
+                                    ":terminal": snapshot["terminal_at"],
+                                    ":now_epoch": int(now.timestamp()),
+                                }
+                            ),
+                        }
+                    },
                     {
                         "Update": {
                             "TableName": self._table_name,
@@ -2997,44 +3147,138 @@ class TaskStore:
             raise TaskStoreError("task locator cleanup unavailable") from exc
 
     def mark_recovery_required(self, *, task_id: str, reason: str, expected_version: int) -> None:
-        """Flag a task as needing intervention and remove any expiry stamp.
-
-        ``REMOVE expires_at`` is the load-bearing half. The design requires that
-        recovery-required tasks are retained until explicit settlement, and TTL
-        deletion is asynchronous — so a task that became uncertain after
-        terminalisation must have its expiry cleared, or the evidence needed to
-        settle it can be deleted while the question is still open.
-        """
-        now_iso = _iso(self._clock())
-        try:
-            self._client.update_item(
-                TableName=self._table_name,
-                Key={"event_id": {"S": task_partition(task_id)}, "arrived_at": {"S": META_SORT_KEY}},
-                UpdateExpression=(
-                    f"SET recovery_required = :true, recovery_reason = :reason, "
-                    f"execution_health = :unknown, version = :next, updated_at = :now REMOVE {TTL_ATTRIBUTE}"
-                ),
-                ConditionExpression="version = :expected",
-                ExpressionAttributeValues={
-                    ":true": {"BOOL": True},
-                    ":reason": {"S": reason},
-                    ":unknown": {"S": "unknown"},
-                    ":next": _SERIALIZER.serialize(expected_version + 1),
-                    ":expected": _SERIALIZER.serialize(expected_version),
-                    ":now": {"S": now_iso},
-                },
+        """Retain every unresolved task record until explicit recovery settlement."""
+        if not isinstance(reason, str) or not reason or len(reason) > 1_000:
+            raise TaskStoreError("recovery reason must contain between 1 and 1000 characters")
+        snapshot = self.read_task(task_id)
+        if snapshot is None:
+            raise TaskStateConflictError(task_id=task_id, current_state=None)
+        already_marked = snapshot.get("recovery_required") is True and int(snapshot.get("version", 0)) == expected_version + 1
+        if not already_marked and int(snapshot.get("version", 0)) != expected_version:
+            raise TaskStateConflictError(
+                task_id=task_id,
+                current_state=str(snapshot.get("state")),
+                current_version=int(snapshot.get("version", 0)),
             )
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                live = self.read_task(task_id)
-                raise TaskStateConflictError(
-                    task_id=task_id,
-                    current_state=str(live.get("state")) if live else None,
-                    current_version=int(live.get("version", 0)) if live else None,
-                ) from None
-            raise TaskStoreError("task store unavailable") from exc
-        except BotoCoreError as exc:
-            raise TaskStoreError("task store unavailable") from exc
+
+        if not already_marked:
+            now_iso = _iso(self._clock())
+            work_records = []
+            dispatch_id = snapshot.get("dispatch_id")
+            if dispatch_id:
+                dispatch = self._get(task_work_partition(task_id), dispatch_sort_key(str(dispatch_id)))
+                if dispatch is not None:
+                    work_records.append(dispatch)
+            reconcile = self._get(task_work_partition(task_id), "RECONCILE")
+            if reconcile is not None:
+                work_records.append(reconcile)
+            if snapshot.get("history_expired") or any(work.get("envelope_compacted") for work in work_records):
+                raise TaskStoreError("recovery evidence has already been compacted")
+
+            transaction: list[dict[str, Any]] = [
+                {
+                    "Update": {
+                        "TableName": self._table_name,
+                        "Key": _serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
+                        "UpdateExpression": (
+                            "SET recovery_required = :true, recovery_reason = :reason, execution_health = :unknown, "
+                            "#version = :next, updated_at = :now REMOVE expires_at"
+                        ),
+                        "ConditionExpression": "#version = :expected",
+                        "ExpressionAttributeNames": {"#version": "version"},
+                        "ExpressionAttributeValues": _serialize_authority(
+                            {
+                                ":true": True,
+                                ":reason": reason,
+                                ":unknown": "unknown",
+                                ":next": expected_version + 1,
+                                ":expected": expected_version,
+                                ":now": now_iso,
+                            }
+                        ),
+                    }
+                },
+                {
+                    "Update": {
+                        "TableName": self._table_name,
+                        "Key": _serialize_authority({"event_id": str(snapshot["idempotency_partition"]), "arrived_at": META_SORT_KEY}),
+                        "UpdateExpression": "REMOVE expires_at",
+                        "ConditionExpression": "task_id = :task AND request_digest = :digest",
+                        "ExpressionAttributeValues": _serialize_authority({":task": task_id, ":digest": snapshot["request_digest"]}),
+                    }
+                },
+            ]
+            for artifact_id in snapshot.get("artifact_ids", []):
+                transaction.append(
+                    {
+                        "Update": {
+                            "TableName": self._table_name,
+                            "Key": _serialize_authority({"event_id": task_artifact_partition(str(artifact_id)), "arrived_at": META_SORT_KEY}),
+                            "UpdateExpression": "REMOVE expires_at",
+                            "ConditionExpression": "task_id = :task AND binding_state = :bound",
+                            "ExpressionAttributeValues": _serialize_authority({":task": task_id, ":bound": "bound"}),
+                        }
+                    }
+                )
+            for work in work_records:
+                transaction.append(
+                    {
+                        "Update": {
+                            "TableName": self._table_name,
+                            "Key": _serialize_authority({"event_id": work["event_id"], "arrived_at": work["arrived_at"]}),
+                            "UpdateExpression": "REMOVE expires_at",
+                            "ConditionExpression": ("task_id = :task AND work_id = :work AND attribute_not_exists(envelope_compacted)"),
+                            "ExpressionAttributeValues": _serialize_authority({":task": task_id, ":work": work["work_id"]}),
+                        }
+                    }
+                )
+            try:
+                self._client.transact_write_items(TransactItems=transaction)
+            except ClientError as exc:
+                if _is_conditional_failure(exc):
+                    live = self.read_task(task_id)
+                    raise TaskStateConflictError(
+                        task_id=task_id,
+                        current_state=str(live.get("state")) if live else None,
+                        current_version=int(live.get("version", 0)) if live else None,
+                    ) from None
+                raise TaskStoreError("task recovery retention unavailable") from exc
+            except BotoCoreError as exc:
+                raise TaskStoreError("task recovery retention unavailable") from exc
+
+        self._clear_recovery_content_ttls(task_id)
+
+    def _clear_recovery_content_ttls(self, task_id: str) -> None:
+        """Idempotently clear previously stamped child TTLs after recovery latches."""
+        for _, partition in _task_content_partitions(task_id):
+            start_key = None
+            while True:
+                query: dict[str, Any] = {
+                    "TableName": self._table_name,
+                    "KeyConditionExpression": "event_id = :partition",
+                    "ExpressionAttributeValues": {":partition": {"S": partition}},
+                    "ProjectionExpression": "event_id, arrived_at, expires_at",
+                    "Limit": 100,
+                    "ConsistentRead": True,
+                }
+                if start_key is not None:
+                    query["ExclusiveStartKey"] = start_key
+                try:
+                    response = self._client.query(**query)
+                    for item in response.get("Items", []):
+                        if TTL_ATTRIBUTE not in item:
+                            continue
+                        self._client.update_item(
+                            TableName=self._table_name,
+                            Key={"event_id": item["event_id"], "arrived_at": item["arrived_at"]},
+                            UpdateExpression="REMOVE expires_at",
+                            ConditionExpression="attribute_exists(event_id)",
+                        )
+                except (ClientError, BotoCoreError) as exc:
+                    raise TaskStoreError("task recovery evidence retention unavailable") from exc
+                start_key = response.get("LastEvaluatedKey")
+                if not start_key:
+                    break
 
     def tombstone_expiry(self, terminal_at: datetime) -> int:
         """Epoch seconds at which a content-free tombstone may be deleted.
@@ -3101,6 +3345,42 @@ def _dynamodb_number(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_dynamodb_number(inner) for inner in value)
     return value
+
+
+def _task_content_partitions(task_id: str) -> tuple[tuple[str, str], ...]:
+    return (
+        ("TASK_RUN", task_run_partition(task_id)),
+        ("TASK_EVENTS", task_events_partition(task_id)),
+        ("TASK_COMMANDS", task_commands_partition(task_id)),
+        ("TASK_TURNS", task_turns_partition(task_id)),
+        ("TASK_OPS", task_ops_partition(task_id)),
+        ("TASK_REPORT", task_report_partition(task_id)),
+    )
+
+
+def _validate_command_payload(*, command_id: str, kind: str, payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        raise TaskStoreError("command payload must be an object")
+    if kind == "input":
+        if not set(payload).issubset({"text", "reply_to"}) or "text" not in payload:
+            raise TaskStoreError("input command does not match the closed v1 schema")
+        text = payload["text"]
+        if not isinstance(text, str) or not text or len(text) > 4_000:
+            raise TaskStoreError("input command text must contain between 1 and 4000 characters")
+        if "reply_to" in payload:
+            validate_uuid(payload["reply_to"], "reply_to")
+    elif kind == "cancel":
+        if not set(payload).issubset({"reason"}):
+            raise TaskStoreError("cancel command does not match the closed v1 schema")
+        reason = payload.get("reason", "")
+        if not isinstance(reason, str) or len(reason) > 1_000:
+            raise TaskStoreError("cancel reason exceeds 1000 characters")
+    else:
+        raise TaskStoreError("command kind must be input or cancel")
+
+    public_body = {"schema_version": "1.0", "command_id": command_id, **payload}
+    if len(canonical_json(public_body)) > MAX_COMMAND_BYTES:
+        raise TaskStoreError("command exceeds the 16384-byte limit")
 
 
 def _protected_grant_digest(grant: dict[str, Any]) -> str:
