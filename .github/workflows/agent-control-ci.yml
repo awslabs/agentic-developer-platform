@@ -837,7 +837,7 @@ jobs:
             --collectCoverageFrom='src/control-runtime-timeout.ts' \
             --collectCoverageFrom='src/run-heartbeat.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
-            --ci --verbose
+            --maxWorkers=2 --ci --verbose
 
       - name: Assert the control adapter advertises no verb as supported
         working-directory: modules/agent-factory/agent
