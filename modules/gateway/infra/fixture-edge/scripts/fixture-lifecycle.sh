@@ -531,7 +531,59 @@ cmd_init() {
     -backend-config="encrypt=true" \
     ${PROFILE:+-backend-config="profile=$PROFILE"} \
     || fail "terraform init failed"
+
+  # Persist WHAT WAS INITIALISED, so later commands have a recorded expectation
+  # rather than an operator-supplied one. See write_init_receipt.
+  write_init_receipt
   ok "initialised against an isolated per-run state key"
+}
+
+# ---------------------------------------------------------------------------
+# The initialisation receipt — why the expectation cannot come from a flag.
+#
+# assert_backend_binding used to compare the bucket, type and profile only when
+# the corresponding flag was supplied on the CURRENT command line:
+#
+#     if expect_bucket and actual_bucket != expect_bucket:   # <-- the bypass
+#
+# So OMITTING --state-bucket did not weaken the check, it SKIPPED it. Reproduced:
+# init against bucket A, then `plan` with no --state-bucket against a backend
+# recorded for bucket B exits 0, prints "backend binding verified
+# (s3://someone-elses-state/...)" and runs terraform plan on that foreign state.
+# The pre-existing negative test passed --state-bucket and so never covered the
+# ordinary omitted-argument path, which is the one an operator hits by accident.
+#
+# A missing expected value must never waive a comparison. The fix is to stop
+# treating the command line as the source of the expectation: `init` is the one
+# command that legitimately DECIDES the backend, so it records what it resolved,
+# and every later command compares the live backend against THAT RECORD. There is
+# then always something to compare against, and no flag to forget.
+#
+# The receipt is bound to the run (nonce/account/region/environment) and lives in
+# the run's private artifact directory, so a receipt from another run is refused
+# by the same binding checks rather than silently supplying the expectation.
+# ---------------------------------------------------------------------------
+init_receipt_path() {                      # -> path (no side effects beyond mkdir)
+  printf '%s/backend.init.receipt.json\n' "$(artifact_dir)"
+}
+
+write_init_receipt() {
+  local path; path="$(init_receipt_path)"
+  # No secret is involved: a bucket name, key, region and profile NAME. The
+  # artifact directory is 700 regardless.
+  python3 - "$path" "$NONCE" "$ACCOUNT" "$REGION" "$ENVIRONMENT" \
+    "$BUCKET" "$STATE_KEY" "${PROFILE:-}" <<'PY' || fail "could not write the backend init receipt"
+import json, sys
+path, nonce, account, region, environment, bucket, key, profile = sys.argv[1:9]
+json.dump({
+    "schema": "fixture-edge/backend-init-receipt/v1",
+    "run_nonce": nonce, "account_id": account, "region": region,
+    "environment": environment,
+    "backend": {"type": "s3", "bucket": bucket, "key": key,
+                "region": region, "profile": profile},
+}, open(path, "w"), indent=2, sort_keys=True)
+PY
+  note "backend init receipt written to $path — later commands verify against it"
 }
 
 # ---------------------------------------------------------------------------
@@ -557,6 +609,75 @@ assert_backend_binding() {
      against, so proceeding would mean planning or destroying through whatever
      state happened to be configured."
   state_key
+  # The EXPECTATION comes from the init receipt, not from this command line.
+  #
+  # Root executed the bypass this closes: with the bucket/profile compared only
+  # `if` the flag happened to be supplied, omitting --state-bucket SKIPPED the
+  # comparison, so a backend initialised against a foreign bucket was reported as
+  # verified and planned against. The receipt is written by `init` (the one command
+  # that legitimately decides the backend), so every state-bearing command now has
+  # a recorded expectation and there is no argument to forget.
+  local receipt; receipt="$(init_receipt_path)"
+  [ -f "$receipt" ] || fail "no backend init receipt found ($receipt missing).
+     Run 'init' first with this run's --nonce/--account-id/--state-bucket and the
+     same --artifact-dir. This is deliberately fatal: the receipt is what this
+     command compares the live backend against. Without it the only available
+     expectation would be the flags on this command line, and an OMITTED flag
+     would silently waive the comparison — which is the exact bypass that let a
+     run plan against another account's state bucket and call it verified."
+  # Flags, when supplied, must AGREE with the receipt. They are a cross-check, never
+  # the expectation itself: a command that contradicts the recorded backend is a
+  # mistake worth stopping on, in either direction.
+  python3 - "$cfg" "$receipt" "$STATE_KEY" "$ACCOUNT" "$REGION" "$ENVIRONMENT" \
+    "$NONCE" "${BUCKET:-}" "${PROFILE:-}" <<'PY' \
+    || fail "backend binding check refused this command; see above."
+import json, sys
+(cfg, receipt_path, expect_key, account, region, environment, nonce,
+ flag_bucket, flag_profile) = sys.argv[1:10]
+try:
+    receipt = json.load(open(receipt_path))
+except Exception as exc:                      # noqa: BLE001
+    sys.exit(f"could not read the backend init receipt {receipt_path}: {exc}")
+
+# The receipt must belong to THIS run before anything is taken from it — otherwise
+# a receipt left by another run would supply the very expectation used to approve
+# this command's state access. Same rule as the ownership receipt in destroy.
+for field, want in (("run_nonce", nonce), ("account_id", account),
+                    ("region", region), ("environment", environment)):
+    got = receipt.get(field)
+    if got != want:
+        sys.exit(
+            f"INIT RECEIPT MISMATCH -- it records {field}={got!r}, but this command is for "
+            f"{want!r}.\nThe receipt in this artifact directory was written by a DIFFERENT "
+            "run, so it cannot say which backend this one should be using. Re-run 'init' with "
+            "these arguments, or use this run's own --artifact-dir."
+        )
+
+rec = receipt.get("backend") or {}
+want_bucket, want_type = rec.get("bucket"), rec.get("type")
+want_profile = rec.get("profile") or ""
+if not want_bucket or not want_type:
+    sys.exit(f"the backend init receipt {receipt_path} records no bucket/type; re-run 'init'")
+
+# A supplied flag that CONTRADICTS the receipt is a stop, not an override.
+if flag_bucket and flag_bucket != want_bucket:
+    sys.exit(
+        "BACKEND ARGUMENT CONTRADICTS THE INIT RECEIPT.\n"
+        f"  init recorded : {want_bucket}\n"
+        f"  --state-bucket: {flag_bucket}\n"
+        "Re-run 'init' for the intended bucket rather than passing a different one to a "
+        "command that consumes the already-initialised state."
+    )
+if flag_profile and flag_profile != want_profile:
+    sys.exit(
+        "PROFILE ARGUMENT CONTRADICTS THE INIT RECEIPT.\n"
+        f"  init recorded : {want_profile or '<none>'}\n"
+        f"  --profile     : {flag_profile}\n"
+        "The state must be read through the identity it was initialised with."
+    )
+json.dump({"bucket": want_bucket, "type": want_type, "profile": want_profile},
+          open(cfg + ".expected.json", "w"))
+PY
   # The BUCKET, TYPE and PROFILE are checked as well as the key.
   #
   # Validating only the key was insufficient in three distinct ways, all of which
@@ -570,10 +691,18 @@ assert_backend_binding() {
   #     it differs from --profile, this command reads state through one identity
   #     while terraform_/aws_ act through another -- so the state the plan is built
   #     from is not the state the account checks were run against.
-  python3 - "$cfg" "$STATE_KEY" "$ACCOUNT" "$REGION" "${BUCKET:-}" "${PROFILE:-}" <<'PY' \
+  # NOTE the expectations are read from the file the block above wrote from the
+  # INIT RECEIPT — not from "${BUCKET:-}"/"${PROFILE:-}". That is the fix for the
+  # omitted-argument bypass: these three values are always present, so none of the
+  # comparisons below can be skipped by leaving a flag off the command line.
+  python3 - "$cfg" "$STATE_KEY" "$ACCOUNT" "$REGION" "$cfg.expected.json" <<'PY' \
     || fail "backend binding check refused this command; see above."
 import json, sys
-cfg, expect_key, account, region, expect_bucket, expect_profile = sys.argv[1:7]
+cfg, expect_key, account, region, expected_path = sys.argv[1:6]
+_expected = json.load(open(expected_path))
+expect_bucket = _expected["bucket"]
+expect_type = _expected["type"]
+expect_profile = _expected["profile"]
 try:
     doc = json.load(open(cfg))
 except Exception as exc:                      # noqa: BLE001
@@ -583,7 +712,7 @@ conf = backend.get("config") or {}
 
 # --- the backend must be the isolated remote one this component requires -----
 actual_type = backend.get("type")
-if actual_type != "s3":
+if actual_type != "s3" or actual_type != expect_type:
     sys.exit(
         f"BACKEND MISMATCH -- the initialised backend type is {actual_type!r}, not 's3'.\n"
         "This component's whole ownership story rests on an isolated per-run S3 state\n"
@@ -610,11 +739,11 @@ if actual_key != expect_key:
 actual_bucket = conf.get("bucket")
 if not actual_bucket:
     sys.exit("the initialised backend records no bucket; re-run init")
-if expect_bucket and actual_bucket != expect_bucket:
+if actual_bucket != expect_bucket:
     sys.exit(
         "BACKEND MISMATCH -- same key, DIFFERENT BUCKET.\n"
-        f"  initialised in : {actual_bucket}\n"
-        f"  this command   : {expect_bucket}\n"
+        f"  live backend   : {actual_bucket}\n"
+        f"  init receipt   : {expect_bucket}\n"
         "A matching key in another bucket is a different state file, so this command\n"
         "would act on resources recorded somewhere other than where it believes. Re-run\n"
         "'init' with the intended bucket."
@@ -626,12 +755,12 @@ if actual_region and actual_region != region:
 
 # --- the profile: the identity that reads/writes the state -------------------
 actual_profile = conf.get("profile") or ""
-if expect_profile and actual_profile != expect_profile:
+if actual_profile != expect_profile:
     sys.exit(
         "BACKEND MISMATCH -- the state is read through a DIFFERENT credential than this\n"
         "command is bound to.\n"
-        f"  backend profile : {actual_profile or '<none: ambient credential>'}\n"
-        f"  --profile       : {expect_profile}\n"
+        f"  live backend  : {actual_profile or '<none: ambient credential>'}\n"
+        f"  init receipt  : {expect_profile or '<none: ambient credential>'}\n"
         "Every account check in this run was made against --profile, so a backend on\n"
         "another identity means the state the plan is built from was never the state\n"
         "those checks applied to. Re-run 'init' with this --profile."

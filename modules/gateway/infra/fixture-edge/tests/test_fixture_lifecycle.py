@@ -758,7 +758,35 @@ def harness(tmp_path):
             "version": 3, "serial": 1,
             "backend": {"type": backend_type, "config": conf}}))
 
+    def write_init_receipt(nonce=NONCE, account=ACCOUNT, region="us-east-1",
+                           environment="dev", bucket=BUCKET, profile=PROFILE,
+                           backend_type="s3"):
+        """The receipt `init` leaves in the run's artifact directory.
+
+        This is the RECORDED EXPECTATION every state-bearing command compares the
+        live backend against. It exists because comparing against the flags on the
+        current command line meant an OMITTED flag SKIPPED the comparison — so a
+        backend initialised against a foreign bucket was reported as verified.
+
+        Kept separate from `write_backend` on purpose: a test needs to express
+        "init recorded bucket A, but the live backend now says B" (a re-init, a
+        copied .terraform, a typo), which is precisely the divergence the receipt
+        is there to detect. A single helper writing both could not model it.
+        """
+        artifacts.mkdir(exist_ok=True)
+        artifacts.chmod(0o700)
+        (artifacts / "backend.init.receipt.json").write_text(json.dumps({
+            "schema": "fixture-edge/backend-init-receipt/v1",
+            "run_nonce": nonce, "account_id": account, "region": region,
+            "environment": environment,
+            "backend": {
+                "type": backend_type, "bucket": bucket,
+                "key": f"fixture-edge/{environment}/{account}/{nonce}/terraform.tfstate",
+                "region": region, "profile": profile or ""},
+        }, indent=2, sort_keys=True))
+
     write_backend()
+    write_init_receipt()
 
     # Started for every test so the SIGNED probe always has a real socket and real
     # SDK-resolved credentials; the curl double still serves the unsigned/spoofed
@@ -799,6 +827,7 @@ def harness(tmp_path):
     harness.tf_env = tf_env
     harness.tmp = tmp_path
     harness.write_backend = write_backend
+    harness.write_init_receipt = write_init_receipt
     harness.edge = edge
     try:
         yield harness
@@ -1423,6 +1452,107 @@ def test_the_same_key_in_another_bucket_is_another_state_file(harness):
     assert "DIFFERENT BUCKET" in r.stderr
     assert "someone-elses-state" in r.stderr and BUCKET in r.stderr
     assert "terraform plan" not in harness.log.read_text()
+
+
+def test_a_foreign_bucket_is_refused_when_no_bucket_argument_is_GIVEN(harness):
+    """The omitted-argument bypass, exactly as root executed it.
+
+        harness.write_backend(bucket="someone-elses-state")
+        harness.run("plan")            # <-- NO --state-bucket
+
+    exited 0, printed "backend binding verified (s3://someone-elses-state/...)"
+    and ran terraform plan against that foreign state.
+
+    The cause was that the comparison was conditional on the flag being supplied
+    (`if expect_bucket and actual_bucket != expect_bucket`), so leaving the flag off
+    did not weaken the check — it SKIPPED it. The pre-existing negative test above
+    supplies --state-bucket, which is why it never covered this path, and the
+    omitted-argument path is the one an operator reaches by accident.
+
+    A missing expected value must never waive a comparison, so the expectation now
+    comes from the receipt `init` wrote. There is always something to compare
+    against and no argument to forget.
+    """
+    harness.write_backend(bucket="someone-elses-state")
+    r = harness.run("plan")                       # deliberately no --state-bucket
+    assert r.returncode != 0, "an omitted --state-bucket waived the bucket comparison"
+    assert "DIFFERENT BUCKET" in r.stderr
+    assert "someone-elses-state" in r.stderr and BUCKET in r.stderr
+    # And it must refuse BEFORE touching state, not report the mismatch afterwards.
+    assert "terraform plan" not in harness.log.read_text()
+
+
+def test_a_profile_argument_matching_the_LIVE_backend_cannot_launder_it(harness):
+    """The profile had the same conditional shape as the bucket, and needs a test
+    that distinguishes WHERE the expectation comes from — which the pre-existing
+    profile test does not, because it happens to pass a flag that disagrees with the
+    live backend either way.
+
+    Here the command line AGREES with the live backend and both differ from what
+    init recorded: state initialised as `adp-embark1`, a re-init (or copied
+    .terraform) now pointing at `some-other-profile`, and a --profile naming that
+    same other profile. If the expectation is taken from the command line the two
+    match and the run proceeds, reading and writing state through an identity none
+    of this run's account checks were ever made against. Taken from the receipt, it
+    is refused.
+    """
+    harness.write_backend(profile="some-other-profile")
+    r = harness.run("plan", args=["--state-bucket", BUCKET,
+                                  "--profile", "some-other-profile"])
+    assert r.returncode != 0, "a --profile agreeing with the live backend laundered it"
+    assert "CONTRADICTS THE INIT RECEIPT" in r.stderr
+    assert "terraform plan" not in harness.log.read_text()
+
+
+def test_a_command_with_no_init_receipt_refuses_rather_than_falling_back(harness):
+    """If the receipt is absent there is no recorded expectation, and the only
+    remaining source would be the command line — the bypass itself. So its absence
+    is fatal rather than a reason to check less."""
+    (harness.artifacts / "backend.init.receipt.json").unlink()
+    r = harness.run("plan", args=["--state-bucket", BUCKET])
+    assert r.returncode != 0
+    assert "no backend init receipt" in r.stderr
+    assert "terraform plan" not in harness.log.read_text()
+
+
+def test_an_init_receipt_from_another_run_cannot_supply_the_expectation(harness):
+    """A receipt is only evidence about the run that wrote it.
+
+    Same rule the destroy guard applies to the ownership receipt: validate the run
+    binding BEFORE taking the expectation from it, or a foreign artifact directory
+    supplies the very value used to approve this command's state access.
+    """
+    harness.write_init_receipt(nonce="ffffffffffffffff")
+    r = harness.run("plan", args=["--state-bucket", BUCKET])
+    assert r.returncode != 0
+    assert "INIT RECEIPT MISMATCH" in r.stderr
+    assert "terraform plan" not in harness.log.read_text()
+
+
+def test_a_bucket_argument_contradicting_the_receipt_is_a_stop_not_an_override(harness):
+    """The flag is a cross-check, never the expectation. A command naming a bucket
+    other than the initialised one is a mistake worth stopping on — silently
+    preferring either value would hide it."""
+    r = harness.run("plan", args=["--state-bucket", "a-different-bucket"])
+    assert r.returncode != 0
+    assert "CONTRADICTS THE INIT RECEIPT" in r.stderr
+    assert "terraform plan" not in harness.log.read_text()
+
+
+def test_init_writes_the_receipt_later_commands_verify_against(harness):
+    """The positive control. Without it, every test above would also pass if `init`
+    never wrote a receipt at all and the refusals were simply unconditional."""
+    (harness.artifacts / "backend.init.receipt.json").unlink()
+    r = harness.run("init", args=["--state-bucket", BUCKET])
+    assert r.returncode == 0, r.stderr
+    receipt = json.loads((harness.artifacts / "backend.init.receipt.json").read_text())
+    assert receipt["run_nonce"] == NONCE and receipt["account_id"] == ACCOUNT
+    assert receipt["backend"] == {
+        "type": "s3", "bucket": BUCKET,
+        "key": f"fixture-edge/dev/{ACCOUNT}/{NONCE}/terraform.tfstate",
+        "region": "us-east-1", "profile": PROFILE}
+    # A plan then proceeds against the matching live backend.
+    assert harness.run("plan", args=["--state-bucket", BUCKET]).returncode == 0
 
 
 def test_a_substituted_local_backend_is_refused(harness):
