@@ -15,7 +15,7 @@
 #
 #   a fixture-edge-only PR triggered a job that authenticates to the account and
 #   plans the ORDINARY gateway, reported a green check against the PR, and ran
-#   none of this component's 25 Terraform tests or 50 pytest tests.
+#   none of this component's mocked Terraform tests or its pytest suites.
 #
 # A green "Gateway Infra Plan" on such a PR is evidence about production's plan,
 # not about the fixture edge. This workflow supplies the missing evidence under a
@@ -155,9 +155,16 @@ jobs:
       - name: Terraform validate
         run: terraform validate -no-color
 
-      # The 25 mocked tests. These are the ones the review found unreachable from
-      # CI. No -filter: the whole file should run, and a new run block added later
-      # must not need a workflow edit to be executed.
+      # The mocked Terraform tests. These are the ones the review found unreachable
+      # from CI. No -filter: the whole file should run, and a new run block added
+      # later must not need a workflow edit to be executed. Deliberately NOT a
+      # count -- a hard-coded number in a comment goes stale on every added case,
+      # and a stale count reads as a coverage claim.
+      #
+      # Note these DO execute here: `terraform validate` and `terraform test` were
+      # once believed unrunnable without credentials and disclosed as not-run. They
+      # run: mock_provider needs no account, and `init -backend=false` needs no
+      # state.
       - name: Terraform test (mocked providers)
         run: terraform test -no-color
 

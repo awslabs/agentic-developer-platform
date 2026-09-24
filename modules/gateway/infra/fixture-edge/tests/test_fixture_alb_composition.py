@@ -18,6 +18,11 @@
 #   * refuses       — foreign namespace, adoption of an existing object, untagged
 #                     or public resolved ALB, and a failed ledger write all stop
 #   * never adopts  — `kubectl create`, never `apply`
+#   * proves first  — account, cluster endpoint and the Service's run ownership are
+#                     asserted BEFORE the one call that cannot be undone, and the
+#                     intent to create is on disk before it too
+#   * recovers      — a create whose record was lost is recoverable BY UID, and a
+#                     same-named replacement is refused rather than adopted
 #
 # These run with FAKE kubectl/aws/ledger binaries on PATH. They make NO cloud or
 # cluster calls: this component is under review, not deployed, and a test that
@@ -43,6 +48,10 @@ RUN_ID = "w2-5836-a1b2c3"
 RUN_NONCE = "a1b2c3d4e5f60718"
 NAMESPACE = "adp-gateway"
 SERVICE = "bedrockgw-w2fx-fixture"
+# The authorized target for this issue. Passed as --account-id so the identity read
+# is a comparison rather than a label.
+ACCOUNT = "879318057152"
+CREATED_UID = "11111111-2222-3333-4444-555555555555"
 # The group the reused VPC Link is already permitted to reach on tcp/80 (dev).
 PERMITTED_SG = "sg-0623ec399f4a20b87"
 EXPECTED_NAME = f"bedrockgw-w2fx-{RUN_ID}"
@@ -67,12 +76,64 @@ with open(log, "a") as fh:
 def die(msg, code=1):
     sys.stderr.write(msg + "\n"); sys.exit(code)
 
+# --- cluster identity ------------------------------------------------------
+# The script compares the kubeconfig API server endpoint against the endpoint AWS
+# reports for the named cluster, so the fake has to serve both halves and the test
+# has to be able to make them disagree.
+if args[:2] == ["config", "current-context"]:
+    ctx = os.environ.get("FAKE_KUBE_CONTEXT", "arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks")
+    if not ctx:
+        die("error: current-context is not set")
+    print(ctx); sys.exit(0)
+
+if args[:2] == ["config", "view"]:
+    server = os.environ.get("FAKE_KUBE_SERVER", "https://ABCDEF0123.gr7.us-east-1.eks.amazonaws.com")
+    print(server); sys.exit(0)
+
 if args[:1] == ["get"] and args[1] == "service":
     if os.environ.get("FAKE_SERVICE_MISSING") == "1":
         die('Error from server (NotFound): services "%s" not found' % args[2])
-    sys.exit(0)
+    labels = {
+        "app": args[2],
+        "app.kubernetes.io/part-of": "bedrock-gateway",
+        "adp.io/w2-fixture": os.environ["FAKE_RUN_ID"],
+        "adp.io/w2-nonce": os.environ["FAKE_RUN_NONCE"],
+    }
+    # Scenario knobs: drop a label, forge one for another run, change the type or
+    # the exposed port. Each is a way an object can pass an existence check and
+    # still be the wrong object.
+    drop = os.environ.get("FAKE_SERVICE_DROP_LABEL")
+    if drop:
+        labels.pop(drop, None)
+    forge = os.environ.get("FAKE_SERVICE_FOREIGN_LABEL")
+    if forge:
+        key, _, value = forge.partition("=")
+        labels[key] = value
+    doc = {
+        "apiVersion": "v1", "kind": "Service",
+        "metadata": {"name": args[2],
+                     "namespace": os.environ.get("FAKE_SERVICE_NAMESPACE", "adp-gateway"),
+                     "labels": labels},
+        "spec": {"type": os.environ.get("FAKE_SERVICE_TYPE", "ClusterIP"),
+                 "selector": {"app": args[2]},
+                 "ports": [{"name": "http",
+                            "port": int(os.environ.get("FAKE_SERVICE_PORT", "80")),
+                            "targetPort": 8080, "protocol": "TCP"}]},
+    }
+    print(json.dumps(doc)); sys.exit(0)
 
 if args[:1] == ["get"] and args[1] == "ingress":
+    jsonpath = ""
+    for a in args:
+        if a.startswith("-o") and "jsonpath" in a:
+            jsonpath = a
+        elif a.startswith("jsonpath="):
+            jsonpath = a
+    # The recovery path reads metadata.uid; the provisioning wait reads the hostname.
+    if "metadata.uid" in jsonpath:
+        if os.environ.get("FAKE_INGRESS_ABSENT") == "1":
+            die('Error from server (NotFound): ingresses.networking.k8s.io "x" not found')
+        print(os.environ.get("FAKE_LIVE_UID", os.environ["FAKE_UID"])); sys.exit(0)
     if os.environ.get("FAKE_ALB_NEVER_READY") == "1":
         print(""); sys.exit(0)
     print(os.environ["FAKE_ALB_DNS"]); sys.exit(0)
@@ -91,7 +152,13 @@ if args[:1] == ["create"]:
     if os.environ.get("FAKE_ALREADY_EXISTS") == "1":
         die('Error from server (AlreadyExists): ingresses.networking.k8s.io "x" already exists')
     uid = "" if os.environ.get("FAKE_NO_UID") == "1" else os.environ["FAKE_UID"]
-    print(json.dumps({"kind": "Ingress", "metadata": {"uid": uid}}))
+    # Full metadata, as the real server returns it: the uid receipt records name and
+    # namespace too, and --recover re-validates them, so a fake that omitted them
+    # would make every recovery test fail on the wrong assertion.
+    print(json.dumps({"kind": "Ingress", "metadata": {
+        "name": os.environ["FAKE_EXPECTED_NAME"],
+        "namespace": os.environ["FAKE_SERVICE_NAMESPACE"],
+        "uid": uid, "resourceVersion": "4815162342"}}))
     sys.exit(0)
 
 die("fake kubectl: unhandled %r" % (args,))
@@ -106,8 +173,28 @@ q = ""
 if "--query" in args:
     q = args[args.index("--query") + 1]
 
+# The script routes every call through aws_(), which PREPENDS --profile/--region.
+# The service/operation pair is therefore not at argv[0:2], and a fake that matched
+# there would fall through to "unhandled" for every call. Strip the leading global
+# options -- the real CLI accepts them in exactly this position.
+_GLOBAL_WITH_VALUE = {"--profile", "--region", "--output", "--endpoint-url"}
+while args and args[0].startswith("--") and args[0] in _GLOBAL_WITH_VALUE:
+    args = args[2:]
+
 if args[:2] == ["sts", "get-caller-identity"]:
+    if os.environ.get("FAKE_STS_FAIL") == "1":
+        sys.stderr.write("Unable to locate credentials\n"); sys.exit(255)
     print(os.environ.get("FAKE_ACCOUNT", "879318057152")); sys.exit(0)
+
+# The authoritative cluster read. The fake can report a DIFFERENT endpoint from the
+# one kubeconfig names, which is the only way to exercise the comparison that makes
+# a context name non-authoritative.
+if args[:2] == ["eks", "describe-cluster"]:
+    if os.environ.get("FAKE_CLUSTER_MISSING") == "1":
+        sys.stderr.write("ResourceNotFoundException\n"); sys.exit(254)
+    print(os.environ.get("FAKE_AWS_CLUSTER_ENDPOINT",
+                         "https://ABCDEF0123.gr7.us-east-1.eks.amazonaws.com"))
+    sys.exit(0)
 
 if args[:2] == ["elbv2", "describe-tags"]:
     print(os.environ.get("FAKE_ALB_TAG", os.environ["FAKE_RUN_NONCE"])); sys.exit(0)
@@ -157,40 +244,57 @@ def harness(tmp_path):
     manifest_copy = tmp_path / "rendered.yaml"
     ledger = tmp_path / "ledger.json"
     ledger.write_text("")
+    # The run's private artifact directory, where the creation intent and the uid
+    # receipt land. Passed explicitly so a test never writes into the checkout.
+    artifacts = tmp_path / "artifacts"
 
-    def run(extra_env=None, args=None):
+    def run(extra_env=None, args=None, omit=()):
         env = dict(os.environ)
         env["PATH"] = f"{bindir}:{env['PATH']}"
         env.update(
             W2_OWNERSHIP_LIB=str(ownership),
             FAKE_LOG=str(log),
             FAKE_MANIFEST_COPY=str(manifest_copy),
-            FAKE_UID="11111111-2222-3333-4444-555555555555",
+            FAKE_UID=CREATED_UID,
             FAKE_ALB_DNS=FIXTURE_DNS,
             FAKE_ALB_ARN=FIXTURE_ARN,
+            FAKE_RUN_ID=RUN_ID,
             FAKE_RUN_NONCE=RUN_NONCE,
             FAKE_PERMITTED_SG=PERMITTED_SG,
             FAKE_EXPECTED_NAME=EXPECTED_NAME,
+            FAKE_ACCOUNT=ACCOUNT,
+            FAKE_SERVICE_NAMESPACE=NAMESPACE,
             # Keep the timeout branch fast; the real defaults are 60x10s.
             W2_ALB_WAIT_ATTEMPTS="2",
             W2_ALB_WAIT_INTERVAL="0",
         )
         env.update(extra_env or {})
-        argv = [
-            str(SCRIPT),
-            "--run-id", RUN_ID,
-            "--run-nonce", RUN_NONCE,
-            "--ledger", str(ledger),
-            "--namespace", NAMESPACE,
-            "--service", SERVICE,
-            "--alb-security-groups", PERMITTED_SG,
-        ] + (args or [])
+        # `omit` drops a flag PAIR, so the "argument left off entirely" case can be
+        # exercised. A default that quietly stands in for a missing argument is the
+        # shape of bug this component has already had once.
+        pairs = [
+            ("--run-id", RUN_ID),
+            ("--run-nonce", RUN_NONCE),
+            ("--account-id", ACCOUNT),
+            ("--ledger", str(ledger)),
+            ("--namespace", NAMESPACE),
+            ("--service", SERVICE),
+            ("--alb-security-groups", PERMITTED_SG),
+            ("--artifact-dir", str(artifacts)),
+        ]
+        argv = [str(SCRIPT)]
+        for flag, value in pairs:
+            if flag in omit:
+                continue
+            argv += [flag, value]
+        argv += args or []
         return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
 
     harness.run = run
     harness.log = log
     harness.manifest = manifest_copy
     harness.ledger = ledger
+    harness.artifacts = artifacts
     return harness
 
 
@@ -648,11 +752,18 @@ def test_refuses_an_alb_that_resolved_as_internet_facing(harness):
 
 
 def test_fails_loudly_when_the_ledger_write_fails(harness):
-    """A created-but-unrecorded object is the one teardown can never prove is ours."""
+    """A created-but-unrecorded object is the one teardown can never prove is ours.
+
+    It must point at the UID-SAFE recovery, not at a delete. The previous revision
+    said `kubectl delete ingress $NAME -n $NAMESPACE`, which is the one instruction
+    that can destroy another run's ALB: a same-named Ingress may not be ours, and
+    deleting an Ingress deletes its load balancer.
+    """
     r = harness.run({"FAKE_LEDGER_FAIL": "1"})
     assert r.returncode != 0
     assert "could NOT record it in the ledger" in r.stderr
-    assert "kubectl delete ingress" in r.stderr
+    assert "--recover" in r.stderr, "the operator is not told how to recover safely"
+    assert "Do NOT 'kubectl delete ingress' by name" in r.stderr
 
 
 def test_fails_when_the_server_returns_no_uid(harness):
@@ -660,6 +771,9 @@ def test_fails_when_the_server_returns_no_uid(harness):
     assert r.returncode != 0
     assert "no metadata.uid" in r.stderr
     assert harness.ledger.read_text() == ""
+    # An object exists with no captured identity: the one case where deleting by
+    # name is most tempting and most dangerous.
+    assert "Do NOT delete by name" in r.stderr
 
 
 def test_alb_provisioning_timeout_is_reported_as_recorded(harness):
@@ -706,3 +820,387 @@ def test_rejects_a_non_80_port_rather_than_widening_a_shared_group(harness):
     r = harness.run(args=["--port", "8443"])
     assert r.returncode != 0
     assert "SHARED VPC Link security group" in r.stderr
+
+
+# =============================================================================
+# Prove-before-create: the four ordering/evidence defects root found
+# =============================================================================
+# Every test in this section is about WHEN something happens, not whether the
+# script can do it. The previous revision could resolve the account, could check
+# the Service, and reported failures clearly -- it just did those things after the
+# irreversible call, or on evidence too weak to carry the conclusion.
+#
+# The shared technique is the call log: `kubectl create` appearing in it is the
+# moment the cluster was mutated, so "refused before the create" is asserted as
+# "no create line in the log", not inferred from a nonzero exit.
+
+def _create_lines(harness) -> list[str]:
+    return [
+        line for line in harness.log.read_text().splitlines()
+        if line.startswith("kubectl create") and "--dry-run=server" not in line
+    ]
+
+
+def created(harness) -> bool:
+    """True once the script issued the real (non-dry-run) create.
+
+    The log is CUMULATIVE across invocations of one harness, so a test that runs the
+    script twice must compare counts (see created_since) rather than ask this.
+    """
+    return bool(_create_lines(harness))
+
+
+def created_since(harness, before: int) -> bool:
+    """True if a create happened after the `before` mark from create_count()."""
+    return len(_create_lines(harness)) > before
+
+
+def create_count(harness) -> int:
+    return len(_create_lines(harness))
+
+
+# --- 1. the account is proven BEFORE the create, not labelled after it -------
+
+def test_requires_the_expected_account_rather_than_labelling_whatever_it_finds(harness):
+    """An ambient account agrees with itself, so it cannot be checked.
+
+    The previous revision read `sts get-caller-identity` only to fill in the
+    ledger row's --account-id, four steps past the create. Making the expected
+    account an argument is what converts that read into a refusal.
+    """
+    r = harness.run(omit=("--account-id",))
+    assert r.returncode != 0
+    assert "--account-id is required" in r.stderr
+    assert not created(harness)
+
+
+def test_refuses_a_credential_for_another_account_before_creating_anything(harness):
+    r = harness.run({"FAKE_ACCOUNT": "111122223333"})
+    assert r.returncode != 0
+    assert "resolves to account 111122223333" in r.stderr
+    assert not created(harness), (
+        "the account mismatch was discovered AFTER the Ingress was created -- which "
+        "is the defect, not the check"
+    )
+    assert harness.ledger.read_text() == ""
+
+
+def test_refuses_when_the_acting_identity_cannot_be_resolved_at_all(harness):
+    """An unreadable identity must stop the run, not fall through to the create."""
+    r = harness.run({"FAKE_STS_FAIL": "1"})
+    assert r.returncode != 0
+    assert "acting account is UNKNOWN" in r.stderr
+    assert not created(harness)
+
+
+def test_the_account_is_verified_before_the_cluster_is_touched(harness):
+    """Ordering asserted on the log itself, so a later refactor cannot silently
+    move the identity read back below the mutation."""
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    lines = harness.log.read_text().splitlines()
+    sts = next(i for i, l in enumerate(lines) if "sts get-caller-identity" in l)
+    create = next(
+        i for i, l in enumerate(lines)
+        if l.startswith("kubectl create") and "--dry-run=server" not in l
+    )
+    assert sts < create, f"identity read at {sts}, create at {create}: {lines}"
+
+
+def test_the_ledger_row_carries_the_verified_account_not_a_rediscovered_one(harness):
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    assert f"--account-id {ACCOUNT}" in harness.ledger.read_text()
+
+
+# --- 2. the cluster kubectl would mutate is identified authoritatively -------
+# Same reasoning as fixture-lifecycle.sh: --profile binds the AWS CLI and says
+# nothing about kubectl's target, and a context NAME is a local alias that can
+# claim any account. The endpoint comparison is the check.
+
+def test_refuses_an_unnamed_cluster_rather_than_trusting_the_context_alias(harness):
+    r = harness.run({"FAKE_KUBE_CONTEXT": "my-dev-cluster"})
+    assert r.returncode != 0
+    assert "is a local alias" in r.stderr
+    assert "--expect-cluster" in r.stderr
+    assert not created(harness)
+
+
+def test_accepts_a_local_alias_once_the_cluster_name_is_verified_against_aws(harness):
+    """--expect-cluster is a NAME to look up, not a string to echo back."""
+    r = harness.run({"FAKE_KUBE_CONTEXT": "my-dev-cluster"},
+                    args=["--expect-cluster", "adp-dev-eks"])
+    assert r.returncode == 0, r.stderr
+    assert "eks describe-cluster" in harness.log.read_text()
+
+
+def test_refuses_when_kubectl_would_reach_a_different_cluster_than_aws_names(harness):
+    """The defect a context-name comparison cannot catch: the name is right and the
+    server is somewhere else."""
+    r = harness.run({"FAKE_KUBE_SERVER": "https://DEADBEEF.gr7.us-east-1.eks.amazonaws.com"})
+    assert r.returncode != 0
+    assert "DIFFERENT cluster" in r.stderr
+    assert not created(harness)
+
+
+def test_refuses_when_the_named_cluster_does_not_exist_in_this_account(harness):
+    r = harness.run({"FAKE_CLUSTER_MISSING": "1"})
+    assert r.returncode != 0
+    assert "does not exist in account" in r.stderr
+    assert not created(harness)
+
+
+def test_refuses_when_there_is_no_kubectl_context_at_all(harness):
+    r = harness.run({"FAKE_KUBE_CONTEXT": ""})
+    assert r.returncode != 0
+    assert "no current kubectl context" in r.stderr
+    assert not created(harness)
+
+
+# --- 3. the Service must be THIS run's fixture, not a name that exists -------
+
+def test_verifies_the_services_run_ownership_and_not_merely_its_existence(harness):
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    assert "is this run's fixture" in r.stdout
+    # Read as a document, because the labels cannot be checked from `get -o name`.
+    assert any(
+        line.startswith("kubectl get service") and "-o json" in line
+        for line in harness.log.read_text().splitlines()
+    )
+
+
+@pytest.mark.parametrize("label", ["adp.io/w2-fixture", "adp.io/w2-nonce"])
+def test_refuses_a_service_that_carries_no_run_ownership_label(harness, label):
+    """#3968's render_fixture.py puts BOTH labels on the fixture Service, so an
+    object missing either is not a fixture Service of this run -- and the edge
+    injects verified-caller headers into whatever sits behind this Ingress."""
+    r = harness.run({"FAKE_SERVICE_DROP_LABEL": label})
+    assert r.returncode != 0
+    assert label in r.stderr
+    assert "not ownership" in r.stderr
+    assert not created(harness)
+
+
+@pytest.mark.parametrize(
+    "forged",
+    [
+        "adp.io/w2-fixture=w2-5836-999999",
+        "adp.io/w2-nonce=ffffffffffffffff",
+    ],
+)
+def test_refuses_a_service_labelled_for_a_different_run(harness, forged):
+    """Both labels are compared, not just the run id: an earlier attempt under the
+    same run id but a different nonce is still a different run, and the nonce is
+    what every other gate in this component binds to."""
+    r = harness.run({"FAKE_SERVICE_FOREIGN_LABEL": forged})
+    assert r.returncode != 0
+    assert "DIFFERENT run" in r.stderr
+    assert not created(harness)
+
+
+def test_refuses_a_service_that_is_already_externally_reachable(harness):
+    """A LoadBalancer Service defeats the point of fronting the pod with an
+    INTERNAL ALB: the header-trusting fixture would be addressable directly."""
+    r = harness.run({"FAKE_SERVICE_TYPE": "LoadBalancer"})
+    assert r.returncode != 0
+    assert "expected ClusterIP" in r.stderr
+    assert not created(harness)
+
+
+def test_refuses_a_service_that_does_not_expose_the_backend_port(harness):
+    """The rendered backend references the port by NUMBER, so a mismatch reconciles
+    to an ALB with an empty target group -- a fixture that looks created and
+    answers nothing."""
+    r = harness.run({"FAKE_SERVICE_PORT": "8080"})
+    assert r.returncode != 0
+    assert "EMPTY" in r.stderr
+    assert not created(harness)
+
+
+def test_refuses_a_service_the_server_reports_in_another_namespace(harness):
+    r = harness.run({"FAKE_SERVICE_NAMESPACE": "default"})
+    assert r.returncode != 0
+    assert "not 'adp-gateway'" in r.stderr
+    assert not created(harness)
+
+
+# --- 4. intent before create, and UID-safe recovery of a partial create ------
+
+def test_records_the_intent_to_create_before_issuing_the_create(harness):
+    """A create that succeeds server-side but whose response is lost must leave a
+    trail. Asserted by ORDER, because an intent written afterwards is exactly as
+    useless as no intent at all."""
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    intent = json.loads((harness.artifacts / "alb-intent.json").read_text())
+    assert intent["intent"] == "create-ingress"
+    assert intent["name"] == EXPECTED_NAME
+    assert intent["run_nonce"] == RUN_NONCE
+    assert intent["account_id"] == ACCOUNT
+    assert intent["namespace"] == NAMESPACE
+    # Written before the mutation: the file predates the create line's mtime is not
+    # observable here, so ordering is asserted through the script's own step output.
+    assert r.stdout.index("intent recorded") < r.stdout.index("created Ingress/")
+
+
+def test_the_intent_survives_a_create_that_reports_failure(harness):
+    """The case the intent exists for: a create can succeed server-side and still
+    report an error (dropped connection), so the operator needs both a record and
+    an instruction that is not 'delete it by name'."""
+    r = harness.run({"FAKE_ALREADY_EXISTS": "1"})
+    assert r.returncode != 0
+    assert (harness.artifacts / "alb-intent.json").exists()
+    assert "--recover" in r.stderr
+
+
+def test_captures_the_uid_receipt_before_the_ledger_call(harness):
+    """The ledger write is the step most likely to fail, so the uid must already be
+    on disk when it does -- otherwise recovery has nothing to compare against."""
+    r = harness.run({"FAKE_LEDGER_FAIL": "1"})
+    assert r.returncode != 0
+    receipt = json.loads((harness.artifacts / "alb-receipt.json").read_text())
+    assert receipt["uid"] == CREATED_UID
+    assert receipt["run_nonce"] == RUN_NONCE
+    assert receipt["account_id"] == ACCOUNT
+    assert receipt["expected_name"] == EXPECTED_NAME
+
+
+def test_recovery_records_the_object_by_its_actual_uid(harness):
+    """The whole point of --recover: finish the ledger write without ever deleting
+    or re-creating anything."""
+    first = harness.run({"FAKE_LEDGER_FAIL": "1"})
+    assert first.returncode != 0
+    assert harness.ledger.read_text() == ""
+    mark = create_count(harness)
+
+    r = harness.run(args=["--recover"])
+    assert r.returncode == 0, r.stderr
+    assert f"--uid {CREATED_UID}" in harness.ledger.read_text()
+    assert "recorded by its actual uid" in r.stdout
+    # Recovery records; it must never create. Compared against the mark, because the
+    # log still holds the first invocation's create.
+    assert not created_since(harness, mark)
+
+
+def test_recovery_refuses_a_same_named_replacement(harness):
+    """The refusal that makes recovery safe. A uid changes only on
+    delete-and-recreate, so a differing live uid means the object under this name
+    belongs to something else -- and recording it would authorise this run's
+    teardown to delete another run's ALB."""
+    harness.run({"FAKE_LEDGER_FAIL": "1"})
+    r = harness.run({"FAKE_LIVE_UID": "99999999-8888-7777-6666-555555555555"},
+                    args=["--recover"])
+    assert r.returncode != 0
+    assert "NOT the object this run created" in r.stderr
+    assert "Do NOT delete it by name" in r.stderr
+    assert harness.ledger.read_text() == ""
+
+
+def test_recovery_refuses_without_a_uid_receipt(harness):
+    """An intent proves an attempt was MADE; it cannot prove which object now holds
+    the name. Without the server-assigned uid the only safe outcome is escalation,
+    so recovery must refuse rather than adopt whatever is live."""
+    first = harness.run({"FAKE_LEDGER_FAIL": "1"})
+    assert first.returncode != 0
+    (harness.artifacts / "alb-receipt.json").unlink()
+
+    r = harness.run(args=["--recover"])
+    assert r.returncode != 0
+    assert "no uid receipt" in r.stderr
+    assert "REFUSING to record any live Ingress as ours" in r.stderr
+    assert harness.ledger.read_text() == ""
+
+
+def test_recovery_refuses_without_a_creation_intent(harness):
+    """No intent means no evidence this run created the object at all."""
+    r = harness.run(args=["--recover"])
+    assert r.returncode != 0
+    assert "no creation intent" in r.stderr
+    assert harness.ledger.read_text() == ""
+
+
+def test_recovery_refuses_an_intent_from_another_run(harness):
+    """A stale artifact directory would otherwise satisfy the existence check."""
+    harness.run({"FAKE_LEDGER_FAIL": "1"})
+    intent_path = harness.artifacts / "alb-intent.json"
+    doc = json.loads(intent_path.read_text())
+    doc["run_nonce"] = "ffffffffffffffff"
+    intent_path.write_text(json.dumps(doc))
+
+    r = harness.run(args=["--recover"])
+    assert r.returncode != 0
+    assert "creation intent's run_nonce" in r.stderr
+    assert harness.ledger.read_text() == ""
+
+
+def test_recovery_reports_nothing_to_recover_when_the_object_is_absent(harness):
+    """If the create genuinely failed, nothing leaked and the run can be retried."""
+    harness.run({"FAKE_LEDGER_FAIL": "1"})
+    r = harness.run({"FAKE_INGRESS_ABSENT": "1"}, args=["--recover"])
+    assert r.returncode != 0
+    assert "nothing to" in r.stderr
+    assert harness.ledger.read_text() == ""
+
+
+def test_recovery_still_verifies_account_and_cluster(harness):
+    """Recovery is a mutation of the ledger, which authorises deletion, so it gets
+    the same identity gate as the create."""
+    harness.run({"FAKE_LEDGER_FAIL": "1"})
+    r = harness.run({"FAKE_ACCOUNT": "111122223333"}, args=["--recover"])
+    assert r.returncode != 0
+    assert "resolves to account 111122223333" in r.stderr
+    assert harness.ledger.read_text() == ""
+
+
+def test_recover_and_check_only_are_refused_together(harness):
+    """--check-only advertises that nothing is mutated; recovery writes the ledger."""
+    r = harness.run(args=["--recover", "--check-only"])
+    assert r.returncode != 0
+    assert "mutually exclusive" in r.stderr
+
+
+# --- the closing teardown instructions ---------------------------------------
+
+def test_the_closing_note_orders_teardown_edge_first(harness):
+    """The previous revision said to delete the Ingress BEFORE destroying the edge's
+    Terraform. That is backwards and it is not a documentation nit: ../main.tf reads
+    this ALB (data.aws_lb.fixture), Terraform RE-READS data sources during destroy,
+    so deleting the Ingress first makes the edge's destroy unplannable and the only
+    apparent way out is deleting cloud resources by hand.
+    """
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    assert "DESTROY THE EDGE FIRST" in out
+    edge = out.index("fixture-lifecycle.sh destroy")
+    ingress = out.index("90-cleanup-ledger.sh")
+    assert edge < ingress, "the printed teardown order still deletes the ALB first"
+    assert "BEFORE destroying the edge" not in out
+
+
+def test_no_failure_path_advises_deleting_the_ingress_by_name(harness):
+    """`kubectl delete ingress <name>` is the one instruction that can destroy
+    another run's load balancer, so no failure path may emit it as advice.
+
+    Asserted over every reachable failure scenario rather than by reading the
+    source, because the dangerous form is what the OPERATOR sees.
+    """
+    scenarios = [
+        {"FAKE_LEDGER_FAIL": "1"},
+        {"FAKE_NO_UID": "1"},
+        {"FAKE_ALREADY_EXISTS": "1"},
+        {"FAKE_ALB_NEVER_READY": "1"},
+        {"FAKE_ALB_TAG": "deadbeefdeadbeef"},
+        {"FAKE_ALB_SCHEME": "internet-facing"},
+    ]
+    for env in scenarios:
+        r = harness.run(env)
+        assert r.returncode != 0, env
+        # The refusal may NAME the command in order to forbid it, so the test looks
+        # for it as an imperative: a line that starts with the delete.
+        for line in r.stderr.splitlines():
+            stripped = line.strip()
+            assert not stripped.startswith("kubectl delete ingress"), (
+                f"{env} advises deleting by name: {stripped!r}"
+            )

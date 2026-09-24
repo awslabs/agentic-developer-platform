@@ -1,8 +1,8 @@
 """Gate for the fixture edge's own CI wiring (Issue #5836, blocking area 5).
 
 The review's finding was "CI does not run these tests". The fix is a workflow,
-but a workflow is exactly the kind of artifact that rots silently: the 25
-Terraform tests and 50 pytest tests it invokes all pass locally, and they also
+but a workflow is exactly the kind of artifact that rots silently: the mocked
+Terraform tests and the pytest suites it invokes all pass locally, and they also
 all pass when NOTHING CALLS THEM. Every other gate in this component stays green
 in that state. So the wiring needs its own gate, for the same reason
 .github/scripts/tests/test_nightly_triage_wiring.py exists.

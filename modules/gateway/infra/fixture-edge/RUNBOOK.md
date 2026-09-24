@@ -107,6 +107,7 @@ this ALB, so it must exist first.
 ```bash
 ./scripts/create-fixture-alb.sh \
   --run-id "<#3968 run id>" --run-nonce "$FIXTURE_NONCE" \
+  --account-id 879318057152 --profile adp-embark1 \
   --ledger "<#3968 ledger.json>" \
   --namespace adp-gateway --service "<fixture Service name>" \
   --alb-security-groups "<from 1b>"
@@ -121,6 +122,79 @@ verifies on the **live** resource that the scheme really is `internal` and the
 `AdpFixtureRun` tag really is this nonce — the tag the Terraform gate refuses to plan
 without. It prints `fixture_alb_arn` and `expected_vpc_id` for step 3.
 
+### Everything that can refuse, refuses before the create
+
+`kubectl create` is the one call in this script that cannot be undone, so every
+check that could stop the run happens above it. Four things were previously checked
+too late, or on evidence too weak to carry the conclusion.
+
+**`--account-id` is now required, and verified first.** The previous revision read
+`sts get-caller-identity` purely to fill in the ledger row's `--account-id`, four
+steps *past* the create. So the account the run was acting on was unknown at the
+moment it mutated, and a credential pointing elsewhere produced a real Ingress — and
+therefore a real ALB — before failing. Naming the expected account is what turns that
+read into a refusal: an ambient value resolves to itself and cannot disagree with
+itself.
+
+**The cluster is identified the same way `fixture-lifecycle.sh` does it.** `--profile`
+binds the AWS CLI and says nothing about which cluster `kubectl` will mutate, and a
+context *name* is a local alias that can read
+`arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks` while pointing at any server.
+What is compared is the kubeconfig API server **endpoint** against the endpoint AWS
+reports for the named cluster, read through this run's own profile. Pass
+`--expect-cluster <name>` when your context is an alias — it is a name to look up,
+not a string to echo back.
+
+**The fixture Service must be *this run's*, not merely a name that exists.** The old
+check was `kubectl get service <name>`, which proves the name is taken. An ordinary
+Service, or another run's fixture, satisfied it — and the Ingress would then have
+routed the trusted edge's header-injecting traffic into whatever that was. The script
+now reads the Service as a document and requires **both** of #3968's renderer labels
+(`adp.io/w2-fixture` = this run id, `adp.io/w2-nonce` = this nonce), `type: ClusterIP`,
+and that the port the rendered backend references is actually exposed. Both labels,
+because an earlier attempt under the same run id but a different nonce is still a
+different run, and the nonce is what every other gate in this component binds to.
+
+### A partial creation is recoverable by uid, and only by uid
+
+A create can succeed server-side and still report a failure — dropped connection,
+killed process, a ledger write that fails afterwards. The previous revision left
+nothing on disk in that case, so an Ingress (and its ALB) could exist with no trace
+and no ledger row.
+
+Two records now bracket the create, both in the run's private `700` artifact
+directory (`.fixture-run-<nonce>/`, shared with `fixture-lifecycle.sh`):
+
+| File | Written | What it proves |
+|------|---------|----------------|
+| `alb-intent.json` | **before** the create | an attempt was made, by *this* run/account/name |
+| `alb-receipt.json` | immediately after, before the ledger call | the **server-assigned uid** of the object created |
+
+```bash
+# Finish an interrupted run without deleting or re-creating anything.
+./scripts/create-fixture-alb.sh --recover \
+  --run-id "<#3968 run id>" --run-nonce "$FIXTURE_NONCE" \
+  --account-id 879318057152 --profile adp-embark1 \
+  --ledger "<#3968 ledger.json>" \
+  --namespace adp-gateway --service "<fixture Service name>"
+```
+
+`--recover` re-reads the live object and records it **by its actual uid**, refusing
+unless that uid still equals the one captured at creation. A uid changes only on
+delete-and-recreate, so a differing one means the object under this name belongs to
+something else. It also **requires the uid receipt**: the intent proves an attempt was
+made, it cannot prove which object now holds the name, and recording is what
+authorises deletion. With no receipt the only safe outcome is escalation, so recovery
+refuses rather than adopting whatever is live.
+
+**No failure path tells you to delete the Ingress by name.** The old messages did
+(`kubectl delete ingress <name> -n <ns>`), and that is the single most dangerous
+instruction here: a same-named Ingress may be another run's, and deleting an Ingress
+deletes its load balancer. Every failure now points at `--recover` or at reading the
+uid first. This is asserted over every reachable failure scenario in
+`tests/test_fixture_alb_composition.py`, because what matters is what the *operator*
+sees.
+
 The Ingress publishes **both** planes the edge routes — `/internal` for the trusted
 plane plus `/me`, `/auth` and liveness for human sessions. An earlier revision served
 `/internal` alone, which left the edge's auth-`NONE` route forwarding to a listener
@@ -131,6 +205,15 @@ backend published nothing for it to reach. See
 No file under `platform/scripts/operator/wave2/` is modified. An Ingress is an
 ordinary uid-bearing Kubernetes object, so #3968's existing `k8s` ledger bucket and
 uid-gated delete path already cover its teardown; no new ledger type was needed.
+
+> **Teardown order, since this is where the ALB is created:** destroy the **edge
+> first**, then delete this Ingress. An earlier revision of the script's closing note
+> said the opposite. It is not a documentation nit — `main.tf` reads this ALB
+> (`data.aws_lb.fixture`) and Terraform re-reads data sources during `destroy`, so
+> deleting the Ingress first makes the edge's destroy *unplannable*, and the only
+> apparent way forward is deleting cloud resources by hand — the one thing the
+> ownership gates exist to prevent. Full procedure in
+> [§8 Teardown](#8-teardown-in-dependency-order-with-proof).
 
 ---
 
