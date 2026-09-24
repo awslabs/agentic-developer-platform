@@ -6,14 +6,13 @@
 #
 # Adapted from aws-innovate/AISuperPlane's infra/arc-runner/Dockerfile.
 #
-# Base: ghcr.io/actions/actions-runner:2.335.1 (pinned per session-context —
-# do NOT use `:latest`, which GitHub can flag "deprecated" and cause the
-# runner to exit-7 loop).
+# Pin the runner release and refresh it before GitHub deprecates the version.
+# With ARC updates disabled, a deprecated release exits before accepting jobs.
 #
 # Build context: this directory (no parent references).
 # =============================================================================
 
-FROM ghcr.io/actions/actions-runner:2.335.1
+FROM ghcr.io/actions/actions-runner:2.337.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -135,7 +134,8 @@ RUN apt-get clean \
 USER runner
 
 # Verify every tool is accessible as the runner user
-RUN echo "=== ADP ARC Runner Tool Verification ===" \
+RUN test "$(/home/runner/bin/Runner.Listener --version)" = "2.337.0" \
+    && echo "=== ADP ARC Runner Tool Verification ===" \
     && node --version \
     && python3 --version \
     && aws --version \

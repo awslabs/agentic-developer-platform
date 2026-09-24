@@ -1,12 +1,12 @@
 # ADP Custom ARC Runner Image
 
-Custom GitHub Actions self-hosted runner image pre-baked with every CLI tool our workflows need. Replaces the bare `ghcr.io/actions/actions-runner:2.333.1` base so workflows don't waste 3-5 minutes apt-installing `zip`/`aws`/`kubectl`/`terraform` on every run.
+Custom GitHub Actions self-hosted runner image pre-baked with every CLI tool our workflows need. Replaces the bare `ghcr.io/actions/actions-runner:2.337.0` base so workflows don't waste 3-5 minutes apt-installing `zip`/`aws`/`kubectl`/`terraform` on every run.
 
 Adapted from [`aws-innovate/AISuperPlane/infra/arc-runner/`](https://github.com/aws-innovate/AISuperPlane/tree/main/infra/arc-runner).
 
 ## What's inside
 
-Base: `ghcr.io/actions/actions-runner:2.333.1` (pinned — session-context notes `:latest` can get flagged "deprecated" and exit-7 loop).
+Base: `ghcr.io/actions/actions-runner:2.337.0` (pinned to a supported release; refresh before GitHub deprecates it).
 
 Added tooling:
 
@@ -27,6 +27,8 @@ The `.github/workflows/arc-runner-build.yml` workflow fires on pushes to this di
 <account>.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner:latest
 ```
 
+Candidate builds can set `PUBLISH_LATEST=false` to publish only the exact source tag. Verify that image before updating the scale set or the shared `latest` tag.
+
 ## Rollout
 
 After the image lands in ECR, update the ARC runner scale set's Helm release to point at it. In our Terraform, that's the `helm_release.arc_runner_set` resource in `modules/agent-factory/infra/` — set `template.spec.containers[0].image` to `<registry>/adp-arc-runner:<tag>`.
@@ -45,5 +47,5 @@ Once the new image is serving workflows, remove the per-workflow install steps (
 
 ## Versioning notes
 
-- **Do NOT upgrade the `actions-runner` base past `2.333.1`** without re-checking the session-context notes (the ARC chart is also pinned at `0.13.1` for a related bug).
+- Keep the pinned runner release within GitHub's supported update window. ARC disables automatic runner updates; an expired pin can register but GitHub rejects its message requests and the pod exits. Verify the runner version, tool checks, and real job execution when updating it.
 - Terraform / kubectl / Helm pins should stay in sync with what the rest of the project uses; check `modules/agent-factory/infra/` Helm releases and cluster Kubernetes version before bumping.
