@@ -24,11 +24,12 @@
   },
   "runnable_now": [
     "python3 scripts/task-api/check-contracts.py",
-    "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
-    "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
-    "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
-    "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && cd ../.. && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
-    "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention tests/tasks/test_store.py::test_recovery_paging_is_bounded"
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers modules/gateway/tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict modules/gateway/tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index modules/gateway/tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority modules/gateway/tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report modules/gateway/tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit modules/gateway/tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically modules/gateway/tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key modules/gateway/tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone modules/gateway/tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention modules/gateway/tests/tasks/test_store.py::test_recovery_paging_is_bounded",
+    "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest"
   ],
   "fixed_thresholds": {
     "legacy_observation_minimum": {
@@ -438,7 +439,7 @@
         "fixtures/valid/error-idempotency-conflict.json",
         "fixtures/valid/submit-response-idempotent-replay.json"
       ],
-      "command": "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers modules/gateway/tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict modules/gateway/tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
       "command_status": "runnable"
     },
     "T1-AC02": {
@@ -448,7 +449,7 @@
       "evidence_lane": "unit and integration tests against the existing request table",
       "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
       "command_status": "runnable"
     },
     "T1-AC03": {
@@ -458,7 +459,7 @@
       "evidence_lane": "unit and integration tests against the existing request table",
       "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index modules/gateway/tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
       "command_status": "runnable"
     },
     "T1-AC04": {
@@ -468,7 +469,7 @@
       "evidence_lane": "unit and integration tests against the existing request table",
       "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && cd ../.. && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority modules/gateway/tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report modules/gateway/tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
       "command_status": "runnable"
     },
     "T1-AC05": {
@@ -478,7 +479,7 @@
       "evidence_lane": "unit and integration tests against the existing request table",
       "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention tests/tasks/test_store.py::test_recovery_paging_is_bounded",
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit modules/gateway/tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically modules/gateway/tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key modules/gateway/tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone modules/gateway/tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention modules/gateway/tests/tasks/test_store.py::test_recovery_paging_is_bounded",
       "command_status": "runnable"
     },
     "T2-AC01": {

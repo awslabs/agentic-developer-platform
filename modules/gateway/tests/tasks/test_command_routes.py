@@ -8,11 +8,11 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-import test_store as t1_fixtures
+from . import test_store as t1_fixtures
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from test_store import NOW, _request
-from test_task_commands import final_body, running
+from .test_store import NOW, _request
+from .test_task_commands import final_body, running
 
 from src.agentauth.routes import require_agent_transport
 from src.shared.database import get_db

@@ -185,12 +185,15 @@ async def test_internal_artifact_http_upload_and_input_read(adapter, store, monk
 
     uploaded, content = _artifact()
     stored = adapter.put_artifact(record=uploaded, content=content)
-    request = _request(artifact_ids=[stored.artifact_id])
+    request = _request(artifact_ids=[stored.artifact_id], request_payload={
+        "instructions": "investigate", "inputs": {"a": 1}, "artifact_ids": [stored.artifact_id]})
     reference = {
         **request.input_reference,
         "artifact_refs": [{"artifact_id": stored.artifact_id, "version": 1, "content_sha256": stored.content_sha256}],
     }
-    request = replace(request, input_reference=reference, envelope={**request.envelope, "input_ref": reference})
+    request = replace(request, input_reference=reference, envelope={**request.envelope, "input_ref": reference},
+        immutable_input={**request.immutable_input, "artifacts": [{"artifact_id": stored.artifact_id,
+            "version": 1, "content_sha256": stored.content_sha256, "content_type": stored.content_type}]})
     store.accept(request)
     attempt_id = str(uuid.uuid4())
     store.bind_runtime_attempt(

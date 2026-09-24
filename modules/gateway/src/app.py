@@ -79,6 +79,7 @@ UNIT_MODULES = [
     "src.tasks.artifacts",
     "src.tasks.internal_artifacts",
     "src.tasks.report_routes",
+    "src.tasks.command_routes",
     "src.agentauth.artifact_service",
     "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",
