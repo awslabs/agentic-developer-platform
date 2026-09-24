@@ -215,12 +215,64 @@ Five predecessors remain OPEN: **S12 #5611, S14 #5613, S15 #5614, S16 #5615, S18
 | Gap | Status |
 |---|---|
 | Raw AWS ledger `s3://adp-dev-security-scans-879318057152/security-agent/runs/2026-09-21/` | **Unavailable** — the plan records credentials expired, refresh needs `mwinit`. Not retrieved; not verified clean. I did not attempt credentialed access. |
-| 13 suppressed critical/high Semgrep records | **No disposition exists.** The inventory carries `suppression.kind: inSource` but **null file, line and justification** — so no location-specific evidence is available from it. S21's acceptance requires per-location evidence for a false positive; that evidence must be recovered from source, not from this inventory. |
-| 8 Grype CVSS disagreements | Enumerated (native low/medium vs CVSS 7.5–9.1: helm 9.1, certifi 7.5, protobuf 7.5, openssh-client/server/sftp 7.8, jsonwebtoken 7.5 ×2) but **`vulnerability_id` is null in every record** — the advisory IDs must be recovered from the source SARIF before they can be dispositioned. |
+| 13 suppressed critical/high Semgrep records | **No disposition exists — but the locations are published.** All 13 records carry `locations[].file` and `.line` in the inventory (enumerated in §8.D below), so each is directly reselectable. What is absent is the **suppression justification**: every record's `suppression` array holds only `{"kind": "inSource"}`, with no `justification` field. So the gap is "why was this suppressed", not "where is it". No raw-SARIF recovery is needed to disposition these. |
+| 8 Grype CVSS disagreements | **Fully identified.** All 8 carry advisory IDs in the inventory's `advisory` field — `CVE-2019-25210` (helm, CVSS 9.1), `GHSA-248v-346w-9cwc` (certifi 7.5), `GHSA-8r3f-844c-mc37` (protobuf 7.5), `CVE-2020-15778` ×3 (openssh-client/server/sftp 7.8), `GHSA-h395-gr6q-cpjc` ×2 (jsonwebtoken 7.5). Each is native low/medium against CVSS ≥7. Enumerated with fix versions in §8.E. **Correction:** an earlier revision of this ledger reported these IDs as null and required raw-SARIF recovery. That was wrong — it read a field named `vulnerability_id`, which does not exist in these records. The data was published all along. |
 | 335 of 860 S20 records verdicted `needs-followon` | **No follow-on issues appear to have been filed.** A search for the 11 proposed follow-on packages (FOLLOWON-A…I) returned no matching issues. The largest, FOLLOWON-E, covers 244 k8s pod-hardening records. **These 335 records currently have no GitHub owner.** |
-| Scanner tooling gaps flagged *to* S21 by owners | **Open.** S09 flagged that the pinned `bandit[sarif]==1.7.9` and `.banditrc` are absent from the checkout. A18 found the checkov allowlist is **inert** because the workflow passes `--directory .`. A24 found cfn-nag is not PR-triggered. All three affect whether S21's final scan is trustworthy, and all three are scanner-configuration matters in S21's lane. |
+| Scanner tooling gaps flagged *to* S21 by owners | **Partly open, and two earlier entries here were wrong — see §5.1 below for the reconciliation against the actual workflow.** The supported limitation is cfn-nag's *parse aborts*, not its triggering. Bandit is pinned and configured in the snapshot workflow; cfn-nag does run in the on-demand scan. |
 | `.grype.yaml` review date | **Lapsed.** The file's own header sets "Next review: 2026-08-22"; it is 2026-09-24 and 189 ignore entries are in force. Each entry removes findings from SARIF output entirely, so a lapsed review silently suppresses. S21 owns this. |
 | 16 older primary tickets | All 16 re-checked live and **all still OPEN** (#4701–#4730). None closed by this scan day. |
+
+### 5.1 Scanner configuration, reconciled against the actual workflow
+
+An earlier revision of this ledger repeated owners' local-environment observations as if they
+were repository-level coverage gaps. Checked directly against
+`.github/workflows/security-scan.yml` at the snapshot revision `9afe1423`, two of the three
+claimed gaps do not exist. What matters here is that **overstating a scanner gap is as harmful
+as hiding one** — it would cast false doubt on the final confirmation scan.
+
+| Earlier claim | Verified state at `9afe1423` | Verdict |
+|---|---|---|
+| Pinned `bandit[sarif]==1.7.9` and `.banditrc` absent from the checkout | `BANDIT_VERSION: "1.7.9"` (line 60); `pip install bandit[sarif]==${{ env.BANDIT_VERSION }}` (line 592); `bandit -r . --ini .github/security/.banditrc` (lines 596–597). The config file **exists** and sets `skips: [B101, B311]` plus `exclude_dirs`. | **Withdrawn as stated.** There is no root-level `.banditrc` — the committed config lives at `.github/security/.banditrc`, which is exactly what the workflow passes. A root-only check misreports it as absent. But see the separate verified defect below: the config is passed with the wrong flag. |
+| cfn-nag is not PR-triggered, so CFN linting rests on local cfn-lint alone | The whole workflow is `on: workflow_dispatch` only — an authenticated, **dispatch-only one-off producer**. cfn-nag is Job 6 *inside it*, gated only by `if: inputs.scan_scope != 'superplane'`. | **Withdrawn as a coverage gap.** S21's final scan is an on-demand dispatch, so cfn-nag runs in it. Absence of a PR trigger is not absence of coverage for this scan. |
+| Checkov allowlist inert because the workflow passes `--directory .` | The workflow passes `--directory .` **together with** `--config-file .github/security/checkov.yml` and `--baseline .github/security/checkov-baseline.json` (lines 213–216). The config itself documents this deliberately: "Keep local runs aligned with security-scan.yml, which explicitly passes `--directory .`". Skips come from `skip-check:` in the config, which `--directory` does not override. | **Not supported as stated.** `--directory .` widens the scanned path set; it does not disable the committed `skip-check` list or the baseline. A18's design item 6 may still be unimplemented on its own terms, but the shared allowlist is not rendered inert by this flag. |
+
+**A distinct, newly verified scanner defect (not the one originally claimed).** While checking
+the Bandit claim above, the config turned out to be passed with the wrong flag: the workflow
+uses `bandit --ini .github/security/.banditrc`, but `--ini` is parsed with `configparser` and
+requires an INI `[bandit]` section, whereas that file is YAML (its own header says
+"Format: YAML (bandit >=1.6)"). Reproduced against `bandit[sarif]==1.7.9`: `--ini` emits
+`WARNING Unable to parse config file ... or missing [bandit] section` and then **drops the
+`skips` and `exclude_dirs`**, while `-c` applies them. The warning is non-fatal, so the job
+stays green. Test-directory exclusion is partly recovered by the workflow's separate `-x` flag,
+but `skips: [B101, B311]` is not applied at all.
+
+This is a **real** finding of the same class S19 addressed — configuration that looks applied
+and is not — and it is in S21's scanner-configuration lane. It is the opposite of the original
+claim: the config exists and is referenced, but does not take effect. It is not fixed here;
+this ledger changes no workflow or config file.
+
+**The limitation that most affects the final scan** — and the reason S19's fix is a precondition
+rather than a nicety — is recorded in the workflow's own source comment on the cfn-nag job:
+
+> "No `continue-on-error`: a parse abort must surface. All three templates aborted unscanned on
+> 2026-09-21 and the job still reported success."
+
+So on the scan day, cfn-nag produced a green job while scanning nothing. That is a
+trustworthiness defect in the *result*, not in the trigger. S19 closed it; the final scan must
+run on the corrected tooling and must confirm the templates actually parsed.
+
+A second narrower cfn-nag limitation, verified rather than inferred: `--input-path` covers only
+`modules/agent-factory/agent-worker-image/aws/` (3 templates). Three further CloudFormation
+templates — `modules/gateway/src/auth/cfn_templates/aws_role_v1.yaml`, `aws_role_v2.yaml`,
+`aws_role_deploy_v1.yaml` — fall outside it. Checkov's `cloudformation` framework over
+`--directory .` does reach them, so this is reduced coverage by one tool, not absent coverage.
+
+`.grype.yaml` remains a real S21 item: its own header says "Re-evaluate quarterly. Next review:
+2026-08-22", and 189 `vulnerability:` ignore entries are in force at a date past that review.
+Each entry removes findings from SARIF output entirely, so a lapsed review suppresses silently.
+**20 of the 189 carry no `package:` scope**, so they suppress their advisory globally across every
+package and image — the broadest category, and the first that S21's baseline reconciliation
+should re-justify per location.
 
 ### S20 disposition profile, for reference
 
@@ -273,7 +325,7 @@ an independent re-run by me.
 | Pkg | Issue | State | PR | Merge | Validated | Deployed | Notes |
 |---|---|---|---|---|---|---|---|
 | S01 | 5600 | CLOSED | 5725 | `76c91c24` | partial | no | Owner disclosed Docker/Syft/Grype unavailable — "the analysis predicts what a scan will report; it is not a scan". Controller image *was* later built (digest in `S01-image-evidence.json`) but the lock still says "no build has run yet". |
-| S02 | 5601 | CLOSED | 5783 | `27a5b943` | yes | no | API suite 1203 passed / 25 skipped. Rebuilt-image scan + SBOM criterion **not satisfied**. |
+| S02 | 5601 | CLOSED | 5783 | `27a5b943` | yes | no | API suite 1203 passed / 25 skipped. **Rebuilt-image + SBOM criterion IS satisfied** — see §3.1; an earlier revision of this ledger wrongly recorded it as unsatisfied. Scoped to the original advisory only; the image is not globally clean and is not deployed. |
 | S03 | 5602 | CLOSED | 5724 | `c742c087` | yes | no | **Doc-only PR** — touched no lock/manifest/infra file. Re-pin "handed over as data" to S21. Live startup/persistence unverified. |
 | S04 | 5603 | CLOSED | 5774 | `ebde4b40` | yes | no | 2060/2067 jest pass, 7 failures pre-existing; 30 new tests. |
 | S05 | 5604 | CLOSED | 5704 | `9614f881` | yes | n/a | Validated-as-by-design: the 3 Semgrep hits persist by rule design; per-location disposition, no rule suppressed. |
