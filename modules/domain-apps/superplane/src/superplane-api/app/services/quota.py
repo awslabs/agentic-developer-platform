@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # committed GPUs. Everything else — including in-flight creation — does count: a
 # reservation that stops counting the moment it is uncertain is how two concurrent
 # requests both see the same headroom.
-RELEASED_DEPLOYMENT_STATUSES = ("Deleted", "Failed")
+RELEASED_DEPLOYMENT_STATUSES = ("Deleted", "Failed", "CancelledBeforeDispatch")
 
 # Statuses a deployment row can hold while its cluster write is still in flight.
 # `reserve_deployment_gpus` writes this, and it counts toward the workspace total.

@@ -290,5 +290,13 @@
   [
     "DELETE",
     "/workspaces/{workspace_id}/batch-jobs/{job_id}"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/deployments/{dep_id}/cancellation"
+  ],
+  [
+    "POST",
+    "/workspaces/{workspace_id}/batch-jobs/{job_id}/cancellation"
   ]
 ]

@@ -12,6 +12,7 @@ from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.deployment import Deployment
 from app.schemas.proxy import (
+    CancelWorkloadRequest,
     CreateBatchRequest,
     CreateDeploymentRequest,
     DeleteDeploymentRequest,
@@ -216,9 +217,8 @@ def batch_result(value):
         "operation_state": value["operation_state"],
         "provider_uid": value["provider_uid"],
         "execution_outcome": "unknown",
-        "cleanup_status": "confirmed"
-        if value["status"] == "Deleted"
-        else "unconfirmed",
+        "cleanup_status": value["cleanup_status"],
+        "cancellation_requested": value["cancellation_requested"],
         "observed_cost_micros": None,
     }
 
@@ -344,3 +344,32 @@ async def delete_batch(
             request, db, org_id, workspace_id, job_id, body, workload_kind="batch"
         )
     )
+
+
+@router.post("/{workspace_id}/batch-jobs/{job_id}/cancellation")
+async def cancel_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    body: CancelWorkloadRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_cancellation import cancel
+
+    result = await cancel(request, db, org_id, workspace_id, job_id, body.operation_id, kind="batch")
+    return {**result, "job_id": result["deployment_id"]}
+
+
+@router.post("/{workspace_id}/deployments/{dep_id}/cancellation")
+async def cancel_deployment(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    body: CancelWorkloadRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_cancellation import cancel
+
+    return await cancel(request, db, org_id, workspace_id, dep_id, body.operation_id, kind="serving")

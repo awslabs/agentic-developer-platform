@@ -66,6 +66,11 @@ class CreateDeploymentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CancelWorkloadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: str = Field(min_length=1, max_length=255)
+
+
 class DeleteDeploymentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation_id: uuid.UUID
@@ -101,6 +106,8 @@ class DeploymentInfo(BaseModel):
     deployment_id: uuid.UUID | None = None
     operation_id: str | None = None
     operation_state: str | None = None
+    cancellation_requested: bool = False
+    cleanup_status: str = "unconfirmed"
     provider_uid: str | None = None
     """Single deployment info."""
 
@@ -124,6 +131,8 @@ class DeploymentCreateResponse(BaseModel):
     deployment_id: uuid.UUID | None = None
     operation_id: str | None = None
     operation_state: str | None = None
+    cancellation_requested: bool = False
+    cleanup_status: str = "unconfirmed"
     provider_uid: str | None = None
 
 
@@ -143,6 +152,8 @@ class DeploymentDeleteResponse(BaseModel):
     status: str = "Deleting"
     operation_id: str | None = None
     operation_state: str | None = None
+    cancellation_requested: bool = False
+    cleanup_status: str = "unconfirmed"
 
 
 # --- Heartbeat schemas ---
