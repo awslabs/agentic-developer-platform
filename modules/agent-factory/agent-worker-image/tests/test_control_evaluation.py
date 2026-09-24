@@ -73,13 +73,16 @@ def test_handoff_is_bound_to_dispatch_and_observed_pod(tmp_path, fixture, change
         verify_handoff(request, handoff=handoff, pod_uid='pod-one')
 
 
-def test_runs_exact_bundle_with_fixture_proxy_and_retains_result(tmp_path, fixture, monkeypatch):
+@pytest.mark.parametrize("mode", ["sdk", "registered-control", "native-interrupt"])
+def test_runs_exact_bundle_with_fixture_proxy_and_retains_result(tmp_path, fixture, monkeypatch, mode):
     identity, request, env = fixture
     repo = tmp_path / 'repo'
     repo.mkdir()
-    script = repo / 'platform/scripts/operator/wave2/20-collect-pause-evidence.sh'
+    request['mode'] = mode
+    script_name = '20-collect-pause-evidence.sh' if mode == 'sdk' else '21-run-registered-control.sh'
+    script = repo / 'platform/scripts/operator/wave2' / script_name
     script.parent.mkdir(parents=True)
-    script.write_text('test "$CLAUDE_CODE_USE_BEDROCK" = 1\ntest "$ANTHROPIC_BEDROCK_BASE_URL" = http://127.0.0.1:9090\nexit 7\n')
+    script.write_text('set -e\ntest "$CLAUDE_CODE_USE_BEDROCK" = 1\ntest "$ANTHROPIC_BEDROCK_BASE_URL" = http://127.0.0.1:9090\nexit 7\n')
     subprocess.run(['git', 'init', '-q', str(repo)], check=True)
     subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
     subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture'], check=True)
@@ -99,11 +102,16 @@ def test_runs_exact_bundle_with_fixture_proxy_and_retains_result(tmp_path, fixtu
         assert actual is proxy
         seen['stopped'] = True
     rc = run_evaluation(request, {'message_id': 'invocation-one', 'tenant_id': 'tenant-one'},
-                        start_proxy=start, stop_proxy=stop, handoff=handoff, identity_dir=identity)
+                        start_proxy=start, stop_proxy=stop, handoff=handoff, identity_dir=identity,
+                        control_env={"ADP_CONTROL_TOKEN": "test-token", "ADP_CONTROL_RUN_ID": "invocation-one"} if mode != "sdk" else None)
     assert rc == 7
     assert seen['stopped']
     assert 'AWS_ACCESS_KEY_ID' not in seen['env']
     assert seen['tenant'] == 'tenant-one'
+    assert seen['env']['ADP_CONTROL_FIXTURE_MODE'] == mode
+    assert seen['env']['ADP_CONTROL_FIXTURE_SOURCE_REVISION'] == request['source_revision']
+    if mode != 'sdk':
+        assert seen['env']['ADP_CONTROL_TOKEN'] == 'test-token'
     assert json.loads((handoff / 'result.json').read_text()) == {'exit_code': 7, 'pod_uid': 'pod-one', 'run_nonce': request['run_nonce']}
     assert json.loads((handoff / 'bootstrap-ready.json').read_text())['invocation_id'] == 'invocation-one'
 
@@ -159,6 +167,7 @@ def test_entrypoint_registers_and_tears_down_the_production_control_channel(fixt
     import lib.control_evaluation as evaluation
     import lib.run_identity as identity_module
     identity, request, env = fixture
+    request["mode"] = "registered-control"
     envelope = {'message_id': 'invocation-one', 'tenant_id': 'tenant-one', 'persona': 'developer',
                 'arrived_at': '2026-09-24T12:00:00Z',
                 'source_ref': {'installation_id': 0, 'repo': 'fixture/repo', 'issue': 0},
@@ -220,6 +229,7 @@ def test_entrypoint_tears_down_control_even_when_evaluation_raises(fixture, monk
     import lib.control_evaluation as evaluation
     import lib.run_identity as identity_module
     identity, request, env = fixture
+    request["mode"] = "registered-control"
     envelope = {'message_id': 'invocation-one', 'tenant_id': 'tenant-one', 'persona': 'developer',
                 'arrived_at': '2026-09-24T12:00:00Z',
                 'source_ref': {'installation_id': 0, 'repo': 'fixture/repo', 'issue': 0},
@@ -270,3 +280,89 @@ def test_unprotected_evaluation_marker_cannot_bypass_installation_guard(monkeypa
     assert entrypoint._main() == 1
     bootstrap.assert_not_called()
     ack.assert_called_once()
+
+
+@pytest.mark.parametrize("mode", ["registered-control", "native-interrupt"])
+def test_registered_mode_refuses_missing_registration_before_handoff(tmp_path, fixture, mode):
+    identity, request, _ = fixture
+    request["mode"] = mode
+    with pytest.raises(ValueError, match="production registration"):
+        run_evaluation(request, {"message_id": "invocation-one", "tenant_id": "tenant-one"},
+                       start_proxy=lambda *_: pytest.fail("proxy must not start"),
+                       stop_proxy=lambda *_: None, identity_dir=identity,
+                       handoff=tmp_path / "handoff", control_env={})
+
+
+def test_unknown_mode_is_not_a_sdk_fallback(fixture):
+    identity, request, env = fixture
+    request["mode"] = "unreviewed-launcher"
+    with pytest.raises(ValueError, match="unknown control evaluation mode"):
+        evaluation_request({"payload": {"control_evaluation": request}},
+                           authenticated=True, env=env, identity_dir=identity)
+
+
+@pytest.mark.parametrize('mode,rc,authorized,persisted,acked', [
+    ('native-interrupt', 0, False, True, True),
+    ('native-interrupt', 1, False, True, True),
+    ('native-interrupt', 1, False, False, True),
+    ('registered-control', 1, True, True, True),
+    ('registered-control', 1, True, True, False),
+    ('registered-control', 1, True, False, False),
+])
+def test_fixture_terminal_classification_and_acknowledgement(fixture, monkeypatch, mode, rc, authorized, persisted, acked):
+    from unittest.mock import MagicMock
+    import entrypoint
+    import lib.control_evaluation as evaluation
+    import lib.run_identity as identity_module
+    identity, request, env = fixture
+    request['mode'] = mode
+    envelope = {'message_id': 'invocation-one', 'tenant_id': 'tenant-one', 'persona': 'developer',
+                'arrived_at': '2026-09-24T12:00:00Z',
+                'source_ref': {'installation_id': 0, 'repo': 'fixture/repo', 'issue': 0},
+                'payload': {'control_evaluation': request}}
+    for name, value in env.items(): monkeypatch.setenv(name, value)
+    monkeypatch.setenv('QUEUE_URL', 'fixture-queue')
+    monkeypatch.setattr(entrypoint, '_receive_one_message', lambda *args: (json.dumps(envelope), 'receipt'))
+    monkeypatch.setattr(entrypoint, 'BootstrapLogger', MagicMock())
+    monkeypatch.setattr(entrypoint.run_report, 'configure', lambda *args: None)
+    monkeypatch.setattr(entrypoint.run_report, 'enabled', lambda: False)
+    monkeypatch.setattr(identity_module, 'bootstrap_run_identity', lambda actual: object())
+    real_request = evaluation.evaluation_request
+    monkeypatch.setattr(evaluation, 'evaluation_request', lambda actual, **kwargs: real_request(actual, **kwargs, identity_dir=identity))
+    order = []
+    def setup(child_env, *args):
+        child_env['ADP_CONTROL_TOKEN'] = 'test-token'
+        order.append('registered')
+        return True
+    monkeypatch.setattr(entrypoint, '_setup_agent_control', setup)
+    monkeypatch.setattr(evaluation, 'run_evaluation', lambda *args, **kwargs: order.append('sdk') or rc)
+    monkeypatch.setattr(entrypoint, '_teardown_agent_control', lambda *args: order.append('teardown'))
+    def resolve(message_id, registered):
+        assert message_id == 'invocation-one' and registered
+        order.append('authorization')
+        return {'reason': 'operator request'} if authorized else None
+    monkeypatch.setattr(entrypoint, '_resolve_abort_outcome', resolve)
+    monkeypatch.setattr(entrypoint, 'ABORT_TERMINAL_WRITE_ATTEMPTS', 1)
+    def status(message_id, arrived_at, value, **kwargs):
+        assert message_id == 'invocation-one'
+        order.append(value)
+        return persisted
+    monkeypatch.setattr(entrypoint, 'update_invocation_status', status)
+    monkeypatch.setattr(entrypoint, '_delete_message', lambda *args: order.append('ordinary-ack'))
+    monkeypatch.setattr(entrypoint, '_acknowledge_abort', lambda *args: order.append('abort-ack') or acked)
+    result = entrypoint._main(task_heartbeat=MagicMock())
+    assert order[:4] == ['registered', 'sdk', 'teardown', 'authorization']
+    if authorized:
+        assert order[4:] == ['aborted', 'abort-ack']
+        assert result == (0 if acked else entrypoint.AGENT_EXIT_RETRYABLE)
+    else:
+        assert order[4:] == ['complete' if rc == 0 else 'failed'] + (['ordinary-ack'] if persisted else [])
+        assert result == (rc if persisted else 1)
+
+
+@pytest.mark.parametrize('mode', [[], {}, None, True])
+def test_malformed_mode_fails_with_validation_error(fixture, mode):
+    identity, request, env = fixture
+    request['mode'] = mode
+    with pytest.raises(ValueError, match='mode'):
+        evaluation_request({'payload': {'control_evaluation': request}}, authenticated=True, env=env, identity_dir=identity)

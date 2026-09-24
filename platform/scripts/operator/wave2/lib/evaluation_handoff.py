@@ -21,6 +21,8 @@ REMOTE = '/work/control-evaluation'
 def validate_inputs(envelope, ledger, identity, bundle):
     expected = identity['expected_identity']
     request = envelope['payload']['control_evaluation']
+    if request.get('mode', 'sdk') not in ('sdk', 'registered-control', 'native-interrupt'):
+        raise ValueError('unknown control evaluation mode')
     if (request['run_id'] != ledger['run_id'] or request['run_nonce'] != ledger['run_nonce']
             or expected['run_id'] != ledger['run_id'] or expected['nonce'] != ledger['run_nonce']):
         raise ValueError('handoff documents belong to different fixtures')
@@ -97,12 +99,21 @@ def main():
     if result.get('pod_uid') != expected['pod_uid'] or result.get('run_nonce') != request['run_nonce']:
         raise ValueError('collected result belongs to another worker')
     # Preserve logs even if the experiment failed before creating its evidence directory.
-    evidence = command('exec', target, '-c', 'agent-worker', '--', 'sh', '-c',
-                       'if test -d /work/control-evaluation/evidence; then echo exists; fi')
-    if evidence.strip():
-        command('cp', target + ':' + REMOTE + '/evidence', str(args.output / 'evidence'), '-c', 'agent-worker')
-    elif result['exit_code'] == 0:
-        raise ValueError('successful experiment has no evidence directory')
+    if request.get('mode', 'sdk') != 'sdk':
+        data = command('exec', target, '-c', 'agent-worker', '--', 'cat', REMOTE + '/registered-runtime.json')
+        runtime = json.loads(data)
+        if (runtime.get('invocation_id') != envelope['message_id']
+                or runtime.get('source_revision') != request['source_revision']
+                or runtime.get('mode') != request['mode'] or runtime.get('run_id') != request['run_id']):
+            raise ValueError('registered runtime evidence belongs to another invocation')
+        (args.output / 'registered-runtime.json').write_bytes(data)
+    else:
+        evidence = command('exec', target, '-c', 'agent-worker', '--', 'sh', '-c',
+                           'if test -d /work/control-evaluation/evidence; then echo exists; fi')
+        if evidence.strip():
+            command('cp', target + ':' + REMOTE + '/evidence', str(args.output / 'evidence'), '-c', 'agent-worker')
+        elif result['exit_code'] == 0:
+            raise ValueError('successful experiment has no evidence directory')
     check_pod()
     command('exec', target, '-c', 'agent-worker', '--', 'touch', REMOTE + '/collected')
     return int(result['exit_code'])

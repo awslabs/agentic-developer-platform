@@ -21,6 +21,7 @@ from typing import Callable
 
 HANDOFF = Path("/work/control-evaluation")
 IDENTITY = Path("/var/run/adp-w2-identity")
+MODES = frozenset({"sdk", "registered-control", "native-interrupt"})
 
 
 def evaluation_request(envelope: dict, *, authenticated: bool, env: dict,
@@ -31,6 +32,8 @@ def evaluation_request(envelope: dict, *, authenticated: bool, env: dict,
         return None
     if not isinstance(request, dict) or not authenticated or env.get("ADP_AGENT_AUTHORITY_ENABLED") != "true":
         raise ValueError("control evaluation requires authenticated fixture dispatch")
+    if not isinstance(request.get("mode", "sdk"), str) or request.get("mode", "sdk") not in MODES:
+        raise ValueError("unknown control evaluation mode")
     labels = {}
     for line in (identity_dir / "pod-labels").read_text().splitlines():
         key, separator, value = line.partition("=")
@@ -87,12 +90,17 @@ def run_evaluation(request: dict, envelope: dict, *, start_proxy: Callable,
     fresh child-env dict for this run (issue #5891, LF-01) — the same
     ``ADP_CONTROL_*`` values the ordinary path places into its own agent
     subprocess's environment. Empty when control registration failed or the
-    feature flag is off, in which case the evidence collector runs exactly as
-    it did before this parameter existed. Never merged into ``os.environ``:
+    feature flag is off. Registered modes fail closed without a token; the
+    default SDK mode continues to use the existing experiment collector. Never merged into ``os.environ``:
     like the ordinary path, only the *evaluation subprocess's* environment
     carries the token.
     """
     handoff.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mode = request.get("mode", "sdk")
+    if not isinstance(mode, str) or mode not in MODES:
+        raise ValueError("unknown control evaluation mode")
+    if mode != "sdk" and not (control_env or {}).get("ADP_CONTROL_TOKEN"):
+        raise ValueError("registered control evaluation requires production registration")
     pod_uid = (identity_dir / "pod-uid").read_text().strip()
     (handoff / "bootstrap-ready.json").write_text(json.dumps({
         "pod_uid": pod_uid, "run_id": request["run_id"],
@@ -119,6 +127,9 @@ def run_evaluation(request: dict, envelope: dict, *, start_proxy: Callable,
     })
     if control_env:
         env.update(control_env)
+    env["ADP_CONTROL_FIXTURE_MODE"] = mode
+    env["ADP_CONTROL_FIXTURE_OUTPUT"] = str(handoff / "registered-runtime.json")
+    env["ADP_CONTROL_FIXTURE_SOURCE_REVISION"] = request["source_revision"]
     for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "ANTHROPIC_BASE_URL"):
         env.pop(key, None)
     proxy = start_proxy(env, envelope["tenant_id"])
@@ -127,12 +138,15 @@ def run_evaluation(request: dict, envelope: dict, *, start_proxy: Callable,
     result = 1
     try:
         with (handoff / "experiment.log").open("w") as log:
-            process = subprocess.Popen([
+            command = [
                 "bash", str(checkout / "platform/scripts/operator/wave2/20-collect-pause-evidence.sh"),
                 "--evidence-dir", str(handoff / "evidence"),
                 "--expected-identity", str(handoff / "expected-identity.json"),
                 "--ledger", str(handoff / "cleanup-ledger.json"),
-            ], env=env, cwd=checkout, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            ]
+            if mode != "sdk":
+                command = ["bash", str(checkout / "platform/scripts/operator/wave2/21-run-registered-control.sh")]
+            process = subprocess.Popen(command, env=env, cwd=checkout, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 result = process.wait(timeout=1800)
             except subprocess.TimeoutExpired:

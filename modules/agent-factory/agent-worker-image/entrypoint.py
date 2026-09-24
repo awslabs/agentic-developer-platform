@@ -1644,7 +1644,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         # path leaves it for its own agent subprocess (#3960's separation between
         # this process's env and the child's).
         control_env: dict = {}
-        control_registered = _setup_agent_control(control_env, message_id, arrived_at)
+        registered_mode = evaluation.get("mode", "sdk") != "sdk"
+        control_registered = (
+            _setup_agent_control(control_env, message_id, arrived_at) if registered_mode else False
+        )
         try:
             rc = run_evaluation(evaluation, envelope, start_proxy=_start_sigv4_proxy,
                                 stop_proxy=_stop_sigv4_proxy, control_env=control_env)
@@ -1657,6 +1660,15 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _teardown_agent_control(message_id, arrived_at, control_registered)
         if task_heartbeat is not None:
             task_heartbeat.stop()
+        abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+        if abort_outcome is not None:
+            summary = "Run-bound live control evaluation aborted by an operator"
+            persisted = _persist_abort_terminal_status(message_id, arrived_at, summary)
+            return _finalize_abort_acknowledgement(
+                queue_url=queue_url, region=region, receipt_handle=receipt_handle,
+                exit_code=0, terminal_persisted=persisted, message_id=message_id,
+                arrived_at=arrived_at, summary=summary,
+            )
         recorded = update_invocation_status(
             message_id, arrived_at, "complete" if rc == 0 else "failed",
             summary="Run-bound live control evaluation finished",

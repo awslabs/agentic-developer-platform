@@ -142,6 +142,10 @@ on:
       - 'modules/agent-factory/agent/src/control-runtime-fault-probe.ts'
       - 'modules/agent-factory/agent/src/control-runtime-steering-probe.test.ts'
       - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.test.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.test.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.test.ts'
@@ -807,6 +811,7 @@ jobs:
             src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
             src/control-runtime-timeout.assembly.test.ts \
             src/control-runtime-steering-probe.test.ts \
+            src/control-runtime-factory.test.ts src/registered-control-fixture.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -816,6 +821,8 @@ jobs:
             --collectCoverageFrom='src/control-revalidation.ts' \
             --collectCoverageFrom='src/lib/runIdentity.ts' \
             --collectCoverageFrom='src/control-runtime.ts' \
+            --collectCoverageFrom='src/control-runtime-factory.ts' \
+            --collectCoverageFrom='src/registered-control-fixture.ts' \
             --collectCoverageFrom='src/pause-gate.ts' \
             --collectCoverageFrom='src/control-command-apply.ts' \
             --collectCoverageFrom='src/steer-queue.ts' \
@@ -824,7 +831,7 @@ jobs:
             --collectCoverageFrom='src/control-runtime-timeout.ts' \
             --collectCoverageFrom='src/run-heartbeat.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
-            --ci --verbose
+            --maxWorkers=2 --ci --verbose
 
       - name: Assert the control adapter advertises no verb as supported
         working-directory: modules/agent-factory/agent
@@ -1084,7 +1091,7 @@ jobs:
         # `update_status` would be measured as uncovered by the very step that
         # enforces the threshold.
         run: |
-          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py \
+          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py tests/test_control_evaluation.py \
             tests/test_status_vocabulary.py \
             --cov=lib.invocation_status \
             --cov=entrypoint \
