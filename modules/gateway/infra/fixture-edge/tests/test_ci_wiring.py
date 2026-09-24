@@ -151,6 +151,71 @@ def test_fmt_validate_and_test_all_run(steps):
 
 
 # ---------------------------------------------------------------------------
+# PREREQUISITES — a test that cannot run is not a test that passed
+# ---------------------------------------------------------------------------
+# Root's finding, from an actual CI run: the job reported 5 failed / 120 passed,
+# and all five were the signed-probe cases returning HTTP 000 — an UNSIGNED
+# request, which is the very defect they exist to detect, caused here by boto3
+# being absent rather than by the script. The same run's real-kubectl tests could
+# equally have SKIPPED silently, which would have been worse: a skip is reported
+# as success.
+#
+# So the runtime prerequisites of the two checks that reach outside the fakes are
+# gated here.
+def test_boto3_is_installed_for_the_signed_probe(steps):
+    """The wrong-role control signs through botocore's own provider chain.
+
+    That is not stylistic: the previous revision read keys with `aws configure get`,
+    which returns nothing under assumed-role/SSO, so the probe could never sign and
+    a 403 it recorded proved nothing. The replacement imports boto3 in the process
+    under test, so an environment without boto3 turns the control's own test into a
+    dependency failure that LOOKS like the defect.
+    """
+    installs = [s.get("run", "") for s in steps if "pip install" in s.get("run", "")]
+    assert installs, "no dependency install step found"
+    assert any(re.search(r"\bboto3\b", r) for r in installs), (
+        "boto3 is not installed. The signed wrong-role probe then cannot sign, and "
+        "its tests fail with HTTP 000 — indistinguishable from the unsigned-probe "
+        "defect they are meant to catch."
+    )
+
+
+def test_the_real_kubectl_is_installed(steps):
+    """Two tests hand the ACTUAL command line to the REAL kubectl (`--local`, so no
+    cluster and no credentials). They are the only checks here not made against a
+    double, and they exist because the fake accepted a flag kubectl does not have."""
+    run = _run_text(steps)
+    assert re.search(r"kubectl", run), (
+        "no step installs kubectl, so the only real-CLI regression in this suite "
+        "cannot execute in CI — the workflow comments claiming it does would be false."
+    )
+    assert "dl.k8s.io" in run or "setup-kubectl" in run, (
+        "kubectl is mentioned but not installed from a release or an action"
+    )
+
+
+def test_a_missing_kubectl_fails_the_job_instead_of_skipping_it(steps):
+    """THE SKIP-IS-NOT-A-PASS GATE.
+
+    If the install step above ever breaks or is removed, the two real-CLI tests
+    would `pytest.skip` and the job would stay green with the interface unchecked.
+    The pytest suite escalates that skip to a failure when
+    FIXTURE_EDGE_REQUIRE_REAL_KUBECTL=1, so this asserts the step that runs it
+    declares that variable.
+    """
+    running = [s for s in steps
+               if "test_fixture_lifecycle.py" in s.get("run", "")]
+    assert running, "no step runs the lifecycle suite"
+    for s in running:
+        env = s.get("env") or {}
+        assert str(env.get("FIXTURE_EDGE_REQUIRE_REAL_KUBECTL")) == "1", (
+            f"step '{s.get('name', '?')}' runs the lifecycle suite without "
+            "FIXTURE_EDGE_REQUIRE_REAL_KUBECTL=1, so an absent kubectl would skip "
+            "the real-CLI regression and still report a green check."
+        )
+
+
+# ---------------------------------------------------------------------------
 # NO PRODUCTION CREDENTIALS — #5836 forbids live mutation from CI
 # ---------------------------------------------------------------------------
 # arc-runner-org carries ambient IRSA credentials. NOT REQUESTING credentials is

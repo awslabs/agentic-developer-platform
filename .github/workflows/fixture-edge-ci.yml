@@ -115,8 +115,34 @@ jobs:
           terraform_version: '1.14.6'
           terraform_wrapper: false
 
+      # boto3 is NOT optional here, and it is not a convenience. The wrong-role
+      # control in `verify` signs its probe through botocore's OWN provider chain
+      # (the previous revision read keys out of the aws config file with
+      # `aws configure get`, which returns nothing for assumed-role/SSO, so the
+      # probe could never sign). The test for it therefore imports boto3 in the
+      # subprocess under test. Without this install those five cases report HTTP
+      # 000 — an unsigned request, i.e. the exact defect being tested, reported as
+      # a test failure rather than as a missing dependency.
       - name: Install test dependencies
-        run: pip install pytest PyYAML
+        run: pip install pytest PyYAML boto3
+
+      # Two tests hand the ACTUAL kubectl command line to the REAL binary in
+      # --local mode. That is the only check in this suite made against a real CLI
+      # instead of a double, and it exists because the fake DID accept a
+      # nonexistent flag (`--resource-version`) while the script could not run at
+      # all. `--local` parses flags and patches the object client-side: no cluster,
+      # no kubeconfig, no credentials.
+      #
+      # FIXTURE_EDGE_REQUIRE_REAL_KUBECTL below turns "kubectl missing" from a SKIP
+      # into a FAILURE for this job, so the required regression cannot quietly stop
+      # executing if this install step breaks or is removed. test_ci_wiring.py
+      # asserts both the install and the variable.
+      - name: Install kubectl (for the real-CLI interface regression)
+        run: |
+          KV="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+          curl -fsSL "https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl" -o /tmp/kubectl
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          kubectl version --client
 
       # Separate from validate so the failure message distinguishes "badly
       # formatted" from "invalid" — they need different fixes.
@@ -147,6 +173,10 @@ jobs:
       # passing for free. It caught its own omission from this step when first
       # written, which is the regression it exists to prevent.
       - name: Script composition and CI-wiring tests
+        env:
+          # Absence of the real kubectl must FAIL this job, not skip two tests.
+          # See the install step above.
+          FIXTURE_EDGE_REQUIRE_REAL_KUBECTL: '1'
         run: |
           python3 -m pytest -q --import-mode=importlib \
             tests/test_fixture_alb_composition.py \

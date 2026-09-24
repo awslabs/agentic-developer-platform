@@ -1589,6 +1589,33 @@ def test_handoff_binds_the_patch_to_the_verified_object_with_json_patch_tests(ha
         f"the patch does not pin the verified resourceVersion: {tests}")
 
 
+def _real_kubectl():
+    """The real kubectl binary, or a decision about its absence.
+
+    Root's point: a REQUIRED regression that skips when a prerequisite is missing is
+    indistinguishable from one that passed. The two tests below are the only checks in
+    this suite made against a real CLI rather than a double, so their silent
+    disappearance is exactly the failure they exist to prevent.
+
+    So absence is a SKIP locally (a developer without kubectl should still be able to
+    run the suite) and a FAILURE wherever the prerequisite is declared, which the CI
+    workflow does by exporting FIXTURE_EDGE_REQUIRE_REAL_KUBECTL=1. test_ci_wiring.py
+    asserts that variable is set there, so the strict mode cannot be dropped from the
+    workflow without a failing gate.
+    """
+    kubectl = shutil.which("kubectl")
+    if kubectl:
+        return kubectl
+    if os.environ.get("FIXTURE_EDGE_REQUIRE_REAL_KUBECTL") == "1":
+        pytest.fail(
+            "kubectl is NOT on PATH, and FIXTURE_EDGE_REQUIRE_REAL_KUBECTL=1 declares "
+            "that this environment must supply it. Failing instead of skipping: these "
+            "are the only tests here that check the real CLI interface, and a silent "
+            "skip is how a script that cannot run at all stays green.")
+    pytest.skip("real kubectl not on PATH (set FIXTURE_EDGE_REQUIRE_REAL_KUBECTL=1 "
+                "to make this a failure, as the dedicated CI workflow does)")
+
+
 def test_the_patch_body_and_flags_parse_under_the_real_kubectl(harness):
     """THE REGRESSION FOR THE PERMISSIVE-DOUBLE CLASS ITSELF.
 
@@ -1599,12 +1626,11 @@ def test_the_patch_body_and_flags_parse_under_the_real_kubectl(harness):
     the patch client-side without contacting any cluster (no credentials, no
     mutation, safe in CI).
 
-    Skips rather than fails when kubectl is absent so the suite still runs, but the
-    dedicated CI workflow installs it, so the interface is checked there.
+    Skips when kubectl is absent so a developer without it can still run the suite --
+    but FAILS when the environment declares it must be present (see _real_kubectl),
+    which is what the dedicated CI workflow does.
     """
-    kubectl = shutil.which("kubectl")
-    if not kubectl:
-        pytest.skip("real kubectl not on PATH; the dedicated CI workflow installs it")
+    kubectl = _real_kubectl()
     r = harness.run("handoff", args=["--fixture-deployment", DEPLOY])
     assert r.returncode == 0, r.stderr
     patch = next(l for l in harness.log.read_text().splitlines()
@@ -1634,9 +1660,7 @@ def test_the_real_kubectl_rejects_the_flag_the_previous_revision_used(harness):
     """Pins WHY the above changed, so nobody reintroduces `--resource-version`
     believing it is merely stylistic. Asserted against the real binary, because the
     claim is about kubectl's interface and not about this repo."""
-    kubectl = shutil.which("kubectl")
-    if not kubectl:
-        pytest.skip("real kubectl not on PATH; the dedicated CI workflow installs it")
+    kubectl = _real_kubectl()
     live = harness.tmp / "live-deployment.json"
     live.write_text(json.dumps(_deployment_doc()))
     out = subprocess.run(
