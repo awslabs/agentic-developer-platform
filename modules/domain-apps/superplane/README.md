@@ -2,9 +2,11 @@
 
 ADP-side module for the Superplane domain app (EPIC #4910, unit U1 / issue #5037).
 
-**Status: skeleton.** This directory is the landing place every other ADP-side unit in
-the EPIC builds into. Today it contains the layout, the feature gate and the offline CI
-lane; the substantive contents arrive with the units named below.
+This directory contains the maintained Superplane API, controller, monitor,
+governed execution adapters, installer and domain UI. Source delivery and remote
+code validation remain separate from deployment and live workload acceptance.
+Start with the [installation contract](installation/README.md),
+[execution contract](executor/README.md) and [onboarding/workload UI](ui/README.md).
 
 ## Feature gate
 
@@ -47,11 +49,10 @@ Per design note §3 (lines 149–162). Each directory is owned by the unit named
 
 ### There is deliberately no `api/`
 
-New domain server routes and migrations live **beside the Superplane API upstream**, not
-here (design §3 line 171: "ADP installs and tests the pinned release"). A second
-writable ADP-hosted domain service was explicitly withdrawn in the design's revision 3.
-What lands on the ADP side is versioned contracts, thin API clients and MCP tools, auth
-adapters, pinned build/deployment integration, and scoped provider-executor adapters.
+The maintained API and its isolated migration chain live in
+`src/superplane-api/`; controller and monitor source live beside it under `src/`.
+U22 transferred this source into ADP. Add routes and migrations to that existing
+service rather than creating a second domain service or writable upstream tree.
 
 If an ADP-side unit finds itself wanting to add `api/`, that is a design question to
 raise — not a directory to create.
