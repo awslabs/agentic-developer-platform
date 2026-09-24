@@ -47,10 +47,10 @@ mock_provider "aws" {
   # refuses — which is only meaningful because the default is otherwise valid.
   mock_data "aws_lb" {
     defaults = {
-      arn            = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
-      dns_name       = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
-      internal       = true
-      vpc_id         = "vpc-0d6115bead9301d25"
+      arn             = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name        = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
+      internal        = true
+      vpc_id          = "vpc-0d6115bead9301d25"
       security_groups = ["sg-0b0f5533ab8440db8"]
       tags = {
         AdpFixtureRun = "a1b2c3d4e5f60718"
@@ -484,7 +484,7 @@ run "resource_policy_allows_only_listed_roles" {
   # NEGATIVE for the internal plane: the listed role is allowed there...
   assert {
     condition = sort([
-      for p in[
+      for p in [
         for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
         s if s.Sid == "AllowListedFixtureCallersOnInternal"
       ][0].Principal.AWS : p
@@ -518,7 +518,7 @@ run "resource_policy_allows_only_listed_roles" {
 
   assert {
     condition = alltrue([
-      for arn in[
+      for arn in [
         for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
         s if s.Sid == "DenyNonListedPrincipalsOnInternal"
       ][0].Condition.StringNotLike["aws:PrincipalArn"] :

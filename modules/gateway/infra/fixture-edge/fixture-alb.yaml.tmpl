@@ -1,0 +1,122 @@
+# =============================================================================
+# Fixture internal ALB — Ingress template (Issue #5836)
+# =============================================================================
+# WHY THIS FILE EXISTS
+# --------------------
+# The fixture trusted edge forwards to a FIXTURE-OWNED internal ALB. Nothing
+# created that ALB. #3968's renderer (lib/render_fixture.py) produces a
+# Deployment, a ClusterIP Service and NetworkPolicies -- verified on branch
+# agent/issue-3968: it contains NO Ingress and NO LoadBalancer. An earlier
+# revision of the runbook claimed #3968 already owned this, which left a circular
+# prerequisite: neither side created the ALB the edge needs.
+#
+# #5836 owns the edge prerequisite, so the composition lives HERE, in this
+# component's own directory. It is INVOKED by scripts/create-fixture-alb.sh,
+# which records the object in #3968's existing ledger through its supported
+# record-k8s interface -- no file under platform/scripts/operator/wave2/ is
+# modified.
+#
+# WHY A DEDICATED ALB AND NOT A SECOND LISTENER OR AN INGRESS GROUP
+# -----------------------------------------------------------------
+# On EKS Auto Mode one Ingress == one ALB. IngressGroups are only settable via
+# IngressClassParams, and changing group identity CREATES A NEW ALB AND DELETES
+# THE OLD ONE, ignoring deletion protection -- which would take out the live edge.
+# This is recorded in docs/design-notes/4010-internal-plane-alb-separation.md and
+# re-confirmed by #3968's FIXTURE-ROUTING-CONSTRAINT.md. So a dedicated Ingress is
+# the ONLY way to give the fixture its own ALB without touching the ordinary one.
+#
+# THE SECURITY GROUP IS LOAD-BEARING, NOT COSMETIC
+# ------------------------------------------------
+# The reused VPC Link's security group does NOT have open egress. Read-only
+# discovery in dev (879318057152/us-east-1) showed sg-013f2ce2bcaf1642c permits
+# tcp/80 to three SPECIFIC target security groups and nothing else. A fixture ALB
+# with a fresh controller-created security group would therefore be UNREACHABLE:
+# the Ingress reconciles, the Terraform plan applies, and every request times out
+# -- which reads as a broken fixture rather than as a networking gap.
+#
+# So the fixture ALB explicitly reuses the shared backend group the link may
+# already reach (dev: sg-0623ec399f4a20b87, "[k8s] Shared Backend SecurityGroup
+# for LoadBalancers", carried by BOTH ordinary gateway ALBs). Reusing an existing
+# group is deliberately preferred over widening the shared VPC Link group, which
+# would be an ordinary-infrastructure change #5836 forbids.
+#
+# main.tf enforces this rather than trusting it: the run_binding_gate refuses to
+# plan unless the discovered ALB carries a permitted group.
+#
+# PLACEHOLDERS (substituted by scripts/create-fixture-alb.sh; no shell eval)
+#   __NAME__        fixture object name, carries the run id
+#   __NAMESPACE__   fixture namespace (the gateway namespace)
+#   __SERVICE__     fixture ClusterIP Service name (created by #3968's renderer)
+#   __RUN_ID__      #3968 ledger run id
+#   __RUN_NONCE__   run nonce; becomes the AdpFixtureRun tag the gate verifies
+#   __ALB_SG_IDS__  comma-separated security groups the VPC Link may reach
+#   __PORT__        listener port (80; matches the link's egress rule)
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: __NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: __NAME__
+    app.kubernetes.io/component: w2-fixture-internal-plane
+    # Run-scoping labels mirror the ones #3968's renderer puts on the fixture
+    # Deployment/Service, so a single label selector finds every object of a run.
+    adp.io/w2-fixture: __RUN_ID__
+    adp.io/w2-nonce: __RUN_NONCE__
+  annotations:
+    # Internal only. This ALB fronts a gateway that trusts headers injected by
+    # the fixture edge, so it must not be reachable from outside the VPC --
+    # otherwise the fixture pod could be addressed directly, bypassing the only
+    # component allowed to assert identity. main.tf re-verifies the resolved
+    # scheme (data.aws_lb.fixture.internal) rather than trusting this annotation.
+    alb.ingress.kubernetes.io/scheme: internal
+
+    # Reuse security groups the VPC Link can already reach -- see the header.
+    # Setting this annotation means the controller does NOT create a frontend
+    # security group, so reachability is inherited rather than newly granted.
+    alb.ingress.kubernetes.io/security-groups: __ALB_SG_IDS__
+    # With explicit frontend security groups, the controller does not manage the
+    # backend rules by default. Enabling it lets the controller open the path from
+    # this ALB to the fixture pods without any manual security-group edit.
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+
+    alb.ingress.kubernetes.io/target-type: ip
+    # Port 80 only, matching the VPC Link's existing egress rule. A different port
+    # would require opening the SHARED link security group, which is an ordinary-
+    # infrastructure change this issue forbids.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": __PORT__}]'
+
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/success-codes: "200"
+
+    # Idle timeout >= the API Gateway integration timeout, for the same reason as
+    # the ordinary internal plane: internal routes proxy long-running work and the
+    # 60s default surfaces as spurious 504s.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=900
+
+    # THE OWNERSHIP TAG. main.tf's run_binding_gate REFUSES to plan unless the
+    # discovered ALB carries AdpFixtureRun = <run_nonce>. That is what stops the
+    # edge from being attached to an ALB belonging to ordinary infrastructure or
+    # to another run, and it is why teardown can prove what this run created.
+    alb.ingress.kubernetes.io/tags: AdpFixtureRun=__RUN_NONCE__,AdpFixtureIssue=5836,AdpFixtureEpic=3959,Disposable=true,ManagedBy=w2-fixture-edge
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # Only the internal plane is served, mirroring the ordinary
+          # internal-plane Ingress. Anything else falls through to the listener's
+          # default 404, so this ALB deliberately exposes no other surface.
+          - path: /internal
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
