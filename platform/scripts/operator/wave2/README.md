@@ -468,6 +468,17 @@ themselves. Unknown activity makes `counters_complete` false permanently. Reject
 incomplete counters or dropped events, and obtain accepted-command counts from
 the actual listener journal. The snapshot contains no credentials or SDK content.
 
+Before source handoff starts the SDK, finish any gateway CIDR update and verify
+that no old fixture gateway pod is still terminating. `kubectl rollout status`
+can complete while an old pod drains an existing connection; starting the SDK
+first can keep that pod alive throughout the capability capture. Bootstrap may
+wait for handoff while the route settles.
+
+A registered fixture that returns SDK success without any tool execution exits
+nonzero and records `fixture_no_tool_execution`. Its final report also preserves
+bounded, redacted authored explanations (excluding thinking and tool output) for
+diagnosis. Successful SDK completion alone is not proof of exercised controls.
+
 Use the authenticated handoff command above for each new invocation. While
 `registered-control` runs, collect live command responses and browser actions
 against that invocation. Use a separate invocation for abort so it cannot end the

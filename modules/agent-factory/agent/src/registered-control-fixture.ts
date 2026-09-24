@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { startControlRuntime } from './control-runtime-factory';
 import { assistantText } from './reporting-text';
+import { ExplanationEvents } from './explanation-events';
 import { resilientQuery } from './utils/resilientQuery';
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore } from './utils/spill';
@@ -18,6 +19,7 @@ export async function runRegisteredControlFixture(): Promise<number> {
       !['registered-control', 'native-interrupt'].includes(mode || '')) {
     throw new Error('authenticated fixture identity and mode are required');
   }
+  const authored = new ExplanationEvents(invocation, Number(process.env.ADP_CONTROL_GENERATION));
   const events: Event[] = [];
   let droppedEvents = 0;
   let sdkQueries = 0;
@@ -89,7 +91,7 @@ export async function runRegisteredControlFixture(): Promise<number> {
       ? 'This is an authorized disposable control fixture. Run Bash sleep 30, then report completion. Do not run background commands.'
       : started.events
         ? 'This is an authorized disposable streaming fixture. First explain to the reader that a bounded history supports reconnects, choosing bounded memory over complete live replay. Include the marker STREAM-MECHANISM. Then run foreground Bash sleep 20. Next explain that seeing two live messages proves incremental delivery but not durable cross-pod replay; include STREAM-EVIDENCE. Then run foreground Bash sleep 20 and finish. Do not combine both explanations in one message. Do not use background work.'
-      : 'This is an authorized disposable control fixture. Repeatedly use separate foreground Bash calls to sleep 2 seconds, then use Write to update progress.txt with the iteration number. Continue for 100 iterations unless a later user instruction changes the task. Keep all files within this working directory. Do not combine the loop into one Bash call or use background work.';
+      : 'Validate foreground tool execution in this disposable directory. Perform exactly three steps in order. For each step, use Bash to run sleep 60 with timeout 90000, wait for that foreground call to finish, then use Write to put the step number in progress.txt. Use separate calls; never background the command or combine the steps into a shell loop. A later user instruction may change the task. Keep all files within this working directory.';
     const attach = runtime.adapter.onAttemptHandle();
     for await (const message of resilientQuery({
       queryParams: { prompt, options: {
@@ -118,7 +120,11 @@ export async function runRegisteredControlFixture(): Promise<number> {
       record('sdk_message', { message_type: event.type, subtype: event.subtype });
       if (event.type === 'assistant') {
         const content = (event.message as { content?: Array<{ type?: unknown; text?: unknown }> } | undefined)?.content;
-        if (Array.isArray(content)) started.events?.publish(assistantText(content));
+        if (Array.isArray(content)) {
+          const text = assistantText(content);
+          authored.publish(text);
+          started.events?.publish(text);
+        }
       }
       if (event.type === 'assistant' && mode === 'native-interrupt' && !nativeRequested) {
         if (!handle || typeof handle.interrupt !== 'function') throw new Error('SDK interruption unavailable');
@@ -137,6 +143,10 @@ export async function runRegisteredControlFixture(): Promise<number> {
     }
     exitCode = !timedOut && resultSeen && !sdkFailure ? 0 : 1;
     if (mode === 'native-interrupt' && !nativeAcknowledged) exitCode = 1;
+    if (mode === 'registered-control' && toolStarts === 0) {
+      record('fixture_no_tool_execution');
+      exitCode = 1;
+    }
   } catch (error) {
     record('sdk_exception', { error_name: error instanceof Error ? error.name : 'unknown' });
     exitCode = 1;
@@ -162,6 +172,7 @@ export async function runRegisteredControlFixture(): Promise<number> {
       native_requested: nativeRequested, native_acknowledged: nativeAcknowledged,
       result_seen: resultSeen, timed_out: timedOut, exit_code: exitCode,
       dropped_events: droppedEvents, cleanup_errors: cleanupErrors, events,
+      authored_explanations: authored.replay().events,
       counters: { sdk_queries: sdkQueries, tool_starts: toolStarts, active_tools: activeTools,
         counters_complete: countersComplete },
     };
