@@ -186,10 +186,16 @@ def admit(
         status = exc.code
         try:
             raw = exc.read(_MAX_RESPONSE_BYTES + 1)
-        except Exception:
+        except Exception:  # noqa: BLE001 - an unreadable error body is simply absent
             raw = b""
-    except Exception:
-        # Connectivity or proof failure is a readiness failure; never a 202.
+    except Exception:  # noqa: BLE001 - see below; the catch must be total
+        # Deliberately broad. Any failure reaching the gateway — DNS, TLS,
+        # timeout, socket reset, a botocore error while signing — means this
+        # request was not durably recorded. Narrowing this would let an
+        # unanticipated exception propagate and be reported as something other
+        # than "not accepted", which is the one outcome that must never be
+        # wrong. The exception is dropped rather than chained so no transport
+        # detail or credential can reach a log or response.
         raise errors.prerequisite_unavailable() from None
 
     if len(raw) > _MAX_RESPONSE_BYTES:
