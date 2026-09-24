@@ -122,6 +122,12 @@ WORK_DUE_ATTRIBUTE: Final = "task_due"
 WORK_SHARD_COUNT: Final = 16
 WORK_SHARD_PREFIX: Final = "v1#"
 
+# Protected primary-key locator in the existing authority table.  The due GSI is
+# discovery only; every dispatch/recovery operation resolves this key and then
+# reads the exact request-table key recorded in the binding.
+TASK_WORK_LOCATOR_PREFIX: Final = "TASK_WORK_ID#"
+TASK_WORK_LOCATOR_SORT_KEY: Final = "BINDING"
+
 #: Epoch-millisecond due times are zero-padded so the index sorts chronologically
 #: as strings, for the same reason sequence numbers are padded.
 _DUE_WIDTH: Final = 13
@@ -220,6 +226,42 @@ def task_artifact_partition(artifact_id: str) -> str:
     24 hours), so at write time there is no task to key it under.
     """
     return f"{TASK_ARTIFACT_NAMESPACE}#{validate_artifact_id(artifact_id)}"
+
+
+def task_work_locator_partition(work_id: str) -> str:
+    """``TASK_WORK_ID#<work_uuid>`` in the protected authority table."""
+    return f"{TASK_WORK_LOCATOR_PREFIX}{validate_uuid(work_id, 'work_id')}"
+
+
+def task_authority_partition(tenant: str) -> str:
+    """Tenant partition used by protected task bindings and run grants."""
+    if not isinstance(tenant, str) or not tenant or "#" in tenant:
+        raise TaskRecordError("tenant must be a non-empty identifier without '#'")
+    return f"TENANT#{tenant}"
+
+
+def task_binding_sort_key(task_id: str) -> str:
+    """Protected immutable task binding key."""
+    return f"TASK#{validate_task_id(task_id)}"
+
+
+def task_run_grant_sort_key(*, invocation_id: str, generation: int) -> str:
+    """Protected run-grant key, sharing the request-table generation width."""
+    return f"TASK_RUN#{validate_uuid(invocation_id, 'invocation_id')}#GEN#{_pad(generation, _GENERATION_WIDTH, 'generation')}"
+
+
+def task_policy_sort_key(canonical_principal: str) -> str:
+    """Protected service policy key used as an acceptance condition."""
+    if not isinstance(canonical_principal, str) or not canonical_principal or "#" in canonical_principal:
+        raise TaskRecordError("canonical_principal must be a non-empty identifier without '#'")
+    return f"TASK_POLICY#{canonical_principal}"
+
+
+def task_capacity_partition(scope_hash: str) -> str:
+    """Protected nonterminal-capacity partition."""
+    if not isinstance(scope_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", scope_hash):
+        raise TaskRecordError("capacity scope hash must be a lowercase SHA-256 digest")
+    return f"TASK_CAPACITY#{scope_hash}"
 
 
 def idempotency_partition(*, tenant: str, canonical_principal: str, idempotency_key: str) -> str:
@@ -446,7 +488,7 @@ def _reject_noncanonical_numbers(value: Any) -> None:
                 raise TaskRecordError("canonical JSON object keys must be strings")
             _reject_noncanonical_numbers(item)
         return
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         for item in value:
             _reject_noncanonical_numbers(item)
 

@@ -3,6 +3,7 @@
 Issue #702: Validates the Postgres safety-net call to POST /internal/v1/resolve-user.
 """
 
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -24,6 +25,9 @@ def _reset_module(monkeypatch):
     mods_to_remove = [k for k in sys.modules if k.startswith("common.gateway_client")]
     for mod in mods_to_remove:
         del sys.modules[mod]
+    # Removing sys.modules alone leaves common.gateway_client pointing at the
+    # previous object. Rebind the package attribute before `from common import`.
+    importlib.import_module("common.gateway_client")
     yield
     mods_to_remove = [k for k in sys.modules if k.startswith("common.gateway_client")]
     for mod in mods_to_remove:
@@ -247,6 +251,7 @@ class TestResolveInstallationById:
             "state": "resolved",
             "tenant_id": "pranavsharma1000",
             "created_via": "",
+            "revocation_checked": False,
         }
         no_cloudwatch.assert_not_called()
 
@@ -268,6 +273,7 @@ class TestResolveInstallationById:
             "state": "resolved",
             "tenant_id": "acme",
             "created_via": "install_autocreate",
+            "revocation_checked": False,
         }
         no_cloudwatch.assert_not_called()
 

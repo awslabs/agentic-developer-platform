@@ -32,7 +32,7 @@ def run_case(directory, row, model, *, run=subprocess.run):
         directory,
         row["url"],
         row["objective"],
-        scope=row.get("scope", "host"),
+        scope=row.get("scope", "observed_external"),
         incident_context=row.get("incident_context", []),
         brand_references=row.get("brand_references", []),
     )

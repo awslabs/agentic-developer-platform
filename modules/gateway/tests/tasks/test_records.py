@@ -45,6 +45,7 @@ from src.tasks.records import (
 )
 
 CONTRACT_PATH = Path(__file__).resolve().parents[4] / "docs/task-api/contracts/v1/identity-and-lifecycle.json"
+STORAGE_FIXTURE_PATH = Path(__file__).resolve().parents[4] / "docs/task-api/contracts/v1/t1/storage-fixtures-v1.json"
 
 TASK_ID = "tsk_2f1c9d7a-3b4e-4c5d-8e9f-0a1b2c3d4e5f"
 INVOCATION_ID = "9c8b7a6d-5e4f-4a3b-9c8d-7e6f5a4b3c2d"
@@ -59,6 +60,18 @@ SCOPE = {"tenant": "tenant-a", "canonical_principal": "svc-principal-1"}
 @pytest.fixture(scope="module")
 def contract() -> dict:
     return json.loads(CONTRACT_PATH.read_text())
+
+
+def test_t1_storage_fixture_manifest_is_versioned_and_non_vacuous():
+    fixture = json.loads(STORAGE_FIXTURE_PATH.read_text())
+    assert fixture["fixture_version"] == "1.0.0"
+    assert fixture["design_revision"] == "b5761a4a2502aceaa9133afef552b567a19cb46e"
+    assert set(fixture["commands"]) == {"storage", "infrastructure", "contract_regression", "terraform_validate"}
+    scenarios = fixture["scenarios"]
+    assert len(scenarios) == 7
+    assert all(scenario["tests"] and scenario["assertions"] and scenario["criteria"] for scenario in scenarios)
+    iam = next(scenario for scenario in scenarios if scenario["id"] == "T1-IAM-01")
+    assert iam["required_followup_lane"] == "deployed AWS IAM simulation and attempted legacy/task writes"
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +121,17 @@ def test_key_forms_match_the_contract_table(contract):
 
 def _form_to_regex(form: str) -> str:
     return "".join(r"[^#]+" if part.startswith("<") else re.escape(part) for part in re.split(r"(<[^>]+>)", form))
+
+
+def test_protected_task_work_locator_and_bindings_use_exact_primary_keys():
+    assert records.task_work_locator_partition(DISPATCH_ID) == f"TASK_WORK_ID#{DISPATCH_ID}"
+    assert records.TASK_WORK_LOCATOR_SORT_KEY == "BINDING"
+    assert records.task_authority_partition("tenant-a") == "TENANT#tenant-a"
+    assert records.task_binding_sort_key(TASK_ID) == f"TASK#{TASK_ID}"
+    assert records.task_run_grant_sort_key(invocation_id=INVOCATION_ID, generation=3) == (
+        f"TASK_RUN#{INVOCATION_ID}#GEN#0000000003"
+    )
+    assert records.task_capacity_partition("a" * 64) == f"TASK_CAPACITY#{'a' * 64}"
 
 
 def test_idempotency_partition_matches_contract_form(contract):

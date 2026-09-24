@@ -14,6 +14,7 @@ from src.shared.schemas.auth import TokenContext
 from .compile import ApprovalContext
 from .review_cycle import CycleBlockedError
 from .shared_amendment import SharedAppendError, SharedAppendRequest, accept_shared_append, preview_shared_append
+from .wave_amendment import WaveDependencyRequest, accept_wave_dependencies, preview_wave_dependencies
 
 router = APIRouter()
 
@@ -35,7 +36,11 @@ async def call(*, accept, flow_id, body, current_user, access, db):
         reason=body.reason,
     )
     try:
-        result = await (accept_shared_append if accept else preview_shared_append)(db, flow_id=flow_id, actor=actor, request=body)
+        if isinstance(body, WaveDependencyRequest):
+            operation = accept_wave_dependencies if accept else preview_wave_dependencies
+        else:
+            operation = accept_shared_append if accept else preview_shared_append
+        result = await operation(db, flow_id=flow_id, actor=actor, request=body)
         if accept:
             await db.commit()
         return result
@@ -64,6 +69,30 @@ async def preview_append(
 async def accept_append(
     flow_id: Annotated[str, Path(min_length=1, max_length=36)],
     body: SharedAppendRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    access = AccessControl(db)
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    return await call(accept=True, flow_id=flow_id, body=body, current_user=current_user, access=access, db=db)
+
+
+@router.post("/flows/{flow_id}/wave-dependencies/preview")
+async def preview_dependencies(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: WaveDependencyRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    access = AccessControl(db)
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    return await call(accept=False, flow_id=flow_id, body=body, current_user=current_user, access=access, db=db)
+
+
+@router.post("/flows/{flow_id}/wave-dependencies/accept")
+async def accept_dependencies(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: WaveDependencyRequest,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):

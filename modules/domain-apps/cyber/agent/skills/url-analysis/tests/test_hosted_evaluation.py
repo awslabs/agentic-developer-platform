@@ -112,6 +112,6 @@ def test_hosted_failure_closes_browser_and_preserves_valid_findings(
     result = hosted.run_case(out, row(), "test-model", run=sdk)
     assert result["error"] and not result["model_completed"]
     assert result["cleanup_confirmed"] and clients[0].stopped
-    assert result["assessment"]["verdict"] == "inconclusive"
+    assert result["assessment"]["verdict"] is None
     assert len(result["assessment"]["findings"]) == 1
     assert verify_case(out) > 0

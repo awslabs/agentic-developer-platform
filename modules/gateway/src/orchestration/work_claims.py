@@ -823,7 +823,7 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
     """Move a held engine lane to its committed successor without a new generation.
 
     The same accepted execution and owner continue after a successful terminal
-    receipt, or an explicit human recovery decision verified against a positively
+    receipt, or an owner- or policy-authorized recovery decision verified against a positively
     exited worker and this exact PR. Recovery never supplies a terminal receipt.
     """
     import json

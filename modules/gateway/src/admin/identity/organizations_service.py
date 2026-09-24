@@ -9,7 +9,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.admin.installations.guards import assert_new_installation_ids_claimable_by
+from src.admin.installations.guards import assert_new_installation_ids_claimable_by, lock_installation_organization
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.models.organization import CREATED_VIA_OPERATOR, Department, Organization, Team
 from src.shared.models.vault import ChannelTenantMap
@@ -70,6 +70,7 @@ class OrganizationsService:
         The Cognito group must succeed before commit; DDB projection follows.
         """
         github_ids = _extract_github_installation_ids(req.channels)
+        await assert_new_installation_ids_claimable_by(req.id, new_ids=github_ids, old_ids=[], db=self._db)
 
         # Build settings JSON
         settings = {
@@ -207,8 +208,7 @@ class OrganizationsService:
 
     async def update_organization(self, org_id: str, req: OrganizationUpdateRequest) -> OrganizationResponse | None:
         """Update an organization. Returns None if not found."""
-        result = await self._db.execute(select(Organization).where(Organization.id == org_id))
-        org = result.scalar_one_or_none()
+        org = await lock_installation_organization(self._db, org_id)
         if org is None:
             return None
 

@@ -19,6 +19,7 @@ from tests.orchestration.test_shared_review import document_for
 
 @pytest.fixture
 async def recovery(shared, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", "true")
     assert (await protocol.tick(shared)).effects_succeeded == 1
     envelope = shared.calls[-1]
     run = envelope["message_id"]
@@ -209,3 +210,198 @@ async def test_stale_cached_exit_cannot_authorize_a_live_worker(recovery):
     with pytest.raises(CycleBlockedError, match="prior_worker_active_or_unverified"):
         await request(recovery)
     recovery.resolver.resolve.assert_not_called()
+
+
+async def mark_stalled(ctx):
+    async with ctx.factory() as db:
+        node = await db.get(OrchestrationNode, ctx.node.id)
+        node.state = "failed"
+        db.add(
+            OrchestrationDecision(
+                org_id=node.org_id,
+                flow_id=node.flow_id,
+                node_id=node.id,
+                kind="node_stalled",
+                actor_kind="service",
+                actor_id="system:orchestration-stall-detector",
+                actor_role="engine",
+                from_state="running",
+                to_state="failed",
+                reason="worker timeout",
+            )
+        )
+        await db.commit()
+
+
+async def test_policy_recovers_stalled_review_through_existing_runner_once(recovery):
+    from src.orchestration.review_recovery import recover_stalled_stories
+
+    ctx = recovery.ctx
+    await mark_stalled(ctx)
+    count = await recover_stalled_stories(ctx.factory, resolver=recovery.resolver)
+    async with ctx.factory() as db:
+        from sqlalchemy import select
+
+        reasons = list((await db.scalars(select(OrchestrationDecision.reason).where(OrchestrationDecision.kind == "stalled_review_blocked"))).all())
+    assert count == 1, reasons
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 0
+    async with ctx.factory() as db:
+        prior = await db.get(OrchestrationRunReport, recovery.run)
+        assert prior.terminal_receipt is None and prior.review_receipt is None
+    assert (await protocol.tick(ctx)).effects_succeeded == 1
+    assert len(ctx.calls) == 2
+    assert ctx.calls[-1]["persona"] == "agent-codex-reviewer"
+    assert ctx.calls[-1]["review_cycle_input"]["recovery"]["source"] == "existing_pr"
+    assert ctx.calls[-1]["review_cycle_input"]["recovery"]["prior_run_id"] == recovery.run
+    execution, claim, node, _ = await protocol.state(ctx)
+    assert execution.attempts == 2 and node.attempts == 1
+    from src.orchestration.review_recovery import recovered_worker_exit
+
+    async with ctx.factory() as db:
+        prior = await db.get(OrchestrationRunReport, recovery.run)
+        assert await recovered_worker_exit(db, prior, claim)
+
+
+@pytest.mark.parametrize("reason", ["pause", "not_stalled", "limit", "live", "explicit_blocker"])
+async def test_automatic_recovery_preserves_holds(recovery, reason):
+    from src.orchestration.models import OrchestrationExecution, OrchestrationFlow
+    from src.orchestration.review_recovery import recover_stalled_stories
+
+    ctx = recovery.ctx
+    if reason != "not_stalled":
+        await mark_stalled(ctx)
+    async with ctx.factory() as db:
+        (await db.get(OrchestrationNode, ctx.node.id)).state = "failed"
+        if reason == "pause":
+            (await db.get(OrchestrationFlow, ctx.flow.id)).execution_paused = True
+        if reason == "limit":
+            from sqlalchemy import select
+
+            execution = await db.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == ctx.node.id))
+            execution.attempts = 8
+        if reason == "explicit_blocker":
+            (await db.get(OrchestrationRunReport, recovery.run)).review_receipt = {"recorded": True}
+        await db.commit()
+    if reason == "live":
+        recovery.resolver.read_current.return_value["status"] = "in_progress"
+        recovery.resolver.read_current.return_value["arrived_at"] = datetime.now(UTC).isoformat()
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 0
+    async with ctx.factory() as db:
+        assert (await db.get(OrchestrationNode, ctx.node.id)).state == "failed"
+        assert (await db.get(OrchestrationWorkClaim, ctx.claim.id)).active_run_id == recovery.run
+    assert len(ctx.calls) == 1
+
+
+def test_service_recovery_transition_is_narrow_and_opt_in():
+    from src.orchestration.state import ActorKind, NodeState, transition
+
+    args = dict(actor_kind=ActorKind.SERVICE, reason="verified policy recovery")
+    assert not transition(NodeState.FAILED, NodeState.RUNNING, **args).allowed
+    assert transition(NodeState.FAILED, NodeState.RUNNING, stalled_review_authorized=True, **args).allowed
+    assert not transition(NodeState.HALTED, NodeState.RUNNING, stalled_review_authorized=True, **args).allowed
+    assert not transition(NodeState.FAILED, NodeState.READY, stalled_review_authorized=True, **args).allowed
+
+
+@pytest.mark.parametrize("lost_response", [False, True])
+async def test_no_pr_creates_draft_from_checkpoint_and_reconciles_lost_response(recovery, monkeypatch, lost_response):
+    import httpx
+    from sqlalchemy import select
+
+    from src.orchestration.models import OrchestrationPullRequestBinding
+    from src.orchestration.pr_bindings import PullRequestIdentity, RegistrationTarget
+    from src.orchestration.recovery_checkpoint import ensure_checkpoint_pr
+    from src.orchestration.review_recovery import recover_stalled_stories
+
+    ctx = recovery.ctx
+    await mark_stalled(ctx)
+    checkpoint = dict(repo=protocol.REPO, provider_repository_id=123, installation_id=42, branch="agent/issue-43", head_sha=ctx.head)
+    monkeypatch.setattr("src.orchestration.recovery_checkpoint.provider_checkpoint", AsyncMock(return_value=checkpoint))
+    target = RegistrationTarget(protocol.ORG, ctx.flow.id, ctx.node.id, 1, recovery.run, protocol.REPO, 43, 42, ctx.binding.accepted_scope)
+    monkeypatch.setattr("src.orchestration.pr_bindings.resolve_registration_target", AsyncMock(return_value=target))
+    monkeypatch.setattr("src.orchestration.review_recovery.report_exit_resolver", lambda row: recovery.resolver)
+    monkeypatch.setattr("src.knowledge.github_app_service.resolve_tenant_app_credentials", AsyncMock(return_value=("app", "key")))
+    monkeypatch.setattr("src.knowledge.github_app_service.mint_installation_token_with_expiry", AsyncMock(return_value=("fake-token", None)))
+    monkeypatch.setattr(
+        "src.orchestration.pr_identity.resolve_pr_identity",
+        AsyncMock(return_value=PullRequestIdentity(123, "PR_recovery", protocol.REPO, 78, ctx.head)),
+    )
+    created = []
+    pr = {"number": 78, "head": {"sha": ctx.head, "ref": checkpoint["branch"], "repo": {"id": 123}}, "base": {"repo": {"id": 123}}}
+
+    class Provider:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, path, **kwargs):
+            body = created if path.endswith("/pulls") else {"id": 123, "default_branch": "main"}
+            return httpx.Response(200, json=body, request=httpx.Request("GET", "https://api.github.com" + path))
+
+        async def post(self, path, **kwargs):
+            # The intent must be committed and visible on another connection
+            # before GitHub receives a write.
+            async with ctx.factory() as other:
+                assert await other.scalar(select(OrchestrationDecision).where(OrchestrationDecision.kind == "recovery_pr_prepared"))
+            assert kwargs["json"]["draft"] is True
+            assert kwargs["json"]["head"] == checkpoint["branch"]
+            created.append(pr)
+            if lost_response:
+                raise httpx.ReadTimeout("simulated lost response")
+            return httpx.Response(201, json=pr, request=httpx.Request("POST", "https://api.github.com" + path))
+
+    monkeypatch.setattr("src.orchestration.recovery_checkpoint.httpx.AsyncClient", lambda **kwargs: Provider())
+    async with ctx.factory() as db:
+        await db.delete(await db.get(OrchestrationPullRequestBinding, ctx.binding.id))
+        await db.commit()
+
+    async def prepare():
+        async with ctx.factory() as db:
+            node = await db.get(OrchestrationNode, ctx.node.id)
+            row = await db.get(OrchestrationRunReport, recovery.run)
+            execution, identity = await validate_current_report_assignment(db, row)
+            return await ensure_checkpoint_pr(db, node=node, report=row, execution=execution, identity=identity)
+
+    if lost_response:
+        with pytest.raises(httpx.ReadTimeout):
+            await prepare()
+    binding = await prepare()
+    assert binding.pr_number == 78 and binding.role == "implementation"
+    assert len(created) == 1
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 1
+    async with ctx.factory() as db:
+        decisions = list((await db.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == "review_recovery_requested"))).all())
+        assert json.loads(decisions[-1].reason)["recovery_source"] == "checkpoint"
+        assert (await db.get(OrchestrationRunReport, recovery.run)).terminal_receipt is None
+
+
+@pytest.mark.parametrize("changed", [None, "tenant_id", "event_id", "engine_node_id", "engine_attempt", "missing"])
+async def test_recovery_registry_read_requires_exact_dispatch_binding(monkeypatch, changed):
+    from unittest.mock import Mock
+
+    from src.orchestration.review_recovery import report_exit_resolver
+
+    report = SimpleNamespace(run_id="run", org_id="tenant", node_id="node", attempt=1, dispatch_metadata={"arrived_at": "arrival"})
+    row = {"event_id": "run", "tenant_id": "tenant", "engine_node_id": "node", "engine_attempt": 1}
+    if changed and changed != "missing":
+        row[changed] = "other"
+    table = SimpleNamespace(get_item=Mock(return_value={} if changed == "missing" else {"Item": row}))
+    monkeypatch.setattr("src.orchestration.run_store.EngineRunStore.from_env", lambda: SimpleNamespace(table=table))
+    resolver = report_exit_resolver(report)
+    if changed:
+        with pytest.raises(CycleBlockedError, match="recovery_registry_binding_changed"):
+            await resolver.read_current("run")
+    else:
+        assert await resolver.read_current("run") == row
+    table.get_item.assert_called_once_with(Key={"event_id": "run", "arrived_at": "arrival"}, ConsistentRead=True)
+
+
+async def test_disabled_engine_does_not_scan_or_recover(monkeypatch):
+    from unittest.mock import Mock
+
+    from src.orchestration.review_recovery import recover_stalled_stories
+
+    monkeypatch.delenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", raising=False)
+    factory = Mock(side_effect=AssertionError("disabled engine must not read"))
+    assert await recover_stalled_stories(factory) == 0

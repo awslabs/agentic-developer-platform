@@ -148,8 +148,7 @@ def pod_command(args, pod, parts, *, input_text=None):
             input_text=input_text,
         )
     except RuntimeError as exc:
-        current = command(["kubectl", "get", "pod", pod, "-n", args.namespace,
-                           "--ignore-not-found", "-o", "json"])
+        current = command(["kubectl", "get", "pod", pod, "-n", args.namespace, "--ignore-not-found", "-o", "json"])
         if not current.strip() or json.loads(current)["metadata"].get("deletionTimestamp"):
             raise PodReplaced(f"Gateway pod {pod} was replaced during pricing rollout") from exc
         raise  # SQL errors, OOMs and failures on a live pod are not retried.
@@ -301,13 +300,19 @@ def finalize(args):
             "--cli-binary-format",
             "raw-in-base64-out",
             "--payload",
-            "{}",
+            '{"report_partial":true}',
             str(payload),
         )
         if result.get("FunctionError") or result.get("StatusCode") != 200:
             raise RuntimeError("Immediate pricing refresh failed; inspect Lambda logs. Schedule remains disabled.")
         refresh = json.loads(payload.read_text())
-        assert refresh.get("status") == "published" and not refresh.get("partial"), "Refresh did not report a full publication"
+        assert refresh.get("status") == "published", "Refresh did not publish a validated generation"
+        if refresh.get("partial"):
+            if not getattr(args, "allow_partial_refresh", False):
+                raise RuntimeError("Refresh retained older rates; schedule remains disabled. Review source gaps before --allow-partial-refresh.")
+            assert refresh.get("fresh_variants", 0) > 0, "Partial refresh has no freshly verified prices"
+            assert not refresh.get("failed_sources"), "Transport failures must be resolved before partial finalization"
+            print("WARNING: enabling scheduled retries with retained, older rates; freshness and partial-refresh alarms remain active.")
         print(json.dumps({"immediate_refresh": refresh}))
     after = verify_seed(args)
     assert after[0]["pricing"]["pointer_revision"] > evidence[0]["pricing"]["pointer_revision"], "Refresh did not publish a new generation"
@@ -321,7 +326,7 @@ def finalize(args):
     except Exception:
         aws(args, "events", "disable-rule", "--name", rule_name)
         raise
-    print("Pricing generation published; daily 06:00 UTC refresh enabled")
+    print("Pricing generation published; daily 06:00 UTC refresh enabled" + (" (DEGRADED: retained rates)" if refresh.get("partial") else ""))
 
 
 if __name__ == "__main__":
@@ -332,6 +337,11 @@ if __name__ == "__main__":
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
     parser.add_argument("--namespace", default="adp-gateway")
     parser.add_argument("--expected-image")
+    parser.add_argument(
+        "--allow-partial-refresh",
+        action="store_true",
+        help="Resume scheduling after a validated partial publication with no transport failures; retained prices stay stale",
+    )
     parser.add_argument("--readiness-timeout", type=int, default=180, help="Seconds to wait for required release replicas (0-600)")
     args = parser.parse_args()
     try:

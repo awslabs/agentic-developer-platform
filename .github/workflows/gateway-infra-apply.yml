@@ -3,10 +3,15 @@ name: Gateway Infra Apply
 on:
   # Manual-only trigger. Merging a PR does NOT auto-apply infra; operator
   # reviews the plan comment on the merged PR, then triggers this workflow
-  # explicitly via Actions → Gateway Infra Apply → Run workflow. See
+  # explicitly via Actions → Gateway Infra Apply → Run workflow with the exact
+  # reviewed main commit in reviewed_source_sha. See
   # platform-infra-apply.yml for the full rationale.
   workflow_dispatch:
     inputs:
+      reviewed_source_sha:
+        description: 'Required reviewed main commit (40 lowercase hex characters). Must equal this run and checkout; stale pins fail.'
+        required: true
+        type: string
       account_id:
         description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
         required: false
@@ -66,12 +71,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify source belongs to reviewed main history
+      - name: Verify exact reviewed source before deployment
         shell: bash
+        env:
+          REVIEWED_SOURCE_SHA: ${{ inputs.reviewed_source_sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
+          if [[ ! "${REVIEWED_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::reviewed_source_sha is required and must be exactly 40 lowercase hexadecimal characters."
+            exit 1
+          fi
+          if [[ "$REVIEWED_SOURCE_SHA" != "${GITHUB_SHA:-}" ]]; then
+            echo "::error::Run source differs from reviewed_source_sha. Review the new main commit before dispatching again; stale pins cannot be overridden."
+            exit 1
+          fi
+          CHECKOUT_SHA="$(git rev-parse HEAD)"
+          if [[ "$REVIEWED_SOURCE_SHA" != "$CHECKOUT_SHA" ]]; then
+            echo "::error::Checkout source differs from reviewed_source_sha. Refusing infra apply."
+            exit 1
+          fi
 
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment

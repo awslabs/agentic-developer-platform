@@ -91,6 +91,63 @@ async def test_last_membership_projects_an_empty_org_list(db_session, admin_serv
     assert projection_writer.update_user_membership_orgs.await_args.kwargs["member_org_ids"] == []
 
 
+async def test_an_unproven_identity_still_gets_its_projection_refreshed(db_session, admin_service, projection_writer):
+    """#5664 (A10): the projection snapshot is unfiltered, the trust guard is not.
+
+    `member_org_ids` answers "which orgs does this GitHub ACCOUNT hold memberships
+    in", recomputed through proven bindings across surviving users. The set of
+    external IDs needing a refresh must still include unproven removed claims,
+    since their stale memberships need clearing. A PROVEN-only snapshot made the refresh a
+    silent no-op for accounts whose only row is unproven (auto-provisioned
+    `channel_placement` rows, which were `admin_manual` and therefore proven before
+    this issue). The stale row then kept advertising an org whose membership was
+    just deleted — permissive staleness for a fail-closed reader.
+
+    `user-home` keeps a proven row on the same GitHub id so the recomputed union is
+    non-trivial, which is what distinguishes "refreshed" from "never written".
+    """
+    await _seed(db_session)
+    identity = await db_session.scalar(select(UserIdentity).where(UserIdentity.user_id == "user-other"))
+    identity.verification_method = "channel_placement"
+    await db_session.commit()
+
+    assert await admin_service.remove_user("other", "user-other")
+
+    projection_writer.update_user_membership_orgs.assert_awaited_once_with(provider_user_id="123", member_org_ids=["home"], provider="github")
+
+
+async def test_unproven_identity_does_not_block_removal_as_a_shared_login(db_session, admin_service, projection_writer):
+    """The other half of the split snapshot: the guard stays proven-only.
+
+    The shared-login interlock refuses a deletion that would strand another
+    tenant's sign-in. That is an authority question, so an unproven claim on the
+    same GitHub id must not be able to manufacture the conflict and block an
+    administrator from removing an account.
+    """
+    await _seed(db_session)
+    for user_id in ("user-home", "user-other"):
+        row = await db_session.scalar(select(UserIdentity).where(UserIdentity.user_id == user_id))
+        row.verification_method = "channel_placement"
+    user = await db_session.get(User, "user-other")
+    user.cognito_username = "own-login"
+    await db_session.commit()
+
+    assert await admin_service.remove_user("other", "user-other")
+
+
+async def test_removing_last_proven_binding_clears_membership_projection(db_session, admin_service, projection_writer):
+    await _seed(db_session)
+    unproven = await db_session.scalar(select(UserIdentity).where(UserIdentity.user_id == "user-other"))
+    unproven.verification_method = "channel_placement"
+    await db_session.commit()
+
+    assert await admin_service.remove_user("home", "user-home")
+
+    projection_writer.update_user_membership_orgs.assert_awaited_once_with(provider_user_id="123", member_org_ids=[], provider="github")
+    assert await db_session.get(User, "user-other") is not None
+    assert await db_session.scalar(select(TenantMembership).where(TenantMembership.user_id == "user-other")) is not None
+
+
 async def test_projection_failure_does_not_undo_removal(db_session, admin_service, projection_writer):
     await _seed(db_session)
     projection_writer.update_user_membership_orgs.side_effect = RuntimeError("DynamoDB unavailable")

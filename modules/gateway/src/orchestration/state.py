@@ -167,7 +167,9 @@ class TransitionResult:
     rejection_reason: str | None = None
 
 
-def transition(from_state: NodeState, to_state: NodeState, *, actor_kind: ActorKind, reason: str) -> TransitionResult:
+def transition(
+    from_state: NodeState, to_state: NodeState, *, actor_kind: ActorKind, reason: str, stalled_review_authorized: bool = False
+) -> TransitionResult:
     """Guard one node state change. Every engine state change goes through here.
 
     Args:
@@ -175,6 +177,9 @@ def transition(from_state: NodeState, to_state: NodeState, *, actor_kind: ActorK
         to_state: The state being requested.
         actor_kind: Who is attempting it. Human-only edges reject `SERVICE`.
         reason: Why, for the decision record. Carried through verbatim.
+        stalled_review_authorized: Internal proof flag set only after recovery
+            verifies an engine stall, worker exit, policy, pause and limits. It
+            permits FAILED -> RUNNING for review; never READY or a halt override.
 
     Returns:
         A `TransitionResult`. On success `allowed` is True and `new_state` is
@@ -202,6 +207,11 @@ def transition(from_state: NodeState, to_state: NodeState, *, actor_kind: ActorK
             reason=reason,
             rejection_reason=f"no legal transition from '{from_state}' to '{to_state}'",
         )
+
+    # Only a verified recovery decision may restore a timed-out review lane.
+    # Ordinary failures and all halted/ready transitions keep their old rules.
+    if stalled_review_authorized and actor_kind is ActorKind.SERVICE and from_state is NodeState.FAILED and to_state is NodeState.RUNNING:
+        permitted_actors = _ENGINE_OR_HUMAN
 
     if actor_kind not in permitted_actors:
         allowed_names = ", ".join(sorted(actor.value for actor in permitted_actors))

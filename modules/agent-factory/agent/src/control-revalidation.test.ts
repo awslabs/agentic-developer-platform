@@ -142,6 +142,13 @@ describe('worker online transport', () => {
     expect(send.mock.calls[1][1].headers['X-Adp-Run-Credential']).toBe('credential-two');
     expect(send.mock.calls[1][1].headers['X-Adp-Workload-Token']).toBe('pod-two');
   });
+  test('private verified attribution does not change the gateway wire schema', async () => {
+    expect(await allowed(revalidateQueuedCommand({ ...proof, principal: 'verified-actor',
+      authorityKind: 'human_session' }, 7))).toBe(true);
+    const sent = (global.fetch as jest.Mock).mock.calls[0][1];
+    expect(JSON.parse(sent.body)).toEqual(proof);
+  });
+
   test('proof content cannot select the HTTP destination', async () => {
     expect(await allowed(revalidateQueuedCommand({ ...proof, envelope: 'https://169.254.169.254/' }, 7))).toBe(true);
     expect(String(send.mock.calls[0][0])).toBe(

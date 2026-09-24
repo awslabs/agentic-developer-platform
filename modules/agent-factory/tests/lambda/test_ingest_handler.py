@@ -25,6 +25,7 @@ from moto import mock_aws
 from botocore.exceptions import ClientError
 
 from tests.conftest import mock_apigw_event as _mock_apigw_event
+from tests.conftest import start_webchat_session
 
 
 def mock_apigw_event(**kwargs):
@@ -172,11 +173,14 @@ class TestDirectResponsePath:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-1", "email": "test@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-001")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Hello!", "session_id": "sess-001"},
+            body={"action": "message", "text": "Hello!", "session_id": session_id},
             connection_id="conn-001",
-            authorizer_claims={"sub": "user-1", "email": "test@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
 
@@ -200,11 +204,13 @@ class TestLongRunningPath:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-2", "email": "test2@example.com", "custom:tenant_id": "test-tenant"}
+        session_id = start_webchat_session(handler, claims, connection_id="conn-002")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Analyze the codebase architecture", "session_id": "sess-002"},
+            body={"action": "message", "text": "Analyze the codebase architecture", "session_id": session_id},
             connection_id="conn-002",
-            authorizer_claims={"sub": "user-2", "email": "test2@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
 
@@ -223,7 +229,7 @@ class TestLongRunningPath:
         messages = resp.get("Messages", [])
         assert len(messages) >= 1
         task = json.loads(messages[0]["Body"])
-        assert task["session_id"] == "sess-002"
+        assert task["session_id"] == session_id
         assert task["message"] == "Analyze the codebase architecture"
 
 
@@ -278,6 +284,10 @@ class TestFollowUpThreadReuse:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        # This test's subject is an EXISTING conversation with prior threads, so it
+        # uses the seeded row's id directly. The row is stamped with the same
+        # owner the claims below resolve to, which is what the ownership gate
+        # requires — see _setup_session_with_idle_thread.
         event = mock_apigw_event(
             route_key="$default",
             body={"action": "message", "text": "tell me more about that", "session_id": "sess-follow"},
@@ -331,6 +341,8 @@ class TestFollowUpThreadReuse:
         mock_bedrock = wrap(mock_bedrock)
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        # Subject is the EXISTING seeded conversation, so it uses that row's id
+        # directly — see the note in test_follow_up_on_idle_thread_reuses_thread_id.
         event = mock_apigw_event(
             route_key="$default",
             body={"action": "message", "text": "another question", "session_id": "sess-follow"},
@@ -360,11 +372,15 @@ class TestWebChatActionVariants:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-action", "email": "action@example.com",
+                  "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-action")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": action, "text": "test message", "session_id": "sess-action"},
+            body={"action": action, "text": "test message", "session_id": session_id},
             connection_id="conn-action",
-            authorizer_claims={"sub": "user-action", "email": "action@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -387,11 +403,14 @@ class TestMalformedPayload:
 
     def test_empty_text_ignored(self, mocked_aws_services):
         handler = _import_handler()
+        claims = {"sub": "user-empty", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-empty")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "", "session_id": "sess-empty"},
+            body={"action": "message", "text": "", "session_id": session_id},
             connection_id="conn-empty",
-            authorizer_claims={"sub": "user-empty"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -416,11 +435,14 @@ class TestClassifierFailure:
         mock_bedrock.invoke_model.side_effect = Exception("Bedrock service error")
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-err", "email": "err@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-err")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Do something complex", "session_id": "sess-err"},
+            body={"action": "message", "text": "Do something complex", "session_id": session_id},
             connection_id="conn-err",
-            authorizer_claims={"sub": "user-err", "email": "err@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
 
@@ -563,10 +585,15 @@ class TestExtendedClaimsPersistence:
         }
         handler.lambda_handler(connect_event, None)
 
+        # #5615: ask the server for a session id the way the browser now does.
+        # No authorizer_claims here on purpose — a real $default frame carries
+        # none, so this also proves creation works off the CONNECT-time claims.
+        session_id = start_webchat_session(handler, connection_id="conn-sqs-flow")
+
         # Now send a message
         msg_event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Deploy the feature", "session_id": "sess-sqs-flow"},
+            body={"action": "message", "text": "Deploy the feature", "session_id": session_id},
             connection_id="conn-sqs-flow",
         )
         result = handler.lambda_handler(msg_event, None)
@@ -587,7 +614,7 @@ class TestExtendedClaimsPersistence:
         assert task["team_id"] == "team-sqs"
         assert task["account_type"] == "human"
         session = mocked_aws_services["table"].get_item(
-            Key={"session_id": "sess-sqs-flow"},
+            Key={"session_id": session_id},
         )["Item"]
         assert task["session_generation"] == int(session["created_at"])
 
@@ -612,11 +639,14 @@ class TestExtendedClaimsPersistence:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-no-org", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-no-org")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Hello!", "session_id": "sess-no-org"},
+            body={"action": "message", "text": "Hello!", "session_id": session_id},
             connection_id="conn-no-org",
-            authorizer_claims={"sub": "user-no-org"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -638,16 +668,19 @@ class TestParseAttachmentsWithStringArtifactIds:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-attach-str", "email": "att@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-attach-str")
         event = mock_apigw_event(
             route_key="$default",
             body={
                 "action": "sendMessage",
                 "text": "Please read helloworld.md",
-                "session_id": "sess-attach-str",
+                "session_id": session_id,
                 "attachments": ["art_9b09c2da5d42"],
             },
             connection_id="conn-attach-str",
-            authorizer_claims={"sub": "user-attach-str", "email": "att@example.com"},
+            authorizer_claims=claims,
         )
         # Should not crash — previously raised AttributeError
         result = handler.lambda_handler(event, None)
@@ -665,12 +698,15 @@ class TestParseAttachmentsWithStringArtifactIds:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-attach-mixed", "email": "mix@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-attach-mixed")
         event = mock_apigw_event(
             route_key="$default",
             body={
                 "action": "sendMessage",
                 "text": "Check these files",
-                "session_id": "sess-attach-mixed",
+                "session_id": session_id,
                 "attachments": [
                     "art_abc123",
                     {"url": "s3://bucket/file.png", "type": "image", "filename": "file.png"},
@@ -678,7 +714,7 @@ class TestParseAttachmentsWithStringArtifactIds:
                 ],
             },
             connection_id="conn-attach-mixed",
-            authorizer_claims={"sub": "user-attach-mixed", "email": "mix@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -695,18 +731,21 @@ class TestParseAttachmentsWithStringArtifactIds:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-attach-dict", "email": "dict@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-attach-dict")
         event = mock_apigw_event(
             route_key="$default",
             body={
                 "action": "sendMessage",
                 "text": "See attached",
-                "session_id": "sess-attach-dict",
+                "session_id": session_id,
                 "attachments": [
                     {"url": "s3://bucket/doc.pdf", "type": "document", "filename": "doc.pdf"},
                 ],
             },
             connection_id="conn-attach-dict",
-            authorizer_claims={"sub": "user-attach-dict", "email": "dict@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -723,16 +762,19 @@ class TestParseAttachmentsWithStringArtifactIds:
         })
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
+        claims = {"sub": "user-attach-sqs", "email": "sqs-att@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-attach-sqs")
         event = mock_apigw_event(
             route_key="$default",
             body={
                 "action": "sendMessage",
                 "text": "Read helloworld.md",
-                "session_id": "sess-attach-sqs",
+                "session_id": session_id,
                 "attachments": ["art_aaa111", "art_bbb222"],
             },
             connection_id="conn-attach-sqs",
-            authorizer_claims={"sub": "user-attach-sqs", "email": "sqs-att@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -797,11 +839,14 @@ class TestNoSubRejectsMessage:
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
         cognito_sub = "44086498-2091-70e1-bd3a-12c6104c3ebb"
+        claims = {"sub": cognito_sub, "email": "user@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="cMJocfj3IAMCJSQ=")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Refactor the auth module", "session_id": "sess-sub"},
+            body={"action": "message", "text": "Refactor the auth module", "session_id": session_id},
             connection_id="cMJocfj3IAMCJSQ=",  # This should NOT end up as user_id
-            authorizer_claims={"sub": cognito_sub, "email": "user@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
 
@@ -839,16 +884,19 @@ class TestCognitoSubPropagation:
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
         cognito_sub = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        event = mock_apigw_event(
-            route_key="$default",
-            body={"action": "message", "text": "Deploy the service", "session_id": "sess-pc"},
-            connection_id="conn-pc-test",
-            authorizer_claims={
+        claims = {
                 "sub": cognito_sub,
                 "email": "dev@example.com",
                 "custom:tenant_id": "org-acme-prod",
                 "custom:org_id": "org-acme-prod",
-            },
+            }
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-pc-test")
+        event = mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Deploy the service", "session_id": session_id},
+            connection_id="conn-pc-test",
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
 
@@ -882,11 +930,14 @@ class TestCognitoSubPropagation:
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
         cognito_sub = "55086498-3091-80e1-cd4a-23d7215d4fcc"
+        claims = {"sub": cognito_sub, "email": "arch@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-match")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Design the API", "session_id": "sess-match"},
+            body={"action": "message", "text": "Design the API", "session_id": session_id},
             connection_id="conn-match",
-            authorizer_claims={"sub": cognito_sub, "email": "arch@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -917,11 +968,14 @@ class TestCognitoSubPropagation:
 
         handler = _import_handler(mock_bedrock=mock_bedrock)
         cognito_sub = "66086498-4091-90e1-de5b-34e8326e5gdd"
+        claims = {"sub": cognito_sub, "email": "user@example.com", "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-compat")
         event = mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": "Fix the bug", "session_id": "sess-compat"},
+            body={"action": "message", "text": "Fix the bug", "session_id": session_id},
             connection_id="conn-compat",
-            authorizer_claims={"sub": cognito_sub, "email": "user@example.com"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
         assert result["statusCode"] == 200
@@ -1094,13 +1148,13 @@ class TestNativeTenantFallback:
         messages = resp.get("Messages", [])
         return json.loads(messages[0]["Body"]) if messages else None
 
-    def _event(self, claims, *, text="Analyze the codebase architecture"):
+    def _event(self, claims, *, session_id, text="Analyze the codebase architecture"):
         # `mock_apigw_event` defaults custom:tenant_id to "test-tenant" for any
         # signed-in fixture; passing the key explicitly is what exercises the
         # real native shape, where the claim is absent or empty.
         return mock_apigw_event(
             route_key="$default",
-            body={"action": "message", "text": text, "session_id": "sess-5268"},
+            body={"action": "message", "text": text, "session_id": session_id},
             connection_id="conn-5268",
             authorizer_claims=claims,
         )
@@ -1108,10 +1162,12 @@ class TestNativeTenantFallback:
     def test_a_native_user_with_only_an_org_claim_dispatches(self, mocked_aws_services):
         """The regression. Org becomes the tenant, on the wire and on the row."""
         handler = self._long_running_handler()
-        result = handler.lambda_handler(
-            self._event({"sub": "native-1", "custom:tenant_id": "", "custom:org_id": "org-acme"}),
-            None,
-        )
+        claims = {"sub": "native-1", "custom:tenant_id": "", "custom:org_id": "org-acme"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        # The org-as-tenant substitution has to hold here too, or creation itself
+        # would refuse a native user before any message was sent.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-5268")
+        result = handler.lambda_handler(self._event(claims, session_id=session_id), None)
 
         assert result["statusCode"] == 200
         assert json.loads(result["body"])["status"] == "processing"
@@ -1122,12 +1178,12 @@ class TestNativeTenantFallback:
     def test_an_explicit_tenant_claim_still_wins(self, mocked_aws_services):
         """The fallback must not overwrite a tenant the token actually asserts."""
         handler = self._long_running_handler()
-        handler.lambda_handler(
-            self._event(
-                {"sub": "native-2", "custom:tenant_id": "tenant-real", "custom:org_id": "org-acme"}
-            ),
-            None,
-        )
+        claims = {
+            "sub": "native-2", "custom:tenant_id": "tenant-real", "custom:org_id": "org-acme",
+        }
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-5268")
+        handler.lambda_handler(self._event(claims, session_id=session_id), None)
 
         task = self._dequeue(mocked_aws_services)
         assert task is not None
@@ -1142,10 +1198,23 @@ class TestNativeTenantFallback:
         tenant -- so these callers must still be rejected, exactly as before.
         """
         handler = self._long_running_handler()
-        handler.lambda_handler(
-            self._event({"sub": "native-3", "custom:tenant_id": "", "custom:org_id": org}),
+        claims = {"sub": "native-3", "custom:tenant_id": "", "custom:org_id": org}
+
+        # #5615: such a caller cannot even obtain a session id — an incomplete
+        # owner is refused at creation rather than recorded with a blank tenant.
+        create = handler.lambda_handler(
+            mock_apigw_event(
+                body={"action": "create-session"},
+                connection_id="conn-5268",
+                authorizer_claims=claims,
+            ),
             None,
         )
+        assert create["statusCode"] == 503
+        assert "session_id" not in json.loads(create["body"])
+
+        # And naming an id anyway still does not authorize a dispatch.
+        handler.lambda_handler(self._event(claims, session_id="sess-5268"), None)
 
         assert self._dequeue(mocked_aws_services) is None, (
             f"org_id {org!r} names no tenant and must not authorize a dispatch"
@@ -1159,22 +1228,25 @@ class TestNativeTenantFallback:
         cross-tenant spend, not a cosmetic mislabel.
         """
         handler = self._long_running_handler()
+        claims = {
+                "sub": "native-4",
+                "custom:tenant_id": "",
+                "custom:org_id": "org-acme",
+            }
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-5268")
         event = mock_apigw_event(
             route_key="$default",
             body={
                 "action": "message",
                 "text": "Analyze the codebase architecture",
-                "session_id": "sess-5268",
+                "session_id": session_id,
                 # Attacker-controlled, and named exactly like the trusted fields.
                 "tenant_id": "org-victim",
                 "org_id": "org-victim",
             },
             connection_id="conn-5268",
-            authorizer_claims={
-                "sub": "native-4",
-                "custom:tenant_id": "",
-                "custom:org_id": "org-acme",
-            },
+            authorizer_claims=claims,
         )
         handler.lambda_handler(event, None)
 
@@ -1213,7 +1285,7 @@ class TestTheSessionRowRecordsItsTenant:
         })
         return _import_handler(mock_bedrock=mock_bedrock)
 
-    def _send(self, claims, *, session_id="sess-5331"):
+    def _send(self, claims, *, session_id):
         return mock_apigw_event(
             route_key="$default",
             body={"action": "message", "text": "Hello!", "session_id": session_id},
@@ -1222,14 +1294,18 @@ class TestTheSessionRowRecordsItsTenant:
         )
 
     def test_a_new_session_records_the_callers_tenant(self, mocked_aws_services):
-        """The defect: this attribute was absent from every session row written."""
-        handler = self._direct_response_handler()
-        handler.lambda_handler(
-            self._send({"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": "org-acme"}),
-            None,
-        )
+        """The defect: this attribute was absent from every session row written.
 
-        item = mocked_aws_services["table"].get_item(Key={"session_id": "sess-5331"}).get("Item", {})
+        #5615: the row is now created by `create-session` rather than by the
+        first message, so this asserts the attribute on the row that route
+        writes — the only way a webchat session comes into existence.
+        """
+        handler = self._direct_response_handler()
+        claims = {"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": "org-acme"}
+        session_id = start_webchat_session(handler, claims, connection_id="conn-5331")
+        handler.lambda_handler(self._send(claims, session_id=session_id), None)
+
+        item = mocked_aws_services["table"].get_item(Key={"session_id": session_id}).get("Item", {})
         assert item, "the session row must exist"
         assert item["org_id"] == "org-acme"
 
@@ -1240,21 +1316,24 @@ class TestTheSessionRowRecordsItsTenant:
         would let a caller plant a row readable by a tenant they do not belong to.
         """
         handler = self._direct_response_handler()
+        claims = {"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": "org-acme"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = start_webchat_session(handler, claims, connection_id="conn-5331")
         event = mock_apigw_event(
             route_key="$default",
             body={
                 "action": "message",
                 "text": "Hello!",
-                "session_id": "sess-5331-spoof",
+                "session_id": session_id,
                 # Attacker-controlled, named exactly like the trusted claim.
                 "org_id": "org-victim",
             },
             connection_id="conn-5331",
-            authorizer_claims={"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": "org-acme"},
+            authorizer_claims=claims,
         )
         handler.lambda_handler(event, None)
 
-        item = mocked_aws_services["table"].get_item(Key={"session_id": "sess-5331-spoof"}).get("Item", {})
+        item = mocked_aws_services["table"].get_item(Key={"session_id": session_id}).get("Item", {})
         assert item["org_id"] == "org-acme"
 
     def test_no_tenant_claim_writes_no_tenant_attribute(self, mocked_aws_services):
@@ -1266,15 +1345,11 @@ class TestTheSessionRowRecordsItsTenant:
         already omits absent extended fields rather than writing blanks.
         """
         handler = self._direct_response_handler()
-        handler.lambda_handler(
-            self._send(
-                {"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": ""},
-                session_id="sess-5331-no-org",
-            ),
-            None,
-        )
+        claims = {"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": ""}
+        session_id = start_webchat_session(handler, claims, connection_id="conn-5331")
+        handler.lambda_handler(self._send(claims, session_id=session_id), None)
 
-        item = mocked_aws_services["table"].get_item(Key={"session_id": "sess-5331-no-org"}).get("Item", {})
+        item = mocked_aws_services["table"].get_item(Key={"session_id": session_id}).get("Item", {})
         assert item, "the conversation still works; only the readback is forfeited"
         assert "org_id" not in item
 

@@ -180,7 +180,10 @@ async function runEngineReviewPass(
   const persona = await readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8");
   const story = JSON.stringify({ issue: { number: envelope.issue_number, title: issue.title, body: issue.body },
     pullRequest: { title: initialPr.title, body: initialPr.body }, priorFindings: cycle.findings });
-  const context = `${persona}\n\nThis is an engine assignment. The story and acceptance criteria define the work; no additional scope approval is required. Your controller publishes and merges after verified review and CI; the engine completes the story. Do not publish, merge, dispatch another agent, or write review reports into the repository.\n\n<story-data>${story.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</story-data>`;
+  const recoveryContext = cycle.recovery
+    ? "This is stalled-story recovery. The prior worker has exited. Preserve its committed work; do not restart from main or treat a checkpoint/PR as completed implementation. Read the current issue including owner clarifications. Identify every unfinished acceptance criterion, repair within the assigned scope when authorized, and revalidate the final changes. An unresolved product/contract clarification or unavailable required evidence is a blocker, not permission to guess or report success."
+    : "";
+  const context = `${recoveryContext}\n\n${persona}\n\nThis is an engine assignment. The story and acceptance criteria define the work; no additional scope approval is required. Your controller publishes and merges after verified review and CI; the engine completes the story. Do not publish, merge, dispatch another agent, or write review reports into the repository.\n\n<story-data>${story.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</story-data>`;
   const verifyGit = async (head: string) => {
     if (await git(["rev-parse", "HEAD"]) !== head
         || await git(["symbolic-ref", "--short", "HEAD"]) !== branch

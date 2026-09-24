@@ -6,18 +6,24 @@
 #
 # Adapted from aws-innovate/AISuperPlane's infra/arc-runner/Dockerfile.
 #
-# Base: ghcr.io/actions/actions-runner:2.335.1 (pinned per session-context —
-# do NOT use `:latest`, which GitHub can flag "deprecated" and cause the
-# runner to exit-7 loop).
+# Pin the runner release and refresh it before GitHub deprecates the version.
+# With ARC updates disabled, a deprecated release exits before accepting jobs.
 #
 # Build context: this directory (no parent references).
 # =============================================================================
 
-FROM ghcr.io/actions/actions-runner:2.335.1
+FROM ghcr.io/actions/actions-runner:2.337.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 USER root
+
+# Use authenticated Ubuntu mirrors for both indexes and package downloads.
+# Plain HTTP returned a stale package/index pair in CodeBuild (package 404).
+RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+        -exec sed -i \
+        -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+        -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' {} +
 
 # ── Base utilities ──────────────────────────────────────────────────────────
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
@@ -45,7 +51,15 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
     && node --version && npm --version
 
 # ── Fix GHSA-73rr-hfp2-rc4v: override npm's bundled diff with >=5.2.2 ────────
-RUN npm --prefix /usr/local/lib/node_modules/npm install diff@5.2.2 \
+# Pack the pinned dependency independently: installing inside npm's package
+# directory also resolves npm's unpublished development dependencies.
+RUN patch_dir=$(mktemp -d) \
+    && npm pack diff@5.2.2 --ignore-scripts --pack-destination "$patch_dir" \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/diff \
+    && mkdir -p /usr/local/lib/node_modules/npm/node_modules/diff \
+    && tar -xzf "$patch_dir/diff-5.2.2.tgz" --strip-components=1 \
+        -C /usr/local/lib/node_modules/npm/node_modules/diff \
+    && rm -rf "$patch_dir" \
     && node -e "const v = require('/usr/local/lib/node_modules/npm/node_modules/diff/package.json').version; \
        if (v !== '5.2.2') { console.error('diff version mismatch: ' + v); process.exit(1); } \
        console.log('diff=' + v);"
@@ -134,8 +148,12 @@ RUN apt-get clean \
 # Back to runner user
 USER runner
 
-# Verify every tool is accessible as the runner user
-RUN echo "=== ADP ARC Runner Tool Verification ===" \
+# The ARC base emits diagnostic lines alongside --version on stdout. Require
+# a successful command and the exact standalone version line.
+# Verify every tool is accessible as the runner user.
+RUN runner_version_output=$(/home/runner/bin/Runner.Listener --version) \
+    && printf '%s\n' "$runner_version_output" | grep -x '2\.337\.0' \
+    && echo "=== ADP ARC Runner Tool Verification ===" \
     && node --version \
     && python3 --version \
     && aws --version \

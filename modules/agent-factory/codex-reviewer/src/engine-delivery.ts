@@ -22,7 +22,7 @@ async function publish(result: EngineReviewResult, envelope: CodexEngineReviewEn
 }
 
 export async function deliverEngineReview(
-  github: Pick<GitHubClient, "getPullRequest" | "getBranch" | "merge" | "queueEntry" | "enqueue">,
+  github: Pick<GitHubClient, "getPullRequest" | "getBranch" | "merge" | "queueEntry" | "enqueue"> & Partial<Pick<GitHubClient, "markReady">>,
   result: EngineReviewResult, envelope: CodexEngineReviewEnvelope,
   publication = publish, checks: (head: string, forMerge: boolean) => Promise<ReviewerChecks> = observeReviewerChecks,
 ): Promise<ReviewerMerge> {
@@ -33,7 +33,24 @@ export async function deliverEngineReview(
   if (current.merged) return { state: "merged" };
   if (current.state !== "open") return { state: "blocked", reason: "PR closed without merge" };
   await publication(result, envelope);
-  const observed = await checks(result.sha, true);
+  let observed = await checks(result.sha, true);
+  if (current.draft && envelope.cycle.recovery?.source === "checkpoint" && envelope.cycle.allow_story_repairs) {
+    // Only a complete recorded review may promote an engine recovery draft.
+    // Other authorization, CI or merge blocks must remain effective.
+    if (result.report.verdict !== "approve"
+        || Object.values(result.report.stages).some(stage => stage !== "completed")
+        || result.report.findings.length > 0 || !github.markReady || !observed.pr_node_id
+        || observed.state !== "passed" || observed.base_repair_required
+        || observed.head_sha !== result.sha || observed.base_sha !== result.reviewed_base_sha
+        || observed.merge_reasons?.some(reason => reason !== "draft")) {
+      return { state: "blocked", reason: "Recovery draft is not ready for delivery" };
+    }
+    const fresh = await github.getPullRequest(number);
+    if (fresh.head.sha !== result.sha || fresh.state !== "open") return { state: "blocked", reason: "Recovery head changed" };
+    if (fresh.draft) await github.markReady(observed.pr_node_id);
+    // A lost response is reconciled by the next getPullRequest; no new reviewer.
+    observed = await checks(result.sha, true);
+  }
   if (observed.head_sha !== result.sha) return { state: "blocked", reason: "PR head changed after publication" };
   if (observed.merged) return { state: "merged" };
   if (observed.merge_method === "queue" && observed.pr_node_id && await github.queueEntry(observed.pr_node_id, result.sha)) {

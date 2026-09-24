@@ -970,3 +970,12 @@ agent-context → webhook-ingress → agent-factory → gateway → platform.
 - GitHub App secrets (`adp/gh-app-*`, `adp/*/github-app/*` in Secrets Manager)
 - GitHub Apps themselves (delete manually in org settings)
 - AWS-managed RDS secrets (`rds!*`)
+
+### Verify gateway and scheduled-engine image parity after updates
+
+A gateway image has two runtime consumers: the EKS gateway and the scheduled
+orchestration Lambda. Both the CI workflow and `deploy-all.sh` verify that they
+use the same release digest. Manual or interrupted rollouts must also run the
+[shared alignment and verification helper](../runbooks/shared-worker-flow-continuation.md#gateway--scheduled-engine-release-parity)
+before reporting completion. Pushing an image to ECR or checking EKS readiness
+alone does not verify the Lambda release.

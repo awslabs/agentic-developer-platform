@@ -75,12 +75,17 @@ class TestUsersWriteThrough:
 
         result = await svc.create_user("wt-org", req)
 
+        # #5664 (A10): each projected identity carries the provenance the Postgres
+        # row was written with. An administrator provisioning a user is genuine,
+        # accountable proof (`admin_manual`), and it must reach the DDB projection —
+        # the webhook authority gate decides from that attribute, so dropping it here
+        # would make the gate refuse an administrator-established link.
         mock_identity_writer.sync_user_identities.assert_awaited_once_with(
             user_id=result.id,
             org_id="wt-org",
             identities=[
-                {"provider_user_id": "gh-123", "provider_username": "alice-gh"},
-                {"provider_user_id": "sl-456", "provider_username": "alice-sl"},
+                {"provider": "github", "provider_user_id": "gh-123", "provider_username": "alice-gh", "verification_method": "admin_manual"},
+                {"provider": "slack", "provider_user_id": "sl-456", "provider_username": "alice-sl", "verification_method": "admin_manual"},
             ],
         )
 
@@ -152,7 +157,7 @@ class TestUsersWriteThrough:
         deleted = await svc.delete_user("wt-org", user.id)
         assert deleted is True
 
-        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["sl-del2"])
+        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["sl-del2"], provider="slack")
 
     @pytest.mark.asyncio
     async def test_delete_user_no_identities_skips_ddb(self, db_session: AsyncSession, mock_cognito_sync, mock_identity_writer, seeded_org):

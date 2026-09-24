@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'modules/gateway/scripts/sync-gateway-engine.py'
+      - 'platform/scripts/tests/test_gateway_engine_release.py'
+      - '.github/workflows/gateway-deploy.yml'
       - 'deploy.sh'
       - 'platform/scripts/enable-bedrock-models.sh'
       - 'platform/scripts/bedrock-model-access.py'
@@ -47,6 +50,9 @@ on:
     branches: [main]
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'modules/gateway/scripts/sync-gateway-engine.py'
+      - 'platform/scripts/tests/test_gateway_engine_release.py'
+      - '.github/workflows/gateway-deploy.yml'
       - 'deploy.sh'
       - 'platform/scripts/enable-bedrock-models.sh'
       - 'platform/scripts/bedrock-model-access.py'
@@ -173,6 +179,7 @@ jobs:
           terraform_wrapper: false
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_gateway_engine_release.py -v
       - run: python -m pytest platform/scripts/tests/test_bedrock_model_access.py -q
       # Capacity-subnet retention and the runbook's resolve block (#5830). Pinned
       # explicitly, like the rest of this job: a glob silently stops covering a file

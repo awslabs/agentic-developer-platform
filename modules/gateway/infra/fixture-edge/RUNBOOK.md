@@ -715,6 +715,9 @@ is traced to the router that actually mounts it:
 | `/auth` | Prefix | `src/auth/routes.py` (`APIRouter(prefix="/auth")`), including `/auth/me` |
 | `/activity/invocations` | Prefix | the agent-control endpoints `#5825`'s merged evaluator calls: `.../{id}/agent/{ping,state,<verb>}` (`src/activity/routes.py:817,837,857` on a **prefix-less** router) |
 | `/orchestration/runs` | Prefix | the **second** control adapter the same evaluator calls: `.../{id}/{ping,state,<verb>}` (`src/orchestration/controls.py`, `prefix="/orchestration"`) |
+| `/access/status` | Exact | dashboard registration check for the real fixture session |
+| `/features` | Exact | dashboard control feature flag |
+| `/admin/agent-invocations` | Prefix | admin invocation list, detail and transcript views |
 | `/admin/agent-run-stats` | Exact | the endpoint `#3968`'s `31-seed-and-count.py:166` reads its seeded counts back through |
 | `/health`, `/ready` | Exact | liveness, registered at the app root in `src/app.py` |
 

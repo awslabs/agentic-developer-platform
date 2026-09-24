@@ -172,3 +172,26 @@ def test_provenance_hash_identifies_both_original_documents(snapshot):
     assert all(r.source_content_sha256 == expected for r in snapshot.rates if r.model_id.startswith("anthropic."))
     assert source_digest(b"page1", b"map") != source_digest(b"page2", b"map")
     assert source_digest(b"page1", b"map") != source_digest(b"page1", b"changed-map")
+
+
+def test_opus55_rates_match_current_aws_widget_and_supported_endpoints():
+    snapshot = load_snapshot("2026-09-24.1")
+    templates = tuple(r for r in snapshot.rates if r.model_id == "anthropic.claude-opus-5-5")
+    folder = Path(__file__).parent / "fixtures/aws/claude"
+    rows = parse_claude_pricing(
+        (folder / "opus55-widgets.html").read_bytes(),
+        (folder / "opus55-token-map.json").read_bytes(),
+        templates,
+        snapshot.models,
+        verified_at="2026-09-24T00:00:00Z",
+    )
+    assert len(rows) == 53
+    us = {r.geography: r for r in rows if r.region == "us-east-1"}
+    assert us["global_cris"].input_price_per_1k_tokens == Decimal("0.004")
+    assert us["global_cris"].output_price_per_1k_tokens == Decimal("0.020")
+    assert us["global_cris"].cache_read_price_per_1k_tokens == Decimal("0.0002")
+    assert us["global_cris"].cache_write_price_per_1k_tokens == Decimal("0.005")
+    assert us["global_cris"].cache_write_1h_price_per_1k_tokens == Decimal("0.008")
+    assert us["geo_cris"].input_price_per_1k_tokens == Decimal("0.0044")
+    assert us["geo_cris"].output_price_per_1k_tokens == Decimal("0.022")
+    assert all(r.service_tier == "standard" for r in rows)

@@ -303,16 +303,30 @@ class TestSupportedVerbBoundary:
     def test_supported_actions_are_the_implemented_verbs(self):
         """The single switch that makes an unimplemented verb a 501.
 
-        Abort joins the set in #3963, which delivers its cancellation path and the
-        terminal finalization that reports the run as deliberately stopped. Steer
-        stays out: its runtime proof is a later story, and a verb in this set with
-        no transport behind it answers 200 for work that never happens.
+        Abort joined in #3963. Steer joins in #3965, which supplies the piece it
+        was missing: a worker that holds an instruction in a bounded queue and
+        hands it over at an observed boundary. With that, the set is complete —
+        every verb the wire can express is now routed.
+
+        The rule this pin enforces did not change and is the reason to keep the
+        pin now that it lists everything: a verb in this set with no transport
+        behind it answers 200 for work that never happens.
         """
-        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "abort"})
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "steer", "abort"})
 
     @BOTH_ADAPTERS
-    @pytest.mark.parametrize("action", ["steer"])
-    def test_authorized_verb_returns_501(self, action, orchestration, regular_user, mock_db):
+    @pytest.mark.parametrize("action", ALL_ACTIONS)
+    def test_a_verb_outside_the_set_returns_501(self, action, orchestration, regular_user, mock_db, monkeypatch):
+        """The 501 gate itself, now that no shipped verb exercises it.
+
+        Until #3965 this test posted ``steer`` and read the refusal off the real
+        set. That made it a test of one verb's absence, so implementing the verb
+        deleted the only coverage of the gate — which is the mechanism protecting
+        every *future* verb. Withholding each verb in turn asserts the gate
+        instead: the property is "not in the set → 501", independent of which
+        verbs happen to be in it today.
+        """
+        monkeypatch.setattr("src.activity.control_service.SUPPORTED_ACTIONS", frozenset(set(ALL_ACTIONS) - {action}))
         client = build_client(make_service(items=[row()]), regular_user, mock_db, orchestration=orchestration)
 
         response = client.post(command_path(action, orchestration), json=valid_body(action))
@@ -346,12 +360,21 @@ class TestSupportedVerbBoundary:
             response = client.post(command_path(action, orchestration), json=valid_body(action))
             assert response.status_code != 404, f"{action} is not routed"
 
-    def test_only_implemented_capabilities_survive_the_pod_claim(self):
+    @pytest.mark.parametrize("withheld", ALL_ACTIONS)
+    def test_only_implemented_capabilities_survive_the_pod_claim(self, withheld, monkeypatch):
         """A compromised or newer worker must not produce a button the gateway 501s.
 
         The gateway intersects the pod's claim with its own SUPPORTED_ACTIONS, so
         the pod is not trusted as the source of truth for what the gateway routes.
+
+        Before #3965 this read the intersection off ``steer``, the one verb the
+        real set withheld. Now that the set is complete, a claim-everything pod
+        would be answered with everything-true and the ``and`` under test would be
+        indistinguishable from an ``or``. So the withheld verb is supplied by the
+        test: each verb in turn is removed from the gateway's set while the pod
+        keeps claiming all four, and only that verb must come back false.
         """
+        monkeypatch.setattr("src.activity.control_service.SUPPORTED_ACTIONS", frozenset(set(ALL_ACTIONS) - {withheld}))
         service = make_service(
             items=[row()],
             pod_body={
@@ -364,10 +387,8 @@ class TestSupportedVerbBoundary:
 
         state = _run(service.get_state(RUN_ID, user_id=CANONICAL_USER_ID, tenant_id=TENANT_ID))
 
-        assert state.capabilities.pause is True
-        assert state.capabilities.resume is True
-        assert state.capabilities.steer is False
-        assert state.capabilities.abort is True
+        for action in ALL_ACTIONS:
+            assert getattr(state.capabilities, action) is (action != withheld), action
 
     @pytest.mark.parametrize("key_ids", [None, [], ["retired-key"], "test-control-key", [1], ["test-control-key"] * 9])
     def test_unverifiable_worker_never_advertises_controls(self, key_ids):
@@ -1495,3 +1516,31 @@ def _run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+def test_fixture_rendered_cidrs_reach_real_transport_guard(monkeypatch):
+    """The operator renderer must configure what this service actually reads."""
+    import runpy
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[4]
+    operator = root / "platform/scripts/operator/wave2"
+    monkeypatch.syspath_prepend(str(operator / "lib"))
+    import render_fixture
+
+    live = runpy.run_path(str(operator / "tests/conftest.py"))["live_deployment"]()
+    rendered, _, _ = render_fixture.render_gateway(
+        live,
+        run_id="w2-cidrs",
+        nonce="deadbeefcafe0123",
+        name="w2-cidrs",
+        namespace="adp-gateway",
+        image="879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:" + "ab" * 32,
+        queue_url="https://example/fixture.fifo",
+        cluster_pod_cidrs="10.0.11.152/32",
+    )
+    env = {entry["name"]: entry.get("value") for entry in rendered["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert str(validate_control_destination("10.0.11.152", 8770, env=env)) == "10.0.11.152"
+    for address, port in [("10.0.11.153", 8770), ("10.0.11.152", 80), ("169.254.169.254", 8770), ("127.0.0.1", 8770)]:
+        with pytest.raises(ControlError):
+            validate_control_destination(address, port, env=env)

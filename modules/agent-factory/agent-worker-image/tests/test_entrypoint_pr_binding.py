@@ -44,7 +44,7 @@ def test_delivery_and_retry_register_pr(path, persona, monkeypatch):
     assert binding.call_count == 2
 
 
-@pytest.mark.parametrize("path", ["self_created", "entrypoint_created"])
+@pytest.mark.parametrize("path", ["self_created", "entrypoint_created", "no_pr"])
 def test_unacknowledged_handoff_keeps_delivered_work_pending(path, monkeypatch):
     import entrypoint
 
@@ -53,7 +53,7 @@ def test_unacknowledged_handoff_keeps_delivered_work_pending(path, monkeypatch):
         return MagicMock(stdout=stdout, returncode=0)
 
     monkeypatch.setattr(entrypoint, "run_cmd", run)
-    monkeypatch.setattr(entrypoint, "_find_open_pr", lambda *_: "5293")
+    monkeypatch.setattr(entrypoint, "_find_open_pr", lambda *_: "" if path == "no_pr" else "5293")
     monkeypatch.setattr(entrypoint, "_branch_changes_are_transcript_only", lambda *_: False)
     monkeypatch.setattr(entrypoint, "_read_result_metadata", lambda: None)
     monkeypatch.setattr(entrypoint, "_register_authored_draft", lambda *_: "")
@@ -68,4 +68,5 @@ def test_unacknowledged_handoff_keeps_delivered_work_pending(path, monkeypatch):
     code = entrypoint._handle_success("aws-e/adp", 5301, "agent/issue-5301", "developer", "run", "arrival")
     assert code == entrypoint.AGENT_EXIT_RETRYABLE
     assert not entrypoint._should_ack_message(code)
-    assert all(call.args[2] != "complete" for call in status.call_args_list)
+    assert status.call_args.args[2] == "failed"
+    assert all(call.args[2] not in {"complete", "in_progress"} for call in status.call_args_list)

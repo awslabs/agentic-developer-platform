@@ -14,13 +14,14 @@ from src.admin.cognito_claims import sync_cognito_role_claims
 from src.admin.cognito_service import CognitoService, CognitoServiceError
 from src.admin.config import get_admin_config
 from src.admin.exceptions import MemberRemovalConflictError, PoolConfigurationError, ResourceConflictError, ResourceNotFoundError
-from src.admin.installations.guards import assert_new_installation_ids_claimable_by
+from src.admin.installations.guards import assert_new_installation_ids_claimable_by, lock_installation_organization
 from src.admin.memberships import (
     is_admin_level_role,
     project_member_org_ids,
     set_membership_role,
     upsert_tenant_membership,
 )
+from src.shared.identity.verification import PROVEN_METHODS
 
 if TYPE_CHECKING:
     from src.admin.identity.identity_index_writer import IdentityIndexWriter
@@ -146,7 +147,12 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Organization", "name", request.name)
 
+        from src.shared.models.base import new_uuid
+
+        new_org_id = new_uuid()
+        await assert_new_installation_ids_claimable_by(new_org_id, new_ids=list(request.github_installation_ids or []), old_ids=[], db=self.db)
         org = Organization(
+            id=new_org_id,
             name=request.name,
             aws_accounts=request.aws_accounts,
             role_mappings=request.role_mappings,
@@ -290,8 +296,7 @@ class AdminService:
             ResourceNotFoundError: If organization not found
             ResourceConflictError: If new name already exists
         """
-        result = await self.db.execute(select(Organization).where(Organization.id == org_id))
-        org = result.scalar_one_or_none()
+        org = await lock_installation_organization(self.db, org_id)
 
         if not org:
             raise ResourceNotFoundError("Organization", org_id)
@@ -1471,6 +1476,7 @@ class AdminService:
             .where(
                 UserIdentity.user_id == User.id,
                 func.lower(UserIdentity.provider) == "github",
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
             )
             .order_by(UserIdentity.created_at)
             .limit(1)
@@ -1561,6 +1567,7 @@ class AdminService:
             .where(
                 UserIdentity.user_id == User.id,
                 func.lower(UserIdentity.provider) == "github",
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
             )
             .order_by(UserIdentity.created_at)
             .limit(1)
@@ -1856,11 +1863,30 @@ class AdminService:
                 "This account also holds membership in another organization. Remove those memberships before deleting this account."
             )
 
-        github_ids = set(
-            (
-                await self.db.execute(select(UserIdentity.provider_user_id).where(UserIdentity.user_id == user_id, UserIdentity.provider == "github"))
-            ).scalars()
-        )
+        # Two snapshots of "this user's GitHub ids", because the two consumers below
+        # ask different questions (#5664, A10).
+        #
+        # `github_ids` is the PROVEN set, and feeds the shared-login removal guard:
+        # "does deleting this account strand another tenant's sign-in?" — an
+        # authority question, so an unproven claim must not be able to block, or to
+        # authorize, a deletion.
+        #
+        # `projected_github_ids` is EVERY GitHub id the user holds, and feeds the
+        # `member_org_ids` projection refresh. Every formerly affected key must be
+        # refreshed, even if this user's claim was unproven, to clear stale orgs.
+        # The recomputation itself includes only proven surviving bindings: the
+        # projected list grants sign-in eligibility and satisfies the webhook's
+        # strict membership policy. A broad refresh set must not become a broad
+        # authority set.
+        identity_rows = (
+            await self.db.execute(
+                select(UserIdentity.provider_user_id, UserIdentity.verification_method).where(
+                    UserIdentity.user_id == user_id, UserIdentity.provider == "github"
+                )
+            )
+        ).all()
+        github_ids = {pid for pid, method in identity_rows if pid and method in PROVEN_METHODS}
+        projected_github_ids = {pid for pid, _ in identity_rows if pid}
         username = user.cognito_username
         if user.cognito_sub:
             from src.shared.identity.workspaces import PLACEMENT_VERIFICATION
@@ -1887,6 +1913,7 @@ class AdminService:
                 .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
                 .where(
                     UserIdentity.provider == "github",
+                    UserIdentity.verification_method.in_(PROVEN_METHODS),
                     UserIdentity.provider_user_id.in_(github_ids),
                     TenantMembership.user_id != user_id,
                 )
@@ -1912,7 +1939,7 @@ class AdminService:
                 "This member has related records that must be retained and cannot be deleted. No membership changes were saved."
             ) from exc
 
-        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=github_ids, writer=identity_writer)
+        await project_member_org_ids(self.db, user_id=user_id, provider_user_ids=projected_github_ids, writer=identity_writer)
 
         # Never remove the login for a database deletion that rolled back.
         if cognito_service and username:

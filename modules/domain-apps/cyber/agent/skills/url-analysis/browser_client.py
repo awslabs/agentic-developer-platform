@@ -113,7 +113,10 @@ def investigation_request(operation, payload, *, broker_url=None):
         # Only the fixed broker port; worker NetworkPolicy restricts it to broker pods.
         broker_url = f"http://{address}:8765"
         payload = {**payload, "session_token": capability}
-    return _request("investigation/" + operation, payload, broker_url, 80)
+    from runtime_limits import STARTUP_SECONDS, ACTION_SECONDS
+
+    budget = STARTUP_SECONDS if operation == "start" else ACTION_SECONDS
+    return _request("investigation/" + operation, payload, broker_url, budget + 20)
 
 
 def _request(operation, payload, broker_url, request_timeout_seconds):

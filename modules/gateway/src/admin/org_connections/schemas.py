@@ -10,6 +10,7 @@ class GitHubConnectionAttachRequest(BaseModel):
     """POST /admin/organizations/{org_id}/connections/github request body."""
 
     installation_id: int = Field(..., gt=0, description="The GitHub App installation id to bind to this organization.")
+    restore_revoked: bool = Field(False, description="Explicit platform-admin restoration of a completed local-only detach owned by this tenant.")
     github_org_id: str | None = Field(
         default=None,
         max_length=64,
@@ -58,3 +59,4 @@ class GitHubConnectionDetachResponse(BaseModel):
     # An operator who detaches to "clean up" needs to see the consequence at the
     # moment they do it.
     warning: str
+    residual: list[str] = Field(default_factory=list)

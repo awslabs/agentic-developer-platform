@@ -313,6 +313,39 @@ describe('Connections Page', () => {
       });
     });
 
+    it('retains pending cleanup and warning until an authorized retry completes', async () => {
+      const user = userEvent.setup();
+      const warning = 'Local access is revoked. Retry to finish the pending cleanup or provider uninstall.';
+      mockDeleteGitHubConnection.mockResolvedValue({
+        deleted: true, installation_id: 12345, local_revoked: true,
+        provider_revoked: false, residual: ['provider_uninstall'], warning,
+      });
+      renderConnections();
+      await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
+      mockListConnections.mockResolvedValue({ connections: [{ ...mockConnection, revocation_pending: true }] });
+      await user.click(screen.getByRole('button', { name: 'Confirm?' }));
+      expect(await screen.findByText(warning)).toBeInTheDocument();
+      expect(await screen.findByText('Access revoked · cleanup pending')).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /Manage repositories/ })).not.toBeInTheDocument();
+      expect(screen.queryByText('GitHub installation disconnected.')).not.toBeInTheDocument();
+
+      mockListConnections.mockResolvedValue({ connections: [] });
+      mockDeleteGitHubConnection.mockResolvedValue({ deleted: true, installation_id: 12345, provider_revoked: true, residual: [] });
+      await user.click(screen.getByRole('button', { name: 'Retry cleanup' }));
+      await waitFor(() => expect(mockDeleteGitHubConnection).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByText('Access revoked · cleanup pending')).not.toBeInTheDocument());
+    });
+
+    it('reports local-only completion honestly', async () => {
+      const user = userEvent.setup();
+      mockDeleteGitHubConnection.mockResolvedValue({ deleted: true, installation_id: 12345, local_revoked: true, provider_revoked: false });
+      renderConnections();
+      await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
+      mockListConnections.mockResolvedValue({ connections: [] });
+      await user.click(screen.getByRole('button', { name: 'Confirm?' }));
+      expect(await screen.findByText('Local access revoked. The installation remains at GitHub.')).toBeInTheDocument();
+    });
+
     it('shows Disconnect button on card', async () => {
       renderConnections();
 

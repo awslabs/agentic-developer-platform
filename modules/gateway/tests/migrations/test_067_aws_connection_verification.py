@@ -10,14 +10,21 @@ from tests.migrations.conftest_postgres import downgrade, upgrade
 MIGRATION = Path(__file__).parents[2] / "alembic/versions/067_aws_connection_verification.py"
 
 
-def test_aws_verification_migration_is_the_single_head():
+def test_aws_verification_migration_is_on_the_single_head_lineage():
     root = Path(__file__).resolve().parents[2]
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(root / "alembic"))
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["069_aws_verification_binding"]
+    # The invariant is "one head, and this migration is in its ancestry", not the
+    # head's NAME. Asserting the name made every later migration fail this test
+    # (#5664 hit it with its own migration) while proving nothing extra: a second head would
+    # still be caught by the length check, and a detached 067 by the ancestry one.
+    heads = scripts.get_heads()
+    assert len(heads) == 1, f"expected a single migration head, found {heads}"
+    lineage = {revision.revision for revision in scripts.walk_revisions("base", heads[0])}
+    assert "067_aws_connection_verify" in lineage
     revision = scripts.get_revision("067_aws_connection_verify")
     assert revision.down_revision == "066_vault_operation_fingerprint"
 

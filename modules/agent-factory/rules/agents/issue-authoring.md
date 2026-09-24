@@ -142,6 +142,14 @@ where needed, not the journey whose existence is being tested. Unit tests of
 helpers can supplement that check. A directory, callable or passing test count
 does not establish an executable capability.
 
+When a handoff carries callbacks or SDK options, require the consumer to invoke
+those callbacks in the production shape. A mocked transport that merely accepts
+an options object can hide a disconnected hook. Assert the resulting runtime
+transition, such as tool work becoming active and then settling, and preserve
+failure/cleanup observations from that same invocation. In epic #3959, passing
+internal pause callbacks directly as SDK hook configuration looked wired in
+helper tests but never exercised the SDK's tool-admission hook contract.
+
 Ask what plausible wrong result could still make the check pass. Exercise that
 counterexample through the actual predicate: e.g. unrelated usage, missing one
 client's record, stale served artifacts, or cleanup with one owned resource

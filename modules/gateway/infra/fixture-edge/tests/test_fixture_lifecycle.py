@@ -163,10 +163,10 @@ if args[:2] == ["ssm", "get-parameter"]:
         print(os.environ.get("FAKE_SSM_VALUE", "s3cr3t-provenance-value")); sys.exit(0)
     # The ORDINARY api id, read by `verify` to prove the fixture edge is a
     # different API. Authoritative: a failure here must stop the run.
-    if name.endswith("/api-gateway-id"):
+    if name.endswith("/apigw-invoke-url"):
         if os.environ.get("FAKE_ORD_APIID_FAIL") == "1":
             denied()
-        print(os.environ.get("FAKE_ORDINARY_API_ID", "ordapi999")); sys.exit(0)
+        print(os.environ.get("FAKE_ORDINARY_INVOKE_URL", "https://" + os.environ.get("FAKE_ORDINARY_API_ID", "ordapi999") + ".execute-api.us-east-1.amazonaws.com/dev")); sys.exit(0)
     # Existence probes. Defaults model post-destroy reality: the PER-RUN secret is
     # gone, the ORDINARY one survives. Tests opt into the failure cases.
     if "/fixture/" in name:
@@ -224,11 +224,13 @@ with open(os.environ["FAKE_LOG"], "a") as fh:
 joined = " ".join(args)
 url = [a for a in args if a.startswith("http")]
 url = url[0] if url else ""
-if "--aws-sigv4" in args:
+if "/agent/model/" in url and os.environ.get("FAKE_MODEL_CODE"):
+    code = os.environ["FAKE_MODEL_CODE"]
+elif "--aws-sigv4" in args:
     code = os.environ.get("FAKE_SIGV4_CODE", "403")
 elif "X-Adp-Edge-Provenance" in joined:
     code = os.environ.get("FAKE_SPOOFED_CODE", "403")
-elif "/internal/" in url:
+elif "/internal/" in url or "/agent/model/" in url:
     code = os.environ.get("FAKE_UNSIGNED_CODE", "403")
 else:
     # The human positive control: anything that is not an /internal probe.
@@ -3548,3 +3550,23 @@ def test_the_fragment_kinds_stay_out_of_the_evaluators_listener_and_policy_sets(
     assert harness.run("apply", args=["--plan-file", str(plan)]).returncode == 0
     for entry in _creation_fragment(harness)["entries"]:
         assert entry["kind"].lower() not in reserved, entry
+
+
+@pytest.mark.parametrize("url", [
+    "", "None", "http://ordapi999.execute-api.us-east-1.amazonaws.com/dev",
+    "https://ordapi999.execute-api.us-west-2.amazonaws.com/dev",
+    "https://ordapi999.execute-api.us-east-1.amazonaws.com/prod",
+    "https://ordapi999.execute-api.us-east-1.amazonaws.com/dev?foo=bar",
+    "https://ordapi999.execute-api.us-east-1.amazonaws.com.evil/dev",
+])
+def test_verify_refuses_invalid_ordinary_invoke_url(harness, url):
+    env = dict(VERIFY_OK_ENV, FAKE_ORDINARY_INVOKE_URL=url)
+    r = harness.run("verify", env, args=VERIFY_OK_ARGS)
+    assert r.returncode != 0
+    assert "ordinary apigw-invoke-url" in r.stderr
+
+
+def test_verify_refuses_an_open_model_route(harness):
+    r = harness.run("verify", dict(VERIFY_OK_ENV, FAKE_MODEL_CODE="200"), args=VERIFY_OK_ARGS)
+    assert r.returncode != 0
+    assert "model route unsigned -> 200" in r.stdout + r.stderr

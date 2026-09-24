@@ -91,6 +91,7 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
+          "dynamodb:ConditionCheckItem",
           "dynamodb:GetItem",
           "dynamodb:Query",
           "dynamodb:PutItem"
@@ -331,12 +332,27 @@ resource "aws_iam_role_policy" "lambda_agent_authority" {
   role = aws_iam_role.lambda_execution.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "TrustedIngressAuthorityWrites"
-      Effect   = "Allow"
-      Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]
-      Resource = [aws_dynamodb_table.agent_authority.arn]
-    }]
+    Statement = [
+      {
+        Sid      = "TrustedIngressAuthorityWrites"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        # Task work IDs are resolved and authorized by the gateway.  The shared
+        # ingress Lambda retains its pre-existing legacy authority writes, but it
+        # can neither create nor retarget a TASK_WORK_ID locator, including as
+        # one member of a future mixed batch/transaction.
+        Sid      = "DenyTaskWorkLocatorWrites"
+        Effect   = "Deny"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:TransactWriteItems"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
+        }
+      },
+    ]
   })
 }
 
@@ -377,6 +393,57 @@ resource "aws_iam_role_policy" "gateway_agent_authority" {
           "kms:DescribeKey",
         ]
         Resource = [aws_kms_key.dynamodb.arn]
+      },
+    ]
+  })
+}
+
+# Task persistence spans the existing request and protected authority tables in
+# one transaction.  Lambda receives no corresponding task grant; the gateway is
+# the only principal that can bind a request-table envelope to a locator.
+resource "aws_iam_role_policy" "gateway_task_storage" {
+  name = "adp-${var.environment}-policy-gateway-task-storage"
+  role = "adp-${var.environment}-role-gateway-service"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "TaskRequestRecords"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:TransactWriteItems",
+        ]
+        Resource = [
+          aws_dynamodb_table.webhook_events.arn,
+          "${aws_dynamodb_table.webhook_events.arn}/index/task-work-index",
+        ]
+      },
+      {
+        Sid    = "TaskAuthorityRecords"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:TransactWriteItems",
+        ]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        Sid      = "TaskLocatorRetentionDelete"
+        Effect   = "Allow"
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
+        }
       },
     ]
   })

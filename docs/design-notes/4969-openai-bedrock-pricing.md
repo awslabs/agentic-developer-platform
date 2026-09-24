@@ -634,7 +634,8 @@ following guards and verification:
    with schema-negative probes retried within 60 seconds. Do not declare deploy
    success while consumers still price known bad legacy fallback rows.
 4. Review and dispatch `.github/workflows/gateway-infra-apply.yml` at this same
-   release commit to deploy IAM, both retry domains/queues and alarm actions;
+   release commit, supplying it as the required `reviewed_source_sha`, to deploy
+   IAM, both retry domains/queues and alarm actions;
    it is manual-only and must actually run before completion. Its Terraform
    archives contain the same package/code. Re-enable the refresh rule only when
    the new code, seeded schema and infra configuration are verified; avoid a

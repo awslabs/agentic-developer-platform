@@ -8,6 +8,11 @@ on:
       release_sha:
         description: 'Full commit SHA of the already deployed and reviewed gateway release.'
         required: true
+      allow_partial_refresh:
+        description: 'Resume scheduling with retained older rates after reviewing source gaps. Freshness alarms remain active.'
+        required: false
+        type: boolean
+        default: false
       account_id:
         description: 'Target AWS account. Empty uses deployment config.'
         required: false
@@ -80,11 +85,14 @@ jobs:
       - name: Verify release pricing and activate its schedule
         env:
           PRICING_RELEASE_SHA: ${{ inputs.release_sha }}
+          PRICING_ALLOW_PARTIAL: ${{ inputs.allow_partial_refresh }}
         run: |
           set -euo pipefail
           [[ "$PRICING_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "A full release SHA is required" >&2; exit 1; }
           [ "$(git rev-parse HEAD)" = "$PRICING_RELEASE_SHA" ] || { echo "Checkout does not match the release SHA" >&2; exit 1; }
           PRICING_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_SHA}"
-          python3 modules/gateway/scripts/pricing-rollout.py finalize \
+          PRICING_RECOVERY_ARGS=()
+          if [ "$PRICING_ALLOW_PARTIAL" = "true" ]; then PRICING_RECOVERY_ARGS+=(--allow-partial-refresh); fi
+          python3 modules/gateway/scripts/pricing-rollout.py finalize "${PRICING_RECOVERY_ARGS[@]}" \
             --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \
             --expected-image "$PRICING_IMAGE"

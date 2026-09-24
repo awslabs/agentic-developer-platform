@@ -157,6 +157,11 @@ async def current_executions(session, *, org_id: str, flow_id: str) -> dict:
     return result
 
 
+def is_preserved_execution(execution, preserved_pairs):
+    """Expose only a derived display flag, never an approval record to the graph."""
+    return execution is not None and (execution.node_id, execution.accepted_plan_version) in preserved_pairs
+
+
 def node_progress(
     *,
     node,
@@ -166,6 +171,7 @@ def node_progress(
     execution=None,
     policy_enabled=False,
     plan_version=None,
+    preserved_execution=False,
     policy_hash=None,
     admission_refusal=None,
     observed_at=None,
@@ -221,7 +227,7 @@ def node_progress(
             and execution.org_id == node.org_id
             and execution.flow_id == node.flow_id
             and execution.cycle == node.attempts
-            and (plan_version is None or execution.accepted_plan_version == plan_version)
+            and (plan_version is None or execution.accepted_plan_version == plan_version or preserved_execution)
         )
         if not current_execution:
             return DeliveryProgress(

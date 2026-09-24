@@ -22,7 +22,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event, start_webchat_session
 
 HANDLER_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "gateway", "lambdas", "ingest")
 
@@ -110,7 +110,33 @@ def _import_handler(mock_bedrock=None):
     return handler
 
 
-def _send(handler, text="I want a nightly cost report", session_id="sess-pin", persona=None):
+PIN_CLAIMS = {
+    "sub": "user-pin", "email": "pin@example.com",
+    "custom:tenant_id": "test-tenant", "custom:account_type": "user",
+}
+
+
+def _session_for(handler, claims=None) -> str:
+    """#5615: one server-issued session id per handler, reused across turns.
+
+    Webchat ids are issued by the server now, so a test cannot name its own. The
+    id is cached on the handler module so consecutive `_send` calls land in the
+    SAME conversation — which is what the multi-turn/thread-reuse tests are about.
+    """
+    cached = getattr(handler, "_test_pin_session_id", None)
+    if cached:
+        return cached
+    session_id = start_webchat_session(
+        handler, dict(claims or PIN_CLAIMS), connection_id="conn-pin"
+    )
+    handler._test_pin_session_id = session_id
+    return session_id
+
+
+def _send(handler, text="I want a nightly cost report", session_id=None, persona=None):
+    """Send a webchat turn. `session_id=None` means "use this handler's session"."""
+    if session_id is None:
+        session_id = _session_for(handler)
     body = {"action": "sendMessage", "text": text, "session_id": session_id}
     if persona is not None:
         body["persona"] = persona
@@ -118,7 +144,7 @@ def _send(handler, text="I want a nightly cost report", session_id="sess-pin", p
         route_key="$default",
         body=body,
         connection_id="conn-pin",
-        authorizer_claims={"sub": "user-pin", "email": "pin@example.com", "custom:tenant_id": "test-tenant", "custom:account_type": "user"},
+        authorizer_claims=dict(PIN_CLAIMS),
     )
     return handler.lambda_handler(event, None)
 
@@ -215,16 +241,20 @@ class TestPersonaRejection:
         )
         handler = _import_handler(mock_bedrock=mock_bedrock)
 
+        claims = {"sub": "user-pin", "email": "pin@example.com",
+                  "custom:tenant_id": "test-tenant"}
+        # #5615: the server issues the session id; a browser cannot invent one.
+        session_id = _session_for(handler, claims)
         event = mock_apigw_event(
             route_key="$default",
             body={
                 "action": "sendMessage",
                 "text": "hi",
-                "session_id": "s1",
+                "session_id": session_id,
                 "persona": {"evil": True},
             },
             connection_id="conn-pin",
-            authorizer_claims={"sub": "user-pin", "email": "pin@example.com", "custom:tenant_id": "test-tenant"},
+            authorizer_claims=claims,
         )
         result = handler.lambda_handler(event, None)
 
@@ -354,7 +384,10 @@ class TestPersonaPinning:
         )
         handler = _import_handler(mock_bedrock=MagicMock())
 
-        result = _send(handler, text="For the prod account", persona="intent-refinement")
+        # The subject is the pre-seeded conversation above, so its id is passed
+        # explicitly instead of minting a fresh one (#5615).
+        result = _send(handler, text="For the prod account", session_id="sess-pin",
+                       persona="intent-refinement")
 
         assert json.loads(result["body"])["thread_id"] == "thread-intake"
         tasks = _drain_queue(mocked_aws_services["sqs"])

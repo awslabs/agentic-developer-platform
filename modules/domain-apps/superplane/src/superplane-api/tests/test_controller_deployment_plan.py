@@ -205,6 +205,90 @@ def test_normal_certificate_plan_fits_unchanged_shared_parameter_bounds():
 
 @pytest.mark.parametrize(
     "change",
+    [
+        None,
+        "fixed",
+        "empty",
+        "duplicate",
+        "overflow",
+        "physical",
+        "boolean",
+        "undersized",
+        "injection",
+        "cpu",
+        "memory",
+    ],
+)
+def test_gpu_constraints_use_skypilot_selection_with_an_exact_physical_envelope(change):
+    profile = profile_fixture(uuid4())
+    del profile["instance_type"]
+    profile.update(
+        accelerators=["A10G:1", "L4:1"],
+        max_gpus_per_node=4,
+        physical_gpus=4,
+        cpus=4,
+        memory_gb=32,
+    )
+    if change == "cpu":
+        profile["cpus"] = 2
+    elif change == "memory":
+        profile["memory_gb"] = 8
+    elif change == "fixed":
+        profile["instance_type"] = "g5.xlarge"
+    elif change == "empty":
+        profile["accelerators"] = []
+    elif change == "duplicate":
+        profile["accelerators"] = ["L4:1", "L4:1"]
+    elif change == "overflow":
+        profile["accelerators"] = ["H100:8"]
+    elif change == "physical":
+        profile["physical_gpus"] = 1
+    elif change == "boolean":
+        profile["max_gpus_per_node"] = True
+    elif change == "undersized":
+        profile["workload"]["gpu_count"] = 2
+        profile["model_options"]["gpu_per_replica"] = 2
+    elif change == "injection":
+        profile["accelerators"] = ["L4:1;echo bad"]
+    if change:
+        with pytest.raises(OperationRefused):
+            build(profile)
+        return
+    preview, values = build(profile)
+    parsed = validate_request(
+        preview.request,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    assert parsed.data["version"] == 3
+    assert "instance_type" not in parsed.data
+    assert parsed.data["accelerators"] == ["A10G:1", "L4:1"]
+    assert preview.request.parameters["max_resource_units"] == "4"
+    stopped = teardown_request(
+        preview.request,
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+        request_id=str(uuid4()),
+        source_operation_id="original-paid-operation",
+    )
+    teardown = validate_request(
+        stopped,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    assert parsed.data == teardown.data
+    assert parsed.cluster_name == teardown.cluster_name
+    assert (
+        stopped.parameters["max_resource_units"]
+        == stopped.parameters["max_cost_micros"]
+        == "0"
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
     ["missing", "certificate", "digest", "oversize", "non-certificate", "target"],
 )
 def test_v2_certificate_and_target_are_bound_to_exact_approved_parameters(change):

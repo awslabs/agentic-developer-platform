@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.identity.providers import IdentityProvider
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.organization import User
 
 logger = logging.getLogger("bedrockgateway.identity")
@@ -303,6 +304,7 @@ async def _resolve_via_github_identity(db: AsyncSession, org_id: str, github_use
     identity_user_id = await db.scalar(
         select(UserIdentity.user_id).where(
             UserIdentity.org_id == org_id,
+            UserIdentity.verification_method.in_(PROVEN_METHODS),
             UserIdentity.provider == IdentityProvider.github,
             UserIdentity.provider_user_id == github_user_id,
         )

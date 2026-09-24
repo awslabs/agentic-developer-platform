@@ -49,7 +49,15 @@ def app():
 
 @pytest.fixture
 def mock_db():
-    return MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    result.scalars.return_value.all.return_value = []
+    result.all.return_value = []
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+    db.get = AsyncMock(return_value=None)
+    db.scalar = AsyncMock(return_value=None)
+    return db
 
 
 def _make_client(

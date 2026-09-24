@@ -20,7 +20,6 @@ _create_installer_membership.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,23 +29,29 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
-    _PROVIDER_GITHUB_INSTALL,
     install_callback,
 )
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
-from src.shared.models.vault import MagicLinkNonce, UserIdentity
+from src.shared.models.vault import UserIdentity
+from tests.admin import install_setup_fixtures as setup_fixtures
+from tests.admin.install_setup_fixtures import (
+    bind_real_org_control,
+    issue_install_nonce,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+offline_setup_boundaries = setup_fixtures.offline_setup_boundaries
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(autouse=True)
-def _configure_github_app(monkeypatch):
+def _configure_github_app(monkeypatch, offline_setup_boundaries):
     """Block Secrets Manager and DDB in unit tests."""
     from src.admin.connections.github_app_provider import _reset_provider_for_testing
 
@@ -106,7 +111,7 @@ def _mock_github_client() -> MagicMock:
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
     client.get_bot_user = AsyncMock(return_value={"id": 424242, "login": "test-adp-agent[bot]", "type": "Bot"})
-    return client
+    return bind_real_org_control(client)
 
 
 # ---------------------------------------------------------------------------
@@ -156,17 +161,7 @@ class TestMembershipPersistenceAcrossSessions:
             seed_session.add(user)
             await seed_session.commit()
 
-            nonce = MagicLinkNonce(
-                jti="persist-jti-001",
-                provider=_PROVIDER_GITHUB_INSTALL,
-                provider_user_id="sub-persist-001",
-                channel_context=None,
-                target_user_id="user-persist-001",
-                expires_at=datetime.now(UTC) + timedelta(minutes=15),
-                consumed_at=None,
-            )
-            seed_session.add(nonce)
-            await seed_session.commit()
+            await issue_install_nonce(seed_session, user, jti="persist-jti-001")
 
         # --- Session 2: Run install_callback, then close WITHOUT committing ---
         # This mirrors the real get_db lifecycle: the session is yielded to the

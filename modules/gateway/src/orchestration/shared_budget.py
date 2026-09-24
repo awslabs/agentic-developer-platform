@@ -107,7 +107,11 @@ async def effective_shared_budget(session, plan, policy):
     if type(data.get("plan_version")) is not int or data["plan_version"] > plan.version:
         raise BudgetIncreaseError("budget_receipt_unverifiable")
     if data["plan_version"] < plan.version:
-        return policy  # A later graph acceptance does not inherit this supplement.
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, data)
+        if plan is None:
+            return policy  # General plan changes still require a fresh approval.
     if (
         decision.actor_kind != "human"
         or decision.actor_role != "platform_admin"

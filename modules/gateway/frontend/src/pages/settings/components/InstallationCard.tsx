@@ -25,7 +25,7 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const handleDisconnect = async () => {
-    if (!confirmDelete) {
+    if (!confirmDelete && !connection.revocation_pending) {
       setConfirmDelete(true);
       return;
     }
@@ -61,7 +61,9 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
   const anyBroken = checks.some((c) => c === false);
   const anyUnverified = v != null && hasUnhealthyCheck(checks);
 
-  const badge = anyBroken ? (
+  const badge = connection.revocation_pending ? (
+    <Badge variant="warning">Access revoked · cleanup pending</Badge>
+  ) : anyBroken ? (
     <Badge variant="danger">Needs attention</Badge>
   ) : anyUnverified ? (
     <Badge variant="warning">Partly verified</Badge>
@@ -123,14 +125,14 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
       </div>
 
       <div className="flex items-center gap-2">
-        <a
+        {!connection.revocation_pending && <a
           href={connection.manage_url || connection.configure_url}
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm text-primary-600 hover:underline dark:text-primary-400"
         >
           Manage repositories ↗
-        </a>
+        </a>}
         {showDisconnect ? (
           <Button
             variant="danger"
@@ -138,7 +140,7 @@ export function InstallationCard({ connection, onDisconnect, readOnly = false }:
             onClick={handleDisconnect}
             disabled={isDisconnecting}
           >
-            {isDisconnecting ? 'Disconnecting…' : confirmDelete ? 'Confirm?' : 'Disconnect'}
+            {isDisconnecting ? 'Working…' : connection.revocation_pending ? 'Retry cleanup' : confirmDelete ? 'Confirm?' : 'Disconnect'}
           </Button>
         ) : readOnly ? (
           <span

@@ -2573,7 +2573,7 @@ cmd_verify() {
   # transient SSM failure.
   local ordinary ord_rc
   set +e
-  ordinary="$(aws_ ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/api-gateway-id" \
+  ordinary="$(aws_ ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
     --query Parameter.Value --output text 2>&1)"
   ord_rc=$?
   set -e
@@ -2581,8 +2581,12 @@ cmd_verify() {
      $(printf '%s' "$ordinary" | tr -d '\n' | cut -c1-200)
      Refusing to continue: without it this cannot prove the fixture edge is not the
      production edge, and 'compare it by hand' is not a check."
-  [ -n "$ordinary" ] && [ "$ordinary" != "None" ] \
-    || fail "the ordinary api-gateway-id resolved EMPTY. Refusing to continue."
+  local ordinary_invoke_url="$ordinary"
+  [[ "$ordinary_invoke_url" =~ ^https://([a-z0-9]+)\.execute-api\. ]] \
+    || fail "the ordinary apigw-invoke-url is invalid. Refusing to continue."
+  ordinary="${BASH_REMATCH[1]}"
+  [ "$ordinary_invoke_url" = "https://${ordinary}.execute-api.${REGION}.amazonaws.com/${ENVIRONMENT}" ] \
+    || fail "the ordinary apigw-invoke-url has an unexpected region, stage or URL component. Refusing to continue."
   [ "$api_id" != "$ordinary" ] \
     || fail "the fixture API id EQUALS the ordinary edge's ($ordinary). STOP."
   ok "distinct from the ordinary edge ($api_id != $ordinary)"
@@ -2630,6 +2634,14 @@ cmd_verify() {
     -H 'X-Caller-Identity: arn:aws:iam::000000000000:role/anything' \
     -H 'X-Adp-Edge-Provenance: forged' || echo 000)"
   _expect_refused "spoofed headers, unsigned" "$code"
+
+  local model_probe="${endpoint%/internal/v1/agent}/agent/model/fixture-auth-probe/invoke"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$model_probe" || echo 000)"
+  _expect_refused "model route unsigned" "$code"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$model_probe" \
+    -H 'X-Caller-Identity: arn:aws:iam::000000000000:role/anything' \
+    -H 'X-Adp-Edge-Provenance: forged' || echo 000)"
+  _expect_refused "model route spoofed headers, unsigned" "$code"
 
   # WRONG ROLE, CORRECTLY SIGNED. This is the one control that exercises this
   # component's resource-policy Deny rather than API Gateway's AWS_IAM check, so
@@ -2683,6 +2695,8 @@ except Exception:
           ok "wrong-role probe signs as $probe_arn (verified NOT allowlisted)"
           code="$(aws_sigv4_probe "$WRONG_ROLE_PROFILE" "$endpoint/bootstrap" || echo 000)"
           _expect_refused "wrong role (correctly signed as $probe_role)" "$code"
+          code="$(aws_sigv4_probe "$WRONG_ROLE_PROFILE" "$model_probe" || echo 000)"
+          _expect_refused "model route wrong role (correctly signed as $probe_role)" "$code"
         fi
       fi
     fi

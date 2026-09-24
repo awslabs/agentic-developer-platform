@@ -185,3 +185,23 @@ def test_claude_source_metric_classification(refresh, monkeypatch):
     module.emit_metrics({"PricingRefreshSuccess": 1}, rows=(row,))
     metric = next(v for v in client.put_metric_data.call_args.kwargs["MetricData"] if v["MetricName"] == "PricingSourceVerifiedAgeHours")
     assert {"Name": "Source", "Value": "pricing_page"} in metric["Dimensions"]
+
+
+def test_manual_partial_report_preserves_partial_metrics(refresh):
+    module, commits = refresh
+    module.fetch_rates.return_value = module.fetch_rates.return_value[0], ("https://failed-source",)
+    result = module.handler({"report_partial": True}, None)
+    assert result["partial"] is True
+    assert result["failed_sources"] == ["https://failed-source"]
+    assert result["fresh_variants"] == 1
+    assert len(commits) == 2
+    assert module.emit_metrics.call_args.args[0]["PricingRefreshPartial"] == 1
+    assert "PricingRefreshSuccess" not in module.emit_metrics.call_args.args[0]
+
+
+@pytest.mark.parametrize("value", ["false", 1, None])
+def test_partial_reporting_flag_is_strict(refresh, value):
+    module, _ = refresh
+    with pytest.raises(ValueError, match="boolean"):
+        module.handler({"report_partial": value}, None)
+    module.publish.assert_not_called()
