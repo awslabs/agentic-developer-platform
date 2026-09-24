@@ -10,6 +10,13 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Superplane's own interface lives with its domain app, not in this SPA.
+      // The Gateway page mounts it and supplies the ADP session; the components
+      // and their API client belong to the domain that owns the contract.
+      //
+      // Resolved through an alias rather than copied in, so there is exactly one
+      // copy of the onboarding client and the browser and CLI cannot drift apart.
+      '@superplane-ui': path.resolve(__dirname, '../../domain-apps/superplane/ui'),
     },
   },
   build: {
