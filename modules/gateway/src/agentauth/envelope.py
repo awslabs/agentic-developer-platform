@@ -89,6 +89,26 @@ ENVELOPE_AUDIENCE = "adp-agent-control-listener"
 # being replayed as a control authorization (PMM-06).
 MODEL_POLICY_AUDIENCE = "adp-agent-model-policy"
 
+# An abort receipt is consumed by the *finalizing supervisor* (a different process
+# from the listener) to decide whether a stopped run may be reported as a
+# deliberate abort and its queue message deleted — Issue #3963.
+#
+# A distinct audience for the same reason as PMM-06, and here the replay it
+# prevents is the specific attack root's finding 1 names: a control envelope
+# authorizing an abort proves an operator *asked*, and it stays valid for its whole
+# TTL whether or not the command was ever accepted by the live run. If the receipt
+# shared the listener's audience, that issuance envelope would itself satisfy the
+# finalizer, and "an operator requested an abort" would be indistinguishable from
+# "this run actually accepted and applied one". The gateway mints this audience
+# only after live revalidation succeeds AND durable intent is persisted, so
+# possession of it is evidence of accepted live delivery rather than of a request.
+ABORT_RECEIPT_AUDIENCE = "adp-agent-abort-receipt"
+
+# The action claim on an abort receipt. Distinct from the `abort` control action so
+# a receipt can never be replayed into the listener's command path as a fresh
+# authorization to abort something.
+ABORT_RECEIPT_ACTION = "abort_accepted"
+
 # Signing key secret name (PEM-encoded Ed25519 private key), gateway only.
 SIGNING_KEY_ENV = "AGENT_CONTROL_ENVELOPE_SIGNING_KEY"
 # Key ID so a listener holding two public keys can pick the right one during
