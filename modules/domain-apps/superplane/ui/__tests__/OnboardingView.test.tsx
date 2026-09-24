@@ -128,6 +128,8 @@ beforeEach(() => {
   restoreDeployment = withoutOnboardingEndpoints();
   server.use(
     http.get(API('/workspaces/:workspaceId/deployments'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, deployments: [] })),
+    http.get(API('/workspaces/:workspaceId/batch-jobs'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, jobs: [], truncated: false })),
+    http.get(API('/workspaces/:workspaceId/batch-profiles'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, profiles: [], can_submit: false, can_review_teardown: false })),
     http.get(API('/workspaces/:workspaceId/deployment-profiles'), ({ params }) => HttpResponse.json({ workspace_id: params.workspaceId, profiles: [], can_submit: false, can_review_teardown: false })),
   );
   // This suite's default fixture is a deployment without capability reporting.

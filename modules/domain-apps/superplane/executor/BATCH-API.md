@@ -11,8 +11,9 @@ Source and input data must be included in that image, or otherwise accessible to
 the installed invocation without introducing an ambient credential. There is no
 arbitrary source checkout, data mount, environment injection, or caller-chosen
 namespace. Workload logs, result delivery, progress observations, cancellation
-before the original operation settles, and a batch browser form remain separate
-work. These routes alone do not complete the researcher lifecycle.
+before the original operation settles remain separate work. The batch browser form
+uses these profiles and durable operation receipts. These routes alone do not
+complete the researcher lifecycle.
 
 ## Policy
 

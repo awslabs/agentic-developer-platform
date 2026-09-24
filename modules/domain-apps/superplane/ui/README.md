@@ -142,3 +142,22 @@ receipt. Browser requests outside the loopback origin are refused. This is
 isolated browser evidence, not a deployed onboarding or serving demonstration.
 Tailwind explicitly scans the domain UI so its classes are included in the
 shipped frontend bundle.
+# Batch operations
+
+`BatchPanel` consumes the governed batch profile and Job routes. Users select a
+fixed immutable image/invocation, review the exact resource/runtime/cost envelope,
+obtain approval and submit. The shared workload action rechecks the current plan
+and approval before admission and persists a `batch:<workspace>:...` receipt
+separate from serving receipts. Reload can recover accepted operations without
+re-entering the invocation. A stop uses the original Job UUID and its separately
+approved teardown plan.
+
+The list is bounded to 100 with an explicit truncation message. Wrong-workspace
+and late responses are refused; revoked access clears displayed rows. Job outcome,
+logs, results and observed cost remain unavailable until those backend contracts
+are composed. A terminal operation is not reported as verified cleanup. In-flight
+cancellation is not implemented by the stop button.
+
+The isolated Chromium CI entry exercises serving and batch separately with
+fixture HTTP transports, keyboard operation and 360/1280px screenshots. This is
+browser evidence, not live workload acceptance.

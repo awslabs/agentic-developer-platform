@@ -95,6 +95,12 @@ ENDPOINTS = {
     "createWorkspace": {"method": "POST", "path": "/workspaces", "served": True},
     # Shared route vocabulary for the browser's operational surface. A served
     # route does not install a CLI command or establish workload readiness.
+    "batchProfiles": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-profiles", "served": True},
+    "listBatchJobs": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs", "served": True},
+    "previewBatchJob": {"method": "POST", "path": "/workspaces/{workspace_id}/batch-jobs/preview", "served": True},
+    "createBatchJob": {"method": "POST", "path": "/workspaces/{workspace_id}/batch-jobs", "served": True},
+    "previewBatchTeardown": {"method": "POST", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/teardown-preview", "served": True},
+    "deleteBatchJob": {"method": "DELETE", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}", "served": True},
     "listDeployments": {"method": "GET", "path": "/workspaces/{workspace_id}/deployments", "served": True},
     "servingProfiles": {"method": "GET", "path": "/workspaces/{workspace_id}/deployment-profiles", "served": True},
     "previewDeployment": {"method": "POST", "path": "/workspaces/{workspace_id}/deployments/preview", "served": True},
