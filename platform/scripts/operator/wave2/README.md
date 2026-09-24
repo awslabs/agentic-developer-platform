@@ -440,3 +440,54 @@ compares container IDs and restart counts, checks termination against collection
 time, and rejects foreign events and missing observations. A collector exit after
 the experiments is distinct from a worker dying during them. The derived artifact
 retains the observation path and hash; missing inputs remain incomplete.
+
+### Registered controls and native interruption (#5891)
+
+Set `payload.control_evaluation.mode` **before signing/publishing the dispatch**:
+
+| Mode | Execution | Required observation |
+| --- | --- | --- |
+| `sdk` (default) | Existing SDK experiment suite | Existing Wave 2 evidence |
+| `registered-control` | Production runtime factory and real `resilientQuery` with foreground tool work | Live gateway state/commands and browser capture of this invocation |
+| `native-interrupt` | Same factory/query; calls the active SDK handle's `interrupt()` after an assistant turn is observed | Native request/ack trace and this invocation's non-aborted terminal row |
+
+Registered modes require successful production registration. A missing token is a
+failure, with no fallback to an unregistered SDK experiment. The launcher uses the
+exact dispatched source bundle, installs its lockfile dependencies and starts
+`registered-control-fixture.ts`. It limits the SDK to one attempt, 300 turns and a
+15-minute runtime deadline. The parent also bounds subprocess lifetime and kills
+its process group on exit. Use disposable fixture infrastructure and foreground
+work only; keep ordinary control flags and allowlists unchanged.
+
+Use the authenticated handoff command above for each new invocation. While
+`registered-control` runs, collect live command responses and browser actions
+against that invocation. Use a separate invocation for abort so it cannot end the
+pause/resume/steer observation early. The collection helper preserves
+`registered-runtime.json`, verifies its dispatch identity, and signals `collected`
+so the entrypoint can finalize the same invocation. A nonzero collection exit
+retains all available evidence; it does not authorize dispatching a replacement.
+
+After collection, read the terminal result through the fixture gateway:
+
+```sh
+python3 platform/scripts/operator/wave2/lib/registered_runtime.py \
+  --runtime "$EV/worker-collection/registered-runtime.json" \
+  --envelope "$EV/protected-envelope.json" \
+  --session-file "$OWNER_SESSION_FILE" \
+  --gateway-url "$FIXTURE_GATEWAY_URL" \
+  --out "$EV/registered-terminal.json" --timeout 180
+```
+
+The session file stays private. The helper makes authenticated read requests only,
+rejects foreign invocation/source/mode, missing lifecycle events, failed cleanup,
+lost events and inconsistent terminal outcomes. A native SDK interruption may
+finish as `failed` with exit code 1; that preserves the actual SDK outcome. It must
+never become `aborted` without a gateway-authorized operator abort. A local trace
+or a successful subprocess exit alone cannot establish live acceptance. Missing
+terminal rows time out rather than being synthesized.
+
+Retain the pod UID, Job UID, resolved worker digest, source/build receipt, gateway
+digest, command/browser captures and fixture ledger alongside these reports. Use
+the existing ledger cleanup only after worker drain and evidence collection;
+verify the exact owned resources are absent. LF-01/03/04 have local production-path
+regressions; LF-02/03/05 still require the maintainer's actual live observations.

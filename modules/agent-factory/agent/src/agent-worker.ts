@@ -2,7 +2,6 @@ import { reviewCyclePrompt } from './review-cycle-input';
 import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
 import { archiveProtectedGitChanges } from './lib/gitArchiveGateway';
 import { saveToS3Fallback } from './utils/ghPost';
-import { controlDeadlineAt } from './control-deadline';
 import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
  * Generic Agent Worker
@@ -99,24 +98,18 @@ import { CodexEventWatcher } from './components/codexEventWatcher';
 // Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
 // so the control surface is unit-testable without starting a run.
 import { ControlListener } from './control-listener';
-import { revalidateQueuedCommand } from './control-revalidation';
-import { parseVerificationKeys } from './control-envelope';
 import { ControlStateStore, type ControlAction } from './control-state';
 // Issue #5840: the heartbeat/exit-watchdog emitter, shared with the live
 // pause-expiry runner so both describe the same execution and the same gate.
 import { startRunHeartbeat } from './run-heartbeat';
 // Issue #3962: the harness-neutral control contract and its first adapter. The
 // worker composes them; it does not reach past the interface into the SDK.
-import { listenerActionsFor } from './control-runtime';
-import {
-  ClaudeControlAdapter,
-  ClaudeBackgroundWorkObserver,
-} from './harnesses/claude-control';
+import { ClaudeControlAdapter } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
-// Issue #3961: the outcome→journal mapping and the gate/store mirror live in their
-// own module so they can be unit-tested; importing this file from a test pulls the
-// SDK's ESM entry point into Jest and the suite cannot parse.
-import { applyControlCommand, bindRuntimeTransitionsToStore } from './control-command-apply';
+// Issue #5891: the shared composition — see control-runtime-factory.ts for why
+// this replaced an inline assembly of pause gate + adapter + store + queue +
+// listener that only `main()` could build.
+import { startControlRuntime } from './control-runtime-factory';
 import { SteerQueue, steerMarker } from './steer-queue';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
@@ -2243,148 +2236,35 @@ async function main(): Promise<void> {
   // finally block can close the port on every exit path — including a thrown
   // error — rather than only on the success path.
   let controlListener: ControlListener | null = null;
-  // Issue #3962: the harness adapter, constructed unconditionally and outside the
-  // try for the same reason. Constructing it costs nothing and starts nothing —
-  // it holds an attempt registry and no transport until `resilientQuery` attaches
-  // one — so it is not gated on the listener having started. That independence is
-  // deliberate: the adapter is the object the retry-safety rules live in, and
-  // making it conditional on a control listener would tie the correctness of a
-  // retry to whether an operator had enabled an intervention channel.
-  //
-  // Issue #3961: the adapter now carries the pause barrier. The gate is the
-  // object the `PreToolUse` hook consults, so it must exist before the query
-  // options are built — which is why it is constructed here and not inside the
-  // query setup. Its deadline comes from the pod's own remaining budget, so a
-  // pause can never outlive the run it is pausing.
-  //
-  // The observer is passed to BOTH the gate (as its background-work probe) and
-  // the hooks (which feed it) so there is exactly one answer to "is anything
-  // still running behind the tools that finished?". Two instances would let the
-  // gate consult a probe nobody was updating, and an un-updated probe answers `0`
-  // — a fabricated quiescence claim, which is the single failure this whole story
-  // exists to prevent.
-  const backgroundWork = new ClaudeBackgroundWorkObserver();
-  const pauseGate = new PauseGate({
-    deadlineAt: controlDeadlineAt,
-    backgroundWorkProbe: () => backgroundWork.count(),
-    log: (msg) => log('DEBUG', msg),
-  });
-  const controlAdapter = new ClaudeControlAdapter({
-    log: (msg) => log('DEBUG', msg),
-    pauseGate,
-    backgroundWorkObserver: backgroundWork,
-  });
+  // Issue #5891: this composition — pause barrier, Claude adapter, command
+  // store, steering queue and the in-pod HTTP listener — used to be assembled
+  // inline here and nowhere else. That made it impossible for anything other
+  // than an ordinary run to start the *same* runtime the gateway's dashboard
+  // talks to: a fixture wanting to prove pause/resume/steer/abort reach a real
+  // agent had no choice but to build a second, similar-looking copy, which
+  // proves the pieces fit together and nothing about production. Extracting it
+  // to `startControlRuntime` (control-runtime-factory.ts) removes that gap —
+  // ordinary runs and the fixture launcher now call the one function that
+  // decides how a control runtime is built. This call is behavior-preserving:
+  // same construction order, same options, same teardown obligations as the
+  // inline version it replaces.
   try {
     // Started here, after config resolution and before the SDK query, so a
     // state read is answerable for the whole life of the run. Everything the
     // listener needs was placed in this process's env by the entrypoint, which
     // only does so when the flag is on and registration succeeded — so an
     // unregistered listener cannot exist.
-    const controlStore = new ControlStateStore({
-      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
-      // Issue #3962: derived from the adapter rather than declared here, so the
-      // wire cannot be enabled without the transport behind it — there is only one
-      // place left to say yes. Issue #3961 is what that buys: `pause`/`resume` are
-      // now in the ADP set and this adapter carries a barrier, so the intersection
-      // yields them and the listener answers 202 instead of 501. `abort` joined
-      // with #3963 on a different mechanism — cancellation rather than the
-      // barrier — which is why the adapter keeps claiming it even when the barrier
-      // is unusable. `steer` stays out on both sides.
-      //
-      // This is also what makes `abort` require a signed envelope: the listener's
-      // `requiresEnvelope` derives from this same set, so enabling the verb and
-      // demanding proof for it are one decision and cannot be separated.
-      supportedActions: listenerActionsFor(controlAdapter),
-      capabilityProvider: () => controlAdapter.capabilities(),
-      revalidate: revalidateQueuedCommand,
-    });
-    // Issue #3961: mirror every gate-initiated transition — the admitted-tool
-    // count (replacing S1's permanent `null`, and only for a run that actually has
-    // a gate, because `0` is a quiescence claim only the gate may make), plus the
-    // confirm/unavailable/expiry edges that change admission with no command behind
-    // them. Without the latter the store can report `paused` while tools run.
-    bindRuntimeTransitionsToStore({ adapter: controlAdapter, store: controlStore, log });
-    // Issue #3965: the steering delivery pump. It owns no ordering of its own —
-    // the journal above is the FIFO and the cap — and its entire job is to wait
-    // for a moment the harness can take input, then perform one authorized
-    // handoff. Constructed before the listener because the listener's executor
-    // closes over it.
-    const steerQueue = new SteerQueue({
-      store: controlStore,
-      submitInput: (input) => controlAdapter.submitInput(input),
-      // The definition of a handoff boundary, and the reason it is assembled here
-      // rather than inside the queue: all three facts belong to different owners
-      // and the intersection is the worker's to compute.
-      //
-      // 1. the transport has a reader parked (the adapter's observed fact);
-      // 2. no operator pause is active. A pause means "nothing is touching my
-      //    repository right now", and `shouldQuery: true` steering is allowed to
-      //    start a turn — so delivering into a pause would let an instruction
-      //    start tool work the barrier is holding back. That is the false-`Paused`
-      //    failure the whole pause story exists to prevent, reached through a side
-      //    door. The instruction stays pending and is delivered on resume;
-      // 3. no admitted tool work is outstanding. `activeToolCount()` is always an
-      //    observed number here (the gate counts admissions), so this is a fact
-      //    rather than an assumption — and a non-zero count means a tool is
-      //    mid-execution, which is precisely the "mid-tool submissions remain
-      //    pending" case.
-      atBoundary: () => controlAdapter.canAcceptInput() &&
-        !pauseGate.isPauseActive() && pauseGate.activeToolCount() === 0,
-      // Re-drive on every runtime transition, and re-subscribe to the new
-      // transport's readiness edge whenever an attempt attaches. The attach case
-      // is what makes a queued instruction survive an in-process retry: the old
-      // endpoint is gone, so its readiness notification is gone with it, and
-      // without re-subscribing here a command that was pending across a retry
-      // would wait for an edge nothing would ever fire.
-      subscribe: (onBoundary) => {
-        const unsubscribe = controlAdapter.subscribe((event) => {
-          if (event.type === 'attempt_attached') controlAdapter.notifyWhenInputAccepted(onBoundary);
-          onBoundary();
-        });
-        controlAdapter.notifyWhenInputAccepted(onBoundary);
-        return unsubscribe;
-      },
+    const { runtime, listener, outcome } = await startControlRuntime({
+      log,
       // Issue #3965: the deterministic live-comment marker. Written on the
-      // outcome, which is after the handoff — never on acceptance. A submission
-      // during a twenty-minute tool call produces no marker for twenty minutes,
-      // and that silence is correct: the marker attests to delivery, so anchoring
-      // it to submission would claim delivery of something still queued.
-      //
-      // The command id is the whole payload. The operator's instruction text is
-      // deliberately absent — the live comment is a public artifact on a GitHub
-      // issue, and echoing steering text into it would republish operator input
-      // outside the authorized control channel.
-      onOutcome: ({ commandId, outcome }) => {
+      // outcome, which is after the handoff — never on acceptance. The
+      // ordinary worker has a live comment to append to; a fixture launcher
+      // passes no callback, which is a correct, inert choice.
+      onSteerOutcome: ({ commandId, outcome }) => {
         activeLiveComment?.appendActivity(steerMarker(commandId, outcome));
       },
-      log,
     });
-    const listener = new ControlListener({
-      bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
-      port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),
-      token: process.env.ADP_CONTROL_TOKEN || '',
-      tokenExpiresAt: process.env.ADP_CONTROL_TOKEN_EXPIRES_AT || '',
-      credentialFile: process.env.ADP_CONTROL_CREDENTIAL_FILE,
-      generation: Number.parseInt(process.env.ADP_CONTROL_GENERATION || '1', 10) || 1,
-      store: controlStore,
-      // Issue #3961: the seam that makes an accepted command actually happen.
-      // Without it every 202 was a promise nothing kept.
-      executor: (action, commandId, reason, instruction) =>
-        applyControlCommand({ action, commandId, reason, instruction, steerQueue,
-          adapter: controlAdapter, store: controlStore, log }),
-      // Issue #5028: this run's own identity and the gateway's public verification
-      // keys. Both are placed here by the entrypoint. An absent key map means
-      // live-control commands are refused while the read paths keep working. That
-      // was the unremarkable default when no verb was implemented; with
-      // pause/resume/abort live it is a real fail-closed state, and the right one —
-      // a pod that cannot verify authorization must refuse, not comply.
-      runId: process.env.ADP_CONTROL_RUN_ID || '',
-      envelopeKeys: parseVerificationKeys(process.env.ADP_CONTROL_ENVELOPE_KEYS),
-      envelopeKeysFile: process.env.ADP_CONTROL_ENVELOPE_KEYS_FILE,
-      logger: (level, message, context) => log(level.toUpperCase(), message, context),
-    });
-    const outcome = await listener.start();
-    if (outcome.started) {
+    if (outcome.started && runtime && listener) {
       controlListener = listener;
       // Issue #3961: publishing the runtime here — and only here — is what
       // installs the admission barrier into the query options below. Gating it on
@@ -2401,16 +2281,8 @@ async function main(): Promise<void> {
       // `undefined` for every transport hook and takes the plain string-prompt
       // path byte-for-byte — there is no queue, no input iterable and no way for
       // a steering command to exist, because there is no socket to submit one to.
-      activeControlRuntime = { adapter: controlAdapter, gate: pauseGate, steerQueue };
+      activeControlRuntime = runtime;
       log('INFO', `Control listener started on port ${outcome.port}`);
-    } else {
-      // Issue #3965: a listener that did not start — for any reason, including
-      // the ordinary flag-off case — means no command can ever arrive, so the
-      // queue is disposed rather than left holding a runtime subscription for the
-      // life of the run. Disposing an empty queue settles nothing; it just drops
-      // the subscription, which keeps the flag-off path free of any live control
-      // object.
-      steerQueue.dispose('the control listener did not start; no instruction can be delivered');
     }
     if (!outcome.started && outcome.reason !== 'disabled') {
       // A failure to start is logged at WARN and the run continues: control is an
@@ -2757,8 +2629,12 @@ Please check the workflow logs for details.`);
     // disposed runtime would read the post-teardown state as though it were the
     // run's — so the surface closes first and the runtime it describes second.
     // Idempotent, and safe when no attempt was ever attached.
+    //
+    // Issue #5891: reads `activeControlRuntime` rather than a local `controlAdapter`
+    // binding — the composition now lives in `startControlRuntime`, so the adapter
+    // this run holds (if any) is exactly the one published there.
     try {
-      await controlAdapter.dispose();
+      await activeControlRuntime?.adapter.dispose();
     } catch (err) {
       log('WARN', `Control adapter dispose failed: ${(err as Error).message}`);
     }

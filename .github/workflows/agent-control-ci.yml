@@ -142,6 +142,10 @@ on:
       - 'modules/agent-factory/agent/src/control-runtime-fault-probe.ts'
       - 'modules/agent-factory/agent/src/control-runtime-steering-probe.test.ts'
       - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.test.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.test.ts'
       - 'modules/agent-factory/agent/src/harnesses/**'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
       - 'modules/agent-factory/agent/src/utils/resilientQuery.test.ts'
@@ -215,6 +219,19 @@ on:
       # the tests together, because they are a single unit: a library change that
       # breaks a script is only visible when both are exercised.
       - 'platform/scripts/operator/wave2/**'
+      # Wave 4 operator collectors (#3970). Same reasoning as wave 2's glob above,
+      # and listed for the reason root's finding 5808491910 named: a package no
+      # workflow references has no merge check at all. The wave-4 tests in
+      # `test_agent_control_eval.py` drive these modules end to end — collector →
+      # artifact → evaluator — so a change here that breaks a measurement is only
+      # visible when both halves run, and the harness's own path entry above does
+      # not fire on an edit confined to this directory.
+      #
+      # The directory is hyphenated rather than `operator/wave4` deliberately: a
+      # nested package needs `platform/scripts/operator/__init__.py`, which shadows
+      # the standard library's `operator` module for anything importing with
+      # `platform/scripts` on the path.
+      - 'platform/scripts/operator-wave4/**'
       # The fixture-config runbook. Listed because its example config is parsed
       # and validated by the harness tests: a doc-only edit that drifts the
       # example from the harness must fail CI, not merge quietly. The operator
@@ -807,6 +824,7 @@ jobs:
             src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
             src/control-runtime-timeout.assembly.test.ts \
             src/control-runtime-steering-probe.test.ts \
+            src/control-runtime-factory.test.ts src/registered-control-fixture.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -816,6 +834,8 @@ jobs:
             --collectCoverageFrom='src/control-revalidation.ts' \
             --collectCoverageFrom='src/lib/runIdentity.ts' \
             --collectCoverageFrom='src/control-runtime.ts' \
+            --collectCoverageFrom='src/control-runtime-factory.ts' \
+            --collectCoverageFrom='src/registered-control-fixture.ts' \
             --collectCoverageFrom='src/pause-gate.ts' \
             --collectCoverageFrom='src/control-command-apply.ts' \
             --collectCoverageFrom='src/steer-queue.ts' \
@@ -824,7 +844,7 @@ jobs:
             --collectCoverageFrom='src/control-runtime-timeout.ts' \
             --collectCoverageFrom='src/run-heartbeat.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
-            --ci --verbose
+            --maxWorkers=2 --ci --verbose
 
       - name: Assert the control adapter advertises no verb as supported
         working-directory: modules/agent-factory/agent
@@ -1084,7 +1104,7 @@ jobs:
         # `update_status` would be measured as uncovered by the very step that
         # enforces the threshold.
         run: |
-          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py \
+          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py tests/test_control_evaluation.py \
             tests/test_status_vocabulary.py \
             --cov=lib.invocation_status \
             --cov=entrypoint \
