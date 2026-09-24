@@ -419,13 +419,22 @@ class TestDeploymentGpuQuota:
         assert len(apps.created) == 1
 
     @pytest.mark.asyncio
-    async def test_a_workspace_with_no_recorded_budget_is_not_unlimited(self, client):
+    @pytest.mark.parametrize(
+        "org_quotas", [None, "{}", '{"max_nodes": 12}', '{"max_gpus": null}']
+    )
+    async def test_a_workspace_with_no_recorded_budget_is_not_unlimited(
+        self, client, org_quotas
+    ):
         """An unset budget falls back to the plan default, not to no ceiling.
 
         An absent budget is an unconfigured workspace; reading that as "no limit" is how
         the unconfigured tenant becomes the expensive one.
         """
         await _seed(ws_a_max_gpus=None)
+        async with async_session_test() as session:
+            org = await session.get(Organization, ORG_ID)
+            org.quotas_json = org_quotas
+            await session.commit()
         apps = _FakeAppsApi()
 
         with _patch_clients(apps):
