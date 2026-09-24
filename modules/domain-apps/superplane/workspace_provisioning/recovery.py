@@ -14,6 +14,8 @@ from dataclasses import replace
 from .recovery_proposals import PROPOSAL_PHASES, ProposalRecovery
 from .recovery_applied import APPLIED_PHASES, AppliedRecovery
 from .recovery_account_creation import AccountCreationRecovery
+from .recovery_bootstrap import BootstrapRecovery
+from .recovery_partial import PARTIAL_PHASES, PartialLifecycleRecovery
 
 
 class LifecycleRecovery(ScopedRecovery):
@@ -54,6 +56,9 @@ class LifecycleRecovery(ScopedRecovery):
         elif step.step_id == "create-account":
             self.proposals = AccountCreationRecovery(self.context)
             self.observe_claim = self.proposals.observe
+        elif step.step_id == "bootstrap-workspace":
+            self.proposals = BootstrapRecovery(self.context)
+            self.observe_claim = self.proposals.observe
         async with self.provider.execution_pool.acquire() as connection:
             started = await connection.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM harness_provider_call_intent WHERE operation_id=$1)",
@@ -69,13 +74,17 @@ class LifecycleRecovery(ScopedRecovery):
                         self.principal.workspace_id,
                         self.operation_id,
                     )
-                    if step.step_id in PROPOSAL_PHASES | APPLIED_PHASES
+                    if step.step_id
+                    in PROPOSAL_PHASES | APPLIED_PHASES | {"bootstrap-workspace"}
                     else False
                 )
             if not proposed:
-                raise OperationRefused(
-                    "lifecycle provider phase requires fresh recovery observations; reservation retained"
-                )
+                if step.step_id not in PARTIAL_PHASES:
+                    raise OperationRefused(
+                        "lifecycle provider phase requires fresh recovery observations; reservation retained"
+                    )
+                self.proposals = PartialLifecycleRecovery(self.context)
+                self.observe_claim = self.proposals.observe
         return frozenset({self.operation_id})
 
     async def _prepare(self, lease, calls):

@@ -197,6 +197,26 @@ class RecoveryAuthority:
             )
         return facts
 
+    async def bootstrap(self, claim, idempotency_key, *, artifact_id, plan_digest):
+        data = await self._observation(
+            "bootstrap", claim, idempotency_key=idempotency_key
+        )
+        facts = data.get("facts")
+        if (
+            data.get("idempotency_key") != idempotency_key
+            or data.get("result_artifact_id") != artifact_id
+            or data.get("plan_digest") != plan_digest
+            or data.get("phase") != "bootstrap-workspace"
+            or not isinstance(facts, dict)
+            or set(facts) != {"bootstrap_anchor_sha256", "source_artifact_id"}
+            or any(
+                not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
+                for value in facts.values()
+            )
+        ):
+            raise OperationRefused("original canonical bootstrap observation changed")
+        return facts
+
     async def deliver_settlement(self, **receipt):
         result = await self.transport.post(
             "/internal/v1/controller-execution/recovery/settlement",

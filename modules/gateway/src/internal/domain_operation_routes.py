@@ -430,6 +430,11 @@ async def account_creation(body: ObserveRequest, request: Request):
     return await observation(body, request, "account-creation")
 
 
+@router.post("/recovery/bootstrap")
+async def bootstrap_recovery(body: ObserveRequest, request: Request):
+    return await observation(body, request, "bootstrap")
+
+
 @router.post("/recovery/settlement")
 async def settlement(body: SettlementRequest, request: Request):
     binding, _, _, _, _, original, _ = await authenticated(request, mode="recovery")

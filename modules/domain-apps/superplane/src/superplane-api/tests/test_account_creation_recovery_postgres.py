@@ -79,7 +79,14 @@ async def accepted_without_artifact(scenario):
 
 @asynccontextmanager
 async def recovery_composition(
-    scenario, operation, tmp_path, monkeypatch, *, status="SUCCEEDED", failure=None
+    scenario,
+    operation,
+    tmp_path,
+    monkeypatch,
+    *,
+    status="SUCCEEDED",
+    failure=None,
+    observation_path="account-creation",
 ):
     original_authority = scenario.context.authority
     lease = operation.grant.lease
@@ -178,9 +185,9 @@ async def recovery_composition(
 
         class Transport:
             async def post(self, path, body):
-                assert path.endswith("/recovery/account-creation")
+                assert path.endswith("/recovery/" + observation_path)
                 response = await client.post(
-                    "/internal/controller/recovery/account-creation", json=body
+                    "/internal/controller/recovery/" + observation_path, json=body
                 )
                 if response.status_code == 422:
                     pytest.fail(

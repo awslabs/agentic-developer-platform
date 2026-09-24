@@ -355,6 +355,25 @@ async def account_creation(
     }
 
 
+@router.post("/bootstrap")
+async def bootstrap(
+    body: StatusRequest, request: Request, submitter=Depends(_authenticated_submitter)
+):
+    from app.services.bootstrap_recovery import observe_bootstrap
+
+    permitted(submitter, body.claim.org_id)
+    result = await observe_bootstrap(request, body)
+    permitted(await _authenticated_submitter(request), body.claim.org_id)
+    return {
+        **result,
+        "version": 1,
+        "observation_only": True,
+        "claim": body.claim.model_dump(),
+        "query_id": body.query_id,
+        "checked_at": datetime.now(UTC).isoformat(),
+    }
+
+
 @router.post("/settlement")
 async def settlement(
     body: SettlementRequest,

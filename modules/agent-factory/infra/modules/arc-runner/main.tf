@@ -170,6 +170,12 @@ resource "helm_release" "arc_runner_set" {
               name    = "runner"
               image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
               command = ["/home/runner/run.sh"]
+              # Busy nodes can delay worker startup beyond the runner's 30s
+              # IPC default, killing it before tests start. Bound the startup
+              # handoff separately from workflow and test execution timeouts.
+              env = [
+                { name = "GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT", value = "120" }
+              ]
               resources = {
                 requests = { cpu = "4", memory = "4Gi" }
                 limits   = { cpu = "4", memory = "8Gi" }

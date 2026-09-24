@@ -43,17 +43,31 @@ interruption, cancellation and lease expiry. Live resumption uses the maintained
 creation observer and an immutable child handoff. Bootstrap uses a separate
 approval; management credential delivery keeps the management account identity,
 and child credentials require the exact original successful creation record.
-This composer is not routed by the public worker. Complete account bootstrap,
-infrastructure handoffs and expired-grant recovery still require composed testing
-before new-account capability can be enabled.
+This composer is not routed by the public worker. Private account bootstrap and
+infrastructure phases join the canonical registration composer. Protected account
+recovery reads the exact accepted request under a current recovery claim, including
+when no artifact exists. Positive pending status preserves the original intent and
+backoff; failures and unknown outcomes retain accounting. Success publishes an
+immutable original-producer handoff and a separate recovery audit, then settles
+through the shared recovery engine. Its API role is configured separately as
+`SUPERPLANE_ACCOUNT_RECOVERY_OBSERVATION_ROLE_ARN` and permits only caller identity,
+DescribeCreateAccountStatus and success-only ListParents reads in the approved
+management account. Full remote composed acceptance remains required before
+new-account capability can be enabled.
 
 An applied result records exact cluster, node-group, launch-template, CNI and
 retained private STS identities. Protected recovery can observe that completed
 result without delivering provider credentials to the worker; persisted plan
 bytes and original admission lineage are checked independently. Missing results,
 uncertain partial applies and changed provider identities remain unresolved, with
-allocation retained. Terminal bootstrap results anchor canonical registration and
-the completed authority journals; read-only bootstrap recovery is not implemented.
+allocation retained. Protected bootstrap recovery checks terminal output against
+the exact canonical registration and completed revoked-authority journal anchor.
+It establishes the original operation's completion; it is not a new live health
+observation and delivers no credentials. A partial mutation without terminal
+output is classified from the maintained finite-effect and authority journals.
+Unknown effects retain the original reservation and are never replayed. Removing
+outstanding grants requires a separately approved cleanup composer; observation
+authority cannot perform that cleanup.
 
 `load_bootstrap_retirement_inventory` reads deletion candidates from
 the completed bootstrap registration and its PostgreSQL ownership journals. It
