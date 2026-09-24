@@ -91,6 +91,7 @@ from src.orchestration.dispatch_pass import (
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.draft_revision_routes import router as draft_revision_router
 from src.orchestration.evaluation_acceptance_routes import router as evaluation_acceptance_router
+from src.orchestration.evaluation_waiver_routes import router as evaluation_waiver_router
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
 from src.orchestration.flow_controls import router as flow_controls_router
@@ -1364,6 +1365,7 @@ class GraphNodeResponse(BaseModel):
     # generic message — so this never claims a binding exists where one does not.
     bound_pull_request: dict | None = None
     binding_hold: str | None = None
+    evaluation_waiver: dict | None = None
     cost: NodeCostResponse
     created_at: str
     updated_at: str | None
@@ -1473,12 +1475,26 @@ async def get_flow_graph(
     dispatches: dict[str, dict] = {}
     result_summaries: dict[str, dict] = {}
     gate_decisions: dict[str, GateDecisionSummary] = {}
+    waivers: dict[str, dict] = {}
     observed_at: dict[str, tuple[int, str]] = {}
     admission_refusals: dict[str, dict] = {}
     from .admission_diagnostics import ACTOR as ADMISSION_ACTOR
     from .admission_diagnostics import CONTRACT as ADMISSION_CONTRACT
 
     for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind == "evaluation_waived" and decision.actor_kind == "human":
+            try:
+                content = json.loads(decision.reason or "{}")
+                waivers[decision.node_id] = dict(
+                    decision_id=decision.id,
+                    actor_id=decision.actor_id,
+                    created_at=decision.created_at.isoformat(),
+                    reason=content["reason"],
+                    criterion_ids=content["criterion_ids"],
+                    plan_version=content["plan_version"],
+                )
+            except (ValueError, KeyError, TypeError):
+                pass
         if decision.kind == DecisionKind.TRANSITION_REJECTED.value and decision.actor_id == ADMISSION_ACTOR and decision.actor_kind == "service":
             try:
                 refusal = json.loads(decision.rejection_reason or "{}")
@@ -1591,6 +1607,7 @@ async def get_flow_graph(
                     observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
                 ),
                 last_gate_decision=gate_decisions.get(node.id),
+                evaluation_waiver=waivers.get(node.id) if node.state == "waived" else None,
                 configuration_problem=(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
                 ),
@@ -1923,5 +1940,6 @@ router.include_router(shared_concurrency_router)
 router.include_router(shared_retry_router)
 router.include_router(shared_window_router)
 router.include_router(evaluation_acceptance_router)
+router.include_router(evaluation_waiver_router)
 
 router.include_router(draft_revision_router)

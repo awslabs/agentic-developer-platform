@@ -85,7 +85,8 @@ _TICK_ACTOR_ID = "system:orchestration-tick"
 _TICK_ACTOR_ROLE = "engine"
 
 
-# A predecessor counts as satisfied only when it reached PASSED.
+# PASSED satisfies a prerequisite. WAIVED also requires a current, attributed
+# exception validated by _predecessor_states before admission.
 #
 # Spelled out rather than derived from TERMINAL_STATES, because "terminal" and
 # "satisfied" are different questions and conflating them would silently release
@@ -95,7 +96,7 @@ _TICK_ACTOR_ROLE = "engine"
 #   - SUPERSEDED:       replaced by another attempt; that attempt's PASSED is
 #                       what should release the successor, not this row.
 # Non-terminal states (PENDING/READY/RUNNING/AWAITING_GATE) are simply not done.
-SATISFIED_STATES: frozenset[NodeState] = frozenset({NodeState.PASSED})
+SATISFIED_STATES: frozenset[NodeState] = frozenset({NodeState.PASSED, NodeState.WAIVED})
 
 
 @dataclass
@@ -206,7 +207,19 @@ async def _predecessor_states(session: AsyncSession, *, org_id: str, node_id: st
             OrchestrationNode.org_id == org_id,
         )
     )
-    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+    rows = [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+    if any(state == NodeState.WAIVED for _, state in rows):
+        from .evaluation_waiver import valid_waiver
+
+        verified = []
+        for predecessor_id, state in rows:
+            if state == NodeState.WAIVED:
+                parent = await session.get(OrchestrationNode, predecessor_id)
+                if parent is None or await valid_waiver(session, parent) is None:
+                    state = NodeState.PENDING.value
+            verified.append((predecessor_id, state))
+        return verified
+    return rows
 
 
 def _unsatisfied(predecessors: list[tuple[str, str]]) -> list[str]:

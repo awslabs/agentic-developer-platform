@@ -490,6 +490,9 @@ class TestOrchestrationRouterIsOperatorPlane:
             ("/orchestration/flows/{flow_id}/continuation/accept", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/evaluation/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/evaluation/accept", "POST"): "Permission.PLAN_APPROVE",
+            # Human owner exceptions use the same approval boundary; never internal routes.
+            ("/orchestration/flows/{flow_id}/evaluation-waiver/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/evaluation-waiver/accept", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/append/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/append/accept", "POST"): "Permission.PLAN_APPROVE",
             # Financial supplements retain plan approval and additionally require
