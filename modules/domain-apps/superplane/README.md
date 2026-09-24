@@ -8,6 +8,12 @@ code validation remain separate from deployment and live workload acceptance.
 Start with the [installation contract](installation/README.md),
 [execution contract](executor/README.md) and [onboarding/workload UI](ui/README.md).
 
+The governed executor currently supports AWS native EKS capacity only. Restoring
+the original AWS + neocloud GPUs in one EKS cluster requires the
+[hybrid capacity extensions](executor/HYBRID-CAPACITY.md). The
+[mixed-provider demo](tests/acceptance/MIXED-PROVIDER-DEMO.md) defines the required
+workload and shared-serving proof; it is not yet an executable acceptance run.
+
 ## Feature gate
 
 Everything here is behind `FEATURE_SUPERPLANE_ENABLED`, which is **fail-closed** —

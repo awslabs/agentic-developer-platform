@@ -6,6 +6,11 @@ workload credentials, and SkyPilot transport credential. The Go process receives
 only the execution socket, per-operation tokens, read-only workspace credentials,
 and signed-observation credentials. No fallback invokes the legacy Go provider.
 
+Current capacity support is AWS native EKS in the cluster's account, region and
+VPC. Nebius/Lambda adapter source does not make hybrid capacity reachable through
+this executor. [Hybrid capacity requirements](HYBRID-CAPACITY.md) map the original
+upstream scenarios to the missing provider, network, join and cleanup composition.
+
 Assignments originate from already admitted operations and existing leased ADP
 runs. `SUPERPLANE_EXECUTION_OPERATION_FILE` is a JSON array of operation IDs from
 that run; it is only a selector. Gateway verifies the live run/pod, IAM scope,
