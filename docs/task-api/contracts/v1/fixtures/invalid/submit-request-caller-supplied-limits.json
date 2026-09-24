@@ -1,0 +1,16 @@
+{
+  "$fixture": {
+    "description": "A caller raising its own ceilings. Limits are fixed platform values; a request-supplied limit is a request to be exempt from the pilot's spend and lifetime bounds.",
+    "schema": "public-api.schema.json#/$defs/submit_request",
+    "expect": "invalid",
+    "reason": "limits is not a permitted request property; limits are fixed platform configuration",
+    "violates": ["limits.json#/amendment_rule"],
+    "owner": "T2",
+    "criteria": ["T0-AC03", "V0-01", "V2-05"]
+  },
+  "schema_version": "1.0",
+  "persona": "agent-task-investigator",
+  "instructions": "Investigate the checkout-api 503 spike.",
+  "limits": { "max_turns": 64, "max_usd_per_task": 50 },
+  "inputs": {}
+}

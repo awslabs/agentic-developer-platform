@@ -1,0 +1,26 @@
+{
+  "$fixture": {
+    "description": "Child asks the host to perform a model call. It cannot name a model, endpoint, region or key; the gateway resolved all of that at admission.",
+    "schema": "process-protocol.schema.json#/$defs/model_request_frame",
+    "expect": "valid",
+    "owner": "T5",
+    "criteria": [
+      "T0-AC02",
+      "T5-AC04",
+      "V0-03",
+      "V2-06"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "model.request",
+  "request_id": "6b5a4cf4-912d-4853-9dcd-094eff538cab",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Given these pool timeout and upstream latency observations, what is the most likely cause of the 503 burst?"
+    }
+  ],
+  "max_tokens": 2048
+}

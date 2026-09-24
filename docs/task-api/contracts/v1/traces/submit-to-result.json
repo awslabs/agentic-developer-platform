@@ -1,0 +1,153 @@
+{
+  "$trace": {
+    "trace_id": "submit-to-result",
+    "description": "One complete flow from submission to a retrieved result, including a follow-up question and its answer. This is the trace T0-AC02 requires: an independent implementation agent can replay these steps in order and check its own system produces the same identities, states and event sequence without having read any other slice's code.",
+    "criteria": ["T0-AC02", "V0-01", "V0-02", "V0-04", "V1-01", "V3-01"],
+    "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+    "expected_terminal_status": "completed"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "actor": "client",
+      "action": "POST /v1/tasks",
+      "owner": "T2",
+      "fixture": "fixtures/valid/submit-request.json",
+      "expected_status": 202,
+      "response_fixture": "fixtures/valid/submit-response.json",
+      "task_status_after": "accepted",
+      "notes": "Admission commits the task record, the immutable input and the outbox entry in one transaction. The client holds a task handle before any worker exists."
+    },
+    {
+      "step": 2,
+      "actor": "client",
+      "action": "POST /v1/tasks (retry, same Idempotency-Key and body)",
+      "owner": "T2",
+      "fixture": "fixtures/valid/submit-request.json",
+      "expected_status": 202,
+      "response_fixture": "fixtures/valid/submit-response-idempotent-replay.json",
+      "task_status_after": "accepted",
+      "notes": "A retry after a client timeout returns HTTP 202 with the original handle rather than creating a second task. The replay flag distinguishes this from step 1; a different task or invocation ID would prove duplicate work was admitted."
+    },
+    {
+      "step": 3,
+      "actor": "gateway",
+      "action": "publish dispatch envelope to the shared FIFO queue",
+      "owner": "T3",
+      "fixture": "fixtures/valid/envelope-dispatch.json",
+      "attributes_fixture": "fixtures/valid/sqs-publish-attributes.json",
+      "task_status_after": "queued",
+      "notes": "MessageGroupId serialises this tenant's task; MessageDeduplicationId is the dispatch UUID, not the invocation, so a recovery republish is not swallowed by the dedup window."
+    },
+    {
+      "step": 4,
+      "actor": "worker",
+      "action": "POST /internal/v1/agent/task/bootstrap",
+      "owner": "T4",
+      "fixture": "fixtures/valid/bootstrap-request.json",
+      "response_fixture": "fixtures/valid/bootstrap-response.json",
+      "task_status_after": "running",
+      "notes": "Authority is acquired here under a verified workload identity, never read from the envelope. The response carries the model binding with invocability already proven."
+    },
+    {
+      "step": 5,
+      "actor": "host",
+      "action": "send start frame to the child process",
+      "owner": "T5",
+      "fixture": "fixtures/valid/process-start-frame.json",
+      "task_status_after": "running",
+      "notes": "The child receives task content only: no credentials, no model identifier, no egress."
+    },
+    {
+      "step": 6,
+      "actor": "child",
+      "action": "emit progress",
+      "owner": "T5",
+      "fixture": "fixtures/valid/process-progress-frame.json",
+      "emits_event": "fixtures/valid/event-progress.json",
+      "event_sequence": 4,
+      "task_status_after": "running",
+      "notes": "Progress crosses the process boundary as a bounded message and becomes a durable, cursored event."
+    },
+    {
+      "step": 7,
+      "actor": "child",
+      "action": "request inference",
+      "owner": "T5",
+      "fixture": "fixtures/valid/process-model-request-frame.json",
+      "task_status_after": "running",
+      "notes": "The child asks for inference without naming a model; the host holds the binding."
+    },
+    {
+      "step": 8,
+      "actor": "host",
+      "action": "record model receipt after a confirmed provider response",
+      "owner": "T6",
+      "fixture": "fixtures/valid/model-receipt-confirmed.json",
+      "task_status_after": "running",
+      "notes": "Usage is recorded only because the handoff was confirmed. The receipt is the sole source for spend; the child never reports cost."
+    },
+    {
+      "step": 9,
+      "actor": "child",
+      "action": "request clarification",
+      "owner": "T7",
+      "fixture": "fixtures/valid/process-input-required-frame.json",
+      "emits_event": "fixtures/valid/event-input-required.json",
+      "expected_event_type": "input.required",
+      "task_status_after": "waiting_for_input",
+      "snapshot_fixture": "fixtures/valid/task-snapshot-waiting-for-input.json",
+      "notes": "The task parks rather than guessing. The open question is visible in the snapshot, so a client polling instead of streaming still learns it is being asked something."
+    },
+    {
+      "step": 10,
+      "actor": "client",
+      "action": "POST /v1/tasks/{task_id}/messages",
+      "owner": "T7",
+      "fixture": "fixtures/valid/message-request.json",
+      "expected_status": 202,
+      "receipt_fixture": "fixtures/valid/command-receipt-accepted.json",
+      "task_status_after": "waiting_for_input",
+      "notes": "Acceptance is durable but not yet consumption: the receipt names no turn, because the command has not been appended to the conversation."
+    },
+    {
+      "step": 11,
+      "actor": "host",
+      "action": "open a turn and consume the pending command",
+      "owner": "T6",
+      "turn_fixture": "fixtures/valid/turn.json",
+      "receipt_fixture": "fixtures/valid/command-receipt-consumed.json",
+      "task_status_after": "running",
+      "notes": "The consumption boundary: appended once to the canonical conversation and included once in exactly this turn. The receipt now names the turn, and the turn is immutable."
+    },
+    {
+      "step": 12,
+      "actor": "child",
+      "action": "emit the final report",
+      "owner": "T5",
+      "fixture": "fixtures/valid/process-result-frame.json",
+      "task_status_after": "running",
+      "notes": "The child reports content and evidence only; the host, not the child, closes the task."
+    },
+    {
+      "step": 13,
+      "actor": "host",
+      "action": "validate process exit, then commit the terminal result",
+      "owner": "T4",
+      "fixture": "fixtures/valid/result-completed.json",
+      "emits_event": "fixtures/valid/event-task-completed.json",
+      "expected_event_type": "task.completed",
+      "task_status_after": "completed",
+      "notes": "Both halves are required before completion: a committed result and a validated exit. Completing on the report alone would leave a live process whose later output has nowhere to go."
+    },
+    {
+      "step": 14,
+      "actor": "client",
+      "action": "GET /v1/tasks/{task_id}",
+      "owner": "T2",
+      "response_fixture": "fixtures/valid/task-snapshot-completed.json",
+      "task_status_after": "completed",
+      "notes": "The terminal snapshot carries artifact identifiers, never a presigned URL; bytes stream through the gateway with access re-checked."
+    }
+  ]
+}

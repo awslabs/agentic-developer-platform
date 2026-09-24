@@ -1,0 +1,19 @@
+{
+  "$fixture": {
+    "description": "An attempt replacement that leaves the previous attempt valid. Two live attempt endpoints for one run means two writers: the superseded attempt's late callbacks would be accepted as current, which is exactly the split-brain the generation fencing exists to prevent.",
+    "schema": "bootstrap.schema.json#/$defs/attempt_request",
+    "expect": "invalid",
+    "reason": "old_attempt_invalidated is fixed true; the previous attempt must be invalidated before a new one is issued",
+    "violates": ["bootstrap.schema.json#/$defs/attempt_request", "identity-and-lifecycle.json#/lifecycle/invariants/LC-03"],
+    "owner": "T4",
+    "criteria": ["T0-AC03", "V0-03", "V3-03"]
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "generation": 1,
+  "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11",
+  "protocol_version": 1,
+  "capabilities": ["input", "cancel"],
+  "old_attempt_invalidated": false
+}

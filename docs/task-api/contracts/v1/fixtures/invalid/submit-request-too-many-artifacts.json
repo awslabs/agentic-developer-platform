@@ -1,0 +1,22 @@
+{
+  "$fixture": {
+    "description": "Five artifact references against a fixed ceiling of four.",
+    "schema": "public-api.schema.json#/$defs/submit_request",
+    "expect": "invalid",
+    "reason": "artifact_ids exceeds artifacts.max_input_artifacts (4)",
+    "violates": ["limits.json#/artifacts/max_input_artifacts"],
+    "owner": "T2",
+    "criteria": ["T0-AC03", "V0-02", "V1-09"]
+  },
+  "schema_version": "1.0",
+  "persona": "agent-task-investigator",
+  "instructions": "Investigate the checkout-api 503 spike.",
+  "artifact_ids": [
+    "art_6f1b9c22-4a7d-4f1e-8b3a-2c9d5e7f1a04",
+    "art_4b4ea33f-a811-451f-89cf-d6f4dcafc12e",
+    "art_1b3d5f7a-9c1e-4f3a-8b5d-7f9a1c3e5b70",
+    "art_2c4e6b8d-0f2a-4c6e-8b0d-2f4a6c8e0b21",
+    "art_3d5f7a9c-1e3f-4a5b-9c7d-1e3f5a7b9c02"
+  ],
+  "inputs": {}
+}

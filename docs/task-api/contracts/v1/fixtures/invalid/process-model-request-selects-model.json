@@ -1,0 +1,34 @@
+{
+  "$fixture": {
+    "description": "A child process naming its own model and endpoint. The child asks for inference; the host decides where that goes. If the child could choose, agent-influenced content would select the model and region, moving spend and data residency outside the platform's control.",
+    "schema": "process-protocol.schema.json#/$defs/model_request_frame",
+    "expect": "invalid",
+    "reason": "model, endpoint and region are forbidden in a child model request; the host holds the binding",
+    "violates": [
+      "process-protocol.schema.json#/$defs/model_request_frame/not",
+      "decisions.json#/O6"
+    ],
+    "owner": "T5",
+    "criteria": [
+      "T0-AC02",
+      "T5-AC02",
+      "V0-02",
+      "V2-05"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "model.request",
+  "request_id": "293a4b5c-6d7e-4f80-9192-031425364758",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Summarise the pool timeout pattern."
+    }
+  ],
+  "max_tokens": 2048,
+  "model": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+  "endpoint": "https://bedrock-runtime.us-east-1.amazonaws.com",
+  "region": "us-east-1"
+}
