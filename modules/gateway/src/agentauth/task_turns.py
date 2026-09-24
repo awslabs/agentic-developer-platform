@@ -73,6 +73,8 @@ class TaskTurnStore:
             "messages": messages, "committed_at": now, "transcript_version": number + 1,
             "invocation_id": identity.invocation_id, "generation": identity.generation, "runtime_attempt_id": identity.runtime_attempt_id}
         sequence = int(task["event_sequence"])
+        if sequence + len(commands) > 10000:
+            raise TaskStoreError("task event budget exhausted")
         transaction = [{"Put": {"TableName": self.repository.table_name, "Item": _serialize(turn),
                                 "ConditionExpression": "attribute_not_exists(event_id)"}},
             {"Update": {"TableName": self.repository.table_name,

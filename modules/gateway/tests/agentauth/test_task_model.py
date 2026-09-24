@@ -84,7 +84,9 @@ async def test_uncertain_provider_response_is_never_replayed_or_released(model):
 @pytest.mark.asyncio
 async def test_budget_denial_prevents_send(model):
     model.enforcement.check_budget_hierarchy.return_value.allowed = False
-    assert (await execute(model))["operation_status"] == "rejected"
+    receipt = await execute(model)
+    assert receipt["operation_status"] == "rejected"
+    assert receipt["error_code"] == "budget_exceeded"
     model.provider.assert_not_awaited()
 
 
@@ -163,3 +165,37 @@ async def test_terminal_unknown_model_preserves_admission_hold(model):
     budget = SimpleNamespace(settle_admission=AsyncMock())
     assert not await settle_task_admission(model.repository, model.identity, budget=budget)
     budget.settle_admission.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_budget_check_prevents_provider_handoff(model):
+    from src.tasks.records import task_partition
+    from src.tasks.store import _serialize
+    async def cancel_during_check(*args, **kwargs):
+        model.repository._client.update_item(TableName=model.repository.table_name,
+            Key=_serialize({"event_id": task_partition(model.identity.task_id), "arrived_at": "META"}),
+            UpdateExpression="SET #state = :cancel ADD #version :one", ExpressionAttributeNames={"#state": "state", "#version": "version"},
+            ExpressionAttributeValues=_serialize({":cancel": "cancel_requested", ":one": 1}))
+        return SimpleNamespace(allowed=True)
+    model.enforcement.check_budget_hierarchy.side_effect = cancel_during_check
+    assert (await execute(model))["operation_status"] == "rejected"
+    model.provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_racing_prepared_transaction_blocks_send(model, monkeypatch):
+    from src.tasks.records import task_partition
+    from src.tasks.store import _serialize
+    transact = model.repository._client.transact_write_items
+    def race(**kwargs):
+        if kwargs["TransactItems"][0].get("Put", {}).get("Item", {}).get("handoff") == {"S": "prepared"}:
+            monkeypatch.setattr(model.repository._client, "transact_write_items", transact)
+            model.repository._client.update_item(TableName=model.repository.table_name,
+                Key=_serialize({"event_id": task_partition(model.identity.task_id), "arrived_at": "META"}),
+                UpdateExpression="SET #state = :cancel ADD #version :one",
+                ExpressionAttributeNames={"#state": "state", "#version": "version"},
+                ExpressionAttributeValues=_serialize({":cancel": "cancel_requested", ":one": 1}))
+        return transact(**kwargs)
+    monkeypatch.setattr(model.repository._client, "transact_write_items", race)
+    assert (await execute(model))["operation_status"] == "rejected"
+    model.provider.assert_not_awaited()

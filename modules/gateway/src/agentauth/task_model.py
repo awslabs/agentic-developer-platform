@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 _RECEIPT_FIELDS = {"schema_version", "task_id", "turn_id", "operation_status", "handoff", "request_digest",
                    "model_id", "claimed_at", "completed_at", "usage", "reservation_status", "automatic_replay_permitted",
-                   "content", "stop_reason"}
+                   "content", "stop_reason", "error_code"}
 
 
 async def invoke_task_messages(db, *, identity, binding, target, request, operation_id):
@@ -157,13 +157,15 @@ class TaskModel:
                 return existing, False
             raise TaskStoreError("model operation claim refused") from None
 
-    def _save(self, operation, **updates):
+    def _save(self, operation, *, authorize_identity=None, **updates):
         updated = {**operation, **updates}
         # Provider evidence belongs to the claimed operation even if cancellation
         # revoked live authority while the provider was processing it. It cannot
         # change task outcome or authorize another provider call.
         for _ in range(3):
-            task = self.repository.read_task(operation["task_id"])
+            task = self._current(authorize_identity) if authorize_identity else self.repository.read_task(operation["task_id"])
+            authority_checks = (self.repository._authority_condition_checks(snapshot=task,
+                runtime_attempt_id=authorize_identity.runtime_attempt_id) if authorize_identity else [])
             try:
                 self.repository._client.transact_write_items(TransactItems=[
                     {"Put": {"TableName": self.repository.table_name, "Item": _serialize(updated),
@@ -175,7 +177,7 @@ class TaskModel:
                         "UpdateExpression": "SET #version = :next", "ConditionExpression": "#version = :version",
                         "ExpressionAttributeNames": {"#version": "version"},
                         "ExpressionAttributeValues": _serialize({":version": int(task["version"]), ":next": int(task["version"]) + 1})}},
-                ])
+                ] + authority_checks)
                 return updated
             except ClientError as exc:
                 if exc.response["Error"]["Code"] != "TransactionCanceledException":
@@ -207,6 +209,7 @@ class TaskModel:
         started = time.monotonic()
         sent = False
         reserved = False
+        error_code = "model_access_denied"
         context = policy.context
         try:
             quote_body = json.dumps({"model": binding["model_id"], **request}, separators=(",", ":")).encode()
@@ -218,12 +221,14 @@ class TaskModel:
             context._policy_quote, context._policy_estimated_cost, context._policy_request_id = quote, quote.total_usd, turn_id
             verdict = await self.enforcement.check_budget_hierarchy(context, quote.total_usd, request_id=turn_id)
             if not verdict.allowed:
+                error_code = "budget_exceeded"
                 raise TaskStoreError("model budget refused")
             reserved = True
             if await confirm_quote_spendable(quote) is not None:
                 raise TaskStoreError("model quote expired")
             await run_in_threadpool(self._current, identity)
-            operation = await run_in_threadpool(self._save, operation, reservation_status="reserved", handoff="prepared")
+            operation = await run_in_threadpool(self._save, operation, authorize_identity=identity,
+                reservation_status="reserved", handoff="prepared")
             sent = True  # Every failure from this point conservatively retains the upper bound.
             result = await self.provider(self.db, identity=identity, binding=binding, target=target, request=request, operation_id=turn_id)
             decision = result["price"]
@@ -264,5 +269,6 @@ class TaskModel:
                     context, turn_id, binding["model_id"], 0, 0, actual_cost_usd=Decimal(0), usage_known=True)
             operation = await run_in_threadpool(self._save, operation,
                 operation_status="unknown" if sent else "rejected", handoff="unknown" if sent else "not_started",
+                error_code="model_outcome_unknown" if sent else error_code,
                 reservation_status="unknown" if sent else ("reserved" if reserved else "not_reserved"), usage=None)
             return self.receipt(operation)

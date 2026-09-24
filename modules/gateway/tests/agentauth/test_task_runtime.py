@@ -188,3 +188,26 @@ def test_turn_consumes_pending_input_with_event_atomically(runtime):
     assert events[-1]["type"] == "input.consumed"
     assert events[-1]["data"]["turn_id"] == turn_id
     assert turns.commit(identity=identity, request_id=turn_id, expected_transcript_version=2)["turn"] == result["turn"]
+
+
+def test_live_turn_route_cannot_skip_or_exceed_eight_turns(runtime):
+    from src.agentauth.task_turns import TaskTurnStore
+    from src.tasks.records import command_sort_key, task_commands_partition
+    from src.tasks.store import TaskStoreError, _serialize
+    identity = _attempt_identity(runtime)
+    repository = runtime[0].repository
+    turns = TaskTurnStore(repository, clock=lambda: NOW)
+    with pytest.raises(TaskStoreError, match="transcript"):
+        turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=99)
+    for number in range(1, 9):
+        if number > 1:
+            command_id = str(uuid.uuid4())
+            repository._client.put_item(TableName=repository.table_name, Item=_serialize({
+                "event_id": task_commands_partition(identity.task_id), "arrived_at": command_sort_key(command_id),
+                "task_id": identity.task_id, "command_id": command_id, "kind": "input", "payload": {"text": "next"},
+                "command_sequence": number, "status": "accepted", "authority_expires_at": "2026-09-24T12:30:00Z"}))
+        committed = turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=number)
+        assert committed["turn"]["turn_number"] == number
+    with pytest.raises(TaskStoreError, match="budget"):
+        turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=9)
+    assert len(turns.list_turns(identity.task_id)) == 8
