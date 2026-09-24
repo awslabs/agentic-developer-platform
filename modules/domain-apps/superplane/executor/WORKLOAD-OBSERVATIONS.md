@@ -36,6 +36,15 @@ Missing read rights report unavailable and never trigger a credential fallback.
 
 ## Meaning and limits
 
+The executor's paid readiness step also requires the original operation's captured
+Job/Deployment UID and approved image/invocation. Serving readiness checks the
+captured Service UID, selector and port before accessing the existing auth Secret.
+The unauthenticated health probe must return 401/403 before a token is sent; target
+identity and current execution authority are rechecked before that probe and after
+its response. Missing, ambiguous or replaced identities require recovery instead
+of completing the original operation. This uses the executor's scoped credential;
+it does not grant Secret or service-proxy access to the observation reader.
+
 This is a fresh observation, not a durable result artifact or cleanup/cost
 settlement. Job completion does not release model quota. Approved teardown and
 verified owned absence remain separate. Serving availability here is Kubernetes

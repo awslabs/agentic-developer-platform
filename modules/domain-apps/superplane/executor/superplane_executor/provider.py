@@ -364,10 +364,34 @@ class Provider:
                                 {i["InstanceId"] for i in instances},
                             )
                         else:
+                            known_references = None
+                            if (
+                                "controller_deployment_id"
+                                in operation.request.parameters
+                            ):
+                                async with self.execution_pool.acquire() as connection:
+                                    rows = await connection.fetch(
+                                        "SELECT provider_reference FROM harness_allocation_resource "
+                                        "WHERE org_id=$1 AND workspace_id=$2 AND allocation_id=$3 "
+                                        "AND provider='aws' AND kind='workspace_object' AND operation_id=$4",
+                                        lease.org_id,
+                                        lease.workspace_id,
+                                        operation.request.parameters["allocation_id"],
+                                        lease.operation_id,
+                                    )
+                                known_references = frozenset(
+                                    row["provider_reference"] for row in rows
+                                )
                             ready = await self.workspace.workload_ready(
-                                operation, target, plan
+                                operation,
+                                target,
+                                plan,
+                                known_references=known_references,
+                                authorize=authorize,
                             )
                         if ready:
+                            # Readiness I/O can outlive its authority, just like writes.
+                            await authorize()
                             return (
                                 CallOutcome.SUCCEEDED,
                                 "verified workspace observation",
