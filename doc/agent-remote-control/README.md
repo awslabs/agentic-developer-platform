@@ -162,7 +162,7 @@ The gateway requires `get`, `list` and `patch` on pods in the configured worker 
 
 **Rollback and cleanup:** stop admitting new control commands, but keep gateway authority, recovery code, event/authority table access and pod permissions available until retained pods have terminal evidence and their finalizers have been released. Disabling authority stops this recovery loop. Do not strip finalizers merely to make deletion finish; unresolved reporting must remain explicit. Fixture teardown must drain recovery before removing its gateway or Role.
 
-Local tests cover startup refusal, retention, reporting outages, recovery restart and concurrent terminal writes. Protected worker finalization, broader integration checks and live acceptance remain outstanding; dependent stories must not treat local evidence as a deployed guarantee.
+Local tests cover startup refusal, retention, reporting outages, recovery restart and concurrent terminal writes. The combined worker failure test covers both direct and protected gateway reporting. Broader integration checks and live acceptance remain outstanding; dependent stories must not treat local evidence as a deployed guarantee.
 
 ### Retry and teardown
 

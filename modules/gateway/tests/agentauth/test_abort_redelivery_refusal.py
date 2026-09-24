@@ -67,8 +67,9 @@ bridges the signed identity client's HTTP transport into the real ASGI bootstrap
 route. A real admission refusal propagates out of startup as ``RunIdentityError``.
 Spies at ``subprocess.run`` and ``Popen`` verify that no process launches. External
 logging and transport credentials are fixtures; this is local integration evidence,
-not a deployed-pod acceptance run. The terminal-write failure above exercises the
-legacy direct-DynamoDB writer; protected reporting needs separate coverage.
+not a deployed-pod acceptance run. The combined failure case is parameterized across legacy direct-DynamoDB and
+protected gateway-mediated reporting. The latter includes an authenticated
+successful write before storage failure injection.
 
 ``TestTheAbortingRunItselfIsNotStopped`` covers the other half, and it is the half an
 abort guard would have broken: the aborting pod re-presents its own binding every
@@ -186,7 +187,7 @@ def arrived_at(ctx) -> str:
     return matching[0]["arrived_at"]["S"]
 
 
-def run_worker_abort_finalization(worker, ctx, monkeypatch, receipt_handle, *, events_table):
+def run_worker_abort_finalization(worker, ctx, monkeypatch, receipt_handle, *, events_table, protected=False):
     """Drive the worker's REAL abort finalization, and report what it observed.
 
     This is the part root's review of e9b630dd found missing: the earlier version of
@@ -221,7 +222,8 @@ def run_worker_abort_finalization(worker, ctx, monkeypatch, receipt_handle, *, e
     # The legacy (direct-DynamoDB) status path, so the write under test is the one
     # whose failure mode this suite injects. The gateway-mediated path is covered by
     # `test_handoff_routes.py`; here the requirement is a *failed* durable write.
-    monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+    if not protected:
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
 
     attempts: list[str] = []
     real_update = invocation_status.update_status
@@ -268,7 +270,10 @@ def run_worker_abort_finalization(worker, ctx, monkeypatch, receipt_handle, *, e
 class TestTheAbortedRunDoesNotStartAgain:
     """The combined flow, with both durable writes failed."""
 
-    async def test_accepted_abort_survives_terminal_and_ack_failure_with_zero_task_starts(self, abort_context, monkeypatch, worker):
+    @pytest.mark.parametrize("protected", [False, True])
+    async def test_accepted_abort_survives_terminal_and_ack_failure_with_zero_task_starts(
+        self, abort_context, monkeypatch, worker, tmp_path, protected
+    ):
         ctx = abort_context
         # 1. A real abort, accepted through the live route by production code.
         await accept_abort(ctx)
@@ -291,13 +296,82 @@ class TestTheAbortedRunDoesNotStartAgain:
         # real: the terminal row against a DynamoDB table that does not answer, the
         # delete against SQS with a corrupted handle. Neither failure is simulated by
         # replacing a worker function with one that returns False.
-        exit_code, terminal_persisted, write_attempts = run_worker_abort_finalization(
-            worker,
-            ctx,
-            monkeypatch,
-            "broken-" + receipt_handle[:20],
-            events_table="events-that-does-not-exist",
-        )
+        import asyncio
+        from functools import partial
+
+        responses = []
+        if protected:
+            from contextlib import nullcontext
+
+            import lib.status_gateway_client as status_client
+            from botocore.credentials import Credentials
+
+            from src.agentauth import registration_routes
+            from src.agentauth.registration import AgentRegistrationService
+
+            # Real policy, run credential, workload binding and transactional
+            # writer. Only the destination table fails; authorization stays live.
+            service = AgentRegistrationService(
+                policy=ctx.runtime.dispatcher.policy, authority_table=ctx.store.table,
+                events_table="events-that-does-not-exist", dynamodb_client=ctx.store.client,
+                env=ctx.runtime.env,
+            )
+            registration = registration_routes.RegistrationRuntime(service=service, runtime=ctx.runtime)
+            app = ctx.client._transport.app
+            app.include_router(registration_routes.router)
+            app.dependency_overrides[registration_routes.get_registration_runtime] = lambda: registration
+            credential_path = tmp_path / "run-credential"
+            credential_path.write_text(ctx.target_headers[status_client.CREDENTIAL_HEADER])
+            monkeypatch.setenv("ADP_RUN_CREDENTIAL_FILE", str(credential_path))
+            monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
+            monkeypatch.setenv("ADP_AGENT_CONTROL_ENDPOINT", "https://gateway.test/internal/v1/agent")
+            monkeypatch.setattr(status_client, "read_workload_token", lambda: ctx.target_headers[WORKLOAD_HEADER])
+            monkeypatch.setattr("adp_trigger.transport_identity.worker_credentials",
+                                lambda _: Credentials("AKIAEXAMPLE", "secret", "token"))
+            loop = asyncio.get_running_loop()
+
+            class ProtectedTransport:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+                def post(self, url, *, data, headers, **_kwargs):
+                    assert url == "https://gateway.test/internal/v1/agent/self/status"
+                    assert "Authorization" in headers
+                    assert headers[status_client.CREDENTIAL_HEADER] == ctx.target_headers[status_client.CREDENTIAL_HEADER]
+                    response = asyncio.run_coroutine_threadsafe(ctx.client.post(
+                        "/internal/v1/agent/self/status", content=data,
+                        headers={**headers, "X-Caller-Identity": "shared-role"},
+                    ), loop).result(timeout=10)
+                    responses.append(response)
+                    from types import SimpleNamespace
+
+                    return nullcontext(SimpleNamespace(
+                        status_code=response.status_code,
+                        raw=SimpleNamespace(read=lambda size, **_: response.content[:size]),
+                    ))
+
+            monkeypatch.setattr(status_client.requests, "Session", ProtectedTransport)
+            # Positive control: the identical authenticated path writes while
+            # the configured table exists. The later 503 is a storage failure,
+            # not a missing credential, route or policy configuration.
+            service._events_table = "events"
+            await asyncio.to_thread(status_client.record_status, "in_progress", {})
+            assert responses[-1].status_code == 200
+            responses.clear()
+            service._events_table = "events-that-does-not-exist"
+
+        exit_code, terminal_persisted, write_attempts = await asyncio.to_thread(partial(
+            run_worker_abort_finalization, worker, ctx, monkeypatch,
+            "broken-" + receipt_handle[:20], events_table="events-that-does-not-exist",
+            protected=protected,
+        ))
+        if protected:
+            assert len(responses) == worker.ABORT_TERMINAL_WRITE_ATTEMPTS
+            assert all(response.status_code == 503 for response in responses)
+
 
         # The write was attempted, on production's own bound, and observed to fail.
         # This is the assertion the previous revision of this test could not make,
