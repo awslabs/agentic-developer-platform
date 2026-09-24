@@ -52,11 +52,32 @@ EVENT_TYPES = (
     "history.gap",
 )
 
-#: Terminal and control evidence. These are the events that may consume the
-#: reserved tail of the per-task event budget, and the events a bounded
-#: subscriber buffer may never drop (design section 9: "Reserve terminal/error
-#: event capacity; terminal evidence cannot be dropped").
-TERMINAL_EVENT_TYPES = frozenset({"task.completed", "task.failed", "task.cancelled", "run.completed", "run.failed", "history.gap"})
+#: Events that close an SSE stream. Only the *task* reaching a terminal status
+#: ends the stream, and the set is deliberately narrower than it first looks:
+#:
+#: * ``run.completed``/``run.failed`` describe one attempt. A failed run may be
+#:   followed by a recovery generation, so closing on it would disconnect a client
+#:   moments before the work it is watching resumes.
+#: * ``history.gap`` is a mid-stream discontinuity report. Closing on it would
+#:   turn "you are missing events 6-7, here is the rest" into "you are missing
+#:   events 6-7, goodbye" — the client would lose the remaining live history as a
+#:   consequence of being told about a small gap.
+#:
+#: Design section 9: "Close terminal streams only after all committed terminal
+#: events have been emitted."
+STREAM_CLOSING_EVENT_TYPES = frozenset({"task.completed", "task.failed", "task.cancelled"})
+
+#: Terminal and control evidence. These may consume the reserved tail of the
+#: per-task event budget, and a bounded subscriber buffer may never drop them
+#: (design section 9: "Reserve terminal/error event capacity; terminal evidence
+#: cannot be dropped").
+#:
+#: Wider than the stream-closing set on purpose. A gap report and a run outcome
+#: are exactly the records that must survive a flood of progress, because they are
+#: the evidence that something went wrong — dropping them under pressure would
+#: leave a client with a clean-looking stream and no indication of loss, which is
+#: the failure T6-AC04 requires to be explicit.
+PROTECTED_EVENT_TYPES = STREAM_CLOSING_EVENT_TYPES | frozenset({"run.completed", "run.failed", "history.gap"})
 
 #: Data keys permitted by ``events.schema.json#/$defs/event_data``. The object is
 #: `additionalProperties: false` in the contract, so an unknown key is a refusal
@@ -210,8 +231,14 @@ class TaskEvent:
         return format_cursor(self.task_id, self.sequence)
 
     @property
-    def is_terminal(self) -> bool:
-        return self.type in TERMINAL_EVENT_TYPES
+    def closes_stream(self) -> bool:
+        """Whether emitting this event ends the stream. See ``STREAM_CLOSING_EVENT_TYPES``."""
+        return self.type in STREAM_CLOSING_EVENT_TYPES
+
+    @property
+    def is_protected(self) -> bool:
+        """Whether a bounded buffer must never drop this event."""
+        return self.type in PROTECTED_EVENT_TYPES
 
     def to_contract(self) -> dict:
         """Serialize to ``events.schema.json#/$defs/event``.

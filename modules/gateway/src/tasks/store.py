@@ -32,7 +32,7 @@ import json
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
-from src.tasks.events import TaskEvent, format_cursor
+from src.tasks.events import PROTECTED_EVENT_TYPES, TaskEvent, format_cursor
 from src.tasks.limits import MAX_EVENTS_PER_TASK, RESERVED_TERMINAL_EVENT_SLOTS
 
 
@@ -320,7 +320,9 @@ class InMemoryTaskStore:
         if expect_runtime_attempt_id is not None and expect_runtime_attempt_id != record.runtime_attempt_id:
             raise SequenceFencedError("runtime attempt is not current")
 
-        is_terminal = event_type in ("task.completed", "task.failed", "task.cancelled", "run.completed", "run.failed", "history.gap")
+        # The reserved tail is for exactly the events a flood must not crowd out:
+        # terminal outcomes, run outcomes and gap reports.
+        is_protected = event_type in PROTECTED_EVENT_TYPES
         digest = _digest(event_type, data)
         ledger = self.reports.setdefault(f"TASK_REPORT#{task_id}", {})
         slot = f"REPORT#{record.generation:010d}#{report_id}" if report_id else None
@@ -337,7 +339,7 @@ class InMemoryTaskStore:
                 raise ReportConflictError("report was committed but its event is no longer retained")
             return AppendResult(event=existing, replayed=True)
 
-        budget = MAX_EVENTS_PER_TASK if is_terminal else MAX_EVENTS_PER_TASK - RESERVED_TERMINAL_EVENT_SLOTS
+        budget = MAX_EVENTS_PER_TASK if is_protected else MAX_EVENTS_PER_TASK - RESERVED_TERMINAL_EVENT_SLOTS
         if record.events_allocated >= budget:
             raise EventBudgetExhaustedError("event budget exhausted")
 

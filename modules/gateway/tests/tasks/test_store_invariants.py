@@ -291,10 +291,10 @@ def test_progress_stops_at_the_reserved_tail() -> None:
         append(store)
 
 
-def test_terminal_events_may_use_the_reserved_tail() -> None:
+def test_protected_events_may_use_the_reserved_tail() -> None:
     store = make_store(events_allocated=MAX_EVENTS_PER_TASK - RESERVED_TERMINAL_EVENT_SLOTS, latest_sequence=MAX_EVENTS_PER_TASK)
     result = append(store, event_type="task.failed", data={"status": "failed", "version": 4, "outcome": "failed", "error_code": "internal"})
-    assert result.event.is_terminal
+    assert result.event.is_protected
 
 
 def test_even_terminal_events_stop_at_the_hard_ceiling() -> None:

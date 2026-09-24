@@ -132,10 +132,33 @@ def test_event_id_is_the_cursor() -> None:
     assert event.event_id == f"{TASK}:9"
 
 
-def test_terminal_kinds_are_marked_terminal() -> None:
+def test_only_task_terminal_kinds_close_the_stream() -> None:
+    """The narrow set. Two near-misses are the point of this test.
+
+    A ``run.failed`` may be followed by a recovery generation, so closing on it
+    would disconnect a client moments before the work it is watching resumes. A
+    ``history.gap`` is a mid-stream discontinuity report, so closing on it would
+    turn "you are missing events 6-7, here is the rest" into "you are missing
+    events 6-7, goodbye" — losing the remaining live history as a consequence of
+    being told about a small gap.
+    """
+    for kind in ("task.completed", "task.failed", "task.cancelled"):
+        assert make_event(type=kind, data={}).closes_stream, kind
+    for kind in ("run.completed", "run.failed", "history.gap", "progress.updated"):
+        assert not make_event(type=kind, data={}).closes_stream, kind
+
+
+def test_protected_kinds_are_wider_than_stream_closing_kinds() -> None:
+    """A bounded buffer must never drop the evidence that something went wrong.
+
+    Run outcomes and gap reports are exactly what a progress flood would otherwise
+    crowd out, and losing them leaves a client with a clean-looking stream and no
+    indication of loss — the failure T6-AC04 requires to be explicit.
+    """
     for kind in ("task.completed", "task.failed", "task.cancelled", "run.completed", "run.failed", "history.gap"):
-        assert make_event(type=kind, data={}).is_terminal, kind
-    assert not make_event(type="progress.updated").is_terminal
+        assert make_event(type=kind, data={}).is_protected, kind
+    assert not make_event(type="progress.updated").is_protected
+    assert events.STREAM_CLOSING_EVENT_TYPES < events.PROTECTED_EVENT_TYPES
 
 
 def test_producer_timestamp_is_omitted_not_nulled_when_absent() -> None:
