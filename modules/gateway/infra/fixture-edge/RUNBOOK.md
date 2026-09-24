@@ -471,6 +471,36 @@ delete authority. #3968's `cleanup_ok` stays `None` for a dry run and `False` on
 unverified absence, so do not record success for this component until both the destroy
 verification and `90-cleanup-ledger.sh` report verified absence.
 
+## What CI checks before any of this runs
+
+`.github/workflows/fixture-edge-ci.yml` runs on every PR touching this directory:
+`terraform fmt -check`, `validate`, the 25 mocked `terraform test` run blocks, the
+three pytest suites, and `bash -n` on every script.
+
+It holds **no AWS credentials**: no `id-token: write`, no credential-configuration
+step, unusable `AWS_*` values with IMDS disabled, and every `terraform init` uses
+`-backend=false`. That last one is structural rather than stylistic — with the
+`backend "s3"` block declared, a `plan` after a `-backend=false` init exits non-zero
+with *Backend initialization required*, so CI cannot plan, apply or write state even
+by accident.
+
+Two things worth knowing if you are reading a green check on a PR here:
+
+- Before this workflow existed, a fixture-edge-only PR triggered **`Gateway Infra
+  Plan`** (it globs `modules/gateway/infra/**`), which authenticates to the account
+  and plans the *ordinary* gateway. This root is not a module of that one, so that
+  job never evaluated a line of this component while still reporting green. If you
+  see only that check on a fixture-edge PR, this component was not tested.
+- A green **`Fixture Edge CI`** proves configuration properties: default-off, the
+  run-binding gate refusing mismatched discovered inputs, the Deny staying scoped to
+  `/internal`, no output carrying the provenance secret, and the scripts refusing
+  the unsafe orderings. It proves **nothing about live behaviour**. Steps 6 and 7
+  are the only source of that.
+
+`tests/test_ci_wiring.py` gates the workflow itself — that the trigger paths reach
+this component and #3968's `lib/ownership.py`, that every suite in `tests/` is
+actually invoked, and that no step can reach AWS.
+
 ## Boundaries
 
 - **No ordinary rollout, flag change or platform apply** is part of this procedure.
