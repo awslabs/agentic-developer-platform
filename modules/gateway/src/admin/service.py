@@ -21,6 +21,7 @@ from src.admin.memberships import (
     set_membership_role,
     upsert_tenant_membership,
 )
+from src.shared.identity.verification import PROVEN_METHODS
 
 if TYPE_CHECKING:
     from src.admin.identity.identity_index_writer import IdentityIndexWriter
@@ -1471,6 +1472,7 @@ class AdminService:
             .where(
                 UserIdentity.user_id == User.id,
                 func.lower(UserIdentity.provider) == "github",
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
             )
             .order_by(UserIdentity.created_at)
             .limit(1)
@@ -1561,6 +1563,7 @@ class AdminService:
             .where(
                 UserIdentity.user_id == User.id,
                 func.lower(UserIdentity.provider) == "github",
+                UserIdentity.verification_method.in_(PROVEN_METHODS),
             )
             .order_by(UserIdentity.created_at)
             .limit(1)
@@ -1858,7 +1861,11 @@ class AdminService:
 
         github_ids = set(
             (
-                await self.db.execute(select(UserIdentity.provider_user_id).where(UserIdentity.user_id == user_id, UserIdentity.provider == "github"))
+                await self.db.execute(
+                    select(UserIdentity.provider_user_id).where(
+                        UserIdentity.user_id == user_id, UserIdentity.provider == "github", UserIdentity.verification_method.in_(PROVEN_METHODS)
+                    )
+                )
             ).scalars()
         )
         username = user.cognito_username
@@ -1887,6 +1894,7 @@ class AdminService:
                 .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
                 .where(
                     UserIdentity.provider == "github",
+                    UserIdentity.verification_method.in_(PROVEN_METHODS),
                     UserIdentity.provider_user_id.in_(github_ids),
                     TenantMembership.user_id != user_id,
                 )
