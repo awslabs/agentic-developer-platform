@@ -82,6 +82,8 @@ class CleanupPlan:
     cluster_ownership: str
     remove_namespace: str = ""
     remove_namespace_uid: str = ""
+    retained_namespace: str = ""
+    retained_namespace_uid: str = ""
     remove_prerequisites: tuple[str, ...] = field(default_factory=tuple)
     preserved: tuple[str, ...] = field(default_factory=tuple)
 
@@ -117,7 +119,12 @@ def _namespace_removal(
             "because a namespace with this name may be a different object than the "
             "one created here"
         )
-    return installation.namespace, installation.namespace_uid, preserved
+    preserved.append(
+        f"Namespace/{installation.namespace} (ADP-created, uid {installation.namespace_uid}; "
+        "retained pending complete fenced namespace inventory: namespace ownership "
+        "does not authorize cascading deletion of adopted or unrelated contents)"
+    )
+    return "", "", preserved
 
 
 def _shared_preservation(objects: tuple[InstalledObject, ...]) -> list[str]:
@@ -199,6 +206,12 @@ def plan_cleanup(
         cluster_ownership=target.cluster_ownership,
         remove_namespace=namespace,
         remove_namespace_uid=namespace_uid,
+        retained_namespace=installation.namespace
+        if installation.namespace_owned
+        else "",
+        retained_namespace_uid=installation.namespace_uid
+        if installation.namespace_owned
+        else "",
         remove_prerequisites=remove_prerequisites,
         preserved=tuple(preserved),
     )

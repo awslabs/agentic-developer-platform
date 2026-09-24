@@ -168,6 +168,8 @@ class _FakeCluster:
         self.rbac_applied: list[Mapping[str, object]] = []
         self.commands: list[tuple[str, ...]] = []
         self.uid_counter = 0
+        self.components = {}
+        self.component_created_at = {}
         self.namespace_created_at = -1
 
     # --- the CommandRunner seam -------------------------------------------
@@ -271,6 +273,36 @@ class _FakeCluster:
                 continue
             rest.append(arg)
         joined = " ".join(rest)
+        from superplane_bootstrap.component_journal import KINDS
+
+        if len(rest) >= 3 and rest[0] == "get" and rest[1] in KINDS:
+            namespace = rest[rest.index("-n") + 1] if "-n" in rest else ""
+            return self._ok(argv, self.components.get((rest[1], namespace, rest[2])))
+        if (
+            joined.startswith("create -f -")
+            and data
+            and json.loads(data).get("kind") in KINDS
+        ):
+            from copy import deepcopy
+
+            body = json.loads(data)
+            meta = body["metadata"]
+            key = body["kind"], meta.get("namespace", ""), meta["name"]
+            if key in self.components:
+                return self._fail(argv, "AlreadyExists")
+            self.uid_counter += 1
+            meta.update(uid=f"component-{self.uid_counter}", resourceVersion="1")
+            self.components[key] = deepcopy(body)
+            self.component_created_at[key] = len(self.commands) - 1
+            if body["kind"] == "Deployment":
+                self.deployments[(meta["namespace"], meta["name"])] = {
+                    "replicas": body["spec"]["replicas"],
+                    "available": body["spec"]["replicas"],
+                    "image": body["spec"]["template"]["spec"]["containers"][0]["image"],
+                }
+            else:
+                self.rbac_applied.append(deepcopy(body))
+            return self._ok(argv, body)
         if joined == "config view --raw --minify -o json":
             return self._ok(
                 argv,
@@ -682,7 +714,12 @@ class _FakeSqlStore:
             rows = [
                 dict(row)
                 for row in self.authority_rows.values()
-                if all(row.get(k) == v for k, v in parameters.items())
+                if all(
+                    row.get(k) != v
+                    if k == "generation" and "generation<>" in collapsed
+                    else row.get(k) == v
+                    for k, v in parameters.items()
+                )
             ]
             if "revoked=false" in collapsed or "revoked = false" in collapsed:
                 rows = [row for row in rows if not row["revoked"]]
@@ -779,6 +816,7 @@ def _run(cluster: _FakeCluster, tmp_path, **overrides):
     manifest = tmp_path / "crds.yaml"
     manifest.write_text("---\n")
     store = overrides.pop("sql_store", None) or _FakeSqlStore()
+    management = overrides.pop("management", False)
 
     access = KubectlClusterAccess(
         runner=cluster,
@@ -791,6 +829,7 @@ def _run(cluster: _FakeCluster, tmp_path, **overrides):
         manifests={name: manifest for name in WORKSPACE_CRDS},
         tenant_identity_reader=lambda: (),
     )
+    access.controller_mode = "management" if management else "legacy"
 
     arguments = {
         "binding": _binding(),
@@ -882,13 +921,9 @@ def test_the_gates_run_in_the_order_the_interlock_depends_on(tmp_path):
 
     created_namespace = cluster.namespace_created_at
     applied_crds = cluster.kubectl_index("apply -f " + str(tmp_path))
-    installed_controller = next(
-        index
-        for index, argv in enumerate(cluster.commands)
-        if "apply -f -" in " ".join(argv)
-        and any(CONTROLLER_IMAGE in a for a in argv) is False
-        and index > applied_crds
-    )
+    installed_controller = cluster.component_created_at[
+        ("Deployment", NAMESPACE, "superplane-controller")
+    ]
     placed_coredns = cluster.kubectl_index("patch deployment coredns")
     removed_taint = cluster.kubectl_index(f"taint nodes --all {BOOTSTRAP_TAINT_KEY}-")
 
@@ -992,7 +1027,8 @@ def test_a_crd_failure_leaves_a_cleanup_plan_and_the_taint_on(tmp_path):
 
     assert outcome.registered is False
     assert outcome.cleanup is not None, "a created namespace with no cleanup plan is F6"
-    assert outcome.cleanup.deletes_nothing is False
+    assert outcome.cleanup.remove_namespace == ""
+    assert outcome.cleanup.retained_namespace == NAMESPACE
     assert any(t["key"] == BOOTSTRAP_TAINT_KEY for t in cluster.taints)
     assert outcome.nodes_left_schedulable is False
     assert store.rows == {}

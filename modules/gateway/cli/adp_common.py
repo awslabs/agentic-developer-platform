@@ -290,6 +290,59 @@ def write_state(name, value):
     write_json(state_path(name), value)
 
 
+@contextlib.contextmanager
+def file_lock(path, busy_message, timeout=30):
+    """Hold an exclusive lock across processes for the duration of the block.
+
+    `mkdir` is the primitive because it is atomic on every filesystem the CLI runs
+    on, including NFS, where `O_CREAT|O_EXCL` on a regular file historically is
+    not. Exactly one of two concurrent `mkdir` calls succeeds; the loser waits.
+
+    Why a lock rather than a careful write: the dangerous operations here are
+    read-modify-write over a shared state file, and `write_json`'s atomic replace
+    makes each individual write atomic without making the *sequence* atomic. Two
+    processes can both read, both decide, and the second's write then silently
+    discards the first's — which for an operation identity means two identities
+    for one intent, and a duplicate of whatever the identity was protecting.
+
+    A stale lock from a killed process is left in place deliberately rather than
+    being cleared on a timeout. Breaking it would reintroduce exactly the
+    concurrency it prevents, and it is recoverable by hand; a silently duplicated
+    paid operation is not. The message names the directory so removing it is
+    possible without guessing.
+    """
+    lock = Path(path)
+    private_directory(lock.parent)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            lock.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise CliError(
+                    f"{busy_message} If no other command is running, remove {lock} and retry.",
+                    "lock_busy",
+                    # 4, not 5: whether the other holder's work succeeded is
+                    # unknown from here, and reporting it as a failure invites a
+                    # retry of something that may already have happened.
+                    4,
+                ) from None
+            time.sleep(0.1)
+    try:
+        yield lock
+    finally:
+        # Best effort: a lock already gone means somebody broke it by hand, which
+        # is not a reason to mask the outcome of the work that just completed.
+        with contextlib.suppress(OSError):
+            lock.rmdir()
+
+
+def state_lock(name, busy_message, timeout=30):
+    """A `file_lock` beside the named state file, so it guards that file alone."""
+    return file_lock(state_path(name).with_suffix(".lock"), busy_message, timeout)
+
+
 def save_session(result):
     directory = private_directory(config_path().parent)
     lock = directory / "refresh.lock"

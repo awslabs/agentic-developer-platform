@@ -36,6 +36,19 @@ export class ApiClient {
         window.location.href = '/login';
       }
 
+      // Attach the HTTP status to the thrown body.
+      //
+      // Without it a caller cannot tell a 403 from a 404 from a 503, because the
+      // response body alone does not say: the gateway domain proxy, for one,
+      // answers both "route not allowlisted" and "workspace not found" with the
+      // same `{"detail": "Not found"}`. Those need different things from the
+      // user — ask an administrator, wait for a deployment, retry — so a caller
+      // that cannot distinguish them can only render one generic banner.
+      //
+      // Purely additive: the thrown value is still the parsed error body, and
+      // existing callers reading `detail`/`message`/`error` are unaffected.
+      errorData.status = response.status;
+
       throw errorData;
     }
 

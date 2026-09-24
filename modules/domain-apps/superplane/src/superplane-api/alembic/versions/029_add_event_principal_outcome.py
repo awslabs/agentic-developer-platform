@@ -52,8 +52,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 # revision identifiers
-revision = "023_add_event_principal_outcome"
-down_revision = "022_deployment_namespace_quota"
+revision = "029_add_event_principal_outcome"
+down_revision = "028_deployment_namespace_quota"
 branch_labels = None
 depends_on = None
 

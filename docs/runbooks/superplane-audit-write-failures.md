@@ -79,7 +79,7 @@ for `<namespace>` below.
 
    Most likely causes, in order: database connection exhaustion (the audit write opens
    its own session, so it competes for the pool), the events table being unwritable, or
-   a migration not yet applied — if `023_add_event_principal_outcome` has not run, every
+   a migration not yet applied — if `029_add_event_principal_outcome` has not run, every
    insert fails on the missing `principal`/`outcome` columns.
 
 3. **Check the migration state** if the failures started right after a rollout. Schema
@@ -93,7 +93,7 @@ for `<namespace>` below.
    ```
 
    The installer asserts the reported revision equals the head pinned in
-   `releases/superplane.lock.yaml` (`023_add_event_principal_outcome`) and refuses
+   `releases/superplane.lock.yaml` (`029_add_event_principal_outcome`) and refuses
    otherwise, so a mismatch surfaces as a failed install rather than a running pod with
    the wrong schema. If the Job succeeded and inserts still fail on the new columns,
    the API image and the applied schema are from different releases — see "Ordering".
@@ -162,7 +162,7 @@ Two consequences for anyone querying this table:
 
 ## Ordering: migration before image
 
-Migration `023_add_event_principal_outcome` must be applied **before or with** the image
+Migration `029_add_event_principal_outcome` must be applied **before or with** the image
 that writes the new columns. It is additive (two columns, one index) plus one constraint
 relaxation (`events.org_id` becomes nullable), so:
 
@@ -207,4 +207,4 @@ outstanding follow-up work, not something this runbook can resolve.
 | `modules/domain-apps/superplane/src/superplane-api/app/middleware/audit.py` | The middleware, with the failure policy and content boundary documented inline |
 | `modules/domain-apps/superplane/src/superplane-api/app/services/audit.py` | `log_event` and the `audit_write_failures` counter |
 | `modules/domain-apps/superplane/src/superplane-api/tests/test_audit_middleware.py` | The invariants, including "no path returns without a row or a counted failure" |
-| `modules/domain-apps/superplane/src/superplane-api/alembic/versions/023_add_event_principal_outcome.py` | The schema change and evidence-preserving downgrade refusal |
+| `modules/domain-apps/superplane/src/superplane-api/alembic/versions/029_add_event_principal_outcome.py` | The schema change and evidence-preserving downgrade refusal |

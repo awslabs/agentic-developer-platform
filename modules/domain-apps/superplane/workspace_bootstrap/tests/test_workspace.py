@@ -318,7 +318,8 @@ def test_a_failure_after_install_still_yields_a_cleanup_plan(
     )
 
     assert outcome.cleanup is not None
-    assert outcome.cleanup.remove_namespace == NAMESPACE
+    assert outcome.cleanup.remove_namespace == ""
+    assert outcome.cleanup.retained_namespace == NAMESPACE
     assert outcome.cleanup.preserves_cluster is True
 
 

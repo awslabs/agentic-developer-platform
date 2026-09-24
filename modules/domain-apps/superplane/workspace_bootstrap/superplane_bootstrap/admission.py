@@ -131,6 +131,8 @@ _PROOF_ENTRY = re.compile(r'"(?P<text>(?:[^"\\]|\\.)*)"')
 _WORKSPACE_OUTPUTS = (
     Path(__file__).resolve().parents[2] / "infra" / "workspaces" / "outputs.tf"
 )
+if Path(__file__).with_name("_data").is_dir():
+    _WORKSPACE_OUTPUTS = Path(__file__).with_name("_data") / "outputs.tf"
 
 
 def required_proofs(outputs_path: Path | None = None) -> tuple[str, ...]:

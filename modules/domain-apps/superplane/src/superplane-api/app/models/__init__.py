@@ -34,4 +34,5 @@ from app.models.provider_connection import (  # noqa: F401
 from app.models.bootstrap import (  # noqa: F401
     WorkspaceBootstrapReservation,
     WorkspaceBootstrapAuthority,
+    WorkspaceBootstrapReadToken,
 )

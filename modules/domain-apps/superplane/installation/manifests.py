@@ -250,6 +250,14 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         # than starting with the variable unset and refusing every login.
         secret("JWT_SECRET_KEY", "superplane-observation", "jwt-signing-key"),
         secret("OBSERVATION_SUBMITTERS", "superplane-observation", "submitters"),
+        variable(
+            "CONTROLLER_STATUS_URL", f"http://superplane-controller.{ns}.svc:8081"
+        ),
+        secret(
+            "CONTROLLER_REGISTRY_CREDENTIAL",
+            "superplane-observation",
+            "controller-credential",
+        ),
         secret(
             "CONTROLLER_OBSERVATION_SUBMITTER_ID",
             "superplane-observation",

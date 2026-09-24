@@ -58,6 +58,7 @@ def test_all_tables_registered():
         # PostgreSQL journals used by the domain bootstrap SQL adapters.
         "workspace_bootstrap_reservations",
         "workspace_bootstrap_authority",
+        "workspace_bootstrap_read_tokens",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (
