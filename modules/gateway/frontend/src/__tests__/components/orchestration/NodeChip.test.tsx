@@ -42,7 +42,7 @@ describe('story delivery stage', () => {
     expect(screen.getByText('Development finished. Waiting for merge.')).toBeVisible();
     expect(screen.getByTestId('node-u1')).toHaveAttribute('data-display-state', 'in_progress');
     expect(screen.getByRole('link', { name: 'View review run' })).toHaveAttribute('href', '/activity?chain=developer-1&highlight=review%3A1');
-    expect(screen.getByRole('link', { name: 'View run' })).toHaveAttribute('href', '/activity?id=developer-1');
+    expect(within(journeyStep('development')).getByRole('link', { name: 'View development run' })).toHaveAttribute('href', '/activity?id=developer-1');
   });
 
   it('updates to awaiting merge when the refreshed response has no active review', () => {
@@ -98,12 +98,43 @@ describe('story delivery stage', () => {
   it('retains a finished review without claiming approval or making merge current', () => {
     render(card(withRuns(development, finishedReview)));
     expect(screen.getByText('Review finished — check feedback')).toBeVisible();
-    expect(journeyStep('review')).toHaveAttribute('aria-current', 'step');
+    expect(journeyStep('review')).toHaveAttribute('data-progress', 'complete');
+    expect(journeyStep('review')).not.toHaveAttribute('aria-current');
     expect(journeyStep('review')).toHaveTextContent('Run finished · check feedback');
     expect(journeyStep('merged')).not.toHaveAttribute('aria-current');
     expect(screen.queryByText(/approved/i)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View review run' })).toHaveAttribute('href', '/activity?chain=developer-1&highlight=review%3A1');
     expect(screen.queryByText('In progress')).not.toBeInTheDocument();
+  });
+
+  it('shows a completed Codex review with green ticks and links beside the completed steps', () => {
+    const codexReview = { ...finishedReview, persona: 'agent-codex-reviewer' as const };
+    render(card({ ...withRuns(development, codexReview), state: 'passed', bound_pull_request: {
+      repo: 'aws-e/adp', pr_number: 5862, url: 'https://github.com/aws-e/adp/pull/5862',
+      head_sha: 'reviewed-head', role: 'implementation', state: 'active',
+    } }));
+    for (const stage of ['development', 'review', 'merged']) {
+      const step = journeyStep(stage);
+      expect(step).toHaveAttribute('data-progress', 'complete');
+      expect(step.querySelector('[aria-hidden="true"]')).toHaveTextContent('✓');
+      expect(step.querySelector('[aria-hidden="true"]')).toHaveClass('text-green-700');
+    }
+    expect(within(journeyStep('review')).queryByText('Upcoming')).not.toBeInTheDocument();
+    expect(within(journeyStep('review')).getByRole('link', { name: 'View review run' }))
+      .toHaveAttribute('href', '/activity?chain=developer-1&highlight=review%3A1');
+    expect(within(journeyStep('development')).getByRole('link', { name: 'View development run' }))
+      .toHaveAttribute('href', '/activity?id=developer-1');
+    expect(within(journeyStep('merged')).getByRole('link', { name: 'Pull request #5862' }))
+      .toHaveAttribute('href', 'https://github.com/aws-e/adp/pull/5862');
+    expect(journeyStep('fixes')).toHaveTextContent('No separate fixes run recorded');
+    expect(journeyStep('fixes')).not.toHaveAttribute('data-progress', 'complete');
+  });
+
+  it('recognizes an active Codex review without calling it complete', () => {
+    render(card(withRuns(development, { ...finishedReview, persona: 'agent-codex-reviewer', status: 'in_progress', liveness: 'live' })));
+    expect(screen.getByText('Review in progress')).toBeVisible();
+    expect(journeyStep('review')).toHaveAttribute('data-progress', 'current');
+    expect(journeyStep('development')).toHaveAttribute('data-progress', 'complete');
   });
 
   it('moves from fixes back to review, retaining the observed repair run', () => {
@@ -117,6 +148,7 @@ describe('story delivery stage', () => {
     expect(screen.getByText('Review in progress')).toBeVisible();
     expect(journeyStep('review')).toHaveAttribute('aria-current', 'step');
     expect(journeyStep('fixes')).toHaveTextContent('Run finished');
+    expect(journeyStep('fixes')).toHaveAttribute('data-progress', 'complete');
     expect(journeyStep('fixes')).not.toHaveAttribute('aria-current');
     expect(screen.getByRole('link', { name: 'View review run' })).toHaveAttribute('href', '/activity?chain=developer-1&highlight=review-2');
   });

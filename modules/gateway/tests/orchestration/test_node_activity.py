@@ -24,13 +24,25 @@ def chain(*items, depth_capped=False):
     return InvocationChainResponse(correlation_id="attempt-1", items=list(items), total_count=len(items), depth_capped=depth_capped)
 
 
-def test_review_is_visible_after_developer_exits():
-    reviewer = run("review-1", "reviewer", "2026-09-15T14:54:00Z")
+@pytest.mark.parametrize("persona", ["reviewer", "agent-codex-reviewer"])
+def test_review_is_visible_after_developer_exits(persona):
+    reviewer = run("review-1", persona, "2026-09-15T14:54:00Z")
     developer = run("attempt-1", "developer", "2026-09-15T14:18:00Z", status="complete", liveness="exited", children=[reviewer])
     activity = current_activity(chain(developer))
     assert activity.invocation_id == "review-1"
-    assert activity.persona == "reviewer"
+    assert activity.persona == persona
     assert activity.liveness == "live"
+
+
+def test_completed_codex_review_remains_in_story_history():
+    reviewer = run("codex-review", "agent-codex-reviewer", "2026-09-15T14:54:00Z", status="complete", liveness="exited")
+    developer = run("attempt-1", "developer", "2026-09-15T14:18:00Z", status="complete", liveness="exited", children=[reviewer])
+    execution = story_execution(chain(developer))
+    assert [(item.invocation_id, item.persona, item.status) for item in execution.runs] == [
+        ("attempt-1", "developer", "complete"),
+        ("codex-review", "agent-codex-reviewer", "complete"),
+    ]
+    assert execution.activity is None and execution.history_complete
 
 
 @pytest.mark.parametrize("status", ["complete", "failed", "aborted", "budget_stopped"])
