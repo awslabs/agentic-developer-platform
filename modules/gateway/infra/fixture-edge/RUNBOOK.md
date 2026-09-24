@@ -66,7 +66,7 @@ Run these with the `adp-embark1` credential.
 aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 # EXPECT Account = 879318057152. If it is anything else, STOP.
 
-# 1b. The reused VPC link, and the security groups it may EGRESS to.
+# 1b. The reused VPC link, and the security group the fixture ALB must reuse.
 #     The link's SG does not have open egress: in dev sg-013f2ce2bcaf1642c permits
 #     tcp/80 to three specific groups only. A fixture ALB outside that set would
 #     pass every other check and then time out on every request.
@@ -74,9 +74,13 @@ aws apigatewayv2 get-vpc-links --region us-east-1 \
   --query 'Items[].{Id:VpcLinkId,Name:Name,Status:VpcLinkStatus,SGs:SecurityGroupIds}' --output table
 # EXPECT bedrockgw-dev-vpc-link-v2 AVAILABLE -> vpc_link_id  (dev: qmovr6)
 
-aws ec2 describe-security-groups --group-ids <link-sg-id> --region us-east-1 \
-  --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId' --output text
-# -> vpc_link_egress_target_security_group_ids (and the group the ALB must reuse)
+# You need ONE of these for --alb-security-groups in step 1.5. It is NOT a
+# Terraform input: read the note below before copying the ids anywhere.
+aws ec2 describe-security-group-rules --region us-east-1 \
+  --filters Name=group-id,Values=<link-sg-id> \
+  --query 'SecurityGroupRules[?IsEgress==`true`].{To:ReferencedGroupInfo.GroupId,Proto:IpProtocol,From:FromPort,Until:ToPort}' \
+  --output table
+# dev: tcp 80-80 -> sg-0623ec399f4a20b87, sg-0d76484377ffc964d, sg-0b0f5533ab8440db8
 
 # 1c. The ORDINARY internal-plane ALB, recorded so the config can refuse to target it.
 #     BOTH values are required — an absent one is not a passed check.
@@ -95,6 +99,25 @@ aws iam get-role --role-name adp-dev-agent-authority-worker-role \
 trusted headers and forward them to the **live** gateway pods, producing a green
 result while actually exercising production traffic. The configuration refuses that
 combination at plan time, but only if you supply this value.
+
+**Why the security groups from 1b are NOT a Terraform input.** An earlier revision
+took them as `vpc_link_egress_target_security_group_ids` and proved reachability by
+intersecting that list with the ALB's discovered groups. Root's review rejected
+that, and rightly: the list records what you saw *at the moment you ran the command*
+and nothing keeps it true. It also only ever described the **egress** half — the
+inbound rule lives on the ALB's group and can be missing or scoped to another port,
+which is a state a correctly-built fixture reaches and which that check could not
+see. So `main.tf` reads the rules itself (`data.aws_vpc_security_group_rule`, every
+group attached to either side) and refuses unless it finds a live rule for **both**
+directions on the fixture port. You still need one id from 1b, for step 1.5's
+`--alb-security-groups`: that is the group the ALB is *told to reuse*, which is a
+different thing from evidence that the reuse works.
+
+If the gate refuses for reachability, **do not add a rule.** Both groups on the path
+are shared — `sg-0623ec399f4a20b87` is carried by both ordinary gateway ALBs — and
+#5836 forbids ordinary-infrastructure changes. Point the fixture ALB at a group that
+already works, or stop and escalate. This component declares no security-group
+resource, so it cannot make that change even if asked to.
 
 ---
 
@@ -359,12 +382,15 @@ environment         = "dev"
 fixture_alb_arn = "<create-fixture-alb.sh output>"
 expected_vpc_id = "<create-fixture-alb.sh output>"
 
-# From step 1c/1d. Both REQUIRED: a skipped isolation check is not a passed one.
+# From step 1c. Both REQUIRED: a skipped isolation check is not a passed one.
 ordinary_internal_plane_alb_arn = "<from 1c>"
 ordinary_internal_plane_alb_dns = "<from 1c>"
 
-vpc_link_id                               = "qmovr6"
-vpc_link_egress_target_security_group_ids = ["<from 1d>"]
+vpc_link_id = "qmovr6"
+
+# NOTE there is no security-group input. Reachability is read from the live rules
+# (both directions, on the listener port) — see "Why the security groups from 1b
+# are NOT a Terraform input" in step 1.
 
 allowed_caller_role_arns = ["arn:aws:iam::879318057152:role/adp-dev-agent-authority-worker-role"]
 EOF
@@ -404,7 +430,19 @@ outside this component's expected set **stops the run**. That should be impossib
 A plan-time **refusal** here is the gate working. `terraform_data.run_binding_gate`
 fails the plan — exit code 1, not a warning — if the caller's real account or region
 disagrees, or if the fixture ALB is public, in another VPC, not tagged for this run,
-unreachable from the reused VPC Link, or is the ordinary internal-plane ALB.
+or is the ordinary internal-plane ALB.
+
+Two of its preconditions are about **reachability**, and they are stated separately
+because the fix differs:
+
+| Refusal | What is missing | What to do |
+|---|---|---|
+| "no live security group rule lets the VPC Link egress to the fixture ALB" | no rule on any of the link's groups permits tcp/`<port>` to any group the ALB carries | point the ALB at a group the link already egresses to (step 1.5 `--alb-security-groups`) |
+| "the fixture ALB's security groups do not admit the VPC Link" | egress exists; no **inbound** rule on the ALB's groups admits the link's group on that port | same fix — a group that admits the link. This half is invisible until traffic flows, so a refusal here has saved you a timeout |
+
+Both messages print the group ids on each side and the `describe-security-group-rules`
+command that reads what the gate read. Neither is fixable by editing a variable: there
+is no variable. **Do not add a rule to either group** — see step 1.
 
 ```bash
 ./scripts/fixture-lifecycle.sh apply \

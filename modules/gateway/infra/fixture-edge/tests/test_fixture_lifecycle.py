@@ -24,6 +24,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -1005,6 +1006,67 @@ def test_apply_requires_a_reviewed_plan_file(harness):
     r = harness.run("apply")
     assert r.returncode != 0
     assert "REVIEWED plan" in r.stderr
+
+
+# --- shared security groups are structurally out of reach -------------------
+# Root's constraint on blocker 5: "Never change/delete shared SGs
+# (sg-0623ec399f4a20b87)."
+#
+# main.tf now READS security group rules to prove the VPC Link can reach the
+# fixture ALB in both directions, and reading is the whole of what it may do.
+# BOTH groups on that path are shared platform infrastructure — the link's group
+# belongs to the platform VPC Link, and the ALB-side group is carried by BOTH
+# ordinary gateway ALBs — so a rule added to "fix" an unreachable fixture would
+# change ordinary traffic's security posture under a fixture ticket.
+#
+# The tempting way to satisfy that constraint is a review note. These two gates
+# make it structural instead: a group cannot be changed by a plan that cannot
+# contain the resource, and cannot reach AWS through a plan review that rejects
+# its type. Both are asserted because either alone can be removed.
+def test_no_terraform_file_declares_a_security_group_resource():
+    """A refusal is the only permitted response to an unreachable fixture.
+
+    Asserted against the source rather than a plan: `terraform test` uses mocked
+    providers, so a declared-but-unreached resource would not surface there, and
+    the question here is what this root is CAPABLE of, not what one plan did.
+
+    Matched on `resource "aws_..."` specifically. `data` blocks are exactly what
+    the fix adds, so a naive grep for the group names would have to be either
+    wrong or disabled.
+    """
+    declared = []
+    for tf in sorted(COMPONENT.glob("*.tf")):
+        for i, line in enumerate(tf.read_text().splitlines(), 1):
+            m = re.match(r'\s*resource\s+"([^"]+)"', line)
+            if m and "security_group" in m.group(1):
+                declared.append(f"{tf.name}:{i} {m.group(1)}")
+    assert not declared, (
+        "this component declares a security-group resource: "
+        + ", ".join(declared)
+        + ". Both sides of the reachability path are SHARED groups "
+        "(sg-0623ec399f4a20b87 is carried by both ordinary gateway ALBs). #5836 "
+        "forbids ordinary-infrastructure changes, so an unreachable fixture must be "
+        "REFUSED by the run-binding gate, never fixed by widening a group."
+    )
+
+
+def test_the_plan_review_allowlist_admits_no_security_group_type():
+    """The second, independent half.
+
+    If someone did declare one, the plan-review guard in this script is what stops
+    it reaching AWS — but only while its allowlist excludes the type. The allowlist
+    is read out of the script so this cannot pass by the two drifting apart.
+    """
+    src = SCRIPT.read_text()
+    block = src[src.index("allowed = {"):]
+    block = block[:block.index("}")]
+    allowed = set(re.findall(r'"([^"]+)"', block))
+    assert allowed, "could not read the plan-review allowlist out of the script"
+    offenders = {t for t in allowed if "security_group" in t}
+    assert not offenders, (
+        f"the plan-review allowlist admits {sorted(offenders)}. That is the check "
+        "that would otherwise stop a security-group change from being applied."
+    )
 
 
 # =============================================================================

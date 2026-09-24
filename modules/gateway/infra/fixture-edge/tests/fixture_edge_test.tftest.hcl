@@ -134,6 +134,37 @@ mock_provider "aws" {
     }
   }
 
+  # REACHABILITY IS NOW READ FROM THE RULES, so the mocks have to supply rules.
+  #
+  # The previous revision needed no mock here at all, which is itself the point:
+  # it compared the ALB's discovered groups against a LIST THE OPERATOR TYPED, so
+  # the test could not distinguish "the link may egress here" from "the operator
+  # believes it may". These stand-ins describe the dev pair that was verified
+  # read-only (sg-013f2ce2bcaf1642c egresses tcp/80 to the shared backend group;
+  # that group admits tcp/80 from the link), and every negative run below re-points
+  # exactly one of them.
+  #
+  # `ids` must be mocked as well as the rules: the for_each over
+  # data.aws_vpc_security_group_rules.reachability[0].ids drives which rule reads
+  # exist at all. Two ids are used, one per direction, so a run can break one
+  # direction while leaving the other intact — which is what proves the two
+  # preconditions are independent rather than one check stated twice.
+  mock_data "aws_vpc_security_group_rules" {
+    defaults = {
+      ids = ["sgr-link-egress", "sgr-alb-ingress"]
+    }
+  }
+
+  # A per-instance default cannot be expressed here (mock_data applies to every
+  # instance), so the two directions are set by file-level override_data below.
+  mock_data "aws_vpc_security_group_rule" {
+    defaults = {
+      ip_protocol = "tcp"
+      from_port   = 80
+      to_port     = 80
+    }
+  }
+
   override_during = plan
 }
 
@@ -149,6 +180,38 @@ mock_provider "random" {
     }
   }
   override_during = plan
+}
+
+# The happy-path rules, one per direction. File-level so every run inherits a
+# REACHABLE pair; a run that overrides one of these is asserting a specific,
+# single-fact break rather than an absence of setup.
+#
+# Note both rules reference the OTHER side's group by id. That is deliberate and is
+# what the fix turns on: a CIDR rule spanning the ALB's subnets is not accepted as
+# proof of reachability to THIS load balancer, so a mock that used cidr_ipv4 here
+# would (correctly) fail the gate.
+override_data {
+  target = data.aws_vpc_security_group_rule.reachability["sgr-link-egress"]
+  values = {
+    is_egress                    = true
+    security_group_id            = "sg-013f2ce2bcaf1642c"
+    referenced_security_group_id = "sg-0b0f5533ab8440db8"
+    ip_protocol                  = "tcp"
+    from_port                    = 80
+    to_port                      = 80
+  }
+}
+
+override_data {
+  target = data.aws_vpc_security_group_rule.reachability["sgr-alb-ingress"]
+  values = {
+    is_egress                    = false
+    security_group_id            = "sg-0b0f5533ab8440db8"
+    referenced_security_group_id = "sg-013f2ce2bcaf1642c"
+    ip_protocol                  = "tcp"
+    from_port                    = 80
+    to_port                      = 80
+  }
 }
 
 variables {
@@ -167,8 +230,7 @@ variables {
   ordinary_internal_plane_alb_arn = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/k8s-adpgatew-bedrockg-d2e32d8c72/cccc3333dddd4444"
   ordinary_internal_plane_alb_dns = "internal-k8s-adpgatew-bedrockg-d2e32d8c72-254378198.us-east-1.elb.amazonaws.com"
 
-  vpc_link_id                               = "qmovr6"
-  vpc_link_egress_target_security_group_ids = ["sg-0623ec399f4a20b87", "sg-0d76484377ffc964d", "sg-0b0f5533ab8440db8"]
+  vpc_link_id = "qmovr6"
 
   allowed_caller_role_arns = ["arn:aws:iam::879318057152:role/adp-dev-agent-authority-worker"]
 }
@@ -922,11 +984,88 @@ run "refuses_a_fixture_alb_not_tagged_for_this_run" {
   expect_failures = [terraform_data.run_binding_gate]
 }
 
-# REACHABILITY is not implied by sharing a VPC. The reused VPC Link's security
-# group permits egress only to SPECIFIC target security groups (verified
-# read-only in dev: sg-013f2ce2bcaf1642c allows tcp/80 to three named ALB groups,
-# not open egress). A fixture ALB with a fresh controller-created group passes
-# every other check and then times out on every request.
+# ---------------------------------------------------------------------------
+# REACHABILITY — ASSERTED FROM THE LIVE RULES, IN BOTH DIRECTIONS
+# ---------------------------------------------------------------------------
+# Root's blocker: "read VPC Link and ALL attached SGs and prove real ALB
+# ingress/egress; caller lists / setintersection are not proof."
+#
+# The runs below are the negatives that the previous `setintersection` check could
+# not express. Each changes ONE live fact and expects a refusal. They matter
+# individually because each corresponds to a fixture that passed every other gate
+# and then TIMED OUT — a failure that reads as "the protected worker failed"
+# rather than "the fixture was never wired".
+#
+# What the old check could not catch, and each of these now does:
+#   * a group the operator listed but whose rule was since revoked
+#   * egress present, ingress absent (the direction never examined at all)
+#   * a rule scoped to another port, or to udp
+#   * a CIDR rule mistaken for identity-based reachability
+#   * a rule belonging to some unrelated group returned by the same read
+#
+# THE POSITIVE CONTROL COMES FIRST. Without it every run here could pass by the
+# gate refusing for an unrelated reason, which is the failure mode of a suite made
+# only of negatives.
+run "reachability_is_established_from_the_rules_not_from_an_input" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  assert {
+    condition     = local.vpc_link_can_reach_fixture_alb
+    error_message = "The happy-path rule pair must establish reachability, or every negative run below could be passing for an unrelated reason."
+  }
+
+  assert {
+    # Both halves must be carried by a REAL, NAMED rule. Asserted separately from
+    # the conjunction above so a regression that satisfies one side twice (for
+    # example by dropping the is_egress test) is visible here.
+    condition = (
+      length(local.vpc_link_egress_rules_to_fixture_alb) == 1 &&
+      length(local.fixture_alb_ingress_rules_from_vpc_link) == 1
+    )
+    error_message = "Each direction must be satisfied by exactly one of the two mocked rules. If one list holds both, the egress/ingress distinction is no longer being applied."
+  }
+
+  assert {
+    # The rules examined must be the ones on the groups the LIVE RESOURCES carry —
+    # the link's own security_group_ids and the ALB's own security_groups. An
+    # operator-supplied list is what root rejected.
+    condition = (
+      local.vpc_link_security_group_ids == toset(data.aws_apigatewayv2_vpc_link.reused[0].security_group_ids) &&
+      local.fixture_alb_security_group_ids == toset(data.aws_lb.fixture[0].security_groups)
+    )
+    error_message = "Both sides of the reachability check must be discovered from the live VPC Link and the live ALB."
+  }
+
+  assert {
+    # EVERY attached group must be in scope for the rule read, not a subset.
+    # Asserted against the data source's OWN filter values, so a future edit that
+    # narrows the read to (say) only the link's groups fails here rather than
+    # quietly stopping the ALB side from being examined.
+    condition = alltrue([
+      for id in setunion(local.vpc_link_security_group_ids, local.fixture_alb_security_group_ids) :
+      contains(one([for f in data.aws_vpc_security_group_rules.reachability[0].filter : f.values if f.name == "group-id"]), id)
+    ])
+    error_message = "The rule read must filter on every group attached to either side, so a group added to the ALB or the link later is still examined."
+  }
+
+  assert {
+    # The gate's receipt must record the rules it passed on, so a reviewer of an
+    # existing fixture re-reads observed facts instead of re-deriving intent.
+    condition = (
+      length(terraform_data.run_binding_gate[0].input.reachability.egress_rule_ids) == 1 &&
+      length(terraform_data.run_binding_gate[0].input.reachability.ingress_rule_ids) == 1 &&
+      terraform_data.run_binding_gate[0].input.reachability.port == var.fixture_alb_listener_port
+    )
+    error_message = "The run-binding record must name the rule ids that carried each direction and the port they were checked on."
+  }
+}
+
+# The case the old check DID cover, restated against rules: a brand-new group the
+# link has no egress rule for. It still has to refuse.
 run "refuses_a_fixture_alb_the_vpc_link_cannot_reach" {
   command = plan
 
@@ -941,7 +1080,8 @@ run "refuses_a_fixture_alb_the_vpc_link_cannot_reach" {
       dns_name = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
       internal = true
       vpc_id   = "vpc-0d6115bead9301d25"
-      # A brand-new group the link has no egress rule for.
+      # A brand-new group. The mocked rules reference sg-0b0f5533ab8440db8, so
+      # NEITHER direction resolves — exactly what a controller-created group does.
       security_groups = ["sg-0999999999999999a"]
       tags            = { AdpFixtureRun = "a1b2c3d4e5f60718" }
     }
@@ -949,6 +1089,259 @@ run "refuses_a_fixture_alb_the_vpc_link_cannot_reach" {
 
   expect_failures = [terraform_data.run_binding_gate]
 }
+
+# THE DIRECTION THE PREVIOUS REVISION NEVER LOOKED AT.
+#
+# This is the most important run in the file, because it is the one a fixture ALB
+# built exactly as RUNBOOK.md documents can still fail. Reusing a permitted group
+# supplies the LINK's egress rule; the inbound rule lives on the ALB's group and
+# can be missing or scoped elsewhere. Under `setintersection` this state was
+# INDISTINGUISHABLE from a working fixture: the group was in the list, the check
+# passed, and every request timed out.
+run "refuses_egress_without_a_matching_ingress_rule" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  # Egress from the link is left intact. Only the ALB-side inbound rule is
+  # re-pointed, at a group that is not the link's.
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-alb-ingress"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = "sg-0aaaaaaaaaaaaaaaa"
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# The mirror case: the ALB admits the link, but the link has no egress rule to the
+# ALB's group. Both halves are required, so both must be individually capable of
+# refusing — otherwise the conjunction is satisfied by one check written twice.
+run "refuses_ingress_without_a_matching_egress_rule" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-link-egress"]
+    values = {
+      is_egress                    = true
+      security_group_id            = "sg-013f2ce2bcaf1642c"
+      referenced_security_group_id = "sg-0aaaaaaaaaaaaaaaa"
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# PORT. Set membership was true for a group reachable only on 443. The listener
+# port is 80 (the only port the link's live egress rule permits), so a rule that
+# admits 443 only must not satisfy the gate.
+run "refuses_a_rule_that_does_not_admit_the_fixture_port" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-link-egress"]
+    values = {
+      is_egress                    = true
+      security_group_id            = "sg-013f2ce2bcaf1642c"
+      referenced_security_group_id = "sg-0b0f5533ab8440db8"
+      ip_protocol                  = "tcp"
+      from_port                    = 443
+      to_port                      = 443
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# PROTOCOL. Same groups, same ports, wrong protocol. An ALB listener is TCP, so a
+# udp rule is not reachability — and neither `setintersection` nor a port-range
+# test alone would notice.
+run "refuses_a_rule_for_the_wrong_protocol" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-alb-ingress"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = "sg-013f2ce2bcaf1642c"
+      ip_protocol                  = "udp"
+      from_port                    = 80
+      to_port                      = 80
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# A CIDR IS A LOCATION, NOT AN IDENTITY.
+#
+# A rule permitting the ALB's subnet CIDRs would let traffic through today, so it
+# is tempting to accept. It is refused deliberately: it establishes nothing about
+# THIS load balancer, stays true after the ALB is replaced by another in the same
+# subnets, and would let the gate pass for a fixture pointed at someone else's ALB.
+run "refuses_a_cidr_rule_as_proof_of_reachability" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-alb-ingress"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = null
+      cidr_ipv4                    = "10.0.0.0/16"
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# The group-id filter returns rules for EVERY group on either side, and shared
+# groups carry plenty of rules that have nothing to do with this path. A rule on
+# an unrelated group must not be counted, or the gate would pass on the strength
+# of ordinary gateway traffic.
+run "ignores_a_rule_that_belongs_to_an_unrelated_security_group" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-link-egress"]
+    values = {
+      is_egress = true
+      # Neither the link's group nor the ALB's: some third group the same
+      # describe call returned.
+      security_group_id            = "sg-0d76484377ffc964d"
+      referenced_security_group_id = "sg-0b0f5533ab8440db8"
+      ip_protocol                  = "tcp"
+      from_port                    = 80
+      to_port                      = 80
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# An all-traffic rule ("-1") is the broadest permission AWS has, and the API
+# reports its ports as -1. A naive from_port/to_port range test would therefore
+# REJECT the most permissive rule in existence — a false refusal that would send an
+# operator looking for a networking gap that is not there.
+run "accepts_an_all_traffic_rule_despite_its_negative_ports" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-link-egress"]
+    values = {
+      is_egress                    = true
+      security_group_id            = "sg-013f2ce2bcaf1642c"
+      referenced_security_group_id = "sg-0b0f5533ab8440db8"
+      ip_protocol                  = "-1"
+      from_port                    = -1
+      to_port                      = -1
+    }
+  }
+
+  assert {
+    condition     = local.vpc_link_can_reach_fixture_alb
+    error_message = "An ip_protocol=-1 rule permits all traffic; refusing it would be a false negative caused by its -1 port fields."
+  }
+}
+
+# A WIDE TCP RANGE that contains the port is real reachability. Asserted so the
+# port check is a RANGE test and not an equality test on from_port — the live
+# shared groups do carry range rules.
+run "accepts_a_port_range_that_contains_the_fixture_port" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rule.reachability["sgr-alb-ingress"]
+    values = {
+      is_egress                    = false
+      security_group_id            = "sg-0b0f5533ab8440db8"
+      referenced_security_group_id = "sg-013f2ce2bcaf1642c"
+      ip_protocol                  = "tcp"
+      from_port                    = 1
+      to_port                      = 1024
+    }
+  }
+
+  assert {
+    condition     = local.vpc_link_can_reach_fixture_alb
+    error_message = "A tcp range spanning the fixture port is reachability; the check must test containment, not equality."
+  }
+}
+
+# NO RULES AT ALL must refuse rather than pass vacuously. This is the shape of
+# failure that matters most for a gate built on a list comprehension: an empty
+# input makes every `for ... if` produce an empty list, and a check written as
+# "no DISALLOWED rule was found" would have been satisfied by it. The check is
+# written as "a PERMITTING rule was found", so it refuses.
+run "refuses_when_no_security_group_rules_are_readable_at_all" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_vpc_security_group_rules.reachability[0]
+    values = {
+      ids = []
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# NOTE — "this component cannot change a shared security group" is NOT asserted
+# here. Whether a resource is DECLARED is a property of this root's .tf source, and
+# a mocked plan is the wrong instrument for it: the assertion would have to read
+# the file anyway. It is asserted in
+# tests/test_fixture_lifecycle.py::test_no_terraform_file_declares_a_security_group_resource,
+# together with the plan-review allowlist that would have to admit such a resource
+# for it to reach AWS. Root's constraint is "never change/delete shared SGs
+# (sg-0623ec399f4a20b87)", and both sides of the reachability path above are
+# shared groups, so the guarantee has to be structural.
 
 # The reused VPC Link must itself be in the expected VPC. Its VPC is derived from
 # a subnet because the provider's vpc_link data source exports no vpc_id
@@ -997,16 +1390,13 @@ run "refuses_a_missing_ordinary_alb_dns" {
   expect_failures = [var.ordinary_internal_plane_alb_dns]
 }
 
-run "refuses_an_empty_vpc_link_egress_allowlist" {
-  command = plan
-
-  variables {
-    fixture_edge_enabled                      = true
-    vpc_link_egress_target_security_group_ids = []
-  }
-
-  expect_failures = [var.vpc_link_egress_target_security_group_ids]
-}
+# REMOVED: refuses_an_empty_vpc_link_egress_allowlist.
+#
+# It asserted a validation on vpc_link_egress_target_security_group_ids, an input
+# that no longer exists — reachability is read from the rules. The property it
+# protected (an empty set of permissions must REFUSE, not pass vacuously) is now
+# covered by refuses_when_no_security_group_rules_are_readable_at_all above, which
+# tests it where it now lives: an empty rule read.
 
 run "refuses_a_malformed_run_nonce" {
   command = plan

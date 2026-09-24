@@ -173,41 +173,19 @@ variable "ordinary_internal_plane_alb_arn" {
   }
 }
 
-variable "vpc_link_egress_target_security_group_ids" {
-  description = <<-EOT
-    Security groups the reused VPC Link is ALREADY permitted to egress to on the
-    fixture listener port. The fixture ALB must carry at least one of them.
-
-    Why this input exists: the VPC Link's security group does not have open egress.
-    Read-only discovery in dev showed sg-013f2ce2bcaf1642c permits tcp/80 to three
-    SPECIFIC ALB security groups and nothing else. A fixture ALB with a fresh
-    controller-created security group would therefore be unreachable — the plan
-    applies, and every request times out, which looks like a broken fixture rather
-    than a networking gap. Widening that shared security group would be an
-    ordinary-infrastructure change this issue forbids, so the fixture ALB reuses a
-    permitted group instead.
-
-    Discover read-only:
-      aws apigatewayv2 get-vpc-links \
-        --query 'Items[?VpcLinkId==`<id>`].SecurityGroupIds'
-      aws ec2 describe-security-groups --group-ids <link-sg-id> \
-        --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId'
-  EOT
-  type        = list(string)
-
-  validation {
-    condition     = length(var.vpc_link_egress_target_security_group_ids) > 0
-    error_message = "vpc_link_egress_target_security_group_ids must list at least one security group the VPC Link can already reach."
-  }
-
-  validation {
-    condition = alltrue([
-      for id in var.vpc_link_egress_target_security_group_ids :
-      can(regex("^sg-[0-9a-f]{8,17}$", id))
-    ])
-    error_message = "Every entry must be a security group id such as sg-013f2ce2bcaf1642c."
-  }
-}
+# DELIBERATELY ABSENT: vpc_link_egress_target_security_group_ids
+# --------------------------------------------------------------
+# An earlier revision took the security groups the VPC Link "may egress to" as an
+# INPUT, and proved reachability by intersecting it with the ALB's discovered
+# groups. Root's review rejected that, correctly: the list recorded what an
+# operator typed after running describe-security-groups at some earlier moment,
+# so the check passed whenever the operator's belief was stale, examined only the
+# egress direction, and constrained neither port nor protocol.
+#
+# main.tf now reads the rules themselves (data.aws_vpc_security_group_rule) and
+# asserts BOTH directions on the fixture port. The input is not merely unused: it
+# is removed, because leaving it would offer a second and laxer way to satisfy a
+# requirement that must have exactly one.
 
 variable "ordinary_internal_plane_alb_dns" {
   description = <<-EOT

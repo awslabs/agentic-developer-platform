@@ -101,6 +101,70 @@ data "aws_subnet" "vpc_link" {
   id    = tolist(data.aws_apigatewayv2_vpc_link.reused[0].subnet_ids)[0]
 }
 
+# ---------------------------------------------------------------------------
+# REACHABILITY, READ FROM THE SECURITY GROUP RULES THEMSELVES
+# ---------------------------------------------------------------------------
+# The previous revision "proved" reachability with
+#
+#   setintersection(data.aws_lb.fixture[0].security_groups,
+#                   var.vpc_link_egress_target_security_group_ids)
+#
+# Root's review was right that this is not proof, and the reason is worth stating
+# precisely, because one half of that expression looked authoritative:
+#
+#   * the fixture ALB's groups WERE discovered — but the set they were compared
+#     against was a LIST THE OPERATOR TYPED. It asserted "the operator believes
+#     the link may egress to this group", never "the link may egress to it".
+#   * the list was collected by hand from a `describe-security-groups` run at
+#     some earlier moment. A rule revoked or re-scoped after that — which needs no
+#     change to this repo — leaves the check passing while every request times out.
+#   * it only ever examined ONE DIRECTION. An egress permission on the link's
+#     group means nothing if the ALB's group does not admit the link, and the ALB
+#     side was not read at all. A fixture ALB reusing a permitted group but
+#     missing the inbound rule passed every check and was unreachable.
+#   * nothing constrained the PORT or the PROTOCOL. Set membership is true for a
+#     group reachable only on 443, or only over UDP.
+#
+# A timeout is the worst possible failure for this component: the plan applies, the
+# edge reports healthy, the bootstrap handshake never completes, and the run reads
+# as "the protected worker failed" rather than "the fixture was never wired".
+#
+# So the rules are read from AWS and the two directions are asserted separately
+# below. `aws_security_group` cannot be used for this: verified against the
+# hashicorp/aws v6.66.0 schema, it exports only arn, description, id, name, region,
+# tags and vpc_id — NO rule attributes. `aws_vpc_security_group_rule` is the
+# authoritative per-rule read (from_port, to_port, ip_protocol, is_egress,
+# referenced_security_group_id, security_group_id, cidr_ipv4).
+#
+# THIS IS A READ AND ONLY A READ. #5836 forbids ordinary-infrastructure changes,
+# and the groups involved are shared: sg-0623ec399f4a20b87 is carried by BOTH
+# ordinary gateway ALBs and sg-013f2ce2bcaf1642c is the platform VPC Link's. This
+# component declares no aws_security_group and no aws_vpc_security_group_*_rule
+# resource, so it cannot widen, narrow or delete any of them — the fixture ALB must
+# reuse a group that already works, and if none does, the answer is a refusal here
+# rather than a rule change.
+#
+# `group-id` covers EVERY group attached to either side, in one read, so a group
+# added to the ALB later cannot escape examination the way an enumerated list
+# would.
+data "aws_vpc_security_group_rules" "reachability" {
+  count = local.enabled ? 1 : 0
+
+  filter {
+    name = "group-id"
+    values = concat(
+      tolist(data.aws_apigatewayv2_vpc_link.reused[0].security_group_ids),
+      tolist(data.aws_lb.fixture[0].security_groups),
+    )
+  }
+}
+
+data "aws_vpc_security_group_rule" "reachability" {
+  for_each = local.enabled ? toset(data.aws_vpc_security_group_rules.reachability[0].ids) : toset([])
+
+  security_group_rule_id = each.value
+}
+
 locals {
   enabled = var.fixture_edge_enabled
 
@@ -117,9 +181,64 @@ locals {
   # component creates, and re-read at teardown to prove ownership before deleting.
   ownership_tag_key = "AdpFixtureRun"
 
-  # Security groups the reused VPC Link may already egress to on the fixture port.
-  # Named here so the reachability precondition and the ALB helper agree.
-  vpc_link_egress_target_security_group_ids = var.vpc_link_egress_target_security_group_ids
+  # --- observed reachability, derived from the rules read above -------------
+  # The two sides of the path, as the live resources report them. Both are
+  # DISCOVERED: the link's groups come from the link, the ALB's from the ALB.
+  vpc_link_security_group_ids    = local.enabled ? toset(data.aws_apigatewayv2_vpc_link.reused[0].security_group_ids) : toset([])
+  fixture_alb_security_group_ids = local.enabled ? toset(data.aws_lb.fixture[0].security_groups) : toset([])
+
+  # Does a rule admit the fixture listener port over TCP?
+  #
+  # ip_protocol "-1" is AWS's all-traffic rule; the API reports its port fields as
+  # -1, so a from_port/to_port range test alone would REJECT the broadest rule
+  # there is. Both forms are therefore handled explicitly. Anything else (udp,
+  # icmp, or a tcp range that excludes the port) does not count, because set
+  # membership in the old check was true for a group reachable only on 443.
+  rule_admits_fixture_port = {
+    for id, r in data.aws_vpc_security_group_rule.reachability : id => (
+      r.ip_protocol == "-1" || (
+        r.ip_protocol == "tcp" &&
+        r.from_port <= var.fixture_alb_listener_port &&
+        r.to_port >= var.fixture_alb_listener_port
+      )
+    )
+  }
+
+  # DIRECTION 1 — the link's group permits egress TO a group the ALB carries.
+  #
+  # Matched on referenced_security_group_id rather than on a CIDR. A CIDR rule that
+  # happens to span the ALB's subnets is deliberately NOT accepted as proof: a CIDR
+  # is a location, not an identity, so it establishes nothing about this particular
+  # load balancer and would keep passing after the ALB moved or was replaced.
+  vpc_link_egress_rules_to_fixture_alb = [
+    for id, r in data.aws_vpc_security_group_rule.reachability : id
+    if r.is_egress &&
+    r.referenced_security_group_id != null &&
+    contains(local.vpc_link_security_group_ids, r.security_group_id) &&
+    contains(local.fixture_alb_security_group_ids, r.referenced_security_group_id) &&
+    local.rule_admits_fixture_port[id]
+  ]
+
+  # DIRECTION 2 — a group the ALB carries admits ingress FROM the link's group.
+  #
+  # This half was never checked before, and it is the half that a correctly-built
+  # fixture ALB can still fail: reusing a permitted group gives the LINK its egress
+  # rule, while the inbound rule lives on the ALB side and can be absent or scoped
+  # to a different port. Egress without ingress is a timeout, not a refusal.
+  fixture_alb_ingress_rules_from_vpc_link = [
+    for id, r in data.aws_vpc_security_group_rule.reachability : id
+    if !r.is_egress &&
+    r.referenced_security_group_id != null &&
+    contains(local.fixture_alb_security_group_ids, r.security_group_id) &&
+    contains(local.vpc_link_security_group_ids, r.referenced_security_group_id) &&
+    local.rule_admits_fixture_port[id]
+  ]
+
+  # Reachability is the CONJUNCTION. Either half alone is a silent timeout.
+  vpc_link_can_reach_fixture_alb = (
+    length(local.vpc_link_egress_rules_to_fixture_alb) > 0 &&
+    length(local.fixture_alb_ingress_rules_from_vpc_link) > 0
+  )
 
   ownership_tags = {
     AdpFixtureRun     = var.run_nonce
@@ -174,6 +293,18 @@ resource "terraform_data" "run_binding_gate" {
       dns_name = data.aws_lb.fixture[0].dns_name
       internal = data.aws_lb.fixture[0].internal
       vpc_id   = data.aws_lb.fixture[0].vpc_id
+    }
+
+    # The rule ids that actually carried the two directions, recorded so a reviewer
+    # of an existing fixture can re-read the SAME rules the gate passed on rather
+    # than re-deriving what "should" have been true. A tfvars list could not serve
+    # this purpose: it records what was typed, not what was observed.
+    reachability = {
+      port                        = var.fixture_alb_listener_port
+      vpc_link_security_groups    = sort(tolist(local.vpc_link_security_group_ids))
+      fixture_alb_security_groups = sort(tolist(local.fixture_alb_security_group_ids))
+      egress_rule_ids             = sort(local.vpc_link_egress_rules_to_fixture_alb)
+      ingress_rule_ids            = sort(local.fixture_alb_ingress_rules_from_vpc_link)
     }
   }
 
@@ -259,40 +390,67 @@ resource "terraform_data" "run_binding_gate" {
       EOT
     }
 
-    # --- the VPC Link may egress to the fixture ALB's security groups --------
-    # Reachability is NOT implied by sharing a VPC. The reused link's security
-    # group permits egress to SPECIFIC target security groups on the fixture port
-    # (verified read-only in dev: sg-013f2ce2bcaf1642c allows tcp/80 to three named
-    # ALB security groups only — it is not an open egress rule).
+    # --- the VPC Link can actually reach the fixture ALB, BOTH WAYS ----------
+    # Asserted from the security group RULES (see the data sources above), not from
+    # a caller-supplied list and not from set membership. Both directions are
+    # required and are stated as two separate preconditions, because the fix for
+    # each is different and a combined message could not say which half is missing.
     #
-    # So a fixture ALB carrying a BRAND-NEW security group would be unreachable
-    # even though every other check passes: the plan applies, and every call times
-    # out. Opening that shared link security group would be an ordinary-
-    # infrastructure change this issue forbids, so the fixture ALB must instead
-    # reuse an already-permitted security group. That is what fixture-alb.yaml
-    # does, and this precondition is what proves it before anything is created.
+    # Direction 1: the VPC Link's group egresses to a group the ALB carries.
     precondition {
-      condition = length(setintersection(
-        toset(data.aws_lb.fixture[0].security_groups),
-        toset(local.vpc_link_egress_target_security_group_ids),
-      )) > 0
+      condition     = length(local.vpc_link_egress_rules_to_fixture_alb) > 0
       error_message = <<-EOT
-        Refusing: the reused VPC Link cannot reach the fixture ALB.
+        Refusing: no live security group rule lets the VPC Link egress to the fixture ALB.
 
-        None of the fixture ALB's security groups are permitted as an egress
-        destination by the VPC Link's security group on port ${var.fixture_alb_listener_port}.
+        Read from AWS, not from a variable: none of the rules on the VPC Link's own
+        security groups (${join(", ", sort(tolist(local.vpc_link_security_group_ids)))})
+        permit egress on tcp/${var.fixture_alb_listener_port} to any security group the fixture ALB
+        actually carries (${join(", ", sort(tolist(local.fixture_alb_security_group_ids)))}).
+
         Every other check would pass and every request would then TIME OUT, which
-        reads as a broken fixture rather than as this misconfiguration.
+        reads as "the protected worker failed" rather than as this misconfiguration.
 
-        Fix by giving the fixture ALB a security group the link may already reach
-        (fixture-alb.yaml uses the alb.ingress.kubernetes.io/security-groups
-        annotation for exactly this reason). Do NOT widen the shared VPC Link
-        security group: that is an ordinary-infrastructure change #5836 forbids.
+        Fix by giving the fixture ALB a group the link already egresses to —
+        fixture-alb.yaml's alb.ingress.kubernetes.io/security-groups annotation
+        exists for exactly this. Do NOT widen the shared VPC Link security group:
+        it is platform infrastructure, and #5836 forbids ordinary-infrastructure
+        changes. This component declares no security group rule resource, so it
+        cannot make that change even by accident.
 
-        Supply the permitted ids via vpc_link_egress_target_security_group_ids;
-        discover them read-only with:
-          aws ec2 describe-security-groups --group-ids <link-sg-id> \
-            --query 'SecurityGroups[0].IpPermissionsEgress'
+        Inspect the rules this gate read, read-only:
+          aws ec2 describe-security-group-rules \
+            --filters Name=group-id,Values=<link-sg-id> \
+            --query 'SecurityGroupRules[?IsEgress==`true`]'
+      EOT
+    }
+
+    # Direction 2: a group the ALB carries admits ingress from the link's group.
+    # This is the half the previous check never looked at, and the half a fixture
+    # ALB built exactly as documented can still fail — reusing a permitted group
+    # supplies the LINK's egress rule, while the inbound rule lives on the ALB side.
+    precondition {
+      condition     = length(local.fixture_alb_ingress_rules_from_vpc_link) > 0
+      error_message = <<-EOT
+        Refusing: the fixture ALB's security groups do not admit the VPC Link.
+
+        Egress from the link was found, but no rule on the fixture ALB's groups
+        (${join(", ", sort(tolist(local.fixture_alb_security_group_ids)))}) permits
+        INGRESS on tcp/${var.fixture_alb_listener_port} from a group the link uses
+        (${join(", ", sort(tolist(local.vpc_link_security_group_ids)))}).
+
+        One-way permission is indistinguishable from reachability until traffic
+        flows, and then it is a timeout. The previous revision checked only the
+        egress side, so this exact state passed the gate.
+
+        Fix by pointing the fixture ALB at a group that already admits the link —
+        in dev the shared backend group does, which is why fixture-alb.yaml reuses
+        it. Do NOT add a rule to a shared group: #5836 forbids it and this
+        component cannot do it.
+
+        Inspect the rules this gate read, read-only:
+          aws ec2 describe-security-group-rules \
+            --filters Name=group-id,Values=<alb-sg-id> \
+            --query 'SecurityGroupRules[?IsEgress==`false`]'
       EOT
     }
 

@@ -35,13 +35,19 @@
 # -- which reads as a broken fixture rather than as a networking gap.
 #
 # So the fixture ALB explicitly reuses the shared backend group the link may
-# already reach (dev: sg-0623ec399f4a20b87, "[k8s] Shared Backend SecurityGroup
-# for LoadBalancers", carried by BOTH ordinary gateway ALBs). Reusing an existing
-# group is deliberately preferred over widening the shared VPC Link group, which
-# would be an ordinary-infrastructure change #5836 forbids.
+# already reach. In dev that is sg-0623ec399f4a20b87, whose live GroupName is
+# `k8s-traffic-adpdevekscluster-f6149627bf` (read read-only on 2026-09-24; an
+# earlier revision of this comment described it as "[k8s] Shared Backend
+# SecurityGroup for LoadBalancers", which is not what the group is called).
+# It is carried by BOTH ordinary gateway ALBs, which is exactly why reusing it is
+# preferred over widening the shared VPC Link group: the latter would be an
+# ordinary-infrastructure change #5836 forbids, and so would adding a rule here.
 #
-# main.tf enforces this rather than trusting it: the run_binding_gate refuses to
-# plan unless the discovered ALB carries a permitted group.
+# main.tf enforces this rather than trusting it, and it no longer takes the
+# operator's word for which groups are permitted: it READS the rules on every group
+# attached to the link and to the discovered ALB, and the run_binding_gate refuses
+# to plan unless a live rule carries EACH DIRECTION on this listener port. Egress
+# without ingress is a timeout, not a refusal, so both halves are required.
 #
 # PLACEHOLDERS (substituted by scripts/create-fixture-alb.sh; no shell eval)
 #   __NAME__        fixture object name, carries the run id

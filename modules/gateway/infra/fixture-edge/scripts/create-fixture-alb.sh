@@ -75,11 +75,20 @@
 #       ACTUAL uid, refusing unless the uid still matches the one captured at
 #       creation.
 #
-# Discover --alb-security-groups read-only (must be groups the VPC Link may
-# already egress to; see ../fixture-alb.yaml.tmpl for why this matters):
+# Discover --alb-security-groups read-only. It must be a group the VPC Link ALREADY
+# egresses to on the listener port, and which itself admits the link -- see
+# ../fixture-alb.yaml.tmpl for why. Reading rules is the authoritative way to see
+# that: describe-security-groups returns no rule detail worth matching on, and an
+# id list alone says nothing about port, protocol or direction.
 #   aws apigatewayv2 get-vpc-links --query 'Items[].SecurityGroupIds'
-#   aws ec2 describe-security-groups --group-ids <link-sg> \
-#     --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId'
+#   aws ec2 describe-security-group-rules \
+#     --filters Name=group-id,Values=<link-sg> \
+#     --query 'SecurityGroupRules[?IsEgress==`true`].{To:ReferencedGroupInfo.GroupId,Proto:IpProtocol,From:FromPort,Until:ToPort}'
+#
+# This script does NOT verify reachability, and must not be read as doing so: the
+# id passed here is what the ALB is TOLD to reuse. main.tf's run_binding_gate reads
+# the live rules on both sides and refuses unless each direction is carried by a
+# real rule on the fixture port.
 # =============================================================================
 set -euo pipefail
 
@@ -679,8 +688,12 @@ cat <<EOF
     expected_vpc_id = "$(aws_ elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --query 'LoadBalancers[0].VpcId' --output text)"
 
   Live security groups: $ALB_SG_LIVE
-  (at least one must appear in vpc_link_egress_target_security_group_ids, or the
-   Terraform gate refuses -- that is the reachability check, not a formality)
+  These are NOT a Terraform input. The gate READS the rules on every group attached
+  to this ALB and to the VPC Link, and refuses unless a live rule carries BOTH
+  directions on the listener port -- link egress TO one of these groups, and ingress
+  on one of these groups FROM the link's group. Egress alone is a timeout, not a
+  refusal, so a plan that refuses here has saved you a silent one. Do NOT add a rule:
+  these groups are shared with ordinary traffic.
 
   fixture_alb_dns is NOT an input: main.tf reads it from this ALB so the two
   cannot disagree.
