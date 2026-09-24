@@ -13634,7 +13634,7 @@ class TestConsolidatedSourceIdentity:
         assert "source evaluation" in artifact.refusals["evaluation"]
 
     def test_wrong_source_wave_reaches_evaluator_unchanged(self, tmp_path):
-        run = collect_with_wave_three(tmp_path,
+        run = collect_and_evaluate(tmp_path,
             documents={"W4-03": evidence_document("W4-03", wave=2)})
         assert run.results["W4-03"].status == _mod.STATUS_FAILED
         assert "wave" in run.results["W4-03"].message
