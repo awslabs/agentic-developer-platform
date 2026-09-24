@@ -281,7 +281,9 @@ async def preview_delete(
         db, org_id, workspace_id, deployment_id, workload_kind=workload_kind
     )
     if intent.status == "CancelledBeforeDispatch":
-        raise ProvisioningRefused("workload was cancelled before dispatch; no teardown is required")
+        raise ProvisioningRefused(
+            "workload was cancelled before dispatch; no teardown is required"
+        )
     original = stored_preview(intent)
     require_target(intent, workspace, cluster)
     async with owner.operation_connect() as connection:
@@ -373,6 +375,7 @@ async def delete(
 async def progress(owner, db, intent):
     """Report paid progress and original provider UIDs; never free reservations."""
     operation_id, state, provider_uid = None, None, intent.provider_uid
+    source_operation_id = None
     cancellation_requested = False
     registrations = (
         await db.scalars(
@@ -388,6 +391,7 @@ async def progress(owner, db, intent):
             (item for item in registrations if item.action == "teardown"),
             registrations[0],
         )
+        source_operation_id = selected.source_operation_id or selected.operation_id
         async with owner.operation_connect() as connection:
             row = await connection.fetchrow(
                 "SELECT operation_id,state,cancel_requested_at IS NOT NULL AS cancellation_requested "
@@ -442,10 +446,11 @@ async def progress(owner, db, intent):
         "status": status,
         "deployment_id": intent.id,
         "operation_id": operation_id,
+        "source_operation_id": source_operation_id,
         "operation_state": state,
         "provider_uid": provider_uid,
         "cancellation_requested": cancellation_requested,
-        "cleanup_status": "not-required" if intent.status == "CancelledBeforeDispatch" else (
-            "confirmed" if intent.status == "Deleted" else "unconfirmed"
-        ),
+        "cleanup_status": "not-required"
+        if intent.status == "CancelledBeforeDispatch"
+        else ("confirmed" if intent.status == "Deleted" else "unconfirmed"),
     }

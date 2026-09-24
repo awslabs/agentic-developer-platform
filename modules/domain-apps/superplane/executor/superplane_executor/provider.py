@@ -390,6 +390,22 @@ class Provider:
                                 authorize=authorize,
                             )
                         if ready:
+                            if (
+                                selected.step_id != "2"
+                                and plan.data["workload"]["kind"] == "batch"
+                                and "controller_deployment_id"
+                                in operation.request.parameters
+                            ):
+                                from .results import capture
+
+                                await capture(
+                                    self,
+                                    operation,
+                                    target,
+                                    plan,
+                                    known_references,
+                                    authorize,
+                                )
                             # Readiness I/O can outlive its authority, just like writes.
                             await authorize()
                             return (

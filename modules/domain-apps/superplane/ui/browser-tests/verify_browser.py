@@ -122,6 +122,7 @@ def main(kind="serving"):
                         "can_cancel": True,
                         "can_observe": True,
                         "can_read_accounting": True,
+                        "can_read_results": batch,
                         "can_review_teardown": True,
                         "profiles": [
                             {
@@ -143,6 +144,26 @@ def main(kind="serving"):
                             if batch
                             else {"deployments": rows}
                         ),
+                    }
+                elif (
+                    batch
+                    and path == root + f"/{resource}/{DEPLOYMENT}/result"
+                    and method == "GET"
+                ):
+                    value = {
+                        "workspace_id": WORKSPACE,
+                        "job_id": DEPLOYMENT,
+                        "operation_id": "fixture-create",
+                        "status": "retained",
+                        "media_type": "text/plain",
+                        "result": {
+                            "job_uid": "fixture-original-uid",
+                            "pod_uid": "fixture-pod",
+                            "content": "accuracy=0.95\n<script>untrusted text only</script>",
+                            "sha256": "a" * 64,
+                            "redacted": False,
+                            "captured_at": "2026-09-24T12:00:00Z",
+                        },
                     }
                 elif (
                     path == root + f"/{resource}/{DEPLOYMENT}/observation"
@@ -386,6 +407,23 @@ def main(kind="serving"):
                     expect(
                         page.get_by_label(f"Logs for {workload_name}")
                     ).to_contain_text("epoch 1 completed")
+                    if batch:
+                        result_button = page.get_by_role(
+                            "button", name=f"View result for {workload_name}"
+                        )
+                        result_button.focus()
+                        result_button.press("Enter")
+                        expect(page.get_by_label("Batch result text")).to_contain_text(
+                            "accuracy=0.95"
+                        )
+                        with page.expect_download() as download:
+                            page.get_by_role(
+                                "button", name="Download text result"
+                            ).click()
+                        assert (
+                            download.value.suggested_filename
+                            == f"batch-{DEPLOYMENT}.txt"
+                        )
                     for width in [360, 1280]:
                         page.set_viewport_size({"width": width, "height": 900})
                         assert page.evaluate(

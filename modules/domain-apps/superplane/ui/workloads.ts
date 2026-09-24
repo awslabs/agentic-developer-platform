@@ -24,11 +24,12 @@ export interface BatchInput { name: string; profile_id: string; batch_options: B
 export type WorkloadInput = ServingInput | BatchInput | { deploymentId: string };
 export type WorkloadKind = 'serving' | 'batch';
 export interface BatchProfile { profileId: string; options: BatchOptions }
-export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; canReviewTeardown: boolean; canCancel: boolean; canReadAccounting: boolean; canObserve: boolean }
+export interface BatchCatalog { profiles: BatchProfile[]; canSubmit: boolean; canReviewTeardown: boolean; canCancel: boolean; canReadAccounting: boolean; canReadResults: boolean; canObserve: boolean }
 
 export interface ServingDeployment {
   deploymentId: string | null;
   operationId: string | null;
+  sourceOperationId?: string | null;
   operationState: ReturnType<typeof parseOperationState>;
   name: string;
   status: string;
@@ -62,7 +63,7 @@ export interface ServingCatalog {
   canSubmit: boolean;
   canReviewTeardown: boolean;
   canCancel: boolean;
-  canReadAccounting: boolean; canObserve: boolean;
+  canReadAccounting: boolean; canReadResults: boolean; canObserve: boolean;
 }
 
 const record = (raw: unknown): raw is Record<string, unknown> =>
@@ -92,7 +93,7 @@ export function getBatchCatalog(guard: ScopeGuard, workspaceId: string) {
       if (!options || options.image !== entry.image) return null;
       profiles.push({ profileId: entry.profile_id, options });
     }
-    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true, canReadAccounting: raw.can_read_accounting === true, canObserve: raw.can_observe === true };
+    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true, canReadAccounting: raw.can_read_accounting === true, canReadResults: raw.can_read_results === true, canObserve: raw.can_observe === true };
   });
 }
 
@@ -127,14 +128,14 @@ export function getServingCatalog(guard: ScopeGuard, workspaceId: string) {
         replicas: 1, gpu_per_replica: model.gpu_per_replica, tensor_parallel_size: model.tensor_parallel_size, max_model_len: model.max_model_len,
       } });
     }
-    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true, canReadAccounting: raw.can_read_accounting === true, canObserve: raw.can_observe === true };
+    return { profiles, canSubmit: raw.can_submit && profiles.length > 0, canReviewTeardown: raw.can_review_teardown, canCancel: raw.can_cancel === true, canReadAccounting: raw.can_read_accounting === true, canReadResults: raw.can_read_results === true, canObserve: raw.can_observe === true };
   });
 }
 
 export function parseDeployment(raw: unknown): ServingDeployment | null {
   if (!record(raw) || !id(raw.name) || !id(raw.status)) return null;
   return {
-    deploymentId: text(raw.deployment_id), operationId: text(raw.operation_id),
+    deploymentId: text(raw.deployment_id), operationId: text(raw.operation_id), sourceOperationId: text(raw.source_operation_id),
     operationState: parseOperationState(raw.operation_state), name: raw.name,
     status: raw.status, providerUid: text(raw.provider_uid),
     cancellationRequested: raw.cancellation_requested === true,

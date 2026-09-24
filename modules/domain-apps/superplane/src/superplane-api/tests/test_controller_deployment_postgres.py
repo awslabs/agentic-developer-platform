@@ -46,6 +46,9 @@ async def workload(lifecycle, monkeypatch, tmp_path):  # noqa: F811
     async with engine.begin() as connection:
         await connection.run_sync(Deployment.__table__.create)
         await connection.run_sync(ControllerDeploymentOperation.__table__.create)
+        from app.models.controller_execution import ControllerBatchResult
+
+        await connection.run_sync(ControllerBatchResult.__table__.create)
         await connection.run_sync(NodePool.__table__.create)
         await connection.run_sync(Node.__table__.create)
     async with context.sessions() as db:

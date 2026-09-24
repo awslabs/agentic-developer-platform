@@ -214,6 +214,7 @@ def batch_result(value):
         "namespace": value["namespace"],
         "status": value["status"],
         "operation_id": value["operation_id"],
+        "source_operation_id": value.get("source_operation_id"),
         "operation_state": value["operation_state"],
         "provider_uid": value["provider_uid"],
         "execution_outcome": "unknown",
@@ -433,6 +434,21 @@ async def observe_serving(
         logs=logs,
         pod_uid=pod_uid,
     )
+
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}/result")
+async def get_batch_result(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.batch_results import read
+
+    response.headers["Cache-Control"] = "no-store"
+    return await read(request, db, org_id, workspace_id, job_id)
 
 
 @router.get("/{workspace_id}/batch-jobs/{job_id}/accounting")

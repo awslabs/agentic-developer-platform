@@ -132,7 +132,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "032_batch_workload_kind"
+    assert observed["revision"] == "033_retained_batch_results"
     async with engine.connect() as conn:
         assert (
             await conn.execute(
@@ -176,17 +176,67 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
             )
     if deployment_id is not None:
         async with engine.begin() as conn:
-            await conn.execute(text("UPDATE deployments SET workload_kind='batch' WHERE id=:id"), {"id": deployment_id})
+            await conn.execute(
+                text("UPDATE deployments SET workload_kind='batch' WHERE id=:id"),
+                {"id": deployment_id},
+            )
         rollback = subprocess.run(
-            [sys.executable, "-m", "alembic", "downgrade", "031_controller_deployment_registry"],
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "downgrade",
+                "031_controller_deployment_registry",
+            ],
             cwd=root,
             env=dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema),
-            text=True, capture_output=True, timeout=60,
+            text=True,
+            capture_output=True,
+            timeout=60,
         )
-        assert rollback.returncode != 0 and "Retained batch records require this schema" in rollback.stderr
+        assert (
+            rollback.returncode != 0
+            and "Retained batch records require this schema" in rollback.stderr
+        )
         async with engine.connect() as conn:
-            assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "032_batch_workload_kind"
-            assert (await conn.execute(text("SELECT workload_kind FROM deployments WHERE id=:id"), {"id": deployment_id})).scalar_one() == "batch"
+            assert (
+                await conn.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar_one() == "033_retained_batch_results"
+            assert (
+                await conn.execute(
+                    text("SELECT workload_kind FROM deployments WHERE id=:id"),
+                    {"id": deployment_id},
+                )
+            ).scalar_one() == "batch"
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO controller_batch_results "
+                    "(operation_id,org_id,workspace_id,deployment_id,allocation_id,plan_digest,job_uid,pod_uid,content,sha256,redacted) "
+                    "SELECT 'retained-result',org_id,workspace_id,id,'allocation',:digest,'job','pod','kept',:digest,false "
+                    "FROM deployments WHERE id=:id"
+                ),
+                {"id": deployment_id, "digest": "a" * 64},
+            )
+        rollback = subprocess.run(
+            [sys.executable, "-m", "alembic", "downgrade", "032_batch_workload_kind"],
+            cwd=root,
+            env=dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema),
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert (
+            rollback.returncode != 0
+            and "Retained batch results require this schema" in rollback.stderr
+        )
+        async with engine.connect() as conn:
+            assert (
+                await conn.execute(text("SELECT content FROM controller_batch_results"))
+            ).scalar_one() == "kept"
+            assert (
+                await conn.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar_one() == "033_retained_batch_results"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))
@@ -510,26 +560,52 @@ async def test_empty_bootstrap_refuses_ambiguous_or_revoked_authority(
         )
 
 
-async def test_audit_migration_preserves_unattributed_evidence_on_downgrade(isolated_database):
+async def test_audit_migration_preserves_unattributed_evidence_on_downgrade(
+    isolated_database,
+):
     _, engine, url, _, schema, _ = isolated_database
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema)
     upgraded = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=root, env=env, text=True, capture_output=True, timeout=60,
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
     )
     assert upgraded.returncode == 0, upgraded.stderr
     event_id = uuid.uuid4()
     async with engine.begin() as conn:
-        await conn.execute(text(
-            "INSERT INTO events (id, org_id, principal, outcome, action, resource_type, event_type) "
-            "VALUES (:id, NULL, 'unresolved', 'denied', 'created', 'workspace', 'api_call')"
-        ), {"id": event_id})
+        await conn.execute(
+            text(
+                "INSERT INTO events (id, org_id, principal, outcome, action, resource_type, event_type) "
+                "VALUES (:id, NULL, 'unresolved', 'denied', 'created', 'workspace', 'api_call')"
+            ),
+            {"id": event_id},
+        )
     refused = subprocess.run(
-        [sys.executable, "-m", "alembic", "downgrade", "028_deployment_namespace_quota"],
-        cwd=root, env=env, text=True, capture_output=True, timeout=60,
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "downgrade",
+            "028_deployment_namespace_quota",
+        ],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
     )
     assert refused.returncode != 0
     async with engine.connect() as conn:
-        assert (await conn.execute(text("SELECT principal, outcome FROM events WHERE id=:id"), {"id": event_id})).one() == ("unresolved", "denied")
-        assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "032_batch_workload_kind"
+        assert (
+            await conn.execute(
+                text("SELECT principal, outcome FROM events WHERE id=:id"),
+                {"id": event_id},
+            )
+        ).one() == ("unresolved", "denied")
+        assert (
+            await conn.execute(text("SELECT version_num FROM alembic_version"))
+        ).scalar_one() == "033_retained_batch_results"

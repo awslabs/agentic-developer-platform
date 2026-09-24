@@ -405,4 +405,4 @@ original reservation identity.
 Workload UI/API reads expose [status and bounded logs](WORKLOAD-OBSERVATIONS.md) and
 [paid reservation accounting](WORKLOAD-ACCOUNTING.md). [Cancellation](CANCELLATION-API.md)
 retains uncertain resources and accounting. These surfaces do not establish
-provider-billed cost, durable result artifacts or live workload acceptance.
+provider-billed cost or live workload acceptance. Bounded batch text retention is documented in [BATCH-RESULTS.md](BATCH-RESULTS.md).

@@ -75,3 +75,5 @@ installer and full PostgreSQL migration checks. The linked batch test runs actua
 API admission, outbox, task registry, worker RPC and finalizer with only
 provider/network transports simulated. Live batch acceptance remains with the
 separately authorized workload evaluation.
+
+Supported images can publish bounded retained text results. See [BATCH-RESULTS.md](BATCH-RESULTS.md) for the message contract, authenticated download, limits and retention through cleanup.

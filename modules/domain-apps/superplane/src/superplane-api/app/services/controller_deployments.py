@@ -126,6 +126,7 @@ async def serving_catalog(
         "can_cancel": False,
         "can_observe": False,
         "can_read_accounting": False,
+        "can_read_results": False,
     }
     try:
         read_principal = await GrantBackedAuthority(async_session_factory).resolve(
@@ -140,6 +141,7 @@ async def serving_catalog(
         )
         owner = composition(request)
         result["can_read_accounting"] = bool(read_principal)
+        result["can_read_results"] = bool(read_principal and workload_kind == "batch")
         principal = await GrantBackedAuthority(async_session_factory).resolve(
             org_id=str(org_id),
             workspace_id=str(workspace_id),

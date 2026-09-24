@@ -95,6 +95,7 @@ ENDPOINTS = {
     "createWorkspace": {"method": "POST", "path": "/workspaces", "served": True},
     # Shared route vocabulary for the browser's operational surface. A served
     # route does not install a CLI command or establish workload readiness.
+    "batchResult": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/result", "served": True},
     "batchAccounting": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting", "served": True},
     "servingAccounting": {"method": "GET", "path": "/workspaces/{workspace_id}/deployments/{dep_id}/accounting", "served": True},
     "observeBatchJob": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/observation", "served": True},
