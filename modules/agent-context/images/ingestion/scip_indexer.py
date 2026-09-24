@@ -77,7 +77,9 @@ class IndexResult:
     language: str
     scip_path: str | None = None  # Path to generated .scip file
     success: bool = False
-    dep_resolution: str = "skipped"  # ok, failed, skipped
+    # ok | failed | refused | skipped. "refused" means we declined to run
+    # repository-authored build logic (#5614) — distinct from a tooling failure.
+    dep_resolution: str = "skipped"
     error: str | None = None
     file_count: int = 0
 
@@ -131,12 +133,181 @@ def detect_languages(clone_path: str) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Execution-safety policy (#5614, older finding #4720)
+# ---------------------------------------------------------------------------
+#
+# A cloned repository is UNTRUSTED INPUT, not a program to run. Any step that
+# hands control to repository-authored content — a wrapper script (`gradlew`,
+# `mvnw`), a build file evaluated as code (`setup.py`, `Gemfile`, MSBuild
+# `.csproj` targets), or a source distribution compiled on the fly — lets the
+# repository author execute code inside the ingestion worker with the worker's
+# network reach and cloud identity.
+#
+# Rules enforced below:
+#   1. A resolver/indexer that cannot avoid executing repository-authored code
+#      REFUSES: it returns a refusal instead of running anything. The dangerous
+#      invocation is deleted, not flag-guarded — there is no toggle that turns
+#      execution back on.
+#   2. Refusal is fail-soft by design. `index_repo` already treats unresolved
+#      dependencies as "index anyway with degraded monikers", and refused
+#      languages still receive the lexical/static ingestion stages (code search
+#      and embeddings) which never execute repository content.
+#   3. Steps that only consume declarative metadata and fetch pre-built
+#      artifacts from a package registry stay enabled (see `_SAFE_*` notes).
+#
+# Refusal detail strings are prefixed with REFUSAL_PREFIX so operators can tell
+# a deliberate security refusal apart from a genuine tooling failure.
+
+REFUSAL_PREFIX = "refused (untrusted-repo execution)"
+
+# Languages whose dependency resolution requires executing repository-authored
+# build logic. Value is the operator-facing reason.
+_UNSAFE_DEP_RESOLUTION: dict[str, str] = {
+    "java": "gradlew/mvnw wrapper scripts and build.gradle/pom.xml are repository-authored code",
+    "ruby": "Gemfile is evaluated as Ruby and gem native extensions compile arbitrary code",
+    "csharp": "dotnet restore evaluates repository-authored MSBuild targets and SDK resolvers",
+}
+
+# Languages whose SCIP indexer drives a real project build (and therefore the
+# repository's own build files) rather than statically parsing sources.
+_UNSAFE_INDEXERS: dict[str, str] = {
+    "java": "scip-java invokes Gradle/Maven on repository-authored build files",
+    "csharp": "scip-dotnet invokes MSBuild on repository-authored project files",
+}
+
+
+def _refuse_dep_resolution(lang: str) -> tuple[bool, str]:
+    """Return a fail-soft refusal for a language we will not build. No execution."""
+    reason = _UNSAFE_DEP_RESOLUTION.get(lang, "dependency resolution is not execution-safe")
+    detail = f"{REFUSAL_PREFIX}: {reason}"
+    log.warning("Dep resolution refused for %s — %s", lang, reason)
+    return False, detail
+
+
+def _refuse_indexer(lang: str) -> tuple[str | None, str | None]:
+    """Return a fail-soft refusal for an indexer that would build the repo. No execution."""
+    reason = _UNSAFE_INDEXERS.get(lang, "indexer is not execution-safe")
+    detail = f"{REFUSAL_PREFIX}: {reason}"
+    log.warning("SCIP indexing refused for %s — %s", lang, reason)
+    return None, detail
+
+
+def is_refusal(detail: str | None) -> bool:
+    """True if a resolver/indexer detail string reports a deliberate safety refusal."""
+    return bool(detail) and detail.startswith(REFUSAL_PREFIX)
+
+
+def _dep_status(dep_ok: bool, dep_detail: str) -> str:
+    """Map a resolver outcome to a reportable status.
+
+    Surfaces "refused" separately from "failed" so an operator seeing degraded
+    monikers can tell a deliberate security refusal from broken tooling.
+    """
+    if dep_ok:
+        return "ok"
+    return "refused" if is_refusal(dep_detail) else "failed"
+
+
+# ---------------------------------------------------------------------------
 # Per-language dependency resolution
 # ---------------------------------------------------------------------------
 
 
+# requirements.txt directives that reintroduce repository-authored execution or
+# redirect where packages come from. `-e/--editable` and bare local paths build
+# the repo itself; VCS/URL entries build an arbitrary source tree; the index and
+# find-links options repoint resolution at a caller-named location, which is the
+# source-admission boundary PR #5790 owns and must not be bypassed here.
+_UNSAFE_REQ_PREFIXES = (
+    "-e",
+    "--editable",
+    "-f",
+    "--find-links",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "--trusted-host",
+    "--no-binary",
+    "--only-binary",
+    "--pre",
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
+)
+
+_VCS_SCHEMES = ("git+", "hg+", "svn+", "bzr+", "http://", "https://", "file:")
+
+
+def _is_unsafe_requirement(line: str) -> bool:
+    """True if a requirements.txt line would execute repo code or repoint resolution."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return False
+
+    lowered = stripped.lower()
+
+    # Option lines: match the option token exactly (so a package literally named
+    # e.g. "requests" is never mistaken for the -r include option).
+    if stripped.startswith("-"):
+        token = lowered.replace("=", " ").split()[0]
+        return token in _UNSAFE_REQ_PREFIXES
+
+    # VCS / direct-URL / local-file requirements build from source.
+    if lowered.startswith(_VCS_SCHEMES):
+        return True
+
+    # PEP 508 direct reference, e.g. "pkg @ git+https://...".
+    if "@" in stripped and any(s in lowered for s in _VCS_SCHEMES):
+        return True
+
+    # Bare local paths (".", "..", "./pkg", "/abs/pkg") install the repo tree.
+    if stripped in (".", "..") or stripped.startswith(("./", "../", "/")):
+        return True
+
+    return False
+
+
+def _sanitize_requirements(req_file: str, venv_path: str) -> tuple[str | None, int]:
+    """Copy a requirements file keeping only declarative pinned requirements.
+
+    Returns (path_to_sanitized_file, count_of_dropped_lines). The sanitized copy
+    is written outside the clone so we never mutate the ingested repository.
+    """
+    try:
+        with open(req_file, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError as e:
+        log.warning("Could not read %s: %s", req_file, e)
+        return None, 0
+
+    kept, dropped = [], 0
+    for line in lines:
+        if _is_unsafe_requirement(line):
+            dropped += 1
+            log.info("Dropped non-declarative requirement line: %s", line.strip()[:120])
+        else:
+            kept.append(line)
+
+    sanitized_path = os.path.join(venv_path, "scip-sanitized-requirements.txt")
+    try:
+        with open(sanitized_path, "w", encoding="utf-8") as f:
+            f.writelines(kept)
+    except OSError as e:
+        log.warning("Could not write sanitized requirements: %s", e)
+        return None, dropped
+
+    return sanitized_path, dropped
+
+
 def _resolve_python_deps(clone_path: str) -> tuple[bool, str]:
-    """Resolve Python dependencies: create venv + install from requirements/setup.
+    """Resolve Python dependencies from requirements files, without building code.
+
+    Execution safety (#5614): pip is run with `--only-binary :all:` so no source
+    distribution is built — building an sdist executes its `setup.py`. Editable
+    and local-path requirements are dropped for the same reason: `-e .` would
+    evaluate the ingested repository's own `setup.py`. There is deliberately no
+    `pip install -e .` / `pyproject.toml` branch; that was the #4720 RCE.
 
     Returns (success, detail_message).
     """
@@ -164,34 +335,39 @@ def _resolve_python_deps(clone_path: str) -> tuple[bool, str]:
             break
 
     if req_file:
+        sanitized, dropped = _sanitize_requirements(req_file, venv_path)
+        if sanitized is None:
+            return False, f"could not read {os.path.basename(req_file)}"
         try:
             subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-                [pip, "install", "-r", req_file, "--quiet", "--no-warn-script-location"],
+                [
+                    pip,
+                    "install",
+                    "-r",
+                    sanitized,
+                    # Never build a source distribution: building one executes
+                    # its setup.py inside the worker (#5614).
+                    "--only-binary",
+                    ":all:",
+                    "--quiet",
+                    "--no-warn-script-location",
+                ],
                 capture_output=True,
                 timeout=300,
                 cwd=clone_path,
             )
-            return True, f"installed from {os.path.basename(req_file)}"
+            detail = f"installed wheels from {os.path.basename(req_file)}"
+            if dropped:
+                detail += f" ({dropped} non-declarative entr{'y' if dropped == 1 else 'ies'} dropped)"
+            return True, detail
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             log.warning("pip install from %s failed: %s", req_file, e)
 
-    # Try setup.py / pyproject.toml
-    if os.path.isfile(os.path.join(clone_path, "pyproject.toml")) or os.path.isfile(
-        os.path.join(clone_path, "setup.py")
-    ):
-        try:
-            subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-                [pip, "install", "-e", ".", "--quiet", "--no-warn-script-location"],
-                capture_output=True,
-                timeout=300,
-                cwd=clone_path,
-            )
-            return True, "installed from project root"
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            log.warning("pip install -e . failed: %s", e)
-
-    # No deps found — still try (moniker quality may degrade)
-    return False, "no requirements.txt or pyproject.toml found"
+    # NOTE: no `pip install -e .` / pyproject.toml fallback. An editable install
+    # of the ingested repository evaluates its own setup.py — finding #4720.
+    # Python still indexes without it (degraded monikers), and the safe
+    # lexical/static stages are unaffected.
+    return False, "no requirements.txt found (declarative install only)"
 
 
 def _resolve_typescript_deps(clone_path: str) -> tuple[bool, str]:
@@ -239,103 +415,36 @@ def _resolve_go_deps(clone_path: str) -> tuple[bool, str]:
 
 
 def _resolve_java_deps(clone_path: str) -> tuple[bool, str]:
-    """Resolve Java/Kotlin/Scala dependencies via Gradle or Maven.
+    """Refuse JVM dependency resolution — it cannot avoid executing repo code.
 
-    Returns (success, detail_message).
+    Finding #4720: the previous implementation took the repository's own
+    `gradlew`/`mvnw`, chmod'd it to 0755 and executed it; with no wrapper it ran
+    `gradle`/`mvn` against repository-authored `build.gradle`/`pom.xml`, which
+    Gradle and Maven evaluate as build logic. Both are arbitrary code execution
+    by the repository author. There is no "safe subset" of a Gradle build, so
+    this refuses outright. JVM repositories still get lexical/static indexing.
     """
-    # Try Gradle first
-    gradlew = os.path.join(clone_path, "gradlew")
-    build_gradle = os.path.join(clone_path, "build.gradle")
-    build_gradle_kts = os.path.join(clone_path, "build.gradle.kts")
-
-    if os.path.isfile(gradlew) or os.path.isfile(build_gradle) or os.path.isfile(build_gradle_kts):
-        gradle_cmd = gradlew if os.path.isfile(gradlew) else "gradle"
-        if os.path.isfile(gradlew):
-            os.chmod(gradlew, 0o755)
-        try:
-            subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-                [gradle_cmd, "dependencies", "--no-daemon", "-q"],
-                capture_output=True,
-                timeout=600,
-                cwd=clone_path,
-                check=True,
-            )
-            return True, "gradle dependencies resolved"
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-            log.warning("Gradle dep resolution failed: %s", e)
-
-    # Try Maven
-    pom_xml = os.path.join(clone_path, "pom.xml")
-    if os.path.isfile(pom_xml):
-        mvnw = os.path.join(clone_path, "mvnw")
-        maven_cmd = mvnw if os.path.isfile(mvnw) else "mvn"
-        if os.path.isfile(mvnw):
-            os.chmod(mvnw, 0o755)
-        try:
-            subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-                [maven_cmd, "dependency:resolve", "-q"],
-                capture_output=True,
-                timeout=600,
-                cwd=clone_path,
-                check=True,
-            )
-            return True, "maven dependencies resolved"
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-            return False, f"maven dependency:resolve failed: {e}"
-
-    return False, "no build.gradle or pom.xml found"
+    return _refuse_dep_resolution("java")
 
 
 def _resolve_ruby_deps(clone_path: str) -> tuple[bool, str]:
-    """Resolve Ruby dependencies: bundle install (best-effort for Sorbet).
+    """Refuse Ruby dependency resolution — bundler evaluates repo-authored code.
 
-    Returns (success, detail_message).
+    A `Gemfile` is a Ruby program that bundler evaluates, and installing a gem
+    with a native extension compiles and runs repository-controlled build code.
+    Ruby repositories still get lexical/static indexing.
     """
-    gemfile = os.path.join(clone_path, "Gemfile")
-    if not os.path.isfile(gemfile):
-        return False, "no Gemfile found"
-
-    try:
-        subprocess.run(
-            ["bundle", "install", "--quiet", "--jobs=4"],
-            capture_output=True,
-            timeout=300,
-            cwd=clone_path,
-            check=True,
-        )
-        return True, "bundle install succeeded"
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-        return False, f"bundle install failed: {e}"
+    return _refuse_dep_resolution("ruby")
 
 
 def _resolve_csharp_deps(clone_path: str) -> tuple[bool, str]:
-    """Resolve C# dependencies: dotnet restore.
+    """Refuse C# dependency resolution — restore evaluates repo-authored MSBuild.
 
-    Returns (success, detail_message).
+    `dotnet restore` evaluates the repository's `.csproj`/`.sln`, including
+    custom MSBuild targets, inline tasks and SDK resolvers — all author
+    controlled. C# repositories still get lexical/static indexing.
     """
-    # Look for .sln or .csproj
-    has_project = False
-    for ext in [".sln", ".csproj"]:
-        for f in Path(clone_path).rglob(f"*{ext}"):
-            has_project = True
-            break
-        if has_project:
-            break
-
-    if not has_project:
-        return False, "no .sln or .csproj found"
-
-    try:
-        subprocess.run(
-            ["dotnet", "restore", "--verbosity", "quiet"],
-            capture_output=True,
-            timeout=300,
-            cwd=clone_path,
-            check=True,
-        )
-        return True, "dotnet restore succeeded"
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-        return False, f"dotnet restore failed: {e}"
+    return _refuse_dep_resolution("csharp")
 
 
 # Dispatch table: language → dep resolution function
@@ -492,26 +601,14 @@ def _index_go(clone_path: str) -> tuple[str | None, str | None]:
 
 
 def _index_java(clone_path: str) -> tuple[str | None, str | None]:
-    """Run scip-java on a Java/Kotlin/Scala repo."""
-    scip_output = os.path.join(clone_path, "index.scip")
+    """Refuse JVM SCIP indexing — `scip-java index` builds the repo.
 
-    cmd = ["scip-java", "index", "--output", scip_output]
-
-    try:
-        result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-            cmd,
-            capture_output=True,
-            timeout=900,
-            cwd=clone_path,
-        )
-        if result.returncode == 0 and os.path.isfile(scip_output):
-            return scip_output, None
-        stderr = result.stderr.decode("utf-8", errors="replace")[:500]
-        return None, f"scip-java exited {result.returncode}: {stderr}"
-    except FileNotFoundError:
-        return None, "scip-java not found in PATH"
-    except subprocess.TimeoutExpired:
-        return None, "scip-java timed out (900s)"
+    `scip-java index` auto-detects the build tool and runs Gradle/Maven (via the
+    repository's wrapper when present) to compile the project. Refusing the
+    dependency resolver but still running this indexer would leave the same
+    execution path open, so both refuse together (#5614 / #4720).
+    """
+    return _refuse_indexer("java")
 
 
 def _index_ruby(clone_path: str) -> tuple[str | None, str | None]:
@@ -538,26 +635,13 @@ def _index_ruby(clone_path: str) -> tuple[str | None, str | None]:
 
 
 def _index_csharp(clone_path: str) -> tuple[str | None, str | None]:
-    """Run scip-dotnet on a C# repo."""
-    scip_output = os.path.join(clone_path, "index.scip")
+    """Refuse C# SCIP indexing — `scip-dotnet index` drives MSBuild.
 
-    cmd = ["scip-dotnet", "index", "--output", scip_output]
-
-    try:
-        result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-            cmd,
-            capture_output=True,
-            timeout=600,
-            cwd=clone_path,
-        )
-        if result.returncode == 0 and os.path.isfile(scip_output):
-            return scip_output, None
-        stderr = result.stderr.decode("utf-8", errors="replace")[:500]
-        return None, f"scip-dotnet exited {result.returncode}: {stderr}"
-    except FileNotFoundError:
-        return None, "scip-dotnet not found in PATH"
-    except subprocess.TimeoutExpired:
-        return None, "scip-dotnet timed out (600s)"
+    `scip-dotnet index` restores and builds the repository's project files,
+    evaluating author-controlled MSBuild targets. Refused for the same reason as
+    the C# dependency resolver (#5614 / #4720).
+    """
+    return _refuse_indexer("csharp")
 
 
 # Dispatch table: language → indexer function
@@ -669,7 +753,7 @@ def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -
             result = IndexResult(
                 language=lang,
                 error=f"No indexer available for {lang}",
-                dep_resolution="ok" if dep_ok else "failed",
+                dep_resolution=_dep_status(dep_ok, dep_detail),
             )
             report.results.append(result)
             continue
@@ -686,7 +770,7 @@ def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -
             result = IndexResult(
                 language=lang,
                 error=f"Indexer exception: {e}",
-                dep_resolution="ok" if dep_ok else "failed",
+                dep_resolution=_dep_status(dep_ok, dep_detail),
             )
             report.results.append(result)
             continue
@@ -703,7 +787,7 @@ def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -
             language=lang,
             scip_path=scip_path,
             success=scip_path is not None,
-            dep_resolution="ok" if dep_ok else "failed",
+            dep_resolution=_dep_status(dep_ok, dep_detail),
             error=error,
         )
         report.results.append(result)
@@ -713,6 +797,10 @@ def index_repo(clone_path: str, repo: str, languages: list[str] | None = None) -
             if report.combined_scip_path is None:
                 report.combined_scip_path = scip_path
             log.info("SCIP index produced for %s (%s): %s", repo, lang, scip_path)
+        elif is_refusal(error):
+            # Not a failure: structural indexing is declined for this language,
+            # and the safe lexical/static stages still cover it.
+            log.warning("SCIP indexing skipped for %s (%s): %s", repo, lang, error)
         else:
             log.error("SCIP indexing failed for %s (%s): %s", repo, lang, error)
 
