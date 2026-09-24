@@ -37,6 +37,41 @@ mock_provider "aws" {
     }
   }
 
+  # The fixture ALB is now DISCOVERED rather than described by input strings, so
+  # the mock has to supply the facts the blocking gate reads. The happy-path
+  # defaults describe a correctly-built fixture ALB: internal, in the expected
+  # account/region/VPC, tagged for this run, and carrying a security group the
+  # reused VPC Link is already permitted to reach.
+  #
+  # Each `override_data` run below re-points ONE of these facts to prove the gate
+  # refuses — which is only meaningful because the default is otherwise valid.
+  mock_data "aws_lb" {
+    defaults = {
+      arn            = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name       = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
+      internal       = true
+      vpc_id         = "vpc-0d6115bead9301d25"
+      security_groups = ["sg-0b0f5533ab8440db8"]
+      tags = {
+        AdpFixtureRun = "a1b2c3d4e5f60718"
+      }
+    }
+  }
+
+  mock_data "aws_apigatewayv2_vpc_link" {
+    defaults = {
+      vpc_link_id        = "qmovr6"
+      subnet_ids         = ["subnet-03ae2ea2ebdf611bb", "subnet-0860c744097c41a03"]
+      security_group_ids = ["sg-013f2ce2bcaf1642c"]
+    }
+  }
+
+  mock_data "aws_subnet" {
+    defaults = {
+      vpc_id = "vpc-0d6115bead9301d25"
+    }
+  }
+
   override_during = plan
 }
 
@@ -61,11 +96,17 @@ variables {
   environment         = "dev"
 
   fixture_alb_arn = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
-  fixture_alb_dns = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
 
+  expected_vpc_id = "vpc-0d6115bead9301d25"
+
+  # Both the ARN and the DNS name of the ordinary internal plane are required now:
+  # a stale ARN alone would let the isolation check pass while the fixture still
+  # fronts the live gateway's pods.
   ordinary_internal_plane_alb_arn = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/k8s-adpgatew-bedrockg-d2e32d8c72/cccc3333dddd4444"
+  ordinary_internal_plane_alb_dns = "internal-k8s-adpgatew-bedrockg-d2e32d8c72-254378198.us-east-1.elb.amazonaws.com"
 
-  vpc_link_id = "qmovr6"
+  vpc_link_id                               = "qmovr6"
+  vpc_link_egress_target_security_group_ids = ["sg-0623ec399f4a20b87", "sg-0d76484377ffc964d", "sg-0b0f5533ab8440db8"]
 
   allowed_caller_role_arns = ["arn:aws:iam::879318057152:role/adp-dev-agent-authority-worker"]
 }
@@ -246,7 +287,7 @@ run "forwards_internal_prefix_and_publishes_https_worker_endpoint" {
   # The pod registers routes under /internal/v1/agent, so dropping the prefix
   # would 404 every bootstrap while the edge itself looked healthy.
   assert {
-    condition     = jsondecode(local.fixture_api_body).paths["/internal/{proxy+}"]["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].uri == "http://${var.fixture_alb_dns}/internal/{proxy}"
+    condition     = jsondecode(local.fixture_api_body).paths["/internal/{proxy+}"]["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].uri == "http://${local.fixture_alb_dns_discovered}/internal/{proxy}"
     error_message = "The internal route must forward with the /internal prefix preserved (the pod registers its routes under it)."
   }
 
@@ -310,7 +351,7 @@ run "never_forwards_to_the_ordinary_internal_plane" {
   assert {
     condition = alltrue([
       for path_key, path_item in jsondecode(local.fixture_api_body).paths :
-      strcontains(path_item["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].uri, var.fixture_alb_dns)
+      strcontains(path_item["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].uri, local.fixture_alb_dns_discovered)
     ])
     error_message = "Every fixture route's forward URI must address the fixture ALB DNS."
   }
@@ -407,49 +448,80 @@ run "resource_policy_allows_only_listed_roles" {
     fixture_edge_enabled = true
   }
 
+  # -------------------------------------------------------------------------
+  # The Deny must be SCOPED TO THE INTERNAL PLANE.
+  # -------------------------------------------------------------------------
+  # REGRESSION GUARD (this assertion fails on the pre-fix revision). The earlier
+  # policy denied every principal without a matching aws:PrincipalArn across
+  # `<execution_arn>/*` — the WHOLE API, including the auth-NONE human routes. An
+  # unsigned browser request carries no aws:PrincipalArn, so it matched the Deny
+  # and was refused AT THE EDGE before the fixture pod could authenticate its JWT.
+  # The human plane was therefore unreachable while the policy read as a
+  # tightening. A Deny resource of ".../*" is the specific defect.
+  assert {
+    condition = alltrue([
+      for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
+      # flatten() normalizes a single-string Resource and a list of them to one
+      # list. A ternary cannot: `tolist(x)` and `[x]` are list-of-string vs
+      # tuple, which do not unify.
+      alltrue([for r in flatten([s.Resource]) : strcontains(r, "/internal")])
+      if s.Effect == "Deny"
+    ])
+    error_message = "Every Deny must be scoped to /internal resources. An API-wide Deny also blocks the auth-NONE human routes, whose callers have no aws:PrincipalArn — the fixture's human sign-in path would be refused at the edge before the pod ever sees the JWT."
+  }
+
+  # POSITIVE CONTROL for the human transport plane: it must be explicitly allowed
+  # without a signature. Its safety comes from header blanking (asserted in
+  # `human_route_blanks_caller_and_provenance`), not from blocking transport.
   assert {
     condition = length([
       for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
-      s if s.Effect == "Allow"
+      s if s.Effect == "Allow" && s.Sid == "AllowHumanSessionTransport"
     ]) == 1
-    error_message = "Exactly one Allow statement expected."
+    error_message = "The human-session transport plane must be explicitly allowed: the fixture pod authenticates those requests from their own JWT, so refusing them at the edge breaks the path this fixture is supposed to serve."
   }
 
-  # Compared as sorted sets rather than with `==`: jsondecode yields a tuple and
-  # the variable is a list(string), so a direct comparison fails on type even when
-  # the ARNs match.
+  # NEGATIVE for the internal plane: the listed role is allowed there...
   assert {
     condition = sort([
-      for p in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement[0].Principal.AWS : p
+      for p in[
+        for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
+        s if s.Sid == "AllowListedFixtureCallersOnInternal"
+      ][0].Principal.AWS : p
     ]) == sort(var.allowed_caller_role_arns)
-    error_message = "The Allow must name exactly the permitted role ARNs."
+    error_message = "The internal-plane Allow must name exactly the permitted role ARNs."
   }
 
-  # The explicit Deny is what produces the wrong-role refusal the evaluation has
-  # to demonstrate: with the worker's wildcard-on-API-id grant, any signed
-  # principal could otherwise invoke the fixture.
+  # ...and every other principal is denied there. This is the layer that produces
+  # the WRONG-ROLE refusal: the worker's existing grant is wildcard-on-API-id, so
+  # without this statement any signed principal could invoke the fixture.
   assert {
     condition = length([
       for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
-      s if s.Effect == "Deny"
+      s if s.Effect == "Deny" && s.Sid == "DenyNonListedPrincipalsOnInternal"
     ]) == 1
-    error_message = "A Deny for unlisted principals is required — without it a wrong-role caller would be served."
+    error_message = "A Deny for unlisted principals on /internal is required — without it a wrong-role caller would be served."
   }
 
-  # The assumed-role session form must be covered: a SigV4 signature from an
-  # assumed session presents sts::assumed-role/NAME/SESSION, not the iam::role
-  # ARN, so omitting it would deny the legitimate worker too.
+  # aws:PrincipalArn for a request signed by an assumed role is the underlying IAM
+  # ROLE ARN. The pre-fix revision also listed invented
+  # `arn:aws:sts::...:assumed-role/NAME/*` entries, with a comment claiming a
+  # session presents that form; that claim was false and the entries widened the
+  # match for no benefit. Pinned so they cannot be reintroduced.
   assert {
-    condition = contains(
-      jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement[1].Condition.StringNotLike["aws:PrincipalArn"],
-      "arn:aws:sts::879318057152:assumed-role/adp-dev-agent-authority-worker/*"
-    )
-    error_message = "The Deny exception must cover the assumed-role SESSION form, or the real worker would be refused."
+    condition = sort([
+      for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
+      s if s.Sid == "DenyNonListedPrincipalsOnInternal"
+    ][0].Condition.StringNotLike["aws:PrincipalArn"]) == sort(var.allowed_caller_role_arns)
+    error_message = "The Deny exception must be exactly the IAM role ARNs. aws:PrincipalArn resolves to the ROLE ARN for assumed-role requests, so sts::assumed-role/NAME/SESSION variants are unnecessary and only widen the match."
   }
 
   assert {
     condition = alltrue([
-      for arn in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement[1].Condition.StringNotLike["aws:PrincipalArn"] :
+      for arn in[
+        for s in jsondecode(aws_api_gateway_rest_api_policy.fixture[0].policy).Statement :
+        s if s.Sid == "DenyNonListedPrincipalsOnInternal"
+      ][0].Condition.StringNotLike["aws:PrincipalArn"] :
       !strcontains(arn, ":root") && arn != "*"
     ])
     error_message = "The Deny exception list must not admit the account root or everyone."
@@ -524,10 +596,28 @@ run "resources_are_bound_to_run_account_and_region" {
 }
 
 # ---------------------------------------------------------------------------
-# FOREIGN / MISSING INPUTS ARE REFUSED
+# FOREIGN / MISSING INPUTS ARE REFUSED — BLOCKING, NOT WARNING
 # ---------------------------------------------------------------------------
 # #5836 requires tests for "failure of missing/foreign inputs". Each of these
 # expects the plan to FAIL.
+#
+# WHY THESE NOW TARGET terraform_data.run_binding_gate
+# -----------------------------------------------------
+# The pre-fix revision expected failures from `check.run_binding`. That made the
+# suite GREEN while the guard did not actually gate anything: a failing `check`
+# assertion emits a WARNING and `terraform plan` STILL EXITS 0 (reproduced on
+# Terraform 1.15.3, matching root's reproduction on 1.14.9). `expect_failures` on
+# a check block is satisfied by that warning, so the tests certified a refusal
+# that would not have happened — an operator wrapper gating on the exit code would
+# have accepted a fixture aimed at the wrong account.
+#
+# The requirements now live in resource preconditions, which DO fail the plan with
+# a non-zero exit. These runs therefore assert a real gate. Treat any future
+# attempt to move them back into a `check` block as a regression.
+#
+# Several cases below use `override_data` to change what DISCOVERY returns rather
+# than what the operator typed, because the point of the fix is that isolation is
+# established from live facts. A string-only negative could not exercise these.
 
 run "refuses_a_foreign_account" {
   command = plan
@@ -539,7 +629,7 @@ run "refuses_a_foreign_account" {
     fixture_alb_arn     = "arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
   }
 
-  expect_failures = [check.run_binding]
+  expect_failures = [terraform_data.run_binding_gate]
 }
 
 run "refuses_a_region_mismatch" {
@@ -549,10 +639,9 @@ run "refuses_a_region_mismatch" {
     fixture_edge_enabled = true
     aws_region           = "us-west-2"
     fixture_alb_arn      = "arn:aws:elasticloadbalancing:us-west-2:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
-    fixture_alb_dns      = "internal-w2-fixture-alb-123456.us-west-2.elb.amazonaws.com"
   }
 
-  expect_failures = [check.run_binding]
+  expect_failures = [terraform_data.run_binding_gate]
 }
 
 # The most dangerous misconfiguration: a "fixture" that actually forwards to the
@@ -565,7 +654,199 @@ run "refuses_targeting_the_ordinary_internal_plane_alb" {
     fixture_alb_arn      = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/k8s-adpgatew-bedrockg-d2e32d8c72/cccc3333dddd4444"
   }
 
-  expect_failures = [check.run_binding]
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# A DIFFERENT ARN can still front the SAME pods if the operator supplied a stale
+# ordinary ARN. Discovery returns the ordinary plane's DNS name here while the ARN
+# comparison passes, so only the DNS comparison can catch it. The pre-fix revision
+# had no DNS comparison at all.
+run "refuses_a_fixture_alb_whose_dns_is_the_ordinary_plane" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_lb.fixture[0]
+    values = {
+      arn      = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name = "internal-k8s-adpgatew-bedrockg-d2e32d8c72-254378198.us-east-1.elb.amazonaws.com"
+      internal = true
+      vpc_id   = "vpc-0d6115bead9301d25"
+      # tolist() ordering is irrelevant; membership is what the gate checks.
+      security_groups = ["sg-0b0f5533ab8440db8"]
+      tags            = { AdpFixtureRun = "a1b2c3d4e5f60718" }
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# An INTERNET-FACING backend behind a trusted-header-injecting edge would let the
+# fixture gateway be addressed directly, bypassing the only component allowed to
+# assert identity. Scheme is a property of the load balancer, so this can only be
+# caught by reading it — the pre-fix revision inferred "internal" from a DNS
+# pattern, which is not even reliable (the dev LiteLLM ALB is internal with no
+# `internal-` prefix).
+run "refuses_a_public_fixture_alb" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_lb.fixture[0]
+    values = {
+      arn             = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name        = "w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
+      internal        = false
+      vpc_id          = "vpc-0d6115bead9301d25"
+      security_groups = ["sg-0b0f5533ab8440db8"]
+      tags            = { AdpFixtureRun = "a1b2c3d4e5f60718" }
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# A fixture ALB in another VPC applies cleanly and then times out on every call,
+# which reads as a broken fixture rather than as a misconfiguration.
+run "refuses_a_fixture_alb_in_a_foreign_vpc" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_lb.fixture[0]
+    values = {
+      arn             = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name        = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
+      internal        = true
+      vpc_id          = "vpc-08ba938f9cd8c684c"
+      security_groups = ["sg-0b0f5533ab8440db8"]
+      tags            = { AdpFixtureRun = "a1b2c3d4e5f60718" }
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# OWNERSHIP. Without this the component would attach a trusted edge to ANY
+# internal ALB in the VPC — ordinary infrastructure, or another run's fixture —
+# and teardown could not prove what this run was responsible for. A name or ARN
+# alone is not ownership.
+run "refuses_a_fixture_alb_not_tagged_for_this_run" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_lb.fixture[0]
+    values = {
+      arn             = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name        = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
+      internal        = true
+      vpc_id          = "vpc-0d6115bead9301d25"
+      security_groups = ["sg-0b0f5533ab8440db8"]
+      # Tagged for a DIFFERENT run.
+      tags = { AdpFixtureRun = "ffffffffffffffff" }
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# REACHABILITY is not implied by sharing a VPC. The reused VPC Link's security
+# group permits egress only to SPECIFIC target security groups (verified
+# read-only in dev: sg-013f2ce2bcaf1642c allows tcp/80 to three named ALB groups,
+# not open egress). A fixture ALB with a fresh controller-created group passes
+# every other check and then times out on every request.
+run "refuses_a_fixture_alb_the_vpc_link_cannot_reach" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_lb.fixture[0]
+    values = {
+      arn      = "arn:aws:elasticloadbalancing:us-east-1:879318057152:loadbalancer/app/w2-fixture-alb/aaaa1111bbbb2222"
+      dns_name = "internal-w2-fixture-alb-123456.us-east-1.elb.amazonaws.com"
+      internal = true
+      vpc_id   = "vpc-0d6115bead9301d25"
+      # A brand-new group the link has no egress rule for.
+      security_groups = ["sg-0999999999999999a"]
+      tags            = { AdpFixtureRun = "a1b2c3d4e5f60718" }
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# The reused VPC Link must itself be in the expected VPC. Its VPC is derived from
+# a subnet because the provider's vpc_link data source exports no vpc_id
+# (confirmed against the hashicorp/aws v6 schema).
+run "refuses_a_vpc_link_in_a_foreign_vpc" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_subnet.vpc_link[0]
+    values = {
+      vpc_id = "vpc-08ba938f9cd8c684c"
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# MISSING ORDINARY IDENTITY must REFUSE, not silently skip.
+# In the pre-fix revision ordinary_internal_plane_alb_arn defaulted to "", so the
+# "not the ordinary ALB" comparison passed trivially exactly when the operator had
+# not looked the value up — the check was skipped at the moment it mattered most.
+# Not having discovered the ordinary identity is not evidence of isolation.
+run "refuses_a_missing_ordinary_alb_identity" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled            = true
+    ordinary_internal_plane_alb_arn = ""
+  }
+
+  expect_failures = [var.ordinary_internal_plane_alb_arn]
+}
+
+run "refuses_a_missing_ordinary_alb_dns" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled            = true
+    ordinary_internal_plane_alb_dns = ""
+  }
+
+  expect_failures = [var.ordinary_internal_plane_alb_dns]
+}
+
+run "refuses_an_empty_vpc_link_egress_allowlist" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled                      = true
+    vpc_link_egress_target_security_group_ids = []
+  }
+
+  expect_failures = [var.vpc_link_egress_target_security_group_ids]
 }
 
 run "refuses_a_malformed_run_nonce" {

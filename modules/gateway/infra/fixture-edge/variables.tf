@@ -113,27 +113,31 @@ variable "fixture_alb_arn" {
   }
 }
 
-variable "fixture_alb_dns" {
+# NOTE: there is deliberately NO fixture_alb_dns input.
+#
+# An earlier revision took the DNS name as a string and pattern-matched it. Root's
+# review was right that this proves nothing: a typed string cannot establish that
+# the ARN and the DNS name refer to the SAME load balancer, and a mismatched pair
+# would silently build an edge that forwards somewhere nobody reviewed. The DNS
+# name is now READ from the load balancer identified by fixture_alb_arn
+# (data.aws_lb.fixture.dns_name in main.tf), so the two cannot disagree by
+# construction. Scheme, VPC, account, region and run-ownership come from that same
+# authoritative read rather than from the operator's typing.
+
+variable "expected_vpc_id" {
   description = <<-EOT
-    DNS name of the fixture's own internal ALB.
+    The VPC the fixture ALB and the reused VPC Link must BOTH be in.
 
-    Both AWS ELB DNS layouts are accepted, because BOTH are present in the target
-    account today (verified by read-only discovery in us-east-1):
-      <name>.<region>.elb.amazonaws.com   e.g. the bedrockgateway ALBs
-      <name>.elb.<region>.amazonaws.com   e.g. the agent-context LiteLLM ALB
-    Accepting only one form would reject a legitimate fixture ALB depending on
-    which layout the controller happened to assign.
-
-    Internal-ness is deliberately NOT inferred from the name: an internal ALB does
-    not always carry an `internal-` prefix (the LiteLLM ALB above is internal and
-    does not). Scheme is a property of the load balancer, so it is verified in the
-    runbook preflight against the live resource rather than guessed from a string.
+    Required because a VPC Link can only reach load balancers inside its own VPC:
+    a fixture ALB in another VPC produces a plan that applies cleanly and then
+    times out on every call, which reads as a broken fixture rather than as the
+    misconfiguration it is. Verified against both live resources, not assumed.
   EOT
   type        = string
 
   validation {
-    condition     = can(regex("^[a-zA-Z0-9.-]+\\.[a-z0-9-]+\\.elb\\.amazonaws\\.com$", var.fixture_alb_dns)) || can(regex("^[a-zA-Z0-9.-]+\\.elb\\.[a-z0-9-]+\\.amazonaws\\.com$", var.fixture_alb_dns))
-    error_message = "fixture_alb_dns must be an ELB DNS name (<name>.<region>.elb.amazonaws.com or <name>.elb.<region>.amazonaws.com)."
+    condition     = can(regex("^vpc-[0-9a-f]{8,17}$", var.expected_vpc_id))
+    error_message = "expected_vpc_id must be a VPC id such as vpc-0d6115bead9301d25."
   }
 }
 
@@ -142,14 +146,109 @@ variable "ordinary_internal_plane_alb_arn" {
     The ORDINARY internal-plane ALB ARN, supplied for one purpose only: to assert
     the fixture is not pointed at it.
 
+    REQUIRED — it deliberately has no default. In the previous revision this
+    defaulted to empty, which made the "not the ordinary ALB" comparison pass
+    trivially precisely when the operator had not looked the value up: the moment
+    the check mattered most was the moment it was silently skipped. Not having
+    discovered the ordinary identity is not evidence of isolation, so the
+    component now refuses to plan without it.
+
     Without this check the component would happily build a "fixture" edge that
     forwards to the ordinary gateway pods. That would look green while actually
     exercising live traffic under an evaluation ticket — the failure mode
-    FIXTURE-ROUTING-CONSTRAINT.md refused to ship. Empty skips the check only
-    when the operator has not discovered it yet.
+    FIXTURE-ROUTING-CONSTRAINT.md refused to ship.
+
+    Discover it read-only:
+      aws ssm get-parameter --name /adp/<env>/gateway/internal-plane-alb-arn \
+        --query Parameter.Value --output text
   EOT
   type        = string
-  default     = ""
+
+  validation {
+    condition = can(regex(
+      "^arn:aws:elasticloadbalancing:[a-z0-9-]+:[0-9]{12}:loadbalancer/(app|net)/[^/]+/[0-9a-f]+$",
+      var.ordinary_internal_plane_alb_arn
+    ))
+    error_message = "ordinary_internal_plane_alb_arn must be a load balancer ARN. Discover it from /adp/<env>/gateway/internal-plane-alb-arn; an empty value is not accepted because a skipped isolation check is not a passed one."
+  }
+}
+
+variable "vpc_link_egress_target_security_group_ids" {
+  description = <<-EOT
+    Security groups the reused VPC Link is ALREADY permitted to egress to on the
+    fixture listener port. The fixture ALB must carry at least one of them.
+
+    Why this input exists: the VPC Link's security group does not have open egress.
+    Read-only discovery in dev showed sg-013f2ce2bcaf1642c permits tcp/80 to three
+    SPECIFIC ALB security groups and nothing else. A fixture ALB with a fresh
+    controller-created security group would therefore be unreachable — the plan
+    applies, and every request times out, which looks like a broken fixture rather
+    than a networking gap. Widening that shared security group would be an
+    ordinary-infrastructure change this issue forbids, so the fixture ALB reuses a
+    permitted group instead.
+
+    Discover read-only:
+      aws apigatewayv2 get-vpc-links \
+        --query 'Items[?VpcLinkId==`<id>`].SecurityGroupIds'
+      aws ec2 describe-security-groups --group-ids <link-sg-id> \
+        --query 'SecurityGroups[0].IpPermissionsEgress[].UserIdGroupPairs[].GroupId'
+  EOT
+  type        = list(string)
+
+  validation {
+    condition     = length(var.vpc_link_egress_target_security_group_ids) > 0
+    error_message = "vpc_link_egress_target_security_group_ids must list at least one security group the VPC Link can already reach."
+  }
+
+  validation {
+    condition = alltrue([
+      for id in var.vpc_link_egress_target_security_group_ids :
+      can(regex("^sg-[0-9a-f]{8,17}$", id))
+    ])
+    error_message = "Every entry must be a security group id such as sg-013f2ce2bcaf1642c."
+  }
+}
+
+variable "ordinary_internal_plane_alb_dns" {
+  description = <<-EOT
+    The ORDINARY internal-plane ALB's DNS name, compared against the fixture ALB's
+    DISCOVERED DNS name.
+
+    Checked in addition to the ARN because the two can disagree: a stale ordinary
+    ARN would let the ARN comparison pass while the fixture still fronts the live
+    gateway's pods. Comparing the resolved DNS name closes that gap.
+
+    Discover it read-only:
+      aws ssm get-parameter --name /adp/<env>/gateway/internal-plane-alb-dns \
+        --query Parameter.Value --output text
+  EOT
+  type        = string
+
+  validation {
+    condition     = length(var.ordinary_internal_plane_alb_dns) > 0
+    error_message = "ordinary_internal_plane_alb_dns is required — a skipped isolation check is not a passed one."
+  }
+}
+
+variable "fixture_alb_listener_port" {
+  description = <<-EOT
+    Port the fixture ALB listens on. Defaults to 80 to match the ordinary
+    internal-plane ALB.
+
+    This default is load-bearing rather than cosmetic: the reused VPC Link's
+    security group permits egress on port 80 only (verified by read-only
+    discovery of sg-013f2ce2bcaf1642c in dev). A different port would need that
+    shared security group opened, which is an ordinary-infrastructure change this
+    issue forbids. See docs/design-notes/4010-internal-plane-alb-separation.md,
+    which reached the same conclusion for the ordinary internal plane.
+  EOT
+  type        = number
+  default     = 80
+
+  validation {
+    condition     = var.fixture_alb_listener_port > 0 && var.fixture_alb_listener_port <= 65535
+    error_message = "fixture_alb_listener_port must be a valid TCP port."
+  }
 }
 
 # ---------------------------------------------------------------------------

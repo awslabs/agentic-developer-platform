@@ -65,6 +65,42 @@ terraform {
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+# =============================================================================
+# Authoritative discovery — facts read from AWS, not strings from a tfvars file
+# =============================================================================
+# An earlier revision validated the fixture backend by pattern-matching operator-
+# supplied strings. Root's review was correct that this establishes nothing: a
+# regex cannot tell whether an ARN and a DNS name name the same load balancer,
+# whether that load balancer is internal, or whether it is in the VPC the reused
+# VPC Link can actually reach. Those are properties of live resources, so they are
+# READ here and asserted in the blocking preconditions below.
+#
+# Reading (rather than trusting) is what turns "the operator typed a plausible
+# ARN" into "this specific internal load balancer, in this account, region and
+# VPC, tagged as owned by this run".
+data "aws_lb" "fixture" {
+  count = local.enabled ? 1 : 0
+  arn   = var.fixture_alb_arn
+}
+
+# The reused VPC Link's own VPC. A VPC Link can only reach load balancers inside
+# its VPC, so this is the fact that decides whether the integration can work at
+# all — verified rather than assumed to match.
+data "aws_apigatewayv2_vpc_link" "reused" {
+  count       = local.enabled ? 1 : 0
+  vpc_link_id = var.vpc_link_id
+}
+
+# The VPC Link resource does NOT expose a vpc_id (verified against the provider
+# schema for hashicorp/aws v6.x: it exports only arn, id, name, region,
+# security_group_ids, subnet_ids, tags, vpc_link_id). Its VPC is therefore derived
+# from one of its subnets, which is authoritative — a subnet belongs to exactly one
+# VPC.
+data "aws_subnet" "vpc_link" {
+  count = local.enabled ? 1 : 0
+  id    = tolist(data.aws_apigatewayv2_vpc_link.reused[0].subnet_ids)[0]
+}
+
 locals {
   enabled = var.fixture_edge_enabled
 
@@ -76,6 +112,15 @@ locals {
   # teardown relies on. #3968's lib/ownership.py verifies a server-returned
   # identity at teardown and deletes only on a match; these tags are the
   # API-Gateway-side equivalent of its SQS run-nonce tag.
+  # The tag that carries run ownership. Named once here because it is asserted on
+  # the discovered fixture ALB (run_binding_gate), applied to everything this
+  # component creates, and re-read at teardown to prove ownership before deleting.
+  ownership_tag_key = "AdpFixtureRun"
+
+  # Security groups the reused VPC Link may already egress to on the fixture port.
+  # Named here so the reachability precondition and the ALB helper agree.
+  vpc_link_egress_target_security_group_ids = var.vpc_link_egress_target_security_group_ids
+
   ownership_tags = {
     AdpFixtureRun     = var.run_nonce
     AdpFixtureIssue   = "5836"
@@ -91,40 +136,182 @@ locals {
 }
 
 # =============================================================================
-# Run binding — fail before creating anything in the wrong place
+# Run binding — a BLOCKING gate, not a warning
 # =============================================================================
-# These are checks, not resources. They run at plan time, so a misdirected
-# fixture fails in review rather than after creating a trusted edge in an
-# account nobody authorized.
+# WHY THIS IS A RESOURCE PRECONDITION AND NOT A `check` BLOCK
+# -----------------------------------------------------------
+# The previous revision expressed these requirements in a `check` block whose
+# comments promised refusal. They did not refuse. A failing `check` assertion
+# emits a WARNING and `terraform plan` still exits 0 — reproduced on Terraform
+# 1.15.3 with a minimal case, matching root's reproduction on 1.14.9:
+#
+#   condition = false  ->  "Check block assertion failed" + PLAN EXIT CODE 0
+#
+# So any wrapper that gates on the exit code (the runbook does, and so would CI)
+# would have treated a fixture misdirected at the WRONG ACCOUNT as approved. The
+# guard read as the strongest part of the component while being the weakest.
+#
+# Resource preconditions DO block: the same condition attached here fails the plan
+# with EXIT CODE 1 (verified both ways — exit 1 when violated, exit 0 when
+# satisfied). Everything else in this component depends on this resource, so
+# nothing can be created while any binding requirement is unmet.
+#
+# terraform_data is used because the gate must be evaluated at PLAN time and must
+# create no cloud resource. It is intentionally the only place these requirements
+# live, so they cannot be satisfied by a second, laxer path.
+resource "terraform_data" "run_binding_gate" {
+  count = local.enabled ? 1 : 0
 
-check "run_binding" {
-  assert {
-    condition     = !local.enabled || data.aws_caller_identity.current.account_id == var.expected_account_id
-    error_message = "Refusing: the caller's real account does not match expected_account_id (#5836 authorizes 879318057152 only)."
+  # Recorded in state so a reviewer of an existing fixture can see what the gate
+  # was satisfied against. No secret is included.
+  input = {
+    run_nonce  = var.run_nonce
+    account_id = var.expected_account_id
+    region     = var.aws_region
+    vpc_id     = var.expected_vpc_id
+    fixture_alb = {
+      arn      = data.aws_lb.fixture[0].arn
+      dns_name = data.aws_lb.fixture[0].dns_name
+      internal = data.aws_lb.fixture[0].internal
+      vpc_id   = data.aws_lb.fixture[0].vpc_id
+    }
   }
 
-  assert {
-    condition     = !local.enabled || data.aws_region.current.region == var.aws_region
-    error_message = "Refusing: the provider's resolved region does not match aws_region."
-  }
+  lifecycle {
+    # --- identity of the account/region actually being deployed into ---------
+    precondition {
+      condition     = data.aws_caller_identity.current.account_id == var.expected_account_id
+      error_message = "Refusing: the caller's real account does not match expected_account_id (#5836 authorizes 879318057152 only)."
+    }
 
-  assert {
-    condition     = !local.enabled || var.fixture_alb_arn != var.ordinary_internal_plane_alb_arn
-    error_message = <<-EOT
-      Refusing: fixture_alb_arn equals the ORDINARY internal-plane ALB.
+    precondition {
+      condition     = data.aws_region.current.region == var.aws_region
+      error_message = "Refusing: the provider's resolved region does not match aws_region."
+    }
 
-      This edge would inject genuine trusted headers and forward them to the
-      ordinary gateway pods, so the "fixture" evaluation would actually be
-      exercising live traffic while reporting isolation. That is precisely the
-      dishonest outcome #3968's FIXTURE-ROUTING-CONSTRAINT.md refused to ship.
-    EOT
-  }
+    # --- the fixture ALB is a real, internal, correctly-placed load balancer --
+    # Read from the load balancer itself. `internal` is the authoritative scheme
+    # flag: it CANNOT be inferred from the DNS name, because internal ALBs do not
+    # always carry an `internal-` prefix (verified in dev: the agent-context
+    # LiteLLM ALB is internal and has no such prefix). A public ALB here would
+    # expose a trusted-header-injecting edge's backend to the internet.
+    precondition {
+      condition     = data.aws_lb.fixture[0].internal
+      error_message = <<-EOT
+        Refusing: the ALB identified by fixture_alb_arn is INTERNET-FACING (internal = false).
 
-  # The fixture ALB must live in the same account as the one authorized. An ALB
-  # ARN embeds its account, so this is checkable without an API call.
-  assert {
-    condition     = !local.enabled || can(regex(":${var.expected_account_id}:", var.fixture_alb_arn))
-    error_message = "Refusing: fixture_alb_arn belongs to a different account than expected_account_id."
+        This edge injects genuine trusted identity headers. Its backend must not be
+        reachable from outside the VPC, or the fixture gateway could be addressed
+        directly, bypassing the edge that is supposed to be the only way in.
+      EOT
+    }
+
+    precondition {
+      condition     = data.aws_lb.fixture[0].vpc_id == var.expected_vpc_id
+      error_message = "Refusing: the fixture ALB is in a different VPC than expected_vpc_id. Traffic from the reused VPC Link could never reach it."
+    }
+
+    # ARN embeds account and region; compared against the live resource's own ARN
+    # so a copied-from-another-account value cannot pass.
+    precondition {
+      condition     = can(regex(":${var.expected_account_id}:", data.aws_lb.fixture[0].arn))
+      error_message = "Refusing: the fixture ALB belongs to a different account than expected_account_id."
+    }
+
+    precondition {
+      condition     = can(regex(":elasticloadbalancing:${var.aws_region}:", data.aws_lb.fixture[0].arn))
+      error_message = "Refusing: the fixture ALB is in a different region than aws_region."
+    }
+
+    # --- isolation from the ordinary internal plane --------------------------
+    # ordinary_internal_plane_alb_arn is now REQUIRED (no empty default), so this
+    # can no longer pass by being skipped.
+    precondition {
+      condition     = var.fixture_alb_arn != var.ordinary_internal_plane_alb_arn
+      error_message = <<-EOT
+        Refusing: fixture_alb_arn equals the ORDINARY internal-plane ALB.
+
+        This edge would inject genuine trusted headers and forward them to the
+        ordinary gateway pods, so the "fixture" evaluation would actually be
+        exercising live traffic while reporting isolation. That is precisely the
+        dishonest outcome #3968's FIXTURE-ROUTING-CONSTRAINT.md refused to ship.
+      EOT
+    }
+
+    # The ordinary ALB's DNS is also compared, because two different ARNs could
+    # still front the same pods if the operator supplied a stale ordinary ARN.
+    precondition {
+      condition     = data.aws_lb.fixture[0].dns_name != var.ordinary_internal_plane_alb_dns
+      error_message = "Refusing: the fixture ALB's DNS name is the ORDINARY internal-plane ALB's. The 'fixture' would be the live gateway."
+    }
+
+    # --- the reused VPC Link can actually reach this ALB --------------------
+    # Reuse is required (#5836 forbids duplicating platform plumbing), but reuse
+    # is only sound if the link is in the same VPC as the target.
+    precondition {
+      condition     = data.aws_subnet.vpc_link[0].vpc_id == var.expected_vpc_id
+      error_message = <<-EOT
+        Refusing: the reused VPC Link is not in expected_vpc_id.
+
+        A VPC Link only reaches load balancers inside its own VPC. Applying this
+        would produce an edge that times out on every call — which reads as a
+        broken fixture rather than as the misconfiguration it is.
+      EOT
+    }
+
+    # --- the VPC Link may egress to the fixture ALB's security groups --------
+    # Reachability is NOT implied by sharing a VPC. The reused link's security
+    # group permits egress to SPECIFIC target security groups on the fixture port
+    # (verified read-only in dev: sg-013f2ce2bcaf1642c allows tcp/80 to three named
+    # ALB security groups only — it is not an open egress rule).
+    #
+    # So a fixture ALB carrying a BRAND-NEW security group would be unreachable
+    # even though every other check passes: the plan applies, and every call times
+    # out. Opening that shared link security group would be an ordinary-
+    # infrastructure change this issue forbids, so the fixture ALB must instead
+    # reuse an already-permitted security group. That is what fixture-alb.yaml
+    # does, and this precondition is what proves it before anything is created.
+    precondition {
+      condition = length(setintersection(
+        toset(data.aws_lb.fixture[0].security_groups),
+        toset(local.vpc_link_egress_target_security_group_ids),
+      )) > 0
+      error_message = <<-EOT
+        Refusing: the reused VPC Link cannot reach the fixture ALB.
+
+        None of the fixture ALB's security groups are permitted as an egress
+        destination by the VPC Link's security group on port ${var.fixture_alb_listener_port}.
+        Every other check would pass and every request would then TIME OUT, which
+        reads as a broken fixture rather than as this misconfiguration.
+
+        Fix by giving the fixture ALB a security group the link may already reach
+        (fixture-alb.yaml uses the alb.ingress.kubernetes.io/security-groups
+        annotation for exactly this reason). Do NOT widen the shared VPC Link
+        security group: that is an ordinary-infrastructure change #5836 forbids.
+
+        Supply the permitted ids via vpc_link_egress_target_security_group_ids;
+        discover them read-only with:
+          aws ec2 describe-security-groups --group-ids <link-sg-id> \
+            --query 'SecurityGroups[0].IpPermissionsEgress'
+      EOT
+    }
+
+    # --- run ownership -----------------------------------------------------
+    # The fixture ALB must be tagged as belonging to THIS run. Without this, the
+    # component would attach a trusted edge to any internal ALB in the VPC —
+    # including one created by another run or by ordinary infrastructure — and
+    # teardown could not prove which resources this run was responsible for.
+    precondition {
+      condition     = try(data.aws_lb.fixture[0].tags[local.ownership_tag_key], "") == var.run_nonce
+      error_message = <<-EOT
+        Refusing: the fixture ALB does not carry this run's ownership tag.
+
+        Expected tag ${local.ownership_tag_key} = <run_nonce>. A load balancer that
+        is not tagged for this run may belong to ordinary infrastructure or to a
+        different fixture run, and a name or ARN alone is not ownership. Create the
+        fixture ALB with fixture-alb.yaml (this directory), which applies the tag.
+      EOT
+    }
   }
 }
 
@@ -186,7 +373,12 @@ locals {
   # (APIRouter(prefix="/internal/v1/agent")), so the prefix must be preserved on
   # forward or every call 404s. The ordinary module makes the same choice for the
   # same reason.
-  fixture_internal_forward_uri = "http://${var.fixture_alb_dns}/internal/{proxy}"
+  # The host comes from the DISCOVERED load balancer, never from an input string,
+  # so the forwarded destination cannot disagree with the ALB whose scheme, VPC,
+  # account, region and run-ownership the gate verified.
+  fixture_alb_dns_discovered = local.enabled ? data.aws_lb.fixture[0].dns_name : ""
+
+  fixture_internal_forward_uri = "http://${local.fixture_alb_dns_discovered}/internal/{proxy}"
 
   fixture_api_body = jsonencode({
     openapi = "3.0.1"
@@ -255,7 +447,7 @@ locals {
           x-amazon-apigateway-integration = {
             type                 = "http_proxy"
             httpMethod           = "ANY"
-            uri                  = "http://${var.fixture_alb_dns}/{proxy}"
+            uri                  = "http://${local.fixture_alb_dns_discovered}/{proxy}"
             timeoutInMillis      = var.integration_timeout_ms
             responseTransferMode = "STREAM"
             passthroughBehavior  = "when_no_match"
@@ -297,6 +489,11 @@ resource "aws_api_gateway_rest_api" "fixture" {
   }
 
   tags = local.tags
+
+  # Nothing may be created until every run-binding requirement has passed. The
+  # gate is a plan-time blocking precondition (exit 1 on violation), and this
+  # dependency is what puts it ahead of the first cloud resource.
+  depends_on = [terraform_data.run_binding_gate]
 
   # The same invariant the ordinary module enforces (#5653), carried here rather
   # than inherited: a route added to THIS body later must also map both headers.
@@ -355,6 +552,24 @@ resource "aws_api_gateway_rest_api" "fixture" {
 # than the listed role ARNs. A valid signature from an unlisted role is refused
 # at the edge, so "wrong-role calls are refused" is provable without weakening
 # production.
+locals {
+  # execute-api resource ARNs for the TRUSTED INTERNAL PLANE ONLY.
+  #
+  # Shape is <execution_arn>/<stage>/<METHOD>/<path>. Wildcards cover stage and
+  # method; the path segment is pinned to /internal so the role restriction cannot
+  # leak onto the human plane. This mirrors how the ordinary API scopes its own
+  # path-specific denies (modules/api-gateway/main.tf
+  # "DenyInternalRoutesOutsideAllowedSources" uses .../*/*/internal/*).
+  #
+  # Both forms are listed deliberately: `/internal/*` does not match the bare
+  # `/internal` resource itself, and omitting the bare form would leave one
+  # unrestricted internal resource behind.
+  internal_plane_policy_resources = local.enabled ? [
+    "${aws_api_gateway_rest_api.fixture[0].execution_arn}/*/*/internal",
+    "${aws_api_gateway_rest_api.fixture[0].execution_arn}/*/*/internal/*",
+  ] : []
+}
+
 resource "aws_api_gateway_rest_api_policy" "fixture" {
   count = local.enabled ? 1 : 0
 
@@ -363,35 +578,72 @@ resource "aws_api_gateway_rest_api_policy" "fixture" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # -----------------------------------------------------------------------
+      # 1. The human-session transport plane.
+      # -----------------------------------------------------------------------
+      # Allowed WITHOUT a signature, and deliberately so: the fixture gateway
+      # authenticates these requests from their own session JWT, exactly as the
+      # ordinary gateway does. Authentication happens in the POD, not at the edge.
+      #
+      # This statement exists because the previous revision did not have it, and
+      # the omission broke the path it was supposed to serve. A single
+      # "deny everyone but the worker role" over the WHOLE API also covered these
+      # auth-NONE routes; an unsigned browser request carries no aws:PrincipalArn,
+      # so it matched "everyone else" and was refused AT THE EDGE before the pod
+      # could ever see the JWT. The human plane was unreachable while the policy
+      # looked like a tightening.
+      #
+      # Allowing unsigned transport here is NOT a trust grant: the /{proxy+} route
+      # blanks BOTH X-Caller-Identity and X-Adp-Edge-Provenance (see
+      # local.fixture_blank_caller_identity), so a caller on this plane cannot
+      # assert an internal identity. Transport is open; identity is not.
       {
-        Sid       = "AllowListedFixtureCallers"
+        Sid       = "AllowHumanSessionTransport"
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "execute-api:Invoke"
+        Resource  = "${aws_api_gateway_rest_api.fixture[0].execution_arn}/*/*/*"
+      },
+      # -----------------------------------------------------------------------
+      # 2. The trusted internal plane — restricted to the listed roles.
+      # -----------------------------------------------------------------------
+      {
+        Sid       = "AllowListedFixtureCallersOnInternal"
         Effect    = "Allow"
         Principal = { AWS = var.allowed_caller_role_arns }
         Action    = "execute-api:Invoke"
-        Resource  = "${aws_api_gateway_rest_api.fixture[0].execution_arn}/*"
+        Resource  = local.internal_plane_policy_resources
       },
       {
-        # NotPrincipal + Deny is the only way to express "nobody else", and it
-        # is evaluated before the Allow. Role ARNs are listed alongside their
-        # assumed-role session form because a signature from an assumed session
-        # presents the sts:assumed-role principal, not the iam:role one.
-        Sid       = "DenyEveryoneElse"
+        # Deny scoped to the INTERNAL PATHS ONLY. An explicit Deny beats any
+        # Allow, so this is what makes the wrong-role refusal provable — while
+        # leaving the human plane above reachable.
+        #
+        # aws:PrincipalArn for a request signed by an assumed role is the
+        # underlying IAM ROLE ARN, not a session-specific ARN. The previous
+        # revision additionally listed invented
+        # `arn:aws:sts::...:assumed-role/NAME/*` variants and asserted in a
+        # comment that a session presents that form; that claim was wrong, and the
+        # extra entries widened the match for no benefit. Listing the role ARN is
+        # both correct and sufficient.
+        #
+        # WHICH LAYER REFUSES WHAT (do not conflate these):
+        #   * unsigned call to /internal/*    -> refused by API Gateway AWS_IAM
+        #     authorization on the route (no valid SigV4 -> 403, never integrated).
+        #   * signed call from an unlisted role -> refused by THIS statement
+        #     (resource policy), even though the signature is valid.
+        #   * forged/replayed provenance header -> refused by the GATEWAY POD
+        #     (src/auth/caller_provenance.py constant-time compare). The edge
+        #     overwrites the header on the internal route, so a client-supplied
+        #     value never survives; the pod check is the backstop.
+        Sid       = "DenyNonListedPrincipalsOnInternal"
         Effect    = "Deny"
         Principal = "*"
         Action    = "execute-api:Invoke"
-        Resource  = "${aws_api_gateway_rest_api.fixture[0].execution_arn}/*"
+        Resource  = local.internal_plane_policy_resources
         Condition = {
           StringNotLike = {
-            "aws:PrincipalArn" = concat(
-              var.allowed_caller_role_arns,
-              [for arn in var.allowed_caller_role_arns :
-                format(
-                  "arn:aws:sts::%s:assumed-role/%s/*",
-                  var.expected_account_id,
-                  reverse(split("/", arn))[0]
-                )
-              ],
-            )
+            "aws:PrincipalArn" = var.allowed_caller_role_arns
           }
         }
       },
