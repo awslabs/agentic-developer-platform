@@ -125,6 +125,8 @@ AUTHORITY_SERVICE_POLICY = "service_policy"
 #: the grant minted from it carries no `DISPATCH`. It authorizes filing one proposed
 #: amendment against one flow at one base revision — never accepting it.
 AUTHORITY_REPLAN_REQUEST = "replan_request"
+#: A durable paid domain admission; grants no model/GitHub/agent dispatch authority.
+AUTHORITY_PAID_DOMAIN_OPERATION = "paid_domain_operation"
 
 #: Every kind this platform issues. A grant whose kind is outside this set is a bug
 #: or a forgery, and every enumerating surface refuses it.
@@ -134,6 +136,7 @@ RECOGNIZED_AUTHORITY_KINDS: frozenset[str] = frozenset(
         AUTHORITY_GITHUB_EVENT,
         AUTHORITY_SERVICE_POLICY,
         AUTHORITY_REPLAN_REQUEST,
+        AUTHORITY_PAID_DOMAIN_OPERATION,
     }
 )
 

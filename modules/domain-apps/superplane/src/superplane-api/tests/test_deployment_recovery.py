@@ -19,7 +19,7 @@ from kubernetes.client.rest import ApiException
 
 def manifest():
     return bind_manifest(
-        create_deployment_manifest("model", "example/model"),
+        create_deployment_manifest("model", "example/model", namespace="ws-a", workspace_id="workspace-a"),
         org_id="org-a",
         workspace_id="workspace-a",
         operation_id="request-a",
@@ -122,7 +122,7 @@ def test_unbound_manifest_is_refused_before_any_provider_call():
     transport = MagicMock()
     with pytest.raises(ProxyError) as exc:
         apply_deployment_via_k8s(
-            transport, create_deployment_manifest("model", "example/model")
+            transport, create_deployment_manifest("model", "example/model", namespace="ws-a", workspace_id="workspace-a")
         )
     assert exc.value.status_code == 409
     assert transport.mock_calls == []

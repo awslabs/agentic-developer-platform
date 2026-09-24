@@ -53,13 +53,46 @@ set -euo pipefail
 component_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 vendor_dir="$component_dir/vendor"
 
-# Each entry: <source dir under the module root>:<import package>:<sentinel module>
+# Each entry: <source dir relative to the module root>:<import package>:<sentinel module>
 # The sentinel is a file that must exist for the copy to be worth making — a
 # directory that exists but is missing the module the app imports is the failure
 # this guard is for, and it is not the same as the directory being absent.
+#
+# The source is a RELATIVE PATH rather than a bare directory name, which is what
+# lets the third entry reach outside this module. `harness_jobs` (#5527) lives at
+# `modules/harness/jobs/`, a sibling of `modules/domain-apps/`, not of this
+# module's `auth/` and `contracts/`. The path is resolved and then re-checked
+# below, so escaping the module root does not escape the repository.
+#
+# WHY harness_jobs IS STAGED (issue #5535, W6)
+# -------------------------------------------
+# `app/composition.py` needs it to build three of the four production trust ports:
+# `OperationFacadeService` for operation admission and `InventoryAuthority` for
+# allocation membership, plus the durable operation and lease rows the provider
+# authority adapter resolves against.
+#
+# It was previously recorded in that module as "not present in this image", with
+# the build context named as the blocker. That was accurate about the *symptom*
+# and wrong about the *cause*, in the same way the `superplane_contracts` comments
+# corrected above were wrong: the package is not unreachable, it was UNSTAGED.
+# Nothing about the architecture prevented this entry; no one had added it. The
+# consequence was not a crash but something quieter — the packaged capability
+# preflight reported three ports permanently absent, and since the installer
+# requires all four, no deployment could pass its own gate however it was
+# configured.
+#
+# It is stdlib-only (`modules/harness/jobs/pyproject.toml` declares no
+# dependencies, deliberately, so that it cannot read a DSN or hold a credential),
+# so staging it adds no transitive package to the image.
 packages=(
   "auth:superplane_auth:policy.py"
   "contracts:superplane_contracts:emission.py"
+  "../../harness/jobs:harness_jobs:facade.py"
+  "infra/account-factory:account_factory:modes.py"
+  "infra/account-provisioning:account_provisioning:creation_runner.py"
+  "workspace_bootstrap:superplane_bootstrap:workspace.py"
+  ".:workspace_provisioning:preview.py"
+  "executor:superplane_executor:inventory.py"
 )
 
 stage_one() {
@@ -68,6 +101,14 @@ stage_one() {
 
   src="$(cd "$component_dir/../../$src_name" 2>/dev/null && pwd)" || {
     echo "error: $src_name is not at $component_dir/../../$src_name" >&2
+    exit 1
+  }
+
+  # Packages may live outside the domain module (the shared harness does), but
+  # every reviewed source must remain within this checkout.
+  repo_root="$(cd "$component_dir/../../../.." && pwd)"
+  [[ "$src" == "$repo_root"/* ]] || {
+    echo "error: $pkg resolves outside the repository" >&2
     exit 1
   }
 
@@ -90,6 +131,23 @@ stage_one() {
   mkdir -p "$staged"
   cp "$src/pyproject.toml" "$staged/"
   cp -R "$src/$pkg" "$staged/$pkg"
+
+  # Preserve the authoritative non-Python runtime inputs inside the wheel.
+  # They remain generated build scratch, refreshed from source on every stage.
+  if [[ "$pkg" == "account_factory" ]]; then
+    mkdir -p "$staged/$pkg/_data"
+    cp "$src/dependencies.lock.yaml" "$staged/$pkg/_data/"
+    cp -R "$src/policies" "$src/manifests" "$src/vendor" "$staged/$pkg/_data/"
+  elif [[ "$pkg" == "superplane_bootstrap" ]]; then
+    mkdir -p "$staged/$pkg/_data"
+    cp "$src/../infra/workspaces/outputs.tf" "$staged/$pkg/_data/outputs.tf"
+  elif [[ "$pkg" == "workspace_provisioning" ]]; then
+    mkdir -p "$staged/$pkg/_data/workspaces"
+    cp "$src/infra/workspaces/"*.tf "$src/infra/workspaces/"*.json \
+      "$src/infra/workspaces/.terraform.lock.hcl" "$staged/$pkg/_data/workspaces/"
+    cp -R "$src/infra/workspaces/scripts" "$staged/$pkg/_data/workspaces/"
+    cp "$src/src/superplane-controller/deploy/crds.yaml" "$staged/$pkg/_data/crds.yaml"
+  fi
 
   echo "Staged $pkg from $src into $staged"
 }

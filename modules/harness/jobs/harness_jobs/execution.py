@@ -1201,6 +1201,11 @@ class OperationExecutor:
         except Exception:  # noqa: BLE001
             outcome = CallOutcome.UNKNOWN
             provider_ref = None
+        if isinstance(provider_ref, str) and provider_ref:
+            # The dispatch connection still owns its original provider advisory
+            # lock. A returned handle is evidence even if that call outlasted its
+            # lease; retaining it does not authorize a successful observation.
+            call = await self._remember_provider_reference(call, provider_ref)
         if outcome is CallOutcome.UNKNOWN:
             # Intent remains recoverable: a transport failure is not a terminal
             # decision to abandon reconciliation. Never serialize exception details.
@@ -1212,16 +1217,15 @@ class OperationExecutor:
                     row = await connection.fetchrow(
                         """
                         UPDATE harness_provider_call_intent AS i
-                           SET provider_ref = COALESCE($5, i.provider_ref),
-                               updated_at = now()
+                           SET updated_at = now()
                          WHERE i.idempotency_key = $1 AND i.stage = 'intended'
                            AND i.operation_id = $2 AND i.attempt_id = $3
                            AND i.fence_token = $4
-                           AND i.org_id = $6 AND i.workspace_id = $7
+                           AND i.org_id = $5 AND i.workspace_id = $6
                            AND EXISTS (
                                SELECT 1 FROM harness_operation_leases l
                                 WHERE l.operation_id = i.operation_id
-                                  AND l.holder = $8 AND l.fence_token = $4
+                                  AND l.holder = $7 AND l.fence_token = $4
                                   AND l.closed_at IS NULL
                                   AND l.expires_at > clock_timestamp()
                                   AND l.runtime_deadline > clock_timestamp()
@@ -1232,7 +1236,6 @@ class OperationExecutor:
                         self.operation_id,
                         self._lease.attempt_id,
                         self._lease.fence_token,
-                        provider_ref,
                         self.org_id,
                         self.workspace_id,
                         self._lease.holder,
@@ -1261,6 +1264,97 @@ class OperationExecutor:
         if await self.cancel_requested():
             raise CancellationPending(*result)
         return result
+
+    async def _remember_provider_reference(self, original, reference):
+        """Fill one original intent's absent handle without granting authority.
+
+        Private to the still-held provider dispatch session. Neither a worker nor
+        a later recovery observer can use this as a lease-free observation API.
+        The expired original holder may preserve returned evidence; a changed
+        holder/fence, settled call, or conflicting reference cannot be overwritten.
+        """
+        matched = None
+        async with self._connection() as connection, connection.transaction():
+            held = await connection.fetchval(
+                """SELECT EXISTS (
+                    SELECT 1 FROM pg_locks
+                     WHERE locktype='advisory' AND pid=pg_backend_pid()
+                       AND granted AND mode='ExclusiveLock' AND objsubid=1
+                       AND classid=((hashtextextended($1,0) >> 32) & 4294967295)::oid
+                       AND objid=(hashtextextended($1,0) & 4294967295)::oid
+                )""",
+                f"harness-provider-dispatch:{self.operation_id}",
+            )
+            # Match the normal operation -> lease -> intent row-lock ordering.
+            operation = (
+                await connection.fetchrow(
+                    "SELECT 1 FROM harness_operations WHERE operation_id=$1 "
+                    "AND org_id=$2 AND workspace_id=$3 AND job_id=$4 FOR UPDATE",
+                    self.operation_id,
+                    self.org_id,
+                    self.workspace_id,
+                    original.job_id,
+                )
+                if held
+                else None
+            )
+            lease = (
+                await connection.fetchrow(
+                    "SELECT 1 FROM harness_operation_leases WHERE operation_id=$1 "
+                    "AND org_id=$2 AND workspace_id=$3 AND holder=$4 "
+                    "AND attempt_id=$5 AND fence_token=$6 FOR UPDATE",
+                    self.operation_id,
+                    self.org_id,
+                    self.workspace_id,
+                    self._lease.holder,
+                    self._lease.attempt_id,
+                    self._lease.fence_token,
+                )
+                if operation is not None
+                else None
+            )
+            row = (
+                await connection.fetchrow(
+                    "SELECT * FROM harness_provider_call_intent "
+                    "WHERE idempotency_key=$1 "
+                    "AND operation_id=$2 AND org_id=$3 AND workspace_id=$4 "
+                    "AND job_id=$5 AND attempt_id=$6 AND fence_token=$7 "
+                    "AND provider=$8 AND operation_kind=$9 AND target=$10 "
+                    "AND stage='intended' FOR UPDATE",
+                    original.idempotency_key,
+                    self.operation_id,
+                    self.org_id,
+                    self.workspace_id,
+                    original.job_id,
+                    self._lease.attempt_id,
+                    self._lease.fence_token,
+                    original.provider,
+                    original.operation_kind,
+                    original.target,
+                )
+                if lease is not None
+                else None
+            )
+            if row is not None and row["provider_ref"] is None:
+                row = await connection.fetchrow(
+                    "UPDATE harness_provider_call_intent "
+                    "SET provider_ref=$2, updated_at=now() "
+                    "WHERE idempotency_key=$1 AND provider_ref IS NULL "
+                    "AND stage='intended' RETURNING *",
+                    original.idempotency_key,
+                    reference,
+                )
+                matched = _call_from_row(row) if row is not None else None
+            elif row is not None and row["provider_ref"] == reference:
+                matched = _call_from_row(row)
+            await self._audit(
+                connection, "provider.reference_evidence", matched is not None
+            )
+        if matched is None:
+            raise ProviderCallRefused(
+                "Returned provider reference differs from its original dispatch"
+            )
+        return matched
 
     async def observe_success(
         self, *, idempotency_key: str, detail: str, provider_ref: str

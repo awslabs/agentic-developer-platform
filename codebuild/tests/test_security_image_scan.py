@@ -26,8 +26,18 @@ def source(tmp_path):
         context = module / "src" / component
         context.mkdir(parents=True)
         shutil.copyfile(ROOT / SUPERPLANE / "src" / component / "Dockerfile", context / "Dockerfile")
-    for package in ("auth", "contracts"):
+    # The production stager also vendors the maintained bootstrap/runtime
+    # packages. Keep its real filesystem inputs in this offline fixture.
+    for package in (
+        "auth", "contracts", "infra/account-factory", "infra/account-provisioning",
+        "workspace_bootstrap", "workspace_provisioning",
+    ):
         shutil.copytree(ROOT / SUPERPLANE / package, module / package)
+    shutil.copyfile(ROOT / SUPERPLANE / "pyproject.toml", module / "pyproject.toml")
+    (module / "infra/workspaces").mkdir(parents=True)
+    shutil.copyfile(ROOT / SUPERPLANE / "infra/workspaces/outputs.tf",
+                    module / "infra/workspaces/outputs.tf")
+    shutil.copytree(ROOT / "modules/harness/jobs", tmp_path / "modules/harness/jobs")
     shutil.copytree(ROOT / SUPERPLANE / "src/superplane-api/scripts",
                     module / "src/superplane-api/scripts")
     return tmp_path
@@ -140,6 +150,13 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
             if context.name == "superplane-api":
                 assert (context / "vendor/superplane-auth/superplane_auth/policy.py").is_file()
                 assert (context / "vendor/superplane-contracts/superplane_contracts/emission.py").is_file()
+                for package, sentinel in (
+                    ("harness_jobs", "facade.py"), ("account_factory", "modes.py"),
+                    ("account_provisioning", "creation_runner.py"),
+                    ("superplane_bootstrap", "workspace.py"),
+                    ("workspace_provisioning", "preview.py"),
+                ):
+                    assert (context / "vendor" / package.replace("_", "-") / package / sentinel).is_file()
             if failure == "build" and context.name == "superplane-controller":
                 raise subprocess.CalledProcessError(1, args)
         if args[:3] == ["docker", "image", "inspect"]:

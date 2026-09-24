@@ -1,0 +1,294 @@
+# =============================================================================
+# Fixture internal ALB — Ingress template (Issue #5836)
+# =============================================================================
+# WHY THIS FILE EXISTS
+# --------------------
+# The fixture trusted edge forwards to a FIXTURE-OWNED internal ALB. Nothing
+# created that ALB. #3968's renderer (lib/render_fixture.py) produces a
+# Deployment, a ClusterIP Service and NetworkPolicies -- verified on branch
+# agent/issue-3968: it contains NO Ingress and NO LoadBalancer. An earlier
+# revision of the runbook claimed #3968 already owned this, which left a circular
+# prerequisite: neither side created the ALB the edge needs.
+#
+# #5836 owns the edge prerequisite, so the composition lives HERE, in this
+# component's own directory. It is INVOKED by scripts/create-fixture-alb.sh,
+# which records the object in #3968's existing ledger through its supported
+# record-k8s interface -- no file under platform/scripts/operator/wave2/ is
+# modified.
+#
+# WHY A DEDICATED ALB AND NOT A SECOND LISTENER OR AN INGRESS GROUP
+# -----------------------------------------------------------------
+# On EKS Auto Mode one Ingress == one ALB. IngressGroups are only settable via
+# IngressClassParams, and changing group identity CREATES A NEW ALB AND DELETES
+# THE OLD ONE, ignoring deletion protection -- which would take out the live edge.
+# This is recorded in docs/design-notes/4010-internal-plane-alb-separation.md and
+# re-confirmed by #3968's FIXTURE-ROUTING-CONSTRAINT.md. So a dedicated Ingress is
+# the ONLY way to give the fixture its own ALB without touching the ordinary one.
+#
+# THE SECURITY GROUP IS LOAD-BEARING, NOT COSMETIC
+# ------------------------------------------------
+# The reused VPC Link's security group does NOT have open egress. Read-only
+# discovery in dev (879318057152/us-east-1) showed sg-013f2ce2bcaf1642c permits
+# tcp/80 to three SPECIFIC target security groups and nothing else. A fixture ALB
+# with a fresh controller-created security group would therefore be UNREACHABLE:
+# the Ingress reconciles, the Terraform plan applies, and every request times out
+# -- which reads as a broken fixture rather than as a networking gap.
+#
+# So the fixture ALB explicitly reuses the shared backend group the link may
+# already reach. In dev that is sg-0623ec399f4a20b87, whose live GroupName is
+# `k8s-traffic-adpdevekscluster-f6149627bf` (read read-only on 2026-09-24; an
+# earlier revision of this comment described it as "[k8s] Shared Backend
+# SecurityGroup for LoadBalancers", which is not what the group is called).
+# It is carried by BOTH ordinary gateway ALBs, which is exactly why reusing it is
+# preferred over widening the shared VPC Link group: the latter would be an
+# ordinary-infrastructure change #5836 forbids, and so would adding a rule here.
+#
+# main.tf enforces this rather than trusting it, and it no longer takes the
+# operator's word for which groups are permitted: it READS the rules on every group
+# attached to the link and to the discovered ALB, and the run_binding_gate refuses
+# to plan unless a live rule carries EACH DIRECTION on this listener port. Egress
+# without ingress is a timeout, not a refusal, so both halves are required.
+#
+# PLACEHOLDERS (substituted by scripts/create-fixture-alb.sh; no shell eval)
+#   __NAME__        fixture object name, carries the run id
+#   __NAMESPACE__   fixture namespace (the gateway namespace)
+#   __SERVICE__     fixture ClusterIP Service name (created by #3968's renderer)
+#   __RUN_ID__      #3968 ledger run id
+#   __RUN_NONCE__   run nonce; becomes the AdpFixtureRun tag the gate verifies
+#   __ALB_SG_IDS__  comma-separated security groups the VPC Link may reach
+#   __PORT__        listener port (80; matches the link's egress rule)
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: __NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: __NAME__
+    app.kubernetes.io/component: w2-fixture-internal-plane
+    # Run-scoping labels mirror the ones #3968's renderer puts on the fixture
+    # Deployment/Service, so a single label selector finds every object of a run.
+    adp.io/w2-fixture: __RUN_ID__
+    adp.io/w2-nonce: __RUN_NONCE__
+  annotations:
+    # Internal only. This ALB fronts a gateway that trusts headers injected by
+    # the fixture edge, so it must not be reachable from outside the VPC --
+    # otherwise the fixture pod could be addressed directly, bypassing the only
+    # component allowed to assert identity. main.tf re-verifies the resolved
+    # scheme (data.aws_lb.fixture.internal) rather than trusting this annotation.
+    alb.ingress.kubernetes.io/scheme: internal
+
+    # Reuse security groups the VPC Link can already reach -- see the header.
+    # Setting this annotation means the controller does NOT create a frontend
+    # security group, so reachability is inherited rather than newly granted.
+    alb.ingress.kubernetes.io/security-groups: __ALB_SG_IDS__
+    # With explicit frontend security groups, the controller does not manage the
+    # backend rules by default. Enabling it lets the controller open the path from
+    # this ALB to the fixture pods without any manual security-group edit.
+    #
+    # THIS IS SECURITY GROUPS ONLY. It does NOT satisfy the fixture pod's
+    # NetworkPolicy, which is a separate enforcement layer that the controller
+    # neither reads nor writes. #3968's fixture policy admits ingress by
+    # namespaceSelector, and an ALB is not a namespace-selected pod source, so an
+    # otherwise perfect security-group path still ends in a connection the pod
+    # drops. See RUNBOOK step 4.5 and ../main.tf's aws_network_interfaces read.
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+
+    # target-type `ip` is why the NetworkPolicy source is the ALB's OWN addresses:
+    # the ALB connects directly to pod IPs from its own network interfaces rather
+    # than via a node, so the source the pod sees belongs to the load balancer.
+    alb.ingress.kubernetes.io/target-type: ip
+    # Port 80 only, matching the VPC Link's existing egress rule. A different port
+    # would require opening the SHARED link security group, which is an ordinary-
+    # infrastructure change this issue forbids.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": __PORT__}]'
+
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/success-codes: "200"
+
+    # Idle timeout >= the API Gateway integration timeout, for the same reason as
+    # the ordinary internal plane: internal routes proxy long-running work and the
+    # 60s default surfaces as spurious 504s.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=900
+
+    # THE OWNERSHIP TAG. main.tf's run_binding_gate REFUSES to plan unless the
+    # discovered ALB carries AdpFixtureRun = <run_nonce>. That is what stops the
+    # edge from being attached to an ALB belonging to ordinary infrastructure or
+    # to another run, and it is why teardown can prove what this run created.
+    alb.ingress.kubernetes.io/tags: AdpFixtureRun=__RUN_NONCE__,AdpFixtureIssue=5836,AdpFixtureEpic=3959,Disposable=true,ManagedBy=w2-fixture-edge
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # ===================================================================
+          # THE TWO PLANES THE EDGE PUBLISHES, AND WHY BOTH MUST BE HERE
+          # ===================================================================
+          # An earlier revision served `/internal` ONLY. The fixture edge has two
+          # routes (../main.tf): `/internal/{proxy+}` at AWS_IAM, and `/{proxy+}`
+          # at auth NONE for human sessions. Both forward to THIS ALB over the VPC
+          # Link, so a human request that API Gateway correctly admitted then hit
+          # the ALB's default action and came back 404 -- and a 404 reads as "the
+          # human plane is broken" rather than "the backend publishes no such
+          # path". The auth-NONE route was therefore unusable, which is precisely
+          # the human-plane control #5836 has to demonstrate.
+          #
+          # These paths are TRACED from the pod's own routers, not guessed. The
+          # gateway mounts (modules/gateway/src/app.py + the unit routers):
+          #   * /health, /ready          at the app root (app.py:411-418)
+          #   * /me/...                  on a PREFIX-LESS router -- src/budget/
+          #                              me_routes.py declares APIRouter(tags=
+          #                              ["budget"]) and @router.get("/me/budget"),
+          #                              so the path is /me/budget with no prefix
+          #                              to match on. /me/bedrock-routing and
+          #                              /me/persona-models are separate routers.
+          #   * /auth/...                src/auth/routes.py APIRouter(prefix=
+          #                              "/auth"), including /auth/me
+          #
+          # `/me/budget` specifically is #3968's human-session probe endpoint
+          # (lib/edge_sessions_cli.py: ENDPOINT = "/me/budget"), so publishing the
+          # `/me` prefix is what makes their executable session check reach this
+          # fixture at all rather than measuring the ordinary deployment.
+          #
+          # `/me/budget` is NOT the whole acceptance surface, though, and treating it
+          # as if it were is what left the set below incomplete for two revisions:
+          # the merged #5825 evaluator and #3968's seed-and-count read agent-control
+          # and stats endpoints that had no rule here and therefore 404ed. Those are
+          # published further down, each traced to the line that calls it.
+          #
+          # The set is deliberately an ENUMERATION of prefixes, not `/`. A
+          # catch-all would forward every path the pod serves -- including
+          # /internal itself -- to a target group reachable without SigV4, so the
+          # auth-NONE plane would become an unsigned route to the internal API.
+          # The whole isolation argument rests on `/internal` being reachable ONLY
+          # through the AWS_IAM route, so `/` must never appear here.
+          #
+          # Note these are ALB-side paths. The edge forwards the request path
+          # unchanged (integration.request.path.proxy), and CloudFront's `/api`
+          # prefix stripping is not in this path at all -- there is no CloudFront
+          # in front of a fixture edge.
+          # ===================================================================
+
+          # --- the trusted internal plane (AWS_IAM at the edge) --------------
+          - path: /internal
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # --- the human session plane (auth NONE at the edge; JWT at the pod)
+          # Admission here is NOT a trust grant: on these paths the edge BLANKS
+          # X-Caller-Identity and the provenance header, so a request asserts no
+          # identity, src/auth/dependencies.py:207 skips the provenance branch
+          # entirely, and the pod authenticates the JWT. A forged header cannot
+          # help -- a failed provenance check on an internal route is a 403, never
+          # a fallback.
+          - path: /me
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # --- the agent-control endpoints ACCEPTANCE actually calls -----------
+          # These were missing, and their absence made the acceptance evidence
+          # unobtainable rather than merely inconvenient: every one of them reached
+          # the ALB's default action and returned 404, which the collectors record
+          # as a failed control-plane probe.
+          #
+          # Traced to the callers, not guessed:
+          #   * platform/scripts/agent-control-eval.py (#5825, merged) ADAPTERS at
+          #     line 146 declares BOTH HTTP adapters onto the one control service,
+          #     and six checks iterate `ADAPTERS.items()`. So the evaluator calls
+          #     /activity/invocations/{id}/agent/{ping,state,<verb>} AND
+          #     /orchestration/runs/{id}/{ping,state,<verb>}. Publishing only the
+          #     first would leave half of every check 404ing -- and "the two HTTP
+          #     edges did not drift" is precisely what that pairing exists to prove,
+          #     so a 404 on one side is not a partial result, it voids the check.
+          #   * platform/scripts/operator/wave2/31-seed-and-count.py:166 (#3968)
+          #     requests /admin/agent-run-stats?days=..&tenant_id=.. -- its seeded
+          #     counts are read back through that endpoint.
+          #
+          # SCOPED TO THE ROUTE SPACE, NOT TO ITS FIRST SEGMENT. `/admin` as a
+          # Prefix would publish every admin router the pod mounts (identity
+          # recovery, persona-model defaults and posture, bedrock routing,
+          # access-request approve/deny, member budgets); `/orchestration` as a
+          # Prefix would publish approval gates and node resume/recovery. None of
+          # that is needed to obtain this evidence, and a fixture that exposes more
+          # surface than the evidence requires is a wider blast radius for no gain.
+          # So: the exact stats path, and the two control spaces at the segment
+          # where the run id begins.
+          #
+          # These are JWT-authenticated at the pod. Checked rather than assumed:
+          # all six control routes and the stats route depend on
+          # get_current_user (src/activity/routes.py:817,837,857;
+          # src/orchestration/controls.py:1095-1166 via _run_control;
+          # src/activity/routes.py:123) with no router-level dependency override,
+          # and get_current_user only consults an edge-injected X-Caller-Identity
+          # when one is asserted -- which on these paths the edge BLANKS
+          # (../main.tf local.fixture_blank_caller_identity). The four POST verbs
+          # additionally refuse a non-human principal in authorize_human_session
+          # (src/agentauth/human_control.py:50).
+          #
+          # Publishing them here does NOT widen the internal plane. The edge's
+          # AWS_IAM route forwards to `/internal/{proxy}` -- it PREPENDS the
+          # prefix (../main.tf local.fixture_internal_forward_uri), so a signed
+          # caller cannot address these paths through it at all.
+          - path: /activity/invocations
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /orchestration/runs
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /admin/agent-run-stats
+            pathType: Exact
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # --- liveness, for the human positive control ----------------------
+          # `verify` needs ONE unauthenticated path that proves the human plane
+          # reaches the pod, separately from whether a JWT was accepted: refusals
+          # alone cannot tell a correctly-restricted edge from one that refuses
+          # everything. Exact paths (pathType: Exact), because /health and /ready
+          # are single routes at the app root and a Prefix match would also admit
+          # anything below them.
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /ready
+            pathType: Exact
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__

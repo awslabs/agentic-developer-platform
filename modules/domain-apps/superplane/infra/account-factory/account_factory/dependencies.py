@@ -191,6 +191,9 @@ class PinnedDependencies:
 
 def default_lock_path() -> Path:
     """The lock beside this package."""
+    packaged = Path(__file__).with_name("_data") / "dependencies.lock.yaml"
+    if packaged.is_file():
+        return packaged
     return Path(__file__).resolve().parent.parent / "dependencies.lock.yaml"
 
 

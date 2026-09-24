@@ -1,0 +1,22 @@
+{
+  "$fixture": {
+    "description": "The snapshot frame sent first on a fresh SSE connection. advances_last_event_id is fixed false: only durable events may move the client's cursor, which is what prevents a reconnect from skipping real history.",
+    "schema": "events.schema.json#/$defs/sse_snapshot_frame",
+    "expect": "valid",
+    "owner": "T6",
+    "criteria": [
+      "T0-AC02",
+      "T6-AC02",
+      "V0-02",
+      "V3-04"
+    ]
+  },
+  "schema_version": "1.0",
+  "frame": "snapshot",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "version": 4,
+  "status": "running",
+  "high_water_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:5",
+  "oldest_event_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:1",
+  "advances_last_event_id": false
+}

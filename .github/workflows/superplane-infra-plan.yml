@@ -129,7 +129,7 @@ jobs:
 
       - name: Terraform fmt
         working-directory: ${{ matrix.dir }}
-        run: terraform fmt -check -recursive
+        run: terraform fmt -check -recursive -diff
 
       - name: Terraform init (no backend)
         working-directory: ${{ matrix.dir }}

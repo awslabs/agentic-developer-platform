@@ -18,22 +18,61 @@ def management_only() -> bool:
     return value == "true"
 
 
-MANAGEMENT_ROUTES = frozenset({
-    ("GET", "/health"),
-    ("GET", "/readyz"),
-    ("GET", "/orgs/current"),
-    ("PATCH", "/orgs/current"),
-    ("GET", "/workspaces"),
-    ("GET", "/workspaces/{workspace_id}"),
-    ("GET", "/users"),
-    ("GET", "/events"),
-    ("GET", "/events/{event_id}"),
-    ("GET", "/internal/installation"),
-    ("GET", "/internal/observations/clusters"),
-    ("POST", "/internal/observations/leases"),
-    ("POST", "/internal/observations/leases/release"),
-    ("POST", "/internal/controller/reconcile"),
-})
+MANAGEMENT_ROUTES = frozenset(
+    {
+        ("GET", "/health"),
+        ("GET", "/readyz"),
+        ("GET", "/orgs/current"),
+        ("PATCH", "/orgs/current"),
+        ("GET", "/workspaces"),
+        ("POST", "/workspaces"),
+        ("POST", "/workspaces/preview"),
+        ("POST", "/workspaces/adopt"),
+        ("POST", "/workspaces/{workspace_id}/retirement/preview"),
+        ("POST", "/workspaces/{workspace_id}/retirement"),
+        ("GET", "/workspaces/{workspace_id}/lifecycle-proposals"),
+        (
+            "POST",
+            "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview",
+        ),
+        (
+            "POST",
+            "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue",
+        ),
+        ("GET", "/workspaces/{workspace_id}/deployments"),
+        ("POST", "/workspaces/{workspace_id}/deployments/preview"),
+        ("POST", "/workspaces/{workspace_id}/deployments"),
+        ("POST", "/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview"),
+        ("DELETE", "/workspaces/{workspace_id}/deployments/{dep_id}"),
+        ("GET", "/capabilities"),
+        ("GET", "/operations/{operation_id}"),
+        ("GET", "/operations/by-idempotency/{idempotency_key}"),
+        ("POST", "/operation-approvals"),
+        ("GET", "/operation-approvals/{approval_id}"),
+        ("POST", "/operation-approvals/{approval_id}/decision"),
+        ("GET", "/workspaces/{workspace_id}"),
+        ("GET", "/workspaces/{workspace_id}/provider-connections"),
+        ("POST", "/workspaces/{workspace_id}/provider-connections"),
+        ("POST", "/workspaces/{workspace_id}/provider-connections/{connection_id}"),
+        (
+            "POST",
+            "/workspaces/{workspace_id}/provider-connections/{connection_id}/validation",
+        ),
+        (
+            "POST",
+            "/workspaces/{workspace_id}/provider-connections/{connection_id}/rotation",
+        ),
+        ("DELETE", "/workspaces/{workspace_id}/provider-connections/{connection_id}"),
+        ("GET", "/users"),
+        ("GET", "/events"),
+        ("GET", "/events/{event_id}"),
+        ("GET", "/internal/installation"),
+        ("GET", "/internal/observations/clusters"),
+        ("POST", "/internal/observations/leases"),
+        ("POST", "/internal/observations/leases/release"),
+        ("POST", "/internal/controller/reconcile"),
+    }
+)
 
 
 async def enforce_management_surface(request: Request) -> None:

@@ -38,6 +38,56 @@ bounded lifetime, so node consolidation cannot erase an in-progress check.
 
 Supply an environment YAML based on `environment.example.yaml` and an immutable release lock based on `releases/superplane.lock.yaml`. The example deliberately leaves unresolved environment decisions blank; it is not an execution configuration. No credentials belong in either file.
 
+Full installation also requires `controller_profiles`, the explicit version-1
+policy consumed by the deployment API. Use the structure in
+[`controller-profiles.example.json`](controller-profiles.example.json) as a mapping
+under that YAML key. Replace its organization/workspace keys and every unresolved
+value with reviewed inputs; the template intentionally cannot pass validation.
+The policy names exactly this installation's domain organization and its actual
+`adp_org_id`, and includes the selected workspace. Additional workspace entries
+must each contain their own explicit profiles. Control-plane-only installation
+may omit the field; deployment admission then remains unavailable.
+The serialized installer policy is limited to 64 KiB so both supported image
+probe transports fit the operating system's per-string limit. The API's separate
+256 KiB policy limit does not enlarge the installer transport limit.
+
+Each profile pins the serving image by SHA-256 digest, its model options and exact
+invocation, compatible AMI/instance/network/cluster/public-CA inputs, registered
+opaque credential reference, physical GPU capacity, finite runtime and cost
+limits. No image, AMI, resource allocation or credential fallback is generated.
+The current controller supports one serving replica. Its serving image must
+implement `superplane-token-file-header-v1`: read the token from
+`SUPERPLANE_AUTH_TOKEN_FILE` and require `X-Superplane-Token` on `/healthz`.
+`workload.auth_secret` names an **existing Secret in the target workspace
+namespace** with a `token` key containing at least 32 characters. Create that
+Secret through the separately authorized workspace credential process before
+running a workload. The installer neither reads nor writes its token, and the
+profile contains only its name.
+
+The installer serializes the reviewed policy into an immutable, content-named
+ConfigMap, mounted read-only in the API at
+`/etc/superplane/controller-profiles/profiles.json`, and sets
+`SUPERPLANE_CONTROLLER_PROFILES_FILE`. Missing ConfigMap content prevents the API
+pod from starting. Policy changes select a new ConfigMap and replace the API pod;
+resume and rollback retain the policy in the exact environment/receipt identity.
+Preflight runs the maintained `build_deployment_preview`/plan validator in the
+pinned API image, and private verification checks the mounted policy and digest
+again. In cluster mode these checks run in the isolated preflight pod; execute CLI
+and runtime regression tests only on the authorized EC2 harness.
+Every profile for the selected workspace must match the installation's explicit
+cluster UUID, ARN, namespace, AWS account and region. Before installation writes,
+the existing EKS preflight also compares its endpoint and public CA with the
+independently queried selected cluster. A self-consistent profile pointing at a
+different destination is refused.
+
+`controller_profiles_validated` proves configuration compatibility, not canonical
+database registration or a running model. The actual API preview independently
+checks current organization, workspace, cluster, account and credential bindings.
+Installation receipts explicitly leave `serving_workload_ready: false`; a model
+becomes ready only after its separately reviewed approval, paid admission and
+authenticated provider/runtime checks succeed. API/controller management health
+and a valid profile cannot establish that result.
+
 The release lock must remove the three built images from `pending_images`, supply their observed ECR digests in `images`, and record `registry`, `repository` and `source_revision` under each `image_sources` entry. Set the root `source_revision` to the exact clean ADP checkout used by the maintained build lanes. Registry tags and OCI revision labels must match each image’s recorded build revision. An image from an earlier commit is reusable only when Git proves its complete component build context (including its Dockerfile) is identical to the installation revision. Both commits must be available locally; changed or unavailable source is refused. The receipt records reused build revisions and Git tree IDs. Preserve the reviewed SkyPilot 0.12.0 digest. This command consumes completed immutable builds; it does not treat a workflow dispatch as a completed build.
 
 Both managed VPC CNI and EKS Auto Mode are supported when NetworkPolicy enforcement
@@ -99,7 +149,7 @@ Install Gateway transport version 2 and its scoped route-read IAM policy through
 
 Version 2 no longer reads the legacy SSM route parameter. Preserve it for rollback; do not copy it over an existing S3 registration. A controlled Gateway upgrade disables the legacy route until an authorized installer resume/reinstallation publishes the verified S3 route. Perform this cutover under the existing installation gate. Subsequent activation/removal takes at most five seconds and needs no Gateway restart. An explicit `FEATURE_SUPERPLANE_ENABLED=false` overrides registration. The public proxy forwards only inventoried domain methods/paths and the original ADP bearer token; the domain API performs token and workspace authorization. It does not publish local login/token minting, internal callbacks, OpenAPI or service diagnostics.
 
-The selected existing RDS instance, database and **two isolated schemas** (API and SkyPilot) need named migration, backup and restore owners and an available matching snapshot. Runtime and migration roles must have the correct schema search path and no rights to mutate other schemas, no role memberships that can elevate authority, and no database-creation/superuser authority. Configure migration-role default privileges so the runtime role can use migrated domain tables and sequences. The API and migration use an explicit verifying SSL context from `ca-pem`; the pinned SkyPilot package uses both psycopg2 and asyncpg, so it receives `PGSSLMODE=verify-full` and a mounted `PGSSLROOTCERT` bundle with a driver-neutral URL. Runtime API and migration sessions explicitly configure asyncpg's `search_path`; they do not rely on the ignored libpq `PGOPTIONS` variable. The maintained Alembic chain runs from the API image and must reach `021_deployment_identity`. An image rollback does not reverse a database migration.
+The selected existing RDS instance, database and **two isolated schemas** (API and SkyPilot) need named migration, backup and restore owners and an available matching snapshot. Runtime and migration roles must have the correct schema search path and no rights to mutate other schemas, no role memberships that can elevate authority, and no database-creation/superuser authority. Configure migration-role default privileges so the runtime role can use migrated domain tables and sequences. The API and migration use an explicit verifying SSL context from `ca-pem`; the pinned SkyPilot package uses both psycopg2 and asyncpg, so it receives `PGSSLMODE=verify-full` and a mounted `PGSSLROOTCERT` bundle with a driver-neutral URL. Runtime API and migration sessions explicitly configure asyncpg's `search_path`; they do not rely on the ignored libpq `PGOPTIONS` variable. The maintained Alembic chain runs from the API image and must reach `031_controller_deployment_registry`. An image rollback does not reverse a database migration.
 
 Three environment-scoped Secrets Manager references contain these exact JSON string fields:
 

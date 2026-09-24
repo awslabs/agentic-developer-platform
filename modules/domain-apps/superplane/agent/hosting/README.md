@@ -11,8 +11,9 @@ see below.
 
 ## The hosting decision: Agent Factory, no dedicated lane (R10 acc. 1)
 
-**Reasoning sessions run on the existing ADP Agent Factory hosting lane. This story adds
-no Superplane-specific queue and no Superplane-specific `ScaledJob`.**
+**Reasoning sessions run on the existing ADP Agent Factory hosting lane. They have
+no Superplane-specific queue or `ScaledJob`.** The separately justified paid
+executor below performs admitted provider operations and does not host reasoning.
 
 R10 states the rule that forces this to be an argued choice rather than a default:
 design note §11 line 778 says to *use ADP Agent Factory* for reasoning sessions, so the
@@ -56,18 +57,48 @@ Superplane does not need one:
 own SQS + KEDA `ScaledJob` upstream describes how the component being retired was built.
 It is R19 parity evidence, not a requirement ADP inherits. R10 says so directly.
 
-### Why the absence is tested rather than only written down
+### Why the hosting boundary is tested
 
 A second hosting path is not a neutral cost: it diverges from Agent Factory's and
-inherits none of its fixes. `tests/test_hosting_choice.py` asserts that this module
-introduces no `ScaledJob` manifest — so adding one becomes a deliberate act that fails a
-test and forces the reason into the diff, which is what R10 asks for. The test is
-conditional in the same way the requirement is: if a lane is ever genuinely justified,
-the test requires it to carry `failedJobsHistoryLimit: 5` and
+inherits none of its fixes. `tests/test_hosting_choice.py` permits only the paid
+executor described below and verifies its separation from reasoning sessions.
+Another `ScaledJob` requires an explicit reviewed justification. Every justified
+lane must retain `failedJobsHistoryLimit: 5` and
 `karpenter.sh/do-not-disrupt: "true"`.
 
-Because no lane is added, **no Terraform applies for this story** and there is no
-infrastructure to destroy on rollback. Reverting the PR is sufficient.
+The reasoning hosting module adds no infrastructure and needs no Terraform apply.
+
+### Paid provider execution requires a separate trust boundary (#5536)
+
+[`executor/deploy/paid-worker.yaml`](../../executor/deploy/paid-worker.yaml) declares
+the one reviewed exception, `superplane-paid-worker`. It consumes only original
+paid domain operation IDs published by the protected Gateway producer. Its
+`paid_domain_operation` authority cannot invoke models, GitHub, the broker or
+dispatch new work. This is a runtime execution lane with different privileges:
+
+- **Isolation** — the trusted Python container holds domain database access,
+  provider credentials and the mounted lifecycle policy. The Go sidecar receives
+  only its operation socket, assignment and token. Neither capability set belongs
+  in a reasoning session that processes external text.
+- **Concurrency** — at most four finite Jobs, one task per Job, with Kubernetes
+  retries disabled. Shared durable leases and bounded recovery control execution
+  retries. Explicit `minReplicaCount: 0` permits scale-to-zero; each Job has a
+  one-hour deadline and completed Job retention.
+- **IAM** — a dedicated worker service account and reviewed Gateway registry
+  binding permit paid execution or observation-only recovery. The queue and
+  provider scopes are deployment-owned; request bodies select neither role nor
+  credentials.
+- **Image** — a reviewed Python executor image includes pinned Terraform,
+  kubectl and AWS CLI tools and maintained bootstrap assets. The Go sidecar uses
+  its independently reviewed controller image. Agent Factory's reasoning image
+  does not carry this provider execution runtime.
+
+The ScaledJob retains five failed Jobs and sets
+`karpenter.sh/do-not-disrupt: "true"`. It uses ScaledJob queue triggers and finite
+Job settings, without ScaledObject HPA fields. Source placeholders require release
+rendering and validation; this manifest does not deploy a queue or grant IAM.
+`test_hosting_choice.py` permits this exact manifest and checks credential mount
+isolation while continuing to reject any additional unexplained execution lane.
 
 ## Ordering for work that outlives the agent (R10 acc. 2)
 

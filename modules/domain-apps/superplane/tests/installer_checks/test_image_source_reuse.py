@@ -11,6 +11,7 @@ from installation.config import COMPONENTS, Refusal
 def test_real_git_context_identity_blocks_changed_or_missing_source(
     tmp_path, environment, release, monkeypatch
 ):
+    environment.pop("execution")
     repo = tmp_path / "repo"
     repo.mkdir()
 

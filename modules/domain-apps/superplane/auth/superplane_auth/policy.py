@@ -246,6 +246,9 @@ WORKSPACE_PATH_PLACEHOLDER = "{workspace}"
 
 ENDPOINT_INVENTORY: Mapping[tuple[str, str], Permission] = {
     ("GET", "/superplane/v1/capabilities"): Permission.READ,
+    # Requesting review cannot decide approval or admit the operation. The API
+    # independently verifies its workspace scope and eligible human decision.
+    ("POST", "/superplane/v1/operation-approvals"): Permission.READ,
     # Workspace lifecycle. `create` and `list` are org-scoped: there is no
     # workspace yet. Their required permissions are inventoried, but U14 must
     # implement an org-scoped grant path; the workspace composer refuses them.
@@ -279,6 +282,14 @@ ENDPOINT_INVENTORY: Mapping[tuple[str, str], Permission] = {
     (
         "DELETE",
         f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/deployments/{{deployment}}",
+    ): Permission.SPEND,
+    (
+        "POST",
+        f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/deployments/preview",
+    ): Permission.SPEND,
+    (
+        "POST",
+        f"/superplane/v1/workspaces/{WORKSPACE_PATH_PLACEHOLDER}/deployments/{{deployment}}/teardown-preview",
     ): Permission.SPEND,
     # Quota. Reading a limit is READ; raising one is the authority to spend more.
     (

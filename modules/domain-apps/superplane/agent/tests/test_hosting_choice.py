@@ -1,17 +1,17 @@
-"""R10 acceptance 1 — the hosting choice is Agent Factory, and no lane was added.
+"""R10 acceptance 1 — shared reasoning sessions and isolated paid execution.
 
 Issue #5050 (U5), EPIC #4910.
 
 The requirement makes this a *choice with a stated reason*: Agent Factory hosting is the
 default, and a dedicated Superplane queue/ScaledJob needs a genuinely different isolation,
-concurrency, IAM or image requirement. This story adds no lane, so these tests assert the
-absence — which makes adding one later a deliberate act that fails a test and forces the
-justification into the diff.
+concurrency, IAM or image requirement. These tests permit only the reviewed paid
+executor and require its credential isolation and hosting controls. A new lane still
+fails until its separate justification and boundary checks are reviewed.
 
-The suite is conditional in the same way the requirement is. If a lane is ever genuinely
-justified, `test_any_added_scaledjob_carries_the_required_knobs` requires it to carry
+The suite is conditional in the same way the requirement is.
+`test_any_added_scaledjob_carries_the_required_knobs` requires a justified lane to carry
 `failedJobsHistoryLimit: 5` and `karpenter.sh/do-not-disrupt: "true"` — so the tests do not
-have to be rewritten to permit a justified lane, only to satisfy the precedent.
+retain the operational protections of the precedent.
 
 Why "a second hosting path" is the thing being prevented: a divergent lane inherits none of
 Agent Factory's fixes. That is the blast radius the story names, and it is silent — the
@@ -61,26 +61,30 @@ def _superplane_scaledjob_docs() -> list[tuple[Path, dict]]:
     return found
 
 
-class TestNoDedicatedLaneWasAdded:
-    """The choice this story made: reuse Agent Factory's lane."""
+class TestReasoningSessionsReuseAgentFactory:
+    """Reasoning uses the shared lane; only the reviewed paid executor is distinct."""
 
-    def test_no_superplane_scaledjob_manifest_exists(self):
-        """The absence IS the decision.
-
-        R10 requires a stated implementation reason for a dedicated lane. None exists —
-        isolation, concurrency, IAM and image are all identical to Agent Factory's lane —
-        so no manifest should be here.
-        """
+    def test_only_the_explicitly_isolated_paid_executor_has_a_scaledjob(self):
         found = _superplane_scaledjob_docs()
-
-        assert found == [], (
-            "A ScaledJob manifest appeared under the Superplane module: "
-            f"{[str(path.relative_to(_REPO_ROOT)) for path, _ in found]}. "
-            "R10 acceptance 1 requires a stated implementation reason — a genuinely different "
-            "isolation, concurrency, IAM or image requirement. The upstream deployment shape is "
-            "explicitly NOT such a reason. If the reason is real, record it in "
-            "agent/hosting/README.md and satisfy the knob assertions in this file."
+        expected = _SUPERPLANE / "executor/deploy/paid-worker.yaml"
+        assert [path for path, _ in found] == [expected], (
+            "Any additional lane needs its own explicit R10 isolation/IAM/image review."
         )
+        document = found[0][1]
+        assert document["metadata"]["name"] == "superplane-paid-worker"
+        job = document["spec"]["jobTargetRef"]
+        assert job["backoffLimit"] == 0
+        assert job["parallelism"] == job["completions"] == 1
+        pod = job["template"]["spec"]
+        assert pod["serviceAccountName"] == "superplane-paid-worker"
+        (trusted,) = pod["containers"]
+        (controller,) = pod["initContainers"]
+        assert trusted["name"] == "paid-worker"
+        assert controller["name"] == "scoped-controller"
+        assert {mount["name"] for mount in controller["volumeMounts"]} == {"task"}
+        assert "database" in {mount["name"] for mount in trusted["volumeMounts"]}
+        readme = (_HOSTING_DIR / "README.md").read_text(encoding="utf-8")
+        assert "superplane-paid-worker" in readme and "paid_domain_operation" in readme
 
     def test_the_hosting_module_adds_no_terraform(self):
         """No lane means no Terraform, which is why rollback is just a revert.
@@ -205,8 +209,8 @@ class TestTheReusedLaneStillProvidesWhatAcceptance1Requires:
 class TestAnyAddedLaneMustFollowThePrecedent:
     """Conditional, exactly as R10 is.
 
-    This test passes trivially today (no manifests exist). It exists so that a future
-    justified lane cannot be added WITHOUT the two knobs acceptance 1 names — the failure
+    The paid executor is explicitly justified. Any such lane must keep the two
+    knobs acceptance 1 names — the failure
     modes are a lane that discards failure evidence, and a lane whose pods get reclaimed
     mid-session.
     """
@@ -221,6 +225,13 @@ class TestAnyAddedLaneMustFollowThePrecedent:
             )
             assert spec.get("minReplicaCount") == 0, (
                 f"{location}: acceptance 1 requires scale-to-zero."
+            )
+            # A ScaledJob creates finite Jobs. ScaledObject-only HPA controls are
+            # not a substitute for its queue trigger and bounded Job lifetime.
+            assert "scaleTargetRef" not in spec and "cooldownPeriod" not in spec
+            assert spec["jobTargetRef"]["activeDeadlineSeconds"] > 0
+            assert any(
+                trigger["type"] == "aws-sqs-queue" for trigger in spec["triggers"]
             )
 
             annotations = (

@@ -66,6 +66,17 @@ class KubernetesWorkloadVerifier:
         self._authority_flag = authority_flag
         self._gateway_token_path = gateway_token_path
 
+    @property
+    def exit_retention(self):
+        from src.agentauth.exit_retention import PodExitRetention
+
+        return PodExitRetention(
+            client=self._client,
+            namespace=self._namespace,
+            service_account=self._service_account,
+            token_path=self._gateway_token_path,
+        )
+
     @classmethod
     def in_cluster(cls, *, chat: bool = False) -> KubernetesWorkloadVerifier:
         # Fixed service DNS and the mounted cluster CA; neither comes from a
@@ -129,6 +140,20 @@ class KubernetesWorkloadVerifier:
             name, uid = names[0], uids[0]
             if not isinstance(name, str) or not _NAME.fullmatch(name) or not isinstance(uid, str) or not uid:
                 raise WorkloadRefusedError("workload refused")
+            return self.verify_bound(name=name, uid=uid)
+        except WorkloadRefusedError:
+            raise
+        except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+            # Do not expose an HTTP exception or request body: TokenReview
+            # contains the worker credential, and Authorization contains ours.
+            raise WorkloadRefusedError("workload verifier unavailable") from None
+
+    def verify_bound(self, *, name: str, uid: str) -> VerifiedPod:
+        """Recheck a previously TokenReview-bound pod from protected metadata."""
+        if not isinstance(name, str) or not _NAME.fullmatch(name) or not isinstance(uid, str) or not uid:
+            raise WorkloadRefusedError("workload refused")
+        try:
+            headers = {"Authorization": f"Bearer {self._gateway_token_path.read_text().strip()}"}
             response = self._client.get(f"/api/v1/namespaces/{self._namespace}/pods/{name}", headers=headers)
             response.raise_for_status()
             pod = response.json()
@@ -157,8 +182,6 @@ class KubernetesWorkloadVerifier:
         except WorkloadRefusedError:
             raise
         except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
-            # Do not expose an HTTP exception or request body: TokenReview
-            # contains the worker credential, and Authorization contains ours.
             raise WorkloadRefusedError("workload verifier unavailable") from None
 
     def _deadline(self, pod: dict, headers: dict) -> str | None:

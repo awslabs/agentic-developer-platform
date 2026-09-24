@@ -76,6 +76,7 @@ async def isolated_database(monkeypatch, installation_postgres_url):
         "017_add_workspace_bootstrap_reservations",
         "019_workspace_operation_state",
         "020_merge_workspace_cli",
+        "027_cli_bootstrap_foundation",
     ],
 )
 async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_head):
@@ -131,7 +132,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "021_deployment_identity"
+    assert observed["revision"] == "031_controller_deployment_registry"
     async with engine.connect() as conn:
         assert (
             await conn.execute(
@@ -493,3 +494,28 @@ async def test_empty_bootstrap_refuses_ambiguous_or_revoked_authority(
             )
             == 0
         )
+
+
+async def test_audit_migration_preserves_unattributed_evidence_on_downgrade(isolated_database):
+    _, engine, url, _, schema, _ = isolated_database
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema)
+    upgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=root, env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    event_id = uuid.uuid4()
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "INSERT INTO events (id, org_id, principal, outcome, action, resource_type, event_type) "
+            "VALUES (:id, NULL, 'unresolved', 'denied', 'created', 'workspace', 'api_call')"
+        ), {"id": event_id})
+    refused = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "028_deployment_namespace_quota"],
+        cwd=root, env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert refused.returncode != 0
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT principal, outcome FROM events WHERE id=:id"), {"id": event_id})).one() == ("unresolved", "denied")
+        assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "031_controller_deployment_registry"

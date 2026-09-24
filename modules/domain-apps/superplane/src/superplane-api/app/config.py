@@ -1,5 +1,6 @@
 """Application settings loaded from environment variables."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -23,6 +24,13 @@ class Settings(BaseSettings):
     superplane_db_schema: str = ""
     # Trusted identity that may advance controller liveness; no reporter-name trust.
     controller_observation_submitter_id: str = ""
+    # Deployment-owned tenant/target policy; never accepted from HTTP input.
+    superplane_lifecycle_config_file: str = ""
+    superplane_controller_profiles_file: str = ""
+    superplane_operation_gateway_url: str = ""
+    superplane_operation_gateway_region: str = ""
+    controller_status_url: str = ""
+    controller_registry_credential: str = ""
 
     # AWS
     aws_region: str = "us-east-1"
@@ -58,6 +66,20 @@ class Settings(BaseSettings):
     # inference that criterion forbids. Asserted by the deployment, reported by
     # GET /health so a reader can observe it rather than assume it.
     cognito_enabled: bool = False
+
+    # Audit read coverage (issue #5673, A17).
+    #
+    # Mutating requests are ALWAYS audited and this flag does not affect them. It controls
+    # only whether reads of tenant data are recorded too.
+    #
+    # OFF by default, deliberately. Reads are the bulk of traffic, so enabling this
+    # multiplies audit row volume and puts a database write on the hot path of every GET;
+    # that is a storage and latency decision each environment should make explicitly
+    # rather than inherit from a code default. It also bounds an amplification risk: now
+    # that refused attempts are recorded, a caller able to generate rejected reads can
+    # drive audit writes, and a per-environment switch is what allows shedding that volume
+    # without a code change.
+    audit_read_coverage: bool = False
 
     # JWT Auth
     #
@@ -141,6 +163,40 @@ class Settings(BaseSettings):
     # value.
     adp_gateway_internal_url: str = ""
     adp_gateway_internal_api_key: str = ""
+
+    # How long a credential-evidence read may take before it is abandoned
+    # (issue #5535). Configurable because the acceptable bound is a property of the
+    # deployment's network, not of this code: the value that is generous in one
+    # cluster is an outage in another, and a constant in the adapter module can only
+    # be changed by shipping a new image.
+    #
+    # It has a default, and the default is not "wait forever". An unbounded read
+    # holds a request worker for as long as the vault stays silent, so a slow vault
+    # becomes an exhausted pool and an API-wide outage — a much larger failure than
+    # the one unavailable credential the caller asked about. 10s is long enough to
+    # ride out a slow round trip and short enough that the boot-time capability
+    # probe's own 5s bound (`app/capability_probes.py`) still governs at startup.
+    #
+    # Bounded above as well as below. Zero or a negative value would mean "time out
+    # immediately", turning every read into a spurious "vault unavailable" and
+    # reporting a healthy vault as broken; an unbounded upper end would reintroduce
+    # the pool-exhaustion failure this setting exists to bound.
+    adp_vault_timeout_seconds: float = 10.0
+
+    @field_validator("adp_vault_timeout_seconds")
+    @classmethod
+    def _timeout_must_be_usable(cls, value: float) -> float:
+        """Refuse at startup rather than on the first credential read.
+
+        A misconfigured timeout that failed lazily would surface as an intermittent
+        503 under load, which reads as a vault fault; refusing here names the setting
+        that is actually wrong, while the deployment is still being rolled out.
+        """
+        if not 0 < value <= 120:
+            raise ValueError(
+                "adp_vault_timeout_seconds must be greater than 0 and at most 120"
+            )
+        return value
 
     # Cross-origin browser access requires an explicit allowlist (#5682).
     # Empty supports same-origin gateway deployments; the installer supplies its

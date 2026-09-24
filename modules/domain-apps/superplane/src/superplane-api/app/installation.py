@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.capability_probes import probe_all
+from app.composition import compose
 from app.config import require_database_url, settings
 from app.database import engine
 from app.schema_boundary import connect_args, schema_name
@@ -26,8 +27,33 @@ async def capability_details() -> dict[str, dict]:
     gate's verdict (``composed``), the contract suite's stricter one
     (``conformant``), the probe verdicts observed, and the offline-only limitation
     that travels with every conformance report.
+
+    **Composes first (#5535).** This module is the packaged image's entry point —
+    ``python -m app.installation capabilities`` — and it does not import
+    ``app.main``, where composition used to live. So the installer's preflight
+    probed an uncomposed process and reported all four ports absent *regardless of
+    configuration*, including the one port that has a production adapter. The
+    installer requires all four true, so the gate was unsatisfiable by any
+    deployment. Calling ``compose`` here is what makes the preflight answer a
+    question about the deployment rather than about which module happened to be
+    imported.
+
+    Composition is idempotent and never displaces an already-installed adapter, so
+    calling it here is safe when the lifespan has already run (the
+    ``/internal/installation`` router reaches this code inside a live server).
+
+    Each report carries ``composition``: what composition did about that port and
+    why. It explains a ``composed: false`` — "no vault URL configured" and "the
+    vault refused the probe" are different faults with different fixes — and it can
+    never turn one into a true, because ``composed`` remains the probe's answer.
     """
-    return await probe_all()
+    composition = compose()
+    details = await probe_all()
+    explained = composition.summary()
+    for port, report in details.items():
+        if port in explained:
+            report["composition"] = explained[port]
+    return details
 
 
 def capabilities_from(details: dict[str, dict]) -> dict[str, bool]:

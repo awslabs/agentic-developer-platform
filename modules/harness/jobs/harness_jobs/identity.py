@@ -184,6 +184,9 @@ _FORBIDDEN_PREFIXES = (
 # in a schema-qualified query and in an idempotency key, so a value containing a
 # quote or a NUL is refused at construction rather than escaped at every use.
 _IDENTIFIER = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+# ADP's MAC-verified run principal is <invocation_id>#<attempt>. Keep tenant
+# identifiers unchanged; only authenticated subjects may carry that separator.
+_SUBJECT = re.compile(r"\A(?=.{1,128}\Z)[A-Za-z0-9][A-Za-z0-9._:-]*(?:#[1-9][0-9]*)?\Z")
 
 
 class ContractViolation(ValueError):
@@ -303,7 +306,8 @@ class ResolvedPrincipal:
     def __post_init__(self) -> None:
         for name in ("org_id", "workspace_id", "subject"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not _IDENTIFIER.match(value):
+            pattern = _SUBJECT if name == "subject" else _IDENTIFIER
+            if not isinstance(value, str) or not pattern.match(value):
                 raise ContractViolation(
                     f"{name} must be a short identifier of letters, digits, "
                     f"'.', '_', ':' or '-'; got {value!r}"
@@ -407,7 +411,10 @@ def _check_parameters(parameters: dict[str, str]) -> None:
                 f"parameter key {key[:32]!r} exceeds "
                 f"{MAX_PARAMETER_KEY_LENGTH} characters"
             )
-        if len(value) > MAX_PARAMETER_VALUE_LENGTH:
+        # The full lifecycle contains account, infrastructure, bootstrap and
+        # retirement descriptors. It is one approval-bound JSON parameter, not
+        # an ordinary scalar. It shares the unchanged aggregate byte ceiling.
+        if key != "execution_steps" and len(value) > MAX_PARAMETER_VALUE_LENGTH:
             raise ContractViolation(
                 f"parameter {key!r} value exceeds "
                 f"{MAX_PARAMETER_VALUE_LENGTH} characters"
@@ -419,6 +426,15 @@ def _check_parameters(parameters: dict[str, str]) -> None:
         raise ContractViolation(
             f"parameters exceed {MAX_TOTAL_PARAMETER_BYTES} bytes in total"
         )
+    if len(parameters.get("execution_steps", "")) > MAX_PARAMETER_VALUE_LENGTH:
+        from .execution_descriptors import parse_execution_steps
+
+        try:
+            parse_execution_steps(parameters["execution_steps"])
+        except (ValueError, TypeError) as exc:
+            raise ContractViolation(
+                "An approved execution-step plan is required"
+            ) from exc
 
 
 def payload_digest(request: OperationRequest) -> str:

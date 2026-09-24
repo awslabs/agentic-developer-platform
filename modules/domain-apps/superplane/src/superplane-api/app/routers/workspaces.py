@@ -27,7 +27,6 @@ from app.services.provisioning import (
     ProvisioningRefused,
     get_operation_facade,
     observe,
-    start_provision,
     start_teardown,
     summarize,
 )
@@ -92,6 +91,7 @@ def _workspace_to_response(
         isolation_mode=ws.isolation_mode,
         display_name=_make_display_name(ws.name, ws.isolation_mode),
         status=ws.status,
+        provisioning_operation_id=ws.provisioning_operation_id,
         is_default=ws.is_default,
         budget_max_daily_usd=ws.budget_max_daily_usd,
         budget_max_hourly_usd=ws.budget_max_hourly_usd,
@@ -106,7 +106,7 @@ def _workspace_to_response(
 
 def _operation_request(body: CreateWorkspaceRequest) -> str:
     return json.dumps(
-        body.model_dump(mode="json", exclude={"operation_id"}),
+        body.model_dump(mode="json", exclude={"operation_id", "approval_id"}),
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -169,18 +169,13 @@ async def _reconcile_workspace_provisioning(
     opening = workspace.provisioning_operation_id is None
     try:
         if opening:
-            request = json.loads(workspace.operation_request_json or "{}")
-            progress = await start_provision(
-                operation_id=str(body.operation_id),
-                workspace_id=str(workspace.id),
-                org_id=str(org_id),
-                workspace_name=workspace.name,
-                isolation_mode=workspace.isolation_mode,
-                account=str(request.get("account") or ""),
+            raise ProvisioningError(
+                "Legacy workspace has no admitted operation; reconcile its original request before retrying"
             )
-            workspace.provisioning_operation_id = progress.operation_id
         else:
-            progress = await observe(workspace.provisioning_operation_id)
+            progress = await _observe_workspace(
+                workspace, workspace.provisioning_operation_id
+            )
     except ProvisioningRefused as exc:
         if opening:
             workspace.status = "Failed"
@@ -196,8 +191,8 @@ async def _reconcile_workspace_provisioning(
 
     if progress.is_conclusive_failure:
         workspace.status = "Failed"
-    elif progress.is_conclusive_success:
-        workspace.status = STATUS_ACTIVE
+    # A completed preparation/apply phase is not workspace readiness. Bootstrap
+    # registration owns Active after scoped credentials and observations verify it.
     await db.commit()
     await db.refresh(workspace)
     logger.info("Workspace %s provisioning: %s", workspace.id, summarize(progress))
@@ -210,6 +205,29 @@ async def _reconcile_workspace_provisioning(
             },
         )
     return _workspace_to_response(workspace)
+
+
+async def _observe_workspace(workspace, operation_id):
+    """Scope org-level replay to the registered workspace, restoring the context."""
+    from dataclasses import replace
+    from app.adapters.operation_authority_source import (
+        acting_principal,
+        set_acting_principal,
+        reset_acting_principal,
+    )
+
+    caller = acting_principal()
+    if (
+        caller is None
+        or caller.org_id != str(workspace.org_id)
+        or caller.workspace_id not in ("", str(workspace.id))
+    ):
+        raise ProvisioningRefused("workspace observation principal mismatch")
+    token = set_acting_principal(replace(caller, workspace_id=str(workspace.id)))
+    try:
+        return await observe(operation_id)
+    finally:
+        reset_acting_principal(token)
 
 
 def _teardown_request_id(org_id: uuid.UUID, workspace_id: uuid.UUID) -> str:
@@ -233,7 +251,9 @@ async def _reconcile_workspace_teardown(
         return
     try:
         if workspace.teardown_operation_id:
-            progress = await observe(workspace.teardown_operation_id)
+            progress = await _observe_workspace(
+                workspace, workspace.teardown_operation_id
+            )
         elif open_if_missing:
             progress = await start_teardown(
                 operation_id=_teardown_request_id(org_id, workspace.id),
@@ -264,58 +284,105 @@ async def create_workspace(
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> WorkspaceResponse:
-    """Create a new workspace.
+    """Admit an approved plan before creating its workspace and ownership grant."""
+    from app.adapters.operation_authority_source import (
+        acting_principal,
+        GrantBackedAuthority,
+    )
+    from app.database import async_session_factory
+    from app.models.workspace_grant import WorkspaceGrantRecord
+    from app.services.onboarding import normalized_request, preview
+    from app.services.provisioning import start_planned_provision
+    from harness_jobs.identity import OperationRequest
 
-    Validates quota, inserts a row with status=Provisioning, and begins
-    provisioning under an authorized operation (issue #5058, U17b — this used to
-    dispatch a GitHub Actions workflow in a repository this project does not own,
-    authenticated with a long-lived personal access token).
-
-    If the operation cannot be opened the workspace is recorded as Failed and this
-    returns 503. It does **not** report Provisioning for work that never started,
-    and there is no path that provisions without an authorized operation.
-
-    For research workspaces:
-    - An AWS account is mandatory (validated by schema)
-    - Budget guardrails default to RESEARCH_DEFAULT_BUDGET if not provided
-    - Agent IAM role is created during bootstrap with permissive policies
-    """
+    body = normalized_request(body)
     operation_request = _operation_request(body)
     existing = await _workspace_for_operation(db, org_id, body, operation_request)
     if existing is not None:
         return await _reconcile_workspace_provisioning(
             db, org_id, body, operation_request
         )
-
-    # Absence is known before any row/quota is committed. A transport failure
-    # after admission still preserves the existing operation's recovery record.
     if get_operation_facade() is None:
         raise HTTPException(503, "Workspace provisioning service is unavailable")
-
+    if not body.plan_revision:
+        raise HTTPException(422, "A reviewed workspace plan revision is required")
     await enforce_workspace_creation_quota(org_id, db)
-
-    # Apply default budget guardrails for research workspaces
-    budget_max_daily_usd = body.budget_max_daily_usd
-    budget_max_gpus = body.budget_max_gpus
-    if body.isolation_mode == "research":
-        if budget_max_daily_usd is None:
-            budget_max_daily_usd = Decimal("100.00")
-        if budget_max_gpus is None:
-            budget_max_gpus = 8
-
+    try:
+        plan = await preview(db, org_id, body)
+        if plan["revision"] != body.plan_revision:
+            raise HTTPException(
+                409, "Workspace plan changed; review and approve the current revision"
+            )
+        approved_request = plan["approval_request"]
+        if body.approval_id is not None:
+            authority = GrantBackedAuthority(async_session_factory)
+            principal = await authority.resolve(
+                org_id=str(org_id),
+                workspace_id=plan["workspace_id"],
+                permission="workspace:provision",
+            )
+            context = await authority.approval_for(
+                principal=principal,
+                request=OperationRequest(
+                    action="provision",
+                    idempotency_key=str(body.operation_id),
+                    parameters=approved_request["parameters"],
+                ),
+            )
+            if context.record is None or context.record.approval_id != str(
+                body.approval_id
+            ):
+                raise ProvisioningRefused(
+                    "approval reference does not match this request"
+                )
+        progress = await start_planned_provision(
+            operation_id=str(body.operation_id),
+            workspace_id=plan["workspace_id"],
+            org_id=str(org_id),
+            parameters=approved_request["parameters"],
+        )
+    except ProvisioningRefused as error:
+        raise HTTPException(403, str(error)) from None
+    except ProvisioningError:
+        raise HTTPException(
+            503, "Workspace admission is unavailable; retain the request identity"
+        ) from None
+    caller = acting_principal()
+    if caller is None:
+        raise HTTPException(503, "Workspace ownership principal is unavailable")
     workspace = Workspace(
+        id=uuid.UUID(plan["workspace_id"]),
         org_id=org_id,
         name=body.name,
         operation_id=body.operation_id,
         operation_request_json=operation_request,
+        provisioning_operation_id=progress.operation_id,
         isolation_mode=body.isolation_mode,
         quotas_json=body.quotas_json,
-        budget_max_daily_usd=budget_max_daily_usd,
-        budget_max_gpus=budget_max_gpus,
-        status="Provisioning",
+        aws_account_id=uuid.UUID(plan["cloud_account_id"])
+        if plan.get("cloud_account_id")
+        else None,
+        budget_max_daily_usd=body.budget_max_daily_usd,
+        budget_max_gpus=body.budget_max_gpus,
+        status={
+            "succeeded": "Provisioning",
+            "failed": "Failed",
+            "cancelled": "Failed",
+            "unknown": "Unknown",
+        }.get(progress.state, "Provisioning"),
     )
     db.add(workspace)
     try:
+        await db.flush()
+        db.add(
+            WorkspaceGrantRecord(
+                workspace_id=workspace.id,
+                org_id=org_id,
+                principal=caller.subject,
+                principal_type=caller.account_type,
+                permissions="workspace:administer",
+            )
+        )
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -326,7 +393,9 @@ async def create_workspace(
             db, org_id, body, operation_request
         )
     await db.refresh(workspace)
-    return await _reconcile_workspace_provisioning(db, org_id, body, operation_request)
+    return _workspace_to_response(workspace).model_copy(
+        update={"operation_state": progress.state}
+    )
 
 
 @router.get("", response_model=WorkspaceListResponse)

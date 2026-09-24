@@ -80,17 +80,23 @@ on:
       - 'modules/agent-factory/agent-worker-image/stage-personas.sh'
       - 'docs/agent-catalogue.md'
   workflow_dispatch:
+    inputs:
+      controller_only:
+        description: Focused remote controller/RPC tests; does not satisfy the full domain gate
+        type: boolean
+        default: false
 
 # No OIDC token permission: lint and unit tests do not need an AWS role.
 permissions:
   contents: read
 
 concurrency:
-  group: superplane-domain-ci-${{ github.ref }}
+  group: superplane-domain-ci-${{ github.ref }}-${{ inputs.controller_only || false }}
   cancel-in-progress: true
 
 jobs:
   superplane-domain-tests:
+    if: ${{ !inputs.controller_only }}
     # Required-check name for U12/U2/U8. Renaming a job silently removes a required check
     # rather than failing, so treat this string as a contract.
     name: Superplane domain tests
@@ -252,6 +258,9 @@ jobs:
             --cov=superplane_mcp --cov-report=term-missing --cov-fail-under=85
 
       - name: Run transferred Superplane API tests
+        # Report independent API/database failures even if a domain suite failed.
+        # Earlier failures still fail the job; cancellation still stops all work.
+        if: ${{ !cancelled() }}
         # The tests that came WITH the transferred source (U22, #5326). This is the step that
         # makes the ownership transfer real: ADP now runs the API's own 288-test suite on
         # every PR, rather than pointing at a repository it cannot read and calling that
@@ -303,14 +312,24 @@ jobs:
           # with ModuleNotFoundError and pytest exits 4.
           pip install -e ../../contracts \
             -c ../../releases/transfer-constraints.txt
+          # Install the same maintained operation/lifecycle packages staged into
+          # the API and worker image. No developer checkout imports are assumed.
+          pip install -e ../../../../harness/jobs \
+            -e ../../infra/account-factory \
+            -e ../../infra/account-provisioning \
+            -e ../../workspace_bootstrap -e ../.. -e ../../executor \
+            -c ../../releases/transfer-constraints.txt
+          python3 -I -c 'from account_factory.modes import validate; from account_provisioning.creation_runner import create_account; from superplane_bootstrap.workspace import bootstrap_workspace; from workspace_provisioning.preview import preview_workspace; from harness_jobs.execution import OperationExecutor'
           # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
           # the transfer, so "no tests found" means a PR deleted them and must fail.
           #
-          # stderr is kept (it used to go to /dev/null): a collection ERROR and an empty
-          # glob both reach this line, `pipefail` fails the step for either, and with
-          # stderr discarded the log showed the failure without the traceback naming the
-          # unimportable module. The count is still read from the last stdout line.
-          COUNT=$(python3 -m pytest tests/ --collect-only -q | tail -1)
+          # Pytest emits collection tracebacks on stdout. Print that output when
+          # collection fails instead of losing it inside command substitution.
+          if ! python3 -m pytest tests/ --collect-only -q > /tmp/superplane-api-collection.log 2>&1; then
+            cat /tmp/superplane-api-collection.log
+            exit 1
+          fi
+          COUNT=$(tail -1 /tmp/superplane-api-collection.log)
           echo "Collected: ${COUNT}"
           python3 -m pytest tests/ -v --tb=short
 
@@ -583,3 +602,84 @@ jobs:
           assert boto3.Session().get_credentials() is None, "Offline tests discovered AWS credentials"
           print("Confirmed: AWS SDK credential discovery is disabled for this test job.")
           PYTHON
+
+  controller-execution-tests:
+    name: Superplane controller execution tests
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+          cache-dependency-path: modules/domain-apps/superplane/src/superplane-controller/go.sum
+      - name: Verify Go execution client against shared RPC and PostgreSQL
+        # Isolate harness dependencies from the API's production importability
+        # checks above. Only a test worker is built; no image or CLI is installed.
+        env:
+          HARNESS_JOBS_REQUIRE_POSTGRES: '1'
+        run: |
+          set -euo pipefail
+          controller="$GITHUB_WORKSPACE/modules/domain-apps/superplane/src/superplane-controller"
+          go -C "$controller" vet ./execution
+          go -C "$controller" test ./... -count=1
+          go -C "$controller" test -c -o "$RUNNER_TEMP/superplane-rpc-worker" ./execution
+          python3 -m venv "$RUNNER_TEMP/superplane-rpc-venv"
+          "$RUNNER_TEMP/superplane-rpc-venv/bin/pip" install './modules/harness/jobs[dev]' \
+            './modules/domain-apps/superplane/contracts' './modules/domain-apps/superplane/executor'
+          export SUPERPLANE_TEST_RPC_BINARY="$RUNNER_TEMP/superplane-rpc-worker"
+          export PYTHONPATH="$GITHUB_WORKSPACE/modules/harness/jobs"
+          # The repository root also has a tests package. Start in the harness
+          # directory so its maintained PostgreSQL fixtures resolve unambiguously.
+          cd "$GITHUB_WORKSPACE/modules/harness/jobs"
+          "$RUNNER_TEMP/superplane-rpc-venv/bin/python" -m pytest \
+            -p tests.conftest -c "$controller/execution/integration/pytest.ini" \
+            "$controller/execution/integration" -v \
+            --junitxml="$RUNNER_TEMP/superplane-rpc-results.xml"
+          python3 - "$RUNNER_TEMP/superplane-rpc-results.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+          if len(cases) < 14 or any(case.find('skipped') is not None for case in cases):
+              sys.exit('Real Go/RPC/PostgreSQL coverage must execute without skips')
+          PY
+
+      - name: Verify trusted controller assignment and provider adapters
+        env:
+          HARNESS_JOBS_REQUIRE_POSTGRES: '1'
+        run: |
+          export PYTHONPATH="$GITHUB_WORKSPACE/modules/harness/jobs"
+          export SUPERPLANE_TEST_RPC_BINARY="$RUNNER_TEMP/superplane-rpc-worker"
+          executor="$GITHUB_WORKSPACE/modules/domain-apps/superplane/executor"
+          cd "$GITHUB_WORKSPACE/modules/harness/jobs"
+          "$RUNNER_TEMP/superplane-rpc-venv/bin/python" -m pytest \
+            -p tests.conftest -c "$executor/pytest.ini" "$executor/tests" -v \
+            --junitxml="$RUNNER_TEMP/superplane-executor-results.xml"
+          python3 - "$RUNNER_TEMP/superplane-executor-results.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+          if len(cases) < 41 or any(case.find('skipped') is not None for case in cases):
+              sys.exit('Trusted executor tests must execute against PostgreSQL without skips')
+          PY

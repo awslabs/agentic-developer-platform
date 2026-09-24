@@ -214,8 +214,15 @@ def test_post_deploy_and_scheduled_checks_have_independent_credentials():
         index = next(i for i, s in enumerate(job['steps']) if s.get('uses') == 'aws-e/adp/.github/actions/trusted-checks@main')
         assert job['permissions']['id-token'] == 'write'
         assert not any(re.search(r'\baws\s', s.get('run', '')) for s in job['steps'][:index])
-    caller = yaml.safe_load((ROOT / '.github/workflows/gateway-deploy.yml').read_text())['jobs']['smoke-test']
-    assert caller['permissions']['id-token'] == 'write'  # Reusable calls cannot elevate the caller.
+    callers = yaml.safe_load((ROOT / '.github/workflows/gateway-deploy.yml').read_text())['jobs']
+    for name in ['smoke-test', 'run-migrations']:
+        caller = callers[name]
+        callee = yaml.safe_load((ROOT / caller['uses']).read_text())
+        # GitHub rejects the whole workflow before any job starts when a
+        # reusable job requests OIDC beyond its caller's permissions.
+        assert any(job.get('permissions', {}).get('id-token') == 'write' for job in callee['jobs'].values())
+        assert caller['permissions']['id-token'] == 'write', name
+        assert caller['permissions']['contents'] == 'read', name
 
 
 def test_github_agents_use_repository_tracking_without_shared_beads_or_skypilot():
@@ -272,6 +279,18 @@ def test_ordinary_cloud_operations_match_reviewed_inventory():
     expected = json.loads((AUTOMATION / 'ordinary-workflow-aws.json').read_text())
     assert ordinary_cloud_inventory() == expected
     for job, record in expected.items():
+        if job == 'superplane-executor-build.yml/build':
+            # PR #5596 added this explicit release workflow on main. Inventory
+            # its existing account/buildspec checks, shared CodeBuild action and
+            # read-only digest lookup. This records source behavior; it grants
+            # no AWS authority and does not permit ECR calls in other jobs.
+            assert record['authority'] == 'runtime'
+            assert set(record['operations']) == {
+                'sts get-caller-identity', 's3 cp',
+                'codebuild batch-get-projects', 'codebuild batch-get-builds',
+                'codebuild start-build', 'codebuild stop-build', 'ecr describe-images',
+            }
+            continue
         if record['authority'] == 'runtime' and job != 'spawn-deploy-instance.yml/spawn':
             assert set(record['operations']) <= {
                 'secretsmanager get-secret-value',  # exact retained GitHub transport inputs

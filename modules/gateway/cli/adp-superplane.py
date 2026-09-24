@@ -106,7 +106,7 @@ STATE = "superplane"
 PROVIDER_RECOVERIES = "provider_recoveries"
 PROVIDER_DELETE_RECOVERIES = "provider_delete_recoveries"
 CREATE_RECOVERIES = "create_recoveries"
-CREATE_PENDING_STATUSES = {"pending", "provisioning", "running", "unknown"}
+CREATE_PENDING_STATUSES = {"pending", "provisioning", "running", "unknown", "needsrecovery"}
 CREATE_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
 CREATE_RETIRED_STATUSES = {"deleted", "deleting", "teardown"}
 CREATE_SUCCEEDED_STATUSES = {"active", "ready", "created"}
@@ -128,6 +128,16 @@ REDIRECTED = {
         "User, invitation and role administration is ADP's, not this CLI's.",
     ),
 }
+
+# Onboarding — capability discovery, plan review, provider binding and durable
+# operation recovery — lives in its own helper file.
+#
+# It is a separate file because it is a different surface with different failure
+# modes: this file runs work in a workspace that exists, while onboarding decides
+# whether one may be built and spends money doing it. Delegating instead of
+# growing this file also means the onboarding work and the concurrent changes to
+# the operational verbs do not have to land on top of each other.
+ONBOARDING_HELPER = "adp-superplane-onboarding.py"
 
 CANCELLED = (
     "Cancelled locally. This did NOT cancel work already accepted by the domain API "
@@ -575,7 +585,7 @@ def _require_create_idempotency(api):
         )
 
 
-def _prepare_create_recovery(command, path, body, *, api=None):
+def _prepare_create_recovery(command, path, body, *, api=None, operation_id=None):
     context = current_recovery_context(api)
     fingerprint = _create_fingerprint(command, path, body)
     with locked_state() as state:
@@ -583,14 +593,23 @@ def _prepare_create_recovery(command, path, body, *, api=None):
         for receipt in recoveries.values():
             if not isinstance(receipt, dict) or receipt.get("fingerprint") != fingerprint:
                 continue
+            if operation_id is not None and receipt.get("operation_id") != operation_id:
+                continue
             recorded = receipt.get("recovery_context")
             # Display names may change without moving the authenticated request.
             # Only stable deployment and caller identity govern receipt reuse.
             same_context = isinstance(recorded, dict) and all(recorded.get(key) == context.get(key) for key in RECOVERY_CONTEXT_KEYS)
             if same_context and looks_like_uuid(str(receipt.get("operation_id", ""))):
                 return receipt
+        if operation_id is not None and operation_id in recoveries:
+            raise CliError(
+                "This operation ID already has a receipt for different inputs or a different signed-in context. "
+                "Reconcile the original request before changing its identity.",
+                "create_identity_conflict",
+                4,
+            )
         receipt = {
-            "operation_id": str(uuid.uuid4()),
+            "operation_id": operation_id or str(uuid.uuid4()),
             "command": command,
             "path": path,
             "fingerprint": fingerprint,
@@ -615,9 +634,9 @@ def _reject_terminal_create_receipt(receipt):
     )
 
 
-def replay_safe_create(api, command, path, body, *, expected_name, id_field):
+def replay_safe_create(api, command, path, body, *, expected_name, id_field, operation_id=None):
     _require_create_idempotency(api)
-    receipt = _prepare_create_recovery(command, path, body, api=api)
+    receipt = _prepare_create_recovery(command, path, body, api=api, operation_id=operation_id)
     _reject_terminal_create_receipt(receipt)
     operation_id = receipt["operation_id"]
     wire_body = {**body, "operation_id": operation_id}
@@ -850,11 +869,86 @@ def deployment_name(value):
     return value
 
 
+def deployment_uuid(value, label):
+    if not looks_like_uuid(value):
+        raise CliError(f"{label} must be a UUID.", "usage_error", 1)
+    return str(uuid.UUID(value))
+
+
+def deployment_revision(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise CliError("Use the exact plan revision returned by deployment preview.", "usage_error", 1)
+    return value
+
+
+def deployment_preview(args, api, identifier, path, body):
+    """Review the server's exact plan; requesting approval never records a decision."""
+    command = "superplane deploy " + args.subcommand
+    if args.request_approval:
+        deployment_revision(args.plan_revision)
+    elif args.plan_revision is not None:
+        raise CliError("--plan-revision requires --request-approval on a preview command.", "usage_error", 1)
+    if args.dry_run:
+        return mutation_guard(args, command, {"workspace_id": identifier, "request": body}, "")
+    review = api.request("POST", path, body)
+    action = "teardown" if args.subcommand == "teardown-preview" else "provision"
+    approval = review.get("approval_request") if isinstance(review, dict) else None
+    if (
+        not isinstance(review, dict)
+        or review.get("request_id") != body["operation_id"]
+        or not looks_like_uuid(str(review.get("deployment_id", "")))
+        or not looks_like_uuid(str(review.get("allocation_id", "")))
+        or not re.fullmatch(r"[a-f0-9]{64}", str(review.get("revision", "")))
+        or not isinstance(review.get("controller_plan"), dict)
+        or not isinstance(approval, dict)
+        or set(approval) != {"workspace_id", "action", "idempotency_key", "parameters"}
+        or approval["workspace_id"] != identifier
+        or approval["action"] != action
+        or not isinstance(approval["idempotency_key"], str)
+        or approval["idempotency_key"] != body["operation_id"]
+        or not isinstance(approval["parameters"], dict)
+        or not all(isinstance(key, str) and isinstance(value, str) for key, value in approval["parameters"].items())
+        or (action == "teardown" and review["deployment_id"] != str(uuid.UUID(args.id)))
+    ):
+        raise CliError(
+            "Deployment preview returned incomplete or mismatched request identity. No approval was requested.", "invalid_deployment_preview", 4
+        )
+    if not args.request_approval:
+        return common.envelope(
+            "ok",
+            command,
+            review,
+            "Review the controller plan, then repeat this preview with --request-approval --plan-revision <revision> --yes. "
+            "An eligible human decides through adp superplane onboarding approval decide.",
+        )
+    if review["revision"] != args.plan_revision:
+        raise CliError("The deployment plan changed. Review its new revision before requesting approval.", "plan_changed", 4)
+    progress(json.dumps(review, sort_keys=True))
+    mutation_guard(args, command, {}, f"Request human approval for deployment plan {args.plan_revision}?")
+    requested = api.request("POST", API_BASE + "/operation-approvals", approval)
+    return common.envelope(
+        "ok",
+        command,
+        {"preview": review, "approval": requested},
+        "Read or decide this request with adp superplane onboarding approval show/decide. "
+        "After approval, submit the original operation ID and exact reviewed inputs with --approval-id and --plan-revision.",
+    )
+
+
 def deploy(args, api):
+    if args.subcommand != "list":
+        operation_id = deployment_uuid(args.operation_id, "--operation-id")
+        if args.subcommand in {"delete", "teardown-preview"} and not looks_like_uuid(args.id):
+            raise CliError("Use the deployment UUID returned by create or list.", "usage_error", 1)
+        if args.subcommand in {"create", "delete"}:
+            approval_id = deployment_uuid(args.approval_id, "--approval-id")
+            deployment_revision(args.plan_revision)
     identifier = workspace_id(api, getattr(args, "workspace", None))
+    if looks_like_uuid(identifier):
+        identifier = str(uuid.UUID(identifier))
     base = f"{API_BASE}/workspaces/{segment(identifier)}/deployments"
 
-    if args.subcommand == "create":
+    if args.subcommand in {"create", "preview"}:
         # `model_name`, not `model`: the server's field name (schemas/proxy.py).
         # `name` is REQUIRED there with no default, so the old "generated when
         # omitted" help was false — nothing generated it and the request was a 422.
@@ -862,23 +956,28 @@ def deploy(args, api):
             "name": deployment_name(args.name),
             "model_name": args.model,
             "precision": args.precision,
+            "profile_id": args.profile_id,
         }
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", args.profile_id):
+            raise CliError("Use a configured deployment --profile-id (lowercase letters, digits and hyphens).", "usage_error", 1)
         # Sent only when the user asked for them, so the server's own defaults
-        # (vllm, 1 replica, 1 GPU, namespace default) stay authoritative.
+        # (vllm, 1 replica, 1 GPU) stay authoritative.
         for key, value in (
             ("serving_framework", args.serving_framework),
             ("replicas", args.replicas),
             ("gpu_per_replica", args.gpu_per_replica),
             ("tensor_parallel_size", args.tensor_parallel_size),
             ("max_model_len", args.max_model_len),
-            ("namespace", args.namespace),
         ):
             if value is not None:
                 body[key] = value
+        if args.subcommand == "preview":
+            return deployment_preview(args, api, identifier, base + "/preview", {**body, "operation_id": operation_id})
+        body.update(approval_id=approval_id, plan_revision=args.plan_revision)
         preview = mutation_guard(
             args,
             "superplane deploy create",
-            {"workspace_id": identifier, "deployment": body},
+            {"workspace_id": identifier, "deployment": {**body, "operation_id": operation_id}},
             f"Create deployment {args.name!r} in workspace {identifier}?",
         )
         if preview:
@@ -891,6 +990,7 @@ def deploy(args, api):
             body,
             expected_name=args.name,
             id_field="deployment_id",
+            operation_id=operation_id,
         )
         if created["status"].lower() in CREATE_PENDING_STATUSES:
             return common.envelope(
@@ -901,27 +1001,42 @@ def deploy(args, api):
             )
         return common.envelope("ok", "superplane deploy create", created)
 
-    if args.subcommand == "delete":
+    if args.subcommand in {"delete", "teardown-preview"}:
+        path = f"{base}/{segment(str(uuid.UUID(args.id)))}"
+        body = {"operation_id": operation_id}
+        if args.subcommand == "teardown-preview":
+            return deployment_preview(args, api, identifier, path + "/teardown-preview", body)
+        body.update(approval_id=approval_id, plan_revision=args.plan_revision)
         preview = mutation_guard(
             args,
             "superplane deploy delete",
-            {
-                "workspace_id": identifier,
-                "name": args.name,
-                "namespace": args.namespace,
-            },
-            f"Delete deployment {args.name!r} from workspace {identifier}?",
+            {"workspace_id": identifier, "deployment_id": args.id, "request": body},
+            f"Delete deployment {args.id!r} from workspace {identifier}?",
         )
         if preview:
             return preview
-        progress(f"Deleting deployment {args.name}...")
-        api.request(
-            "DELETE",
-            query(f"{base}/{segment(args.name)}", {"namespace": args.namespace}),
-        )
-        return common.envelope("ok", "superplane deploy delete", {"deleted": args.name})
+        progress(f"Deleting deployment {args.id}...")
+        try:
+            deleted = api.request("DELETE", path, body)
+        except CliError as exc:
+            if exc.status_code is not None and 400 <= exc.status_code < 500 and exc.status_code not in {408, 409, 425, 429}:
+                raise
+            raise CliError(
+                f"Teardown delivery is uncertain for operation {operation_id}. Reconcile with deploy list or repeat the exact "
+                "command with the same operation ID, approval ID and plan revision; do not generate another identity.",
+                "teardown_delivery_uncertain",
+                5,
+            ) from None
+        if not isinstance(deleted, dict) or not deleted.get("name") or not deleted.get("status"):
+            raise CliError(
+                f"Teardown response was incomplete. Reconcile operation {operation_id} using the same request identity.",
+                "teardown_delivery_uncertain",
+                5,
+            )
+        pending = str(deleted.get("status", "")).lower() != "deleted"
+        return common.envelope("pending" if pending else "ok", "superplane deploy delete", deleted)
 
-    result = api.request("GET", query(base, {"namespace": args.namespace}))
+    result = api.request("GET", base)
     return common.envelope("ok", "superplane deploy list", {"deployments": result.get("deployments") or []})
 
 
@@ -1763,39 +1878,50 @@ def parser():
     events_command.add_argument("--limit", type=int, default=50, help="Maximum events to return (1-500)")
     events_command.add_argument("--offset", type=int, default=None, help="Pagination offset")
 
-    deploy_command = commands.add_parser("deploy", help="Create, list and delete model deployments")
+    deploy_command = commands.add_parser("deploy", help="Review, approve, create, list and tear down model deployments")
     deploy_subcommands = deploy_command.add_subparsers(dest="subcommand", required=True)
-    create_deploy = mutation(leaf(deploy_subcommands, "create", help="Deploy a model"))
-    create_deploy.add_argument("--model", required=True, help="Model to serve, for example a HuggingFace name")
-    # The server's own set, which is wider than the three this CLI offered
-    # (schemas/proxy.py). awq and int8 were unreachable through the CLI.
-    create_deploy.add_argument("--precision", default="fp16", choices=("fp8", "fp16", "bf16", "awq", "int8"))
-    # REQUIRED: CreateDeploymentRequest has no default for it, so "generated when
-    # omitted" was false and the request was a 422 (Issue #5637).
-    create_deploy.add_argument(
-        "--name",
-        required=True,
-        help="Deployment name (lowercase letters, digits, hyphens)",
-    )
-    create_deploy.add_argument("--workspace")
-    create_deploy.add_argument(
-        "--serving-framework",
-        dest="serving_framework",
-        choices=("vllm", "sglang"),
-        help="Defaults to the server's choice",
-    )
-    create_deploy.add_argument("--replicas", type=int, help="1-32; defaults to the server's choice")
-    create_deploy.add_argument("--gpu-per-replica", type=int, dest="gpu_per_replica", help="1-8")
-    create_deploy.add_argument("--tensor-parallel-size", type=int, dest="tensor_parallel_size", help="1-8")
-    create_deploy.add_argument("--max-model-len", type=int, dest="max_model_len", help="Maximum context length")
-    create_deploy.add_argument("--namespace", help="Cluster namespace; defaults to the server's choice")
+    for name, help_text in (
+        ("preview", "Review a model deployment and optionally request approval"),
+        ("create", "Submit the exact approved model deployment"),
+    ):
+        create_deploy = mutation(leaf(deploy_subcommands, name, help=help_text))
+        create_deploy.add_argument("--model", required=True, help="Model to serve, for example a HuggingFace name")
+        create_deploy.add_argument("--precision", default="fp16", choices=("fp8", "fp16", "bf16", "awq", "int8"))
+        create_deploy.add_argument("--name", required=True, help="Deployment name (lowercase letters, digits, hyphens)")
+        create_deploy.add_argument("--workspace")
+        create_deploy.add_argument("--operation-id", required=True, help="Request UUID; reuse unchanged from preview through submission and recovery")
+        create_deploy.add_argument("--profile-id", required=True, help="Configured serving profile with reviewed image and authentication")
+        create_deploy.add_argument("--serving-framework", choices=("vllm", "sglang"), help="Defaults to the server's choice")
+        create_deploy.add_argument("--replicas", type=int, help="The current controller supports one replica")
+        create_deploy.add_argument("--gpu-per-replica", type=int, help="1-8")
+        create_deploy.add_argument("--tensor-parallel-size", type=int, help="1-8")
+        create_deploy.add_argument("--max-model-len", type=int, help="Maximum context length")
+        create_deploy.add_argument("--plan-revision", required=name == "create", help="Exact revision returned by preview")
+        if name == "preview":
+            create_deploy.add_argument(
+                "--request-approval", action="store_true", help="Issue the reviewed request for a human decision; requires --plan-revision"
+            )
+        else:
+            create_deploy.add_argument("--approval-id", required=True, help="Approved operation request UUID")
     list_deploy = leaf(deploy_subcommands, "list", help="List deployments")
     list_deploy.add_argument("--workspace")
-    list_deploy.add_argument("--namespace", help="Cluster namespace to list")
-    delete_deploy = mutation(leaf(deploy_subcommands, "delete", help="Delete a deployment"))
-    delete_deploy.add_argument("--name", required=True)
-    delete_deploy.add_argument("--workspace")
-    delete_deploy.add_argument("--namespace", help="Cluster namespace the deployment is in")
+    for name, help_text in (
+        ("teardown-preview", "Review teardown and optionally request approval"),
+        ("delete", "Submit the exact approved deployment teardown"),
+    ):
+        delete_deploy = mutation(leaf(deploy_subcommands, name, help=help_text))
+        delete_deploy.add_argument("--id", required=True, help="Deployment UUID returned by create or list")
+        delete_deploy.add_argument("--workspace")
+        delete_deploy.add_argument(
+            "--operation-id", required=True, help="Teardown request UUID; reuse unchanged through preview, submission and recovery"
+        )
+        delete_deploy.add_argument("--plan-revision", required=name == "delete", help="Exact revision returned by teardown-preview")
+        if name == "teardown-preview":
+            delete_deploy.add_argument(
+                "--request-approval", action="store_true", help="Issue the reviewed teardown for a human decision; requires --plan-revision"
+            )
+        else:
+            delete_deploy.add_argument("--approval-id", required=True, help="Approved teardown request UUID")
 
     account_command = commands.add_parser("account", help="Register, list and deregister cloud accounts")
     account_subcommands = account_command.add_subparsers(dest="subcommand", required=True)
@@ -1881,6 +2007,12 @@ def parser():
     for verb in REDIRECTED:
         commands.add_parser(verb, add_help=False, help=f"Redirected: ADP administers {verb}s")
 
+    # Onboarding is a separate helper file, and it is advertised only when that
+    # file actually shipped. An install missing it must not list a verb that then
+    # fails — the same rule `adp-admin.py` applies to its sub-areas.
+    if Path(__file__).with_name(ONBOARDING_HELPER).is_file():
+        commands.add_parser("onboarding", add_help=False, help="Discover, plan and bind workspace and provider onboarding")
+
     return root
 
 
@@ -1908,6 +2040,17 @@ def main(argv=None):
     as_json = "--json" in argv
     command = "superplane " + (argv[0] if argv and not argv[0].startswith("-") else "")
     try:
+        # Before this file's own secret check, because the onboarding helper runs a
+        # STRICTER one: onboarding takes no secret at any time and refuses outright,
+        # whereas this file offers a prompt for the verbs that legitimately accept
+        # one. Rejecting here first would answer with the wrong remedy — "type it at
+        # the prompt instead" — for a surface that has no such prompt. The helper's
+        # check is a superset of this one and is the first thing its main() runs.
+        if argv and argv[0] == "onboarding":
+            module = common.load_provider(ONBOARDING_HELPER)
+            if not module:
+                raise CliError("Workspace onboarding is not installed. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv[1:])
         # Before argparse: a rejected secret flag must be reported as the leak it
         # is, not as an unrecognized argument.
         reject_secret_arguments(argv)

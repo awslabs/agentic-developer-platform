@@ -38,6 +38,11 @@ from lib.amendment_input import (
     AuthoringInputError,
     materialize_authoring_input,
 )
+from lib.abort_sentinel import (
+    authorized_abort_reason,
+    read_abort_sentinel,
+    verify_abort_authorization,
+)
 from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
@@ -123,6 +128,26 @@ RETIRED_BEDROCK_VIA = {
 # queue's maxReceiveCount before it lands in the DLQ. Keep in sync with
 # EXIT_RETRYABLE in agent/src/agent-worker.ts.
 AGENT_EXIT_RETRYABLE = 75
+
+# Bounds on the aborted run's queue acknowledgement (#3963). Three attempts with a
+# linear backoff, so the whole sequence is ~3s — long enough to ride out a
+# transient SQS error, short enough to stay well inside the visibility timeout.
+# Unbounded retry here would hold the FIFO group for the pod's whole lifetime, and
+# the fallback if all attempts fail is sound: the row is already terminal, so the
+# redelivery is refused rather than re-executed.
+ABORT_ACK_ATTEMPTS = 3
+ABORT_ACK_BACKOFF_SECONDS = 1.0
+
+# Bounds on the aborted run's terminal status write (#3963 review finding 3). The
+# same shape and the same reasoning as the acknowledgement bounds above, because the
+# two writes are the two halves of a reported abort and failing either one has a
+# consequence an operator sees: a missing row leaves the dashboard stale and leaves
+# the legacy completion guard with nothing to refuse a redelivery with. Bounded for
+# the same reason too — the retries run before the DeleteMessage that actually
+# prevents the rerun, so a long sequence here would delay the thing that matters
+# most. ~3s + ~3s stays well inside the visibility timeout.
+ABORT_TERMINAL_WRITE_ATTEMPTS = 3
+ABORT_TERMINAL_WRITE_BACKOFF_SECONDS = 1.0
 
 # Personas whose branch-bootstrap logic should NEVER delete an existing remote
 # branch. AIDLC runs multiple sequential stages on the same issue/branch, each
@@ -2861,8 +2886,26 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         logger.info("%s", review_note)
     review_options = {"review_note": review_note} if review_note else {}
 
+    # Issue #3963: an operator's abort is resolved BEFORE the exit-code branch
+    # below, and the ordering is the requirement rather than a tidiness choice.
+    # A cancelled run does not exit 0 — the Node worker's typed cancellation
+    # propagates and the process ends non-zero — so leaving this until afterwards
+    # would post a "failed with exit code N" comment for a run an operator stopped
+    # on purpose, and `_handle_failure`'s status write would already have landed by
+    # the time anything could correct it. One terminal handler runs, never two.
+    abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+    # Only meaningful when `abort_outcome` is set; `_handle_abort` assigns the real
+    # value. Defaulted to False so a future edit that reads it on a non-abort path
+    # errs toward "not proven durable" rather than toward a silent claim.
+    abort_terminal_persisted = False
+
     # Step 11/12: Post-agent actions
-    if result.returncode == 0:
+    if abort_outcome is not None:
+        exit_code, abort_terminal_persisted = _handle_abort(
+            repo, issue, persona, message_id, arrived_at, abort_outcome, check_run_url,
+            **review_options
+        )
+    elif result.returncode == 0:
         exit_code = _handle_success(
             repo, issue, branch_name, persona, message_id, arrived_at, check_run_url,
             review_only=review_delivery is not None, **review_options
@@ -2882,7 +2925,19 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
         try:
-            if exit_code == 0:
+            if abort_outcome is not None:
+                # Checked ahead of the exit code, which is 0 for an abort (see
+                # `_handle_abort`): a run an operator stopped must not display a
+                # green check. `cancelled` is GitHub's own vocabulary for exactly
+                # this — deliberately stopped, neither passed nor failed — so the
+                # Checks tab agrees with the `aborted` status the row now carries.
+                cr_conclusion = "cancelled"
+                cr_title = f"Agent {persona} was aborted"
+                cr_summary = f"Agent `{persona}` was aborted by an operator on issue #{issue}."
+                if abort_outcome.get("reason"):
+                    # Operator text, already bounded on both sides of the bridge.
+                    cr_summary += f"\n\nReason given: {abort_outcome['reason']}"
+            elif exit_code == 0:
                 cr_conclusion = "success"
                 cr_title = f"Agent {persona} completed successfully"
                 cr_summary = f"Agent `{persona}` finished processing issue #{issue}."
@@ -2945,7 +3000,18 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # gateway can serve the transcript from the Agent Activity UI.
     # Fail-soft: reuses the same update_invocation_status contract (logs, never raises).
     if transcript_key or stop_reason:
-        if stop_reason:
+        if abort_outcome is not None:
+            # Issue #3963: resolved first, for the same reason `budget_stopped` is —
+            # this write is unconditional, and `exit_code` is 0 for an abort, so
+            # without this branch it would overwrite the `aborted` status with
+            # `complete` a few lines after `_handle_abort` established it. The
+            # distinction the operator needs would be destroyed by the transcript
+            # write, which is a field update that has no business changing an
+            # outcome. The reason is re-asserted rather than dropped, so the row
+            # does not end up aborted with no explanation.
+            terminal_status = "aborted"
+            stop_reason = stop_reason or "operator_aborted"
+        elif stop_reason:
             terminal_status = "budget_stopped"
         else:
             terminal_status = "complete" if exit_code == 0 else "failed"
@@ -2991,9 +3057,20 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
 
     if run_report.enabled():
         try:
-            if exit_code != 0:
+            # Issue #3963: an abort reports the engine's `failed`, not `complete`,
+            # even though `exit_code` is 0. The engine's terminal vocabulary is
+            # binary and the load-bearing fact for it is whether the story was
+            # delivered — an aborted run delivered nothing. `complete` would
+            # advance a workflow on work an operator deliberately stopped, which is
+            # the one direction that cannot be undone from here; `failed` merely
+            # understates *why* it did not finish, and the invocation row carries
+            # `aborted` with its reason for anyone asking that question. Spooling
+            # is kept for the same reason it applies to a failure: the undelivered
+            # material stays recoverable.
+            aborted = abort_outcome is not None
+            if exit_code != 0 or aborted:
                 run_report.spool_undelivered_failure()
-            run_report.terminal("complete" if exit_code == 0 else "failed")
+            run_report.terminal("failed" if (exit_code != 0 or aborted) else "complete")
         except run_report.RunReportError as exc:
             logger.warning("Engine terminal report deferred: %s", exc.code)
             return AGENT_EXIT_RETRYABLE
@@ -3004,6 +3081,36 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         except InvocationCompletionError as exc:
             logger.error("AIDLC acknowledgement deferred: %s", exc)
             return AGENT_EXIT_RETRYABLE
+
+    # Issue #3963: an aborted run's acknowledgement is *confirmed*, and its outcome
+    # is reported honestly. The path below deliberately swallows a delete failure —
+    # the work is already on GitHub and a redelivery would only re-post the same
+    # comment — but an abort inverts that reasoning. The message still being on the
+    # queue means the run an operator just stopped is due to start again, which is
+    # the single thing the abort was issued to prevent. So the delete is retried
+    # within a bound, and an unconfirmed acknowledgement does not report success:
+    # AGENT_EXIT_RETRYABLE says "this pod did not finish handling the message", and
+    # the redelivery it invites is refused by the completion guard — but only when
+    # the terminal `aborted` row actually landed, which is why `_handle_abort`
+    # reports whether it did instead of leaving that assumed (#3963 finding 3). The
+    # operator-facing outcome (comment, status, check conclusion) is already in
+    # place either way.
+    if abort_outcome is not None:
+        return _finalize_abort_acknowledgement(
+            queue_url=queue_url,
+            region=region,
+            receipt_handle=receipt_handle,
+            exit_code=exit_code,
+            terminal_persisted=abort_terminal_persisted,
+            # Passed so a terminal row lost earlier can be repaired once the
+            # acknowledgement is confirmed (#3963 finding 3). The summary is rebuilt
+            # from the same persona the original write used, so a repaired row is
+            # identical to the one `_handle_abort` intended rather than a second,
+            # differently-worded outcome.
+            message_id=message_id,
+            arrived_at=arrived_at,
+            summary=f"Agent `{persona}` was aborted by an operator.",
+        )
 
     try:
         _delete_message(queue_url, region, receipt_handle)
@@ -3371,6 +3478,13 @@ def _setup_agent_control(
         # teardown is scheduled for a registration that never happened.
         _install_control_teardown_guard(message_id, arrived_at)
 
+        # Kept for the abort resolver, which runs long after this function and
+        # cannot re-derive the generation: the value came from the row's atomic
+        # increment and re-reading the row would return whatever a concurrent
+        # attempt has since incremented it to (#3963).
+        global _registered_control_generation
+        _registered_control_generation = generation
+
         if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
             from lib.control_renewal import ControlRenewal
 
@@ -3414,6 +3528,14 @@ def _control_token_ttl_seconds() -> int:
 # passed arguments (Issue #3960).
 _pending_control_teardown: tuple[str, str] | None = None
 _control_renewal_session = None
+
+# The control generation this process was assigned, from the invocation row's own
+# atomic increment (#3963). Module-level for the same reason as the teardown key:
+# the abort resolver runs after the agent process is gone and needs the value the
+# registration returned, and it must not be derivable from anything the agent can
+# write. `None` until a registration succeeds — and a run with no registration has
+# no generation for a sentinel to be bound to, so the abort path declines.
+_registered_control_generation: int | None = None
 
 
 def _install_control_teardown_guard(message_id: str, arrived_at: str) -> None:
@@ -3533,6 +3655,339 @@ def _record_session_id(message_id: str, arrived_at: str) -> str | None:
     except Exception as exc:
         logger.warning("Failed to record SDK session id (non-fatal): %s", exc)
         return None
+
+
+def _resolve_abort_outcome(message_id: str, was_registered: bool) -> dict | None:
+    """The authorized abort this run stopped for, or ``None`` — Issue #3963 (S4).
+
+    Two questions, asked in this order, because they fail differently:
+
+    1. :func:`read_abort_sentinel` — is there a well-formed sentinel bound to this
+       run and this control generation? A stale file from a superseded attempt, a
+       torn write, or a document from another run all answer no.
+    2. :func:`verify_abort_authorization` — did the *gateway* authorize it? Every
+       field in the sentinel is self-asserted: the agent runs with a ``Bash`` tool,
+       so any code in the pod can write that file. The envelope it carries is an
+       Ed25519 token signed with a key that exists only in the gateway, which makes
+       it the one artifact here that could not have been produced from inside the
+       pod.
+
+    Both must pass. Honouring step 1 alone would mean this function could be made
+    to return an abort by a shell command, and what follows a `True` here is a
+    deleted queue message and an operator told a crash was a deliberate stop.
+
+    Returns ``None`` whenever anything is missing or unproven, which the caller
+    treats as "classify by exit code" — the behaviour that predates this story.
+    Never raises: it runs during teardown, where an escaping exception would cost
+    the acknowledgement and strand the message.
+
+    Skipped entirely when control was never registered. A flag-off run has no
+    generation to bind against, so there is nothing a sentinel could prove.
+    """
+    if not was_registered:
+        return None
+    try:
+        # This process's own generation, captured by `_setup_agent_control` from
+        # the value the invocation row's atomic increment returned. Deliberately
+        # not read from the environment: `ADP_CONTROL_GENERATION` is placed only in
+        # the *child's* env, and taking it from anywhere the agent can influence
+        # would let the pod choose the generation its own sentinel is checked
+        # against — which is the staleness defence the binding exists to provide.
+        generation = _registered_control_generation
+        if generation is None:
+            return None
+        sentinel = read_abort_sentinel(message_id, generation)
+        if sentinel is None:
+            return None
+        if not verify_abort_authorization(
+            sentinel, run_id=message_id, generation=int(generation)
+        ):
+            # Deliberately loud. A sentinel that parsed but could not prove itself
+            # is either a bug in the handoff or an attempt to fabricate an abort,
+            # and both are worth an operator seeing rather than a silent fallback.
+            logger.error(
+                "Abort sentinel for run %s is present but not authorized by the gateway; "
+                "classifying this run by exit code instead (abort_unauthorized)",
+                message_id,
+            )
+            return None
+        # The operator's words, and the only place they enter this process.
+        #
+        # Derived here, after verification, rather than read from the document:
+        # `validate_abort_sentinel` deliberately does not carry the file's own
+        # `reason` field through, because that field sits beside the envelope in a
+        # file the agent's `Bash` tool can write and is covered by no signature. A
+        # real-signature reproduction substituted text there under an otherwise
+        # valid envelope and had it attributed to the human who authorized the
+        # abort. `authorized_abort_reason` instead parses the reason out of the
+        # exact request bytes whose sha256 the envelope signed — bytes
+        # `verify_abort_authorization` has just confirmed against `body_digest`.
+        #
+        # `None` when the operator gave no reason, and then nothing downstream may
+        # invent one: every consumer (`_handle_abort`'s comment, the check-run
+        # summary) must say nothing about a reason rather than fall back.
+        sentinel["reason"] = authorized_abort_reason(sentinel)
+        logger.info(
+            "Authorized abort recorded for command %s; finalizing as aborted",
+            sentinel.get("command_id"),
+        )
+        return sentinel
+    except Exception as exc:  # noqa: BLE001 - teardown path; must never raise
+        logger.warning("Could not resolve an abort outcome (non-fatal): %s", exc)
+        return None
+
+
+def _handle_abort(
+    repo: str,
+    issue: int,
+    persona: str,
+    message_id: str,
+    arrived_at: str,
+    sentinel: dict,
+    check_run_url: str = "",
+    review_note: str = "",
+) -> tuple[int, bool]:
+    """Report the terminal aborted outcome: one comment, one status.
+
+    Returns ``(exit_code, terminal_persisted)``.
+
+    The exit code is 0. An abort is neither a success nor a crash, but the *pod*
+    handled it exactly as asked, and the exit code is what Kubernetes retries on:
+    the ScaledJob runs with ``backoffLimit: 2``, so a non-zero exit here would start
+    a replacement pod for a run an operator deliberately stopped. The outcome the
+    dashboard reads is the ``aborted`` status, not the exit code.
+
+    ``terminal_persisted`` is the second half of the pair because this function used
+    to call a fail-soft status writer and then let its caller behave as though a
+    durable ``aborted`` row existed (#3963 review finding 3). It does not always
+    exist: ``update_invocation_status`` logs and returns on a refused status, an
+    absent row, an unavailable transport or a gateway error. That row is the thing
+    the legacy completion guard reads to refuse a redelivery, so when it is missing
+    AND the queue acknowledgement also fails, nothing on that path stops the stopped
+    run from executing again. The caller needs to know which of those two worlds it is
+    in, and it can only know by being told whether the write was observed to land.
+
+    On the protected path (``authority_enabled()``) the guard does not run at all —
+    ``use_completion_receipt`` requires ``not authority_enabled()`` — and a redelivery
+    is refused by ``bind`` instead, because the execution record is ACTIVE and already
+    bound. So this return value is load-bearing for the legacy path's rerun safety and
+    for *reporting* on both, which is why the row is still repaired after a confirmed
+    ack rather than treated as optional once the protected path is in play.
+
+    Note what is deliberately NOT done here: the exit code does not change when the
+    write fails. Exiting non-zero would launch the replacement pod this abort exists
+    to prevent, so the honest signal travels in the return value instead, and the
+    caller decides the acknowledgement policy.
+
+    The reason is the operator's own text, derived from the gateway-signed request
+    bytes and already whitespace-collapsed and length-bounded by both sentinel
+    halves. It is interpolated into a GitHub comment, so it is used only inside a
+    fenced block — an operator reason must not be able to forge markdown structure
+    in a comment attributed to the platform.
+    """
+    reason = sentinel.get("reason")
+    summary = f"Agent `{persona}` was aborted by an operator."
+    body = summary
+    if reason:
+        body = f"{summary}\n\n> Reason given:\n> ```\n> {reason}\n> ```"
+    _post_comment(repo, issue, message_id, "aborted", _join_notes(body, review_note), check_run_url)
+    # The comment is posted first and unconditionally: the operator asked for this
+    # and deserves to see it acknowledged even if the row write then fails. A
+    # published comment is not a redelivery guard, though, which is why the status
+    # result is what travels back rather than the fact that a comment exists.
+    terminal_persisted = _persist_abort_terminal_status(message_id, arrived_at, summary)
+    if not terminal_persisted:
+        logger.error(
+            "The aborted run's terminal status did not persist; the completion guard "
+            "has nothing to read, so this run's queue acknowledgement must be "
+            "confirmed before the abort can be reported as handled"
+        )
+    return 0, bool(terminal_persisted)
+
+
+def _persist_abort_terminal_status(message_id: str, arrived_at: str, summary: str) -> bool:
+    """Write the terminal ``aborted`` row, retrying a lost write — #3963 finding 3.
+
+    ``update_invocation_status`` is fail-soft: it logs and returns ``False`` on a
+    transport error rather than raising. A single call was therefore one transient
+    DynamoDB or gateway blip away from an abort with no terminal row, and that row is
+    not merely cosmetic — it is what ``is_delivery_completed`` reads to refuse a
+    redelivery, and what the dashboard shows an operator who just asked for a stop.
+
+    Retried on the same bounds as the acknowledgement, and for the same reasons: a
+    few seconds rides out a transient fault, while unbounded retry would hold the
+    FIFO group for the pod's whole lifetime and delay the DeleteMessage that actually
+    prevents the rerun. The two together stay comfortably inside the visibility
+    timeout.
+
+    Bounded, not guaranteed. A ``False`` return still happens and still matters —
+    ``_finalize_abort_acknowledgement`` is what decides the consequence. This narrows
+    the window; it does not close it, and nothing downstream should treat it as
+    though it had.
+
+    Idempotent by construction: every attempt writes the same terminal status for the
+    same row key, so a retry after an ambiguous failure cannot produce a second or
+    conflicting outcome.
+    """
+    for attempt in range(1, ABORT_TERMINAL_WRITE_ATTEMPTS + 1):
+        if update_invocation_status(
+            message_id,
+            arrived_at,
+            "aborted",
+            summary=summary,
+            stop_reason="operator_aborted",
+        ):
+            if attempt > 1:
+                logger.info(
+                    "The aborted run's terminal status persisted on attempt %d", attempt
+                )
+            return True
+        logger.warning(
+            "Could not persist the aborted run's terminal status (attempt %d/%d)",
+            attempt,
+            ABORT_TERMINAL_WRITE_ATTEMPTS,
+        )
+        if attempt < ABORT_TERMINAL_WRITE_ATTEMPTS:
+            time.sleep(ABORT_TERMINAL_WRITE_BACKOFF_SECONDS * attempt)
+    return False
+
+
+def _finalize_abort_acknowledgement(
+    *,
+    queue_url: str,
+    region: str,
+    receipt_handle: str,
+    exit_code: int,
+    terminal_persisted: bool,
+    message_id: str = "",
+    arrived_at: str = "",
+    summary: str = "",
+) -> int:
+    """Acknowledge an aborted run's message and return the pod's exit code.
+
+    Split out of ``main`` so the outcomes below can be tested directly. They are
+    otherwise reachable only by driving an entire run, which is why the dangerous one
+    went uncovered (#3963 review finding 3).
+
+    ==================  ===========  ===========================================
+    terminal row        ack          result
+    ==================  ===========  ===========================================
+    persisted           confirmed    ``exit_code`` — clean abort
+    NOT persisted       confirmed    repaired if possible; clean, or logged stale
+    persisted           unconfirmed  retryable; the guard refuses the redelivery
+    NOT persisted       unconfirmed  retryable, and logged as unprotected
+    ==================  ===========  ===========================================
+
+    The second row is the one review finding 3 named: a successful delete used to be
+    reported as a clean abort on its own, which left an operator looking at a
+    dashboard that still showed the run as active. A confirmed acknowledgement means
+    the run cannot restart; it says nothing about whether the outcome was *reported*,
+    and those are two separate requirements. So the terminal row is repaired here,
+    after the delete — the ordering root specified, because the delete is what
+    establishes that no rerun can follow and therefore what makes it safe to spend
+    more time on reporting.
+
+    The last two rows cannot be distinguished by exit code — a non-zero exit summons
+    the replacement pod the abort exists to prevent, so both are
+    ``AGENT_EXIT_RETRYABLE`` — which is why the distinction is made explicit in the
+    log instead.
+    """
+    if _acknowledge_abort(queue_url, region, receipt_handle):
+        # The message is gone, so the stopped run cannot restart: the operator's
+        # primary requirement is met and re-queueing would undo it.
+        #
+        # But "cannot restart" is not "was reported". When the terminal write failed
+        # earlier, this is the first moment it is safe to spend more time on it: the
+        # delete is confirmed, so a retry here cannot delay the thing that prevents a
+        # rerun, and there is no longer a redelivery for a guard to have to refuse.
+        # Attempting the repair only in this branch is deliberate — doing it before
+        # the delete would trade the rerun guarantee for a reporting improvement.
+        if not terminal_persisted and message_id:
+            if _persist_abort_terminal_status(message_id, arrived_at, summary):
+                logger.info(
+                    "The aborted run's terminal status was repaired after its queue "
+                    "acknowledgement was confirmed"
+                )
+            else:
+                # Reported rather than escalated. The run is stopped and acknowledged,
+                # so exiting non-zero would start a pod that can only pick up an
+                # unrelated message — it cannot repair this row. A stale dashboard is
+                # a reporting defect with no rerun risk, and it is logged as exactly
+                # that so an operator seeing an active-looking aborted run has the
+                # explanation.
+                logger.error(
+                    "The aborted run was stopped and acknowledged, but its terminal "
+                    "status could not be persisted or repaired. The run cannot execute "
+                    "again; its dashboard row is stale and still shows the pre-abort "
+                    "status (message_id=%s)",
+                    message_id,
+                )
+        return exit_code
+    if terminal_persisted:
+        # The message survives and will redeliver, but the durable `aborted` row was
+        # observed to land, so the legacy completion guard reads it and refuses the
+        # redelivered work. AGENT_EXIT_RETRYABLE is honest about this pod not having
+        # finished handling the message.
+        return AGENT_EXIT_RETRYABLE
+    # Neither the terminal row nor the acknowledgement landed, so on the legacy path
+    # nothing refuses the redelivery — the guard has no `aborted` status to read — and
+    # the run an operator stopped is queued to execute again. (On the protected path
+    # `bind` refuses it regardless, because the record is ACTIVE and already bound;
+    # that is a property of the binding lifecycle, not of this row, so it is not a
+    # reason to soften the message.) Say so as loudly as this process can.
+    logger.error(
+        "Abort finalization is unprotected: the terminal status did not persist AND "
+        "the queue acknowledgement is unconfirmed, so the redelivered message has no "
+        "terminal row to refuse it. The run may execute again despite being aborted"
+    )
+    return AGENT_EXIT_RETRYABLE
+
+
+def _acknowledge_abort(queue_url: str, region: str, receipt_handle: str) -> bool:
+    """Delete the aborted run's queue message, and report whether it is confirmed.
+
+    Bounded retry, and a boolean rather than a swallowed exception. The ordinary
+    ack path logs a delete failure and returns the exit code anyway, on the
+    reasoning that the work is already committed to GitHub — which is fine for a
+    run that finished, because a redelivery re-posts a comment and stops. For an
+    abort it is not fine: the message is still there, so the run an operator just
+    stopped is queued to start again.
+
+    So the caller is told the truth. An unconfirmed acknowledgement is not
+    reported as a successful abort, because the one thing an operator needs from an
+    abort — that the work does not continue — has not been established. The
+    redelivery that follows is refused by ``bind`` on the protected path (an ACTIVE,
+    already-bound record admits no second pod) and, on the legacy path, by the
+    completion guard reading the ``aborted`` status this run has already written —
+    which is why that write's *observed* result is what the caller acts on.
+
+    Attempts are bounded, not indefinite: this runs inside the visibility timeout
+    and a pod that retries forever holds the FIFO group for its whole lifetime.
+    """
+    for attempt in range(1, ABORT_ACK_ATTEMPTS + 1):
+        try:
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("Aborted run's SQS message acked and deleted (attempt %d)", attempt)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Could not acknowledge the aborted run's SQS message (attempt %d/%d): %s",
+                attempt,
+                ABORT_ACK_ATTEMPTS,
+                exc,
+            )
+            if attempt < ABORT_ACK_ATTEMPTS:
+                time.sleep(ABORT_ACK_BACKOFF_SECONDS * attempt)
+    # Deliberately does NOT claim the row is terminal. This function does not know
+    # whether the terminal write landed — only the caller holds `terminal_persisted` —
+    # and the previous wording asserted it unconditionally, which read as reassurance
+    # in exactly the case (write failed AND ack failed) where it was untrue. The
+    # caller's branch says which world this is.
+    logger.error(
+        "Abort acknowledgement unconfirmed after %d attempts — the message may redeliver",
+        ABORT_ACK_ATTEMPTS,
+    )
+    return False
 
 
 def _should_ack_message(worker_exit_code: int) -> bool:

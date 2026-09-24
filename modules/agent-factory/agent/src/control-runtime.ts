@@ -64,12 +64,13 @@ import type { ControlAction } from './control-state';
 export const CONTROL_PROTOCOL_VERSION = 1;
 
 /**
- * Pause/resume have an admission barrier and signed gateway control path.
+ * Pause/resume have an admission barrier and signed gateway control path; abort
+ * has a cancellation path and a terminal finalization that reports it (#3963).
  * The adapter, current attempt and deployment configuration each still veto
- * unavailable controls. Steer/abort remain outside this implementation set.
+ * unavailable controls. Steer remains outside this implementation set.
  * Kept in lockstep with the gateway and both CI capability gates (#5222).
  */
-export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume']);
+export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume', 'abort']);
 
 /** Per-verb support, with a bounded reason when support is absent. */
 export interface VerbSupport {

@@ -84,7 +84,7 @@ func TestZeroTargetsRegistrationRevocationAndTransport(t *testing.T) {
 }
 
 func TestRegistryRefusesForeignOrgDuplicateTargetsExpiredLeaseAndRedirect(t *testing.T) {
-	for _, change := range []string{"organization", "duplicate", "lease", "redirect", "execution"} {
+	for _, change := range []string{"organization", "duplicate", "lease", "redirect"} {
 		t.Run(change, func(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				result := registry{Version: 1, OrgID: orgID, LeaseExpiresAt: time.Now().Add(45 * time.Second), FenceToken: 1, Targets: []Target{}}
@@ -95,8 +95,6 @@ func TestRegistryRefusesForeignOrgDuplicateTargetsExpiredLeaseAndRedirect(t *tes
 					result.Targets = []Target{{WorkspaceID: workspaceID}, {WorkspaceID: workspaceID}}
 				case "lease":
 					result.LeaseExpiresAt = time.Now().Add(-time.Second)
-				case "execution":
-					result.GovernedProvisioning = true
 				case "redirect":
 					w.Header().Set("Location", "https://foreign.example")
 					w.WriteHeader(307)
@@ -124,5 +122,38 @@ func TestMissingWorkspaceCredentialNeverUsesAmbientConfig(t *testing.T) {
 	m.config.WorkspaceCredentialsDir = t.TempDir()
 	if got := m.inspectTarget(context.Background(), target); got != "credential_unavailable" {
 		t.Fatal(got)
+	}
+}
+
+func TestProvisionalSnapshotBindsInspectedClaimWithoutExecution(t *testing.T) {
+	target := Target{WorkspaceID: workspaceID, Provisional: true, BootstrapOperationID: "bootstrap-operation", RegistrationClaim: "claim-one", ClusterARN: "arn:workspace", Namespace: "tenant-a"}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(registry{Version: 1, OrgID: orgID, LeaseExpiresAt: time.Now().Add(45 * time.Second), FenceToken: 19, Targets: []Target{target}, GovernedProvisioning: true})
+	}))
+	defer server.Close()
+	m := testManager(t, server)
+	m.config.EnableExecution = true
+	m.inspect = func(context.Context, Target) string { return "observed_execution_unavailable" }
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := m.Snapshot()
+	if snapshot.InstanceID != m.instanceID || snapshot.FenceToken != 19 || snapshot.Targets[workspaceID] != "observed_execution_unavailable" || len(snapshot.Executions) != 0 {
+		t.Fatal("bootstrap observation conferred execution")
+	}
+	if snapshot.BootstrapObservations[workspaceID].RegistrationClaim != "claim-one" {
+		t.Fatal("bootstrap claim missing")
+	}
+	delete(snapshot.BootstrapObservations, workspaceID)
+	if len(m.Snapshot().BootstrapObservations) != 1 {
+		t.Fatal("snapshot aliases mutable state")
+	}
+	target.RegistrationClaim = "claim-two"
+	m.inspect = func(context.Context, Target) string { return "credential_unavailable" }
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Snapshot().BootstrapObservations) != 0 {
+		t.Fatal("failed replacement reused old observation")
 	}
 }

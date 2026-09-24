@@ -106,13 +106,17 @@ class GenerationReader(Protocol):
 class AuthorityTargetResolver:
     """Resolves target facts from protected state. Implements ``TargetResolver``.
 
-    ``generation_reader`` is optional and defaults to reporting generation 0.
-    That is safe *only* because generation is consumed by envelope binding, and
-    every live-control verb in this deployment is refused with 501 before an
-    envelope is minted (``SUPPORTED_AGENT_ACTIONS`` holds MONITOR alone). A
-    deployment that enables a control verb must supply a reader; the envelope
-    would otherwise bind a generation the listener will not match, which fails
-    closed but is a confusing way to do so.
+    ``generation_reader`` is optional and defaults to reporting generation 0,
+    which is a **test-only** shape now that live-control verbs are implemented.
+    Generation is consumed by envelope binding, so a resolver without a reader
+    binds generation 0 into every envelope and the listener refuses it — closed,
+    but a confusing way to fail. ``build_agent_authorization_service`` therefore
+    always supplies :class:`ControlGenerationReader`; the default exists only so
+    MONITOR-only unit tests need not stand one up. It was formerly safe in
+    production because ``SUPPORTED_AGENT_ACTIONS`` held MONITOR alone and every
+    control verb was refused with 501 before an envelope was minted. That is no
+    longer true — MONITOR, PAUSE, RESUME and ABORT all mint envelopes — so the
+    reader is now a real requirement rather than a precaution.
     """
 
     def __init__(

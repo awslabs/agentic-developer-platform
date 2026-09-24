@@ -67,14 +67,16 @@ A login, organization switch or gateway configuration change in another terminal
 cannot retarget that command's recovery context; if its token expires, the request
 fails and must be retried.
 
-Workspace and deployment creation use a caller-generated operation ID that is
-saved in private CLI state before the POST. Identical invocations in the same
+Workspace creation generates an operation ID; deployment creation requires the
+explicit `--operation-id` used during preview. Both save that ID in private CLI
+state before the create POST. Identical invocations in the same
 signed-in deployment and tenant reuse that operation ID, including concurrent
 invocations and retries after the server completes the operation.
 If delivery times out, disconnects, returns a 5xx, or returns a malformed success,
 the CLI reports the operation ID; rerun the identical command to reconcile it.
-Changing the inputs starts a different operation and does not discard the earlier
-receipt. Successful creates retain the resource ID and receipt because a server
+Changing workspace inputs starts a different operation and retains the earlier
+receipt. Deployment inputs are bound to the reviewed operation ID: changing them
+requires a new preview and approval, and cannot reuse that ID. Successful creates retain the resource ID and receipt because a server
 success does not prove the result reached your terminal. An identical create
 therefore reconciles the original resource. Failed, deleting or deleted resources
 retain their receipts and block further identical creates. Inspect that resource
@@ -127,30 +129,65 @@ not workspace-scoped.
 
 ## Model deployments and quotas
 
-Replace `MODEL_ID` with a model supported by your service:
+Choose one request UUID and retain it from preview through submission and recovery.
+Replace `PROFILE_ID` with a configured serving profile and `MODEL_ID` with its
+supported model. The profile supplies the reviewed image and authentication.
 
 ```bash
+adp superplane deploy preview --workspace research --name demo \
+  --model MODEL_ID --precision bf16 --profile-id PROFILE_ID --operation-id REQUEST_UUID
+# Review the returned controller_plan, allocation_id and revision, then request approval.
+adp superplane deploy preview --workspace research --name demo \
+  --model MODEL_ID --precision bf16 --profile-id PROFILE_ID --operation-id REQUEST_UUID \
+  --request-approval --plan-revision REVIEWED_REVISION --yes
+adp superplane onboarding approval show --approval-id APPROVAL_ID
+# A selected human approver uses their own ADP session for this decision.
+adp superplane onboarding approval decide --approval-id APPROVAL_ID --result allowed-once --yes
 adp superplane deploy create --workspace research --name demo \
-  --model MODEL_ID --precision bf16
+  --model MODEL_ID --precision bf16 --profile-id PROFILE_ID --operation-id REQUEST_UUID \
+  --approval-id APPROVAL_ID --plan-revision REVIEWED_REVISION --yes
 adp superplane deploy list --workspace research
 adp superplane quota set --workspace research --max-gpus 1 \
   --max-nodes 1 --max-cost-per-day 25 --allowed-clouds aws
 ```
 
-`--name` is required: it is the deployment's name in the service and the handle
-`deploy delete` takes, and the service does not generate one. Use lowercase
-letters, digits and hyphens.
+Preview returns the exact approval request. `--request-approval` sends that request
+unchanged after checking the reviewed revision; it does not record an approval
+decision. The server enforces eligible human approval separately. `--yes` confirms
+the CLI submission and cannot substitute for that approval. Creation repeats the
+same preview inputs with the approval ID and revision.
+
+`--name` is required and uses lowercase letters, digits and hyphens.
+Deployment listing preserves the durable deployment ID, operation ID/state and
+provider UID so accepted or uncertain work can be reconciled.
 
 Supported precision values are `fp16` (default), `bf16`, `fp8`, `awq` and `int8`.
 `--serving-framework vllm|sglang`, `--replicas`, `--gpu-per-replica`,
-`--tensor-parallel-size`, `--max-model-len` and `--namespace` are optional; each
+`--tensor-parallel-size` and `--max-model-len` are optional; each
 omitted option takes the service's own default rather than one chosen locally.
-To request deletion of that deployment:
+The current controller recipe accepts one serving replica; unsupported profile or
+replica combinations are refused during preview.
+The service uses the workspace's recorded namespace. Missing namespace ownership
+requires reconciliation before deployment.
+
+Teardown uses the deployment UUID returned by create or list and a separate request
+UUID. Its preview retains the original allocation. Review and obtain human approval
+before submitting the same teardown identity:
 
 ```bash
-adp superplane deploy delete --workspace research --name demo --yes
+adp superplane deploy teardown-preview --workspace research --id DEPLOYMENT_UUID \
+  --operation-id TEARDOWN_REQUEST_UUID
+adp superplane deploy teardown-preview --workspace research --id DEPLOYMENT_UUID \
+  --operation-id TEARDOWN_REQUEST_UUID --request-approval \
+  --plan-revision TEARDOWN_REVISION --yes
+# The selected human approver decides TEARDOWN_APPROVAL_ID through the approval commands above.
+adp superplane deploy delete --workspace research --id DEPLOYMENT_UUID \
+  --operation-id TEARDOWN_REQUEST_UUID --approval-id TEARDOWN_APPROVAL_ID \
+  --plan-revision TEARDOWN_REVISION --yes
 ```
 
+`--dry-run` on preview, approval issuance, create or delete sends no mutation.
+After a lost reply, retain every original input and operation ID when retrying.
 Stopping the local CLI does not cancel work already accepted by the service or
 prove provider resources stopped billing. Check service events and resource
 state after an interruption.
@@ -236,3 +273,34 @@ refused without deleting anything, rather than guessed at as a vault id.
 Organization and user administration belongs to ADP settings.
 `adp superplane org` and `adp superplane user` print those destinations; they do
 not create organizations or users.
+
+## Saved workspace lifecycle plans
+
+The onboarding CLI can review a saved phase and request its exact server-provided
+approval through the composed lifecycle API routes. Authorization, current policy
+and exact approval still govern each submission. An unavailable command exits 4.
+
+```bash
+adp superplane onboarding lifecycle list --workspace WORKSPACE_ID
+adp superplane onboarding lifecycle plan --workspace WORKSPACE_ID --artifact-id ARTIFACT_ID
+adp superplane onboarding lifecycle request-approval --workspace WORKSPACE_ID \
+  --artifact-id ARTIFACT_ID --plan-revision REVIEWED_REVISION --yes
+adp superplane onboarding approval show --approval-id APPROVAL_ID
+# A selected approver uses their own ADP session to decide the request.
+adp superplane onboarding approval decide --approval-id APPROVAL_ID --result allowed-once --yes
+adp superplane onboarding lifecycle continue --workspace WORKSPACE_ID \
+  --artifact-id ARTIFACT_ID --plan-revision REVIEWED_REVISION --yes
+```
+
+Review the account, region, resource changes, estimate and saved plan hashes
+before requesting approval. The CLI preserves one request identity across plan
+review, approval and continuation. It checks the current approval and rereads
+the plan immediately before submission; changed hashes or an expired, revoked,
+rejected or unrelated approval prevent continuation. `--dry-run` on
+`request-approval` and `continue` writes no receipt and sends no domain request.
+
+If a continuation response is lost, retain its request reference and use
+`adp superplane onboarding operation recover --key REQUEST_ID`. Repeating
+`lifecycle continue` recovers the submitted receipt, including after the API has
+advanced past its source proposal. A completed phase does not establish workspace
+readiness; check `adp superplane onboarding readiness --workspace WORKSPACE_ID`.

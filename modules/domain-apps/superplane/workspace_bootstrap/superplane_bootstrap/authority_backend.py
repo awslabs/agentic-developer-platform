@@ -124,7 +124,14 @@ class BootstrapGrantBackend:
         ):
             raise BootstrapRefused("bootstrap clients do not match the reservation")
         self.journal = journal
-        plan = compile_grants(journal, self.release, self.clients.principals)
+        plan = compile_grants(
+            journal,
+            self.release,
+            self.clients.principals,
+            controller_mode=getattr(
+                self.clients.installer_access, "controller_mode", "legacy"
+            ),
+        )
         # Only a completed, same-workspace journal can authorize adoption of an
         # existing operational supervisor. Tags or caller-provided ARNs cannot.
         with journal.fenced():
@@ -172,6 +179,9 @@ class BootstrapGrantBackend:
                         replace(journal, generation=old["generation"]),
                         self.release,
                         self.clients.principals,
+                        controller_mode=getattr(
+                            self.clients.installer_access, "controller_mode", "legacy"
+                        ),
                     )["grants"]
                     if s["key"] == spec["key"]
                 )
@@ -225,6 +235,7 @@ class BootstrapGrantBackend:
 
     def _verify_controller_handover(self):
         from .components import CONTROLLER_IMAGE_MARKER
+        from .adapters import KubectlClusterAccess
 
         self.registrar._verify_transport()
         response = self.clients.registrar_kubernetes.resources.get(
@@ -235,21 +246,92 @@ class BootstrapGrantBackend:
             raise BootstrapRefused("controller handover inventory was not answered")
         if payload.get("metadata", {}).get("continue"):
             raise BootstrapRefused("controller handover inventory is incomplete")
-        images = [
-            c.get("image", "")
+        controllers = [
+            item
             for item in payload["items"]
-            for c in item.get("spec", {})
-            .get("template", {})
-            .get("spec", {})
-            .get("containers", [])
-            if CONTROLLER_IMAGE_MARKER in c.get("image", "")
+            if any(
+                CONTROLLER_IMAGE_MARKER in c.get("image", "")
+                for c in item.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
+            )
         ]
         state = load_state(
             self.state_store,
             workspace_id=self.clients.target.workspace_id,
             cluster_arn=self.clients.target.cluster_arn,
         )
-        if images and not (state.controller_installed and len(images) == 1):
+        if (
+            controllers
+            and getattr(self.clients.installer_access, "controller_mode", None)
+            == "management"
+        ):
+            raise BootstrapRefused(
+                "legacy workspace controller requires explicit handover before management bootstrap"
+            )
+        if controllers and isinstance(
+            self.clients.installer_access, KubectlClusterAccess
+        ):
+            from .component_journal import (
+                ComponentJournal,
+                component_key,
+                component_identity,
+                merge_component_records,
+            )
+
+            if len(controllers) != 1:
+                raise BootstrapRefused(
+                    "multiple workspace controllers require explicit handover"
+                )
+            body = controllers[0]
+            if (
+                body.get("metadata", {}).get("namespace"),
+                body.get("metadata", {}).get("name"),
+            ) != (
+                self.release.namespace,
+                self.release.controller,
+            ):
+                raise BootstrapRefused(
+                    "existing controller belongs to another workspace"
+                )
+            key = component_key(body)
+            rows = self.journal.store.execute(
+                "SELECT progress_json FROM workspace_bootstrap_authority "
+                "WHERE workspace_id=:workspace_id AND org_id=:org_id AND cluster_arn=:cluster_arn",
+                {
+                    "workspace_id": self.clients.target.workspace_id,
+                    "org_id": self.clients.target.org_id,
+                    "cluster_arn": self.clients.target.cluster_arn,
+                },
+            )
+            records = [
+                candidate
+                for row in rows
+                if (
+                    candidate := json.loads(row["progress_json"])
+                    .get("components", {})
+                    .get(key)
+                )
+            ]
+            owned = merge_component_records(records)
+            if owned is None or owned["phase"] not in {"owned", "intended"}:
+                raise BootstrapRefused(
+                    "existing controller has no durable creation ownership"
+                )
+            ComponentJournal._matches(body, owned["desired"])
+            identity = component_identity(body)
+            if (owned["phase"] == "owned" and identity != owned.get("identity")) or (
+                owned["phase"] == "intended"
+                and identity["creation"] != owned.get("creation")
+            ):
+                raise BootstrapRefused("existing controller immutable identity changed")
+            # A response lost after Deployment creation leaves the old boolean
+            # unset. The durable creation intent plus exact provider read repairs
+            # that state; a name or image alone cannot authorize this handover.
+            record(self.state_store, state, controller_installed=True)
+            return
+        if controllers and not (state.controller_installed and len(controllers) == 1):
             raise BootstrapRefused(
                 "existing workspace controller requires completed handover before namespace creation"
             )
@@ -338,6 +420,20 @@ class BootstrapGrantBackend:
         verify_install_permissions(
             access, r.namespace, r.service_account, r.controller, r.crds
         )
+        if getattr(access, "controller_mode", None) == "management":
+            for verb, name in (("create", None), ("patch", r.controller)):
+                if (
+                    access.bootstrap_permission(
+                        verb=verb,
+                        resource="deployments.apps",
+                        namespace=r.namespace,
+                        name=name,
+                    )
+                    is not False
+                ):
+                    raise BootstrapRefused(
+                        "management bootstrap installer can write workspace deployments"
+                    )
         for actor in ("installer", "supervisor"):
             access = getattr(self.clients, actor + "_access")
             for verb, resource, namespace, name in (

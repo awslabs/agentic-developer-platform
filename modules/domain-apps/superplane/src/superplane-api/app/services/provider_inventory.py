@@ -68,3 +68,17 @@ def set_allocation_inventory_reader(reader: AllocationInventoryReader | None) ->
 
 def get_allocation_inventory_reader() -> AllocationInventoryReader | None:
     return _reader
+
+
+def uninstall_allocation_inventory_reader(reader: AllocationInventoryReader) -> bool:
+    """Remove `reader` if it is the installed one. Returns whether it was.
+
+    Identity-scoped, as with the other three ports: a composition releases what it
+    installed and leaves anything else alone. See
+    `credential_evidence.uninstall_credential_evidence_reader`.
+    """
+    global _reader
+    if _reader is not reader:
+        return False
+    _reader = None
+    return True

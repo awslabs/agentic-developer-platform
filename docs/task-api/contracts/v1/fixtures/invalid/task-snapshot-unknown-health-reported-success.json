@@ -1,0 +1,36 @@
+{
+  "$fixture": {
+    "description": "A task whose heartbeat is lost but whose execution health still claims healthy. Invariant LC-04 requires the honest answer: a missing heartbeat means the platform does not know whether work is progressing, and reporting confidence it does not have is what causes an operator to wait instead of intervening.",
+    "schema": "public-api.schema.json#/$defs/task_snapshot",
+    "expect": "invalid",
+    "reason": "heartbeat_lost with execution_health healthy; LC-04 requires unknown health once the heartbeat bound is exceeded",
+    "violates": ["identity-and-lifecycle.json#/lifecycle/invariants/LC-04"],
+    "owner": "T4",
+    "criteria": ["T0-AC03", "V0-04", "V3-06"],
+    "checked_by": "cross_component",
+    "cross_component_context": {
+      "heartbeat_lost": true
+    }
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "status": "running",
+  "persona": "agent-task-investigator",
+  "version": 7,
+  "created_at": "2026-09-24T14:40:02Z",
+  "updated_at": "2026-09-24T14:44:02Z",
+  "deadline_at": "2026-09-24T15:10:02Z",
+  "latest_event_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:9",
+  "oldest_event_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:1",
+  "generation": 1,
+  "runtime_attempt_id": null,
+  "execution_health": "healthy",
+  "recovery_required": true,
+  "result": null,
+  "error": null,
+  "input_request": null,
+  "command_receipts": [],
+  "queue_ack_status": "unknown",
+  "request_id": "req-01JC9K5Q7W0Y"
+}

@@ -71,8 +71,8 @@ async def list_events(
         count_query = count_query.where(Event.resource_type == resource_type)
 
     if user:
-        query = query.where(Event.user_id == user)
-        count_query = count_query.where(Event.user_id == user)
+        query = query.where(func.coalesce(Event.principal, Event.user_id) == user)
+        count_query = count_query.where(func.coalesce(Event.principal, Event.user_id) == user)
 
     if action:
         query = query.where(Event.action == action)

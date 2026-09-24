@@ -4,6 +4,15 @@ export interface ApiError {
   error: string;
   message: string;
   details?: Record<string, unknown>;
+  /**
+   * HTTP status of the failed response, attached by `ApiClient.handleResponse`.
+   *
+   * Optional because the thrown value is the server's parsed error body, which
+   * does not itself carry the status. Callers need it to tell "you are not
+   * permitted" from "this is not deployed here" from "retry shortly" — three
+   * outcomes that can share an identical body.
+   */
+  status?: number;
 }
 
 export interface PaginatedResponse<T> {

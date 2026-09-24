@@ -114,6 +114,13 @@ class TestCliScriptDownload:
             # so serving it publicly exposes nothing. Added in the PR that ships
             # the helper, never before it.
             "adp-flow.py",
+            # Issue #5730: `adp superplane onboarding`. A sibling helper rather
+            # than more verbs inside adp-superplane.py, so it stays separable
+            # from the concurrent CLI transport work on that file. Carries no
+            # secret and cannot: it reads the session `adp login` wrote, refuses
+            # any credential-shaped flag before parsing, and moves credential
+            # references only — never values.
+            "adp-superplane-onboarding.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

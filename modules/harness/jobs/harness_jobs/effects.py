@@ -69,10 +69,18 @@ _REMOVAL_KINDS = frozenset(
 _READ_ONLY_ACTIONS = {
     "aws": _READ_ONLY_KINDS,
     "gcp": frozenset({"compute.instances.get", "compute.instances.list"}),
+    "superplane-aws": frozenset({"verify-resource-inventory"}),
 }
 _REMOVAL_ACTIONS = {
     "aws": _REMOVAL_KINDS,
     "gcp": frozenset({"compute.instances.delete"}),
+    "superplane-kubernetes": frozenset({"delete-controller-component", "revoke-grant"}),
+    "superplane-aws": frozenset({"revoke-grant", "revoke-network-prerequisite"}),
+    "superplane-terraform": frozenset({"apply-reviewed-destroy"}),
+    "superplane-governance": frozenset(
+        {"block-governed-admission", "drain-governed-workloads"}
+    ),
+    "superplane-registry": frozenset({"unregister-workspace"}),
 }
 
 _CREATING_VERBS = frozenset(

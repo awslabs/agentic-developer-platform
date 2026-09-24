@@ -1,0 +1,22 @@
+{
+  "$fixture": {
+    "description": "Child-to-host authored progress. Carries no completion percentage and no private reasoning; the host must forward it immediately rather than buffering until exit.",
+    "schema": "process-protocol.schema.json#/$defs/progress_frame",
+    "expect": "valid",
+    "owner": "T5",
+    "criteria": [
+      "T0-AC02",
+      "T4-AC03",
+      "T5-AC02",
+      "V0-02"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "progress",
+  "request_id": "1e14b86d-50d6-45e6-9cc9-5f4cc30365aa",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "report_id": "9a734313-2f31-484b-9349-d52c41ad2497",
+  "message": "Correlated 14 of 17 observed 503 responses with a preceding pool acquisition timeout. Now checking configured pool size against observed upstream latency.",
+  "stage": "analysis",
+  "producer_timestamp": "2026-09-24T14:44:05Z"
+}

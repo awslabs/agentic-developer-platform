@@ -11,6 +11,61 @@ from pathlib import Path
 import sys
 
 
+def provider_identity():
+    """Attest the backend's own constrained credential source, never the proxy's."""
+    path = Path("/provider-identity/identity.json")
+    path.unlink(missing_ok=True)
+    forbidden = {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    }
+    if any(os.environ.get(key) for key in forbidden):
+        raise RuntimeError("alternate provider credential sources refused")
+    if any(
+        os.environ.get(key) != "/dev/null"
+        for key in ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE")
+    ):
+        raise RuntimeError("provider credential files must be disabled")
+    from botocore.client import BaseClient
+
+    if not getattr(BaseClient._make_api_call, "_superplane_guard", False):
+        raise RuntimeError("provider allocation guard unavailable")
+    role = os.environ.get("AWS_ROLE_ARN")
+    if not role:
+        # A zero-workspace installation can serve management without cloud auth.
+        value = {"version": 1, "configured": False}
+    else:
+        import boto3
+
+        identity = boto3.client("sts").get_caller_identity()
+        expected = (
+            f"arn:aws:sts::{role.split(':')[4]}:assumed-role/{role.rsplit('/', 1)[-1]}/"
+        )
+        if identity["Account"] != role.split(":")[4] or not identity["Arn"].startswith(
+            expected
+        ):
+            raise RuntimeError("backend provider role mismatch")
+        value = {
+            "version": 1,
+            "configured": True,
+            "provider": "aws",
+            "account_id": identity["Account"],
+            "principal_arn": identity["Arn"],
+            "role_arn": role,
+            "credential_source": "web_identity",
+            "allocation_tags": ["instance", "volume", "network-interface"],
+        }
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value))
+    temporary.chmod(0o644)
+    temporary.replace(path)
+
+
 def main():
     if (
         os.environ.get("IS_SKYPILOT_SERVER") != "true"
@@ -60,6 +115,7 @@ def main():
     # server config writer is running. The pinned API persists this in PostgreSQL.
     skypilot_config.update_api_server_config_no_lock(desired)
     engine.dispose()
+    provider_identity()
     os.execv(sys.executable, [sys.executable, "-m", "sky.server.server", *sys.argv[1:]])
 
 

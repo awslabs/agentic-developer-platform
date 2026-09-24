@@ -4,13 +4,22 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CreateWorkspaceRequest(BaseModel):
     """POST /workspaces — create a new workspace."""
 
     operation_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    mode: str = Field(
+        default="managed", pattern="^(managed|adopt|new-account-managed)$"
+    )
+    region: str | None = None
+    cluster_reference: str | None = None
+    plan_revision: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    approval_id: uuid.UUID | None = None
+    account_email: str | None = None
+    organizational_unit_id: str | None = None
     name: str = Field(..., min_length=1, max_length=255)
     isolation_mode: str = Field(
         default="dedicated", pattern="^(dedicated|namespace|research)$"
@@ -33,6 +42,8 @@ class CreateWorkspaceRequest(BaseModel):
         description="Maximum number of GPUs allowed (budget guardrail)",
     )
 
+    model_config = ConfigDict(extra="forbid")
+
     @model_validator(mode="after")
     def research_requires_account(self) -> "CreateWorkspaceRequest":
         """Research isolation mode requires an AWS account."""
@@ -50,6 +61,8 @@ class WorkspaceResponse(BaseModel):
     isolation_mode: str
     display_name: str = Field(description="Name with isolation tag for display")
     status: str
+    provisioning_operation_id: str | None = None
+    operation_state: str | None = None
     is_default: bool = Field(
         default=False, description="Platform default workspace (not deletable via CLI)"
     )

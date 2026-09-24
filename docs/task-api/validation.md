@@ -37,12 +37,13 @@ Do not commit tokens, signed download URLs, private credentials or unrelated
 customer task content. A reviewer must be able to trace each result to the
 specific code/configuration tested.
 
-The contract story freezes measurable limits before acceptance: progress latency,
-revocation/cancellation bounds, concurrency, event sizes, retry windows and
-retention. Tests cannot choose looser limits after observing a failure. For a
-controlled healthy live fixture, the proposed streaming target is two distinct
-authored updates delivered within five seconds each while the task is held open;
-T0 confirms or amends that target before implementation.
+The [implementation contract](implementation-design.md#10-fixed-pilot-limits-and-evidence-thresholds)
+records numeric limits accepted in this design session before engine implementation. T0
+encodes the accepted limits in fixtures; evaluators cannot choose looser limits
+after observing a failure. The controlled healthy streaming fixture requires two
+distinct authored updates delivered within five seconds each while held open.
+Every report also identifies the accepted design SHA. Design contradictions return
+to this session; they are not choices for T0 or V0 to settle independently.
 
 ## 1a. V0 — Contract baseline and evaluation readiness
 
@@ -60,7 +61,7 @@ T0 confirms or amends that target before implementation.
 | V0-07 | An independent consistency review records cross-component contradictions and their resolution against the exact T0 source revision. No unresolved contract contradiction or required decision remains at PASS. |
 | V0-08 | T0 publishes a runnable contract-check entry point and the versioned command/evidence manifest used by later waves. Contract checks actually execute and produce the V0 criterion report. Future runtime/live commands are explicitly identified as not yet implemented until their owning stories supply them; they are not presented as existing tests. |
 
-T0 supplies the runnable contract validator and versioned command/report/coverage manifest. The evaluator checks out the exact T0 revision, executes that validator and records the independent consistency review. All eight IDs must have reproducible PASS evidence. Missing decisions, commands, collected tests or required evidence remain BLOCKED/NOT RUN. Failures return to T0 for correction and independent rerun.
+T0 implements the runnable contract validator and versioned command/report/coverage manifest against the design accepted here. The evaluator checks out the exact T0 revision, executes that validator and records the independent consistency review. All eight IDs must have reproducible PASS evidence. Missing decisions, commands, collected tests or required evidence remain BLOCKED/NOT RUN. Implementation failures return to T0 for correction and independent rerun. A design gap blocks the affected handoff and returns to this design session; V0 cannot approve an architecture change.
 
 The [wave plan](waves.md) defines tooling ownership, evidence fields and failure/retry behavior for all six evaluations. It preserves every existing criterion below. Runtime test implementations and environment-specific runner bindings are delivered by their owning stories before execution; this document claims no completed result.
 
@@ -170,10 +171,26 @@ rollback after end-to-end behavior is established. Each evaluator should have
 clear fixture ownership to avoid modifying another evaluation's task or flag.
 
 The native GitHub child stories carry these V0-V5 scopes and dependencies.
-T0 defines the shared command/report manifest; each component owner supplies its
+T0 implements the shared command/report manifest from the accepted design; each component owner supplies its
 wave fixtures before qualification. V1-V3 do not wait for T8. T8 assembles earlier
 fixtures into bounded V4/V5 external, coexistence and operational tooling.
 Implementation agents own fixes for failed criteria;
 evaluators record evidence and rerun affected criteria. No validation story
 authorizes unrestricted traffic, infrastructure changes, paid model runs or
 retirement of the existing paths by itself.
+
+## 8. Additional conformance evidence from the design review
+
+All original acceptance rows above remain intact. The implementation contract adds
+these explicit scenarios to the existing criteria; none are substitutes for a
+required test or evidence lane.
+
+| Existing criteria | Additional required scenarios |
+|---|---|
+| V0-01–V0-08 | Trace O1–O8 to the design accepted here, then to schema/fixture implementation. Verify the assignment contains that immutable design revision and no engine design/reauthoring instruction. |
+| V1-01/V1-02/V1-08 | Exact Cognito client alias/canonical principal mapping, gateway/Lambda parity, separate service task policy, no human-control impersonation, and denied unregistered task policy. |
+| V1-06/V1-07 | No legacy index exposure; mixed legacy/task batch and transaction writes cannot evade task IAM denies; legacy gateway routes cannot act as a deputy; task artifact prefixes are isolated. |
+| V3-01–V3-03 | Crash/duplicate delivery matrix, safe pre-model worker replacement, distinct run/generation/runtime attempt IDs, stale callback rejection and separately confirmed queue acknowledgement. |
+| V3-07 | Fault injection across command acceptance, unique transcript/turn commit, model-send claim, physical send, persisted model result and child acknowledgement. One command/turn assignment, no blind upstream replay, and explicit unknown handoff. The consumption boundary is the visible design decision in implementation contract section 8. |
+| V3-08/V3-09 | Input authority revalidation immediately before handoff; typed cancellation blocks all further attempts; process exit and unknown provider outcome remain distinct; actual 30-second revocation bound. |
+| V4-01/V5-02–V5-04 | Task-capable shared consumer cohort and actual deployment/component bindings. A successful code merge or unresolved deployment manifest cannot pass release qualification. |

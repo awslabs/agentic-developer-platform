@@ -49,10 +49,12 @@ type SkyPilotHealthChecker interface {
 // the control plane. It implements manager.Runnable so it can be registered
 // with the controller-runtime manager via mgr.Add().
 type HeartbeatSender struct {
+	Namespace             string
 	WorkspaceID           string
 	Credential            string
 	SigningKey            string
 	RequireAuthentication bool
+	NativeNodes           bool // Governed native EKS health; never derives billing from nodes.
 	Client                client.Client
 	SkyChecker            SkyPilotHealthChecker
 	APIURL                string        // Control plane API base URL
@@ -112,10 +114,13 @@ func (h *HeartbeatSender) Collect(ctx context.Context) ClusterHeartbeat {
 		Timestamp:         time.Now(),
 		Alerts:            []HeartbeatAlert{},
 	}
+	if h.NativeNodes {
+		return h.collectNativeNodes(ctx, hb)
+	}
 
 	// 1. List all SuperplaneNodes and compute node/GPU/cost summaries.
 	var nodeList superplanev1.SuperplaneNodeList
-	if err := h.Client.List(ctx, &nodeList); err != nil {
+	if err := h.Client.List(ctx, &nodeList, client.InNamespace(h.Namespace)); err != nil {
 		logger.Error(err, "failed to list SuperplaneNodes")
 		hb.Status = "degraded"
 		hb.Alerts = append(hb.Alerts, HeartbeatAlert{
@@ -143,6 +148,38 @@ func (h *HeartbeatSender) Collect(ctx context.Context) ClusterHeartbeat {
 	// 4. Determine overall status.
 	hb.Status = h.computeStatus(hb)
 
+	return hb
+}
+
+// collectNativeNodes reads only nodes labelled for this workspace. The signed
+// observation reports health; financial exposure comes from trusted inventory.
+func (h *HeartbeatSender) collectNativeNodes(ctx context.Context, hb ClusterHeartbeat) ClusterHeartbeat {
+	hb.Status = "degraded"
+	if h.WorkspaceID == "" {
+		return hb
+	}
+	var nodes corev1.NodeList
+	if err := h.Client.List(ctx, &nodes, client.MatchingLabels{"superplane.ai/workspace": h.WorkspaceID}); err != nil {
+		return hb
+	}
+	hb.NodeSummary.Total = len(nodes.Items)
+	for _, node := range nodes.Items {
+		ready := false
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status == corev1.ConditionTrue {
+				ready = true
+			}
+		}
+		if ready && node.Spec.ProviderID != "" && node.DeletionTimestamp == nil {
+			hb.NodeSummary.Ready++
+		} else {
+			hb.NodeSummary.NotReady++
+		}
+	}
+	hb.SkyPilotHealthy = h.checkSkyPilotHealth(ctx)
+	if hb.SkyPilotHealthy && hb.NodeSummary.NotReady == 0 {
+		hb.Status = "healthy"
+	}
 	return hb
 }
 
@@ -328,11 +365,11 @@ func (h *HeartbeatSender) checkSkyPilotHealth(ctx context.Context) bool {
 // countPendingPods counts pods in Pending phase that request GPU resources.
 func (h *HeartbeatSender) countPendingPods(ctx context.Context) int {
 	var podList corev1.PodList
-	if err := h.Client.List(ctx, &podList, client.MatchingFields{
+	if err := h.Client.List(ctx, &podList, client.InNamespace(h.Namespace), client.MatchingFields{
 		"status.phase": string(corev1.PodPending),
 	}); err != nil {
 		// If field selector is not indexed, fall back to listing all pods.
-		if err := h.Client.List(ctx, &podList); err != nil {
+		if err := h.Client.List(ctx, &podList, client.InNamespace(h.Namespace)); err != nil {
 			return 0
 		}
 	}

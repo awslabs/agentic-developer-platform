@@ -295,8 +295,16 @@ class CostReconciler:
         for node in nodes:
             hourly_rate = node.hourly_cost_usd or Decimal("0")
 
-            start = max(node.created_at, day_start) if node.created_at else day_start
-            end = node.terminated_at or now
+            # Node timestamps are stored as UTC. SQLite returns them without
+            # tzinfo, unlike PostgreSQL's timestamptz; restore that UTC meaning.
+            created_at = node.created_at
+            if created_at is not None and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            terminated_at = node.terminated_at
+            if terminated_at is not None and terminated_at.tzinfo is None:
+                terminated_at = terminated_at.replace(tzinfo=timezone.utc)
+            start = max(created_at, day_start) if created_at else day_start
+            end = terminated_at or now
             if end > now:
                 end = now
             if end < day_start:

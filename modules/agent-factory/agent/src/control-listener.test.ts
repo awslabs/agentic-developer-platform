@@ -269,6 +269,7 @@ test('signed pause and resume preserve acceptance order across delayed revalidat
     currentAttempt: () => unitAttempt,
     activeWorkCount: () => gate.activeToolCount(),
     subscribe: (listener) => gate.subscribe(event => listener({ ...event, attemptId: unitAttempt })),
+    isCancelled: () => false,
   }, store });
   const listener = new ControlListener({
     bindAddress: '127.0.0.1', port: await freePort(), token: TOKEN,
@@ -280,6 +281,9 @@ test('signed pause and resume preserve acceptance order across delayed revalidat
       await applyControlCommand({ action, commandId, store, adapter: {
         requestPause: (options) => gate.requestPause(options),
         resumeFromPause: async () => { await gate.resume(); },
+        // Unused: this case drives pause/resume only. Abort's own executor
+        // behaviour is covered in `agent-worker-abort.test.ts` (#3963).
+        cancel: () => {},
       } });
     },
   });
@@ -1824,6 +1828,7 @@ test.each([60_000, 1])('bounds delivered pauses through the signed listener and 
         await applyControlCommand({ action, commandId, store, adapter: {
           requestPause: options => gate.requestPause(options),
           resumeFromPause: async () => { await gate.resume(); },
+          cancel: () => {},
         } });
       } finally { liveExecutors -= 1; }
     },

@@ -102,6 +102,55 @@ def _expected(**overrides) -> ExpectedPrerequisites:
     )
 
 
+def test_retained_sts_rule_uses_exact_reviewed_identity_without_claiming_tags(target):
+    from superplane_bootstrap.prerequisites import verify_network_prerequisites
+
+    class ExternalSts(FakePrerequisiteAccess):
+        def security_group_rule(self, group_id, source, port, protocol):
+            value = dict(super().security_group_rule(group_id, source, port, protocol))
+            if group_id != CLUSTER_SG_ID:
+                value.update(tags={}, created_by_bootstrap=False)
+            return value
+
+    items = verify_network_prerequisites(
+        access=ExternalSts(),
+        target=target,
+        expected=_expected(retained_sts_rule_id=MANAGEMENT_RULE_ID),
+        provider_account_id=ACCOUNT_ID,
+    )
+    retained = next(item for item in items if item.kind == MANAGEMENT_RULE)
+    assert retained.identifier == MANAGEMENT_RULE_ID
+    assert not retained.removable
+
+
+@pytest.mark.parametrize("fault", ["identity", "ownership", "api-tags"])
+def test_retained_sts_exception_cannot_adopt_another_rule_or_hide_api_attribution(
+    target, fault
+):
+    from superplane_bootstrap.prerequisites import verify_network_prerequisites
+
+    class Changed(FakePrerequisiteAccess):
+        def security_group_rule(self, group_id, source, port, protocol):
+            value = dict(super().security_group_rule(group_id, source, port, protocol))
+            if group_id != CLUSTER_SG_ID:
+                value.update(tags={}, created_by_bootstrap=False)
+                if fault == "identity":
+                    value["rule_id"] = "sgr-another"
+                elif fault == "ownership":
+                    value["created_by_bootstrap"] = True
+            elif fault == "api-tags":
+                value["tags"] = {}
+            return value
+
+    with pytest.raises(BootstrapRefused):
+        verify_network_prerequisites(
+            access=Changed(),
+            target=target,
+            expected=_expected(retained_sts_rule_id=MANAGEMENT_RULE_ID),
+            provider_account_id=ACCOUNT_ID,
+        )
+
+
 def _verify(target, access=None, *, store=None, **overrides):
     arguments = {
         "access": access if access is not None else FakePrerequisiteAccess(),

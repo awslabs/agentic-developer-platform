@@ -78,6 +78,34 @@ def _install(adapter) -> None:
         setattr(module, attribute, adapter)
 
 
+def _unconfigured(monkeypatch) -> None:
+    """Make this process's settings configure no adapter at all.
+
+    Needed because ``installation.capability_details`` composes before it probes —
+    that IS the #5535 fix, and without it the packaged preflight probed an
+    uncomposed process and reported every port absent regardless of configuration.
+    The consequence here is that ``_install(None)`` alone no longer produces an
+    uncomposed process: ``conftest`` sets ``DATABASE_URL``, so composition
+    immediately installs the three real harness-backed adapters, and they correctly
+    refuse the probe and report composed.
+
+    So "nothing is installed" has to be expressed as what it actually is — a
+    deployment that configured nothing — rather than as a global someone cleared.
+    Clearing the globals and asserting False would have tested that composition is
+    broken.
+
+    ``monkeypatch.setattr`` on the settings object, and only for the duration of the
+    test: ``compose()`` with no argument reads the process settings, which is the
+    path the CLI and the boot gate take, and that path is the one under test.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "database_url", "", raising=False)
+    monkeypatch.setattr(settings, "adp_gateway_internal_url", "", raising=False)
+    monkeypatch.setattr(settings, "adp_gateway_internal_api_key", "", raising=False)
+    _install(None)
+
+
 class _Placeholder:
     """An object that exists and implements nothing.
 
@@ -209,19 +237,43 @@ class TestTheDefectThisStoryFixes:
 
 
 class TestUncomposedStaysRefused:
-    """The existing fail-closed behaviour is preserved, not relaxed."""
+    """The existing fail-closed behaviour is preserved, not relaxed.
 
-    async def test_no_adapter_installed_reports_no_capability(self):
-        """This repository's actual state today, and it must keep refusing."""
-        _install(None)
+    Since #5535 composed the remaining three ports, "uncomposed" means a deployment
+    that configured nothing — see `_unconfigured`. The property is unchanged and is
+    the one that matters for the installer: an image that was given no configuration
+    reports no capability, and cannot be installed.
+    """
+
+    async def test_no_adapter_installed_reports_no_capability(self, monkeypatch):
+        """An unconfigured deployment must keep refusing, on every port."""
+        _unconfigured(monkeypatch)
         capabilities = await installation.capabilities_async()
         assert capabilities == dict.fromkeys(PORTS, False)
 
-    async def test_the_absent_case_says_so_plainly(self):
-        _install(None)
+    async def test_the_absent_case_says_so_plainly(self, monkeypatch):
+        _unconfigured(monkeypatch)
         details = await installation.capability_details()
         for name, report in details.items():
             assert report["detail"] == "no adapter installed", name
+
+    async def test_the_readout_names_the_setting_that_is_missing(self, monkeypatch):
+        """``detail`` says no adapter; ``composition`` says why there is none.
+
+        The distinction is the operator's next step. "No adapter installed" alone
+        leaves them reading source to find out which variable to set, and it reads
+        identically for a misconfigured deployment and a broken image. Composition's
+        own explanation names the setting, and it cannot inflate a capability because
+        ``composed`` stays the probe's answer — asserted False here alongside it.
+        """
+        _unconfigured(monkeypatch)
+        details = await installation.capability_details()
+        for name, report in details.items():
+            assert report["composed"] is False, name
+            explanation = report["composition"]["detail"]
+            assert "DATABASE_URL" in explanation or "ADP_GATEWAY_INTERNAL_URL" in (
+                explanation
+            ), (name, explanation)
 
     async def test_an_adapter_missing_the_probed_method_is_refused(self):
         """Partial implementations fail on the part they are missing."""
@@ -599,9 +651,11 @@ class TestProbesAreSafeToRunOnEveryBoot:
 class TestExistingConsumerContractsAreUnchanged:
     """Four consumers read this. All keep their current meaning."""
 
-    def test_the_cli_still_exits_2_and_prints_the_capabilities_key(self, capsys):
+    def test_the_cli_still_exits_2_and_prints_the_capabilities_key(
+        self, capsys, monkeypatch
+    ):
         """``installation/runner.py:288`` parses exactly this shape."""
-        _install(None)
+        _unconfigured(monkeypatch)
         assert installation.main(["capabilities"]) == 2
         payload = json.loads(capsys.readouterr().out)
         assert set(payload["capabilities"]) == set(PORTS)
@@ -649,7 +703,7 @@ class TestExistingConsumerContractsAreUnchanged:
         Now for a stronger reason: the answer comes from calling the adapter, so
         there is no flag in the path that could be flipped.
         """
-        _install(None)
+        _unconfigured(monkeypatch)
         monkeypatch.setenv("CREDENTIAL_EVIDENCE_AVAILABLE", "true")
         monkeypatch.setenv("B_OPERATION_AUTHORITY_AVAILABLE", "true")
         assert installation.main(["capabilities"]) == 2

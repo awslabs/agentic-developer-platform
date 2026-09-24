@@ -71,6 +71,8 @@ __all__ = [
 
 
 POLICY_DIR = Path(__file__).resolve().parent.parent / "policies"
+if Path(__file__).with_name("_data").is_dir():
+    POLICY_DIR = Path(__file__).with_name("_data") / "policies"
 """Where the reviewed trust and permission documents live.
 
 Resolved from this file rather than left as a bare relative `file://` argument. The commands
@@ -352,6 +354,7 @@ class BootstrapPlan:
     `BootstrapPlan(...)` construction the ordering tests use. Absent means the comparison is
     NOT MADE rather than passed, on the same footing as `unchecked_authorization`.
     """
+    operation_org_id: str | None = None
 
     @property
     def account_wide_steps(self) -> tuple[BootstrapStep, ...]:
@@ -659,6 +662,7 @@ def bootstrap_plan(
         # It is what lets `recovery_report` establish that a creation attempt's account id is
         # about this plan's account and not another workspace's.
         account_identity_key=account_identity_key(request),
+        operation_org_id=authorization.operation_org_id if authorization else None,
     )
     check_order(plan)
     return plan

@@ -171,12 +171,17 @@ def validate(
         "image_execution",
         "gateway_namespace",
         "cluster_dns_ip",
+        "execution",
+        "controller_profiles",
     }
     require(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
     )
     cluster_dns_address(env)
+    from .execution import validate_execution
+
+    validate_execution(env, lock)
     require(
         env.get("image_execution", "docker") in {"docker", "cluster"},
         "image_execution must be docker or cluster",
@@ -360,7 +365,7 @@ def validate(
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         require(
-            head == "021_deployment_identity",
+            head == "031_controller_deployment_registry",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})
@@ -405,9 +410,16 @@ def validate(
     )
     if not control_plane_only:
         require(
+            env.get("execution") is not None,
+            "Full activation requires the trusted executor release and existing run projections",
+        )
+        require(
             env.get("controller_ownership") == "single-workspace-controller",
             "Explicit single-controller ownership is required",
         )
+    from .controller_profiles import validate_profiles
+
+    validate_profiles(env, control_plane_only=control_plane_only)
 
 
 def image(lock: dict, component: str) -> str:

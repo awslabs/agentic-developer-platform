@@ -282,4 +282,12 @@ def build_vault_client(settings: Any) -> AdpVaultClient | None:
             "ADP vault client is not configured; credential evidence will be unavailable"
         )
         return None
-    return AdpVaultClient(base_url=base_url, api_key=api_key)
+    # The timeout comes from settings so the bound is a deployment decision rather
+    # than an image constant (#5535). `getattr` with the module default, because this
+    # function accepts any settings-shaped object — including the stubs the
+    # composition tests pass — and a missing attribute must fall back to the safe
+    # bound rather than raise. `or` is deliberately not used: it would treat a
+    # configured 0.0 as absent, and 0.0 is refused by the setting's validator, so
+    # silently replacing it with 10.0 would hide a misconfiguration.
+    timeout = getattr(settings, "adp_vault_timeout_seconds", _DEFAULT_TIMEOUT)
+    return AdpVaultClient(base_url=base_url, api_key=api_key, timeout=timeout)
