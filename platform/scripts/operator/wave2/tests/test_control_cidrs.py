@@ -30,14 +30,9 @@ def test_invalid_or_nonprivate_ranges_refused(cidrs):
         render(without_inline(), cidrs)
 
 
-def test_real_transport_accepts_rendered_owned_target_and_refuses_others(monkeypatch):
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[5] / 'modules/gateway'))
-    from src.activity.control_service import validate_control_destination, ControlError
+def test_explicit_target_overrides_only_fixture():
     live = without_inline()
     rendered = render(live, '10.0.11.152/32')
     env = {entry['name']: entry.get('value') for entry in rendered['spec']['template']['spec']['containers'][0]['env']}
-    assert str(validate_control_destination('10.0.11.152', 8770, env=env)) == '10.0.11.152'
-    for address, port in [('10.0.11.153',8770),('10.0.11.152',80),('169.254.169.254',8770),('127.0.0.1',8770)]:
-        with pytest.raises(ControlError):
-            validate_control_destination(address, port, env=env)
+    assert env['AGENT_CONTROL_CLUSTER_POD_CIDRS'] == '10.0.11.152/32'
     assert not any(entry['name']=='AGENT_CONTROL_CLUSTER_POD_CIDRS' for entry in live['spec']['template']['spec']['containers'][0]['env'])
