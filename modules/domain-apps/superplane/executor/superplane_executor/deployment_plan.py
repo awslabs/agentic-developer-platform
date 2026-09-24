@@ -78,6 +78,8 @@ PROFILE_FIELDS = frozenset(
 GPU_PROFILE_FIELDS = (PROFILE_FIELDS - {"instance_type"}) | {
     "accelerators",
     "max_gpus_per_node",
+    "cpus",
+    "memory_gb",
 }
 
 
@@ -280,7 +282,7 @@ def build_deployment_preview(
             ).hexdigest(),
         )
         capacity_fields = (
-            ("accelerators", "max_gpus_per_node")
+            ("accelerators", "max_gpus_per_node", "cpus", "memory_gb")
             if data["version"] == 3
             else ("instance_type",)
         )

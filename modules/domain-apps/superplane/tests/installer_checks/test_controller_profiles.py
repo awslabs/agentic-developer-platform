@@ -22,7 +22,9 @@ def test_installed_gpu_requirements_do_not_need_a_preselected_machine(
 ):
     profile = selected_profiles(environment)["approved-model"]
     del profile["instance_type"]
-    profile.update(accelerators=["A10G:1", "L4:1"], max_gpus_per_node=1)
+    profile.update(
+        accelerators=["A10G:1", "L4:1"], max_gpus_per_node=1, cpus=4, memory_gb=32
+    )
     validate(environment, release)
     encoded = json.loads(policy(environment))
     assert encoded == environment["controller_profiles"]

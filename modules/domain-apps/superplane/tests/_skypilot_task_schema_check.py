@@ -68,6 +68,8 @@ def test_actual_executor_task_preserves_choices_join_and_physical_limit(monkeypa
             "disk_size": 100,
             "accelerators": ["A10G:1", "L4:1"],
             "max_gpus_per_node": 4,
+            "cpus": 4,
+            "memory_gb": 32,
         },
         "sp-" + "a" * 32,
         (),
@@ -92,3 +94,5 @@ def test_actual_executor_task_preserves_choices_join_and_physical_limit(monkeypa
         assert str(resource.cloud).lower() == "aws"
         assert resource.region == "us-east-1"
         assert resource.labels["superplane-max-gpus-per-node"] == "4"
+        assert resource.cpus == "4+"
+        assert resource.memory == "32+"

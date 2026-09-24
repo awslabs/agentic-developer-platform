@@ -82,6 +82,8 @@ class Plan:
                     fields = (fields - {"instance_type"}) | {
                         "accelerators",
                         "max_gpus_per_node",
+                        "cpus",
+                        "memory_gb",
                     }
                 if set(data) != fields:
                     raise ValueError("unsupported versioned plan")
@@ -261,6 +263,24 @@ class Plan:
                 r"[1-9][0-9]{0,4}m?", workload["cpu"]
             ) or not re.fullmatch(r"[1-9][0-9]{0,4}[MG]i", workload["memory"]):
                 raise ValueError("invalid workload resources")
+            if data["version"] == 3:
+                cpu_millis = int(workload["cpu"].removesuffix("m")) * (
+                    1 if workload["cpu"].endswith("m") else 1000
+                )
+                memory_mib = int(workload["memory"][:-2]) * (
+                    1024 if workload["memory"].endswith("Gi") else 1
+                )
+                if (
+                    type(data["cpus"]) is not int
+                    or not 1 <= data["cpus"] <= 1024
+                    or type(data["memory_gb"]) is not int
+                    or not 1 <= data["memory_gb"] <= 16384
+                    or data["cpus"] * 1000 <= cpu_millis
+                    or data["memory_gb"] * 1024 <= memory_mib
+                ):
+                    raise ValueError(
+                        "machine CPU and memory minimums must leave room for node services"
+                    )
             if workload["kind"] == "serving":
                 if (
                     type(workload["port"]) is not int
@@ -350,6 +370,8 @@ class Plan:
             task["resources"]["labels"]["superplane-max-gpus-per-node"] = str(
                 data["max_gpus_per_node"]
             )
+            task["resources"]["cpus"] = f"{data['cpus']}+"
+            task["resources"]["memory"] = f"{data['memory_gb']}+"
         else:
             task["resources"]["instance_type"] = data["instance_type"]
         return json.dumps(task)

@@ -215,15 +215,25 @@ def test_normal_certificate_plan_fits_unchanged_shared_parameter_bounds():
         "boolean",
         "undersized",
         "injection",
+        "cpu",
+        "memory",
     ],
 )
 def test_gpu_constraints_use_skypilot_selection_with_an_exact_physical_envelope(change):
     profile = profile_fixture(uuid4())
     del profile["instance_type"]
     profile.update(
-        accelerators=["A10G:1", "L4:1"], max_gpus_per_node=4, physical_gpus=4
+        accelerators=["A10G:1", "L4:1"],
+        max_gpus_per_node=4,
+        physical_gpus=4,
+        cpus=4,
+        memory_gb=32,
     )
-    if change == "fixed":
+    if change == "cpu":
+        profile["cpus"] = 2
+    elif change == "memory":
+        profile["memory_gb"] = 8
+    elif change == "fixed":
         profile["instance_type"] = "g5.xlarge"
     elif change == "empty":
         profile["accelerators"] = []

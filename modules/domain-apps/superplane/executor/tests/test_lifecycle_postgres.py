@@ -255,6 +255,8 @@ async def system(pool, tmp_path, request):
             certificate_authority=base64.b64encode(certificate.encode()).decode(),
             accelerators=["A10G:1", "L4:1"],
             max_gpus_per_node=4,
+            cpus=4,
+            memory_gb=16,
         )
         del data["instance_type"]
     kube = Kubernetes(cloud)

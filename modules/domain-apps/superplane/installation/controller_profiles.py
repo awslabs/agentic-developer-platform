@@ -38,6 +38,8 @@ PROFILE_FIELDS = {
 GPU_PROFILE_FIELDS = (PROFILE_FIELDS - {"instance_type"}) | {
     "accelerators",
     "max_gpus_per_node",
+    "cpus",
+    "memory_gb",
 }
 
 
