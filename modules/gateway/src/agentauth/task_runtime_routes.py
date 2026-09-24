@@ -51,20 +51,20 @@ class AttemptBody(BaseModel):
     old_attempt_invalidated: Literal[True]
 
 
-def task_runtime(runtime):
+def task_runtime(runtime, *, stop_only=False):
     env = os.environ if runtime.env is None else runtime.env
-    if env.get("ADP_TASK_API_ADMISSION_ENABLED", "false").lower() != "true":
+    if not stop_only and env.get("ADP_RUN_TASKS_ENABLED", "false").lower() != "true":
         raise HTTPException(503, "task runtime unavailable")
     return TaskRuntime(TaskStore(dynamodb_client=runtime.store.client,
         table_name=env.get("WEBHOOK_EVENTS_TABLE"), authority_table_name=runtime.store.table), env=env)
 
 
-async def _authenticate(request, *, require_attempt):
+async def _authenticate(request, *, require_attempt, stop_only=False):
     runtime = get_agent_runtime()
     try:
         pod = await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, ""))
-        identity = await run_in_threadpool(task_runtime(runtime).authenticate,
-            credential=request.headers.get(CREDENTIAL_HEADER, ""), pod=pod, require_attempt=require_attempt)
+        identity = await run_in_threadpool(task_runtime(runtime, stop_only=stop_only).authenticate,
+            credential=request.headers.get(CREDENTIAL_HEADER, ""), pod=pod, require_attempt=require_attempt, stop_only=stop_only)
         if await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, "")) != pod:
             raise WorkloadRefusedError("workload changed")
         return identity
@@ -74,6 +74,11 @@ async def _authenticate(request, *, require_attempt):
 
 async def authenticate_task_attempt(request: Request):
     return await _authenticate(request, require_attempt=True)
+
+
+async def authenticate_task_settlement(request: Request):
+    """Only terminal/stop evidence routes may consume this restricted identity."""
+    return await _authenticate(request, require_attempt=True, stop_only=True)
 
 
 @router.post("/bootstrap")

@@ -63,7 +63,7 @@ class TaskServicePolicyStore:
         document = {
             name: _DESERIALIZER.deserialize(value)
             for name, value in item.items()
-            if name not in {"pk", "sk", "scope", "record_type"}
+            if name not in {"pk", "sk", "scope", "record_type", "personas"}
         }
         document["tenant_id"] = tenant_id
         return document
@@ -91,7 +91,11 @@ class TaskServicePolicyStore:
         }
         stored_document = {name: value for name, value in document.items() if name != "tenant_id"}
         stored_document["scope"] = {"tenant_id": tenant_id}
-        item = {name: _SERIALIZER.serialize(value) for name, value in stored_document.items()}
+        # T1's acceptance and every conditional mutation use this same field.
+        # It is written atomically with the public policy projection, never by
+        # a worker or a second admission-specific policy writer.
+        stored_document["personas"] = set(policy["allowed_personas"])
+        item = {name: _SERIALIZER.serialize(_decimal_json(value)) for name, value in stored_document.items()}
         item.update(self.key(tenant_id, canonical_principal_id))
         condition = "attribute_not_exists(pk)" if expected_version == 0 else "#version = :expected"
         put = {
@@ -166,3 +170,14 @@ def _validate_policy(policy: dict) -> None:
         value = limits.get(name)
         if not isinstance(value, int | float | Decimal) or isinstance(value, bool) or value <= 0 or value > ceiling:
             raise TaskServicePolicyError("invalid_policy")
+
+
+def _decimal_json(value):
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: _decimal_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decimal_json(item) for item in value]
+    return value
+

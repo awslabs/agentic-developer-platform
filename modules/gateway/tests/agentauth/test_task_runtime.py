@@ -75,3 +75,67 @@ def test_bootstrap_body_cannot_name_another_task(runtime):
     service, pod, body, delivery = runtime
     with pytest.raises(BootstrapRefusedError):
         service.bootstrap(body={**body, "task_id": "tsk_" + str(uuid.uuid4())}, pod=pod, delivery=delivery)
+
+
+def test_admin_policy_is_consumed_by_actual_acceptance(client, store):
+    from src.agentauth.task_service_policy import TaskServicePolicyStore
+    from tests.tasks.test_store import AUTHORITY_TABLE
+    policy_store = TaskServicePolicyStore(table_name=AUTHORITY_TABLE, client=client, clock=lambda: NOW)
+    client.delete_item(TableName=AUTHORITY_TABLE, Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}})
+    policy_store.put(tenant_id="tenant-a", canonical_principal_id="svc-principal-1", expected_version=0,
+        updated_by="operator", policy={"status": "active", "allowed_personas": ["agent-task-investigator"],
+            "task_scopes": ["submit", "read"], "model_policy_version": "model-v1",
+            "limits": {"max_duration_minutes": 30, "max_turns": 8, "max_output_tokens_per_turn": 4096, "max_usd_per_task": 1}})
+    request = _request()
+    assert store.accept(request).task_id == request.task_id
+    assert store.resolve_work(request.dispatch_id)["envelope"] == request.envelope
+
+
+def test_bootstrap_replay_keeps_execution_reservations_once(runtime):
+    service, pod, body, delivery = runtime
+    service.bootstrap(body=body, pod=pod, delivery=delivery)
+    service.bootstrap(body=body, pod=pod, delivery=delivery)
+    task = service.repository.read_task(body["task_id"])
+    grant = service._grant(task["scope"]["tenant"], task["invocation_id"], task["generation"])
+    assert len(grant["execution_capacity_keys"]) == 3
+    for key in grant["execution_capacity_keys"]:
+        assert service.repository._get_authority(key, "ACTIVE")["active_count"] == 1
+
+
+def test_expired_credential_only_allows_bound_stop_evidence(runtime):
+    from datetime import timedelta
+
+    from src.agentauth.run_credential import CredentialError
+    service, pod, body, delivery = runtime
+    result = service.bootstrap(body=body, pod=pod, delivery=delivery)
+    identity = service.authenticate(credential=result["run_credential"], pod=pod, require_attempt=False)
+    service.register_attempt(identity=identity, body={"task_id": identity.task_id,
+        "invocation_id": identity.invocation_id, "generation": identity.generation, "runtime_attempt_id": str(uuid.uuid4())})
+    service.clock = lambda: NOW + timedelta(minutes=31)
+    with pytest.raises(CredentialError):
+        service.authenticate(credential=result["run_credential"], pod=pod)
+    assert service.authenticate(credential=result["run_credential"], pod=pod, stop_only=True).task_id == identity.task_id
+    with pytest.raises(BootstrapRefusedError):
+        service.authenticate(credential=result["run_credential"],
+            pod=SimpleNamespace(uid=str(uuid.uuid4()), namespace=pod.namespace), stop_only=True)
+
+
+def test_principal_execution_limit_is_atomic(runtime):
+    service, pod, body, delivery = runtime
+    service.bootstrap(body=body, pod=pod, delivery=delivery)
+    for number in (2, 3):
+        request = _request(idempotency_key=f"task-{number}")
+        service.repository.accept(request)
+        next_pod = SimpleNamespace(uid=str(uuid.uuid4()), namespace=pod.namespace)
+        next_body = {"task_id": request.task_id, "invocation_id": request.invocation_id,
+            "envelope_digest": envelope_digest(request.envelope), "workload": {"pod_uid": next_pod.uid, "namespace": next_pod.namespace}}
+        next_delivery = SimpleNamespace(require_assignment=lambda *args: None, read=lambda uid: {"body": json.dumps(request.envelope)})
+        if number == 2:
+            service.bootstrap(body=next_body, pod=next_pod, delivery=next_delivery)
+        else:
+            with pytest.raises(BootstrapRefusedError, match="capacity"):
+                service.bootstrap(body=next_body, pod=next_pod, delivery=next_delivery)
+            assert "workload_uid" not in service._grant(request.tenant, request.invocation_id, 1)
+    task = service.repository.read_task(body["task_id"])
+    for key in service._grant(task["scope"]["tenant"], task["invocation_id"], 1)["execution_capacity_keys"]:
+        assert service.repository._get_authority(key, "ACTIVE")["active_count"] == 2
