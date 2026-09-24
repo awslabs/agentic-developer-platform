@@ -50,8 +50,14 @@ variable "additional_private_subnet_ids_by_az" {
     give new nodes more addresses — the NodeClass itself must not be edited.
 
     ADDITIVE, never a replacement: entries are appended to var.private_subnet_ids,
-    which always stays in the cluster's subnet set. Empty (the default, and the
-    shipped configuration) leaves the subnet set exactly as it is today.
+    which always stays in the cluster's subnet set.
+
+    Empty (the default, and the shipped configuration) leaves an un-widened
+    cluster exactly as it is. It is NOT a no-op on a cluster that has already
+    been widened: there, empty means "the set is just the networking private
+    subnets", and the plan REMOVES the added subnets. That removal re-breaks pod
+    IP assignment for every node launched afterwards, so the deployment paths
+    resolve the value against the live cluster rather than defaulting (below).
 
     This widens the CLUSTER's subnet set only. Every other subnet consumer
     (RDS subnet group, load balancers, Lambda VPC config, VPC endpoints) selects
@@ -72,10 +78,17 @@ variable "additional_private_subnet_ids_by_az" {
     Account-specific by nature, so it is NOT set in the shipped environment
     files. Supply it per-invocation:
       export TF_VAR_additional_private_subnet_ids_by_az='{"us-east-1a":"subnet-..."}'
-    For CI, set the ADDITIONAL_PRIVATE_SUBNETS_BY_AZ repository variable, which
-    platform-infra-apply.yml passes through. `--update` runs rediscover the live
-    cluster's extra subnets and retain them (platform/scripts/upgrade-state.py),
-    so a later routine update cannot silently shrink the subnet set back.
+    For CI, set the ADDITIONAL_PRIVATE_SUBNETS_BY_AZ repository variable. It is
+    NOT passed straight through: once a cluster has been widened, an unset or
+    stale variable would resolve to the default ({}) and plan the additions away.
+    So platform-infra-apply.yml and `--update` runs both resolve the effective
+    map against the LIVE cluster (platform/scripts/capacity_subnets.py) — unset
+    or blank retains what the cluster has, a map that omits a live addition is
+    REFUSED, and narrowing requires an explicit authorisation.
+
+    A bare `terraform apply` with this variable unset gets no such protection:
+    the default applies and the added subnets are planned for removal. Use the
+    documented path, not an ad-hoc apply, on a cluster that has been widened.
 
     Existing nodes are not moved by this; only newly launched nodes can use the
     added subnets.

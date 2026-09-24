@@ -47,9 +47,13 @@ variable "additional_private_subnet_ids_by_az" {
     supported way to give new nodes addresses without editing the NodeClass.
 
     ADDITIVE: appended to the networking module's private subnets, which always
-    remain in the set. Empty (the default) leaves the cluster's subnet set
-    exactly as it is today, and only the EKS cluster's own subnet set is
-    affected — RDS, load balancers, Lambdas and VPC endpoints are not.
+    remain in the set. Only the EKS cluster's own subnet set is affected — RDS,
+    load balancers, Lambdas and VPC endpoints are not.
+
+    Empty (the default) leaves an un-widened cluster as it is, but it is NOT a
+    no-op once subnets have been added: empty then plans their REMOVAL and
+    re-breaks pod IP assignment for nodes launched afterwards. That is why the
+    deployment paths resolve this against the live cluster (see CI, below).
 
     Creates nothing. Every entry is checked at plan time and the plan FAILS
     unless the subnet is in this VPC, is in the zone it is keyed by, assigns no
@@ -64,10 +68,14 @@ variable "additional_private_subnet_ids_by_az" {
 
       export TF_VAR_additional_private_subnet_ids_by_az='{"us-east-1a":"subnet-..."}'
 
-    CI: set the ADDITIONAL_PRIVATE_SUBNETS_BY_AZ repository variable, which
-    platform-infra-apply.yml passes through. `--update` runs rediscover the live
-    cluster's added subnets and retain them, so a routine update cannot silently
-    shrink the subnet set back and re-break pod scheduling.
+    CI: set the ADDITIONAL_PRIVATE_SUBNETS_BY_AZ repository variable. It is NOT
+    passed straight through — on a cluster already widened, an unset or stale
+    variable would resolve to this default and plan the additions away. Both
+    platform-infra-apply.yml and `--update` runs resolve the effective map
+    against the LIVE cluster (platform/scripts/capacity_subnets.py): unset or
+    blank retains, a map omitting a live addition is REFUSED, and narrowing
+    needs an explicit authorisation. A bare `terraform apply` with the variable
+    unset bypasses that and WILL plan the additions away.
   EOT
   type        = map(string)
   default     = {}

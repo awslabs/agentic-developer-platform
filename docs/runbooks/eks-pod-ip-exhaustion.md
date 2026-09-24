@@ -107,16 +107,43 @@ Subnet IDs are account-specific and are deliberately not committed to this
 repository, so they are supplied per-invocation rather than in
 `environments/<env>/platform.tfvars`. An assignment in a `-var-file` — even
 `= {}` — overrides `TF_VAR_`, so adding one there would silently defeat both the
-export below and CI's passthrough.
+export below and the CI resolution described further down.
 
 ```bash
 export TF_VAR_additional_private_subnet_ids_by_az='{"us-east-1a":"subnet-...","us-east-1b":"subnet-..."}'
 ```
 
 For a CI apply, set the `ADDITIONAL_PRIVATE_SUBNETS_BY_AZ` repository variable to
-the same JSON object; `platform-infra-apply.yml` passes it through. Unset or
-blank is a no-op — the declared default (`{}`) applies and the cluster's subnet
-set is left exactly as it is.
+the same JSON object.
+
+**Unset or blank is not a no-op once the cluster has been widened**, and this is
+the trap worth understanding before you rely on any of it. The declared default
+is `{}`, so on a cluster whose exhaustion has already been relieved, "nothing
+configured" means "the subnet set is just the networking private subnets" — and
+the plan removes the additions, re-breaking pod IP assignment for every node
+launched afterwards. Nobody asked for that change; it is the absence of
+configuration being read as an instruction.
+
+Because the ids live outside the repository, unset and "deliberately none" are
+indistinguishable at the variable. Only the live cluster knows which is true, so
+the deployment paths resolve the effective value against it
+(`platform/scripts/resolve-capacity-subnets.py`, rules in `capacity_subnets.py`):
+
+| configuration | result |
+|---|---|
+| unset | retain what the cluster has |
+| blank / whitespace | retain what the cluster has |
+| omits a live addition | **refuse**, naming the subnet |
+| names more | allowed — an operator adding capacity |
+| narrowing | only with `ALLOW_CAPACITY_SUBNET_REMOVAL` |
+
+The same resolved value is used for the plan and the apply, so the plan you
+review is the plan that applies.
+
+**A bare `terraform apply` bypasses all of this.** The protection lives in the
+deployment paths, not in the variable's default. On a widened cluster, run the
+resolver and export its output first (§5), or you are planning the additions
+away.
 
 The map is keyed by the availability zone each subnet is expected to be in. That
 is what makes one-subnet-per-zone structural: a subnet pasted under the wrong
@@ -132,14 +159,85 @@ any AWS lookup happens.
 
 ---
 
-## Section 5 — The plan to expect
+## Section 5 — Rolling it out: prerequisite, preserved inputs, scoped saved plan
 
-Run the plan and read it against this expectation before applying:
+### 5.1 — Prerequisite: the provider/schema mismatch (#5831)
+
+**A full `terraform plan`/`apply` of `platform/infra` is not currently an
+available route on `879318057152/dev`, and this is a hard prerequisite rather
+than a caveat.** The platform source constrains AWS to `~> 5.0` and resolves
+provider 5.100.0, while existing state for `module.eks.aws_eks_addon.coredns`
+carries newer schema fields (`namespace_config`, and resource identity
+`account_id`/`addon_name`/`cluster_name`/`region`). The observable consequences:
+
+- a read-only targeted plan of the cluster warns `Failed to decode resource from
+  state ... unsupported attribute "namespace_config"`;
+- `terraform show -json <saved-plan>` **fails** with `no resource identity schema
+  found for aws_eks_addon.coredns`.
+
+The second one is what blocks rollout: if the saved plan cannot be rendered as
+JSON, it cannot be inspected, and the reviewed-plan requirement cannot be met.
+**Do not work around this** by stripping unsupported fields or identity from
+state, by forgetting/reimporting the add-on, or by applying without the saved-plan
+inspection. #5831 owns the durable repair; this change waits on it.
+
+Also note the root module carries unrelated pending changes, so an ordinary full
+apply would sweep in collateral nobody reviewed. Target the cluster (§5.3).
+
+### 5.2 — Resolve the inputs first, and plan with exactly those
+
+On a cluster that has already been widened, resolve the effective subnet map
+before planning, so the plan preserves the live additions instead of defaulting
+them away (§4):
 
 ```bash
 cd platform/infra
-terraform plan -var-file=../../environments/<env>/platform.tfvars
+export TF_VAR_additional_private_subnet_ids_by_az="$(
+  python3 ../scripts/resolve-capacity-subnets.py \
+    --environment <env> --bucket <state-bucket> \
+    --configured "${ADDITIONAL_PRIVATE_SUBNETS_BY_AZ:-}")"
+echo "$TF_VAR_additional_private_subnet_ids_by_az"
 ```
+
+It exits non-zero rather than printing a map that would narrow the set. Echo and
+read the value: it is the input the plan and the apply both use. Other inputs the
+platform module expects per-invocation (`TF_VAR_eks_public_access_cidrs`,
+`extra_cluster_admin_principal_arns`) must carry their live values too — an
+unset one is its own silent narrowing.
+
+### 5.3 — Save a scoped plan, then inspect that file
+
+```bash
+terraform plan -var-file=../../environments/<env>/platform.tfvars \
+  -target=module.eks.aws_eks_cluster.main -out=/tmp/subnets.tfplan
+terraform show -json /tmp/subnets.tfplan > /tmp/subnets.plan.json   # must exit 0 — see §5.1
+```
+
+Review `/tmp/subnets.plan.json`, then apply **that saved file**
+(`terraform apply /tmp/subnets.tfplan`) so the reviewed plan is the applied plan.
+Re-planning between review and apply discards the review.
+
+> `.github/scripts/verify_scoped_plan.py` has **no scope entry for this change**,
+> so there is no automated guard over this plan — the review is a human one
+> against the expectations below. `-target` also prunes anything the target does
+> not depend on, which is why the subnet and route-table validations are wired
+> upstream of the cluster (`modules/eks/main.tf`); they run under a targeted plan
+> and their regression tests assert exactly that.
+
+### 5.4 — Recheck free capacity immediately before applying
+
+```bash
+aws ec2 describe-subnets --subnet-ids <added-subnets> \
+  --query 'Subnets[].{Subnet:SubnetId,Free:AvailableIpAddressCount}' --output table
+```
+
+Require **at least 6** free addresses per added subnet (EKS's minimum; 16+ is
+recommended for real headroom). The plan-time postcondition checks the same
+threshold, but it is **point-in-time at plan**: other workloads can consume those
+addresses between plan and apply, and a plan that passed does not prove the
+capacity is still there. This recheck, immediately before rollout, is what does.
+
+### 5.5 — The plan to expect
 
 **Expected:** exactly one in-place update.
 
@@ -172,8 +270,9 @@ Plan: 0 to add, 1 to change, 0 to destroy.
 - More than one resource changing, unless the extra changes have been separately
   reviewed as unrelated pre-existing drift.
 
-`terraform apply` here calls `UpdateClusterConfig`; the cluster stays `ACTIVE`
-and the API server is not interrupted.
+Applying the saved plan calls `UpdateClusterConfig`; the cluster stays `ACTIVE`
+and the API server is not interrupted. The change is also not instantaneous
+relief — see §2's "forward-looking only".
 
 ---
 
@@ -202,9 +301,19 @@ the added subnets only serve nodes launched after the apply.
 
 ## Section 7 — Rollback
 
-Remove the entry from `TF_VAR_additional_private_subnet_ids_by_az` (or clear the
-repository variable) and apply. The cluster's subnet set narrows back to the
-networking module's private subnets.
+Rollback is a **deliberate narrowing**, so clearing the variable is deliberately
+not enough — that is now read as "retain" (§4), precisely so an accidental blank
+cannot roll back for you. To narrow on purpose, authorise it:
+
+```bash
+# Operator path: state the reduced map you intend, and authorise the removal.
+python3 ../scripts/resolve-capacity-subnets.py --environment <env> \
+  --bucket <state-bucket> --configured '<reduced-or-empty-map>' --allow-removal
+# CI path: set the ALLOW_CAPACITY_SUBNET_REMOVAL repository variable for the run.
+```
+
+Then plan and apply through §5.3 as usual. The cluster's subnet set narrows back
+to what you named.
 
 **Rollback is not free, and it is not symmetric.** Nodes already launched into a
 removed subnet keep running, but the cluster will no longer place new nodes
@@ -217,22 +326,46 @@ than emptying it.
 
 ## Section 8 — Keeping the fix across upgrades
 
-Because the subnet IDs live outside the repository, a routine update could plan
-the empty default and shrink the subnet set back — re-breaking pod scheduling
-without anyone changing anything on purpose. `--update` runs therefore
-rediscover the live cluster's subnet set and re-export the additions Terraform
-does not own, keyed by availability zone
-(`retain_capacity_subnets` in `platform/scripts/upgrade-state.py`).
+Because the subnet IDs live outside the repository, a routine deployment could
+plan the empty default and shrink the subnet set back — re-breaking pod
+scheduling without anyone changing anything on purpose. Passing a repository
+variable through does not prevent that; the variable is exactly what goes stale.
 
-Two consequences worth knowing:
+So both paths that could drop the subnets decide the effective map against the
+**live cluster**, using one shared rules module,
+`platform/scripts/capacity_subnets.py`:
 
-- During an update run, configure additions through the `TF_VAR_` export.
-  Discovery merges it with what it finds, and the exported
-  `platform.tfvars.json` is applied *after* the repository tfvars.
-- Discovery refuses rather than dropping what it cannot represent: a subnet whose
-  zone it cannot resolve, two additions in the same zone, or an export that
-  contradicts the live zone. Each of those, dropped silently, would shrink the
-  live subnet set — the exact failure this retention exists to prevent.
+| path | entry point |
+|---|---|
+| CI apply | `platform-infra-apply.yml` → `resolve-capacity-subnets.py` |
+| upgrade discovery | `retain_capacity_subnets` in `platform/scripts/upgrade-state.py` |
+
+The rules are the §4 table: absent retains, an omission refuses, more is allowed,
+narrowing needs authorisation. They live in one module because the failure is
+identical on both paths, and they are tested once
+(`platform/scripts/tests/test_capacity_subnets.py`).
+
+Consequences worth knowing:
+
+- The CI resolver runs for **scoped** applies too, not just full ones: a scoped
+  target's dependency graph can reach the cluster, so skipping resolution there
+  would reintroduce the removal on exactly the path used for rollout.
+- The resolved value is used for both plan and apply, so a reviewed plan is not
+  invalidated by re-resolution.
+- A failed read is never treated as "no additions". A cluster that does not exist
+  is a first deployment; any other AWS failure propagates, because interpreting
+  it as "nothing to retain" is the silent-removal path itself.
+- Retention refuses rather than dropping what it cannot represent: a subnet whose
+  zone will not resolve, two additions in one zone, a configured subnet
+  contradicting the live zone, or a live cluster subnet that platform Terraform
+  manages but is not among the networking private subnets — an ownership shape
+  this retention cannot reason about. Each, dropped silently, would shrink the
+  live set.
+- Baseline membership comes from the networking module's **private** subnets (the
+  platform `private_subnet_ids` output), not from every Terraform-managed
+  `aws_subnet` — public subnets are managed too, and counting them as
+  already-wired would let a managed-but-not-baseline subnet leave the cluster's
+  set unannounced.
 
 ---
 
@@ -243,4 +376,10 @@ Two consequences worth knowing:
 - `platform/infra/modules/eks/variables.tf` —
   `additional_private_subnet_ids_by_az`, the plan-time checks and their rationale
 - `platform/infra/modules/eks/tests/additional_capacity_subnets.tftest.hcl` —
-  the unchanged-default, additive and refusal contracts
+  the unchanged-default, additive and refusal contracts, including that the
+  refusals still hold under a plan that targets only the cluster
+- `platform/scripts/capacity_subnets.py` — the retention rules shared by CI and
+  upgrade discovery; `platform/scripts/resolve-capacity-subnets.py` is the CLI,
+  `platform/scripts/tests/test_capacity_subnets.py` the tests
+- Issue #5831 — the provider/schema mismatch that must be repaired before a
+  saved plan for this change can be inspected on `dev` (§5.1)

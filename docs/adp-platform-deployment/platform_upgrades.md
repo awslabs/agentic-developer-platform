@@ -125,8 +125,15 @@ export TF_VAR_additional_private_subnet_ids_by_az='{"us-east-1a":"subnet-...","u
 ```
 
 For CI applies, set the `ADDITIONAL_PRIVATE_SUBNETS_BY_AZ` repository variable to
-the same JSON object; `platform-infra-apply.yml` passes it through. Unset or
-blank is a no-op and the cluster's subnet set is left exactly as it is.
+the same JSON object. It is **not** passed straight through, because on a cluster
+that has already been widened that would not be a no-op: the variable's default
+is `{}`, so an unset or stale variable plans the added subnets away and re-breaks
+pod IP assignment for every node launched afterwards. Unset and "deliberately
+none" are indistinguishable at the variable, so the effective map is resolved
+against the live cluster instead — unset or blank retains what the cluster has, a
+map that omits a live addition is refused, naming more is allowed, and narrowing
+requires the `ALLOW_CAPACITY_SUBNET_REMOVAL` authorisation. A bare
+`terraform apply` with the variable unset gets none of this protection.
 
 The change is additive — the original subnets always stay in the set — and it
 creates nothing: no subnet, NAT gateway or VPC endpoint. It widens the
@@ -142,13 +149,23 @@ structural: a subnet pasted under the wrong zone is refused instead of quietly
 collapsing the added capacity into a single zone.
 
 Upgrades retain this. An `--update` run rediscovers the live cluster's subnet set
-and re-exports the additions Terraform does not own, so a later routine update
-cannot silently shrink the set back and re-break pod scheduling. If discovery
-cannot represent what it finds — a subnet whose zone it cannot resolve, or two
-additions in the same zone — it stops rather than dropping them. Note that
-`platform.tfvars.json` is applied after the repository tfvars, so during an
-update run configure additions through the export above (which discovery merges
-in), not by editing `environments/<env>/platform.tfvars`.
+and re-exports the additions Terraform does not own, sharing the rules above via
+`platform/scripts/capacity_subnets.py`, so a later routine update cannot silently
+shrink the set back and re-break pod scheduling. If retention cannot represent or
+account for what it finds — a subnet whose zone it cannot resolve, two additions
+in the same zone, or a live cluster subnet Terraform manages that is not one of
+the networking private subnets — it stops rather than dropping them. A failed AWS
+read is likewise never read as "no additions". Note that `platform.tfvars.json`
+is applied after the repository tfvars, so during an update run configure
+additions through the export above (which discovery merges in), not by editing
+`environments/<env>/platform.tfvars`.
+
+Rolling this out on an existing cluster has a prerequisite: a saved targeted plan
+must be renderable as JSON for review, which the provider/schema mismatch in
+#5831 currently prevents on `dev`. Use the sequence in
+[`docs/runbooks/eks-pod-ip-exhaustion.md`](../runbooks/eks-pod-ip-exhaustion.md)
+§5 — a reviewed scoped saved plan with resolved inputs — not an ordinary full
+apply.
 
 ### Ordered upgrades and completion
 

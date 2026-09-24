@@ -82,7 +82,7 @@ data "aws_subnet" "additional_private" {
       # POINT-IN-TIME ONLY. This is read at plan time and free addresses move on
       # their own as pods come and go, so it catches an obviously unsuitable subnet
       # -- it does NOT establish that capacity will still be there at apply. Recheck
-      # immediately before rollout: docs/runbooks/eks-pod-ip-exhaustion.md §3.
+      # immediately before rollout: docs/runbooks/eks-pod-ip-exhaustion.md §5.4.
       condition     = self.available_ip_address_count >= 6
       error_message = "additional_private_subnet_ids_by_az names a subnet with fewer than the 6 available IP addresses EKS requires; pick one with comfortable headroom (16+)."
     }
