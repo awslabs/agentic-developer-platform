@@ -106,3 +106,26 @@ fallbacks.
 Live acceptance still requires the deployed release to complete an authorized onboarding
 journey, preserve its operation identity and report verified workspace readiness. Remote CI
 does not substitute for that demonstration or for browser layout verification.
+
+## Serving workload operations
+
+`ServingPanel.tsx` uses the maintained deployment preview, create, list and
+UUID-scoped teardown routes. Model options must match an installed serving
+profile. The review renders the plan carried by the exact approval request,
+including its immutable workload image, target, resource ceiling, runtime and
+maximum additional cost. Approval is checked again immediately before submission.
+
+Create and stop have separate durable request receipts, scoped to deployment,
+organization and workspace. Receipts contain identifiers and a payload fingerprint,
+not model inputs, images or credential values. A lost reply retains its identity;
+reviewing the same inputs recovers the approval and retries that same request.
+Lists refresh every ten seconds; inaccessible results are removed and late results
+from a previous workspace are discarded. Operation success, missing list entries
+and accepted stop requests never establish provider absence or cost settlement.
+
+`ServingPanel.test.tsx` covers lost replies/reload, original-resource stop requests,
+changed plans, revoked and mismatched approvals, cross-workspace responses, and
+read-only views. These are remote CI transport-fixture tests. Browser layout and
+live serving acceptance remain outstanding. Batch submission, bounded logs,
+result links, endpoint access, reconciled workload costs, profile discovery and
+live capability-driven controls remain required for complete #5731 delivery.
