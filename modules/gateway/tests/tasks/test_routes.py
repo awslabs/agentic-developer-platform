@@ -27,7 +27,7 @@ from src.tasks import authz, errors, http
 from src.tasks import routes as routes_module
 from src.tasks import streaming as streaming_module
 from src.tasks.limits import SSE_MAX_STREAMS_PER_TASK
-from src.tasks.store import TaskStoreError
+from src.tasks.read_store import TaskStoreError
 
 from .conftest import (
     NO_SCOPES,

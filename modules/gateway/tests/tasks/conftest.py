@@ -51,7 +51,7 @@ from httpx import ASGITransport, AsyncClient
 from src.tasks import artifacts as artifacts_module
 from src.tasks import authz, http, report_routes
 from src.tasks import routes as routes_module
-from src.tasks.store import ArtifactRecord, InMemoryTaskStore, TaskRecord
+from src.tasks.read_store import ArtifactRecord, InMemoryTaskStore, TaskRecord
 from src.tasks.streaming import StreamRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[4]

@@ -70,6 +70,7 @@ UNIT_MODULES = [
     # app's own startup.
     "src.tasks.routes",
     "src.tasks.artifacts",
+    "src.tasks.internal_artifacts",
     "src.tasks.report_routes",
     "src.agentauth.artifact_service",
     "src.agentauth.cyber_jobs",

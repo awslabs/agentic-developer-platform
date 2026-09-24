@@ -20,7 +20,7 @@ Design reference: implementation-design.md section 4; ``public-api.schema.json#/
 from __future__ import annotations
 
 from src.tasks.events import SCHEMA_VERSION
-from src.tasks.store import TaskRecord
+from src.tasks.read_store import TaskRecord
 
 #: Statuses with no committed outcome. Terminal receipts are suppressed for these
 #: rather than merely expected-absent, so a store row left inconsistent by a

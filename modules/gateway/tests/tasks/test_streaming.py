@@ -26,7 +26,7 @@ from src.tasks.limits import (
     SSE_HEARTBEAT_INTERVAL_SECONDS,
     STREAM_AUTHORIZATION_RECHECK_SECONDS,
 )
-from src.tasks.store import InMemoryTaskStore, TaskRecord, TaskStoreError
+from src.tasks.read_store import InMemoryTaskStore, TaskRecord, TaskStoreError
 
 TASK = "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20"
 INVOCATION = "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40"

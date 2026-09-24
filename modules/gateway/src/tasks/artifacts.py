@@ -57,8 +57,8 @@ from src.tasks.limits import (
     PERMITTED_ARTIFACT_CONTENT_TYPES,
     UNCLAIMED_UPLOAD_EXPIRY_HOURS,
 )
+from src.tasks.read_store import ArtifactRecord, TaskStoreError
 from src.tasks.routes import get_store
-from src.tasks.store import ArtifactRecord, TaskStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -82,20 +82,10 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def storage_key(*, tenant_id: str, principal_id: str, artifact_id: str, version: int) -> str:
-    """Derive ``tasks/<tenant-hash>/<principal-hash>/<artifact-id>/<version>``.
+    """Use T1's canonical artifact key, also used by acceptance bindings."""
+    from src.tasks.dynamo_read_store import artifact_object_key
 
-    Hashed rather than literal, because a tenant ID or canonical principal ID in
-    an object key is customer-identifying data readable by anyone with bucket
-    listing — including in access logs and inventory reports. The hash keeps the
-    prefix partitioning the design wants without publishing who owns what.
-
-    Truncated to 32 hex characters: this is a partition key, not a security
-    boundary (authorization is the ``TASK_ARTIFACT`` binding, checked on every
-    read), and 128 bits is far past any collision concern for a per-tenant prefix.
-    """
-    tenant_hash = hashlib.sha256(tenant_id.encode()).hexdigest()[:32]
-    principal_hash = hashlib.sha256(principal_id.encode()).hexdigest()[:32]
-    return f"tasks/{tenant_hash}/{principal_hash}/{artifact_id}/{version}"
+    return artifact_object_key(tenant_id, principal_id, artifact_id, version)
 
 
 def check_content(body: dict, content: bytes) -> None:
@@ -261,7 +251,9 @@ async def upload_artifact(request: Request, db: AsyncSession = Depends(get_db)):
     )
 
     try:
-        stored = get_store().put_artifact(record=record, content=content)
+        store = get_store()
+        store.require_policy(tenant=caller.tenant_id, principal=caller.principal_id, persona="agent-task-investigator")
+        stored = store.put_artifact(record=record, content=content)
     except TaskStoreError:
         logger.warning("Task API artifact upload failed: storage unavailable", exc_info=True)
         raise errors.prerequisite_unavailable("Artifact storage is unavailable.") from None

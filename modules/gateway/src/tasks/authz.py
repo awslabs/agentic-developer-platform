@@ -44,7 +44,7 @@ from src.admin.persona_models import service as principal_service
 from src.auth.dependencies import _cognito_claims_to_context, _get_cognito_validator, _stamp_trusted_alias_source
 from src.shared.schemas.auth import TokenContext
 from src.tasks import errors
-from src.tasks.store import TaskRecord, TaskStore, TaskStoreError
+from src.tasks.read_store import TaskRecord, TaskStore, TaskStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +185,7 @@ def authorize_task(caller: Caller, store: TaskStore, task_id: str) -> TaskRecord
 
     if record is None or record.tenant_id != caller.tenant_id or record.owner_principal_id != caller.principal_id:
         raise errors.not_found()
+    store.require_policy(tenant=caller.tenant_id, principal=caller.principal_id, persona=record.persona)
     return record
 
 

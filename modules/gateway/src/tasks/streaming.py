@@ -64,7 +64,7 @@ from src.tasks.limits import (
     SSE_POLL_INTERVAL_SECONDS,
     STREAM_AUTHORIZATION_RECHECK_SECONDS,
 )
-from src.tasks.store import TaskRecord, TaskStore, TaskStoreError
+from src.tasks.read_store import TaskRecord, TaskStore, TaskStoreError
 
 logger = logging.getLogger(__name__)
 

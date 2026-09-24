@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from src.tasks.limits import MAX_EVENTS_PER_TASK, RESERVED_TERMINAL_EVENT_SLOTS
-from src.tasks.store import (
+from src.tasks.read_store import (
     EventBudgetExhaustedError,
     InMemoryTaskStore,
     ReportConflictError,

@@ -38,6 +38,7 @@ Design reference: implementation-design.md sections 7, 9 and 12;
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from dataclasses import dataclass
@@ -49,7 +50,7 @@ from src.agentauth.routes import require_agent_transport
 from src.tasks import errors, http
 from src.tasks.events import SCHEMA_VERSION, validate_event_data
 from src.tasks.limits import MAX_PROGRESS_EVENT_BYTES, MAX_REPORT_FRAME_BYTES
-from src.tasks.store import (
+from src.tasks.read_store import (
     EventBudgetExhaustedError,
     ReportConflictError,
     SequenceFencedError,
@@ -153,10 +154,12 @@ class ReportRequest(BaseModel):
     data: dict
 
 
-def verified_attempt(request: Request) -> VerifiedAttempt:
+async def verified_attempt(request: Request) -> VerifiedAttempt:
     if _AUTHENTICATOR is None:
-        raise errors.prerequisite_unavailable("Task attempt verification is not configured in this environment.")
-    return _AUTHENTICATOR(request)
+        from src.agentauth.task_runtime_routes import authenticate_task_attempt
+        return await authenticate_task_attempt(request)
+    result = _AUTHENTICATOR(request)
+    return await result if inspect.isawaitable(result) else result
 
 
 def check_binding(body: ReportRequest, attempt: VerifiedAttempt) -> None:
@@ -255,20 +258,20 @@ async def report(request: Request):
     """
     http.require_flag(http.FLAG_WORKER)
 
-    if _STORE is None:
-        raise errors.prerequisite_unavailable("Task storage is not configured in this environment.")
+    from src.tasks.routes import get_store
+    store = _STORE if _STORE is not None else get_store()
 
     # Attempt verification precedes reading the body. The transport guard has
     # already run, but the run credential is what proves *which* execution is
     # calling, and confirming it first means an unproven caller cannot make this
     # process buffer and parse up to 64 KiB before being refused.
-    attempt = verified_attempt(request)
+    attempt = await verified_attempt(request)
     body = await parse_body(request)
     check_binding(body, attempt)
     check_payload(body)
 
     try:
-        result = _STORE.append_event(
+        result = store.append_event(
             task_id=attempt.task_id,
             report_id=body.report_id,
             event_type=body.event_type,

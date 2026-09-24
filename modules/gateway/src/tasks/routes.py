@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.database import get_db, get_session_factory
 from src.tasks import authz, errors, http, snapshot, streaming
 from src.tasks.events import CursorError, parse_cursor
-from src.tasks.store import TaskRecord, TaskStore
+from src.tasks.read_store import TaskRecord, TaskStore
 from src.tasks.streaming import StreamRegistry
 
 logger = logging.getLogger(__name__)
@@ -60,8 +60,22 @@ def set_store(store: TaskStore | None) -> None:
 
 
 def get_store() -> TaskStore:
+    global _STORE
     if _STORE is None:
-        raise errors.prerequisite_unavailable("Task storage is not configured in this environment.")
+        import os
+
+        import boto3
+
+        from src.tasks.dynamo_read_store import DynamoTaskReadStore
+        from src.tasks.store import TaskStore as DurableTaskStore
+
+        bucket = os.environ.get("TASK_ARTIFACT_BUCKET_NAME", "")
+        if not bucket:
+            raise errors.prerequisite_unavailable("Task artifact storage is not configured in this environment.")
+        _STORE = DynamoTaskReadStore(
+            DurableTaskStore(), s3_client=boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1")),
+            artifact_bucket=bucket,
+        )
     return _STORE
 
 

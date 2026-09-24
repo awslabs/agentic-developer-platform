@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 import pytest
 
 from src.tasks import events, snapshot
-from src.tasks.store import TaskRecord
+from src.tasks.read_store import TaskRecord
 
 from .conftest import SCHEMA_DIR, make_record
 
