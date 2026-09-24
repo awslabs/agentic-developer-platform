@@ -32,6 +32,48 @@ that the principal came back holding it. This resolver returns `None` unless the
 grant actually carries the permission, and the harness independently re-checks
 `may_provision` — both, because each side's check guards a different mistake.
 
+## Which grant answers, and the ordering defect that made this necessary
+
+Authority is read from `workspace_grants` first. `organization_grants` are
+consulted only when the workspace row **does not exist** — not merely when no
+grant row was found. That distinction is the whole correctness argument, and two
+earlier revisions of this module got it wrong in two different ways.
+
+The fallback is what makes the zero-workspace ordering implementable:
+`workspace_grants.workspace_id` is a foreign key to `workspaces.id`
+(`app/models/workspace_grant.py:75`), so for a workspace that does not exist a
+grant is not absent but *unrepresentable* — and `POST /workspaces` must admit its
+operation before it writes the row, or the operation did not gate anything.
+Measured against real PostgreSQL before the fallback existed, an organization
+administrator resolved to `None`: no organization could create its first
+workspace, ever.
+
+Bounded that way it widens nothing. `POST /workspaces` is the only
+`(Scope.ORGANIZATION, Permission.PROVISION)` route in the endpoint inventory, and
+`app/auth.py:authorize_organization_operation` already admits it on that same
+`organization:administer` row — so for the creating case the fallback turns two
+disagreeing answers into one. Unbounded it widened a great deal: every other
+workspace route is `Scope.WORKSPACE`, `authorize_workspace_operation` has no
+organization fallback at all, and `_IMPLIED[ADMINISTER]` closes over `spend`. An
+unconditional fallback therefore handed org admins spend authority on every
+*existing* workspace through a port whose own HTTP guard refuses it.
+
+Workspace-grant-first is load-bearing in the other direction too, and a revoked
+grant is a terminal refusal rather than a missing one. The row is read WITHOUT a
+`revoked_at IS NULL` filter for that reason: filtering turns "revoked" into "no
+row", and "no row" is what opens the fallback, so the filter quietly let an
+organization grant reinstate a workspace-level revocation.
+
+## Unreadable is not unentitled
+
+Every grant read here distinguishes three outcomes, not two: a row, no row, and
+*could not tell*. `None` is this resolver's spelling of refusal, so returning it
+for a failed read would report an unreachable database as a denied caller — a 403
+for a 503, blaming a tenant for an outage and pointing an operator at the grant
+tables. The unreadable case raises `_AuthorityUnreadable`, which the harness
+converts to `OperationUnavailable`, because `refused`, `unavailable` and
+`unknown` are three different answers and only the first one is about the caller.
+
 ## Why approval is refused rather than auto-granted
 
 `ApprovalSource.approval_for` may return a context whose `record is None`, and the
@@ -84,6 +126,15 @@ APPROVAL_PERMISSION = "workspace:administer"
 # module does not import the harness at module scope — see `composition.py` on why
 # the harness import must stay inside functions.
 PROVISION_PERMISSION = "workspace:provision"
+
+# `superplane_auth.policy.Permission.ADMINISTER`, the workspace permission an
+# organization administrator holds by implication. The same string as
+# `APPROVAL_PERMISSION` above and deliberately a separate constant: that one is
+# "what an approver must hold" and this one is "what an org admin administers",
+# and collapsing them would make a future divergence in either rule silently
+# change the other. `_IMPLIED[ADMINISTER]` closes over PROVISION, which is what
+# makes this sufficient to provision without being written as PROVISION.
+WORKSPACE_ADMINISTER = "workspace:administer"
 
 
 @dataclass(frozen=True)
@@ -152,6 +203,12 @@ class GrantBackedAuthority:
         turns `None` into `OperationRefused` and turns a *raise* into
         `OperationUnavailable`, so raising here would report a caller's lack of
         authority as an outage and invite a retry that can never succeed.
+
+        The converse holds and is why `_AuthorityUnreadable` propagates: a grant
+        table that could not be read has established *nothing* about entitlement,
+        and returning `None` for it would answer 403 where the truth is 503. The
+        two directions are the same rule read from both ends — a refusal must be an
+        answer, and an answer must not be manufactured from an outage.
 
         The asserted `org_id` / `workspace_id` are checked against what this
         process authenticated whenever they are non-empty, and ignored when empty
@@ -250,45 +307,209 @@ class GrantBackedAuthority:
         `administer` yields its implied closure rather than only itself. Reusing
         the same shape matters because a second, subtly different authorization
         query is a second answer to the same question.
-        """
-        from superplane_auth.policy import Permission, expand_permissions
 
+        ## Why the organization grant is consulted, and why that is not a widening
+
+        A workspace grant cannot exist for a workspace that does not exist —
+        `workspace_grants.workspace_id` is a foreign key to `workspaces.id`, so such
+        a grant is unrepresentable, not merely missing. And `POST /workspaces` admits
+        its operation *before* the row is written (it has to: an operation opened
+        after the row is an operation that did not gate it). So for the first
+        workspace in an organization's life the workspace-grant query below returns
+        nothing for a reason that says nothing about the principal. Measured against
+        real PostgreSQL before this fallback existed: an organization administrator
+        with `organization:administer` and no workspace grant resolved to `None`,
+        which means no organization could ever create its first workspace. That is
+        the zero-workspace ordering requirement, failing closed in the unusable
+        direction.
+
+        For that case, reading the organization grant grants no authority that was
+        not already granted. `app/auth.py:authorize_organization_operation`
+        **already admits this exact request** on this exact row: `POST /workspaces`
+        is `(Scope.ORGANIZATION, Permission.PROVISION)` in the endpoint inventory,
+        and `_IMPLIED[ADMINISTER]` closes over `PROVISION`. Before the fallback the
+        guard said yes and this resolver said no for the same caller on the same
+        request — two answers to one question, with the second unreachable by any
+        configuration. This makes them one answer, read from one row.
+
+        ## The two ways the fallback is bounded, and why each bound is necessary
+
+        **It applies only when the workspace does not exist.** `POST /workspaces` is
+        the only organization-scoped provisioning route; every other workspace route
+        is `Scope.WORKSPACE`, and `authorize_workspace_operation` offers no
+        organization fallback. Since `_IMPLIED[ADMINISTER]` closes over `SPEND`, an
+        unconditional fallback gave organization administrators spend authority on
+        every existing workspace via this port while the HTTP guard for the same
+        workspace refused them. `_workspace_exists` is therefore consulted before
+        the organization is.
+
+        **A revoked workspace grant is terminal.** The query deliberately omits
+        `revoked_at IS NULL` and judges the column in Python, because a revocation
+        is the most specific answer available about this principal on this workspace
+        and so must end the search rather than start a wider one.
+
+        Measured honestly, this second bound is **defense in depth rather than the
+        load-bearing guard**, and the comment here used to claim otherwise. A
+        revoked grant can only exist for a workspace that exists (foreign key), and
+        an existing workspace already closes the fallback by the bound above — so
+        mutation-testing the `revoked_at` filter back in, on its own, changed no
+        reachable outcome. It is kept for three reasons that are not "it currently
+        matters": the two guards fail independently, so relaxing the existence bound
+        later cannot silently reinstate revoked authority; a revoked grant produces
+        an explicit operator log where a filtered-away row produces silence; and
+        `revoked` and `absent` genuinely are different answers, which is the same
+        distinction `_read` preserves between `absent` and `unreadable`.
+        """
+        # Selected WITHOUT a `revoked_at IS NULL` filter, then judged in Python.
+        # The filter is what made case 5 wrong: it turns a revoked grant into no
+        # row, and no row is what triggers the organization fallback below — so a
+        # workspace-level revocation was silently reinstated by the org grant it is
+        # supposed to override. `app/auth.py:539` is the precedent and the shape is
+        # copied from it deliberately: it too selects the grant unfiltered and
+        # refuses on a present-but-revoked row rather than falling through.
+        #
+        # `load_workspace_authorization` DOES collapse revoked into absent, and that
+        # is not a contradiction — nothing follows it, so the two cases are
+        # indistinguishable to its caller. Collapsing is safe exactly when no
+        # fallback follows. Here one does.
+        workspace_grant = await self._read(
+            "workspace grant",
+            lambda session: session.execute(
+                select(WorkspaceGrantRecord).where(
+                    WorkspaceGrantRecord.workspace_id == _as_uuid(workspace_id),
+                    WorkspaceGrantRecord.org_id == _as_uuid(org_id),
+                    WorkspaceGrantRecord.principal == principal,
+                    WorkspaceGrantRecord.principal_type == account_type,
+                )
+            ),
+        )
+        if workspace_grant is _UNREADABLE:
+            raise _AuthorityUnreadable("workspace grant")
+        if workspace_grant is not None:
+            if workspace_grant.revoked_at is not None:
+                # Terminal. A revocation is an answer about this principal on this
+                # workspace, and it is the most specific answer available.
+                logger.warning(
+                    "a revoked workspace grant refused an operation; the "
+                    "organization grant is deliberately not consulted"
+                )
+                return None
+            return _expand(workspace_grant.permission_values(), "workspace grant")
+
+        # No workspace grant row at all. The organization is consulted ONLY when the
+        # workspace itself does not exist, which is the single case the fallback was
+        # added for. See the docstring: for an existing workspace, the shipped
+        # `authorize_workspace_operation` has no organization fallback, so honouring
+        # one here would grant org admins the full `administer` closure — `spend`
+        # included — on every existing workspace, through a port whose HTTP guard
+        # refuses exactly that. The fallback's justification was only ever that the
+        # row cannot exist yet.
+        if await self._workspace_exists(workspace_id):
+            return None
+
+        organization_grant = await self._read(
+            "organization grant",
+            lambda session: session.execute(
+                select(OrganizationGrantRecord).where(
+                    OrganizationGrantRecord.org_id == _as_uuid(org_id),
+                    OrganizationGrantRecord.principal == principal,
+                    OrganizationGrantRecord.principal_type == account_type,
+                    OrganizationGrantRecord.revoked_at.is_(None),
+                )
+            ),
+        )
+        if organization_grant is _UNREADABLE:
+            raise _AuthorityUnreadable("organization grant")
+        if organization_grant is None:
+            return None
+
+        # Only `organization:administer` confers workspace authority.
+        # `organization:read` deliberately does not: `authorize_organization_operation`
+        # admits it for `Permission.READ` alone, and provisioning is not a read.
+        if ORGANIZATION_ADMINISTER not in organization_grant.permission_values():
+            return None
+        # The organization administrator's workspace authority, stated as the
+        # workspace permission it implies rather than as the organization string.
+        # `expand_permissions` then closes it over `_IMPLIED`, so this yields
+        # exactly what a stored workspace `administer` grant would — the same
+        # closure, from the row the guard already honoured.
+        #
+        # `WORKSPACE_ADMINISTER` rather than `APPROVAL_PERMISSION`, which holds the
+        # same string: the two are equal today and mean different things, and
+        # writing the approval constant here would say "an org admin may approve"
+        # when what is meant is "an org admin administers the workspace". They must
+        # be free to diverge — see `_approver_statuses`, which uses the approval
+        # spelling for the approval question.
+        return _expand((WORKSPACE_ADMINISTER,), "organization grant")
+
+    async def _workspace_exists(self, workspace_id: str) -> bool:
+        """Whether the workspace row exists, gating the organization fallback.
+
+        The fallback exists because `workspace_grants.workspace_id` is a foreign key
+        to `workspaces.id` (`app/models/workspace_grant.py:75`), so a grant for a
+        workspace that does not exist is not merely absent — it is
+        *unrepresentable*. That makes non-existence the precise and only condition
+        under which the absence of a workspace grant carries no information about
+        the principal's authority.
+
+        Fails CLOSED in both non-answers, and the two directions differ:
+
+        - unreadable raises `_AuthorityUnreadable`, so the caller gets 503. Returning
+          `False` would open the fallback on an outage, and returning `True` would
+          report a refusal for one.
+        - an id the table cannot be keyed on returns `True`, closing the fallback.
+          Not a claim that the workspace exists; a claim that *this* path may not
+          widen authority for an identifier it could not even look up.
+        """
+        from app.models.workspace import Workspace
+
+        row = await self._read(
+            "workspace",
+            lambda session: session.execute(
+                select(Workspace.id).where(Workspace.id == _as_uuid(workspace_id))
+            ),
+        )
+        if row is _UNREADABLE:
+            raise _AuthorityUnreadable("workspace")
+        # `_read` maps `_IdentityNotUuid` to `None`, which here would mean "absent"
+        # and open the fallback. Distinguish it before trusting the `None`.
+        if row is None and not _is_uuid(workspace_id):
+            return True
+        return row is not None
+
+    async def _read(self, what: str, query: Any) -> Any:
+        """Run one authority query, distinguishing "no grant" from "cannot tell".
+
+        Returns the row, `None` for an absent grant, or `_UNREADABLE` when the
+        question could not be answered. The three-way return is the point. Every
+        one of these reads used to collapse into `return None`, and `None` is how
+        this resolver spells *refusal* — so a database that could not be reached
+        while checking authority was reported to the caller as "you are not
+        entitled", a 403 for what is a 503. That is the specific conflation this
+        story forbids: it tells a tenant their authority was rejected when nothing
+        about their authority was ever established, and it points an operator at
+        the grant tables instead of at the outage.
+
+        `_IdentityNotUuid` stays a refusal, because that one *is* an answer: an
+        identifier the grant tables cannot be keyed on is not a grant, and querying
+        a coerced value would be answering a different question than the one asked.
+        """
         try:
             async with self._session_factory() as session:
-                record = (
-                    await session.execute(
-                        select(WorkspaceGrantRecord).where(
-                            WorkspaceGrantRecord.workspace_id == _as_uuid(workspace_id),
-                            WorkspaceGrantRecord.org_id == _as_uuid(org_id),
-                            WorkspaceGrantRecord.principal == principal,
-                            WorkspaceGrantRecord.principal_type == account_type,
-                            WorkspaceGrantRecord.revoked_at.is_(None),
-                        )
-                    )
-                ).scalar_one_or_none()
+                return (await query(session)).scalar_one_or_none()
         except _IdentityNotUuid:
-            # An identifier the grant tables cannot be keyed on. Refused rather
-            # than queried with a coerced value.
             return None
         except Exception:
+            # Deliberately `exc_info=False`: a SQLAlchemy traceback can quote the
+            # statement and its bound parameters, and these carry tenant
+            # identifiers and principal subjects.
             logger.warning(
-                "the workspace grant could not be read while resolving a principal",
+                "the %s could not be read while resolving a principal; reporting "
+                "the authority as unavailable rather than as absent",
+                what,
                 exc_info=False,
             )
-            return None
-
-        if record is None:
-            return None
-
-        known: set[Permission] = set()
-        for value in record.permission_values():
-            try:
-                known.add(Permission(value))
-            except ValueError:
-                logger.warning(
-                    "workspace grant carries an unrecognized permission; ignoring it"
-                )
-        return {str(item) for item in expand_permissions(known)}
+            return _UNREADABLE
 
     async def _approver_statuses(self, principal: Any) -> dict[str, Any]:
         """The current authority of each potential approver in this tenant.
@@ -298,6 +519,16 @@ class GrantBackedAuthority:
         and `is_member=True`, never as absent: absence reads as "never had
         authority", and only "had it and lost it" means a decision already taken
         under that authority must be re-examined.
+
+        A failed read raises `_AuthorityUnreadable` rather than returning `{}`, for
+        the same reason `_read` distinguishes the two. `{}` is a *claim*: it tells
+        `evaluate_approval` that no selected approver's authority could be
+        established, which it correctly turns into a refusal (step 7, "an unverified
+        approver does not authorize"). Refusing is the safe direction, but the
+        reason would be a fabrication — "this approver has no authority" asserted
+        from a database that never answered. The harness's `_approval_for` converts
+        a raise into `OperationUnavailable`, which is what an unreachable grant
+        table actually is.
         """
         from harness_jobs.approval import ApproverStatus
 
@@ -332,27 +563,24 @@ class GrantBackedAuthority:
                     .all()
                 )
         except _IdentityNotUuid:
+            # An answer: identifiers the grant tables cannot be keyed on have no
+            # approvers, rather than unknown ones.
             return {}
         except Exception:
             logger.warning(
-                "approver authority could not be read; reporting no approvers",
+                "approver authority could not be read; reporting it as unavailable "
+                "rather than as an absence of approvers",
                 exc_info=False,
             )
-            return {}
-
-        from superplane_auth.policy import Permission, expand_permissions
+            raise _AuthorityUnreadable("approver authority") from None
 
         for record in workspace_grants:
-            known: set[Permission] = set()
-            for value in record.permission_values():
-                try:
-                    known.add(Permission(value))
-                except ValueError:
-                    continue
             statuses[record.principal] = ApproverStatus(
                 subject=record.principal,
                 is_member=True,
-                permissions=frozenset(str(item) for item in expand_permissions(known)),
+                permissions=frozenset(
+                    _expand(record.permission_values(), "workspace grant")
+                ),
                 revoked=record.revoked_at is not None,
             )
 
@@ -380,6 +608,54 @@ class _IdentityNotUuid(Exception):
     """An identifier that cannot key the grant tables."""
 
 
+class _AuthorityUnreadable(Exception):
+    """The grant tables could not be read, so authority is unknown — not absent.
+
+    Raised rather than returned so it cannot be mistaken for a refusal by a caller
+    that forgot to check. `resolve` lets it propagate, and the harness's `_resolve`
+    converts a *raise* into `OperationUnavailable` while converting a `None` into
+    `OperationRefused` (`harness_jobs/facade.py:_resolve`). That is exactly the
+    split this exception exists to reach: `unknown` is not failure and 503 is not
+    403, so an unreachable grant table must not be reported as a denied caller.
+    """
+
+
+class _Unreadable:
+    """Sentinel for a read that could not be performed.
+
+    A distinct type rather than `None`, because `None` already means "no such
+    grant" on these reads and the whole defect being fixed is those two being the
+    same value.
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic only
+        return "<authority unreadable>"
+
+
+_UNREADABLE = _Unreadable()
+
+
+def _expand(values: Any, source: str) -> set[str]:
+    """Close a stored permission set over `_IMPLIED`, dropping what this build
+    does not understand.
+
+    An unrecognized value grants nothing rather than passing through: a downgrade
+    that removes a permission must not leave a grant asserting authority this code
+    cannot reason about. Same rule as `WorkspaceGrantRecord.permission_values`.
+    """
+    from superplane_auth.policy import Permission, expand_permissions
+
+    known: set[Permission] = set()
+    for value in values:
+        try:
+            known.add(Permission(value))
+        except ValueError:
+            logger.warning(
+                "a %s carries an unrecognized permission; ignoring it", source
+            )
+    return {str(item) for item in expand_permissions(known)}
+
+
 def _as_uuid(value: str) -> Any:
     import uuid
 
@@ -387,6 +663,20 @@ def _as_uuid(value: str) -> Any:
         return uuid.UUID(str(value))
     except (ValueError, AttributeError, TypeError):
         raise _IdentityNotUuid(value) from None
+
+
+def _is_uuid(value: str) -> bool:
+    """Whether `_as_uuid` would accept this identifier.
+
+    Written in terms of `_as_uuid` rather than repeating the parse, so the two can
+    never disagree about what keys the grant tables — a second, subtly different
+    acceptance rule is the bug this avoids, not the duplication.
+    """
+    try:
+        _as_uuid(value)
+    except _IdentityNotUuid:
+        return False
+    return True
 
 
 # Conservative per-attempt ceilings, used when a request names none. Chosen to be
