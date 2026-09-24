@@ -538,5 +538,108 @@
     "owner_routing_plan_sha256": "1bff84a4d2e30e889cc3e365debacbd75e94d1ac22a0a72f8b36764160d934ea",
     "recorded_demo_sessions_independently_verified_terminated": 16,
     "coverage_followup": "adp-6qg"
+  },
+  "cyber_analyst_recovery_20260924": {
+    "account_id": "879318057152",
+    "aws_profile": "embark1",
+    "region": "us-east-1",
+    "scope": "Authorized cyber maintenance; preserve worker base and whole-module hold",
+    "implementation_commit": "e05c66f4d5350f2c587b1e991bb29b292d3253c2",
+    "release_source": "fd9561392e163b26875aa9afdc1276ad15217594",
+    "phases": {
+      "validation": "complete",
+      "archive_partitions": "complete",
+      "image_build": "complete",
+      "broker_rollout": "complete",
+      "worker_rollout": "complete",
+      "hosted_canary": "complete",
+      "github_rerun": "complete"
+    },
+    "archive_plan_sha256": "50004667962e5a737c0280485c1ae3b487430143885337a6a31a3c1198cb595d",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
+    "build_id": "adp-dev-agent-runtime:cdded5ea-0a3f-4064-8443-2c903671618e",
+    "broker_plan_sha256": "26e8568ff2ca474c359c09b95316c83c995fc3a15a0e25c8d460a9f6649bd16a",
+    "implementation_merge": "a107e3cfb68cd75d8c205ad566ad71cc62dd857b",
+    "github_issues": [
+      5919,
+      5920,
+      5921,
+      5922,
+      5923
+    ],
+    "canary_session": "01M3A3VR8EZDN3D1DMX0040YS6",
+    "canary_verified_files": 19,
+    "assessment_recovery_fix": {
+      "implementation_pr": 5931,
+      "implementation_commit": "50a928090c61c7893d93482c69c20ebdb49b5078",
+      "release_source": "2ac9af8aa209674ff77d0211f69a9e3768a14f0d",
+      "build_id": "adp-dev-agent-runtime:b443baf4-ca35-49d0-84c2-67adbbfdbe28",
+      "status": "deployed",
+      "scope": "Worker-only rejected-assessment report recovery; model, skill, schema and broker unchanged",
+      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:9b07180e2304cd075bfb5d3309f010b8a458f2973a7cf034c0ef82a79b3900f4",
+      "canary_cases": 3,
+      "canary_verified_files": 15,
+      "canary_signed_gets_verified": 15,
+      "temporary_resources_removed": true,
+      "implementation_merge": "fce54b09443e724fbe52ac74b3384de6713ca605",
+      "all_ci_passed": true,
+      "worker_rollout": "complete",
+      "broker_rollout": "not_required_unchanged_code",
+      "prepull_updated": 12,
+      "prepull_desired": 12,
+      "prepull_ready": 12,
+      "prepull_verified_at": "2026-09-24T17:09:00Z",
+      "broker_ready_replicas": 2
+    },
+    "current_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:9b07180e2304cd075bfb5d3309f010b8a458f2973a7cf034c0ef82a79b3900f4",
+    "current_broker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
+    "final_assessment_counts": {
+      "clean": 9,
+      "suspicious": 8,
+      "malicious": 0,
+      "inconclusive": 8,
+      "pending": 0
+    },
+    "comparison_url": "https://github.com/aws-e/adp/pull/5924#issuecomment-5818550683",
+    "browser_sessions_in_run_window": 31,
+    "browser_sessions_in_run_window_terminated": 31,
+    "operator_cleanup_sessions": [
+      "01M3A4SGAKQHX6MYEK2WWYNVC0"
+    ],
+    "browser_cleanup_verified_at": "2026-09-24T17:00:00Z",
+    "github_checks": [
+      {
+        "issue": 5919,
+        "check_id": 107728013516,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "issue": 5920,
+        "check_id": 107728038934,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "issue": 5921,
+        "check_id": 107728077472,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "issue": 5922,
+        "check_id": 107728052279,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "issue": 5923,
+        "check_id": 107728054886,
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ],
+    "artifact_readback_verified": true,
+    "provenance_addendum_url": "https://github.com/aws-e/adp/issues/5920#issuecomment-5818622775"
   }
 }
