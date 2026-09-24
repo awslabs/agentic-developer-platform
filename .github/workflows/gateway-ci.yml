@@ -53,6 +53,19 @@ on:
       - 'modules/gateway/frontend/src/**'
       - 'modules/gateway/frontend/package*.json'
       - 'modules/gateway/frontend/tests/**'
+      # Superplane's onboarding UI lives in its own domain app but has no
+      # toolchain of its own — this lane is the only CI that builds, tests and
+      # typechecks it. superplane-domain-ci.yml also matches that path, but it
+      # runs Python and Go only, so a UI-only PR without this entry gets a green
+      # report from a lane that executed no frontend check at all. That
+      # false-green is worse than no coverage, because the check name reads as
+      # passing. Same lockstep class as #4145/#4848. The build configs below are
+      # what let this runner reach outside its package root; editing one without
+      # re-running the suite that pins them silently un-collects those tests.
+      - 'modules/domain-apps/superplane/ui/**'
+      - 'modules/gateway/frontend/vite.config.ts'
+      - 'modules/gateway/frontend/vitest.config.ts'
+      - 'modules/gateway/frontend/tsconfig*.json'
       - 'libs/python/adp-common/**'
       # Shared cross-module contract fixtures (#4029). tests/internal/
       # test_provenance_contract.py validates these against the gateway's
@@ -373,6 +386,13 @@ jobs:
         # ARC requests two CPUs for this pod. Bound jsdom workers to that share
         # instead of allowing host CPU discovery to oversubscribe the container.
         run: npx vitest run --reporter=verbose --maxWorkers=2
+
+      # The domain app's sources are typechecked only here. Vitest strips types
+      # without checking them, so a type error in modules/domain-apps/ would
+      # otherwise reach main with a green suite.
+      - name: Typecheck
+        working-directory: modules/gateway/frontend
+        run: npx tsc --noEmit
 
   build:
     name: Build Container

@@ -669,6 +669,9 @@ def bootstrap_workspace(
         if required_crds is not None:
             install_kwargs["required_crds"] = required_crds
         installation, state = install_components(**install_kwargs)
+        if authority is not None:
+            authority.record_components()
+            authority.configure_management_observation()
 
         # 5 and 6. F2: make the runtime exist, then verify it does. The system
         # workloads are placed while tenant scheduling is still denied, and step 6
@@ -769,7 +772,10 @@ def bootstrap_workspace(
         # F5 recovery: if the interlock was already cleared, put it back and verify.
         taint_restored = False
         restore_failed = False
-        if taint_cleared or (state is not None and state.taint_clear_pending):
+        owns_claim = reservation is not None and bool(reservation.attempt_token)
+        if taint_cleared or (
+            owns_claim and state is not None and state.taint_clear_pending
+        ):
             taint_cleared = True  # conservatively report the uncertain mutation
             taint_restored = _restore_interlock(access, taint_key)
             restore_failed = not taint_restored
@@ -795,7 +801,10 @@ def bootstrap_workspace(
 
         # `state` is None only when step 1 refused, which is before any record exists
         # and before anything was mutated — there is nothing to record in that case.
-        if state is not None:
+        if state is not None and owns_claim:
+            # A refused contender may read the interrupted owner's state file.
+            # It has no right to clear that owner's recovery claim or restore
+            # its interlock. Only the holder/recovery path can update those facts.
             # RE-READ before writing. `state` is this frame's local, and the steps that
             # mutate the cluster record their progress through their OWN local copy:
             # `install_components` writes the namespace record and returns an updated

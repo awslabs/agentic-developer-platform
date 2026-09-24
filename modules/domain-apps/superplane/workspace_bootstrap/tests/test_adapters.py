@@ -135,7 +135,7 @@ def _deployment(namespace: str, name: str, image: str) -> dict[str, object]:
 
 
 def _access(runner: _Scripted, **overrides) -> KubectlClusterAccess:
-    return KubectlClusterAccess(
+    access = KubectlClusterAccess(
         **{
             "runner": runner,
             "tenant_identity_reader": lambda: (),
@@ -148,6 +148,19 @@ def _access(runner: _Scripted, **overrides) -> KubectlClusterAccess:
             **overrides,
         }
     )
+    # Keep the historic Deployment adapter regressions executable for recovery;
+    # production defaults to management mode and refuses this legacy install.
+    access.controller_mode = "legacy"
+    return access
+
+
+def test_management_mode_never_installs_a_second_workspace_controller():
+    runner = _Scripted({})
+    access = _access(runner)
+    access.controller_mode = "management"
+    with pytest.raises(BootstrapRefused, match="canonical management controller"):
+        access.install_controller("workspace", "superplane-controller", "observer")
+    assert not runner.calls
 
 
 # --- The defect F1 named: the adapter must actually BE a ClusterAccess ----------
@@ -360,13 +373,149 @@ def test_the_namespaced_permissions_are_not_granted_cluster_wide():
         for resource in rule["resources"]
     }
     assert "pods" not in cluster_resources
-    assert "leases" not in cluster_resources
+    assert "superplanenodes" not in cluster_resources
+    assert "nodepools" in cluster_resources
     # And the cluster-scoped ones cannot be in the Role, because RBAC cannot grant them
     # there however the rule is written.
     role_resources = {
         resource for rule in objects["Role"]["rules"] for resource in rule["resources"]
     }
     assert "nodes" not in role_resources
+    assert "nodepools" not in role_resources
+    assert "superplanenodes" in role_resources
+
+
+def test_the_observer_can_list_each_crd_in_its_declared_api_scope():
+    from pathlib import Path
+
+    import yaml
+
+    definitions = (
+        Path(__file__).parents[2] / "src/superplane-controller/deploy/crds.yaml"
+    )
+    scopes = {
+        document["spec"]["names"]["plural"]: document["spec"]["scope"]
+        for document in yaml.safe_load_all(definitions.read_text())
+        if document and document.get("kind") == "CustomResourceDefinition"
+    }
+    runner = _Scripted({"apply": "{}"})
+    _access(runner).establish_controller_rbac(NAMESPACE, CONTROLLER_SERVICE_ACCOUNT)
+    objects = _rbac_objects(runner)
+    for resource in ("nodepools", "superplanenodes"):
+        expected = "ClusterRole" if scopes[resource] == "Cluster" else "Role"
+        for kind in ("Role", "ClusterRole"):
+            rules = [
+                rule for rule in objects[kind]["rules"] if resource in rule["resources"]
+            ]
+            if kind != expected:
+                assert rules == []
+            else:
+                assert len(rules) == 1
+                assert set(rules[0]["verbs"]) == {"list", "watch"}
+
+
+def test_the_controller_is_granted_no_lease_mutation_anywhere():
+    """Not "leases are not in the ClusterRole" — not granted at ALL, in either object.
+
+    The previous revision granted `create`/`update` on `leases.coordination.k8s.io` for a
+    controller that ran leader election. The controller #5536 ships runs a registration
+    manager with no leader election that never writes a Lease, and its own credential
+    check (`management/target.go::readOnlyWorkspaceRules`) whitelists `create` only for
+    the virtual self-review resources — so a credential holding `create leases` makes the
+    manager refuse its own target with `credential_not_read_only`.
+
+    Asserted over both objects rather than over the required set, because the set is what
+    generates them: a test that only read the constant would pass on RBAC that granted it
+    some other way.
+    """
+    runner = _Scripted({"apply": "{}"})
+
+    _access(runner).establish_controller_rbac(NAMESPACE, CONTROLLER_SERVICE_ACCOUNT)
+    granted = _granted(_rbac_objects(runner))
+
+    assert not [pair for pair in granted if "leases" in pair[1]], (
+        "lease mutation is granted somewhere in the controller's RBAC; the observation-"
+        "only registration manager refuses a credential that holds it"
+    )
+
+
+def test_every_granted_verb_is_a_read():
+    """The whole grant, checked as a property rather than as a list.
+
+    `readOnlyWorkspaceRules` does not ask "is this the expected set" — it asks whether
+    every verb is `get`/`list`/`watch` (or a self-review `create`). So the durable
+    invariant is that this RBAC contains no mutating verb at all, which stays true as
+    the required set changes and fails the moment a future edit adds a write for
+    convenience. Without this, adding `("patch", "nodes")` to the set would keep every
+    other test in this file green.
+    """
+    runner = _Scripted({"apply": "{}"})
+
+    _access(runner).establish_controller_rbac(NAMESPACE, CONTROLLER_SERVICE_ACCOUNT)
+    granted = _granted(_rbac_objects(runner))
+
+    assert granted, "no permissions were granted at all, so this proves nothing"
+    mutating = sorted(
+        f"{verb} {resource}"
+        for verb, resource in granted
+        if verb not in {"get", "list", "watch"}
+    )
+    assert not mutating, (
+        f"the workspace controller is granted mutating verbs ({', '.join(mutating)}); "
+        "the registration manager's own credential check refuses anything beyond "
+        "get/list/watch and would report credential_not_read_only"
+    )
+
+
+def test_the_cluster_wide_namespace_read_is_narrowed_to_this_namespace():
+    """`get namespaces` is cluster-scoped, so RBAC can only grant it via a ClusterRole —
+    and an unrestricted one reads EVERY namespace on the cluster, a BYOC tenant's
+    included. `resourceNames` is the only thing that bounds it, and this asserts the
+    bound is present and is this workspace's namespace.
+
+    `list`/`watch` are deliberately not narrowed anywhere: RBAC ignores `resourceNames`
+    for them, so naming one would read as a bound that is not actually enforced.
+    """
+    runner = _Scripted({"apply": "{}"})
+
+    _access(runner).establish_controller_rbac(NAMESPACE, CONTROLLER_SERVICE_ACCOUNT)
+    objects = _rbac_objects(runner)
+
+    namespace_rules = [
+        rule
+        for rule in objects["ClusterRole"]["rules"]
+        if "namespaces" in rule["resources"]
+    ]
+    assert len(namespace_rules) == 1, namespace_rules
+    rule = namespace_rules[0]
+    assert rule["verbs"] == ["get"]
+    assert rule.get("resourceNames") == [NAMESPACE], (
+        "the namespace read is not narrowed to the workspace namespace, so the "
+        "controller can read every namespace on the cluster"
+    )
+    for other in objects["ClusterRole"]["rules"]:
+        if "namespaces" in other["resources"]:
+            continue
+        # The narrowing must not have leaked onto a list/watch rule, where RBAC does not
+        # honour it — that would look like a bound and enforce nothing.
+        assert "resourceNames" not in other, other
+
+
+def test_a_name_scoped_resource_refuses_to_be_granted_unnamed():
+    """The fallback direction matters: `_rbac_rules` must refuse rather than emit the
+    wide rule. A missing name silently producing an unrestricted `get namespaces` is
+    precisely the grant the narrowing exists to prevent, and it would pass every other
+    assertion in this file."""
+    from superplane_bootstrap.adapters import _rbac_rules
+
+    with pytest.raises(BootstrapRefused) as refusal:
+        _rbac_rules(["namespaces"], resource_names={"namespaces": "  "})
+
+    assert "named object only" in str(refusal.value)
+
+    # And the same when the mapping simply does not mention it.
+    with pytest.raises(BootstrapRefused):
+        _rbac_rules(["namespaces"])
 
 
 def test_the_rbac_is_bound_to_the_workspace_namespace_only():
@@ -894,13 +1043,37 @@ def test_controller_permissions_asks_both_the_required_and_forbidden_pairs():
         if attrs["resource"] in {
             "nodes",
             "nodepools",
-            "superplanenodes",
             "namespaces",
             "clusterrolebindings",
         }:
             assert "namespace" not in attrs
         else:
             assert attrs["namespace"] == NAMESPACE
+
+
+def test_the_namespace_read_is_probed_with_the_name_it_was_granted_for():
+    """Install and verify must ask the same question, or the gate refuses a correct install.
+
+    `get namespaces` is granted by a ClusterRole narrowed with `resourceNames: [ns]`. An
+    unnamed SubjectAccessReview asks "may it get ANY namespace", which RBAC answers `no`
+    — so without the name this probe would report a denial for a controller that is
+    installed exactly right, and the taint would never come off. This is the same
+    install-says-one-thing-verify-says-another class the `leases` drift was.
+
+    `delete namespaces` must stay unnamed: the forbidden set asks whether the credential
+    can delete any namespace at all, and naming one would narrow a check whose breadth is
+    the whole point.
+    """
+    runner = _Scripted({"create -f -": {"status": {"allowed": True}}})
+
+    _access(runner).controller_permissions(NAMESPACE)
+
+    asked = {}
+    for _argv, data in runner.calls:
+        attrs = json.loads(data)["spec"]["resourceAttributes"]
+        asked[(attrs["verb"], attrs["resource"])] = attrs
+    assert asked[("get", "namespaces")].get("name") == NAMESPACE
+    assert "name" not in asked[("delete", "namespaces")]
 
 
 def test_an_unanswerable_permission_is_absent_rather_than_denied():

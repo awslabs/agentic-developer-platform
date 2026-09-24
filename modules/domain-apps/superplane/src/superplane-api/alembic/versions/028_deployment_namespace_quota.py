@@ -3,8 +3,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "022_deployment_namespace_quota"
-down_revision = "021_deployment_identity"
+revision = "028_deployment_namespace_quota"
+down_revision = "027_cli_bootstrap_foundation"
 branch_labels = None
 depends_on = None
 

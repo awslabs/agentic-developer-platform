@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     superplane_db_schema: str = ""
     # Trusted identity that may advance controller liveness; no reporter-name trust.
     controller_observation_submitter_id: str = ""
+    controller_status_url: str = ""
+    controller_registry_credential: str = ""
 
     # AWS
     aws_region: str = "us-east-1"

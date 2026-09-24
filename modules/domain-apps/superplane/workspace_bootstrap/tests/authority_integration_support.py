@@ -62,6 +62,13 @@ def compose_authority(cluster, path, arguments):
         def run(self, argv, *, data=None, timeout=120):
             result = cluster.run(argv, data=data, timeout=timeout)
             body = json.loads(data) if data and data.startswith("{") else {}
+            if (
+                body.get("metadata", {})
+                .get("annotations", {})
+                .get("superplane.aws-e/component-creation")
+            ):
+                for (kind, namespace, name), value in cluster.components.items():
+                    cloud.objects[(kind, namespace or None, name)] = deepcopy(value)
             if body.get("kind") in {"SelfSubjectAccessReview", "SubjectAccessReview"}:
                 spec = body["spec"]
                 attrs = spec["resourceAttributes"]
@@ -110,6 +117,7 @@ def compose_authority(cluster, path, arguments):
     access = arguments["access"]
     installer = replace(access, runner=Runner("installer"))
     supervisor = replace(access, runner=Runner("supervisor"))
+    installer.controller_mode = supervisor.controller_mode = access.controller_mode
     binding = arguments["binding"]
     clients = BootstrapClients(
         binding,
@@ -135,4 +143,35 @@ def compose_authority(cluster, path, arguments):
         tuple(arguments["required_crds"]),
         tuple(arguments["required_system_workloads"]),
     )
-    return BootstrapAuthorityFactory(lambda *_: clients, release)
+
+    def resolve_observation(authority):
+        from datetime import UTC, datetime, timedelta
+        from superplane_bootstrap.management_observation import ManagementObservation
+
+        observer = ManagementObservation(
+            origin="https://api.example.invalid",
+            credential="sp-bootstrap-read-" + "fixture" * 8,
+            binding=binding,
+            target=target,
+            namespace=release.namespace,
+            claim=authority.journal.claim,
+        )
+
+        def observe():
+            now = datetime.now(UTC)
+            document = {
+                **observer._expected,
+                "registry_ready": True,
+                "target_status": "observed_execution_unavailable",
+                "last_reconciled": now.isoformat(),
+                "lease_expires_at": (now + timedelta(seconds=30)).isoformat(),
+            }
+            observer.verify(document)
+            return document
+
+        observer.observe = observe
+        return observer
+
+    return BootstrapAuthorityFactory(
+        lambda *_: clients, release, resolve_observation=resolve_observation
+    )

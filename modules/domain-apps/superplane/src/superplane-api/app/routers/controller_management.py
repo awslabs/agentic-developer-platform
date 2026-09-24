@@ -7,7 +7,7 @@ create registrations, change readiness, or authorize provider work.
 import uuid
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,7 @@ async def reconcile(
     body: ReconcileRequest,
     submitter: Submitter = Depends(_authenticated_submitter),
     db: AsyncSession = Depends(get_session),
+    request: Request = None,
 ):
     scope = f"controller_management/{body.org_id}"
     if scope not in submitter.lease_scopes:
@@ -68,6 +69,22 @@ async def reconcile(
         }
         for row in rows
     ]
+    if request is not None:
+        from app.services.bootstrap_observation import (
+            operation_connect,
+            provisional_targets,
+        )
+
+        provisional = await provisional_targets(
+            db, org=org, connect=lambda: operation_connect(request)()
+        )
+        provisional_ids = {target["workspace_id"] for target in provisional}
+        targets = [
+            target
+            for target in targets
+            if target["workspace_id"] not in provisional_ids
+        ]
+        targets.extend(provisional)
     return {
         "version": 1,
         "org_id": str(body.org_id),

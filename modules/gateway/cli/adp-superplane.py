@@ -129,6 +129,16 @@ REDIRECTED = {
     ),
 }
 
+# Onboarding — capability discovery, plan review, provider binding and durable
+# operation recovery — lives in its own helper file.
+#
+# It is a separate file because it is a different surface with different failure
+# modes: this file runs work in a workspace that exists, while onboarding decides
+# whether one may be built and spends money doing it. Delegating instead of
+# growing this file also means the onboarding work and the concurrent changes to
+# the operational verbs do not have to land on top of each other.
+ONBOARDING_HELPER = "adp-superplane-onboarding.py"
+
 CANCELLED = (
     "Cancelled locally. This did NOT cancel work already accepted by the domain API "
     "and did NOT release any provider resource — check 'adp superplane events' and "
@@ -1873,6 +1883,14 @@ def parser():
     for verb in REDIRECTED:
         commands.add_parser(verb, add_help=False, help=f"Redirected: ADP administers {verb}s")
 
+    # Onboarding is a separate helper file, and it is advertised only when that
+    # file actually shipped. An install missing it must not list a verb that then
+    # fails — the same rule `adp-admin.py` applies to its sub-areas.
+    if Path(__file__).with_name(ONBOARDING_HELPER).is_file():
+        commands.add_parser(
+            "onboarding", add_help=False, help="Discover, plan and bind workspace and provider onboarding"
+        )
+
     return root
 
 
@@ -1900,6 +1918,19 @@ def main(argv=None):
     as_json = "--json" in argv
     command = "superplane " + (argv[0] if argv and not argv[0].startswith("-") else "")
     try:
+        # Before this file's own secret check, because the onboarding helper runs a
+        # STRICTER one: onboarding takes no secret at any time and refuses outright,
+        # whereas this file offers a prompt for the verbs that legitimately accept
+        # one. Rejecting here first would answer with the wrong remedy — "type it at
+        # the prompt instead" — for a surface that has no such prompt. The helper's
+        # check is a superset of this one and is the first thing its main() runs.
+        if argv and argv[0] == "onboarding":
+            module = common.load_provider(ONBOARDING_HELPER)
+            if not module:
+                raise CliError(
+                    "Workspace onboarding is not installed. Run adp update.", "provider_unavailable", 4
+                )
+            return module.main(argv[1:])
         # Before argparse: a rejected secret flag must be reported as the leak it
         # is, not as an unrecognized argument.
         reject_secret_arguments(argv)

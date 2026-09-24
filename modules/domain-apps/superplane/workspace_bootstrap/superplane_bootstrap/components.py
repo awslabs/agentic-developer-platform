@@ -231,7 +231,11 @@ def _refuse_existing_controller(access: ClusterAccess, state: BootstrapState) ->
     ]
     if not existing:
         return
-    if state.controller_installed and len(existing) == 1:
+    if (
+        getattr(access, "controller_mode", None) != "management"
+        and state.controller_installed
+        and len(existing) == 1
+    ):
         return
     raise BootstrapRefused(
         f"{len(existing)} existing workspace controller deployment(s) already "
@@ -326,7 +330,7 @@ def _install_controller(
     controller_name: str,
     service_account: str,
     partial: ComponentInstallation,
-) -> tuple[tuple[InstalledObject, ...], ObservedWorkload]:
+) -> tuple[tuple[InstalledObject, ...], ObservedWorkload | None]:
     """Establish the controller's scoped RBAC and then the controller itself.
 
     Order matters and is not interchangeable. The RBAC comes first because a
@@ -372,19 +376,30 @@ def _install_controller(
             installation=partial,
         )
     created.extend(
-        InstalledObject(kind=str(kind), name=str(name), owned=True)
+        _controller_object(access, str(kind), str(name), namespace)
         for kind, name in sorted(rbac.items())
     )
+    if getattr(access, "controller_mode", None) == "management":
+        # The manager runs in the management cluster. Its workspace credential
+        # uses only this observation RBAC; no execution secret or second
+        # controller Deployment is installed in the customer namespace.
+        return tuple(created), None
 
     existing = access.workload(namespace, controller_name)
     if existing is not None:
+        if getattr(access, "component_journal", None) is not None:
+            # Revalidate and adopt only through the durable component journal;
+            # name/image observations alone never establish deletion ownership.
+            existing = access.install_controller(
+                namespace, controller_name, service_account
+            )
         # Already installed by a previous attempt. Not re-installed, and deliberately
         # not re-read for availability here: whether it is AVAILABLE is
         # `readiness.py`'s question, and answering it in two places is how the two
         # answers come to differ. It is still recorded as owned, because this bootstrap
         # created it and cleanup must remove it.
         created.append(
-            InstalledObject(kind="Deployment", name=controller_name, owned=True)
+            _controller_object(access, "Deployment", controller_name, namespace)
         )
         return tuple(created), existing
 
@@ -418,8 +433,30 @@ def _install_controller(
                 partial, objects=partial.objects + tuple(created)
             ),
         )
-    created.append(InstalledObject(kind="Deployment", name=controller_name, owned=True))
+    created.append(_controller_object(access, "Deployment", controller_name, namespace))
     return tuple(created), observed
+
+
+def _controller_object(access, kind, name, namespace):
+    journal = getattr(access, "component_journal", None)
+    if journal is None:
+        return InstalledObject(kind=kind, name=name, owned=True)
+    import json
+
+    key = json.dumps(
+        [kind, "" if kind.startswith("Cluster") else namespace, name],
+        separators=(",", ":"),
+    )
+    _, progress = journal.journal.read()
+    component = progress.get("components", {}).get(key, {})
+    if component.get("phase") not in {"owned", "adopted"}:
+        raise BootstrapRefused("installed component ownership is not durable")
+    return InstalledObject(
+        kind=kind,
+        name=name,
+        owned=component["phase"] == "owned",
+        uid=component["identity"]["uid"],
+    )
 
 
 def _installation_record(
@@ -568,7 +605,11 @@ def install_components(
     controller_objects, _ = _install_controller(
         access, namespace, controller_name, controller_service_account, partial
     )
-    state = record(store, state, controller_installed=True)
+    state = record(
+        store,
+        state,
+        controller_installed=getattr(access, "controller_mode", None) != "management",
+    )
     return (
         _installation_record(
             target, observed, namespace_owned, required_crds, controller_objects

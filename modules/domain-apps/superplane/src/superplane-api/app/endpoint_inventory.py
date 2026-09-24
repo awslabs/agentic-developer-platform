@@ -120,6 +120,7 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/internal/installation"),
         ("POST", "/internal/controller/reconcile"),
+        ("GET", "/api/v1/workspaces/{workspace_id}/bootstrap-observation"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
         ("POST", "/internal/workspaces/{workspace_id}/reconcile"),

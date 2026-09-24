@@ -44,6 +44,13 @@ on:
       - 'modules/domain-apps/superplane/src/superplane-api/**'
       - 'modules/domain-apps/superplane/auth/**'
       - 'modules/domain-apps/superplane/contracts/**'
+      - 'modules/harness/jobs/**'
+      - 'modules/domain-apps/superplane/infra/account-factory/**'
+      - 'modules/domain-apps/superplane/infra/account-provisioning/**'
+      - 'modules/domain-apps/superplane/workspace_bootstrap/**'
+      # The lifecycle distribution manifest is at the domain root; its source
+      # package is workspace_provisioning/. Watch the declared source root.
+      - 'modules/domain-apps/superplane/**'
       - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       - 'modules/domain-apps/superplane/releases/resolve_lock.py'
       - 'modules/domain-apps/superplane/releases/build-image.sh'

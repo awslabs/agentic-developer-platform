@@ -2,22 +2,18 @@
 
 import hashlib
 import json
-from dataclasses import dataclass
 from enum import Enum
 
 from .effects import CallEffect, call_effect
+from .execution_descriptors import (
+    ExecutionStep as ExecutionStep,
+)
+from .execution_descriptors import (
+    encode_execution_steps as encode_execution_steps,
+)
+from .execution_descriptors import parse_execution_steps
 from .identity import ContractViolation
-from .store import _record
-
-
-@dataclass(frozen=True)
-class ExecutionStep:
-    """A descriptor in the immutable, approval-bound admitted request."""
-
-    step_id: str
-    provider: str
-    operation_kind: str
-    target: str
+from .store import _record, stored_outcome
 
 
 def admitted_steps(record):
@@ -28,27 +24,9 @@ def admitted_steps(record):
     before approval/admission; absence cannot default to worker-selected calls.
     """
     try:
-        data = json.loads(record.admitted_request().parameters["execution_steps"])
-        if not isinstance(data, list) or not 1 <= len(data) <= 16:
-            raise ValueError("Invalid step count")
-        steps = []
-        for item in data:
-            if not isinstance(item, dict) or set(item) != {
-                "step_id",
-                "provider",
-                "operation_kind",
-                "target",
-            }:
-                raise ValueError("Invalid descriptor")
-            if any(
-                not isinstance(v, str) or not v.strip() or len(v) > 2048 or "\x00" in v
-                for v in item.values()
-            ):
-                raise ValueError("Invalid descriptor value")
-            steps.append(ExecutionStep(**item))
-        if len({s.step_id for s in steps}) != len(steps):
-            raise ValueError("Duplicate step")
-        return tuple(steps)
+        return parse_execution_steps(
+            record.admitted_request().parameters["execution_steps"]
+        )
     except (KeyError, ValueError, TypeError) as exc:
         raise ContractViolation("An approved execution-step plan is required") from exc
 
@@ -113,7 +91,11 @@ async def confirmed_plan_progress(connection, operation_id):
         if (
             step is None
             or call["stage"] not in ("observed", "reconciled")
-            or call["outcome"] != "succeeded"
+            # The stored column carries the provider's free text after the enum, so
+            # this must compare the decoded enum. A raw equality test here read every
+            # call that returned any detail as unconfirmed, which is fail-closed for
+            # this function but makes a finished plan permanently unfinishable.
+            or stored_outcome(call["outcome"]) != "succeeded"
             or (call["org_id"], call["workspace_id"])
             != (record.org_id, record.workspace_id)
             or (call["provider"], call["operation_kind"], call["target"])

@@ -360,7 +360,7 @@ def validate(
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         require(
-            head == "022_deployment_namespace_quota",
+            head == "028_deployment_namespace_quota",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})

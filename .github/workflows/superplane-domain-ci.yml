@@ -303,6 +303,14 @@ jobs:
           # with ModuleNotFoundError and pytest exits 4.
           pip install -e ../../contracts \
             -c ../../releases/transfer-constraints.txt
+          # Install the same maintained operation/lifecycle packages staged into
+          # the API and worker image. No developer checkout imports are assumed.
+          pip install -e ../../../../harness/jobs \
+            -e ../../infra/account-factory \
+            -e ../../infra/account-provisioning \
+            -e ../../workspace_bootstrap -e ../.. \
+            -c ../../releases/transfer-constraints.txt
+          python3 -I -c 'from account_factory.modes import validate; from account_provisioning.creation_runner import create_account; from superplane_bootstrap.workspace import bootstrap_workspace; from workspace_provisioning.preview import preview_workspace; from harness_jobs.execution import OperationExecutor'
           # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
           # the transfer, so "no tests found" means a PR deleted them and must fail.
           #

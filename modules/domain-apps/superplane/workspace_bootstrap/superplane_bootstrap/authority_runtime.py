@@ -49,6 +49,12 @@ class FencedClusterAccess:
             if supervisor
             else authority.backend.clients.installer_access
         )
+        from .adapters import KubectlClusterAccess
+
+        if not supervisor and isinstance(self.raw, KubectlClusterAccess):
+            from .component_journal import ComponentJournal
+
+            self.raw.component_journal = ComponentJournal(authority, self.raw)
 
     def __getattr__(self, name):
         value = getattr(self.raw, name)
@@ -62,6 +68,13 @@ class FencedClusterAccess:
         def call(*args, **kwargs):
             lease = self.authority
             if not self.supervisor:
+                if (
+                    name in {"establish_controller_rbac", "install_controller"}
+                    and getattr(self.raw, "component_journal", None) is not None
+                ):
+                    # Each component commits intent before taking its I/O lock.
+                    # An outer transaction here would undo that durability.
+                    return value(*args, **kwargs)
                 return lease.mutate(value, *args, **kwargs)
             # The bounded supervisor owns only inventory and the scheduling
             # interlock. It stays usable after all installation grants are gone.
@@ -81,6 +94,77 @@ class FencedClusterAccess:
 
 
 class WorkspaceAuthority(TemporaryAuthority):
+    def record_components(self):
+        from .adapters import KubectlClusterAccess
+        from .component_journal import expected_component_keys
+
+        if not isinstance(self.backend.clients.installer_access, KubectlClusterAccess):
+            return
+        release = self.backend.release
+        management = (
+            getattr(self.backend.clients.installer_access, "controller_mode", None)
+            == "management"
+        )
+        expected = expected_component_keys(
+            release.namespace,
+            release.service_account,
+            None if management else release.controller,
+        )
+        with self.journal.fenced():
+            _, progress = self.journal.read_locked()
+            self._require_phase(progress, "active")
+            components = progress.get("components", {})
+            if set(components) != expected or any(
+                record.get("phase") not in {"owned", "adopted"}
+                or not record.get("identity", {}).get("uid")
+                for record in components.values()
+            ):
+                raise BootstrapRefused("durable component inventory is incomplete")
+            progress["component_inventory_complete"] = True
+            progress["component_inventory_mode"] = (
+                "management" if management else "legacy"
+            )
+            # Read-only discovery before canonical publication. These facts come
+            # from the verified target and real claim, never a request body. The
+            # API additionally checks the current shared operation lease.
+            target = self.journal.target
+            progress["management_observation"] = {
+                "workspace_id": target.workspace_id,
+                "org_id": target.org_id,
+                "operation_id": self.journal.binding.operation_id,
+                "registration_claim": self.journal.claim,
+                "cluster_arn": target.cluster_arn,
+                "namespace": release.namespace,
+                "endpoint": target.endpoint,
+            }
+            self.journal.write_locked(progress)
+
+    def configure_management_observation(self):
+        from .management_observation import ManagementObservation
+
+        access = self.backend.clients.installer_access
+        if getattr(access, "controller_mode", None) != "management":
+            return
+        resolver = self.backend.resolve_observation
+        observer = resolver(self)
+        if not isinstance(observer, ManagementObservation):
+            raise BootstrapRefused(
+                "bootstrap requires the concrete scoped management observer"
+            )
+        target = self.journal.target
+        expected = {
+            "workspace_id": target.workspace_id,
+            "org_id": target.org_id,
+            "operation_id": self.journal.binding.operation_id,
+            "cluster_arn": target.cluster_arn,
+            "namespace": self.backend.release.namespace,
+            "registration_claim": self.journal.claim,
+        }
+        if observer._expected != expected:
+            raise BootstrapRefused("management observer names another bootstrap claim")
+        access.management_observation = observer
+        self.backend.clients.supervisor_access.management_observation = observer
+
     def record_prerequisites(self, inventory):
         from dataclasses import asdict
         from .prerequisites import require_inventory
@@ -117,8 +201,9 @@ class BootstrapAuthorityFactory:
     from its request. No ambient-credential fallback exists in this factory.
     """
 
-    def __init__(self, resolve_clients, release):
+    def __init__(self, resolve_clients, release, *, resolve_observation=None):
         self.resolve_clients, self.release = resolve_clients, release
+        self.resolve_observation = resolve_observation
         self._resolved = []
 
     def _backend(self, binding, target, state_store):
@@ -133,6 +218,7 @@ class BootstrapAuthorityFactory:
             )
         self._resolved.append(clients)
         backend = BootstrapGrantBackend(clients, self.release, state_store)
+        backend.resolve_observation = self.resolve_observation
         clients.installer_access.tenant_identity_reader = (
             lambda: backend.tenant_principals(temporary=True)
         )
@@ -154,6 +240,12 @@ class BootstrapAuthorityFactory:
             claim_fingerprint(reservation.attempt_token),
         )
         backend = self._backend(binding, target, state_store)
+        if getattr(
+            backend.clients.installer_access, "controller_mode", None
+        ) == "management" and not callable(self.resolve_observation):
+            raise BootstrapRefused(
+                "management bootstrap requires operation-scoped observation composition"
+            )
         backend.journal = journal
         return WorkspaceAuthority(journal, backend)
 

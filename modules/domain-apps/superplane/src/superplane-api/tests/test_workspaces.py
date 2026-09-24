@@ -1158,26 +1158,24 @@ class TestTheFacadeIsAMock:
     def test_the_double_is_declared_a_mock(self):
         assert _MockOperationFacade.is_mock is True
 
-    def test_no_real_operation_facade_is_composed_into_this_app(self):
-        """Fails when B's facade becomes reachable here — the trigger to revisit.
-
-        Watches importability rather than the existence of `modules/harness/jobs/`.
-        The directory check fired when #5525 landed the shared store, and the answer
-        on inspection was that the package is built but composed nowhere: it is
-        imported by nothing under `src/`, so the facade above is still a mock and
-        every claim in this class still holds. A package existing is not a dependency;
-        being importable from this app is the first point at which it could be one.
-
-        Retargeted rather than removed, so the transition still has a tripwire — and
-        because an assertion that can never pass again teaches a reader to ignore it.
-        """
-        import importlib.util
-
-        assert importlib.util.find_spec("harness_jobs") is None, (
-            "`harness_jobs` is importable from this app: B's operation facade may be "
-            "real here. Revisit the mocked facade in this file and the live "
-            "criterion. Importability alone is not live evidence."
-        )
+    @pytest.mark.asyncio
+    async def test_installed_shared_sources_do_not_authorize_an_unconfigured_facade(
+        self,
+    ):
+        """Packaging lifecycle sources does not establish live execution authority."""
+        previous = prov.get_operation_facade()
+        prov.set_operation_facade(None)
+        try:
+            with pytest.raises(prov.ProvisioningUnavailable):
+                await prov.start_provision(
+                    operation_id="unconfigured-operation",
+                    workspace_id="unconfigured-workspace",
+                    org_id="unconfigured-org",
+                    workspace_name="unconfigured",
+                    isolation_mode="dedicated",
+                )
+        finally:
+            prov.set_operation_facade(previous)
 
 
 # ===========================================================================

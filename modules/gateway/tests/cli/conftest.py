@@ -203,6 +203,9 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
         "adp-github.py",
         "adp-github-admin.py",
         "adp-superplane.py",
+        # The onboarding surface is a sibling helper that `adp-superplane.py`
+        # delegates to, so an installed prefix without it has no onboarding verbs.
+        "adp-superplane-onboarding.py",
         "adp-models.py",
     ):
         target = bin_dir / name
