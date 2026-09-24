@@ -814,7 +814,7 @@ export function decideApproval(guard: ScopeGuard, approvalId: string, result: 'a
 
 export function parseOperationState(raw: unknown): OperationState {
   if (raw === 'pending') return 'accepted';
-  return raw === 'accepted' || raw === 'running' || raw === 'succeeded' || raw === 'failed'
+  return raw === 'accepted' || raw === 'running' || raw === 'succeeded' || raw === 'failed' || raw === 'cancelled'
     ? raw : 'unknown';
 }
 

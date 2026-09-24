@@ -120,7 +120,7 @@ export function WorkloadReceipt({ initial, intent, ...props }: Props & { initial
   }, [guard, receipt.operationId, receipt.idempotencyKey, props.workspaceId, props.store, props.scope, intent]);
   useEffect(() => () => guard.supersede(), [guard]);
   useEffect(() => {
-    if (receipt.state === 'succeeded' || receipt.state === 'failed' || problem?.reason === 'not-permitted') return;
+    if (receipt.state === 'succeeded' || receipt.state === 'failed' || receipt.state === 'cancelled' || problem?.reason === 'not-permitted') return;
     void refresh();
     const timer = setInterval(() => void refresh(), 10000);
     return () => clearInterval(timer);

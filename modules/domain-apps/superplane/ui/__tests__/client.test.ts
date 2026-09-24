@@ -822,7 +822,7 @@ describe('operation receipts, parsed so a lost reply stays recoverable', () => {
   it('preserves each state the contract declares', () => {
     // The inverse of the test above: mapping everything to `unknown` would satisfy
     // it while making the parser useless.
-    for (const state of ['accepted', 'running', 'succeeded', 'failed'] as const) {
+    for (const state of ['accepted', 'running', 'succeeded', 'failed', 'cancelled'] as const) {
       expect(parseOperationReceipt({ ...WIRE_RECEIPT, state })?.state).toBe(state);
     }
   });
