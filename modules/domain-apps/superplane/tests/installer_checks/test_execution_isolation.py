@@ -150,7 +150,20 @@ def test_executor_requires_real_release_and_explicit_same_account_role(
         validate(env, lock)
 
 
-@pytest.mark.parametrize("refused", [None, "namespace", "nodepools", "superplanenodes"])
+@pytest.mark.parametrize(
+    "refused",
+    [
+        None,
+        "namespace",
+        "nodepools",
+        "superplanenodes",
+        "pods",
+        "pods/log",
+        "deployments.apps",
+        "replicasets.apps",
+        "jobs.batch",
+    ],
+)
 def test_workspace_permission_probes_match_actual_crd_scopes(tmp_path, refused):
     import json
     from types import SimpleNamespace
@@ -169,6 +182,15 @@ def test_workspace_permission_probes_match_actual_crd_scopes(tmp_path, refused):
                 elif probe[1] == "nodepools.superplane.ai":
                     assert "-n" not in probe
                     selected = "nodepools"
+                elif probe[1] in {
+                    "pods",
+                    "pods/log",
+                    "deployments.apps",
+                    "replicasets.apps",
+                    "jobs.batch",
+                }:
+                    assert probe[-2:] == ["-n", "tenant-a"]
+                    selected = probe[1]
                 else:
                     selected = (
                         "superplanenodes"

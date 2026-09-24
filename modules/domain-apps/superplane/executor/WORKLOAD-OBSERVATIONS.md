@@ -24,9 +24,11 @@ original workload is rechecked before returning the projection.
 
 ## Read credential contract
 
-Provision the existing workspace manager identity independently with the reads it
-needs. The installer validates this identity; it does not create or broaden these
-permissions. Alongside existing namespace/node/Superplane reads, status needs
+The governed workspace bootstrap creates these reads in the manager's namespaced
+Role, and its readiness gate and the installer verify them. The installer itself
+does not create or broaden credentials. Existing workspaces need an explicitly
+approved credential/RBAC update; reading the UI does not mutate their grants.
+Alongside existing namespace/node/Superplane reads, status needs
 `get` on `batch/jobs` and `apps/deployments`, and `list` on `apps/replicasets` and
 core `pods`. Log windows additionally need `get` on core `pods` and `pods/log`.
 Scope namespaced rules to the registered workspace namespace. The manager requires
