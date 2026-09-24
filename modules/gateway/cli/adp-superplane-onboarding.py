@@ -93,6 +93,18 @@ ENDPOINTS = {
     "listWorkspaces": {"method": "GET", "path": "/workspaces", "served": True},
     "getWorkspace": {"method": "GET", "path": "/workspaces/{workspace_id}", "served": True},
     "createWorkspace": {"method": "POST", "path": "/workspaces", "served": True},
+    # Shared route vocabulary for the browser's operational surface. A served
+    # route does not install a CLI command or establish workload readiness.
+    "listDeployments": {"method": "GET", "path": "/workspaces/{workspace_id}/deployments", "served": True},
+    "servingProfiles": {"method": "GET", "path": "/workspaces/{workspace_id}/deployment-profiles", "served": True},
+    "previewDeployment": {"method": "POST", "path": "/workspaces/{workspace_id}/deployments/preview", "served": True},
+    "createDeployment": {"method": "POST", "path": "/workspaces/{workspace_id}/deployments", "served": True},
+    "previewDeploymentTeardown": {
+        "method": "POST",
+        "path": "/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview",
+        "served": True,
+    },
+    "deleteDeployment": {"method": "DELETE", "path": "/workspaces/{workspace_id}/deployments/{dep_id}", "served": True},
     "registerConnection": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/provider-connections",
