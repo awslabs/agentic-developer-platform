@@ -12666,47 +12666,17 @@ def collect_and_evaluate(
     )
 
 
-# A wave-3 manifest, used ONLY to model the revision this one becomes after #3969
-# lands. It is patched in by `with_wave_three` and is never registered in
-# `agent-control-eval.py`: wave 3's twelve checks are ADP developer #3969's namespace,
-# and inventing them here would both trespass on that ownership and — much worse —
-# make `--wave 3` report a pass on a manifest nobody delivered.
+# Wave 3's manifest is now registered for real — #3969 landed twelve checks, five of
+# them with predicates and the other seven owned in PENDING_CHECK_OWNERS. Wave 4's
+# prerequisite is therefore answerable from the real registries, and an earlier
+# stand-in manifest that this file used to patch in has been deleted along with the
+# revision that needed it.
 #
-# Twelve rows because #3969's driver has twelve; the acceptance IDs are deliberately
-# EMPTY, so `all_acceptance_ids()` still returns exactly 37. That is the property being
-# protected: wave 4's consolidation is over the criteria the waves declare, and a
-# stand-in manifest that contributed IDs would change the number this evaluation is
-# counting.
-WAVE3_STANDIN: tuple = tuple(
-    _mod.CheckSpec(f"W3-{index:02d}", (), f"wave 3 check {index} (owned by #3969)")
-    for index in range(1, 13)
-)
-
-
-def with_wave_three():
-    """Patch a wave-3 manifest and evaluation in, as the merged revision will have.
-
-    Wave 4's row closes all four evaluations, so with wave 3 unregistered the honest
-    outcome is `not_run` — and the tests above assert exactly that. But an evaluator
-    that could ONLY ever report not_run would be untestable in its passing direction,
-    and "this check can never pass" is its own kind of broken: it makes the check
-    indistinguishable from one that is simply missing.
-
-    So this models the post-#3969 revision for the tests that need a full report. It
-    patches the two registries the prerequisite is read from and nothing else, which
-    means every other assertion in those tests is still made by the real code.
-    """
-    return (
-        patch.dict(_mod.WAVE_CHECKS, {3: WAVE3_STANDIN}, clear=False),
-        patch.dict(_mod.WAVE_EVALUATIONS, {3: "3969"}, clear=False),
-    )
-
-
-def collect_with_wave_three(tmp_path: Path, **kwargs) -> CollectedRun:
-    """`collect_and_evaluate` on the revision where wave 3 is registered."""
-    manifest, evaluations = with_wave_three()
-    with manifest, evaluations:
-        return collect_and_evaluate(tmp_path, **kwargs)
+# One property of #3969's manifest is worth stating because wave 4's consolidation
+# depends on it: its twelve rows declare acceptance IDs that are all ALSO declared by
+# waves 1, 2 or 4, so `all_acceptance_ids()` still returns exactly 37. Wave 4 counts
+# the criteria the epic declares, not the rows the waves contain, and a wave 3 that
+# introduced a thirty-eighth ID would change the number this evaluation is counting.
 
 
 class TestTheCollectorToEvaluatorPathIsReal:
@@ -12726,7 +12696,7 @@ class TestTheCollectorToEvaluatorPathIsReal:
         below would be ambiguous between "the counterexample was caught" and "nothing
         can ever pass".
         """
-        run = collect_with_wave_three(tmp_path)
+        run = collect_and_evaluate(tmp_path)
         assert {cid: r.status for cid, r in run.results.items()} == {
             spec.check_id: _mod.STATUS_PASSED for spec in _mod.WAVE4_CHECKS
         }
@@ -12736,12 +12706,79 @@ class TestTheCollectorToEvaluatorPathIsReal:
 
     def test_nothing_was_measured_by_default(self, tmp_path):
         """No collector filled a gap: a complete collection has no refusals at all."""
-        run = collect_with_wave_three(tmp_path)
+        run = collect_and_evaluate(tmp_path)
         assert {name: gaps for name, gaps in run.refusals.items() if gaps} == {}
 
-    def test_wave_three_unregistered_keeps_the_wave_incomplete(self, tmp_path):
-        """An unavailable Wave 3 manifest prevents acceptance despite complete inputs."""
-        with patch.object(_mod, "WAVE_CHECKS", {k: v for k, v in _mod.WAVE_CHECKS.items() if k != 3}):
+    def test_wave_three_s_real_partial_acceptance_keeps_the_wave_incomplete(
+        self, tmp_path
+    ):
+        """The honest state of THIS revision, reached through the real path.
+
+        Not a contrived failure: the collection is complete and correct, every transport
+        answers, and wave 4 is still incomplete because wave 3 is not accepted. Seven of
+        its twelve checks have no predicate in this revision — they are owned in
+        PENDING_CHECK_OWNERS and report not_run — so its own report is 5/12, and
+        `measure_prior_wave` derives `accepted` from those counts rather than from
+        anyone's word for it.
+
+        The kickoff's "missing prerequisite acceptance ... must remain NOT RUN/failure
+        and nonzero" is this case. It is asserted at wave 3's REPORT rather than by
+        patching the registries, because that is where the fact lives: the acceptance is
+        a property of what that wave measured, not of whether this file knows about it.
+        """
+        pending = sum(
+            1
+            for spec in _mod.WAVE_CHECKS[3]
+            if spec.check_id not in _mod.CHECK_PREDICATES
+        )
+        assert pending == 7, (
+            "wave 3 has seven unimplemented checks in this revision; if that changed, "
+            "this test's premise needs rechecking rather than its number adjusting"
+        )
+        honest = wave_report(3, passed=len(_mod.WAVE_CHECKS[3]) - pending)
+        reports = wave_reports(**{"3": honest})
+        run = collect_and_evaluate(
+            tmp_path,
+            preflight_kwargs={"reports": reports},
+            index_kwargs={"reports": reports},
+        )
+        assert run.results["W4-01"].status == _mod.STATUS_FAILED
+        assert run.results["W4-10"].status == _mod.STATUS_FAILED
+        assert "wave 3" in run.results["W4-01"].message
+        assert not _mod.report_is_passing(run.report)
+
+    def test_an_unregistered_wave_is_refused_rather_than_skipped(self, tmp_path):
+        """A wave with no manifest at all is a not_run naming what is missing.
+
+        Distinct from the partial acceptance above, and worth keeping now that wave 3 IS
+        registered: the code path for "this wave does not exist in this revision" is the
+        one a future wave 5 would take, and an evaluator that silently consolidated over
+        the waves it happened to know about would report a complete index for a shorter
+        epic. Expressed by removing a registration rather than by editing an artifact,
+        so it is the evaluator's own prerequisite logic under test.
+
+        BOTH registries are cleared of wave 3, because "unregistered" means absent from
+        both and the two checks read different ones: W4-01's prerequisite is the
+        MANIFEST (a wave with no checks has no acceptance to establish) while W4-10's is
+        the EVALUATION (a wave with no issue has no criteria in the consolidated set).
+        Patching one would leave the other passing on a half-registered wave, which is
+        a state the harness should never be in and which this test is not about.
+        """
+        without_three = {
+            "manifests": {
+                wave: specs for wave, specs in _mod.WAVE_CHECKS.items() if wave != 3
+            },
+            "evaluations": {
+                wave: issue for wave, issue in _mod.WAVE_EVALUATIONS.items() if wave != 3
+            },
+        }
+        with (
+            patch.dict(_mod.WAVE_CHECKS, without_three["manifests"], clear=True),
+            patch.dict(_mod.WAVE_EVALUATIONS, without_three["evaluations"], clear=True),
+        ):
+            # Still 37: wave 3's rows declare criteria waves 1, 2 and 4 also declare, so
+            # removing it changes which wave last evidenced them, not how many there are.
+            assert len(_mod.all_acceptance_ids()) == _mod.WAVE4_TOTAL_ACCEPTANCE_IDS
             run = collect_and_evaluate(tmp_path)
         assert run.results["W4-01"].status == _mod.STATUS_NOT_RUN
         assert run.results["W4-10"].status == _mod.STATUS_NOT_RUN
@@ -12757,7 +12794,7 @@ class TestTheCollectorToEvaluatorPathIsReal:
         omits refused fields, and "omitted" only means anything if the evaluator is
         reading the written file rather than an in-memory dict.
         """
-        run = collect_with_wave_three(tmp_path)
+        run = collect_and_evaluate(tmp_path)
         for name in _mod.REQUIRED_ARTIFACT_KEYS:
             if not name.startswith("wave4_"):
                 continue
@@ -12787,7 +12824,7 @@ class TestMissingPriorAcceptanceCannotBeConsolidated:
         an operator's "wave 2 is done" could enter the record.
         """
         short = reports_with(2, passed=len(_mod.WAVE_CHECKS[2]) - 1)
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, preflight_kwargs={"reports": short}, index_kwargs={"reports": short}
         )
         assert run.results["W4-01"].status == _mod.STATUS_FAILED
@@ -12801,7 +12838,7 @@ class TestMissingPriorAcceptanceCannotBeConsolidated:
         the acceptance does not carry forward even though every check passed.
         """
         dirty = reports_with(2, fixture_cleanup={"ok": False})
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, preflight_kwargs={"reports": dirty}, index_kwargs={"reports": dirty}
         )
         assert run.results["W4-01"].status == _mod.STATUS_FAILED
@@ -12824,7 +12861,7 @@ class TestMissingPriorAcceptanceCannotBeConsolidated:
         silent = wave_report(2)
         silent.pop("fixture_cleanup")
         reports = wave_reports(**{"2": silent})
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, preflight_kwargs={"reports": reports}, index_kwargs={"reports": reports}
         )
         assert run.results["W4-01"].status == _mod.STATUS_FAILED
@@ -12834,7 +12871,7 @@ class TestMissingPriorAcceptanceCannotBeConsolidated:
     def test_an_absent_prior_report_is_a_named_refusal(self, tmp_path):
         """The collection gap, which must not read as a finding about the deployment."""
         absent = reports_without(2)
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, preflight_kwargs={"reports": absent}, index_kwargs={"reports": absent}
         )
         assert run.results["W4-01"].status in {_mod.STATUS_FAILED, _mod.STATUS_NOT_RUN}
@@ -12854,7 +12891,7 @@ class TestMissingPriorAcceptanceCannotBeConsolidated:
         orphan = "f" * 40
         graph = w4_commit_graph(**{orphan: ()})
         stale = reports_with(2, revision=orphan)
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             graph=graph,
             git_runner=staleness_runner(graph),
@@ -12881,7 +12918,7 @@ class TestMismatchedRunGenerationSourceAndAssets:
         assets are refused, the key is absent, and W4-01 reports a missing measurement
         rather than "the deployment serves the wrong bundle".
         """
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, preflight_kwargs={"fetch": spa_transport(status=503, body="unavailable")}
         )
         assert run.results["W4-01"].status in {_mod.STATUS_FAILED, _mod.STATUS_NOT_RUN}
@@ -12895,7 +12932,7 @@ class TestMismatchedRunGenerationSourceAndAssets:
         content-hashed files while every revision field says the new one.
         """
         stale_assets = ("index-00000000.js", "index-11111111.css")
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             preflight_kwargs={
                 "fetch": spa_transport(stale_assets),
@@ -12915,7 +12952,7 @@ class TestMismatchedRunGenerationSourceAndAssets:
         gate = _mod.WAVE4_REQUIRED_CI_GATES[0]
         broken = run_lookup_for()(gate)
         broken = {**broken, "jobs": [{"name": gate, "conclusion": "failure"}]}
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, preflight_kwargs={"run_lookup": run_lookup_for(**{gate: broken})}
         )
         assert run.results["W4-01"].status in {_mod.STATUS_FAILED, _mod.STATUS_NOT_RUN}
@@ -12926,7 +12963,7 @@ class TestMismatchedRunGenerationSourceAndAssets:
         orphan = "f" * 40
         graph = w4_commit_graph(**{orphan: ()})
         elsewhere = {**run_lookup_for()(gate), "headSha": orphan}
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             graph=graph,
             git_runner=staleness_runner(graph),
@@ -12941,7 +12978,7 @@ class TestMismatchedRunGenerationSourceAndAssets:
         Not reconcilable in the preflight's favour: every wave-4 browser observation is
         about whichever bundle the browser actually loaded.
         """
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, capture=browser_control_run_payload(bundle_revision="f" * 40)
         )
         assert run.results["W4-01"].status == _mod.STATUS_FAILED
@@ -13012,7 +13049,7 @@ class TestStaleAndTouchedEvidenceMustBeRerun:
         """
         surface = _mod.WAVE4_CONSOLIDATED_SOURCES["W4-06"]["surfaces"][0]
         graph = w4_commit_graph()
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             graph=graph,
             git_runner=staleness_runner(graph, touched={surface: relative_time(600)}),
@@ -13028,7 +13065,7 @@ class TestStaleAndTouchedEvidenceMustBeRerun:
         opposite consequences, and only the second is the harness's own problem.
         """
         graph = w4_commit_graph()
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, graph=graph, git_runner=staleness_runner(graph, answerable=False)
         )
         for check_id in ("W4-03", "W4-05", "W4-06", "W4-09"):
@@ -13039,7 +13076,7 @@ class TestStaleAndTouchedEvidenceMustBeRerun:
         """Consolidated evidence about a build the deployment does not contain."""
         orphan = "f" * 40
         graph = w4_commit_graph(**{orphan: ()})
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             graph=graph,
             git_runner=staleness_runner(graph),
@@ -13061,7 +13098,7 @@ class TestStaleAndTouchedEvidenceMustBeRerun:
         a softer verdict, and it is still correct — what it buys is that an unmeasured
         field is never reported as a measured one.
         """
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, documents={"W4-03": evidence_document("W4-03", evidenced_at="")}
         )
         assert run.results["W4-03"].status == _mod.STATUS_FAILED
@@ -13083,7 +13120,7 @@ class TestStaleAndTouchedEvidenceMustBeRerun:
 
         Collapsing them would send an operator to the wrong one of those two places.
         """
-        observed_false = collect_with_wave_three(
+        observed_false = collect_and_evaluate(
             tmp_path, documents={"W4-03": evidence_document("W4-03", fifo_order_proven=False)}
         )
         assert observed_false.results["W4-03"].status == _mod.STATUS_FAILED
@@ -13093,7 +13130,7 @@ class TestStaleAndTouchedEvidenceMustBeRerun:
 
         document = evidence_document("W4-03")
         document.pop("fifo_order_proven")
-        unmeasured = collect_with_wave_three(tmp_path, documents={"W4-03": document})
+        unmeasured = collect_and_evaluate(tmp_path, documents={"W4-03": document})
         assert unmeasured.results["W4-03"].status == _mod.STATUS_FAILED
         assert "missing required keys" in unmeasured.results["W4-03"].message
         assert "records no 'fifo_order_proven'" in unmeasured.refusals[
@@ -13130,7 +13167,7 @@ class TestWrongIdentityOrDestinationIsNotEvidence:
 
     def test_a_capture_taken_as_a_nonowner_cannot_evidence_the_owner_path(self, tmp_path):
         """The identity the preflight recorded has to be the one the row needs."""
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             preflight_kwargs={"identity": {"role": "nonowner", "is_run_owner": False}},
         )
@@ -13138,7 +13175,7 @@ class TestWrongIdentityOrDestinationIsNotEvidence:
 
     def test_an_unanswerable_identity_is_refused_rather_than_assumed_owner(self, tmp_path):
         """A gateway that could not say who we are has not said we are the owner."""
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             preflight_kwargs={
                 "identity": _collector.Refused("GET /auth/whoami returned 500")
@@ -13154,7 +13191,7 @@ class TestWrongIdentityOrDestinationIsNotEvidence:
         directly would work perfectly and would have bypassed the authorization the
         whole control path exists to impose.
         """
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             capture=browser_control_run_payload(
                 bundle_revision=FRONTEND_REVISION,
@@ -13172,7 +13209,7 @@ class TestWrongIdentityOrDestinationIsNotEvidence:
         leak, and it stays a failure — this issue does not get to weaken it to
         accommodate a producer that finds it inconvenient.
         """
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             capture=browser_control_run_payload(
                 bundle_revision=FRONTEND_REVISION,
@@ -13188,7 +13225,7 @@ class TestWrongIdentityOrDestinationIsNotEvidence:
         A wave-4 observation taken with the ordinary-user flag enabled was taken in an
         environment the evaluation forbids, whatever it went on to observe.
         """
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path,
             preflight_kwargs={
                 "flags": {"ordinary_users_gated": True, "ordinary_flags_off": False}
@@ -13217,7 +13254,7 @@ class TestTheIndexCannotBeAuthoredComplete:
         dropped = _mod.CHECK_ACCEPTANCE_IDS["W4-06"][0]
         document = evidence_document("W4-06")
         del document["criteria"][dropped]
-        run = collect_with_wave_three(tmp_path, documents={"W4-06": document})
+        run = collect_and_evaluate(tmp_path, documents={"W4-06": document})
 
         assert dropped in run.refusals["wave4_evidence_index"]
         index = json.loads(run.paths["wave4_evidence_index"].read_text(encoding="utf-8"))
@@ -13243,7 +13280,7 @@ class TestTheIndexCannotBeAuthoredComplete:
         target = _mod.CHECK_ACCEPTANCE_IDS["W4-06"][0]
         document = evidence_document("W4-06")
         document["criteria"][target] = {"status": _mod.STATUS_PASSED, "evidence": []}
-        run = collect_with_wave_three(tmp_path, documents={"W4-06": document})
+        run = collect_and_evaluate(tmp_path, documents={"W4-06": document})
 
         matrix = json.loads(run.paths["wave4_security_matrix"].read_text(encoding="utf-8"))
         assert target not in matrix["criteria"], (
@@ -13264,7 +13301,7 @@ class TestTheIndexCannotBeAuthoredComplete:
         target = _mod.CHECK_ACCEPTANCE_IDS["W4-06"][0]
         document = evidence_document("W4-06")
         document["criteria"][target]["status"] = _mod.STATUS_FAILED
-        run = collect_with_wave_three(tmp_path, documents={"W4-06": document})
+        run = collect_and_evaluate(tmp_path, documents={"W4-06": document})
 
         index = json.loads(run.paths["wave4_evidence_index"].read_text(encoding="utf-8"))
         assert index["criteria"][target]["status"] == _mod.STATUS_FAILED
@@ -13285,7 +13322,7 @@ class TestTheIndexCannotBeAuthoredComplete:
         )
         document = evidence_document("W4-06")
         document["criteria"][target]["live"] = False
-        run = collect_with_wave_three(tmp_path, documents={"W4-06": document})
+        run = collect_and_evaluate(tmp_path, documents={"W4-06": document})
         assert run.results["W4-10"].status == _mod.STATUS_FAILED
         assert "non-live" in run.results["W4-10"].message
 
@@ -13294,7 +13331,7 @@ class TestTheIndexCannotBeAuthoredComplete:
         target = _mod.CHECK_ACCEPTANCE_IDS["W4-06"][0]
         document = evidence_document("W4-06")
         document["criteria"][target].pop("live")
-        run = collect_with_wave_three(tmp_path, documents={"W4-06": document})
+        run = collect_and_evaluate(tmp_path, documents={"W4-06": document})
         assert "live" in run.refusals["wave4_evidence_index"][target]
         assert target not in json.loads(
             run.paths["wave4_evidence_index"].read_text(encoding="utf-8")
@@ -13379,7 +13416,7 @@ class TestTheIndexCannotBeAuthoredComplete:
         Neither the compiler nor the check carries a literal 37 it could be adjusted to
         match, which is what stops "make the numbers agree" from being a valid fix.
         """
-        run = collect_with_wave_three(tmp_path)
+        run = collect_and_evaluate(tmp_path)
         index = json.loads(run.paths["wave4_evidence_index"].read_text(encoding="utf-8"))
         assert set(index["criteria"]) == set(_mod.all_acceptance_ids())
         assert len(index["criteria"]) == _mod.WAVE4_TOTAL_ACCEPTANCE_IDS
@@ -13394,23 +13431,59 @@ class TestAFabricatedFullReportIsUnreachable:
     self-description, which is what makes the two impossible to separate.
     """
 
-    def test_a_complete_index_cannot_certify_a_run_with_not_runs(self, tmp_path):
-        """A hand-authored complete index inside an incomplete run is rejected.
+    def test_a_complete_index_cannot_certify_a_run_with_a_failed_check(self, tmp_path):
+        """A genuinely complete index inside a failing run is rejected.
 
-        The index here is the REAL one, compiled from real evidence and genuinely
-        complete — so this is the strongest form of the case: not a forgery, a correct
-        index presented as a wave it does not complete. Wave 3 is unregistered, so the
-        criteria are not in the consolidated set, and W4-10 refuses on that rather than
-        on anything about the index.
+        The strongest form of the case, and the one a real defect hid behind. The index
+        here is the REAL one, compiled from real evidence and complete on all 37 — not a
+        forgery, a correct index presented as a wave it does not complete. The wave fails
+        anyway, because a sibling check failed.
+
+        What made this worth writing as its own test: W4-10 used to read only the check-ID
+        INVENTORY, which says which checks answered and never what they answered. So it
+        passed beside a failed W4-09 — a consolidation green-lighting a report that does
+        not pass its own gate, which is precisely the fabricated full report the kickoff
+        forbids. The run's statuses are now passed in, and the failure names the sibling.
+
+        The failure is induced by dropping ONE proof key from W4-09's source document, so
+        it arrives through the collector: the artifact is emitted without the key, and the
+        evaluator fails on a claim with no evidence behind it.
         """
-        with patch.object(_mod, "WAVE_CHECKS", {k: v for k, v in _mod.WAVE_CHECKS.items() if k != 3}):
-            run = collect_and_evaluate(tmp_path)
+        document = {
+            key: value
+            for key, value in evidence_document("W4-09").items()
+            if key != "flag_off_events_digest"
+        }
+        run = collect_and_evaluate(tmp_path, documents={"W4-09": document})
         index = json.loads(run.paths["wave4_evidence_index"].read_text(encoding="utf-8"))
         assert set(index["criteria"]) == set(_mod.all_acceptance_ids()), (
             "the index is genuinely complete; the run is not"
         )
-        assert run.results["W4-10"].status == _mod.STATUS_NOT_RUN
+        assert run.results["W4-09"].status == _mod.STATUS_FAILED
+        assert run.results["W4-10"].status == _mod.STATUS_FAILED
+        assert "W4-09" in run.results["W4-10"].message
+        assert not _mod.report_is_passing(run.report)
+
+    def test_a_complete_index_cannot_certify_a_run_with_not_runs(self, tmp_path):
+        """The same rejection when the sibling is not_run rather than failed.
+
+        Both severities must stop the consolidation and for the same reason — the row
+        names "missing/skipped/not-run result" — but they reach it by different routes: a
+        failure is an observation that went wrong, a not_run is an observation nobody
+        could make. Here the commit graph cannot answer when a covered surface last
+        changed (the shallow-clone case), so currency is unanswerable and the checks that
+        depend on it report not_run rather than "not stale".
+        """
+        graph = w4_commit_graph()
+        run = collect_and_evaluate(
+            tmp_path, graph=graph, git_runner=staleness_runner(graph, answerable=False)
+        )
+        index = json.loads(run.paths["wave4_evidence_index"].read_text(encoding="utf-8"))
+        assert set(index["criteria"]) == set(_mod.all_acceptance_ids()), (
+            "the index is genuinely complete; the run is not"
+        )
         assert run.report["not_run"] > 0
+        assert run.results["W4-10"].status != _mod.STATUS_PASSED
         assert not _mod.report_is_passing(run.report)
 
     def test_running_a_partition_of_the_wave_is_not_a_short_inventory(self, tmp_path):
@@ -13429,7 +13502,7 @@ class TestAFabricatedFullReportIsUnreachable:
         selected = tuple(
             spec for spec in _mod.WAVE4_CHECKS if spec.check_id not in {"W4-07"}
         )
-        run = collect_with_wave_three(tmp_path, specs=selected)
+        run = collect_and_evaluate(tmp_path, specs=selected)
         assert run.results["W4-10"].status == _mod.STATUS_PASSED
         assert "W4-07" not in run.results
 
@@ -13445,21 +13518,17 @@ class TestAFabricatedFullReportIsUnreachable:
         short = tuple(
             spec.check_id for spec in _mod.WAVE4_CHECKS if spec.check_id != "W4-07"
         )
-        manifest, evaluations = with_wave_three()
-        with manifest, evaluations:
-            base = collect_and_evaluate(tmp_path, config=config)
-            store = _mod.ArtifactStore(tmp_path, base.config["artifacts"])
-            driver = _mod.Driver(
-                base.config,
-                _mod.Probe(base.config["gateway_url"], gateway_stub()),
-                store,
-                dynamodb=ddb_stub(),
-                git_runner=staleness_runner(w4_commit_graph()),
-            )
-            with patch.dict("os.environ", IDENTITY_ENV, clear=False):
-                results = _mod.run_checks(
-                    driver, _mod.WAVE4_CHECKS, manifest_ids=short
-                )
+        base = collect_and_evaluate(tmp_path, config=config)
+        store = _mod.ArtifactStore(tmp_path, base.config["artifacts"])
+        driver = _mod.Driver(
+            base.config,
+            _mod.Probe(base.config["gateway_url"], gateway_stub()),
+            store,
+            dynamodb=ddb_stub(),
+            git_runner=staleness_runner(w4_commit_graph()),
+        )
+        with patch.dict("os.environ", IDENTITY_ENV, clear=False):
+            results = _mod.run_checks(driver, _mod.WAVE4_CHECKS, manifest_ids=short)
         verdicts = {result.check_id: result for result in results}
         assert verdicts["W4-10"].status == _mod.STATUS_FAILED
         assert "inventory" in verdicts["W4-10"].message
@@ -13471,7 +13540,7 @@ class TestAFabricatedFullReportIsUnreachable:
         derived from, so this is the exit status rather than a proxy for it.
         """
         graph = w4_commit_graph()
-        run = collect_with_wave_three(
+        run = collect_and_evaluate(
             tmp_path, graph=graph, git_runner=staleness_runner(graph, answerable=False)
         )
         assert run.report["not_run"] > 0
@@ -13484,7 +13553,7 @@ class TestAFabricatedFullReportIsUnreachable:
         is the DP-INV-1 state: the flag is still on. Partial cleanup keeps the report
         nonzero, which is the kickoff's "incomplete cleanup must remain ... nonzero".
         """
-        run = collect_with_wave_three(tmp_path)
+        run = collect_and_evaluate(tmp_path)
         assert _mod.report_is_passing(run.report)
 
         dirty = _mod.build_report(
@@ -13506,7 +13575,7 @@ class TestAFabricatedFullReportIsUnreachable:
         a count. Each ID appears against the check that carries it, so a reader can go
         from any single criterion to the evidence for it.
         """
-        run = collect_with_wave_three(tmp_path)
+        run = collect_and_evaluate(tmp_path)
         assert _mod.report_is_passing(run.report)
         reported = {
             acceptance_id

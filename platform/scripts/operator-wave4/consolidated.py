@@ -165,7 +165,14 @@ def collect_consolidated(
     if document is None:
         # Every field is refused naming the ONE cause. Four unexplained gaps would send
         # an operator looking for four problems.
-        for key in ("wave", "evaluation", "criteria", "evidenced_revision", "evidenced_at", *proofs):
+        for key in (
+            "wave",
+            "evaluation",
+            "criteria",
+            "evidenced_revision",
+            "evidenced_at",
+            *proofs,
+        ):
             artifact.set(key, failure)
         artifact.set("fixture_identity", dict(fixture_identity))
         artifact.update(dict(extra_fields or {}))

@@ -35,7 +35,16 @@ Missing required evidence is BLOCKED or FAIL, never an implicit pass. CI fixture
 
 ## Workload contract
 
-A bundled script in a digest-pinned PyTorch CUDA image creates two 256×256 float32 CUDA tensors filled with 1 and 2, multiplies and synchronizes them, and verifies 65,536 entries equal 512 and total 33,554,432. It writes a version 1 result below 4,096 UTF-8 bytes to `/dev/termination-log`. Run the same bounded script on each provider without runtime source/dataset downloads.
+The bundled [CUDA probe](workloads/cuda_probe.py), packaged using the adjacent
+[Dockerfile](workloads/Dockerfile) with a reviewed digest-pinned PyTorch CUDA base,
+creates two 256×256 float32 CUDA tensors filled with 1 and 2, multiplies and
+synchronizes them, and verifies 65,536 entries equal 512 and total 33,554,432.
+It writes the maintained `superplane_result_version: 1` text envelope below
+4,096 UTF-8 bytes to `/dev/termination-log`. Missing CUDA, computation failure or
+a wrong result exits nonzero; there is no CPU fallback. Run the same final image
+digest on each provider without runtime source/dataset downloads. The workload
+command is `python /opt/superplane-demo/cuda_probe.py`, with no arguments. This
+source fixture has not yet been built or executed on a GPU.
 
 Use the same immutable serving image, model repository revision and tokenizer artifacts on both providers. The installed image contract must support authenticated health/inference, bounded text requests and request/backend correlation without secret exposure. Record model identity separately from generated text. Do not assert an exact generated phrase or imply the CUDA job trained this model.
 

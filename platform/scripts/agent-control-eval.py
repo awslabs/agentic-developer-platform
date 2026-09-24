@@ -87,6 +87,7 @@ import os
 import re
 import subprocess  # noqa: S404 - invokes only the operator's declared teardown command
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7891,7 +7892,12 @@ class Driver:
 
     # ---- W4-10 ---------------------------------------------------------
 
-    def check_w4_10(self, *, emitted_ids: tuple[str, ...] = ()) -> None:
+    def check_w4_10(
+        self,
+        *,
+        emitted_ids: tuple[str, ...] = (),
+        results_so_far: Sequence[CheckResult] = (),
+    ) -> None:
         """The consolidation: all 37 criteria, each owned, current and live where
         required — and a report with nothing missing in it.
 
@@ -7912,10 +7918,17 @@ class Driver:
         * **Live where the row demands live.** A unit mock cannot stand in for a named
           live SDK/API/browser check, and that is only checkable because each entry
           records which it was.
-        * **No missing, skipped or not-run result** — asserted against THIS RUN's own
-          results, not against the index's self-description. An index claiming
-          completeness inside a report with three not_runs is exactly the fabricated
-          10/10 the kickoff forbids.
+        * **No missing, skipped, not-run or FAILED result** — asserted against THIS
+          RUN's own check outcomes, not against the index's self-description. An index
+          claiming completeness inside a report with three not_runs is exactly the
+          fabricated 10/10 the kickoff forbids.
+
+        That last one needs `results_so_far` rather than `emitted_ids`, and the
+        difference was a real defect: an ID inventory says which checks answered, never
+        what they answered, so reading it alone let W4-10 pass beside a failed sibling.
+        The wave's own row makes this check the condition for closing all four
+        evaluations, so a consolidation that green-lights a report failing its own gate
+        is the exact outcome it exists to prevent.
         """
         index = self._artifact("wave4_evidence_index")
         self._assert_fixture_identity(index, "wave4_evidence_index", self.config)
@@ -8103,6 +8116,28 @@ class Driver:
                 "wave cannot consolidate criteria its own manifest asserts but its index omits"
             )
 
+        # (5) And what those checks ANSWERED. The inventory above establishes that
+        # every check ran; this establishes that none of them found anything. They are
+        # different claims, and a complete index sitting beside a failed sibling check
+        # satisfies the first while contradicting the whole point of the second.
+        #
+        # W4-10 itself is excluded because it has no verdict yet — it is the check
+        # making this assertion. Everything else in the wave is fair game, including
+        # `skipped`: the row names it explicitly, and a skipped criterion is an
+        # unobserved one however it came to be skipped.
+        unresolved = sorted(
+            f"{result.check_id}={result.status}"
+            for result in results_so_far
+            if result.check_id != "W4-10" and result.status != STATUS_PASSED
+        )
+        if unresolved:
+            raise AssertionError(
+                f"W4-10: this run's other checks did not all pass ({', '.join(unresolved)}). The wave-4 "
+                "row makes this consolidation the condition for closing all four evaluations, so it "
+                "cannot be satisfied inside a report that does not pass its own gate — however complete "
+                "the evidence index is"
+            )
+
 
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
@@ -8205,6 +8240,18 @@ MANIFEST_AWARE_CHECK_IDS: frozenset[str] = frozenset(
     {"W1-10", "W2-01", "W2-10", "W4-01", "W4-10"}
 )
 
+# Predicates that need the OUTCOMES of the checks that already ran in this run, not
+# just their IDs. Exactly one check needs this and it is worth being explicit about
+# why, because the distinction is what a defect hid behind.
+#
+# W4-10's row forbids "missing/skipped/not-run result", and the inventory in
+# MANIFEST_AWARE_CHECK_IDS carries check IDs only. A check ID set cannot distinguish a
+# wave that answered all ten from a wave that answered all ten with three failures, so
+# reading the inventory alone let W4-10 pass beside a failed sibling — a consolidation
+# certifying a report that does not pass its own gate. The statuses have to be passed
+# in for the assertion the docstring describes to be makeable at all.
+RESULTS_AWARE_CHECK_IDS: frozenset[str] = frozenset({"W4-10"})
+
 
 def split_post_cleanup_specs(
     specs: tuple[CheckSpec, ...],
@@ -8226,6 +8273,7 @@ def run_checks(
     specs: tuple[CheckSpec, ...] = WAVE1_CHECKS,
     *,
     manifest_ids: tuple[str, ...] = (),
+    prior_results: Sequence[CheckResult] = (),
     cleanup: CleanupOutcome | None = None,
     capture: SecurityCapture | None = None,
     teardown: ResourceTeardown | None = None,
@@ -8247,6 +8295,12 @@ def run_checks(
     `main` passes the manifest explicitly — because with the post-cleanup split
     ``specs`` is only part of the wave, and a self-completeness check comparing
     against its own partition would always agree with itself.
+
+    ``prior_results`` is the results of any EARLIER partition of the same wave, for
+    the checks in RESULTS_AWARE_CHECK_IDS whose subject is the report's own outcomes.
+    Without it a consolidation running in the post-cleanup partition would see only
+    that partition's results and conclude the wave was clean because it could not see
+    the failures.
 
     ``cleanup`` is the harness's first-hand teardown record, passed to the checks
     that verify it. ``None`` means cleanup has not run, which those checks report
@@ -8310,6 +8364,13 @@ def run_checks(
         kwargs: dict[str, object] = {}
         if spec.check_id in MANIFEST_AWARE_CHECK_IDS:
             kwargs["emitted_ids"] = inventory
+        if spec.check_id in RESULTS_AWARE_CHECK_IDS:
+            # The outcomes recorded SO FAR, which for W4-10 is the other nine: it is
+            # last in the manifest, and a check cannot be handed its own verdict
+            # before it has one. A wave-4 run split across partitions passes the
+            # earlier partition's results in through `prior_results`, so the
+            # consolidation still sees the whole wave.
+            kwargs["results_so_far"] = tuple(prior_results) + tuple(results)
         if spec.check_id in CLEANUP_AWARE_CHECK_IDS:
             kwargs["cleanup"] = cleanup
         if spec.check_id in CAPTURE_AWARE_CHECK_IDS:
@@ -9182,6 +9243,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - each exit is 
                     driver,
                     post_cleanup_specs,
                     manifest_ids=expected_ids,
+                    # The earlier partition's outcomes, so a consolidation running here
+                    # sees the whole wave rather than only this partition. Without it a
+                    # results-aware check in the post-cleanup group would conclude the
+                    # wave was clean because the failures were before its horizon.
+                    prior_results=results,
                     cleanup=cleanup,
                     capture=capture,
                     teardown=teardown,

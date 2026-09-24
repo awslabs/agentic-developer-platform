@@ -1503,26 +1503,35 @@ work to finish; the second is yours to collect.
 | W4-07 | Gate/regression | Live JSON matches `agentControl.ts` and `control_schemas.py` at each level | **S7 #3966** |
 | W4-08 | Gate/regression | Measured polling lifecycle, backoff, stop conditions, distinct delivery states | **S7 #3966** |
 | W4-09 | AC-F1, AC-F2 | Flag-off/flag-on runtime comparison with final code; live stats provenance | S5 #3964 |
-| W4-10 | Gate/regression | Evidence index covering exactly all 37 acceptance IDs | operations |
+| W4-10 | Gate/regression | Evidence index covering exactly all 37 acceptance IDs, inside a report where every other check passed | operations |
 
 **A complete wave-4 report is still not reachable in this revision**, and that
 remains the correct state rather than a gap to work around. What blocks it is no
 longer missing code:
 
-- **Wave 3 is unregistered here.** W4-01 needs waves 1–3 accepted and W4-10 needs
-  every wave's criteria in the consolidated set, so both report `not_run` naming
-  wave 3. This is the prerequisite that cannot be satisfied by paperwork: a wave-3
-  `result.json` can exist while its manifest does not, and the evaluator still
-  refuses, because acceptance is a property of a registered evaluation.
+- **Wave 3 is registered but not accepted.** Seven of its twelve checks have no
+  predicate yet (see "Wave 3 is registered and partially implemented" above), so
+  an honest wave-3 report is 5/12. W4-01 needs waves 1–3 *accepted*, and
+  `measure_prior_wave` derives that from the counts the wave's own `result.json`
+  carries — so this is the prerequisite that cannot be satisfied by paperwork. An
+  operator asserting "wave 3 is done" never enters the record; a 5/12 does.
 - **W4-03 needs steering to be routable** (S6 #3965 — the gateway's
   `SUPPORTED_ACTIONS` excludes `steer` today).
 - **The browser capture producer** (#5878) is what W4-02/04/07/08 read. The
   harness consumes it; it does not make it.
 
 So a run against a correct environment in this revision reports eight passed and
-two `not_run`, and exits nonzero. Do not read the eight as "wave 4 is nearly
+W4-01/W4-10 failed, and exits nonzero. Do not read the eight as "wave 4 is nearly
 done": the two that are missing are precisely the ones that check whether
 everything else adds up.
+
+**W4-10 reads this run's other nine verdicts, not just its inventory.** Worth
+knowing because it changes where you look when it fails. A complete, correctly
+compiled evidence index is *not* sufficient: if any other wave-4 check failed or
+reported `not_run`, W4-10 fails too and names the sibling. The row makes this
+consolidation the condition for closing all four evaluations, so it cannot be
+satisfied inside a report that does not pass its own gate. When W4-10's message
+names another check, fix that one — the index is not the problem.
 
 #### `browser_control_run` (W4-02, W4-04, W4-07, W4-08, wave 4)
 
@@ -1784,9 +1793,10 @@ Every one of these needs a live fixture run and exact cleanup, which are the
 maintainer's. A criterion whose only evidence is a test in this repository is
 `not_run`, and the evaluator is built so you cannot record it as anything else.
 
-Wave 3 remains unregistered and `--wave 3` is still refused outright. That is not
-an oversight in wave 4: several wave-4 checks consolidate wave 3's criteria, so
-wave 4 cannot be complete before wave 3 exists and is accepted.
+Wave 3 is registered now, and `--wave 3` runs — but five of its twelve checks have
+predicates, so it reports 5/12 and is not accepted. That is not an oversight in
+wave 4: several wave-4 checks consolidate wave 3's criteria, so wave 4 cannot be
+complete before wave 3 is accepted at 12/12 with its cleanup confirmed.
 
 ## Troubleshooting
 

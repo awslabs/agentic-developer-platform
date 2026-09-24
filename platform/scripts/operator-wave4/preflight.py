@@ -53,7 +53,9 @@ from .collector import (
 # to change, and a pattern pinned to today's exact format would start silently
 # matching nothing after an upgrade, which would make this check vacuous rather than
 # failing.
-_ASSET_REFERENCE = re.compile(r"""["'(]([^"'()\s]*/assets/[^"'()\s]+\.(?:js|css))["')]""")
+_ASSET_REFERENCE = re.compile(
+    r"""["'(]([^"'()\s]*/assets/[^"'()\s]+\.(?:js|css))["')]"""
+)
 
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -81,7 +83,9 @@ def measure_revision(
     also refused: `rev-parse` can print an abbreviated hash under some configs, and a
     short SHA names whatever that prefix happened to match.
     """
-    measured = _git(["rev-parse", ref], what=f"revision of {ref!r}", runner=runner, repo=repo)
+    measured = _git(
+        ["rev-parse", ref], what=f"revision of {ref!r}", runner=runner, repo=repo
+    )
     if is_refused(measured):
         return measured
     if not _GIT_SHA.match(measured):
@@ -152,7 +156,9 @@ def measure_served_assets(
         return Refused(f"served assets: GET {url} failed: {exc}")
     if status != 200:
         return Refused(f"served assets: GET {url} returned {status}, expected 200")
-    references = sorted({match.group(1).rsplit("/", 1)[-1] for match in _ASSET_REFERENCE.finditer(body)})
+    references = sorted(
+        {match.group(1).rsplit("/", 1)[-1] for match in _ASSET_REFERENCE.finditer(body)}
+    )
     if not references:
         return Refused(
             f"served assets: GET {url} returned 200 but its body references no hashed assets. An "
@@ -176,7 +182,9 @@ def measure_built_assets(
     COMPARISON and the refusal semantics around it.
     """
     try:
-        names = sorted({str(name).rsplit("/", 1)[-1] for name in dist_listing(revision)})
+        names = sorted(
+            {str(name).rsplit("/", 1)[-1] for name in dist_listing(revision)}
+        )
     except Exception as exc:  # noqa: BLE001
         return Refused(f"built assets for {revision}: {exc}")
     if not names:
@@ -242,10 +250,14 @@ def measure_prior_wave(
     except Exception as exc:  # noqa: BLE001
         return Refused(f"wave {wave} acceptance: cannot read its result.json: {exc}")
     if not isinstance(report, Mapping):
-        return Refused(f"wave {wave} acceptance: its result.json is {type(report).__name__}, not an object")
+        return Refused(
+            f"wave {wave} acceptance: its result.json is {type(report).__name__}, not an object"
+        )
 
     missing = [
-        key for key in ("evaluation", "run_id", "revision", "passed", "required") if key not in report
+        key
+        for key in ("evaluation", "run_id", "revision", "passed", "required")
+        if key not in report
     ]
     if missing:
         return Refused(
@@ -301,7 +313,9 @@ def measure_gate(
     if is_refused(response):
         return Refused(f"the {gate!r} gate: {response.reason}")
     if not isinstance(response, Mapping):
-        return Refused(f"the {gate!r} gate: `gh run view` returned {type(response).__name__}, not an object")
+        return Refused(
+            f"the {gate!r} gate: `gh run view` returned {type(response).__name__}, not an object"
+        )
 
     run_id = response.get("databaseId")
     head = response.get("headSha")
@@ -316,7 +330,12 @@ def measure_gate(
     named = None
     if isinstance(jobs, Sequence):
         named = next(
-            (job for job in jobs if isinstance(job, Mapping) and job.get("name") == gate), None
+            (
+                job
+                for job in jobs
+                if isinstance(job, Mapping) and job.get("name") == gate
+            ),
+            None,
         )
     if named is None:
         return Refused(
@@ -329,7 +348,9 @@ def measure_gate(
     return {
         "status": status,
         "run_id": str(run_id),
-        "run_url": str(response.get("url") or f"https://github.com/aws-e/adp/actions/runs/{run_id}"),
+        "run_url": str(
+            response.get("url") or f"https://github.com/aws-e/adp/actions/runs/{run_id}"
+        ),
         "tested_revision": head,
         "raw": {
             "run": {
@@ -379,9 +400,13 @@ def collect(
         # unexplained gaps.
         artifact.set("frontend", Refused(f"frontend: {frontend_revision.reason}"))
     else:
-        served = measure_served_assets(str(config.get("frontend_url") or config["gateway_url"]), fetch=fetch)
+        served = measure_served_assets(
+            str(config.get("frontend_url") or config["gateway_url"]), fetch=fetch
+        )
         built = measure_built_assets(frontend_revision, dist_listing=dist_listing)
-        evidence = measure_served_asset_evidence(frontend_revision, served=served, built=built)
+        evidence = measure_served_asset_evidence(
+            frontend_revision, served=served, built=built
+        )
         if is_refused(evidence):
             artifact.set("frontend", Refused(f"frontend: {evidence.reason}"))
         else:
@@ -431,14 +456,21 @@ def collect(
         # "Merged" is a graph relation, not a claim: is this story's revision contained
         # in the default branch? Asked of git, so an unmerged branch cannot be recorded
         # as merged.
-        contained = measure_containment(revision, "origin/main", runner=git_runner, repo=repo)
+        contained = measure_containment(
+            revision, "origin/main", runner=git_runner, repo=repo
+        )
         if is_refused(contained):
             artifact.refuse_entry("merged_revisions", story, contained.reason)
             continue
         merged[story] = {"merged": contained, "revision": revision}
-    artifact.set("merged_revisions", merged if merged else Refused(
-        "merged_revisions: no story revision could be resolved and placed in the commit graph"
-    ))
+    artifact.set(
+        "merged_revisions",
+        merged
+        if merged
+        else Refused(
+            "merged_revisions: no story revision could be resolved and placed in the commit graph"
+        ),
+    )
 
     gate_results: dict[str, Any] = {}
     for gate in gates:
@@ -455,8 +487,12 @@ def collect(
     artifact.set("browser_identity", _measure_identity(identity_lookup))
     flags = flag_lookup()
     if is_refused(flags):
-        artifact.set("ordinary_users_gated", Refused(f"ordinary_users_gated: {flags.reason}"))
-        artifact.set("ordinary_flags_off", Refused(f"ordinary_flags_off: {flags.reason}"))
+        artifact.set(
+            "ordinary_users_gated", Refused(f"ordinary_users_gated: {flags.reason}")
+        )
+        artifact.set(
+            "ordinary_flags_off", Refused(f"ordinary_flags_off: {flags.reason}")
+        )
     else:
         artifact.set("ordinary_users_gated", flags.get("ordinary_users_gated"))
         artifact.set("ordinary_flags_off", flags.get("ordinary_flags_off"))
@@ -483,7 +519,9 @@ def _measure_identity(identity_lookup: Callable[[], Measured]) -> Measured:
     if is_refused(answer):
         return Refused(f"browser_identity: {answer.reason}")
     if not isinstance(answer, Mapping):
-        return Refused(f"browser_identity: the identity lookup returned {type(answer).__name__}")
+        return Refused(
+            f"browser_identity: the identity lookup returned {type(answer).__name__}"
+        )
     for key in ("role", "is_run_owner"):
         if key not in answer:
             return Refused(
@@ -496,9 +534,12 @@ def _measure_identity(identity_lookup: Callable[[], Measured]) -> Measured:
 def _digest(names: Sequence[str]) -> str:
     import hashlib
 
-    return "sha256:" + hashlib.sha256(
-        json.dumps(sorted(names), separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(sorted(names), separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def measure_component_digest(
