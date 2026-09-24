@@ -6946,7 +6946,8 @@ class Driver:
         return observed_identities
 
     def _assert_every_created_resource_is_gone(
-        self, preflight: dict, payload: dict, artifact: str, *, test_object_key: str | None = None
+        self, preflight: dict, payload: dict, artifact: str, *, test_object_key: str | None = None,
+        cleanup: CleanupOutcome | None = None,
     ) -> tuple[dict, dict]:
         """Reconciliation against the creation ledger, in BOTH directions.
 
@@ -7021,6 +7022,34 @@ class Driver:
                         "account for"
                     )
             observed_identities = {**observed_identities, **test_objects}
+        # Synthetic rows are deleted by the harness AFTER the resource callback
+        # writes its artifact. Their absence must come from that later first-hand
+        # record, not a prefilled claim in the earlier artifact. Bind all three
+        # identity parts so a row in a different table cannot discharge this one.
+        row_entries = {
+            identity: entry for identity, entry in ledger.items()
+            if entry.get("kind") == "dynamodb-row"
+        }
+        if row_entries:
+            self._assert_row_deletion_record(cleanup)
+            assert cleanup is not None
+            table = self.config["invocation_table"]
+            prefilled = sorted(set(row_entries) & set(observed_identities))
+            if prefilled:
+                raise AssertionError(
+                    f"harness-owned rows {prefilled!r} must not have a pre-row-cleanup "
+                    "absence claim in the resource teardown artifact"
+                )
+            for deletion in cleanup.deletions:
+                identity = f"{table}/{deletion.event_id}/{deletion.arrived_at}"
+                if identity not in row_entries:
+                    continue
+                observed_identities[identity] = {
+                    "identity": identity,
+                    "absent": deletion.confirmed_absent,
+                    "observed_by": "harness DeleteItem with both keys and consistent GetItem",
+                }
+
         # Every created resource accounted for. The direction that matters: a leaked
         # resource is one with no absence observation, and only the ledger knows it
         # exists.
@@ -7208,7 +7237,7 @@ class Driver:
             )
         self._assert_isolation_and_flags(verification, "teardown_verification", running=False)
         self._assert_every_created_resource_is_gone(
-            preflight, verification, "teardown_verification"
+            preflight, verification, "teardown_verification", cleanup=cleanup
         )
 
         # --- (5) the deleted row must not still read as live ---------------------
@@ -8303,6 +8332,7 @@ class Driver:
             verification,
             "wave3_teardown_verification",
             test_object_key="test_objects_removed",
+            cleanup=cleanup,
         )
 
         # --- (5) the deleted rows must not still read as live --------------------

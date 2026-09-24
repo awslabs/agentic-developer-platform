@@ -18109,3 +18109,47 @@ class TestScopedPolicyCleanup:
         worker["kind"] = worker["selection_observation"]["body"]["kind"] = "Deployment"
         with pytest.raises(AssertionError, match="pod template"):
             self.ordered(policy, worker)
+
+
+class TestHarnessOwnedRowInventory:
+    def config_with_row(self, tmp_path, *, table=None, arrived_at=None):
+        config = wave2_config(tmp_path)
+        row = config['cleanup_items'][0]
+        identity = f"{table or config['invocation_table']}/{row['event_id']}/{arrived_at or row['arrived_at']}"
+        artifact = tmp_path / config['artifacts']['wave2_preflight']
+        payload = json.loads(artifact.read_text())
+        payload['creation_ledger'].append({
+            'kind': 'dynamodb-row', 'name': row['event_id'],
+            'identity': identity, 'created': True,
+        })
+        artifact.write_text(json.dumps(payload))
+        return config, identity
+
+    def test_post_callback_row_deletion_completes_inventory(self, tmp_path):
+        config, identity = self.config_with_row(tmp_path)
+        # The real test lifecycle invokes resource teardown first, then run_cleanup.
+        # No synthetic row absence is supplied by the earlier resource callback.
+        result = run_w2_10(tmp_path, config=config)
+        assert result.status == _mod.STATUS_PASSED, result.message
+
+    @pytest.mark.parametrize('mismatch', ['table', 'sort-key'])
+    def test_other_table_or_sort_key_cannot_discharge_created_row(self, tmp_path, mismatch):
+        kwargs = {'table': 'other-table'} if mismatch == 'table' else {'arrived_at': 'other-time'}
+        config, identity = self.config_with_row(tmp_path, **kwargs)
+        result = run_w2_10(tmp_path, config=config)
+        assert result.status == _mod.STATUS_FAILED
+        assert identity in result.message
+        assert 'no post-teardown absence observation' in result.message
+
+    @pytest.mark.parametrize('table', [None, 'other-table'])
+    def test_resource_callback_cannot_prefill_row_absence(self, tmp_path, table):
+        config, identity = self.config_with_row(tmp_path, table=table)
+        removals = ledger_removals() + [{
+            'identity': identity, 'absent': True,
+            'observed_by': 'operator claims row gone before harness deletion',
+            'removed_at': relative_time(20),
+        }]
+        result = run_w2_10(tmp_path, config=config,
+                           verification=teardown_verification_payload(removals=removals))
+        assert result.status == _mod.STATUS_FAILED
+        assert 'pre-row-cleanup' in result.message

@@ -534,3 +534,13 @@ workload. Supplying policy scope without workload observations fails; unknown or
 malformed selectors cannot exempt resources. These observations do not establish
 that anything was deleted: independent removal receipts and absence checks remain
 required for every ledger entry, including canaries removed earlier.
+
+### Synthetic row absence during consolidated cleanup
+
+Keep every created row in the preflight creation ledger as `dynamodb-row`, with
+identity `<invocation_table>/<event_id>/<arrived_at>`. The resource teardown callback
+runs before the harness deletes these rows, so omit row absence claims from its
+`teardown_verification.removals`. The gate reconciles rows using the harness's own
+subsequent DeleteItem and consistent GetItem results. Configure every exact row key
+in `cleanup_items`; a missing key, different table, or unconfirmed deletion fails
+acceptance. The resource callback must still remove and verify all non-row resources.
