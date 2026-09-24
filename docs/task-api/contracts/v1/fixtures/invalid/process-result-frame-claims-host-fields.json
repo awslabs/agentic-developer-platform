@@ -1,0 +1,30 @@
+{
+  "$fixture": {
+    "description": "A child result frame asserting its own spend and turn accounting. The child reports content; the host owns the ledger. If the child could state usage, agent-generated output would be writing the billing record.",
+    "schema": "process-protocol.schema.json#/$defs/result_frame",
+    "expect": "invalid",
+    "reason": "total_usd and turns_used are not child-reportable fields; the host derives them from its own receipts",
+    "violates": [
+      "process-protocol.schema.json#/$defs/result_frame"
+    ],
+    "owner": "T5",
+    "criteria": [
+      "T0-AC02",
+      "T5-AC03",
+      "V0-02"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "result",
+  "request_id": "c50750f5-23e4-4114-a5ac-35520acece13",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "report": {
+    "summary": "Connection-pool exhaustion is the most likely cause.",
+    "findings": [],
+    "uncertainties": [],
+    "recommendations": [],
+    "evidence_refs": []
+  },
+  "total_usd": 0.07,
+  "turns_used": 3
+}

@@ -1,0 +1,23 @@
+{
+  "$fixture": {
+    "description": "413 payload_too_large naming the exceeded limit by name and value, so a client can correct the request without guessing.",
+    "schema": "errors.schema.json#/$defs/error_response",
+    "expect": "valid",
+    "owner": "T2",
+    "criteria": [
+      "T0-AC03",
+      "T2-AC02",
+      "V0-02",
+      "V1-09"
+    ]
+  },
+  "schema_version": "1.0",
+  "code": "payload_too_large",
+  "message": "Submit body exceeds the permitted size.",
+  "request_id": "req-01JC9K9U1E4F",
+  "http_status": 413,
+  "details": {
+    "limit_name": "submit_body.max_body_bytes",
+    "limit_value": 65536
+  }
+}

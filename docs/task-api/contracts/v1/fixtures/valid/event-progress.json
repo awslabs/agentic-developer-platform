@@ -1,0 +1,29 @@
+{
+  "$fixture": {
+    "description": "An authored progress event naming the evidence inspected. It carries both server and producer timestamps because the two-marker latency threshold is measured at emitter and external receiver.",
+    "schema": "events.schema.json#/$defs/event",
+    "expect": "valid",
+    "owner": "T6",
+    "criteria": [
+      "T0-AC02",
+      "T0-AC03",
+      "T6-AC01",
+      "V0-02",
+      "V4-03"
+    ]
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "generation": 1,
+  "runtime_attempt_id": "a1b2c3d4-e5f6-4718-9a2b-3c4d5e6f7081",
+  "sequence": 4,
+  "event_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:4",
+  "type": "progress.updated",
+  "timestamp": "2026-09-24T14:43:18Z",
+  "producer_timestamp": "2026-09-24T14:43:17Z",
+  "data": {
+    "message": "Inventoried 3 supplied artifacts: 204 log lines, 1 configuration document, 1 metrics extract. Beginning correlation of 503 responses against pool acquisition timeouts.",
+    "stage": "evidence_inventory"
+  }
+}

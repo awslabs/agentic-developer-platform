@@ -1,0 +1,32 @@
+{
+  "$fixture": {
+    "description": "A history.gap event naming the omitted producer reports by ID. When storage recovers after a buffering failure the gap is recorded explicitly rather than fabricating sequence numbers for progress that was never persisted (invariant LC-09).",
+    "schema": "events.schema.json#/$defs/event",
+    "expect": "valid",
+    "owner": "T6",
+    "criteria": [
+      "T0-AC02",
+      "T6-AC04",
+      "V0-04",
+      "V3-06"
+    ]
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "generation": 1,
+  "runtime_attempt_id": "a1b2c3d4-e5f6-4718-9a2b-3c4d5e6f7081",
+  "sequence": 8,
+  "event_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:8",
+  "type": "history.gap",
+  "timestamp": "2026-09-24T14:46:02Z",
+  "data": {
+    "omitted_from_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:6",
+    "omitted_to_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:7",
+    "omitted_report_ids": [
+      "3d852922-4be7-4319-98c7-dfc1b31a5a2f",
+      "9f93af69-b400-45c2-b86f-4d375c11c9ef"
+    ],
+    "reason": "Progress storage was unavailable for 8 seconds; buffered reports exceeded the host retention window."
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$fixture": {
+    "description": "Submit body exercising every optional field at or below its fixed limit: 4 artifacts, 10 acceptance criteria, inputs object and external reference.",
+    "schema": "public-api.schema.json#/$defs/submit_request",
+    "expect": "valid",
+    "owner": "T2",
+    "criteria": ["T0-AC02", "T0-AC03", "V0-02"]
+  },
+  "schema_version": "1.0",
+  "persona": "agent-task-investigator",
+  "instructions": "Correlate the attached gateway logs, deployment configuration and error samples. Identify the most likely cause of the 503 burst and state what evidence is missing.",
+  "inputs": {
+    "incident_window": "2026-09-24T14:05:00Z/2026-09-24T14:40:00Z",
+    "affected_service": "checkout-api",
+    "observed_error_rate": 0.41
+  },
+  "artifact_ids": [
+    "art_6f1b9c22-4a7d-4f1e-8b3a-2c9d5e7f1a04",
+    "art_7a2c0d33-5b8e-4021-9c4b-3d0e6f802b15",
+    "art_8b3d1e44-6c9f-4132-ad5c-4e1f7a913c26",
+    "art_9c4e2f55-7d01-4243-be6d-5f208b024d37"
+  ],
+  "external_reference": "incident-INC-2026-0924-0031",
+  "acceptance_criteria": [
+    "Name the most likely cause.",
+    "Cite the specific log lines supporting it.",
+    "List configuration values checked.",
+    "State which evidence would confirm the hypothesis.",
+    "Identify anything that could not be determined.",
+    "Do not speculate beyond the supplied evidence.",
+    "Distinguish symptom from cause.",
+    "Note whether the error rate is still rising.",
+    "Say whether a rollback would be safe.",
+    "Flag any secret accidentally present in the logs."
+  ]
+}

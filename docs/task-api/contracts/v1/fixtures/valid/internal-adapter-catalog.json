@@ -1,0 +1,410 @@
+{
+  "$fixture": {
+    "description": "Reusable request/response examples for every fixed section-12 adapter and all three retained delivery adapters. Credential-like values are explicit non-secret fixture sentinels.",
+    "schema": "internal-adapters.schema.json#/$defs/adapter_catalog",
+    "expect": "valid",
+    "owner": "T0",
+    "criteria": ["T0-AC02", "T0-AC03", "V0-03", "V0-04"]
+  },
+  "admit": {
+    "route": "/internal/v1/tasks/admit",
+    "request": {
+      "schema_version": "1.0",
+      "submit": {
+        "schema_version": "1.0",
+        "persona": "agent-task-investigator",
+        "instructions": "Determine the cause from the supplied evidence."
+      },
+      "idempotency_key": "fixture-idempotency-key",
+      "caller_token": "fixture:non-secret:caller-token",
+      "producer_proof": "fixture:non-secret:producer-proof"
+    },
+    "response": {
+      "schema_version": "1.0",
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+      "status": "accepted",
+      "created_at": "2026-09-24T14:42:03Z",
+      "deadline_at": "2026-09-24T15:12:03Z",
+      "status_url": "/v1/tasks/tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "events_url": "/v1/tasks/tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20/events",
+      "request_id": "fixture-request-1",
+      "idempotent_replay": false
+    }
+  },
+  "dispatch_claim": {
+    "route": "/internal/v1/tasks/dispatch/claim",
+    "request": {
+      "schema_version": "1.0",
+      "dispatch_id": "b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+      "producer_proof": "fixture:non-secret:producer-proof"
+    },
+    "response": {
+      "schema_version": "1.0",
+      "envelope": {
+        "kind": "adp.task",
+        "schema_version": "1.0",
+        "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+        "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+        "message_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+        "persona": "agent-task-investigator",
+        "dispatch_id": "b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+        "request_digest": "9f2a4c6e8b0d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f11",
+        "input_ref": {
+          "record_type": "TASK",
+          "input_digest": "1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1133"
+        },
+        "assignment_ref": {
+          "grant_pk": "TENANT#fixture",
+          "grant_sk": "TASK_RUN#5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40#GEN#0000000001",
+          "generation": 1
+        }
+      },
+      "lease_token": "fixture:non-secret:dispatch-lease",
+      "lease_expires_at": "2026-09-24T14:42:48Z"
+    }
+  },
+  "dispatch_settle": {
+    "route": "/internal/v1/tasks/dispatch/settle",
+    "request": {
+      "schema_version": "1.0",
+      "dispatch_id": "b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+      "lease_token": "fixture:non-secret:dispatch-lease",
+      "publication_outcome": "confirmed",
+      "sqs_message_id": "fixture-sqs-message-id",
+      "producer_proof": "fixture:non-secret:producer-proof"
+    },
+    "response": {
+      "schema_version": "1.0",
+      "dispatch_id": "b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+      "queue_ack_status": "pending",
+      "task_status": "queued"
+    }
+  },
+  "recovery_claim": {
+    "route": "/internal/v1/tasks/recovery/claim",
+    "request": {
+      "schema_version": "1.0",
+      "shard": "v1#00",
+      "cursor": null,
+      "limit": 100,
+      "producer_proof": "fixture:non-secret:recovery-proof"
+    },
+    "response": {
+      "schema_version": "1.0",
+      "work": [{
+        "work_id": "08bc87f5-2f05-41e4-9a92-0a774e41e618",
+        "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+        "kind": "execution",
+        "due_at": "2026-09-24T14:50:00Z",
+        "lease_token": "fixture:non-secret:recovery-lease",
+        "lease_expires_at": "2026-09-24T14:50:45Z"
+      }],
+      "next_cursor": null
+    }
+  },
+  "recovery_settle": {
+    "route": "/internal/v1/tasks/recovery/settle",
+    "request": {
+      "schema_version": "1.0",
+      "work_id": "08bc87f5-2f05-41e4-9a92-0a774e41e618",
+      "lease_token": "fixture:non-secret:recovery-lease",
+      "evidence": {
+        "kind": "workload_termination",
+        "observed": true,
+        "observed_at": "2026-09-24T14:50:10Z"
+      },
+      "producer_proof": "fixture:non-secret:recovery-proof"
+    },
+    "response": {
+      "schema_version": "1.0",
+      "work_id": "08bc87f5-2f05-41e4-9a92-0a774e41e618",
+      "operation_status": "confirmed",
+      "task_status": "failed"
+    }
+  },
+  "bootstrap": {
+    "route": "/internal/v1/agent/task/bootstrap",
+    "request": {
+      "schema_version": "1.0",
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+      "envelope_digest": "4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4466",
+      "workload": {
+        "pod_uid": "b306c7fd-2563-4f01-9d8d-2407cd83dc75",
+        "job_uid": "a62e383f-8da1-4e5f-a477-776526e0805b",
+        "namespace": "adp-agents"
+      }
+    },
+    "response": {
+      "schema_version": "1.0",
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+      "generation": 1,
+      "persona": "agent-task-investigator",
+      "run_credential": "fixture:non-secret:task-run-credential",
+      "run_credential_expires_at": "2026-09-24T15:12:03Z",
+      "input": {
+        "instructions": "Determine the cause from the supplied evidence.",
+        "input_digest": "1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1133"
+      },
+      "model_binding": {
+        "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "transport": "anthropic_messages",
+        "model_policy_version": "mp-fixture",
+        "request_shape_version": "rs-fixture",
+        "pricing_evidence_version": "pe-fixture",
+        "invocability_verified": true
+      },
+      "limits": {
+        "max_turns": 8,
+        "max_output_tokens_per_turn": 4096,
+        "max_usd": 1,
+        "deadline_at": "2026-09-24T15:12:03Z"
+      }
+    }
+  },
+  "attempt": {
+    "route": "/internal/v1/agent/task/attempt",
+    "request": {
+      "schema_version": "1.0",
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+      "generation": 1,
+      "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11",
+      "protocol_version": 1,
+      "capabilities": ["input", "cancel"],
+      "old_attempt_invalidated": true
+    },
+    "response": {
+      "schema_version": "1.0",
+      "operation_status": "confirmed",
+      "request_id": "fixture-request-2",
+      "reason": null
+    }
+  },
+  "report": {
+    "route": "/internal/v1/agent/task/report",
+    "request": {
+      "schema_version": "1.0",
+      "attempt": {
+        "run": {
+          "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+          "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+          "generation": 1
+        },
+        "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11"
+      },
+      "report_id": "5a867be2-19ca-41e4-a435-4e94520b332b",
+      "event_type": "progress.updated",
+      "producer_timestamp": "2026-09-24T14:43:17Z",
+      "data": {"message": "Inspected the supplied log.", "stage": "analysis"}
+    },
+    "response": {
+      "schema_version": "1.0",
+      "report_id": "5a867be2-19ca-41e4-a435-4e94520b332b",
+      "sequence": 4,
+      "event_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:4"
+    }
+  },
+  "turn": {
+    "route": "/internal/v1/agent/task/turn",
+    "request": {
+      "schema_version": "1.0",
+      "attempt": {
+        "run": {
+          "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+          "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+          "generation": 1
+        },
+        "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11"
+      },
+      "request_id": "8f027e4b-ceb0-40cc-94fd-bd402f1048db",
+      "expected_transcript_version": 1
+    },
+    "response": {
+      "schema_version": "1.0",
+      "operation_status": "committed",
+      "turn": {
+        "schema_version": "1.0",
+        "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+        "turn_number": 1,
+        "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+        "command_ids": [],
+        "transcript_version": 1,
+        "committed_at": "2026-09-24T14:43:20Z",
+        "immutable": true,
+        "model_operation_id": null
+      },
+      "pending_input_count": 0
+    }
+  },
+  "model": {
+    "route": "/internal/v1/agent/task/model",
+    "request": {
+      "schema_version": "1.0",
+      "attempt": {
+        "run": {
+          "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+          "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+          "generation": 1
+        },
+        "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11"
+      },
+      "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+      "request_digest": "5e7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f77",
+      "messages": [{"role": "user", "content": "Analyze the supplied evidence."}],
+      "max_tokens": 4096
+    },
+    "response": {
+      "schema_version": "1.0",
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+      "operation_status": "confirmed",
+      "handoff": "confirmed",
+      "request_digest": "5e7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f77",
+      "claimed_at": "2026-09-24T14:43:21Z",
+      "completed_at": "2026-09-24T14:43:30Z",
+      "usage": {"input_tokens": 10, "output_tokens": 5, "estimated_usd": 0.001},
+      "reservation_status": "settled",
+      "automatic_replay_permitted": false
+    }
+  },
+  "control": {
+    "route": "/internal/v1/agent/task/control",
+    "request": {
+      "schema_version": "1.0",
+      "attempt": {
+        "run": {
+          "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+          "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+          "generation": 1
+        },
+        "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11"
+      },
+      "last_receipt_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:4"
+    },
+    "response": {
+      "schema_version": "1.0",
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "cancel_requested": false,
+      "cancel_command_id": null,
+      "pending_input_count": 0,
+      "last_receipt_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:4",
+      "attempt_valid": true
+    }
+  },
+  "artifact": {
+    "route": "/internal/v1/agent/task/artifact",
+    "request": {
+      "schema_version": "1.0",
+      "run": {
+        "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+        "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+        "generation": 1
+      },
+      "content_type": "text/plain",
+      "content_sha256": "2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b44",
+      "content_base64": "Zml4dHVyZQ=="
+    },
+    "response": {
+      "schema_version": "1.0",
+      "artifact_id": "art_6f1b9c22-4a7d-4f1e-8b3a-2c9d5e7f1a04",
+      "version": 1,
+      "content_sha256": "2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b44",
+      "content_type": "text/plain",
+      "created_at": "2026-09-24T14:43:31Z",
+      "expires_at": "2026-09-25T14:43:31Z",
+      "request_id": "fixture-request-3"
+    }
+  },
+  "finalize": {
+    "route": "/internal/v1/agent/task/finalize",
+    "request": {
+      "schema_version": "1.0",
+      "attempt": {
+        "run": {
+          "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+          "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+          "generation": 1
+        },
+        "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11"
+      },
+      "final_report_id": "dd487aca-1f18-42e8-bb2d-bec140d2f065",
+      "child_exit": {
+        "confirmed": true,
+        "exit_code": 0,
+        "signal": null,
+        "stopped_at": "2026-09-24T14:49:31Z"
+      },
+      "outcome": "completed",
+      "result": {
+        "schema_version": "1.0",
+        "outcome": "completed",
+        "report": {
+          "summary": "The supplied evidence supports a bounded conclusion.",
+          "findings": [],
+          "uncertainties": [],
+          "recommendations": [],
+          "evidence_refs": []
+        },
+        "committed_at": "2026-09-24T14:49:31Z",
+        "process_exit_validated": true,
+        "turns_used": 1,
+        "total_usd": 0.001
+      },
+      "error": null,
+      "committed_result_refs": []
+    },
+    "response": {
+      "schema_version": "1.0",
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "status": "completed",
+      "version": 8,
+      "terminal_event_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:8"
+    }
+  },
+  "settlement": {
+    "route": "/internal/v1/agent/task/settlement",
+    "request": {
+      "schema_version": "1.0",
+      "workload": {
+        "pod_uid": "b306c7fd-2563-4f01-9d8d-2407cd83dc75",
+        "job_uid": "a62e383f-8da1-4e5f-a477-776526e0805b",
+        "namespace": "adp-agents"
+      },
+      "assignment": {
+        "grant_pk": "TENANT#fixture",
+        "grant_sk": "TASK_RUN#5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40#GEN#0000000001",
+        "generation": 1
+      },
+      "stop_evidence": {
+        "child_exit_confirmed": true,
+        "workload_terminated": true,
+        "observed_at": "2026-09-24T14:49:31Z"
+      },
+      "queue_ack_status": "confirmed"
+    },
+    "response": {
+      "schema_version": "1.0",
+      "operation_status": "confirmed",
+      "stop_only": true,
+      "queue_ack_status": "confirmed"
+    }
+  },
+  "acquire": {
+    "route": "/internal/v1/agent/task/acquire",
+    "request": {},
+    "response": {"body": null}
+  },
+  "heartbeat": {
+    "route": "/internal/v1/agent/task/heartbeat",
+    "request": {},
+    "response": {"accepted": true}
+  },
+  "ack": {
+    "route": "/internal/v1/agent/task/ack",
+    "request": {},
+    "response": {"accepted": true}
+  }
+}
