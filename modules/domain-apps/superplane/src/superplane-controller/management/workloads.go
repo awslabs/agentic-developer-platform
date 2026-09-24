@@ -297,8 +297,8 @@ var logSecrets = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(authorization\s*[:=]\s*(?:bearer\s+)?|bearer\s+)[^\s,;]+`),
 	regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`),
-	regexp.MustCompile(`(?is)-----BEGIN[^-]*PRIVATE KEY-----.*?-----END[^-]*PRIVATE KEY-----`),
-	regexp.MustCompile(`(?i)(?:password|secret|api[_-]?key|access[_-]?token)\s*[:=]\s*[^\s,;]+`),
+	regexp.MustCompile(`(?is)-----BEGIN[^-]*PRIVATE KEY-----.*?(?:-----END[^-]*PRIVATE KEY-----|$)`),
+	regexp.MustCompile(`(?i)["']?(?:authorization|password|secret|api[_-]?key|access[_-]?token|auth[_-]?token|token)["']?\s*[:=]\s*(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s,;]+)`),
 }
 
 func redactWorkloadLog(value string) string {
