@@ -15,8 +15,8 @@ non-applicable. Runtime and operator assertions still require review.
 | Fixed fail-soft logging gaps | 4 |
 | Verified test assertions | 187 |
 | Reviewed parameterized SQL boundaries | 2 |
-| Fixed source boundary, runtime acceptance open | 1 |
-| Pending source review, owned by #6108 | 1276 |
+| Fixed source boundary, runtime acceptance open | 2 |
+| Pending source review, owned by #6108 | 1275 |
 | Total original selectors | 1470 |
 
 Every original selector is retained exactly once in
@@ -43,7 +43,7 @@ B608 scanner severity is retained: the interpolated text contains fixed SQL
 fragments, while caller values are bound parameters. The review also found and
 fixed a separate production authorization defect: default list/count results
 included other users' personal assets. This is a source fix only; gateway rollout
-and acceptance remain held, and the remaining 1,276 pending selectors retain #6108.
+and acceptance remain held, and the remaining 1,275 pending selectors retain #6108.
 
 Original MEDIUM B310 selector `ri=652` has a bounded
 [ingest resolver transport fix](bandit-ingest-resolver-review.md). Synthetic
@@ -51,3 +51,10 @@ loopback tests reproduce internal-key forwarding on the original 301/302/303
 redirect paths and prove it is refused after the change. Scanner severity and
 original identity are retained. Source verification does not establish an ingest
 Lambda rollout or live acceptance; that remains open under #6108.
+
+Original MEDIUM B310 selector `ri=653` has a bounded
+[Slack response-router transport fix](bandit-slack-router-review.md). Actual
+loopback tests reproduce default redirect forwarding of a synthetic Bearer key;
+the fix refuses redirects, bounds request duration and redacts failure details.
+No real Slack message or response Lambda deployment was performed. Original
+identity/severity and #6108 ownership remain, with runtime acceptance open.
