@@ -12,6 +12,12 @@ async def observe_request(provider, operation, plan, *, operation_kind, request_
     instance; removal returns no new resource and still needs full inventory before
     settlement can establish absence.
     """
+    from .node_command_plan import KINDS
+
+    if operation_kind in KINDS and plan.node_bootstrap is not None:
+        from .node_command_inventory import recover
+
+        return await recover(provider, operation, plan, operation_kind, request_id)
     if operation_kind not in {"launch", "delete_cluster"} or not request_id:
         raise OperationRefused("journalled controller request unavailable")
     if await provider.sky.status(request_id) != "SUCCEEDED":

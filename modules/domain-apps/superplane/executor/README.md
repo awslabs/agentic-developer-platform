@@ -539,12 +539,19 @@ are reread before completion; a Job success counter without retained Pod evidenc
 is insufficient. This check does not assert DNS or Service connectivity or replace
 the allocation's separate exact node-identity gate.
 
-Remaining #5927 acceptance contracts: node-side traffic and same-machine
-bootstrap retry still need the governed post-launch transport; SkyPilot setup
-`nodeadm init` is not evidence of a separate transport.
-Prepared AMI/runtime/CNI/device-plugin compatibility and shared-cluster Node
-observation authority remain installation/integration requirements. No live
-networking or end-to-end join acceptance is established by these source checks.
+An installed `node_bootstrap` profile uses the governed post-launch SSM path in
+[NATIVE-BOOTSTRAP-DESIGN.md](NATIVE-BOOTSTRAP-DESIGN.md): original-instance bootstrap,
+Node/GPU readiness, node DNS/TLS probe, then ordinary workload execution. The fixed
+wrapper supports bounded preflight retries before one durable-latched nodeadm init;
+interrupted initialization is retained for recovery and cannot be blindly rerun.
+Legacy profiles retain their original SkyPilot setup behavior. See the
+[installation assets](node-command/INSTALLATION.md) for the required image, document
+and workspace-scoped IAM grants.
+
+Remaining #5927 acceptance includes actual prepared AMI/runtime/CNI/device-plugin
+compatibility, full interrupted-init re-entry where required, and separate trusted
+shared-cluster Node observation. No live networking or end-to-end GPU join is
+established by these source checks.
 
 An opt-in approved network probe batch profile is specified in
 [NETWORK-PROBE-DESIGN.md](NETWORK-PROBE-DESIGN.md). It binds the existing Service
