@@ -7,7 +7,10 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import stat
+import sys
 import time
+from types import SimpleNamespace
 import urllib.error
 
 import pytest
@@ -15,6 +18,139 @@ import pytest
 from superplane_executor import node_bootstrap_runner as bootstrap
 from superplane_executor import node_probe_runner as probe
 from superplane_executor import node_runner as runner
+
+
+@pytest.fixture
+def local_plugin(monkeypatch):
+    image_id = "sha256:" + "1" * 64
+    container = {
+        "id": "2" * 64,
+        "state": "CONTAINER_RUNNING",
+        "imageRef": image_id,
+        "labels": {"io.kubernetes.pod.namespace": "kube-system"},
+    }
+    image = {
+        "id": image_id,
+        "repoDigests": ["registry.example/nvidia/plugin@sha256:" + "b" * 64],
+    }
+    calls = []
+
+    def read(*arguments):
+        calls.append(arguments)
+        if arguments[0] == "ps":
+            return {"containers": [container]}
+        if arguments[0] == "inspecti":
+            assert arguments[-1] == image_id
+            return {"status": image}
+        assert arguments == ("inspect", "--output=json", container["id"])
+        return {"status": dict(container)}
+
+    monkeypatch.setattr(probe, "cri_json", read)
+    return container, image, calls
+
+
+def test_running_local_device_plugin_resolves_config_id_to_manifest(local_plugin):
+    _, _, calls = local_plugin
+    probe.verify_device_plugin(contract("node-api-dns-tls"))
+    assert [c[0] for c in calls] == ["ps", "inspecti", "inspect"]
+
+
+@pytest.mark.parametrize("wrong", ["digest", "state", "namespace", "image_identity"])
+def test_local_device_plugin_refuses_unproven_image(local_plugin, wrong):
+    container, image, _ = local_plugin
+    if wrong == "digest":
+        image["repoDigests"] = ["registry.example/plugin@sha256:" + "c" * 64]
+    elif wrong == "state":
+        container["state"] = "CONTAINER_EXITED"
+    elif wrong == "namespace":
+        container["labels"]["io.kubernetes.pod.namespace"] = "tenant"
+    else:
+        image["id"] = "sha256:" + "c" * 64
+    with pytest.raises(runner.RunnerRefused):
+        probe.verify_device_plugin(contract("node-api-dns-tls"))
+
+
+def test_local_cri_uses_only_fixed_native_endpoint(monkeypatch):
+    monkeypatch.setattr(probe, "verify_cri_socket", lambda: None)
+    calls = []
+
+    def command(arguments):
+        calls.append(arguments)
+        return b'{"containers":[]}'
+
+    monkeypatch.setattr(runner, "bounded_command", command)
+    assert probe.cri_json("ps", "--output=json") == {"containers": []}
+    assert calls == [
+        [
+            "/usr/bin/crictl",
+            "--config=/dev/null",
+            "--runtime-endpoint=unix:///run/containerd/containerd.sock",
+            "--image-endpoint=unix:///run/containerd/containerd.sock",
+            "--timeout=5",
+            "ps",
+            "--output=json",
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "mode,uid,gid",
+    [
+        (stat.S_IFLNK | 0o777, 0, 0),
+        (stat.S_IFREG | 0o600, 0, 0),
+        (stat.S_IFSOCK | 0o666, 0, 0),
+        (stat.S_IFSOCK | 0o660, 1000, 0),
+        (stat.S_IFSOCK | 0o660, 0, 1000),
+    ],
+)
+def test_local_cri_refuses_untrusted_socket(monkeypatch, mode, uid, gid):
+    monkeypatch.setattr(runner, "secure_path", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        probe,
+        "CRI_SOCKET",
+        SimpleNamespace(
+            parent=Path("/run/containerd"),
+            lstat=lambda: SimpleNamespace(st_mode=mode, st_uid=uid, st_gid=gid),
+        ),
+    )
+    with pytest.raises(runner.RunnerRefused, match="socket"):
+        probe.verify_cri_socket()
+
+
+def test_local_cri_refuses_oversized_json(monkeypatch):
+    monkeypatch.setattr(probe, "verify_cri_socket", lambda: None)
+    monkeypatch.setattr(runner, "bounded_command", lambda *_: b" " * 131073)
+    with pytest.raises(runner.RunnerRefused, match="bound"):
+        probe.cri_json("ps", "--output=json")
+
+
+def test_local_cri_capture_bounds_output_during_read():
+    with pytest.raises(runner.RunnerRefused, match="bound"):
+        runner.bounded_command(
+            [sys.executable, "-c", "import sys; sys.stdout.write('x' * 100000)"],
+            limit=1024,
+        )
+
+
+def test_local_cri_capture_times_out_stalled_process():
+    with pytest.raises(runner.RunnerRefused, match="timed out"):
+        runner.bounded_command(
+            [sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.1
+        )
+
+
+def test_local_plugin_rechecks_same_running_container(local_plugin, monkeypatch):
+    original = probe.cri_json
+
+    def changed(*arguments):
+        result = original(*arguments)
+        if arguments[0] == "inspect":
+            result["status"]["state"] = "CONTAINER_EXITED"
+        return result
+
+    monkeypatch.setattr(probe, "cri_json", changed)
+    with pytest.raises(runner.RunnerRefused, match="changed"):
+        probe.verify_device_plugin(contract("node-api-dns-tls"))
 
 
 def manifest():

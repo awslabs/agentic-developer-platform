@@ -53,6 +53,24 @@ re-entry. It survives reboot; `/run/nodeadm/init` is only an upstream start mark
 Successful nodeadm exit is a bootstrap execution receipt, not Node/GPU readiness.
 The executor separately verifies readiness and packet/workload evidence.
 
+The post-join probe also requires the approved device-plugin image to be running
+locally in `kube-system`. Install the reviewed `/usr/bin/crictl` binary and include
+it and its dependencies in the artifact manifest. The fixed probe uses only
+`unix:///run/containerd/containerd.sock` for runtime and image APIs, with an empty
+configuration and cleared environment. Its socket and parent directories must be
+root-owned; the socket must be a real root-group Unix socket with no other-user
+permissions. No Kubernetes observer credentials or permissions are added.
+
+For this prepared containerd runtime, CRI `imageRef` must be a SHA256 image/config
+ID. The probe resolves that exact ID with ImageStatus, requires an approved
+platform-specific manifest digest in `repoDigests`, then rechecks the same running
+container's ID, imageRef and namespace. Supply the platform-specific device-plugin
+manifest digest as `device_plugin_image`, and verify that the prepared runtime
+reports that repository digest. An image/config ID or manifest-list digest is not
+the approved manifest digest. JSON reads, container/image counts and elapsed time
+are bounded. This check runs only after join; bootstrap does not require a plugin
+that has not yet been scheduled. Node GPU readiness remains a separate check.
+
 A killed nodeadm may already have queued a systemd restart. Timeout, lost response,
 or partial execution therefore retains uncertainty and original allocation exposure.
 Only bounded preflight retry is supported; repeated full init requires separately

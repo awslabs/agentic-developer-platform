@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import selectors
 import stat
 import subprocess
 import time
@@ -79,6 +80,7 @@ REQUIRED_FILES = frozenset(
         "/usr/bin/nvidia-smi",
         "/usr/bin/amazon-ssm-agent",
         "/usr/bin/systemctl",
+        "/usr/bin/crictl",
         "/opt/superplane/bin/node-bootstrap-v1",
         "/opt/superplane/bin/node-probe-v1",
     }
@@ -454,6 +456,41 @@ def fixed_command(arguments, *, timeout=5):
         env=clean_environment(),
         timeout=timeout,
     ).stdout.decode()
+
+
+def bounded_command(arguments, *, limit=131072, timeout=5):
+    """Bound local CRI JSON while reading, not after an unbounded capture."""
+    with subprocess.Popen(
+        arguments,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=clean_environment(),
+    ) as process:
+        try:
+            end = time.monotonic() + timeout
+            output = bytearray()
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while True:
+                    remaining = end - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise RunnerRefused("local runtime observation timed out")
+                    chunk = os.read(
+                        process.stdout.fileno(), min(8192, limit + 1 - len(output))
+                    )
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if len(output) > limit:
+                        raise RunnerRefused("local runtime observation exceeds bound")
+            if process.wait(timeout=max(0.001, end - time.monotonic())) != 0:
+                raise RunnerRefused("local runtime observation failed")
+            return bytes(output)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
 
 
 def verify_native_runtime(contract):
