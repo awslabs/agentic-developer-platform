@@ -263,3 +263,20 @@ def test_control_retry_does_not_extend_to_model_or_cyber_operations(transport, m
         with pytest.raises(client.TaskRunClientUnavailable):
             operation({'request_id':'same-operation'})
     assert calls == ['model', 'cyber']
+
+
+def test_generic_tool_registry_is_exact_and_host_owned(monkeypatch):
+    monkeypatch.setenv('ADP_TASK_TOOL_ROUTES', '{"archive.scan":"https://tools.example/dev/tools/archive"}')
+    monkeypatch.setenv('ADP_AGENT_CONTROL_ENDPOINT', 'https://gateway.example/internal/v1/agent')
+    # Use the existing module fixture constructor configuration.
+    monkeypatch.setenv(client.CONTROL_ENDPOINT_ENV, 'https://gateway.example/internal/v1/agent')
+    instance = client.TaskRunClient()
+    calls = []
+    monkeypatch.setattr(instance, '_post', lambda action, body, **kw: calls.append((action, body, kw)) or {'ok': True})
+    body = {'operation': 'scan', 'payload': {'url': 'https://untrusted.example/other'}}
+    assert instance.tool('archive.scan', body) == {'ok': True}
+    assert calls[0][2]['tool_endpoint'] == 'https://tools.example/dev/tools/archive'
+    with pytest.raises(client.TaskRunClientError):
+        instance.tool('archive.other', body)
+    with pytest.raises(client.TaskRunClientError):
+        instance.tool('https://untrusted.example', body)

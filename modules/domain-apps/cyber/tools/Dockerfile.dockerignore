@@ -8,6 +8,10 @@
 !modules/domain-apps/cyber/tools/
 !modules/domain-apps/cyber/tools/cyber_tools/
 !modules/domain-apps/cyber/tools/cyber_tools/**
+!modules/domain-apps/cyber/agent/
+!modules/domain-apps/cyber/agent/skills/
+!modules/domain-apps/cyber/agent/skills/url-analysis/
+!modules/domain-apps/cyber/agent/skills/url-analysis/**
 **/__pycache__
 **/*.pyc
 **/.env*

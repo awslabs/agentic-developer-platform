@@ -16,7 +16,7 @@ function finish(error, report) {
   terminal = true;
   if (bridge) {
     if (bridge.cancelCommand) bridge.send('cancelled', { command_id: bridge.cancelCommand, partial_findings: null });
-    else if (error) bridge.send('error', { code: bridge.failure?.message === 'model_outcome_unknown' ? 'model_outcome_unknown' : 'process_failed', message: 'Cyber SDK execution did not complete with confirmed evidence.' });
+    else if (error) bridge.send('error', { code: bridge.failure?.message === 'model_outcome_unknown' ? 'model_outcome_unknown' : 'process_failed', message: error.message === 'SDK model-turn limit reached before a grounded report was accepted' ? error.message : 'Cyber SDK execution did not complete with confirmed evidence.' });
     else { bridge.send('result', { report }); }
   }
   process.stdin.destroy();

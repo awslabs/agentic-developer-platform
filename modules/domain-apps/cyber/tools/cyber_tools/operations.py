@@ -37,6 +37,8 @@ OPERATIONS = {
     "url_analysis",
     "enrich",
     "cancel_jobs",
+    "common_crawl_scan", "common_crawl_result", "common_crawl_read",
+    "browser_start", "browser_step", "browser_close", "browser_result",
 }
 JOB_OPERATIONS = {"triage", "static", "dynamic"}
 TERMINAL = {"completed", "failed", "cancelled", "not_started"}
@@ -55,6 +57,9 @@ class CyberBody(BaseModel):
 
 
 def validate_payload(operation, payload):
+    if operation.startswith(("common_crawl_", "browser_")):
+        from cyber_tools.url_contract import validate_url_payload
+        return validate_url_payload(operation, payload)
     fields = {
         "triage": {"sample_s3_uri", "focus", "yara_rules"},
         "static": {"sample_s3_uri", "focus", "yara_rules"},
@@ -316,7 +321,7 @@ class CyberOperations:
         row.update(runtime_attempt_id=identity.runtime_attempt_id, job=job)
         self.repo._client.put_item(TableName=self.repo.table_name, Item=_serialize(row))
 
-    def cleanup(self, identity, operation_id):
+    def fence_cleanup(self, identity):
         self.task(identity, cleanup=True)
         self.repo._client.update_item(
             TableName=self.repo.table_name,
@@ -332,7 +337,18 @@ class CyberOperations:
                 }
             ),
         )
+    def cleanup(self, identity, operation_id):
+        self.fence_cleanup(identity)
         pending, settled = [], set()
+        for scan in self.rows(identity, "CC_SCAN#"):
+            if scan.get("identity") != identity.model_dump():
+                continue
+            athena = self.backend._client("athena")
+            query_id = scan["query_id"]
+            state = athena.get_query_execution(QueryExecutionId=query_id)["QueryExecution"]["Status"]["State"]
+            if state not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                athena.stop_query_execution(QueryExecutionId=query_id)
+                pending.append(query_id)
         jobs = sorted(
             self.rows(identity, "CYBER_JOB#"),
             key=lambda row: row.get("cleanup_checked_at", 0),
@@ -381,7 +397,7 @@ class CyberOperations:
             receipt = row.get("receipt")
             if receipt and receipt.get("operation_status") != "unknown":
                 continue
-            if row.get("operation") in {"result", "enrich"}:
+            if row.get("operation", "").startswith("browser_") or row.get("operation") in {"result", "enrich", "common_crawl_result", "common_crawl_read"}:
                 continue  # Read-only operations create no external execution.
             expected_job = (
                 "cyber-"
@@ -421,7 +437,7 @@ class CyberOperations:
             return self.cleanup(identity, operation_id)
         task = self.task(identity)
         inputs = task["input_payload"].get("inputs", {})
-        if operation == "url_analysis":
+        if operation in {"url_analysis", "common_crawl_scan", "browser_start"}:
             if payload["url"] not in [inputs.get("url"), *inputs.get("urls", [])]:
                 raise HTTPException(403, "URL was not supplied to this Task")
             checked_url(payload["url"])
@@ -441,7 +457,7 @@ class CyberOperations:
             }
         )
         # Side effects are also deduplicated across new SDK tool-call IDs.
-        suffix = operation_id if operation == "result" else digest
+        suffix = operation_id if operation in {"result", "common_crawl_result", "browser_result"} else digest
         key = "CYBER_OP#" + suffix
         id_key = "CYBER_ID#" + operation_id
         existing_id = self.repo._get(task_ops_partition(identity.task_id), id_key)
@@ -630,6 +646,10 @@ class CyberOperations:
                 self.put_job(identity, job_id, {**job, "status": "not_started"})
         elif operation == "result":
             result = self.backend.result(job)
+        elif operation.startswith(("common_crawl_", "browser_")):
+            result = self.backend.url_tools.execute(
+                identity, operation, payload, task, digest, self.repo, self.evidence, self.revalidate
+            )
         elif operation == "url_analysis":
             result = self.backend.url_analysis(payload["url"], self.deadline(task))
         else:

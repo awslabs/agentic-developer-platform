@@ -17,7 +17,10 @@ from cyber_tools.operations import CyberBody, CyberOperations, validate_payload
 def lambda_handler(event, context):
     authority = None
     try:
-        if event.get("httpMethod") != "POST" or event.get("resource") != "/tools/cyber":
+        if event.get("httpMethod") != "POST" or event.get("resource") not in {
+            "/tools/cyber",
+            "/tools/cyber/common-crawl",
+        }:
             raise HTTPException(404, "Not found")
         require_worker(
             event,
@@ -37,6 +40,14 @@ def lambda_handler(event, context):
             raise HTTPException(413, "Tool request exceeds bound")
         body = CyberBody.model_validate_json(raw)
         validate_payload(body.operation, body.payload)
+        if body.operation.startswith("browser_"):
+            raise HTTPException(404, "Browser tools run in the Task worker")
+        if (
+            event.get("resource") == "/tools/cyber/common-crawl"
+            and not body.operation.startswith("common_crawl_")
+            and body.operation != "cancel_jobs"
+        ):
+            raise HTTPException(404, "Tool is unavailable on this transport")
         cleanup = body.operation == "cancel_jobs"
         if (
             not cleanup
@@ -57,6 +68,12 @@ def lambda_handler(event, context):
 
         verified = authorize()
         backend = CyberBackends()
+        if body.operation.startswith("common_crawl_"):
+            from cyber_tools.common_crawl_scan import CommonCrawlTools
+
+            backend.url_tools = CommonCrawlTools(
+                backend._client("athena"), s3=backend._client("s3")
+            )
         table = os.environ.get("CYBER_TOOLS_TABLE")
         if not table:
             raise HTTPException(503, "Cyber operation store unavailable")

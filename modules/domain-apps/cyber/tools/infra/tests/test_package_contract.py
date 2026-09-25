@@ -8,7 +8,7 @@ INFRA = Path(__file__).resolve().parents[1]
 def test_container_copies_only_owned_tool_packages():
     lines = (INFRA.parent / "Dockerfile").read_text().splitlines()
     copies = [line.split()[1] for line in lines if line.startswith("COPY ")]
-    assert copies == ["modules/tools/adp_tools", "modules/domain-apps/cyber/tools/cyber_tools"]
+    assert copies == ["modules/tools/adp_tools", "modules/domain-apps/cyber/tools/cyber_tools", "modules/domain-apps/cyber/agent/skills/url-analysis"]
     assert 'CMD ["cyber_tools.handler.lambda_handler"]' in lines
 
 

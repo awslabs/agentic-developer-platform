@@ -31,6 +31,7 @@ _ACTIONS = frozenset(
         "turn",
         "model",
         "cyber",
+        "tool-authorize",
         "control",
         "artifact",
         "finalize",
@@ -104,6 +105,9 @@ class TaskRunClient:
         ):
             raise TaskRunClientError("task service endpoint unavailable")
         self._cyber_endpoint = os.environ.get(CYBER_TOOLS_ENDPOINT_ENV, "")
+        self._local_tools = {}
+        self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
+        self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
         self._base = base
         self._timeout = timeout
         self._run_credential: str | None = None
@@ -145,6 +149,7 @@ class TaskRunClient:
         *,
         run_bound: bool,
         workload_token: str | None = None,
+        tool_endpoint: str | None = None,
     ) -> dict:
         if action not in _ACTIONS:
             raise TaskRunClientError("unsupported task operation")
@@ -155,7 +160,7 @@ class TaskRunClient:
         # The target is selected only from host configuration, never a child
         # operation body. Missing cyber service configuration must not fall back
         # to the retired gateway domain broker route.
-        url = self._cyber_url() if action == "cyber" else f"{self._base}/task/{action}"
+        url = (tool_endpoint or self._cyber_url()) if action == "cyber" else f"{self._base}/task/{action}"
         data = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=action != "model").encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -254,7 +259,7 @@ class TaskRunClient:
             return response
 
     def _renew_for(self, action, body):
-        stop_only = action == "control" or (action == "cyber" and body.get("operation") == "cancel_jobs") or (
+        stop_only = (action == "tool-authorize" and body.get("cleanup") is True) or action == "control" or (action == "cyber" and body.get("operation") == "cancel_jobs") or (
             action == "finalize" and body.get("outcome") != "completed")
         if stop_only:
             return
@@ -279,8 +284,44 @@ class TaskRunClient:
     def model(self, body: dict) -> dict:
         return self._post("model", body, run_bound=True)
 
+    def tool(self, name: str, body: dict) -> dict:
+        # Exact host-configured registry. The child supplies a name, never a URL.
+        endpoint = self._tool_routes.get(name)
+        if isinstance(endpoint, str) and endpoint.startswith("local:"):
+            import importlib
+            target = endpoint.removeprefix("local:")
+            if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.]*", target):
+                raise TaskRunClientError("Invalid local tool handler")
+            if target not in self._local_tools:
+                module, factory = target.rsplit(".", 1)
+                self._local_tools[target] = getattr(importlib.import_module(module), factory)(self)
+            return self._local_tools[target].invoke(body)
+        if not isinstance(endpoint, str) or any(c.isspace() for c in endpoint):
+            raise TaskRunClientError("Tool is not configured")
+        try:
+            parsed = urlparse(endpoint)
+            valid = (parsed.scheme == "https" and parsed.hostname and not parsed.username
+                     and not parsed.password and parsed.port in (None, 443)
+                     and "?" not in endpoint and "#" not in endpoint
+                     and re.fullmatch(r"(?:/[A-Za-z0-9_-]+)+", parsed.path))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise TaskRunClientError("Tool endpoint unavailable")
+        return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
+
     def cyber(self, body: dict) -> dict:
-        return self._post("cyber", body, run_bound=True)
+        cleanup_receipts = []
+        if body.get("operation") == "cancel_jobs":
+            for name in self._tool_cleanup:
+                cleanup_receipts.append(self.tool(name, body))
+        receipt = self._post("cyber", body, run_bound=True)
+        for cleanup in cleanup_receipts:
+            if any(cleanup.get(key) != receipt.get(key) for key in ("schema_version", "task_id", "operation_id")):
+                raise TaskRunClientError("Tool cleanup identity differs")
+            if cleanup.get("operation_status") != "confirmed" or cleanup.get("result", {}).get("status") != "confirmed" or cleanup.get("result", {}).get("pending_jobs") != []:
+                return cleanup
+        return receipt
 
     def control(self, body: dict) -> dict:
         # A control read creates no model/tool work. Retry only its transient

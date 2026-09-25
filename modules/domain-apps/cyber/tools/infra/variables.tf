@@ -133,7 +133,9 @@ variable "backend_environment" {
   validation {
     condition = alltrue([for key in keys(var.backend_environment) : contains([
       "CYBER_TRIAGE_QUEUE", "CYBER_STATIC_QUEUE", "CYBER_RESULTS_TABLE", "CYBER_CAPE_ALB", "CYBER_CAPE_TOKEN_SECRET",
-      "CYBER_VT_TOKEN_SECRET", "TASK_CYBER_BROWSER_ENDPOINT"
+      "CYBER_VT_TOKEN_SECRET", "TASK_CYBER_BROWSER_ENDPOINT",
+      "CYBER_CC_DATABASE", "CYBER_CC_TABLE", "CYBER_CC_WORKGROUP", "CYBER_CC_CRAWLS", "CYBER_CC_REGION",
+      "CYBER_CC_QUEUE_SECONDS", "CYBER_CC_EXECUTION_SECONDS"
     ], key)])
     error_message = "Only named non-secret backend configuration is permitted."
   }
@@ -168,4 +170,10 @@ variable "endpoint_security_group_ids" {
     condition     = alltrue([for id in var.endpoint_security_group_ids : can(regex("^sg-[a-f0-9]+$", id))])
     error_message = "Use explicit endpoint security group IDs."
   }
+}
+
+variable "common_crawl_policy" {
+  description = "Scoped Athena/Glue/S3 IAM statements from the existing Common Crawl stack. Empty keeps archive tooling unavailable."
+  type        = string
+  default     = ""
 }

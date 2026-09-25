@@ -111,6 +111,9 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
                     'stop_reason': 'tool_use' if number < 3 else 'end_turn',
                     'usage': {'input_tokens': 100, 'output_tokens': 30}}
 
+        def tool(self, name, body):
+            assert name == "cyber." + body["operation"]
+            return self.cyber(body)
         def cyber(self, body):
             events.append('cyber:' + body['operation'])
             base = {'schema_version': '1.0', 'task_id': assignment.task_id,

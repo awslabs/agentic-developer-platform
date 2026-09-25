@@ -41,6 +41,10 @@ run "enabled_route_is_scoped_and_image_is_immutable" {
     sample_bucket_arn = "arn:aws:s3:::sample-bucket"
   }
   assert {
+    condition = aws_api_gateway_method.common_crawl[0].authorization == "AWS_IAM" && aws_lambda_permission.common_crawl[0].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/cyber/common-crawl"
+    error_message = "Archive Lambda invocation must be restricted to the exact route."
+  }
+  assert {
     condition     = length(aws_security_group.service) == 1 && length(aws_security_group.service[0].ingress) == 0 && one(aws_security_group.service[0].egress).from_port == 443 && one(aws_security_group.service[0].egress).to_port == 443
     error_message = "Service-owned networking must expose no ingress and only HTTPS egress."
   }

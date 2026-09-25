@@ -63,9 +63,11 @@ COPY modules/agent-factory/task-agents/cyber/package.json modules/agent-factory/
 RUN npm ci --ignore-scripts
 COPY modules/agent-factory/task-agents/cyber/src/ ./src/
 COPY modules/agent-factory/task-agents/cyber/build.mjs ./
-RUN npm run build && npm prune --omit=dev
+COPY modules/tools/task-sdk/ /task-sdk/
+RUN ADP_TASK_SDK_SOURCE=/task-sdk npm run build && npm prune --omit=dev
 COPY modules/domain-apps/cyber/agent/skills/ /skills/
 RUN find /skills -type f ! -name SKILL.md -delete
+COPY modules/domain-apps/cyber/tools/skills/ /skills/
 
 # -----------------------------------------------------------------------------
 # Stage 4: Stage personas and skills
@@ -277,6 +279,10 @@ COPY --from=task-cyber-builder --chown=agent:agent /build/dist/ /app/task-agents
 COPY --from=task-cyber-builder --chown=agent:agent /build/package.json /app/task-agents/cyber/package.json
 COPY --from=task-cyber-builder --chown=agent:agent /build/node_modules/ /app/task-agents/cyber/node_modules/
 COPY --from=task-cyber-builder --chown=agent:agent /skills/ /app/task-agents/cyber/skills/
+
+# Trusted local tool adapters; source and execution stay outside the SDK process.
+COPY --chown=agent:agent modules/tools/adp_tools/ /app/adp_tools/
+COPY --chown=agent:agent modules/domain-apps/cyber/tools/cyber_tools/ /app/cyber_tools/
 
 # Copy staged personas and skills
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/

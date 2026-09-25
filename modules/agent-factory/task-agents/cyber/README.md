@@ -86,3 +86,9 @@ The full host/SDK harness verifies durable model-turn request digests, broker
 artifact provenance in the final report, cleanup before finalization, and no
 second model call after an unknown outcome. These are the supported Task control
 guarantees; they do not claim that legacy steering or pause/resume is available.
+
+The shared Claude Agent SDK lifecycle and model transport now live in
+`modules/tools/task-sdk/`; this package supplies cyber tools, skills and prompt.
+New tool calls use generic `tool.request` frames and the host-owned
+`ADP_TASK_TOOL_ROUTES` registry. URL tool architecture, permissions and deployment
+are documented in `modules/domain-apps/cyber/tools/URL-TOOLS.md`.

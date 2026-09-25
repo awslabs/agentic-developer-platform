@@ -29,8 +29,8 @@ test('host serializes model and broker calls and correlates operation', async ()
   await tick(); assert.equal(writes.length,1);
   bridge.receive(frame('model.result',bridge.start.task_id,{turn_id:writes[0].turn_id,operation_status:'confirmed',content:[{type:'text',text:'ok'}],stop_reason:'end_turn'}));
   await model; await tick(); assert.equal(writes.length,2);
-  assert.throws(()=>bridge.receive({...writes[1],type:'cyber.result',operation:'static',operation_status:'confirmed'}));
-  bridge.receive({...writes[1],type:'cyber.result',operation_status:'confirmed',result:{},artifact:{artifact_id:'art_evidence'}});
+  assert.throws(()=>bridge.receive({...writes[1],type:'tool.result',tool:'cyber.static',operation_status:'confirmed'}));
+  bridge.receive({...writes[1],type:'tool.result',operation_status:'confirmed',result:{},artifact:{artifact_id:'art_evidence'}});
   await cyber; assert.equal(bridge.evidence.get('art_evidence').source,'artifact');
 });
 test('cancel interrupts blocked tool and input, binding cancellation command', async()=>{
@@ -80,9 +80,9 @@ test('tool citations let an aliased report correct exact references before accep
  const writes=[];const bridge=new HostBridge(start(),value=>writes.push(value));
  const tools=cyberTools(bridge);const tool=name=>tools.find(value=>value.name===name);
  const pending=tool('result').handler({job_id:'job1'});
- while (!writes.some(value=>value.type==='cyber.request')) await tick();
+ while (!writes.some(value=>value.type==='tool.request')) await tick();
  const citation={ref:'art_evidence',source:'artifact',artifact_id:'art_evidence'};
- bridge.receive({...writes.find(value=>value.type==='cyber.request'),type:'cyber.result',operation_status:'confirmed',result:{job_id:'job1',status:'completed'},artifact:{artifact_id:'art_evidence'}});
+ bridge.receive({...writes.find(value=>value.type==='tool.request'),type:'tool.result',operation_status:'confirmed',result:{job_id:'job1',status:'completed'},artifact:{artifact_id:'art_evidence'}});
  const receipt=JSON.parse((await pending).content[0].text);assert.deepEqual(receipt.evidence_refs,[citation]);
  const value={...report(),evidence_refs:[{...citation,ref:'triage_result'}],findings:[{statement:'Observed file type',evidence_refs:['triage_artifact_art_evidence']}]};
  const rejected=await tool('submit_report').handler(value);assert.equal(rejected.isError,true);assert.equal(bridge.report,null);
@@ -90,4 +90,37 @@ test('tool citations let an aliased report correct exact references before accep
  value.evidence_refs=[citation];value.findings[0].evidence_refs=['art_evidence'];
  assert.deepEqual(JSON.parse((await tool('submit_report').handler(value)).content[0].text),{accepted:true});
  assert.deepEqual(bridge.report,value);
+});
+
+test('Archive submission polls accepted work without replaying the query',async()=>{
+ const bridge=new HostBridge(start(),()=>{});const calls=[];const waits=[];
+ bridge.cyber=async(operation,payload)=>{calls.push(operation);return {operation_status:'confirmed',result:{scan_id:'a'.repeat(64),status:calls.length<3?'pending':'completed',view_id:'view1'}};};
+ const tools=cyberTools(bridge,{sleep:async ms=>waits.push(ms)});
+ const payload={url:'https://example.com'};
+ const result=await tools.find(t=>t.name==='common_crawl_scan').handler(payload);
+ assert.deepEqual(calls,['common_crawl_scan','common_crawl_result','common_crawl_result']);
+ assert.deepEqual(waits,[2000,4000]);assert.equal(JSON.parse(result.content[0].text).result.view_id,'view1');
+ await tools.find(t=>t.name==='common_crawl_scan').handler(payload);assert.equal(calls.length,3);
+});
+
+test('SDK model proxy preserves bounded inline tool images and rejects remote URLs',()=>{
+ const image={type:'image',source:{type:'base64',media_type:'image/jpeg',data:'/9j/Zml4dHVyZQ=='}};
+ const body={messages:[{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_1',content:[image]}]}]};
+ assert.deepEqual(normalizeRequest(body,100).sdk_request.messages[0].content[0].content,[image]);
+ assert.throws(()=>normalizeRequest({messages:[{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_1',content:[{type:'image',source:{type:'url',url:'https://untrusted.example'}}]}]}]},100));
+});
+
+test('report derives metadata from exact finding citations but refuses an unknown citation',async()=>{
+ const bridge=new HostBridge(start(),()=>{});
+ const citation={ref:'art_known',source:'artifact',artifact_id:'art_known'};
+ bridge.evidence.set(citation.ref,citation);
+ const submit=cyberTools(bridge).find(t=>t.name==='submit_report');
+ const input={summary:'Observed a page',findings:[{statement:'Example page',evidence_refs:['art_known']}]};
+ assert.equal(JSON.parse((await submit.handler(input)).content[0].text).accepted,true);
+ assert.deepEqual(bridge.report.evidence_refs,[citation]);
+ assert.deepEqual(bridge.report.uncertainties,[]);
+ bridge.report=null;
+ const bad={...input,findings:[{statement:'Example page',evidence_refs:['art_typo']}]};
+ assert.equal((await submit.handler(bad)).isError,true);
+ assert.equal(bridge.report,null);
 });

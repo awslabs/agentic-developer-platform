@@ -184,3 +184,16 @@ class TaskAuthorityClient:
                 for k in ("artifact_id", "content_type", "content_sha256")
             }
         )
+
+
+class TaskHostAuthority(TaskAuthorityClient):
+    """Same authority/artifact contract using the trusted worker's transport."""
+
+    def __init__(self, post):
+        self.host_post = post
+
+    def post(self, action, body, *, status=200):
+        return self.host_post(action, body)
+
+    def close(self):
+        pass

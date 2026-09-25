@@ -67,3 +67,9 @@ variable "tools_endpoint" {
     error_message = "tools_endpoint must be an HTTPS /tools/cyber endpoint without credentials, query, fragment or trailing slash."
   }
 }
+
+variable "task_url_tools_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable URL tool routing after the Lambda and native Task worker pass acceptance."
+}
