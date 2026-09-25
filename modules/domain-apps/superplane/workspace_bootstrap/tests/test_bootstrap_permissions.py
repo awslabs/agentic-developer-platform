@@ -50,11 +50,14 @@ def test_missing_bind_and_rule_authority_refuses(
     binding, provider_identity, observed_cluster, expected_target
 ):
     access = _access()
-    access.bootstrap_permission = lambda **kw: kw["verb"] not in {
-        "bind",
-        "escalate",
-        "watch",
-    }
+    access.bootstrap_permission = lambda **kw: (
+        kw["verb"]
+        not in {
+            "bind",
+            "escalate",
+            "watch",
+        }
+    )
     result = _run(
         access,
         FakeRegistrationStore(),

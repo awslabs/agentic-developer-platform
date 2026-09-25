@@ -210,6 +210,31 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[0].id
 }
 
+# ---------------------------------------------------------------------------
+# Default Security Group — deny-all (CKV2_AWS_12)
+# ---------------------------------------------------------------------------
+# Adopts the VPC's default security group and removes all rules. This ensures
+# nothing can accidentally rely on the permissive defaults AWS creates. All
+# workloads use dedicated, scoped security groups (cluster SG, node SG, etc.).
+#
+# Gated on local.owns_network: in supplied mode this VPC belongs to the
+# customer and adopting its default security group would revoke rules other
+# workloads may depend on. The zero-count keeps it out of state entirely.
+
+resource "aws_default_security_group" "workspace" {
+  count = local.owns_network ? 1 : 0
+
+  vpc_id = aws_vpc.workspace[0].id
+
+  # Explicit empty sets keep both adoption and later drift reconciliation deny-all.
+  # Omitting these Optional+Computed fields would leave rules state-derived.
+  ingress = []
+  egress  = []
+
+  tags = {
+    Name = "${local.name_prefix}-default-sg-restricted"
+  }
+}
 
 data "aws_availability_zones" "selected" {
   state = "available"
