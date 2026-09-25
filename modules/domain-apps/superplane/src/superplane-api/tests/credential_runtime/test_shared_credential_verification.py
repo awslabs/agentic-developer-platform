@@ -14,7 +14,7 @@ from workspace_provisioning.shared_credential_verification import (
     verify_projected_credential,
 )
 
-from .test_member_credentials import CA, fixture  # noqa: F401
+from workspace_provisioning.tests.test_member_credentials import CA
 
 
 @pytest.mark.parametrize("expect_closed", [False, True])

@@ -11,10 +11,6 @@ from superplane_bootstrap.errors import BootstrapRefused
 from workspace_provisioning.credential_controller import renewal
 
 from .credential_renewal_harness import RenewalHarness
-from .test_bootstrap_runtime_postgres import bootstrap_harness  # noqa: F401
-from .postgres_bridge import requires_harness_postgres
-
-pytestmark = requires_harness_postgres
 
 
 @pytest.fixture

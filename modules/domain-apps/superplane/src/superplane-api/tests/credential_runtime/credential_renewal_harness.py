@@ -19,8 +19,8 @@ from workspace_provisioning.credential_controller.renewal import (
 )
 from workspace_provisioning.shared_membership import reserve
 
-from .test_credential_authority import authority_document
-from .test_member_credentials import API, ApiError, Resource
+from workspace_provisioning.tests.test_credential_authority import authority_document
+from workspace_provisioning.tests.test_member_credentials import API, ApiError, Resource
 from workspace_bootstrap.tests import conftest as identities
 
 
