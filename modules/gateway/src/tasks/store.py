@@ -2648,8 +2648,24 @@ class TaskStore:
         if due_time.tzinfo is None or due_time > now:
             return None
         expected_due_key = work_due_key(due_at=due_time, work_id=str(record["work_id"]))
-        if record.get(WORK_DUE_ATTRIBUTE) != expected_due_key:
+        stored_due_key = record.get(WORK_DUE_ATTRIBUTE)
+        # due_at is persisted at second precision; the sparse index retains
+        # milliseconds. Validate that both identify the same due second and
+        # work, then fence the write with the exact stored index key.
+        stored_millis, separator, stored_work_id = str(stored_due_key).partition("#")
+        expected_millis = int(expected_due_key.partition("#")[0])
+        if (
+            not separator
+            or not stored_millis.isdigit()
+            or len(stored_millis) != len(expected_due_key.partition("#")[0])
+            or stored_work_id != str(record["work_id"])
+            or int(stored_millis) // 1000 != expected_millis // 1000
+        ):
+            logger.warning("Task recovery due key refused", extra={"work_id": record["work_id"], "error_code": "invalid_due_key"})
             return None
+        if int(stored_millis) > int(now.timestamp() * 1000):
+            return None
+        expected_due_key = stored_due_key
         expiry = _iso(now + timedelta(seconds=lease_seconds))
         token = str(uuid.uuid4())
         snapshot = self.read_task(str(record["task_id"]))
