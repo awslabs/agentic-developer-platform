@@ -134,6 +134,12 @@ class TaskTurnStore:
                 }
             },
         ]
+        waiting = task.get("input_request") or {}
+        if task["state"] == "waiting_for_input" and any(row["payload"].get("reply_to") == waiting.get("input_request_id") for row in commands):
+            meta_update = transaction[1]["Update"]
+            meta_update["UpdateExpression"] += ", #state = :running REMOVE input_request"
+            meta_update["ExpressionAttributeNames"]["#state"] = "state"
+            meta_update["ExpressionAttributeValues"][":running"] = {"S": "running"}
         transaction.extend(self.repository._authority_condition_checks(snapshot=task, runtime_attempt_id=identity.runtime_attempt_id))
         for offset, command in enumerate(commands, 1):
             transaction.append(

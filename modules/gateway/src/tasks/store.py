@@ -1883,9 +1883,17 @@ class TaskStore:
             ":attempt": runtime_attempt_id,
             ":version": int(snapshot["version"]),
         }
-        if starts_run:
+        if starts_run or kind == "input.required":
             meta_expression += ", #state = :running, #version = :next_version"
-            meta_values.update({":running": "running", ":next_version": int(snapshot["version"]) + 1})
+            meta_values.update(
+                {":running": "waiting_for_input" if kind == "input.required" else "running", ":next_version": int(snapshot["version"]) + 1}
+            )
+        if kind == "input.required":
+            validate_uuid(data.get("input_request_id"), "input_request_id")
+            if not isinstance(data.get("prompt"), str) or not 1 <= len(data["prompt"]) <= 4000:
+                raise TaskStoreError("clarification prompt is invalid")
+            meta_expression += ", input_request = :input_request"
+            meta_values[":input_request"] = {"input_request_id": data["input_request_id"], "prompt": data["prompt"], "requested_at": now_iso}
         transaction = [
             {
                 "Put": {

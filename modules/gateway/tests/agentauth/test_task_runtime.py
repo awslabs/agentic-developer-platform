@@ -330,3 +330,61 @@ def test_settlement_rejects_mismatched_current_attempt(runtime):
     )
     with pytest.raises(BootstrapRefusedError):
         service.authenticate_settlement(pod=pod)
+
+
+def test_reported_clarification_is_public_replyable_and_consumed_once(runtime):
+    from datetime import timedelta
+
+    from src.agentauth.task_turns import TaskTurnStore
+    from src.tasks.dynamo_read_store import DynamoTaskReadStore
+    from src.tasks.errors import TaskApiError
+    from src.tasks.task_commands import TaskCommands
+
+    identity = _attempt_identity(runtime)
+    repository = runtime[0].repository
+    turns = TaskTurnStore(repository, clock=lambda: NOW)
+    turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=1)
+    request_id = str(uuid.uuid4())
+    report = dict(
+        task_id=identity.task_id,
+        invocation_id=identity.invocation_id,
+        generation=identity.generation,
+        runtime_attempt_id=identity.runtime_attempt_id,
+        report_id=str(uuid.uuid4()),
+        kind="input.required",
+        data={"input_request_id": request_id, "prompt": "Which environment?"},
+    )
+    first = repository.append_report(**report)
+    snapshot = repository.read_task(identity.task_id)
+    assert snapshot["state"] == "waiting_for_input"
+    adapter = DynamoTaskReadStore(repository, s3_client=None, artifact_bucket="unused")
+    assert adapter.load_task(task_id=identity.task_id).input_request == {
+        "input_request_id": request_id,
+        "prompt": "Which environment?",
+        "requested_at": "2026-09-24T12:00:00Z",
+    }
+    assert repository.append_report(**report) == first
+    assert repository.read_task(identity.task_id)["version"] == snapshot["version"]
+    command_id = str(uuid.uuid4())
+    commands = TaskCommands(repository)
+    command = dict(
+        task_id=identity.task_id,
+        command_id=command_id,
+        kind="input",
+        payload={"text": "staging", "reply_to": request_id},
+        principal=snapshot["scope"]["canonical_principal"],
+        tenant=identity.tenant,
+        expires_at=NOW + timedelta(minutes=5),
+    )
+    commands.admit(**command)
+    assert repository.read_task(identity.task_id)["state"] == "waiting_for_input"
+    turn_id = str(uuid.uuid4())
+    result = turns.commit(identity=identity, request_id=turn_id, expected_transcript_version=2)
+    assert result["messages"] == [{"command_id": command_id, "text": "staging", "reply_to": request_id}]
+    assert repository.read_task(identity.task_id)["state"] == "running"
+    assert repository.read_task(identity.task_id).get("input_request") is None
+    assert turns.commit(identity=identity, request_id=turn_id, expected_transcript_version=2)["turn"] == result["turn"]
+    commands.admit(**command)
+    assert sum(row["type"] == "input.consumed" for row in repository.read_events(task_id=identity.task_id)) == 1
+    with pytest.raises(TaskApiError, match="no longer current"):
+        commands.admit(**(command | {"command_id": str(uuid.uuid4())}))
