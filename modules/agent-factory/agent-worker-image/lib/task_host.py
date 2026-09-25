@@ -795,17 +795,31 @@ class TaskHost:
             def acknowledge_report(frame: dict, receipt: dict) -> None:
                 if frame["type"] == "progress":
                     progress_messages.add(frame["message"])
-                _write_frame(
-                    process,
-                    {
-                        "protocol_version": PROTOCOL_VERSION,
-                        "type": "report.ack",
-                        "request_id": _request_id(),
-                        "task_id": assignment.task_id,
-                        "report_id": receipt["report_id"],
-                        "sequence": receipt["sequence"],
-                    },
-                )
+                # The process protocol permits progress followed by result/exit
+                # without waiting for report.ack. A durable report stays valid
+                # if the child has already closed its input; drain stdout and
+                # validate the result and exit status before deciding success.
+                if process.stdin is None or process.stdin.closed:
+                    return
+                try:
+                    _write_frame(
+                        process,
+                        {
+                            "protocol_version": PROTOCOL_VERSION,
+                            "type": "report.ack",
+                            "request_id": _request_id(),
+                            "task_id": assignment.task_id,
+                            "report_id": receipt["report_id"],
+                            "sequence": receipt["sequence"],
+                        },
+                    )
+                except BrokenPipeError:
+                    logger.info("Task child closed input before durable report acknowledgement")
+                    try:
+                        process.stdin.close()
+                    except BrokenPipeError:
+                        pass
+
 
             def buffer_report(frame: dict, now: float) -> None:
                 nonlocal pending_report_bytes, report_outage_started

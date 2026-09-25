@@ -250,3 +250,50 @@ def test_adapter_refuses_oversize_before_committing_a_turn():
             4096,
         )
     assert turns.calls == 0
+
+
+def test_actual_child_final_progress_can_exit_before_durable_report_ack(tmp_path, monkeypatch):
+    import importlib.util
+
+    helper_path = ROOT / "modules/agent-factory/agent-worker-image/tests/test_task_host.py"
+    spec = importlib.util.spec_from_file_location("host_fixture_helpers", helper_path)
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    assignment, envelope, bootstrap = helpers.assignment_and_bootstrap.__wrapped__()
+    events = []
+    report = {
+        "summary": "The affected service is checkout-api.",
+        "findings": [{"statement": "Checkout-api is the affected service.", "evidence_refs": ["affected_service"], "confidence": "high"}],
+        "uncertainties": ["No upstream logs were supplied."],
+        "recommendations": ["Collect upstream logs."],
+        "evidence_refs": [{"ref": "affected_service", "source": "inputs"}],
+    }
+
+    class SlowReportClient(helpers.FakeClient):
+        def report(self, body):
+            if body["data"].get("stage") == "analysis":
+                # Real report round trip lets the real child write synthesis,
+                # result and close stdin before this durable receipt arrives.
+                time.sleep(0.15)
+            return super().report(body)
+
+        def model(self, body):
+            return {
+                "schema_version": "1.0", "task_id": assignment.task_id,
+                "turn_id": body["turn_id"], "request_digest": body["request_digest"],
+                "automatic_replay_permitted": False, "operation_status": "confirmed",
+                "handoff": "confirmed", "content": [{"type": "text", "text": json.dumps(report)}],
+                "stop_reason": "end_turn",
+            }
+
+    entry = ROOT / "modules/agent-factory/task-agents/investigator/dist/index.js"
+    assert entry.is_file(), "Build actual investigator before running seam"
+    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": "fixture", "namespace": "test"})
+    client = SlowReportClient(bootstrap, events)
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda _: ["node", str(entry), "--embedded"])
+    assert host.run(assignment, envelope, heartbeat=helpers.FakeHeartbeat(events), acknowledge=lambda: events.append("ack")) == 0
+    assert client.finalize_body["outcome"] == "completed"
+    assert client.finalize_body["result"]["artifact_ids"] == client.finalize_body["committed_result_refs"]
+    assert len(client.finalize_body["committed_result_refs"]) == 1
+    assert events.index("artifact") < events.index("finalize:completed") < events.index("ack")
+    assert sum(event.startswith("report:") for event in events) == 3
