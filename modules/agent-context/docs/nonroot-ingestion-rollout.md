@@ -47,57 +47,37 @@ writable home. GOPATH stays /opt/go so installed scip-go remains protected;
 GOMODCACHE explicitly overrides its normally read-only default. Python bytecode
 writes are disabled. Chromium binaries stay root-owned in /opt/browsers.
 
-## PVC ownership preflight: supervisor-owned, no blanket recursive migration
+## Actual Mountpoint acceptance and rollout
 
-Before rollout, inventory the actual storage class/CSI fsGroup implementation and
-all consumers of platform-data. Snapshot directory ownership, group, mode, ACLs and
-counts/checksums for the specific ingestion write roots and unrelated data. Identify
-existing root-owned files that require updates; a group change alone does not grant
-write permission. Do not run chgrp/chmod recursively on /platform-data.
+The deployed platform-data PV uses S3 Mountpoint CSI v1.15 systemd, not a POSIX
+volume. The local ownership fixture above does not establish live compatibility.
+See [Mountpoint ownership acceptance](mountpoint-nonroot-acceptance.md) for the
+current driver evidence, explicit FUSE UID/GID/modes, supplementary read group,
+least-privilege isolated probe and bounded production rollout/rollback plan.
 
-The two PVC consumers declare fsGroupChangePolicy: OnRootMismatch. This avoids the
-standard kubelet recursive permission pass only when the volume root already matches
-the required group/mode; CSI delegation may behave differently. It is not a promise
-that existing data is unchanged. Refuse rollout if driver behavior is unknown, the
-volume root is mismatched, or another consumer's ownership contract is incompatible.
-Do not let a first workload mount silently perform a broad migration.
+Do not chmod/chown S3 objects or rely on fsGroupChangePolicy to set this driver's
+ownership. The source PV grants UID1001 owner-write and GID1001 read/traverse;
+Zoekt is an additional read-only consumer and must be included in acceptance.
 
-A supervisor must prepare a bounded, explicit path manifest of required updates,
-record previous uid/gid/mode/ACL for each entry, and check symlinks/mount boundaries.
-Review root-directory metadata separately. Prefer existing compatible group access;
-otherwise change only approved ingestion-owned paths or migrate to a separately
-prepared volume. Validate group-write on approved fixture paths and denied/preserved
-unrelated paths first. No live data ownership command is part of this source change.
-Rollout requires evidence that UID 1001 can create/update each intended artifact path
-without granting access to unrelated data. Keep the path journal for reversal.
+Snapshot each actual controller and immutable rollback image before changing it.
+Render only the reviewed five ingestion consumers plus the separately reviewed
+PV/reader changes; do not bulk-apply manifests. Absent synthesis and expired or
+absent migration Jobs require explicit lifecycle decisions. A filesystem change
+does not itself authorize rerunning a migration or creating a missing consumer.
+The old vuln-scan tag must be replaced with a verified rollback artifact before
+that consumer changes. Existing Pods may retain old FUSE options until replaced.
 
-## Rollout and rollback: exactly five rendered consumers
+The promoted PR6043 image can run the isolated synthetic probe, but it predates
+PR6060 scratch/retry fixes. Production rollout requires a newly tested immutable
+candidate incorporating the reviewed fixes. Never use the broad build/deploy
+workflow as a validation shortcut because it updates latest and deploys.
 
-Before deployment, save the previous immutable image digest and exact Git commit.
-Using the maintained deployment templating function (`template_file` in
-`.github/workflows/agent-context-deploy.yml`), render the five named consumer files
-with the deployment's verified variables and save those rendered documents plus
-checksums in the rollout receipt. Save a distinct new migration Job ID; existing
-Jobs have immutable pod templates. Include the associated ScaledJob trigger document
-only if unchanged and already managed by the same workflow.
-
-Render the new reviewed commit in a separate clean checkout, using the tested image
-promoted by immutable digest and an explicit new migration Job ID. Diff old/new
-rendered documents before apply. Use the existing deployment workflow's ordering:
-migration must complete successfully before worker/CronJob rollout. Apply only these
-reviewed documents; never `kubectl apply -f manifests/`. Observe new jobs for all five
-consumer paths, UID/security settings, expected write paths and product behavior.
-Do not confuse declaration inspection with successful ingestion acceptance.
-
-For rollback, pause new queue/cron launches through the maintained supervisor
-procedure, use the saved previous rendered documents/image digest, and restore only
-those five consumers. Do not `git checkout main`: main will contain this change.
-Database rollback is a separate migration decision; do not blindly reverse schema
-or rerun an old migration Job. Use a fresh, explicit Job ID if a reviewed migration
-validation is required. Preserve in-flight jobs/data and record their disposition.
-Reverse a bounded ownership change only from its reviewed per-path journal after
-checking that subsequent writes would not be lost. Root image rollback alone is not
-proof of data compatibility. Record final image IDs and outcomes for every consumer.
+On canary failure, stop new attempts and restore only the recorded changed fields
+with current UID/resourceVersion guards, including old mount options and pullable
+images. Verify newly mounted rollback Pods before resuming controllers. No data
+ownership reversal or database rollback is implied. Preserve in-flight jobs and
+record their disposition; never remove production PV finalizers or force-unmount
+shared node paths. Source templates alone are not live acceptance.
 
 ## Remaining S15 scope
 

@@ -33,6 +33,10 @@ spec:
         app.kubernetes.io/component: search
     spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
+      securityContext:
+        # Read/traverse the synthetic Mountpoint GID without filesystem chown.
+        # Both S3 readers retain readOnly mounts; no group write permission.
+        supplementalGroups: [1001]
       initContainers:
       - name: prepare-index
         image: busybox:1.36
