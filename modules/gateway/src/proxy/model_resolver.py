@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Default model alias mappings
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
+    "global.moonshotai.kimi-k3": "global.moonshotai.kimi-k3",
+    "us.moonshotai.kimi-k3": "us.moonshotai.kimi-k3",
     # Version-pinned /model aliases: <family><major><minor>, compact, no
     # separators (e.g. opus48, sonnet46, haiku45). Each → an invocable
     # inference-profile ID (global. prefix), verified ACTIVE + invokable
@@ -100,6 +102,8 @@ DEFAULT_ALLOWED_PATTERNS: list[str] = [
     # for this path is the route-level gate (mantle_allowed_models) plus the
     # Step-2 IAM Deny — this default only unblocks the metered gateway path.
     "openai.*",
+    "global.moonshotai.kimi-k3",
+    "us.moonshotai.kimi-k3",
 ]
 
 

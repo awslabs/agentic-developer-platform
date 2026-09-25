@@ -474,3 +474,19 @@ class TestTheUnitLevelHelpers:
 
         assert len(minted) == 50
         assert all(len(value) >= proxy_module.MIN_CAPABILITY_LENGTH for value in minted)
+
+
+@pytest.mark.parametrize("model", ["global.moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "us.openai.gpt-6-sol", "openai.gpt-6-sol"])
+def test_qualified_model_ids_are_not_rewritten(model):
+    handler = object.__new__(proxy_module.GatewayProxyHandler)
+    handler.path = "/openai/v1/responses"
+    body = json.dumps({"model": model, "input": "hello"}).encode()
+    assert handler._normalize_model(body) == body
+
+
+def test_bare_gpt_slug_still_normalizes():
+    handler = object.__new__(proxy_module.GatewayProxyHandler)
+    handler.path = "/openai/v1/responses"
+    handler.log_message = lambda *args: None
+    body = json.dumps({"model": "gpt-6-sol"}).encode()
+    assert json.loads(handler._normalize_model(body))["model"] == "openai.gpt-6-sol"

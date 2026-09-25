@@ -215,7 +215,7 @@ class Settings(BaseSettings):
     # Comma-separated glob patterns of OpenAI model IDs the route will serve
     # (e.g. "openai.gpt-5.5,openai.*"). Used to validate the requested model
     # before proxying; per-tenant access is still enforced via the model allowlist.
-    mantle_allowed_models: str = "openai.*"
+    mantle_allowed_models: str = "openai.*,global.moonshotai.kimi-k3,us.moonshotai.kimi-k3"
 
     # PMM-03 / D3: production organization and team model-access policy.
     # JSON object keyed by ``org_id`` or ``org_id:team_id`` with canonical

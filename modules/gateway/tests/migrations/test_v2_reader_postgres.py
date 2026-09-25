@@ -414,7 +414,7 @@ def test_reader_rows_match_the_snapshot_version_the_seed_recorded(pg_url, connec
     state = reader.get_rate_state(conn)
     assert state.from_database
     versions = {row.snapshot_version for row in state.rows if row.snapshot_version}
-    assert versions == {"2026-09-12.1", "2026-09-12.2", "2026-09-24.1"}, versions
+    assert versions == {"2026-09-12.1", "2026-09-12.2", "2026-09-24.1", "2026-09-24.2"}, versions
     assert {row.snapshot_version for row in state.rows if row.model_id.startswith("openai.")} == {"2026-09-12.1"}
     # Migration 070 adds Opus 5.5 while preserving older models' provenance.
     opus55 = [row for row in state.rows if row.model_id == "anthropic.claude-opus-5-5"]
@@ -422,6 +422,9 @@ def test_reader_rows_match_the_snapshot_version_the_seed_recorded(pg_url, connec
     assert opus55 and legacy_anthropic
     assert {row.snapshot_version for row in legacy_anthropic} == {"2026-09-12.2"}
     assert {row.snapshot_version for row in opus55} == {"2026-09-24.1"}
+    kimi = [row for row in state.rows if row.model_id == "moonshotai.kimi-k3"]
+    assert len(kimi) == 111
+    assert {row.snapshot_version for row in kimi} == {"2026-09-24.2"}
 
 
 def test_warm_reader_honors_disable_even_when_rate_table_is_unavailable(pg_url, connect, reader):

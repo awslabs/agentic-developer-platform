@@ -542,6 +542,8 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
         config.toml, but the gateway's OpenAI passthrough only serves models
         under their prefixed ids (``openai.gpt-5.6-sol``). Rewriting here lets
         in-app model switching work without hand-editing config.toml.
+        Fully qualified Bedrock profiles and other provider IDs must not acquire
+        an OpenAI prefix. Only the bare GPT slugs this helper owns are rewritten.
         Anything that is not JSON with a string ``model`` passes through
         untouched.
         """
@@ -552,7 +554,7 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return body
         model = payload.get("model") if isinstance(payload, dict) else None
-        if not isinstance(model, str) or not model or model.startswith("openai."):
+        if not isinstance(model, str) or not model.startswith("gpt-"):
             return body
         payload["model"] = f"openai.{model}"
         self.log_message("model %r -> %r", model, payload["model"])

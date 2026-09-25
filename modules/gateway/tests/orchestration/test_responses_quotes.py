@@ -986,3 +986,10 @@ async def test_an_unhashable_part_type_refuses_rather_than_raising(oracle):
     part = {"type": ["input_image"], "image_url": "https://example.invalid/x"}
     raw = body(input=[{"role": "user", "content": [part]}])
     assert await refusal(raw) == (QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES)
+
+
+async def test_kimi_profile_has_bounded_quote(oracle):
+    model = "moonshotai.kimi-k3"
+    oracle(rates=[_row(model_id=model, max_input_tokens=1000000, context_tier="flat")], models={model: {"context_tiers": {"flat": 1000000}}})
+    result = await quote(body(model="global." + model, max_output_tokens=256))
+    assert result.total_usd == Decimal("13.764080")
