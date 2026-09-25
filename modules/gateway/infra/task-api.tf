@@ -53,15 +53,47 @@ variable "task_api_flags" {
   description = "Explicit operator rollout gates; all remain off during prerequisite preparation."
 }
 
+variable "task_api_runtime_bindings" {
+  type = object({
+    queue_url                = optional(string, "")
+    admission_producer_roles = optional(set(string), [])
+    dispatch_producer_roles  = optional(set(string), [])
+    recovery_producer_roles  = optional(set(string), [])
+    qualification_id         = optional(string, "")
+    worker_image_digests     = optional(set(string), [])
+    worker_service_account   = optional(string, "agent-scaledjob-sa")
+  })
+  default     = {}
+  description = "Optional durable bindings for the existing Task API queue, IAM producers and verified workload identity. Does not activate admission."
+
+  validation {
+    condition     = alltrue([for digest in var.task_api_runtime_bindings.worker_image_digests : can(regex("^sha256:[0-9a-f]{64}$", digest))])
+    error_message = "Task worker identities must be immutable sha256 image digests."
+  }
+  validation {
+    condition     = alltrue([for arn in concat(tolist(var.task_api_runtime_bindings.admission_producer_roles), tolist(var.task_api_runtime_bindings.dispatch_producer_roles), tolist(var.task_api_runtime_bindings.recovery_producer_roles)) : can(regex("^arn:[a-z0-9-]+:iam::[0-9]{12}:role/.+$", arn)) && !strcontains(arn, "*")])
+    error_message = "Task producer bindings require IAM role ARNs, not sessions or wildcard principals."
+  }
+}
+
 locals {
   task_api_config = merge(
     { for flag, enabled in var.task_api_flags : "task-api-${flag}-enabled" => tostring(enabled) },
-    { "task-artifact-bucket-name" = var.task_api_artifact_bucket_name }
+    {
+      "task-artifact-bucket-name"     = var.task_api_artifact_bucket_name
+      "task-api-queue-url"            = var.task_api_runtime_bindings.queue_url
+      "task-admission-producer-roles" = join(",", sort(tolist(var.task_api_runtime_bindings.admission_producer_roles)))
+      "task-dispatch-producer-roles"  = join(",", sort(tolist(var.task_api_runtime_bindings.dispatch_producer_roles)))
+      "task-recovery-producer-roles"  = join(",", sort(tolist(var.task_api_runtime_bindings.recovery_producer_roles)))
+      "task-qualification-id"         = var.task_api_runtime_bindings.qualification_id
+      "task-worker-image-digests"     = length(var.task_api_runtime_bindings.worker_image_digests) > 0 ? join(",", sort(tolist(var.task_api_runtime_bindings.worker_image_digests))) : "disabled"
+      "task-worker-service-account"   = var.task_api_runtime_bindings.worker_service_account
+    }
   )
 }
 
 resource "aws_ssm_parameter" "task_api_config" {
-  for_each = var.task_api_prerequisites_enabled ? local.task_api_config : {}
+  for_each = var.task_api_prerequisites_enabled ? { for key, value in local.task_api_config : key => value if value != "" } : {}
   name     = "/adp/${var.environment}/gateway/${each.key}"
   type     = "String"
   value    = each.value
