@@ -37,9 +37,7 @@ def inventory(app):
             continue
         module = route.endpoint.__module__
         endpoint = route.endpoint.__name__
-        if module == "src.admin.onboarding.handler":
-            classification = "A11-handoff"
-        elif endpoint in NON_MUTATIONS:
+        if endpoint in NON_MUTATIONS:
             classification = "nonmutating-or-retired"
         elif isinstance(route, AuditedAdminRoute) and route.audit_mutation:
             classification = "durable-operation"

@@ -28,13 +28,15 @@ V2_ON = {"USER_IDENTITY_INDEX_V2_WRITE": "true"}
 
 
 def _mock_github_client(role: str):
-    """Mock GitHubAppClient whose /orgs/{org}/memberships/{user} returns `role`."""
+    """Return active provider membership bound to the attaching GitHub ID."""
     client = MagicMock()
     client.check_org_membership = AsyncMock(return_value=True)
     client.get_installation_token = AsyncMock(return_value="fake-token")
     client.aclose = AsyncMock()
     client._http_client = MagicMock()
-    client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": role}))
+    client._http_client.get = AsyncMock(
+        return_value=MagicMock(status_code=200, json=lambda: {"role": role, "state": "active", "user": {"id": 70007}})
+    )
     return client
 
 

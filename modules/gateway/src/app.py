@@ -396,9 +396,9 @@ def create_app() -> FastAPI:
     # and BEFORE TokenContextMiddleware, so at runtime it executes after token_context is
     # populated and before the budget/ledger read — rejecting an un-approved caller
     # without spending a DB round-trip on a request that is going to be denied anyway.
-    # Registered unconditionally: the BG_ENFORCE_ORG_ASSIGNMENT flag (default False)
-    # short-circuits inside the middleware, so it stays flippable by env change + pod
-    # recycle with no code-path difference.
+    # Registered unconditionally: the BG_ENFORCE_ORG_ASSIGNMENT flag (default True as
+    # of #5666 / A11) short-circuits inside the middleware, so it stays flippable by
+    # env change + pod recycle with no code-path difference.
     app.add_middleware(ApprovalEnforcementMiddleware)
     logger.info("Approval enforcement middleware enabled")
 

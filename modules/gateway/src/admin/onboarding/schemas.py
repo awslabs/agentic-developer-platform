@@ -58,3 +58,18 @@ class AdminAccessRequestList(BaseModel):
 
 class AdminDecisionPayload(BaseModel):
     decision_note: str | None = None
+
+
+class AdminApprovalResponse(BaseModel):
+    """The outcome of an approval, including the role it granted — #5666 (A11).
+
+    The route previously returned a bare ``dict`` with no ``response_model``, so an
+    approval never reported what authority it conferred. That is the one fact an
+    approver most needs to see: with the role derived server-side, the response is
+    the only place the decision becomes visible to the person who made it, and an
+    unexpected ``org_admin`` is precisely what an operator should be able to notice.
+    """
+
+    status: str
+    tenant_id: str
+    granted_role: str

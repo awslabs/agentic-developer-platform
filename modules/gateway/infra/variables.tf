@@ -146,11 +146,48 @@ variable "pool_account_arns" {
 
 variable "cognito_mfa_configuration" {
   type        = string
-  description = "MFA configuration for Cognito User Pool: OFF, ON, or OPTIONAL"
-  default     = "OPTIONAL"
+  description = "MFA configuration for Cognito User Pool: ON (required) or OPTIONAL (user-elected). OFF is rejected — see the validation below. #5666 (A11): defaults to ON."
+
+  # #5666 (A11): default was "OPTIONAL", which SHADOWED the cognito module's own
+  # "ON" default (infra/modules/cognito/variables.tf, hardened by #133 with the
+  # comment "MFA is required for a SaaS platform managing Bedrock access").
+  # main.tf passes this variable straight through, so the inner default was dead
+  # code and every deployed pool got OPTIONAL — the module looked hardened while
+  # the platform was not. No environment overrides this, so the wrapper default
+  # IS the deployed value.
+  #
+  # OPTIONAL is still selectable for a staged rollout (see
+  # docs/runbooks/cognito-mfa-rollout.md), but it must now be an explicit,
+  # reviewable choice in tfvars rather than what you get by saying nothing.
+  default = "ON"
+
   validation {
-    condition     = contains(["OFF", "ON", "OPTIONAL"], var.cognito_mfa_configuration)
-    error_message = "MFA configuration must be OFF, ON, or OPTIONAL."
+    condition     = contains(["ON", "OPTIONAL"], var.cognito_mfa_configuration)
+    error_message = "MFA configuration must be ON or OPTIONAL. #5666 (A11): OFF is no longer accepted — it disables MFA for every user of a pool that gates paid model access, and there is no rollout in which it is the right answer. Use OPTIONAL for a staged enrollment instead."
+  }
+}
+
+variable "cognito_threat_protection_mode" {
+  type        = string
+  description = "Cognito threat protection (advanced security) mode: OFF, AUDIT (detect + log risk, no enforcement) or ENFORCED (block/challenge risky sign-ins). AUDIT and ENFORCED require the Cognito Plus feature plan, billed per monthly active user."
+
+  # #5666 (A11): threat protection had no path through this root module at all —
+  # opting in would have meant editing module internals. Exposed here so it is a
+  # one-line tfvars change per environment.
+  #
+  # The default MIRRORS the inner module's default deliberately. A wrapper default
+  # that disagreed with the module it wraps is the precise defect above: the outer
+  # value silently wins and the inner hardening becomes dead code. Keeping the two
+  # equal means this pass-through cannot shadow anything.
+  #
+  # OFF, unlike the other defaults in this issue, because the Plus plan is a
+  # per-monthly-active-user charge: a merge must not change an AWS bill. AUDIT is
+  # the recommended first step — it logs risk without altering any sign-in outcome.
+  default = "OFF"
+
+  validation {
+    condition     = contains(["OFF", "AUDIT", "ENFORCED"], var.cognito_threat_protection_mode)
+    error_message = "cognito_threat_protection_mode must be OFF, AUDIT, or ENFORCED."
   }
 }
 

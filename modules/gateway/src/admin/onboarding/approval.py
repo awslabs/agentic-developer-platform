@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.cognito_claims import emit_metric, sync_cognito_role_claims
+from src.admin.config import PLATFORM_LEVEL_ROLES
 from src.admin.identity.identity_index_writer import IdentityIndexWriter
 from src.admin.memberships import project_member_org_ids, upsert_tenant_membership
 from src.shared.models.base import new_uuid, utcnow
@@ -26,7 +27,21 @@ from src.shared.models.organization import (
 )
 from src.shared.models.vault import UserIdentity
 
+from .approval_decision import target_account_for_request
+
 logger = logging.getLogger(__name__)
+
+
+def _sync_approval_claims(**kwargs):
+    """Keep committed approval, but expose incomplete provider synchronization."""
+    complete = sync_cognito_role_claims(**kwargs)
+    if complete is False:
+        from src.admin.audit_operation import current_operation
+
+        operation = current_operation.get()
+        if operation is not None:
+            operation.terminal = {"outcome": "reconciliation_required"}
+    return complete
 
 
 def _v2_write_enabled() -> bool:
@@ -39,11 +54,28 @@ async def approve_request(
     request: TenantAccessRequest,
     admin_sub: str,
     identity_writer: IdentityIndexWriter | None = None,
+    *,
+    granted_role: str = "org_admin",
 ) -> str:
     """Approve a tenant access request — atomic Postgres transaction.
 
     Creates: organization, tenant, default department, default team, user,
     2x user_identities (cognito + github). Then DDB write-through (best-effort).
+
+    Args:
+        granted_role: The role to write onto the user, the membership row and the
+            Cognito claims. #5666 (A11): this was hardcoded ``"org_admin"`` at five
+            points in this function, including the ``existing_org is not None``
+            branch — which meant a platform admin approving a request to JOIN an
+            existing org silently minted a co-administrator of it. It is now a
+            parameter derived once by
+            ``approval_decision.derive_approval_decision``, so the role reported,
+            persisted and synced is necessarily the same value.
+
+            The ``"org_admin"`` default covers the genuine new-organization case,
+            where the requester IS the org's owner, and keeps ``bootstrap_admin``
+            (which creates the first platform admin's own org, then overwrites
+            ``users.role`` itself) working unchanged.
 
     Returns the tenant_id on success.
     Raises ValueError if the request is not in 'pending' state.
@@ -69,13 +101,23 @@ async def approve_request(
         # that predate this fix left the admin with no membership row at all, so
         # this branch is what heals them; the upsert is a no-op once the row is
         # correct. Same transaction as the request-status write.
-        existing_user = await db.scalar(select(User).where(User.cognito_sub == request.cognito_sub))
+        # #5666 (A11): scoped to the org being approved. This lookup was global
+        # (`cognito_sub` alone), so with more than one users row for a sub it could
+        # heal a membership for a DIFFERENT tenant than the one under approval, and
+        # in Postgres the unscoped read is ambiguous where SQLite is forgiving.
+        existing_user = await target_account_for_request(db, request)
         if existing_user is not None:
+            # Organization approval must not revoke account-wide platform authority.
+            if existing_user.org_id == tenant_id and (existing_user.role or "").strip().lower() not in PLATFORM_LEVEL_ROLES:
+                existing_user.role = granted_role
             await upsert_tenant_membership(
                 db,
                 user_id=existing_user.id,
                 tenant_id=tenant_id,
-                role="org_admin",
+                # #5666 (A11): was hardcoded "org_admin". On an existing org this is
+                # the JOIN_EXISTING class, so a hardcoded owner role promoted every
+                # approved joiner to co-admin.
+                role=granted_role,
                 joined_via="onboarding_approval",
             )
         await db.commit()
@@ -87,10 +129,17 @@ async def approve_request(
         # Re-sync Cognito claims in case a prior approval predated this step or
         # the attributes were cleared — cheap + idempotent. (team_id is omitted
         # on this path; role + org_id are what gate the SPA nav/dashboard.)
-        sync_cognito_role_claims(
+        canonical_role = await db.scalar(select(User.role).where(User.cognito_sub == request.cognito_sub))
+        claim_role = canonical_role if (canonical_role or "").strip().lower() in PLATFORM_LEVEL_ROLES else granted_role
+        if existing_user is not None and (existing_user.role or "").strip().lower() in PLATFORM_LEVEL_ROLES:
+            claim_role = existing_user.role
+        _sync_approval_claims(
             cognito_sub=request.cognito_sub,
             org_id=tenant_id,
-            role="org_admin",
+            # #5666 (A11): the claims must carry the SAME role as the membership row
+            # written above. Hardcoding here was the second half of the defect: even
+            # had the membership been correct, the claims still asserted org_admin.
+            role=claim_role,
             team_id="",
         )
         return tenant_id
@@ -138,16 +187,25 @@ async def approve_request(
     )
     db.add(team)
 
+    canonical = await db.scalar(select(User).where(User.cognito_sub == request.cognito_sub))
     user = User(
         id=user_id,
         org_id=tenant_id,
         team_id=team_id,
         email=f"{request.target_login}@github.onboard",
         name=request.target_login,
-        cognito_sub=request.cognito_sub,
-        role="org_admin",
+        cognito_sub=None if canonical is not None else request.cognito_sub,
+        # #5666 (A11): the derived role. Reaching this point normally means the
+        # CREATE_NEW class, where org_admin is correct because the requester owns the
+        # org being created — but it is the DERIVATION that says so now, not this line.
+        role=granted_role,
     )
     db.add(user)
+    await db.flush()
+    if canonical is not None:
+        from src.shared.identity.workspaces import link_login_to_workspace
+
+        await link_login_to_workspace(db, canonical, user)
 
     # User identities: cognito + github
     cognito_identity = UserIdentity(
@@ -161,7 +219,8 @@ async def approve_request(
         verification_method="oauth",
         verified_at=now,
     )
-    db.add(cognito_identity)
+    if canonical is None:
+        db.add(cognito_identity)
 
     github_identity = UserIdentity(
         id=new_uuid(),
@@ -185,7 +244,7 @@ async def approve_request(
         db,
         user_id=user_id,
         tenant_id=tenant_id,
-        role="org_admin",
+        role=granted_role,
         joined_via="onboarding_approval",
     )
 
@@ -265,10 +324,10 @@ async def approve_request(
     # the user mints carries them (the pre-token Lambda reads Cognito attrs, not
     # Postgres). Without this the approved user logs in with an empty role/org →
     # broken SPA nav + dashboard. Best-effort; never rolls back the approval.
-    sync_cognito_role_claims(
+    _sync_approval_claims(
         cognito_sub=request.cognito_sub,
         org_id=tenant_id,
-        role="org_admin",
+        role=canonical.role if canonical is not None and (canonical.role or "").strip().lower() in PLATFORM_LEVEL_ROLES else granted_role,
         team_id=team_id,
         department_id=dept_id,
     )
@@ -335,30 +394,48 @@ async def attach_approved_member(
     if team is None:
         raise ValueError(f"Organization {tenant_id} has no team to attach the user to")
 
+    from src.shared.identity.workspaces import link_login_to_workspace
+
     now = utcnow()
-    user_id = new_uuid()
-    db.add(
-        User(
-            id=user_id,
+    canonical = await db.scalar(select(User).where(User.cognito_sub == request.cognito_sub))
+    user = await target_account_for_request(db, request)
+    if user is None:
+        user = User(
+            id=new_uuid(),
             org_id=tenant_id,
             team_id=team.id,
             email=f"{request.target_login}@github.onboard",
             name=request.target_login,
-            cognito_sub=request.cognito_sub,
+            cognito_sub=None if canonical is not None else request.cognito_sub,
             role=granted_role,
         )
-    )
+        db.add(user)
+        await db.flush()
+    elif user.org_id == tenant_id and (user.role or "").strip().lower() not in PLATFORM_LEVEL_ROLES:
+        user.role = granted_role
+    user_id = user.id
+    if canonical is not None and canonical.id != user_id:
+        await link_login_to_workspace(db, canonical, user)
 
     for provider, provider_user_id in (
         ("cognito", request.cognito_sub),
         ("github", request.provider_user_id),
     ):
+        existing_identity = await db.scalar(
+            select(UserIdentity).where(
+                UserIdentity.user_id == user_id,
+                UserIdentity.provider == provider,
+                UserIdentity.provider_user_id == provider_user_id,
+            )
+        )
+        if existing_identity is not None:
+            continue
         db.add(
             UserIdentity(
                 id=new_uuid(),
                 user_id=user_id,
-                org_id=tenant_id,
-                team_id=team.id,
+                org_id=user.org_id,
+                team_id=user.team_id,
                 provider=provider,
                 provider_user_id=provider_user_id,
                 provider_username=request.target_login,
@@ -394,10 +471,14 @@ async def attach_approved_member(
     # attributes rather than Postgres, so without this the approved member logs
     # in with an empty role/org and the SPA nav + dashboard break.
     if sync_cognito_claims:
-        sync_cognito_role_claims(
+        canonical_role = canonical.role if canonical is not None else user.role
+        claim_role = canonical_role if (canonical_role or "").strip().lower() in PLATFORM_LEVEL_ROLES else granted_role
+        if (user.role or "").strip().lower() in PLATFORM_LEVEL_ROLES:
+            claim_role = user.role
+        _sync_approval_claims(
             cognito_sub=request.cognito_sub,
             org_id=tenant_id,
-            role=granted_role,
+            role=claim_role,
             team_id=team.id,
             department_id=team.department_id or "",
         )
@@ -410,38 +491,17 @@ async def deny_request(
     request: TenantAccessRequest,
     admin_sub: str,
     decision_note: str | None = None,
-    cognito_client=None,
-    user_pool_id: str | None = None,
 ) -> None:
-    """Deny a tenant access request and delete the Cognito user.
+    """Deny only this access request; preserve the requester's global account.
 
-    Variant A1: AdminDeleteUser on the Cognito sub so user can re-sign-in fresh.
+    A tenant decision does not authorize deleting a Cognito login shared by other
+    workspaces. Global deletion belongs to the separate user-administration flow.
     """
     if request.status not in ("pending", "denied"):
         raise ValueError(f"Request {request.id} cannot be denied (status={request.status})")
 
-    now = utcnow()
     request.status = "denied"
     request.decided_by = admin_sub
-    request.decided_at = now
+    request.decided_at = utcnow()
     request.decision_note = decision_note
     await db.commit()
-
-    # Post-commit: Delete Cognito user (best-effort, idempotent)
-    if cognito_client and user_pool_id:
-        try:
-            cognito_client.admin_delete_user(
-                UserPoolId=user_pool_id,
-                Username=request.cognito_sub,
-            )
-        except Exception as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code == "UserNotFoundException":
-                # Already deleted — idempotent success
-                logger.info("Cognito user %s already deleted (idempotent deny)", request.cognito_sub)
-            else:
-                logger.exception(
-                    "Failed to delete Cognito user %s during deny",
-                    request.cognito_sub,
-                )
-                emit_metric("ADP/Onboarding", "OnboardingDeny.CognitoDeleteFailure")

@@ -16,13 +16,23 @@ variable "common_tags" {
 
 variable "mfa_configuration" {
   type        = string
-  description = "MFA configuration: OFF, ON, or OPTIONAL"
+  description = "MFA configuration: ON (required) or OPTIONAL (user-elected). OFF is rejected."
   # Issue #133: Changed default from OPTIONAL to ON for security
   # MFA is required for a SaaS platform managing Bedrock access
+  #
+  # #5666 (A11): this default was DEAD CODE from #133 until now — the calling root
+  # module (infra/variables.tf :: cognito_mfa_configuration) passed its own
+  # "OPTIONAL" default over it, so hardening the inner default changed nothing
+  # about any deployed pool. Both layers now default to ON. Keeping the inner
+  # default hardened as well is not redundant: it is what makes a future caller
+  # that forgets to pass the variable fail safe.
   default = "ON"
   validation {
-    condition     = contains(["OFF", "ON", "OPTIONAL"], var.mfa_configuration)
-    error_message = "MFA configuration must be OFF, ON, or OPTIONAL."
+    # OFF is rejected at BOTH layers deliberately. A validation only on the wrapper
+    # would leave this module permissive for any other caller, and the wrapper is
+    # exactly the layer that silently overrode this one before.
+    condition     = contains(["ON", "OPTIONAL"], var.mfa_configuration)
+    error_message = "MFA configuration must be ON or OPTIONAL. #5666 (A11): OFF is rejected — it disables MFA for every user of a pool gating paid model access."
   }
 }
 
@@ -110,6 +120,38 @@ variable "enable_software_mfa" {
   type        = bool
   description = "Enable software token MFA (TOTP)"
   default     = true
+}
+
+# =============================================================================
+# Threat protection (advanced security) — #5666 (A11)
+# =============================================================================
+# The reviewed records asked for threat protection to be traced through every
+# current Cognito path. The finding: there was no path. `user_pool_add_ons` did
+# not appear anywhere in this repository, so compromised-credential detection,
+# impossible-travel/risk scoring and adaptive authentication were simply absent
+# from the pool that fronts paid model access — not misconfigured, unbuilt.
+#
+# Defaulted to "OFF" deliberately, which is the one place in this issue where a
+# permissive default is the correct engineering answer:
+#
+# Threat protection requires the Cognito **Plus** feature plan, which is a
+# PER-MONTHLY-ACTIVE-USER CHARGE. Defaulting it on would mean a merge silently
+# changed an AWS bill on every environment that applies this module — including
+# any downstream consumer — and a security fix that surprises an operator with a
+# cost is a fix that gets reverted in a hurry. The other defaults in this issue
+# (approval enforcement, MFA=ON, fail-closed) cost nothing to switch on, so they
+# ship on; this one has a price and therefore ships as a reviewed, one-line
+# opt-in with AUDIT available as a free-of-behaviour-change first step.
+#
+# See docs/runbooks/cognito-mfa-rollout.md for the enrollment/rollout sequence.
+variable "threat_protection_mode" {
+  type        = string
+  description = "Cognito threat protection (advanced security) mode: OFF (no add-on), AUDIT (detect + log risk, no enforcement), or ENFORCED (block/challenge risky sign-ins). AUDIT and ENFORCED require the Cognito Plus feature plan, which is billed per monthly active user."
+  default     = "OFF"
+  validation {
+    condition     = contains(["OFF", "AUDIT", "ENFORCED"], var.threat_protection_mode)
+    error_message = "threat_protection_mode must be OFF, AUDIT, or ENFORCED."
+  }
 }
 
 # =============================================================================

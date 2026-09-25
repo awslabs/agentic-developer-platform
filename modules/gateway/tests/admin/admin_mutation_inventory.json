@@ -4,21 +4,21 @@
     "path": "/access/request",
     "module": "src.admin.onboarding.handler",
     "endpoint": "submit_access_request",
-    "classification": "A11-handoff"
+    "classification": "durable-operation"
   },
   {
     "method": "POST",
     "path": "/admin/access-requests/{request_id}/approve",
     "module": "src.admin.onboarding.handler",
     "endpoint": "approve_access_request",
-    "classification": "A11-handoff"
+    "classification": "durable-operation"
   },
   {
     "method": "POST",
     "path": "/admin/access-requests/{request_id}/deny",
     "module": "src.admin.onboarding.handler",
     "endpoint": "deny_access_request",
-    "classification": "A11-handoff"
+    "classification": "durable-operation"
   },
   {
     "method": "POST",

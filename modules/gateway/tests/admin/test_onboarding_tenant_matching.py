@@ -18,6 +18,19 @@ from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import ChannelTenantMap
 from src.shared.schemas.auth import TokenContext
 
+# Ordinary handler fixtures model the server-side Cognito read explicitly.
+# The unsigned bearer below exercises request plumbing, never identity authority.
+_provider_claims = {}
+
+
+@pytest.fixture(autouse=True)
+def subject_bound_cognito_record(monkeypatch):
+    from src.admin.onboarding import handler
+
+    _provider_claims.clear()
+    monkeypatch.setattr(handler, "_fetch_github_identity_from_cognito", lambda sub: handler._extract_from_claims(_provider_claims))
+
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
@@ -93,6 +106,8 @@ async def app_client(db_engine, new_user_context):
 
 def _fake_bearer(claims: dict) -> str:
     """Build an unsigned Bearer token whose base64 payload decodes to claims."""
+    _provider_claims.clear()
+    _provider_claims.update(claims)
     import base64 as _b64
     import json as _json
 
@@ -171,7 +186,16 @@ async def test_second_user_from_same_org_attaches_to_existing(app_client, db_eng
     mock_client.get_installation_token = AsyncMock(return_value="fake-token")
     mock_client.aclose = AsyncMock()
     mock_client._http_client = MagicMock()
-    mock_client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": "member"}))
+    mock_client._http_client.get = AsyncMock(
+        return_value=MagicMock(
+            status_code=200,
+            json=lambda: {
+                "role": "member",
+                "state": "active",
+                "user": {"id": _provider_claims.get("cognito:username", "github_12345").split("_", 1)[1]},
+            },
+        )
+    )
 
     with (
         patch(
@@ -244,7 +268,16 @@ async def test_match_by_install_id_not_slug(app_client, db_engine, inert_members
     mock_client.get_installation_token = AsyncMock(return_value="fake-token")
     mock_client.aclose = AsyncMock()
     mock_client._http_client = MagicMock()
-    mock_client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": "member"}))
+    mock_client._http_client.get = AsyncMock(
+        return_value=MagicMock(
+            status_code=200,
+            json=lambda: {
+                "role": "member",
+                "state": "active",
+                "user": {"id": _provider_claims.get("cognito:username", "github_12345").split("_", 1)[1]},
+            },
+        )
+    )
 
     with (
         patch(
@@ -356,8 +389,13 @@ async def test_require_admin_approval_policy_creates_pending(app_client, db_engi
         await session.commit()
 
     mock_client = MagicMock()
-    mock_client.check_org_membership = AsyncMock(return_value=True)
+    mock_client.get_installation_token = AsyncMock(return_value="test-token")
     mock_client.aclose = AsyncMock()
+    mock_client._http_client.get = AsyncMock(
+        return_value=MagicMock(
+            status_code=200, json=lambda: {"role": "member", "state": "active", "user": {"id": _provider_claims["cognito:username"].split("_", 1)[1]}}
+        )
+    )
 
     with (
         patch(

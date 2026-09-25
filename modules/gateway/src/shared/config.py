@@ -299,10 +299,29 @@ class Settings(BaseSettings):
     # Issue #4144: gate inference on approval (org assignment). When True, a human
     # caller with no org assignment (resolved from Postgres, not just the JWT
     # claim) is rejected with a 409 on the enforced spend paths. Platform admins
-    # and agents/service accounts are exempt. Default False — enable per-env after
-    # smoke. Set BG_ENFORCE_ORG_ASSIGNMENT=false to roll back (checked per-request,
-    # so a pod recycle is enough; no image rebuild).
-    enforce_org_assignment: bool = False
+    # and agents/service accounts are exempt. Set BG_ENFORCE_ORG_ASSIGNMENT=false
+    # to roll back (checked per-request, so a pod recycle is enough; no rebuild).
+    #
+    # #5666 (A11): default flipped False -> True. "Enable per-env after smoke" left
+    # the only server-side proof of approval on the paid paths switched OFF by
+    # default, so the documented protection was not the shipped behaviour and a
+    # fresh environment billed un-approved callers. A security control whose
+    # default is off is a control nobody has. The SPA's "request access" screen is
+    # not a substitute: it is client-side and a direct curl/SDK caller never sees
+    # it.
+    enforce_org_assignment: bool = True
+
+    # #5666 (A11): break-glass for the approval check's fail-CLOSED behaviour.
+    # When the approval lookup itself raises, the request is denied with a
+    # retryable 503 (approval_check_unavailable) rather than admitted. Set
+    # BG_APPROVAL_FAIL_OPEN=true only as a conscious incident decision to trade the
+    # gate for availability; it is logged and metered separately
+    # (ApprovalCheckFailedFailOpen) so it cannot be left on unnoticed.
+    #
+    # Default False. Note the exemption order in the middleware means platform
+    # admins, agents and humans with a populated org claim never reach the DB read
+    # at all, so a database outage cannot lock them out regardless of this flag.
+    approval_fail_open: bool = False
 
     # Issue #4743 (#4692 · R2): per-principal Bedrock account routing, SHADOW MODE.
     # When True the resolution ladder (user > team > org > platform) runs on the

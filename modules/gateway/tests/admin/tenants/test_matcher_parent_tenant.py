@@ -14,6 +14,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from src.shared.models.base import Base
 from src.shared.models.organization import Organization
 
+
+def _membership_transport(client):
+    client.get_installation_token = AsyncMock(side_effect=lambda install_id: str(install_id))
+    client.aclose = AsyncMock()
+
+    async def get(path, *, headers):
+        _, _, org, _, login = path.split("/")
+        install = int(headers["Authorization"].split()[-1])
+        member = await client.check_org_membership(installation_id=install, org_login=org, username=login)
+        return MagicMock(status_code=200 if member else 404, json=lambda: {"state": "active", "user": {"id": 12345}})
+
+    client._http_client.get = AsyncMock(side_effect=get)
+
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
@@ -84,7 +98,7 @@ async def test_matcher_resolves_linked_org_to_parent_tenant(db_session, seeded_l
     mock_client.check_org_membership = AsyncMock(
         side_effect=lambda installation_id, org_login, username: installation_id == 200,
     )
-    mock_client.aclose = AsyncMock()
+    _membership_transport(mock_client)
 
     with (
         patch(
@@ -96,7 +110,7 @@ async def test_matcher_resolves_linked_org_to_parent_tenant(db_session, seeded_l
             return_value=("app-id", "fake-pem"),
         ),
     ):
-        matched = await _find_matching_tenants_for_user(db_session, "researcher-user")
+        matched = await _find_matching_tenants_for_user(db_session, "researcher-user", "12345")
 
     # Should resolve to parent-tenant, not child-org
     assert len(matched) == 1
@@ -115,7 +129,7 @@ async def test_matcher_resolves_standalone_org_to_itself(db_session, seeded_link
     mock_client.check_org_membership = AsyncMock(
         side_effect=lambda installation_id, org_login, username: installation_id == 300,
     )
-    mock_client.aclose = AsyncMock()
+    _membership_transport(mock_client)
 
     with (
         patch(
@@ -127,7 +141,7 @@ async def test_matcher_resolves_standalone_org_to_itself(db_session, seeded_link
             return_value=("app-id", "fake-pem"),
         ),
     ):
-        matched = await _find_matching_tenants_for_user(db_session, "standalone-user")
+        matched = await _find_matching_tenants_for_user(db_session, "standalone-user", "12345")
 
     # Should resolve to standalone-org (its own id)
     assert len(matched) == 1
@@ -153,7 +167,7 @@ async def test_matcher_resolves_unlinked_org_to_itself(db_session, seeded_linked
     mock_client.check_org_membership = AsyncMock(
         side_effect=lambda installation_id, org_login, username: installation_id == 200,
     )
-    mock_client.aclose = AsyncMock()
+    _membership_transport(mock_client)
 
     with (
         patch(
@@ -165,7 +179,7 @@ async def test_matcher_resolves_unlinked_org_to_itself(db_session, seeded_linked
             return_value=("app-id", "fake-pem"),
         ),
     ):
-        matched = await _find_matching_tenants_for_user(db_session, "researcher-user")
+        matched = await _find_matching_tenants_for_user(db_session, "researcher-user", "12345")
 
     # Should now resolve to child-org (its own id) since unlinked
     assert len(matched) == 1
@@ -183,7 +197,7 @@ async def test_matcher_multi_org_member_with_linked_org(db_session, seeded_linke
     mock_client.check_org_membership = AsyncMock(
         side_effect=lambda installation_id, org_login, username: installation_id in (100, 200),
     )
-    mock_client.aclose = AsyncMock()
+    _membership_transport(mock_client)
 
     with (
         patch(
@@ -195,7 +209,7 @@ async def test_matcher_multi_org_member_with_linked_org(db_session, seeded_linke
             return_value=("app-id", "fake-pem"),
         ),
     ):
-        matched = await _find_matching_tenants_for_user(db_session, "multi-org-user")
+        matched = await _find_matching_tenants_for_user(db_session, "multi-org-user", "12345")
 
     # Both orgs resolve to parent-tenant — dedup ensures only one entry returned
     # (prevents UniqueConstraint violation in _create_memberships_for_matches).

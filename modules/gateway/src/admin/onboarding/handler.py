@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
+from src.admin.audit_operation import AuditedAdminRoute, current_operation, mark_admin_effects
 from src.admin.config import AdminRole, Permission
 from src.admin.exceptions import InvalidScopeError
 from src.admin.memberships import project_member_org_ids, upsert_tenant_membership
@@ -28,6 +29,7 @@ from src.shared.models.organization import Organization, User
 from src.shared.schemas.auth import TokenContext
 
 from .approval import approve_request, attach_approved_member, deny_request
+from .approval_decision import ApprovalDecision, derive_approval_decision, target_account_for_request
 from .schemas import (
     RESERVED_TENANT_IDS,
     TENANT_ID_PATTERN,
@@ -36,12 +38,18 @@ from .schemas import (
     AccessStatusResponse,
     AdminAccessRequestItem,
     AdminAccessRequestList,
+    AdminApprovalResponse,
     AdminDecisionPayload,
+)
+from .trusted_identity import (
+    NO_LINKED_IDENTITY,
+    TrustedGitHubIdentity,
+    trusted_login_from_attributes,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=AuditedAdminRoute)
 
 
 @dataclass(frozen=True)
@@ -131,8 +139,14 @@ def _extract_from_claims(claims: dict) -> tuple[str, str]:
 
     Returns empty strings for anything missing — caller decides whether to
     fall back to an AdminGetUser lookup.
+
+    #5666 (A11): the login half is read through ``trusted_login_from_attributes``,
+    the same single accessor the Cognito lookup uses, so the trusted attribute name
+    has exactly one definition. A JWT claim cannot be forged (the token is signed),
+    but reading it through one accessor is what stops a second, laxer source of the
+    login reappearing here.
     """
-    github_login = claims.get("custom:github_username") or ""
+    github_login = trusted_login_from_attributes(claims)
     cognito_username = claims.get("cognito:username") or claims.get("username") or ""
     github_id = ""
     if cognito_username.startswith("github_"):
@@ -176,37 +190,57 @@ def _fetch_github_identity_from_cognito(cognito_sub: str) -> tuple[str, str]:
         resp = client.list_users(
             UserPoolId=user_pool_id,
             Filter=f'sub = "{cognito_sub}"',
-            Limit=1,
+            Limit=2,
         )
         users = resp.get("Users", [])
-        if not users:
+        if len(users) != 1 or resp.get("PaginationToken"):
             return "", ""
         user = users[0]
         username = user.get("Username", "")
         attrs = {a["Name"]: a["Value"] for a in user.get("Attributes", [])}
-        github_login = attrs.get("custom:github_username") or attrs.get("name") or ""
-        github_id = username[len("github_") :] if username.startswith("github_") else ""
+        # #5666 (A11): the ``or attrs.get("name")`` fallback that used to sit here
+        # is REMOVED, not relocated. ``name`` is self-writable by the SPA client, so
+        # it let a user type another person's GitHub login and have the membership
+        # matcher treat it as their own identity. See trusted_identity.py for the
+        # full path from that attribute to a cross-tenant membership row.
+        if attrs.get("sub") != cognito_sub:
+            return "", ""
+        github_login = trusted_login_from_attributes(attrs)
+        match = re.fullmatch(r"github_([0-9]+)", username, re.IGNORECASE)
+        github_id = match.group(1) if match else ""
         return github_login, github_id
     except Exception as exc:  # noqa: BLE001
         logger.warning("Cognito AdminGetUser fallback failed for sub=%s: %s", cognito_sub, exc)
         return "", ""
 
 
-def _extract_github_identity(claims: dict, cognito_sub: str) -> tuple[str, str]:
-    """Return (github_login, github_numeric_id) — claims first, Cognito lookup as fallback.
+def resolve_trusted_github_identity(claims: dict, cognito_sub: str) -> TrustedGitHubIdentity:
+    """Resolve one complete Cognito broker identity for the authenticated subject.
 
-    Raises HTTPException(400) only when neither source yields both values.
+    The separately decoded Authorization payload is not an authentication proof.
+    Read both identity halves from the same provider record, validate its subject,
+    and require the broker's immutable numeric username. Native/bootstrap users
+    without that identity retain local access but cannot gain GitHub memberships.
     """
-    github_login, github_id = _extract_from_claims(claims)
-    if github_login and github_id:
-        return github_login, github_id
+    login, numeric_id = _fetch_github_identity_from_cognito(cognito_sub)
+    if not login or not re.fullmatch(r"[0-9]+", numeric_id):
+        return NO_LINKED_IDENTITY
+    return TrustedGitHubIdentity(login=login, numeric_id=numeric_id, linked=True)
 
-    # Fallback: look the user up in Cognito directly (sub is always in JWT)
-    fallback_login, fallback_id = _fetch_github_identity_from_cognito(cognito_sub)
-    github_login = github_login or fallback_login
-    github_id = github_id or fallback_id
 
-    if not github_login or not github_id:
+def _extract_github_identity(claims: dict, cognito_sub: str) -> tuple[str, str]:
+    """Return the complete broker identity bound to the authenticated subject.
+
+    Raises HTTPException(400) when the authoritative record lacks either value.
+
+    #5666 (A11): a thin adapter over :func:`resolve_trusted_github_identity` so the
+    access-request route keeps its 400-on-absence contract while the trust decision
+    lives in exactly one function.
+    """
+    identity = resolve_trusted_github_identity(claims, cognito_sub)
+    github_login, github_id = identity.login, identity.numeric_id
+
+    if not identity.complete:
         raise HTTPException(
             status_code=400,
             detail={
@@ -220,6 +254,7 @@ def _extract_github_identity(claims: dict, cognito_sub: str) -> tuple[str, str]:
 async def _find_matching_tenants_for_user(
     db: AsyncSession,
     github_login: str,
+    github_id: str,
 ) -> list[MatchedTenant]:
     """Find ALL existing ADP tenants this GitHub user is a verified member of.
 
@@ -231,6 +266,9 @@ async def _find_matching_tenants_for_user(
     """
     from src.admin.connections.github_client import GitHubAppClient
     from src.admin.connections.service import _get_github_app_credentials
+
+    if not re.fullmatch(r"[0-9]+", github_id):
+        return []
 
     # Fetch all orgs ordered by created_at for deterministic ordering
     stmt = select(Organization).order_by(Organization.created_at)
@@ -250,11 +288,13 @@ async def _find_matching_tenants_for_user(
         for org in candidates:
             for install_id in org.github_installation_ids:
                 try:
-                    is_member = await client.check_org_membership(
-                        installation_id=int(install_id),
-                        org_login=org.name,
-                        username=github_login,
+                    token = await client.get_installation_token(int(install_id))
+                    response = await client._http_client.get(
+                        f"/orgs/{org.name}/memberships/{github_login}",
+                        headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json"},
                     )
+                    membership = response.json() if response.status_code == 200 else {}
+                    is_member = membership.get("state") == "active" and str((membership.get("user") or {}).get("id", "")) == github_id
                     if is_member:
                         # Issue #2954: If this org is linked to a parent tenant,
                         # resolve to the parent (attach-forward-only rule 3).
@@ -296,6 +336,7 @@ async def _determine_role_for_matched_user(
     github_login: str,
     org_login: str,
     installation_id: int,
+    github_id: str,
 ) -> str:
     """Return 'org_admin' if the user is a GitHub org admin, else 'member'.
 
@@ -304,6 +345,8 @@ async def _determine_role_for_matched_user(
     from src.admin.connections.github_client import GitHubAppClient
     from src.admin.connections.service import _get_github_app_credentials
 
+    if not re.fullmatch(r"[0-9]+", github_id):
+        return "member"
     try:
         app_id, private_key = _get_github_app_credentials()
         if not app_id or not private_key:
@@ -318,7 +361,12 @@ async def _determine_role_for_matched_user(
                     "Accept": "application/vnd.github+json",
                 },
             )
-            if resp.status_code == 200 and resp.json().get("role") == "admin":
+            membership = resp.json() if resp.status_code == 200 else {}
+            if (
+                membership.get("role") == "admin"
+                and membership.get("state") == "active"
+                and str((membership.get("user") or {}).get("id", "")) == github_id
+            ):
                 return "org_admin"
         finally:
             await client.aclose()
@@ -355,7 +403,7 @@ async def _attach_user_to_existing_tenant(
 
     # Determine role via GitHub API
     install_id = int(org.github_installation_ids[0]) if org.github_installation_ids else 0
-    role = await _determine_role_for_matched_user(github_login, org.name, install_id)
+    role = await _determine_role_for_matched_user(github_login, org.name, install_id, github_id)
 
     # Check approval policy
     auto_approve = org.member_approval_policy == "auto_approve_org_members"
@@ -451,6 +499,7 @@ async def _create_memberships_for_matches(
     user_id: str,
     matched_tenants: list[MatchedTenant],
     github_login: str,
+    github_id: str,
 ) -> None:
     """Create TenantMembership rows for each matched tenant (D5 multi-membership).
 
@@ -470,9 +519,12 @@ async def _create_memberships_for_matches(
     for mt in matched_tenants:
         if mt.org_id in existing_tenant_ids:
             continue  # D7: already a member, skip
+        target_org = await db.get(Organization, mt.org_id)
+        if target_org is None or target_org.member_approval_policy != "auto_approve_org_members":
+            continue
 
         # D4: determine role from GitHub org membership
-        role = await _determine_role_for_matched_user(github_login, mt.org_name, mt.install_id)
+        role = await _determine_role_for_matched_user(github_login, mt.org_name, mt.install_id, github_id)
 
         # Set is_active on the first new membership only if user has no active one
         is_active = first_new and not has_active
@@ -497,22 +549,88 @@ async def _create_memberships_for_matches(
     # Callers must call admin.memberships.project_member_org_ids after committing.
 
 
+async def _proven_link_conflict(db: AsyncSession, cognito_sub: str, github_id: str) -> str | None:
+    """Compare immutable provider identities across organization-local accounts.
+
+    Missing historical rows do not substitute for proof: callers separately
+    require a complete broker identity and matching provider membership response.
+    A renamed/reused handle is not an account identifier.
+    """
+    from sqlalchemy import or_
+
+    from src.shared.identity.verification import is_proven
+    from src.shared.models.vault import UserIdentity
+
+    if not re.fullmatch(r"[0-9]+", github_id):
+        return "missing_immutable_identity"
+    rows = (
+        await db.execute(
+            select(UserIdentity, User.cognito_sub)
+            .join(User, User.id == UserIdentity.user_id)
+            .where(
+                UserIdentity.provider == "github",
+                or_(
+                    UserIdentity.provider_user_id == github_id,
+                    User.cognito_sub == cognito_sub,
+                ),
+            )
+        )
+    ).all()
+    for identity, linked_sub in rows:
+        if not is_proven(identity.verification_method):
+            continue
+        if identity.provider_user_id == github_id and linked_sub not in (None, "", cognito_sub):
+            return "provider_identity_proven_for_another_subject"
+        if identity.provider_user_id == github_id and not linked_sub:
+            placements = (
+                await db.scalars(
+                    select(UserIdentity.provider_user_id).where(
+                        UserIdentity.user_id == identity.user_id,
+                        UserIdentity.provider == "cognito",
+                        UserIdentity.verification_method == "org_placement",
+                    )
+                )
+            ).all()
+            if any(subject != cognito_sub for subject in placements):
+                return "provider_identity_placed_under_another_subject"
+        if linked_sub == cognito_sub and identity.provider_user_id != github_id:
+            return "subject_has_different_proven_provider_identity"
+    return None
+
+
 async def sync_memberships_on_login(
     db: AsyncSession,
     user: User,
     github_login: str,
+    *,
+    github_id: str,
+    resolved_for_sub: str,
 ) -> None:
-    """Sync org-tenant memberships for an existing user on login.
+    """Add memberships only for the authenticated subject's immutable identity.
 
-    Issue #3017: Second call site for the #2953 matcher. Called from
-    get_access_status when user is already registered and has a GitHub
-    identity. Finds any org tenants the user is verified to belong to
-    (via GitHub API org-membership check) and creates TenantMembership
-    rows for ones they don't already have (D7 idempotent — skips existing).
-
-    Does NOT create org tenants, does NOT change active-tenant selection.
+    Existing memberships remain untouched when proof is unavailable. The common
+    conflict check supports compatible organization-local accounts; the matcher
+    requires GitHub's active membership response to confirm the same numeric ID.
     """
-    matched_tenants = await _find_matching_tenants_for_user(db, github_login)
+    if user.cognito_sub != resolved_for_sub:
+        logger.error(
+            "membership_sync_refused reason=identity_user_mismatch user=%s resolved_for=%s",
+            user.cognito_sub,
+            resolved_for_sub,
+        )
+        return
+
+    conflict = await _proven_link_conflict(db, resolved_for_sub, github_id)
+    if conflict is not None:
+        logger.error(
+            "membership_sync_refused reason=%s user=%s login=%s",
+            conflict,
+            user.cognito_sub,
+            github_login,
+        )
+        return
+
+    matched_tenants = await _find_matching_tenants_for_user(db, github_login, github_id)
     if not matched_tenants:
         return
 
@@ -521,6 +639,7 @@ async def sync_memberships_on_login(
         user_id=user.id,
         matched_tenants=matched_tenants,
         github_login=github_login,
+        github_id=github_id,
     )
     await db.commit()
     # Issue #4849: project post-commit (see project_member_org_ids' docstring).
@@ -530,6 +649,25 @@ async def sync_memberships_on_login(
 # ---------------------------------------------------------------------------
 # Public routes (authenticated but no tenant required)
 # ---------------------------------------------------------------------------
+
+
+def _onboarding_result(result, *, provider_complete: bool = True, request_id: str | None = None):
+    """Stage the durable result without logging motivation, tokens, or profiles."""
+    operation = current_operation.get()
+    if operation is not None:
+        data = result if isinstance(result, dict) else result.model_dump()
+        status = data.get("status", "")
+        operation.target_org = data.get("tenant_id") or operation.target_org
+        provider_complete = provider_complete and (operation.terminal or {}).get("outcome") != "reconciliation_required"
+        operation.terminal = {
+            "event_type": "admin_" + operation.action,
+            "outcome": "reconciliation_required" if not provider_complete else ("denied" if status in {"unavailable", "collision"} else "success"),
+            "target_type": "access_request",
+            "target_id": request_id or data.get("request_id") or operation.route,
+            "org_id": operation.target_org,
+            "extra": {"request_status": status, "granted_role": data.get("granted_role")},
+        }
+    return result
 
 
 @router.get("/access/status", response_model=AccessStatusResponse)
@@ -547,7 +685,7 @@ async def get_access_status(
     cognito_sub = current_user.user_id
 
     # Check if user already exists
-    stmt = select(User).where(User.cognito_sub == cognito_sub)
+    stmt = select(User).where(User.cognito_sub == cognito_sub).order_by(User.org_id, User.id).limit(1)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     if user is not None:
@@ -559,17 +697,21 @@ async def get_access_status(
         # submit_access_request. Issue #3027.
         try:
             claims = _decode_jwt_claims(request_in.headers.get("authorization"))
-            github_login, _ = _extract_from_claims(claims)
-            if not github_login:
-                github_login, _ = _fetch_github_identity_from_cognito(cognito_sub)
-            if github_login:
-                await sync_memberships_on_login(db, user, github_login)
+            # #5666 (A11): one resolver, no string fallback. This call site used to
+            # inline its own two-step lookup, which is how it inherited the
+            # self-writable ``name`` fallback; routing it through
+            # resolve_trusted_github_identity means the trust decision cannot differ
+            # between here and the access-request route.
+            identity = resolve_trusted_github_identity(claims, cognito_sub)
+            if identity.linked:
+                await sync_memberships_on_login(db, user, identity.login, github_id=identity.numeric_id, resolved_for_sub=cognito_sub)
             else:
                 # Issue #3031: greppable event for post-deploy smoke diagnostics.
-                # Silent no-op when github_login cannot be resolved — membership
-                # sync is skipped entirely.
+                # #5666 (A11): an unlinked session is an explicit no-op that creates
+                # no membership row in ANY organization, rather than a best-effort
+                # match on whatever string was available.
                 logger.info(
-                    "membership_sync_skipped reason=no_github_login user=%s",
+                    "membership_sync_skipped reason=no_verified_identity user=%s",
                     cognito_sub,
                 )
         except Exception:
@@ -614,9 +756,11 @@ async def submit_access_request(
     """
     # Preflight: check feature flag
     if not _v2_write_enabled():
-        return AccessRequestResponse(
-            status="unavailable",
-            reason="USER_IDENTITY_INDEX_V2_WRITE=false, run #537 migration steps first",
+        return _onboarding_result(
+            AccessRequestResponse(
+                status="unavailable",
+                reason="USER_IDENTITY_INDEX_V2_WRITE=false, run #537 migration steps first",
+            )
         )
 
     cognito_sub = current_user.user_id
@@ -629,20 +773,25 @@ async def submit_access_request(
     result = await db.execute(stmt)
     dup_request = result.scalar_one_or_none()
     if dup_request is not None:
-        return AccessRequestResponse(
-            status="pending",
-            request_id=dup_request.id,
-            eta_hours=24,
+        return _onboarding_result(
+            AccessRequestResponse(
+                status="pending",
+                request_id=dup_request.id,
+                eta_hours=24,
+            )
         )
 
     # Derive GitHub identity — JWT claims first, Cognito AdminGetUser fallback
     claims = _decode_jwt_claims(request_in.headers.get("authorization"))
     github_login, github_id = _extract_github_identity(claims, cognito_sub)
+    if await _proven_link_conflict(db, cognito_sub, github_id):
+        raise HTTPException(status_code=409, detail="GitHub identity requires administrator review")
 
     # Issue #2953 (D5): Before slug derivation, check if this user belongs to
     # ANY existing ADP tenants (via verified GitHub org membership).
-    matched_tenants = await _find_matching_tenants_for_user(db, github_login)
+    matched_tenants = await _find_matching_tenants_for_user(db, github_login, github_id)
     if matched_tenants:
+        mark_admin_effects()
         # Attach user to the FIRST matched tenant (home tenant — creates User row)
         first_match = matched_tenants[0]
         response = await _attach_user_to_existing_tenant(
@@ -657,21 +806,22 @@ async def submit_access_request(
         # ALL matched tenants (including the first one). D7: skips existing.
         if response.status == "approved":
             # Look up the just-created User row to get its ID
-            stmt = select(User).where(User.cognito_sub == cognito_sub)
-            result = await db.execute(stmt)
-            user = result.scalar_one_or_none()
+            from src.shared.identity.workspaces import workspace_user
+
+            user = await workspace_user(db, cognito_sub, first_match.org_id, username=f"github_{github_id}")
             if user is not None:
                 await _create_memberships_for_matches(
                     db=db,
                     user_id=user.id,
                     matched_tenants=matched_tenants,
                     github_login=github_login,
+                    github_id=github_id,
                 )
                 await db.commit()
                 # Issue #4849: project post-commit.
                 await project_member_org_ids(db, user_id=user.id)
 
-        return response
+        return _onboarding_result(response)
 
     # D6 fallback: No org matches — derive tenant ID from the GitHub login.
     # Reject on collision so an admin can decide whether this user belongs in
@@ -679,16 +829,19 @@ async def submit_access_request(
     base_slug = _slugify_tenant_id(github_login)
     tenant_id = await _pick_tenant_id(db, base_slug, cognito_sub)
     if tenant_id is None:
-        return AccessRequestResponse(
-            status="collision",
-            reason=(
-                f"A workspace named '{base_slug}' already exists or is being "
-                f"requested by another user. Contact an administrator to "
-                f"join an existing workspace."
-            ),
+        return _onboarding_result(
+            AccessRequestResponse(
+                status="collision",
+                reason=(
+                    f"A workspace named '{base_slug}' already exists or is being "
+                    f"requested by another user. Contact an administrator to "
+                    f"join an existing workspace."
+                ),
+            )
         )
 
     # Create the request
+    mark_admin_effects()
     request = TenantAccessRequest(
         cognito_sub=cognito_sub,
         provider="github",
@@ -714,7 +867,7 @@ async def submit_access_request(
             identity_writer=writer,
         )
         # D6: Create username-self membership for username-slug tenant
-        stmt = select(User).where(User.cognito_sub == cognito_sub)
+        stmt = select(User).where(User.cognito_sub == cognito_sub, User.org_id == approved_tenant_id)
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
         if user is not None:
@@ -736,16 +889,20 @@ async def submit_access_request(
             # Issue #4849: consolidated into admin/memberships.py.
             await project_member_org_ids(db, user_id=user.id, writer=writer)
 
-        return AccessRequestResponse(
-            status="approved",
-            tenant_id=approved_tenant_id,
-            redirect="/dashboard",
+        return _onboarding_result(
+            AccessRequestResponse(
+                status="approved",
+                tenant_id=approved_tenant_id,
+                redirect="/dashboard",
+            )
         )
 
-    return AccessRequestResponse(
-        status="pending",
-        request_id=request.id,
-        eta_hours=24,
+    return _onboarding_result(
+        AccessRequestResponse(
+            status="pending",
+            request_id=request.id,
+            eta_hours=24,
+        )
     )
 
 
@@ -891,9 +1048,8 @@ async def _authorize_decision(
     ``BedrockGatewayError`` 403s handled globally in ``app.py``, so callers need
     no try/except.
 
-    Order matters on the deny route: this runs before any Cognito client is
-    built, so a scope failure can never reach ``admin_delete_user`` (deny is
-    destructive — a scope bug there deletes an account rather than leaking a row).
+    Both decisions authorize the stored request's target tenant before changing
+    its status. Denial never deletes a global Cognito login.
     """
     # target_org_id makes check_permission itself enforce the cross-tenant
     # boundary; USER_MANAGE is in _ORG_SCOPED_PERMISSIONS, so a caller with an
@@ -915,14 +1071,14 @@ async def _authorize_decision(
     return role, allowed_org_id
 
 
-@router.post("/admin/access-requests/{request_id}/approve")
+@router.post("/admin/access-requests/{request_id}/approve", response_model=AdminApprovalResponse)
 async def approve_access_request(
     request_id: str,
     body: AdminDecisionPayload | None = None,
     admin: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> AdminApprovalResponse:
     """Approve a pending access request.
 
     Platform admin: unchanged — ``approve_request`` creates the new tenant for a
@@ -938,62 +1094,143 @@ async def approve_access_request(
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
 
+    operation = current_operation.get()
+    if operation is not None:
+        operation.target_org = request.proposed_tenant_id
     role, _ = await _authorize_decision(access, db, admin, request)
 
-    # Idempotent: already approved
+    # Idempotent: already approved. Report the role actually held in the target org
+    # rather than re-deriving it — the grant already happened and this must not look
+    # like a fresh decision.
     if request.status == "approved":
-        return {"status": "approved", "tenant_id": request.proposed_tenant_id}
+        return _onboarding_result(
+            AdminApprovalResponse(
+                status="approved",
+                tenant_id=request.proposed_tenant_id,
+                granted_role=await _granted_role_in_org(db, request),
+            ),
+            request_id=request_id,
+        )
 
+    # #5666 (A11): ONE derivation for BOTH approver branches. The platform-admin
+    # branch below previously skipped role derivation entirely and inherited
+    # approve_request's hardcoded "org_admin", so a platform admin approving a
+    # request to JOIN an existing org minted a co-administrator of it. The guards
+    # (require_assignable_role + require_modifiable_target) run inside this call, so
+    # neither branch can reach a write without them.
+    decision = await derive_approval_decision(
+        db,
+        access,
+        admin,
+        request,
+        role_for_existing_org=_determine_role_for_matched_user,
+    )
+
+    mark_admin_effects()
     if role != AdminRole.PLATFORM_ADMIN:
-        tenant_id = await _approve_as_org_admin(access, db, admin, request)
+        tenant_id = await _approve_as_org_admin(db, admin, request, decision)
         _log_decision(admin, role, request, "approve")
-        return {"status": "approved", "tenant_id": tenant_id}
+        return _onboarding_result(
+            AdminApprovalResponse(status="approved", tenant_id=tenant_id, granted_role=decision.granted_role), request_id=request_id
+        )
 
     from src.admin.identity.identity_index_writer import IdentityIndexWriter
 
     writer = IdentityIndexWriter()
     try:
-        tenant_id = await approve_request(
-            db=db,
-            request=request,
-            admin_sub=admin.user_id,
-            identity_writer=writer,
-        )
+        if decision.creates_organization:
+            tenant_id = await approve_request(
+                db=db,
+                request=request,
+                admin_sub=admin.user_id,
+                identity_writer=writer,
+                granted_role=decision.granted_role,
+            )
+        elif await _has_user_in_org(db, request):
+            # The org AND a users row for this sub already exist — a partially
+            # completed earlier approval. approve_request's existing-org branch is
+            # the heal path for exactly this: it upserts the membership and re-syncs
+            # claims without minting a second users row. It now heals with the
+            # DERIVED role instead of a hardcoded org_admin.
+            tenant_id = await approve_request(
+                db=db,
+                request=request,
+                admin_sub=admin.user_id,
+                identity_writer=writer,
+                granted_role=decision.granted_role,
+            )
+        else:
+            # An existing org is the JOIN_EXISTING class whichever branch approves
+            # it, so a platform admin now takes the same executor an org admin does.
+            # approve_request's existing-org branch only heals a membership; it never
+            # created the users/identity rows a first-time joiner needs, so a platform
+            # admin approving a genuine join used to leave an authority-less principal
+            # — or, worse, promote them to co-admin of the org they were joining.
+            tenant_id = await attach_approved_member(
+                db,
+                request,
+                granted_role=decision.granted_role,
+                decided_by=admin.user_id,
+            )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
     _log_decision(admin, role, request, "approve")
-    return {"status": "approved", "tenant_id": tenant_id}
+    return _onboarding_result(
+        AdminApprovalResponse(status="approved", tenant_id=tenant_id, granted_role=decision.granted_role), request_id=request_id
+    )
+
+
+async def _granted_role_in_org(db: AsyncSession, request: TenantAccessRequest) -> str:
+    """The role this requester actually holds in the target org — #5666 (A11).
+
+    Read from ``tenant_memberships``, the row ``access_control`` resolves org
+    permissions from, so the reported role is the one that is really in force rather
+    than a re-derivation that might now differ.
+    """
+    user = await target_account_for_request(db, request)
+    if user is None:
+        return ""
+    role = await db.scalar(
+        select(TenantMembership.role).where(
+            TenantMembership.user_id == user.id,
+            TenantMembership.tenant_id == request.proposed_tenant_id,
+        )
+    )
+    return role or ""
+
+
+async def _has_user_in_org(db: AsyncSession, request: TenantAccessRequest) -> bool:
+    """True when a users row for this requester already exists in the target org.
+
+    Scoped to the org (#5666 A11): an unscoped ``cognito_sub`` lookup would report a
+    user row belonging to a DIFFERENT tenant and send a genuine first-time join down
+    the heal path, which never creates the rows that joiner needs.
+    """
+    user = await target_account_for_request(db, request)
+    return user is not None
 
 
 async def _approve_as_org_admin(
-    access: AccessControl,
     db: AsyncSession,
     caller: TokenContext,
     request: TenantAccessRequest,
+    decision: ApprovalDecision,
 ) -> str:
-    """Approve a class-B request as an org admin, granting a derived role.
+    """Execute a class-B approval as an org admin, with the already-derived role.
 
-    The role is derived from the requester's GitHub org membership — the SAME
-    function the auto-approve path uses — so an approval grants exactly what an
-    auto-approved join would have. ``require_assignable_role`` is then called as
-    defence-in-depth: it blocks platform-level role strings, but note it is NOT
-    what prevents an org_admin grant (ranks are equal there, and ``>`` does not
-    fire on equal ranks) — the derivation above is that control.
+    #5666 (A11): the derivation and both ceiling guards moved into
+    ``derive_approval_decision``, which the route calls for BOTH approver branches.
+    This function now only executes, so the org-admin and platform-admin paths cannot
+    reach a different role for the same request.
     """
-    org = await db.get(Organization, request.proposed_tenant_id)
-    install_id = int(org.github_installation_ids[0]) if org and org.github_installation_ids else 0
-    granted_role = await _determine_role_for_matched_user(request.target_login, org.name if org else "", install_id)
-
-    await access.require_assignable_role(caller, granted_role, target_org_id=request.proposed_tenant_id)
-
     try:
         return await attach_approved_member(
             db,
             request,
-            granted_role=granted_role,
+            granted_role=decision.granted_role,
             decided_by=caller.user_id,
         )
     except ValueError as e:
@@ -1025,40 +1262,27 @@ async def deny_access_request(
     access: AccessControl = Depends(_get_access_control),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Deny a pending access request and delete the user's Cognito account."""
+    """Deny this tenant access request while preserving the global login."""
     request = await db.get(TenantAccessRequest, request_id)
     if request is None:
         raise HTTPException(status_code=404, detail="Request not found")
 
-    # Deny is DESTRUCTIVE (admin_delete_user below). Authorize first, before the
-    # Cognito client exists, so a scope failure cannot delete another org's user.
+    # Authorization governs this request's tenant, never global account deletion.
+    operation = current_operation.get()
+    if operation is not None:
+        operation.target_org = request.proposed_tenant_id
     role, _ = await _authorize_decision(access, db, admin, request)
 
-    # Get Cognito client for AdminDeleteUser
-    cognito_client = None
-    user_pool_id = _cognito_user_pool_id()
-    if user_pool_id:
-        try:
-            import boto3
-
-            cognito_client = boto3.client(
-                "cognito-idp",
-                region_name=os.environ.get("AWS_REGION", "us-east-1"),
-            )
-        except Exception:
-            logger.warning("Could not create Cognito client for deny action")
-
     try:
+        mark_admin_effects()
         await deny_request(
             db=db,
             request=request,
             admin_sub=admin.user_id,
             decision_note=body.decision_note if body else None,
-            cognito_client=cognito_client,
-            user_pool_id=user_pool_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
     _log_decision(admin, role, request, "deny")
-    return {"status": "denied", "request_id": request_id}
+    return _onboarding_result({"status": "denied", "request_id": request_id})

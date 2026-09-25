@@ -276,13 +276,34 @@ data:
   # the JWT claim only as a fast path. Do NOT "simplify" this to the claim alone:
   # the login-time auto-match approval path never syncs Cognito attributes, so
   # approved users routinely hold tokens with no org_id and would all be locked
-  # out. Fails OPEN on a DB error (a transient blip must not down all inference).
+  # out.
   #
-  # When "false" (default), the middleware is inert — it still runs, but returns
-  # early. Rollback is a value flip + `kubectl rollout restart`; the flag is read
+  # #5666 (A11): default flipped to "true". Shipping "false" meant the only
+  # server-side proof of approval on the paid paths was switched off by default, so
+  # a fresh environment billed un-approved callers while the SPA showed them a
+  # "request access" screen — a client-side screen a direct curl/SDK caller never
+  # sees.
+  #
+  # Fails CLOSED on a DB error as of #5666: an indeterminate lookup returns a
+  # RETRYABLE 503 ({"detail": {"error": "approval_check_unavailable", ...}}) with
+  # Retry-After, not a 409, and not an admit. Because every exemption is evaluated
+  # before the DB read, a database blip cannot lock out platform admins, agents, or
+  # any human whose token carries an org — the 503 reaches only callers whose
+  # approval cannot be confirmed without the database. BG_APPROVAL_FAIL_OPEN="true"
+  # is the conscious break-glass if an incident calls for availability over the
+  # gate.
+  #
+  # When "false", the middleware is inert — it still runs, but returns early.
+  # Rollback is a value flip + `kubectl rollout restart`; the flag is read
   # per-request via get_settings(), so no image rebuild is needed.
   # =============================================================================
-  BG_ENFORCE_ORG_ASSIGNMENT: "false"
+  BG_ENFORCE_ORG_ASSIGNMENT: "true"
+
+  # Break-glass for the fail-closed approval check above (#5666 / A11). "true"
+  # admits requests whose approval lookup raised, restoring the pre-#5666
+  # behaviour. Logged + metered as ApprovalCheckFailedFailOpen so it is visible
+  # while active. Leave "false" outside an incident.
+  BG_APPROVAL_FAIL_OPEN: "false"
 
   # =============================================================================
   # Per-principal Bedrock account routing — SHADOW MODE (Issue #4743, #4692)

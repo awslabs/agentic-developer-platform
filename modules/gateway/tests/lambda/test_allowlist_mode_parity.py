@@ -50,6 +50,25 @@ _NOT_ELIGIBLE = "not_eligible"
 _UNAVAILABLE = "unavailable"
 
 
+def _org_check_verdicts() -> tuple[str, str, str]:
+    """The three results of ``check_org_membership`` — read from the real module.
+
+    #5666 (A11): imported rather than hardcoded so renaming a verdict in
+    ``lambda/github-auth-broker/allowlist.py`` fails these tests instead of
+    silently making them assert against a string the code no longer returns.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "parity_allowlist_verdicts",
+        _GATEWAY_ROOT / "lambda" / "github-auth-broker" / "allowlist.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ALLOWED, module.DENIED, module.UNVERIFIED
+
+
+_ALLOWED, _DENIED, _UNVERIFIED = _org_check_verdicts()
+
+
 def _load_broker() -> ModuleType:
     """Load the broker handler with its own dir on sys.path.
 
@@ -112,11 +131,16 @@ _GITHUB_ID = "20402445"
 _LOGIN = "octocat"
 
 
-def _broker_allows(broker, mode, *, reader=None, org_member=True, allow_open=False) -> bool:
+def _broker_allows(broker, mode, *, reader=None, org_member=True, allow_open=False, org_result=None) -> bool:
+    """#5666 (A11): ``org_result`` overrides the bool to reach UNVERIFIED.
+
+    ``org_member`` cannot express the third state ``check_org_membership`` actually
+    returns, which is why that branch had no coverage.
+    """
     broker.ALLOWLIST_MODE = mode
     broker.ALLOWED_ORGS = "my-org"
     broker.ALLOW_OPEN_SIGNUP = allow_open
-    org_result = "allowed" if org_member else "denied"
+    org_result = org_result if org_result is not None else (_ALLOWED if org_member else _DENIED)
     with (
         patch.object(broker, "check_org_membership", return_value=org_result),
         patch.object(broker, "_get_github_org_token", return_value="org-token"),
@@ -125,7 +149,17 @@ def _broker_allows(broker, mode, *, reader=None, org_member=True, allow_open=Fal
         return broker._check_allowlist(_LOGIN, "user-token", _GITHUB_ID) is None
 
 
-def _pre_signup_allows(pre_signup, mode, *, reader=None, org_member=True, allow_open=False, on_allowlist=False) -> bool:
+def _pre_signup_allows(pre_signup, mode, *, reader=None, org_member=True, allow_open=False, on_allowlist=False, org_result=None) -> bool:
+    """``org_result`` is adapted, not ignored — #5666 (A11).
+
+    This copy's ``_check_org_membership`` returns a bool and already collapses its
+    own failures to ``False`` (``lambda/pre-signup/handler.py``), so an
+    unverifiable check is expressed here as ``False``. The rule being compared
+    across copies is "an indeterminate org check does not grant", and both copies
+    must satisfy it even though they encode the third state differently.
+    """
+    if org_result is not None:
+        org_member = org_result == _ALLOWED
     pre_signup.ALLOWLIST_MODE = mode
     pre_signup.ALLOWED_ORGS = "my-org"
     pre_signup.ALLOW_OPEN_SIGNUP = allow_open
@@ -275,6 +309,86 @@ def test_mode_parsing_is_case_and_space_insensitive_in_every_copy(copy, broker, 
     """
     reader = _fake_reader(_ELIGIBLE)
     assert _allows(copy, broker, pre_signup, mode, reader=reader, allow_open=True) is True
+
+
+# ---------------------------------------------------------------------------
+# org mode: the "could not verify" result — #5666 (A11)
+#
+# ``check_org_membership`` has THREE results (allowlist.py): ALLOWED, DENIED, and
+# UNVERIFIED for "the check itself did not complete" — a missing/unapproved org
+# token, a GitHub 5xx, a network fault. The matrix above only ever exercised the
+# first two, so the branch that decides what an *indeterminate* org check does had
+# no coverage in either copy. That is the branch most worth pinning: it is the one
+# an attacker can influence by making the check fail, and it is exactly the
+# "unknown/unavailable allowlist result" this contract area names.
+#
+# It is also already correct in the broker (#3986 returns org_check_unavailable,
+# which denies) — so these are evidence tests, not repairs. Without them a future
+# "simplification" of the three-state result into a bool would read UNVERIFIED as
+# truthy and fail open with nothing to stop it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("copy", COPIES)
+def test_org_mode_denies_when_the_membership_check_cannot_complete(copy, broker, pre_signup):
+    """An indeterminate org check must deny in every copy."""
+    assert _allows(copy, broker, pre_signup, "org", org_result=_UNVERIFIED) is False
+
+
+def test_org_mode_reports_unverified_distinctly_from_not_authorized(broker):
+    """An unverifiable check and a proven non-membership must stay distinguishable.
+
+    Collapsing them is the ambiguity #3986 was filed to fix: a missing org token or
+    an unapproved OAuth App would present as a legitimate denial, so an operator
+    debugging "why can nobody sign in" is told the users are simply not members.
+    Asserted on the broker because it is the live gate and the only copy that
+    returns an error code at all.
+    """
+    broker.ALLOWLIST_MODE = "org"
+    broker.ALLOWED_ORGS = "my-org"
+    with (
+        patch.object(broker, "check_org_membership", return_value=_UNVERIFIED),
+        patch.object(broker, "_get_github_org_token", return_value="org-token"),
+    ):
+        unverified = broker._check_allowlist(_LOGIN, "user-token", _GITHUB_ID)
+    with (
+        patch.object(broker, "check_org_membership", return_value=_DENIED),
+        patch.object(broker, "_get_github_org_token", return_value="org-token"),
+    ):
+        denied = broker._check_allowlist(_LOGIN, "user-token", _GITHUB_ID)
+
+    assert unverified == "org_check_unavailable"
+    assert denied == "not_authorized"
+    assert unverified != denied, "an unverifiable check must not be reported as a proven denial"
+
+
+def test_org_mode_denies_when_no_org_token_is_configured_and_github_rejects(broker):
+    """The documented fallback path still ends in a denial, not a grant.
+
+    With no ``GITHUB_TOKEN_SECRET_ARN`` the broker falls back to the user's own
+    OAuth token, which only works if the OAuth App is org-approved. When it is not,
+    GitHub's answer is unverifiable — and that must deny.
+    """
+    broker.ALLOWLIST_MODE = "org"
+    broker.ALLOWED_ORGS = "my-org"
+    with (
+        patch.object(broker, "check_org_membership", return_value=_UNVERIFIED),
+        patch.object(broker, "_get_github_org_token", return_value=None),
+    ):
+        assert broker._check_allowlist(_LOGIN, "user-token", _GITHUB_ID) == "org_check_unavailable"
+
+
+def test_org_mode_with_no_allowed_orgs_configured_denies(broker):
+    """An empty ALLOWED_ORGS list must not mean "everyone".
+
+    ``org`` mode with nothing configured is a misconfiguration, and the fail-closed
+    reading is that a user provably belongs to none of zero orgs.
+    """
+    broker.ALLOWLIST_MODE = "org"
+    broker.ALLOWED_ORGS = ""
+    with patch.object(broker, "_get_github_org_token", return_value="org-token"):
+        # The real helper decides; no membership can be proven against an empty list.
+        assert broker._check_allowlist(_LOGIN, "user-token", _GITHUB_ID) is not None
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ The load-bearing distinction these tests pin is the TWO REQUEST CLASSES:
 Two escalation vectors are guarded explicitly:
 
   1. **Cross-tenant.** An org_admin must not list, approve, or deny another org's
-     requests. Deny is destructive (``admin_delete_user``), so the deny tests
+     requests. Deny updates request state only, so the deny tests
      assert on the Cognito mock — a 403 alone would not prove no account was
      deleted.
   2. **Peer-level privilege grant.** ``approve_request``'s existing-org branch
@@ -151,7 +151,7 @@ def _pending(
         id=request_id,
         cognito_sub=sub,
         provider="github",
-        provider_user_id=f"gh-{login}",
+        provider_user_id="12345",
         proposed_tenant_id=tenant_id,
         target_login=login,
         motivation="please let me in",
@@ -214,7 +214,9 @@ def _github_role_client(role: str):
     client.get_installation_token = AsyncMock(return_value="fake-token")
     client.aclose = AsyncMock()
     client._http_client = MagicMock()
-    client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": role}))
+    client._http_client.get = AsyncMock(
+        return_value=MagicMock(status_code=200, json=lambda: {"role": role, "state": "active", "user": {"id": 12345}})
+    )
     return client
 
 
@@ -324,7 +326,9 @@ async def test_org_admin_approve_own_org_grants_member_not_org_admin(seeded):
             resp = await client.post("/admin/access-requests/req-own-b/approve")
 
     assert resp.status_code == 200
-    assert resp.json() == {"status": "approved", "tenant_id": OWN_ORG}
+    # #5666 (A11): the response now reports the role the approval granted, so the
+    # derived outcome is visible to the approver rather than implicit.
+    assert resp.json() == {"status": "approved", "tenant_id": OWN_ORG, "granted_role": "member"}
 
     factory = async_sessionmaker(seeded, expire_on_commit=False)
     async with factory() as session:
@@ -454,7 +458,7 @@ async def test_approve_unknown_request_is_404_for_platform_admin(seeded):
 
 
 # ---------------------------------------------------------------------------
-# POST .../deny — destructive, so scope must fail closed BEFORE Cognito
+# POST .../deny — request scope must fail closed; Cognito remains unchanged
 # ---------------------------------------------------------------------------
 
 
@@ -506,7 +510,7 @@ async def test_org_admin_can_deny_own_org_request(seeded):
             resp = await client.post("/admin/access-requests/req-own-b/deny", json={"decision_note": "not this quarter"})
 
     assert resp.status_code == 200
-    mock_cognito.admin_delete_user.assert_called_once_with(UserPoolId="us-east-1_pool", Username="sub-joiner")
+    mock_cognito.admin_delete_user.assert_not_called()
 
     factory = async_sessionmaker(seeded, expire_on_commit=False)
     async with factory() as session:
@@ -528,3 +532,36 @@ async def test_dept_admin_deny_never_deletes_cognito_user(seeded):
 
     assert resp.status_code == 403
     mock_cognito.admin_delete_user.assert_not_called()
+
+
+@pytest.mark.parametrize("target_role", ["member", "org_admin", "platform_admin"])
+async def test_org_denial_preserves_requesters_other_workspace_and_global_login(seeded, target_role):
+    factory = async_sessionmaker(seeded, expire_on_commit=False)
+    async with factory() as session:
+        team = await session.scalar(select(Team).where(Team.org_id == OTHER_ORG))
+        target = User(
+            id=new_uuid(),
+            org_id=OTHER_ORG,
+            team_id=team.id,
+            email="existing-target@example.com",
+            name="Existing target",
+            cognito_sub="sub-joiner",
+            role=target_role,
+        )
+        session.add(target)
+        await session.flush()
+        session.add(TenantMembership(user_id=target.id, tenant_id=OTHER_ORG, role="org_admin", is_active=True, joined_via="onboarding_approval"))
+        await session.commit()
+        target_id = target.id
+
+    async with _client(seeded, _context("sub-org-admin", OWN_ORG)) as client:
+        with patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}), patch("boto3.client") as provider:
+            response = await client.post("/admin/access-requests/req-own-b/deny")
+    assert response.status_code == 200
+    provider.assert_not_called()
+    async with factory() as session:
+        target = await session.get(User, target_id)
+        assert target.cognito_sub == "sub-joiner" and target.role == target_role
+        membership = await session.scalar(select(TenantMembership).where(TenantMembership.user_id == target_id))
+        assert membership.tenant_id == OTHER_ORG and membership.role == "org_admin"
+        assert (await session.get(TenantAccessRequest, "req-own-b")).status == "denied"

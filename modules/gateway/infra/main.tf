@@ -681,10 +681,11 @@ module "cognito" {
   automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
   source                              = "./modules/cognito"
 
-  environment       = var.environment
-  name_prefix       = local.name_prefix
-  common_tags       = local.common_tags
-  mfa_configuration = var.cognito_mfa_configuration
+  environment            = var.environment
+  name_prefix            = local.name_prefix
+  common_tags            = local.common_tags
+  mfa_configuration      = var.cognito_mfa_configuration
+  threat_protection_mode = var.cognito_threat_protection_mode
   callback_urls = concat(
     var.cognito_callback_urls,
     ["https://${module.cloudfront.distribution_domain_name}/auth/callback"]
