@@ -549,50 +549,9 @@ resource "aws_iam_role_policy" "gateway_agent_execute_api" {
   })
 }
 
-# --- Extend runner IAM with gateway permissions ---
-
-resource "aws_iam_role_policy" "runner_gateway_sqs" {
-  name = "gateway-sqs"
-  role = module.runner_iam.runner_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"]
-        Resource = module.gateway_sqs.input_queue_arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
-        Resource = module.gateway_sqs.response_queue_arn
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy" "runner_gateway_dynamodb" {
-  name = "gateway-dynamodb"
-  role = module.runner_iam.runner_role_name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
-        Resource = [module.gateway_sessions.table_arn, "${module.gateway_sessions.table_arn}/index/*"]
-      },
-      {
-        Sid      = "DynamoDBKMSAccess"
-        Effect   = "Allow"
-        Action   = ["kms:Decrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
-        Resource = [aws_kms_key.dynamodb.arn]
-      }
-    ]
-  })
-}
+# Shared runners use only the runner-runtime-policy grants. Direct gateway SQS,
+# session DynamoDB and DynamoDB KMS access belongs to the gateway workloads;
+# adding it here is redundant with (and denied by) the shared runtime boundary.
 
 # Basic saved-model lookup shares the existing gateway deployment. Derive its
 # endpoint from that deployment so a dev apply cannot erase manually supplied
