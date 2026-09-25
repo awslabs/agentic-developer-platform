@@ -141,11 +141,23 @@ class MemberIssuer:
             raise BootstrapRefused("credential service account is absent")
         identity = self.grants._identity(spec, observed)
         self.grants.verify(spec, identity)
+        # The component journal adds its own creation marker before the API
+        # write. It is provenance metadata, not an additional credential scope.
+        # Exact SA UID still comes from that trusted journal and all membership
+        # annotations must match; arbitrary extra annotations remain refused.
+        from superplane_bootstrap.component_journal import ANNOTATION
+        import re
+
+        annotations = dict(observed["metadata"].get("annotations", {}))
+        creation = annotations.pop(ANNOTATION, None)
+        if creation is not None and (
+            not isinstance(creation, str) or not re.fullmatch(r"[a-f0-9]{32}", creation)
+        ):
+            raise BootstrapRefused("credential component creation marker is invalid")
         if (
             identity["uid"] != uid(expected_uid)
             or observed["metadata"].get("deletionTimestamp")
-            or observed["metadata"].get("annotations")
-            != spec["body"]["metadata"]["annotations"]
+            or annotations != spec["body"]["metadata"]["annotations"]
         ):
             raise BootstrapRefused("credential service account binding changed")
         self._verify(binding, action)

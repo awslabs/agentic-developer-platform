@@ -38,6 +38,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -67,6 +68,16 @@ class ClusterMembership(Base):
 
     __tablename__ = "cluster_memberships"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "workspace_id"],
+            ["workspaces.org_id", "workspaces.id"],
+            name="fk_cluster_memberships_workspace_org",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "cluster_id"],
+            ["clusters.org_id", "clusters.id"],
+            name="fk_cluster_memberships_cluster_org",
+        ),
         CheckConstraint(
             "state IN ('reserved', 'active', 'removed')",
             name="ck_cluster_memberships_state",

@@ -36,6 +36,7 @@ STATUS_MAX_RETRIES_EXCEEDED = "max_retries_exceeded"
 class Workspace(Base):
     __tablename__ = "workspaces"
     __table_args__ = (
+        UniqueConstraint("org_id", "id", name="uq_workspaces_org_identity"),
         UniqueConstraint(
             "org_id",
             "operation_id",

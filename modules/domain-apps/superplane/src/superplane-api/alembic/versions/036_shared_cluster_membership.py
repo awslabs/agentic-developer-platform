@@ -28,6 +28,12 @@ _TABLE = "cluster_memberships"
 
 
 def upgrade():
+    op.create_unique_constraint(
+        "uq_clusters_org_identity", "clusters", ["org_id", "id"]
+    )
+    op.create_unique_constraint(
+        "uq_workspaces_org_identity", "workspaces", ["org_id", "id"]
+    )
     op.add_column(
         "clusters",
         sa.Column(
@@ -95,6 +101,16 @@ def upgrade():
         sa.CheckConstraint(
             "generation ~ '^[a-f0-9]{64}$'",
             name="ck_cluster_memberships_generation",
+        ),
+        sa.ForeignKeyConstraint(
+            ["org_id", "workspace_id"],
+            ["workspaces.org_id", "workspaces.id"],
+            name="fk_cluster_memberships_workspace_org",
+        ),
+        sa.ForeignKeyConstraint(
+            ["org_id", "cluster_id"],
+            ["clusters.org_id", "clusters.id"],
+            name="fk_cluster_memberships_cluster_org",
         ),
     )
     op.create_index(
@@ -178,6 +194,69 @@ def upgrade():
         unique=True,
         postgresql_where=sa.text("state = 'active'"),
     )
+    op.create_table(
+        "cluster_credential_authorities",
+        sa.Column("authority_id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "org_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("organizations.id"),
+            nullable=False,
+        ),
+        sa.Column(
+            "cluster_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("clusters.id"),
+            nullable=False,
+        ),
+        sa.Column("document_json", sa.Text(), nullable=False),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("holder", sa.Text(), nullable=True),
+        sa.Column("fence_token", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.UniqueConstraint(
+            "org_id", "cluster_id", name="uq_cluster_credential_authorities_cluster"
+        ),
+        sa.ForeignKeyConstraint(
+            ["org_id", "cluster_id"],
+            ["clusters.org_id", "clusters.id"],
+            name="fk_cluster_credential_authorities_org",
+        ),
+        sa.CheckConstraint(
+            "fence_token >= 0", name="ck_cluster_credential_authorities_fence"
+        ),
+        sa.CheckConstraint(
+            "(holder IS NULL) = (lease_expires_at IS NULL)",
+            name="ck_cluster_credential_authorities_lease",
+        ),
+    )
+    op.create_table(
+        "membership_credential_components",
+        sa.Column("membership_id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("revision", sa.Integer(), primary_key=True),
+        sa.Column("scope", sa.String(16), primary_key=True),
+        sa.Column("kind", sa.String(32), primary_key=True),
+        sa.Column("name", sa.String(253), primary_key=True),
+        sa.Column("desired_json", sa.Text(), nullable=False),
+        sa.Column("identity_json", sa.Text(), nullable=True),
+        sa.Column("state", sa.String(16), nullable=False, server_default="planned"),
+        sa.ForeignKeyConstraint(
+            ["membership_id", "revision", "scope"],
+            [
+                "membership_credentials.membership_id",
+                "membership_credentials.revision",
+                "membership_credentials.scope",
+            ],
+        ),
+        sa.CheckConstraint(
+            "kind IN ('ServiceAccount','Role','RoleBinding')",
+            name="ck_membership_credential_components_kind",
+        ),
+        sa.CheckConstraint(
+            "state IN ('planned','created','revoked')",
+            name="ck_membership_credential_components_state",
+        ),
+    )
 
 
 def downgrade():
@@ -186,6 +265,13 @@ def downgrade():
             RAISE EXCEPTION 'Retain membership identity and removal history before rollback';
         END IF;
     END $$""")
+    op.execute("""DO $$ BEGIN
+        IF EXISTS(SELECT 1 FROM cluster_credential_authorities) THEN
+            RAISE EXCEPTION 'Retain cluster credential authority before rollback';
+        END IF;
+    END $$""")
+    op.drop_table("membership_credential_components")
+    op.drop_table("cluster_credential_authorities")
     op.drop_index(
         "uq_membership_credentials_active", table_name="membership_credentials"
     )
@@ -198,3 +284,5 @@ def downgrade():
     op.drop_table(_TABLE)
     op.drop_column("clusters", "platform_eligible")
     op.drop_column("clusters", "sharing_enabled")
+    op.drop_constraint("uq_workspaces_org_identity", "workspaces", type_="unique")
+    op.drop_constraint("uq_clusters_org_identity", "clusters", type_="unique")

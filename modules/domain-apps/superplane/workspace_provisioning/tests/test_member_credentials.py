@@ -192,6 +192,25 @@ def issue(f):
     return f.issuer.issue(f.binding, service_account_uid="uid-ServiceAccount")
 
 
+@pytest.mark.parametrize("marker", ["a" * 32, "invalid-marker"])
+def test_journalled_creation_marker_does_not_change_credential_scope(fixture, marker):
+    from superplane_bootstrap.component_journal import ANNOTATION
+
+    f = fixture
+    for spec in delegation_specs(f.binding):
+        key = (
+            spec["body"]["kind"],
+            f.binding.membership.namespace,
+            spec["body"]["metadata"]["name"],
+        )
+        f.api.objects[key]["metadata"]["annotations"][ANNOTATION] = marker
+    if marker == "invalid-marker":
+        with pytest.raises(BootstrapRefused, match="creation marker"):
+            issue(f)
+    else:
+        assert issue(f).metadata["scope"] == "reader"
+
+
 def test_issue_project_and_revoke_preserves_peers(fixture):
     f = fixture
     credential = issue(f)
