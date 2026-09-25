@@ -30,11 +30,14 @@ def test_task_routes_and_sparse_index_are_narrowly_granted():
     assert 'name            = "task-work-index"' in dynamodb
     assert 'hash_key        = "task_work_shard"' in dynamodb
     assert 'range_key       = "task_due"' in dynamodb
-    assert '"${aws_dynamodb_table.webhook_events.arn}/index/task-work-index"' in recovery
-    assert 'Sid      = "TaskWorkAuthority"' in recovery
-    assert '"dynamodb:TransactWriteItems"' in recovery
-    assert "aws_dynamodb_table.agent_authority.arn" in recovery
-    assert "dynamodb:Scan" not in recovery
+    storage = text("iam.tf").split('resource "aws_iam_role_policy" "gateway_task_storage"', 1)[1]
+    assert '"${aws_dynamodb_table.webhook_events.arn}/index/task-work-index"' in storage
+    assert '"dynamodb:ConditionCheckItem"' in storage
+    assert "aws_dynamodb_table.agent_authority.arn" in storage
+    assert '"dynamodb:TransactWriteItems"' not in text("iam.tf")
+    assert '"dynamodb:TransactWriteItems"' not in text("scaledjob-iam.tf")
+    assert "dynamodb:Scan" not in storage
+
 
 
 def test_lambda_cannot_write_protected_work_locators():

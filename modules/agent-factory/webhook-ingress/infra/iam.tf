@@ -327,6 +327,8 @@ resource "aws_iam_role_policy" "gateway_activity_read" {
 #
 # No worker role appears here, and no worker statement names this table. That
 # absence is the boundary — see the comment on aws_dynamodb_table.agent_authority.
+# DynamoDB transactions authorize their constituent item actions;
+# TransactWriteItems is an API operation, not a valid IAM action.
 resource "aws_iam_role_policy" "lambda_agent_authority" {
   name = "adp-${var.environment}-policy-ingress-agent-authority"
   role = aws_iam_role.lambda_execution.id
@@ -344,7 +346,7 @@ resource "aws_iam_role_policy" "lambda_agent_authority" {
         # including when one reserved key is hidden in a mixed batch/transaction.
         Sid      = "DenyTaskRequestWrites"
         Effect   = "Deny"
-        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:TransactWriteItems"]
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
         Resource = [aws_dynamodb_table.webhook_events.arn]
         Condition = {
           "ForAnyValue:StringLike" = {
@@ -370,7 +372,7 @@ resource "aws_iam_role_policy" "lambda_agent_authority" {
         # one member of a future mixed batch/transaction.
         Sid      = "DenyTaskWorkLocatorWrites"
         Effect   = "Deny"
-        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:TransactWriteItems"]
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
         Resource = [aws_dynamodb_table.agent_authority.arn]
         Condition = {
           "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
@@ -441,7 +443,6 @@ resource "aws_iam_role_policy" "gateway_task_storage" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:ConditionCheckItem",
-          "dynamodb:TransactWriteItems",
         ]
         Resource = [
           aws_dynamodb_table.webhook_events.arn,
@@ -456,7 +457,6 @@ resource "aws_iam_role_policy" "gateway_task_storage" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:ConditionCheckItem",
-          "dynamodb:TransactWriteItems",
         ]
         Resource = [aws_dynamodb_table.agent_authority.arn]
       },

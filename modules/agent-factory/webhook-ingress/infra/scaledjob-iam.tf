@@ -65,6 +65,8 @@ locals {
       Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
     }
   ]
+  # The item-action denies also cover TransactWriteItems. AWS IAM has no
+  # dynamodb:TransactWriteItems action; batch writes remain explicitly denied.
   agent_task_protection_deny = [
     {
       Sid    = "DenyTaskRecordWrites"
@@ -74,7 +76,6 @@ locals {
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
         "dynamodb:BatchWriteItem",
-        "dynamodb:TransactWriteItems",
       ]
       Resource = "arn:aws:dynamodb:*:*:table/adp-*-webhook-events"
       Condition = {
@@ -102,7 +103,6 @@ locals {
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
         "dynamodb:BatchWriteItem",
-        "dynamodb:TransactWriteItems",
       ]
       Resource = "arn:aws:dynamodb:*:*:table/adp-*-agent-authority"
     },
