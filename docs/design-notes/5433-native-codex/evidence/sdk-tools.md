@@ -54,3 +54,31 @@ confirmed errors, call limits, overlap, request bounds, resource-method refusal 
 The real SDK fixture discovers and executes this shared transport successfully.
 The report-only session/Task Responses path still refuses executable bindings;
 this transport is not evidence of gateway tool integration or persona completion.
+
+## Shared Responses bridge tool cycle
+
+The real SDK fixture now also uses the shared Responses bridge, replacing its
+custom inference HTTP/SSE server. With explicit host tool policy, the bridge
+projects only the reviewed `mcp__adp` namespace and forces serial tool calls.
+SDK-provided descriptions/schemas cannot replace host definitions. Native MCP
+resource functions and residual built-ins are removed from model requests.
+
+Closed function call/result types bound names, arguments and inline output;
+SDK-only IDs/metadata are stripped. Input history must contain complete,
+nonoverlapping call/result pairs and pass the host's explicit receipt validator.
+Model responses may call only an admitted function with schema-valid arguments,
+and cannot reissue a completed call ID. Tool opt-in requires a synchronous
+validator returning `true`; absent authority retains the text-only behavior.
+The Task gateway's report-only contract is not widened by this local opt-in.
+
+The pinned SDK prepends a `Wall time: ... seconds` text part to MCP results.
+The integration fixture validates that bounded-format wrapper separately and
+compares the following evidence text exactly against its confirmed host receipt.
+This observed SDK decoration must not be mistaken for gateway cost/latency or
+execution evidence. Production gateway receipt binding remains outstanding.
+
+Six additional bridge tests cover host schema projection, forged/unpaired/history
+calls, namespace substitution, invalid/parallel output calls, refusal before
+model handoff and completed-call replay. All 51 harness/IPC tests and the actual
+SDK→Responses bridge→MCP→SDK continuation fixture pass. Inference and tool effects
+remain deterministic local fixtures; no live story has been accepted by this test.

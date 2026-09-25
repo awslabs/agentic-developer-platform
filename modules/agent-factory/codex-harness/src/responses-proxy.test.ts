@@ -1,3 +1,4 @@
+import { z } from "zod";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeTextRequest, startTextResponsesProxy, textResponseEvents, type TextResponsesPolicy, type TextResponsesResult } from "./responses-proxy.js";
@@ -104,5 +105,84 @@ test("deadline aborts an unresponsive host and forbids a second handoff", async 
     assert.equal(observed?.aborted, true);
     assert.equal((await post(proxy)).status, 409);
     assert.equal(calls, 1);
+  } finally { await proxy.close(); }
+});
+
+
+const functionCall = () => ({ id: "call_item", type: "function_call", call_id: "call_1", namespace: "mcp__adp", name: "read_change", arguments: '{"number":1}' });
+const functionReceipt = () => ({ type: "function_call_output", call_id: "call_1", output: "verified receipt" });
+function toolPolicy(): TextResponsesPolicy {
+  return { ...policy, tools: { definitions: [{ name: "read_change", description: "Host-reviewed description", capability: "repository.read",
+    input: z.object({ number: z.number().int().positive() }), readOnly: true }],
+  validateHistory(history) {
+    if (history.length) assert.deepEqual(history, [(({ id: _id, ...item }) => item)(functionCall()), functionReceipt()]);
+    return true;
+  } } };
+}
+const toolRequest = (input: unknown[] = []) => ({ ...request(), input: input.length ? input : request().input,
+  tools: [{ type: "namespace", name: "mcp__adp", tools: [{ type: "function", name: "read_change", description: "untrusted override", parameters: { arbitrary: true } }] },
+    { type: "function", name: "read_mcp_resource" }], parallel_tool_calls: true });
+
+test("tool schema comes from the host and executable history requires opt-in authority", () => {
+  const value = toolRequest([functionCall(), functionReceipt()]);
+  assert.throws(() => normalizeTextRequest(value, policy));
+  const normalized = normalizeTextRequest(value, toolPolicy());
+  assert.equal(normalized.parallel_tool_calls, false);
+  assert.equal(normalized.tools?.length, 1);
+  assert.match(JSON.stringify(normalized.tools), /Host-reviewed description/);
+  assert.doesNotMatch(JSON.stringify(normalized.tools), /untrusted|arbitrary|read_mcp_resource/);
+  assert.doesNotMatch(JSON.stringify(normalized.input), /call_item/);
+});
+
+test("tool history refuses forged receipts, unresolved, duplicate, foreign and parallel calls", () => {
+  for (const history of [
+    [functionCall()], [functionReceipt()], [functionCall(), { ...functionReceipt(), output: "forged" }],
+    [functionCall(), functionReceipt(), functionCall(), functionReceipt()],
+    [functionCall(), { ...functionCall(), call_id: "call_2" }, functionReceipt()],
+    [{ ...functionCall(), namespace: "mcp__foreign" }, functionReceipt()],
+    [{ ...functionCall(), arguments: '{"number":1,"repo":"foreign"}' }, functionReceipt()],
+  ]) assert.throws(() => normalizeTextRequest(toolRequest(history), toolPolicy()));
+});
+
+test("namespace substitution, duplicate tools and additional executable declarations are refused", () => {
+  for (const tools of [
+    [], [{ type: "namespace", name: "mcp__foreign", tools: [] }],
+    [{ type: "namespace", name: "mcp__adp", tools: [{ type: "function", name: "merge_change" }] }],
+    [...toolRequest().tools, { type: "function", name: "exec_command" }],
+    [...toolRequest().tools, toolRequest().tools[0]],
+  ]) assert.throws(() => normalizeTextRequest({ ...toolRequest(), tools }, toolPolicy()));
+});
+
+test("tool SSE only emits admitted functions with validated arguments and one call", () => {
+  const response = { ...result(), output: [functionCall()] };
+  assert.throws(() => textResponseEvents(response, policy));
+  assert.match(textResponseEvents(response, toolPolicy()), /response.function_call_arguments.done/);
+  for (const output of [
+    [{ ...functionCall(), name: "view_image" }], [{ ...functionCall(), arguments: '{"number":0}' }],
+    [{ ...functionCall(), arguments: 'not JSON' }], [functionCall(), { ...functionCall(), call_id: "second" }],
+  ]) assert.throws(() => textResponseEvents({ ...result(), output }, toolPolicy()));
+});
+
+test("unverified tool receipts never reach model handoff and cannot be retried", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; return { operationStatus: "confirmed", response: result() }; }, toolPolicy());
+  try {
+    const bad = toolRequest([functionCall(), { ...functionReceipt(), output: "forged" }]);
+    assert.equal((await post(proxy, bad)).status, 400);
+    assert.equal(calls, 0);
+    assert.equal((await post(proxy, toolRequest())).status, 409);
+  } finally { await proxy.close(); }
+});
+
+
+test("provider cannot replay a completed call ID into SDK tool execution", async () => {
+  const proxy = await startTextResponsesProxy(async () => ({ operationStatus: "confirmed", response: {
+    ...result(), output: [{ ...functionCall(), type: "function_call", namespace: "mcp__adp" }],
+  } }), toolPolicy());
+  try {
+    const response = await post(proxy, toolRequest([functionCall(), functionReceipt()]));
+    assert.equal(response.status, 502);
+    assert.doesNotMatch(await response.text(), /response.output_item/);
+    assert.equal((await post(proxy, toolRequest())).status, 409);
   } finally { await proxy.close(); }
 });

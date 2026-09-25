@@ -1,6 +1,7 @@
 import http from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import type { HostTool } from "./tool-server.js";
 
 const textPart = z.strictObject({ type: z.enum(["input_text", "output_text"]), text: z.string(), annotations: z.array(z.never()).optional() });
 const message = z.strictObject({
@@ -20,8 +21,29 @@ const reasoningInput = z.strictObject({ ...reasoningFields, id: z.string().max(2
   content: z.null().optional(), internal_chat_message_metadata_passthrough: z.unknown().optional(),
 }).transform(({ id: _discardedId, content: _emptyContent, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
 const reasoningOutput = z.strictObject({ ...reasoningFields, id: z.string().min(1).max(200) });
+const functionFields = {
+  type: z.literal("function_call"), call_id: z.string().min(1).max(200),
+  namespace: z.literal("mcp__adp"), name: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+  arguments: z.string().min(2).max(32768), status: z.literal("completed").optional(),
+};
+const functionInput = z.strictObject({ ...functionFields, id: z.string().max(200).optional(),
+  internal_chat_message_metadata_passthrough: z.unknown().optional() })
+  .transform(({ id: _discarded, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
+const functionOutput = z.strictObject({ ...functionFields, id: z.string().min(1).max(200) });
+const functionResult = z.strictObject({ id: z.string().max(200).optional(),
+  internal_chat_message_metadata_passthrough: z.unknown().optional(), type: z.literal("function_call_output"), call_id: z.string().min(1).max(200),
+  output: z.union([z.string().max(32768), z.array(z.strictObject({ type: z.literal("input_text"), text: z.string().max(32768) })).max(16)]),
+}).transform(({ id: _discarded, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
+export type ToolHistory = z.infer<typeof functionInput> | z.infer<typeof functionResult>;
+export interface ResponsesTools {
+  /** Reviewed host schemas, never SDK- or persona-supplied authority. */
+  definitions: readonly HostTool[];
+  /** Must compare every call/result with this run's confirmed model/tool
+   * receipts. Structural call-ID pairing is not evidence authenticity. */
+  validateHistory(history: readonly ToolHistory[]): true;
+}
 const sdkRequest = z.strictObject({
-  model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput])).min(1).max(64)]),
+  model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput, functionInput, functionResult])).min(1).max(64)]),
   instructions: z.string().optional(), stream: z.literal(true), store: z.literal(false),
   reasoning: z.strictObject({ effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]), summary: z.enum(["auto", "concise", "detailed", "none"]).optional() }),
   // These are SDK-owned transport hints, never authority or cross-run cache IDs.
@@ -40,12 +62,15 @@ export interface TextResponsesPolicy {
   maxResponseBytes: number;
   maxOperations: number;
   timeoutMs: number;
+  tools?: ResponsesTools;
 }
 export interface TextResponsesRequest {
   input: z.infer<typeof sdkRequest>["input"];
   instructions?: string;
   reasoning: { effort: TextResponsesPolicy["effort"] };
   max_output_tokens: number;
+  tools?: object[];
+  parallel_tool_calls?: false;
 }
 const usageSchema = z.strictObject({
   input_tokens: z.number().int().nonnegative().safe(), output_tokens: z.number().int().nonnegative().safe(),
@@ -54,7 +79,7 @@ const usageSchema = z.strictObject({
 });
 const responseSchema = z.strictObject({
   id: z.string().min(1).max(200), status: z.literal("completed"),
-  output: z.array(z.union([reasoningOutput, z.strictObject({
+  output: z.array(z.union([reasoningOutput, functionOutput, z.strictObject({
     id: z.string().min(1).max(200), type: z.literal("message"), role: z.literal("assistant"), status: z.literal("completed"),
     phase: z.enum(["commentary", "final_answer"]).optional(),
     content: z.array(z.strictObject({ type: z.literal("output_text"), text: z.string(), annotations: z.array(z.never()) })).min(1).max(64),
@@ -74,18 +99,58 @@ export type TextResponsesHost = (request: TextResponsesRequest, signal: AbortSig
 export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy): TextResponsesRequest {
   const parsed = sdkRequest.parse(value);
   if (parsed.model !== policy.model || parsed.reasoning.effort !== policy.effort) throw new Error("SDK model binding mismatch");
-  // Native residual tools are not projected into this text-only contract. Reject
-  // all other declarations so a new SDK tool cannot acquire implicit authority.
-  for (const tool of parsed.tools ?? []) {
-    z.object({ type: z.literal("function"), name: z.enum(["view_image", "request_user_input"]) }).parse(tool);
+  const admitted = new Map((policy.tools?.definitions ?? []).map(tool => [tool.name, tool]));
+  let namespaceSeen = false;
+  for (const declaration of parsed.tools ?? []) {
+    const kind = z.object({ type: z.string() }).parse(declaration);
+    if (kind.type === "namespace" && policy.tools) {
+      const namespace = z.object({ type: z.literal("namespace"), name: z.literal("mcp__adp"),
+        tools: z.array(z.object({ type: z.literal("function"), name: z.string() })).max(64) }).parse(declaration);
+      if (namespaceSeen || namespace.tools.length !== admitted.size
+        || new Set(namespace.tools.map(tool => tool.name)).size !== admitted.size
+        || namespace.tools.some(tool => !admitted.has(tool.name))) throw new Error("SDK tool catalogue mismatch");
+      namespaceSeen = true;
+    } else {
+      const residual = policy.tools
+        ? ["view_image", "request_user_input", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
+        : ["view_image", "request_user_input"];
+      const tool = z.object({ type: z.literal("function"), name: z.string() }).parse(declaration);
+      if (!residual.includes(tool.name)) throw new Error("SDK tool not admitted");
+    }
   }
+  if (policy.tools && (!admitted.size || !namespaceSeen)) throw new Error("Missing host tool namespace");
+  const history = typeof parsed.input === "string" ? [] : parsed.input.filter(
+    (item): item is ToolHistory => item.type === "function_call" || item.type === "function_call_output");
+  if (history.length && !policy.tools) throw new Error("Executable history not admitted");
+  const pending = new Set<string>(), completed = new Set<string>();
+  for (const item of history) {
+    if (item.type === "function_call") {
+      if (pending.size || completed.has(item.call_id)) throw new Error("Overlapping or duplicate tool call");
+      validateToolCall(item, policy);
+      pending.add(item.call_id);
+    } else {
+      if (!pending.delete(item.call_id)) throw new Error("Unmatched tool result");
+      completed.add(item.call_id);
+    }
+  }
+  if (pending.size) throw new Error("Unresolved tool call");
+  if (policy.tools && policy.tools.validateHistory(history) !== true) throw new Error("Tool history not verified");
   const normalized: TextResponsesRequest = {
+    ...(policy.tools ? { tools: [{ type: "namespace", name: "mcp__adp", description: "Authorized ADP tools.",
+      tools: policy.tools.definitions.map(tool => ({ type: "function", name: tool.name, description: tool.description,
+        parameters: z.toJSONSchema(tool.input.strict(), { target: "draft-7" }), strict: false })) }], parallel_tool_calls: false as const } : {}),
     input: parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
     reasoning: { effort: policy.effort },
     max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens),
   };
   if (Buffer.byteLength(JSON.stringify(normalized)) > policy.maxRequestBytes) throw new Error("Responses request exceeds bound");
   return normalized;
+}
+
+function validateToolCall(call: z.infer<typeof functionInput>, policy: TextResponsesPolicy) {
+  const tool = policy.tools?.definitions.find(tool => tool.name === call.name);
+  if (!tool) throw new Error("Response tool not admitted");
+  tool.input.strict().parse(JSON.parse(call.arguments));
 }
 
 export function textResponseEvents(value: unknown, policy: TextResponsesPolicy): string {
@@ -95,10 +160,20 @@ export function textResponseEvents(value: unknown, policy: TextResponsesPolicy):
     || response.usage.output_tokens > policy.maxOutputTokens
     || (response.usage.input_tokens_details?.cached_tokens ?? 0) > response.usage.input_tokens
     || (response.usage.output_tokens_details?.reasoning_tokens ?? 0) > response.usage.output_tokens) throw new Error("Invalid Responses usage");
+  const calls = response.output.filter(item => item.type === "function_call");
+  if (calls.length > 1) throw new Error("Parallel tool calls not admitted");
+  for (const call of calls) validateToolCall(call, policy);
   const events: string[] = [];
   const emit = (type: string, fields: object) => events.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
   emit("response.created", { response: { id: response.id, object: "response", status: "in_progress", output: [] } });
   response.output.forEach((item, output_index) => {
+    if (item.type === "function_call") {
+      emit("response.output_item.added", { output_index, item: { ...item, status: "in_progress", arguments: "" } });
+      emit("response.function_call_arguments.delta", { output_index, item_id: item.id, delta: item.arguments });
+      emit("response.function_call_arguments.done", { output_index, item_id: item.id, arguments: item.arguments });
+      emit("response.output_item.done", { output_index, item });
+      return;
+    }
     if (item.type === "reasoning") {
       // Reasoning is replayable protocol state, never a progress/log message.
       emit("response.output_item.added", { output_index, item: { ...item, summary: [] } });
@@ -119,8 +194,8 @@ export function textResponseEvents(value: unknown, policy: TextResponsesPolicy):
   return events.join("");
 }
 
-/** Text-only transport milestone. No tool execution, session isolation, Task
- * lifecycle or safe-resume authority is supplied by this loopback adapter.
+/** Bounded Responses transport; tools require explicit host schemas and receipt
+ * validation. No execution, Task lifecycle or safe-resume authority lives here.
  * Once a model outcome is ambiguous, further SDK calls are refused locally.
  */
 export async function startTextResponsesProxy(host: TextResponsesHost, policy: TextResponsesPolicy) {
@@ -129,7 +204,10 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid Responses limit");
   }
   // A fresh immutable host snapshot prevents caller mutation during a request.
-  policy = Object.freeze({ ...policy });
+  if (policy.tools && (typeof policy.tools.validateHistory !== "function" || policy.tools.definitions.length > 64
+    || new Set(policy.tools.definitions.map(tool => tool.name)).size !== policy.tools.definitions.length)) throw new Error("Invalid host tool policy");
+  policy = Object.freeze({ ...policy, ...(policy.tools ? { tools: Object.freeze({ ...policy.tools,
+    definitions: Object.freeze(policy.tools.definitions.map(tool => Object.freeze({ ...tool, input: tool.input.strict() }))) }) } : {}) });
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   let failed = false;
@@ -173,6 +251,11 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       const receipt = await Promise.race([host(request, controller.signal), aborted]);
       controller.signal.throwIfAborted();
       if (receipt.operationStatus !== "confirmed") throw new Error("Unconfirmed model operation");
+      const previousCalls = new Set(typeof request.input === "string" ? [] : request.input
+        .filter(item => item.type === "function_call").map(item => item.call_id));
+      if (receipt.response.output.some(item => item.type === "function_call" && previousCalls.has(item.call_id))) {
+        throw new Error("Provider repeated a completed tool call");
+      }
       const output = textResponseEvents(receipt.response, { ...policy, maxOutputTokens: request.max_output_tokens });
       res.writeHead(200, { "content-type": "text/event-stream" }).end(output);
     } catch {
