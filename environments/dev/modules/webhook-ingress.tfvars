@@ -86,3 +86,5 @@ task_tool_invoke_resources = [
 
 # Authenticated Agent Activity explanation stream; independent of mutation controls.
 agent_explanations_enabled = true
+# Explicit operator activation on 2026-09-25; acceptance evidence remains tracked separately.
+agent_control_enabled = true
