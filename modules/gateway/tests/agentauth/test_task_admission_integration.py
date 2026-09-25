@@ -326,3 +326,61 @@ def test_scoped_producer_needs_no_generic_internal_agent_grant(flow, monkeypatch
     response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
     assert response["statusCode"] == 202
     assert len(flow.model_calls) == 1
+
+
+def test_uploaded_artifact_admission_preserves_closed_dispatch_reference(flow):
+    artifact_id = "art_12345678-1234-4234-8234-123456789abc"
+    flow.store.create_artifact_binding(
+        artifact_id=artifact_id,
+        tenant="tenant-a",
+        canonical_principal="svc-principal-1",
+        version=1,
+        content_sha256="a" * 64,
+        content_type="text/plain",
+        size_bytes=40,
+    )
+    raw = json.dumps({"schema_version": "1.0", "persona": "agent-task-investigator", "instructions": "inspect", "artifact_ids": [artifact_id]})
+    response = submit(raw)
+    assert response["statusCode"] == 202, response
+    task = flow.store.read_task(json.loads(response["body"])["task_id"])
+    work = flow.store.resolve_work(task["dispatch_id"], expected_kind="dispatch")
+    assert work["envelope"]["input_ref"]["artifact_refs"] == [{"artifact_id": artifact_id, "version": 1, "content_sha256": "a" * 64}]
+    replay = submit(raw)
+    assert replay["statusCode"] == 202
+    assert json.loads(replay["body"])["task_id"] == task["task_id"]
+    target = flow.budget._target(scope="qualification:http-integration", cap=25)
+    assert flow.web.portal.call(flow.reservations.snapshot, target).total_usd == 1
+
+
+def test_artifact_retry_after_pretransaction_failure_reuses_original_budget_hold(flow, monkeypatch, caplog):
+    from datetime import timedelta
+
+    from src.tasks.store import TaskStoreError
+
+    artifact_id = "art_12345678-1234-4234-8234-123456789abc"
+    flow.store.create_artifact_binding(
+        artifact_id=artifact_id,
+        tenant="tenant-a",
+        canonical_principal="svc-principal-1",
+        version=1,
+        content_sha256="a" * 64,
+        content_type="text/plain",
+        size_bytes=40,
+    )
+    raw = json.dumps({"schema_version": "1.0", "persona": "agent-task-investigator", "instructions": "inspect", "artifact_ids": [artifact_id]})
+    original = flow.store.accept
+
+    def fail_before_transaction(request):
+        raise TaskStoreError("secret-body-must-not-be-logged")
+
+    monkeypatch.setattr(flow.store, "accept", fail_before_transaction)
+    assert submit(raw)["statusCode"] == 503
+    assert "TaskStoreError" in [getattr(record, "error_class", "") for record in caplog.records]
+    assert "secret-body-must-not-be-logged" not in caplog.text
+    target = flow.budget._target(scope="qualification:http-integration", cap=25)
+    assert flow.web.portal.call(flow.reservations.snapshot, target).total_usd == 1
+    monkeypatch.setattr(flow.store, "accept", original)
+    flow.budget.clock = lambda: storage_tests.NOW + timedelta(seconds=121)
+    response = submit(raw)
+    assert response["statusCode"] == 202, response
+    assert flow.web.portal.call(flow.reservations.snapshot, target).total_usd == 1
