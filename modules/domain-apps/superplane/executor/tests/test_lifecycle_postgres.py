@@ -45,6 +45,7 @@ class Cloud:
         self.lose_status_response = False
         self.instance = {
             "InstanceId": "i-0123456789abcdef0",
+            "Placement": {"AvailabilityZone": data["region"] + "a"},
             "ImageId": data["image_id"],
             "InstanceType": data["instance_type"],
             "State": {"Name": "running"},
@@ -167,6 +168,14 @@ class Kubernetes(Workspace):
                 json={
                     "items": [
                         {
+                            "metadata": {
+                                "labels": {
+                                    "superplane.ai/capacity": self.cloud.cluster_name,
+                                    "superplane.ai/workspace": operation.grant.lease.workspace_id,
+                                    "topology.kubernetes.io/region": "us-east-1",
+                                    "topology.kubernetes.io/zone": "us-east-1a",
+                                }
+                            },
                             "spec": {
                                 "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
                             },
@@ -323,6 +332,7 @@ async def system(pool, tmp_path):
             payload = json.loads(request.content)
             assert isinstance(payload["task"], str)
             task = json.loads(payload["task"])
+            cloud.cluster_name = task["name"]
             assert "SSM_ACTIVATION" not in payload["task"]
             assert "nodeadm init" in task["setup"] and "remaining=" in task["run"]
             assert payload["retry_until_up"] is False

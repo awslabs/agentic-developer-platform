@@ -499,7 +499,7 @@ class Provider:
                                 operation,
                                 target,
                                 plan,
-                                {i["InstanceId"] for i in instances},
+                                instances,
                             )
                         else:
                             known_references = None

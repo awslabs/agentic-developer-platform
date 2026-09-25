@@ -284,7 +284,38 @@ class Workspace:
             (kind, metadata["namespace"], metadata["name"], metadata["uid"])
         )
 
-    async def ready_nodes(self, operation, target, plan, instance_ids):
+    async def ready_nodes(self, operation, target, plan, instances):
+        # Preserve provider-observed location, not merely the instance-ID suffix.
+        # A label selector is a query hint, not evidence of node ownership.
+        import re
+
+        try:
+            workspace_id = operation.grant.lease.workspace_id
+            approved_regions = {binding["region"] for binding in plan.region_bindings}
+            expected = {}
+            for instance in instances:
+                instance_id = instance["InstanceId"]
+                region = instance["SuperplaneRegion"]
+                zone = instance["Placement"]["AvailabilityZone"]
+                if (
+                    not re.fullmatch(r"i-(?:[0-9a-f]{8}|[0-9a-f]{17})", instance_id)
+                    or region not in approved_regions
+                    or not re.fullmatch(
+                        re.escape(region) + r"(?:[a-z]|-[a-z0-9-]+)", zone
+                    )
+                ):
+                    return False
+                provider_id = f"aws:///{zone}/{instance_id}"
+                if provider_id in expected:
+                    return False
+                expected[provider_id] = (region, zone)
+            if (
+                len(expected) != plan.data["node_count"]
+                or len({region for region, _ in expected.values()}) != 1
+            ):
+                return False
+        except (KeyError, TypeError, AttributeError):
+            return False
         selector = quote("superplane.ai/capacity=" + plan.cluster_name, safe="")
         response = await self.request(
             operation, target, "GET", "/api/v1/nodes?labelSelector=" + selector
@@ -292,15 +323,7 @@ class Workspace:
         if response.status_code != 200:
             return False
         nodes = response.json().get("items", [])
-        if len(nodes) != plan.data["node_count"]:
-            return False
-        provider_ids = {
-            node.get("spec", {}).get("providerID", "").rsplit("/", 1)[-1]
-            for node in nodes
-        }
-        if not provider_ids or "" in provider_ids or provider_ids != set(instance_ids):
-            return False
-        if len(provider_ids) != len(nodes):
+        if not isinstance(nodes, list) or len(nodes) != plan.data["node_count"]:
             return False
         # A joined, Ready node is not yet a usable GPU node: the device plugin
         # publishes allocatable nvidia.com/gpu only once the driver/runtime/CNI
@@ -309,16 +332,35 @@ class Workspace:
         # into "the node can run the requested GPU workload" -- a CPU-only batch
         # workload (gpu_count 0) is unaffected.
         required_gpus = plan.data["workload"]["gpu_count"] or 0
-        return all(
-            node.get("spec", {}).get("providerID", "").rsplit("/", 1)[-1]
-            in instance_ids
-            and any(
-                c.get("type") == "Ready" and c.get("status") == "True"
-                for c in node.get("status", {}).get("conditions", [])
-            )
-            and (required_gpus == 0 or self._allocatable_gpus(node) >= required_gpus)
-            for node in nodes
-        )
+        observed = set()
+        try:
+            for node in nodes:
+                provider_id = node["spec"]["providerID"]
+                if provider_id not in expected or provider_id in observed:
+                    return False
+                region, zone = expected[provider_id]
+                labels = node["metadata"]["labels"]
+                if any(
+                    labels.get(key) != value
+                    for key, value in {
+                        "superplane.ai/capacity": plan.cluster_name,
+                        "superplane.ai/workspace": workspace_id,
+                        "topology.kubernetes.io/region": region,
+                        "topology.kubernetes.io/zone": zone,
+                    }.items()
+                ):
+                    return False
+                if not any(
+                    c.get("type") == "Ready" and c.get("status") == "True"
+                    for c in node.get("status", {}).get("conditions", [])
+                ) or (
+                    required_gpus > 0 and self._allocatable_gpus(node) < required_gpus
+                ):
+                    return False
+                observed.add(provider_id)
+            return observed == set(expected)
+        except (KeyError, TypeError, AttributeError):
+            return False
 
     @staticmethod
     def _allocatable_gpus(node):
