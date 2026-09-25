@@ -30,6 +30,8 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
+from src.admin.audit import write_admin_audit
+from src.admin.audit_operation import AuditedAdminRoute, callback_result, mark_admin_effects
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user
 from src.auth.magic_link import (
@@ -88,6 +90,7 @@ async def _get_access_control(db: AsyncSession = Depends(get_db)) -> AccessContr
 # /api/admin/... made GitHub's Setup-URL redirect and the SPA's calls 404 after
 # the strip → the connections UI never populated.
 router = APIRouter(
+    route_class=AuditedAdminRoute,
     prefix="/admin/connections",
     tags=["connections"],
 )
@@ -143,12 +146,22 @@ async def github_install_start(
     try:
         if current_user.account_type != "human":
             raise HTTPException(status_code=403, detail="A signed-in human identity is required")
-        return await install_start(
+        mark_admin_effects()
+        result = await install_start(
             cognito_sub=current_user.user_id,
             org_id=current_user.org_id,
             cognito_username=current_user.cognito_username,
             db=db,
         )
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_install_start",
+            target_type="github_connection",
+            target_id=current_user.org_id,
+            best_effort=True,
+        )
+        return result
     except connection_service.SetupAuthorityError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
@@ -187,6 +200,9 @@ async def github_install_callback(
             setup_action=setup_action,
             state=state,
             db=db,
+        )
+        callback_result(
+            action="connection_install_callback", target_id=installation_id, complete=bool(result.get("success", True) and not result.get("partial"))
         )
         # Issue #2952: No-nonce path returns a generic HTML page (no redirect —
         # the user has no ADP session to redirect into).
@@ -323,7 +339,17 @@ async def switch_tenant(
     """Compatibility route; callers must refresh tokens after this switch."""
     from src.auth.workspaces import get_workspace_claims, select_workspace
 
+    mark_admin_effects()
     selected = await select_workspace(db, current_user, body.tenant_id, get_workspace_claims())
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="connection_switch_tenant",
+        target_type="tenant",
+        target_id=selected.org_id,
+        org_id=selected.org_id,
+        best_effort=True,
+    )
     return SwitchTenantResponse(active_tenant_id=selected.org_id)
 
 
@@ -346,13 +372,26 @@ async def disconnect_github(
         caller = await workspace_user(db, current_user.user_id, effective_org_id, username=current_user.cognito_username)
         pg_user_id = caller.id if caller else None
 
-        return await delete_connection(
+        mark_admin_effects()
+        result = await delete_connection(
             installation_id=installation_id,
             caller_org_id=effective_org_id,
             db=db,
             caller_user_id=pg_user_id,
             caller_is_admin=current_user.is_admin,
         )
+        result = DeleteConnectionResponse.model_validate(result)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_disconnect",
+            target_type="github_connection",
+            target_id=str(installation_id),
+            org_id=effective_org_id,
+            outcome="reconciliation_required" if result.residual else "success",
+            best_effort=True,
+        )
+        return result
     except HTTPException:
         # Issue #2700: surface deliberate HTTPExceptions instead of masking
         # them as a generic 500 (same audit as install-start).
@@ -399,7 +438,8 @@ async def github_app_register_start(
         )
 
     try:
-        return await register_app_start(
+        mark_admin_effects()
+        result = await register_app_start(
             owner_type=body.owner_type,
             org=body.org,
             app_name=body.app_name,
@@ -408,6 +448,15 @@ async def github_app_register_start(
             cognito_username=current_user.cognito_username,
             db=db,
         )
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_register_app_start",
+            target_type="github_app",
+            target_id=body.app_name or "manifest",
+            best_effort=True,
+        )
+        return result
     except connection_service.SetupAuthorityError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
@@ -451,6 +500,7 @@ async def github_app_register_callback(
             state=state,
             db=db,
         )
+        callback_result(action="connection_register_app_callback", target_id="deployment")
         return RedirectResponse(url=redirect_url, status_code=302)
 
     except (NonceNotFoundError, TokenExpiredError) as exc:
@@ -488,6 +538,7 @@ async def github_app_register_manual(
     body: RegisterManualRequest,
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
 ) -> RegisterManualResponse:
     """Import an existing GitHub App by providing its credentials.
 
@@ -503,12 +554,21 @@ async def github_app_register_manual(
         )
 
     try:
+        mark_admin_effects()
         result = await register_app_manual(
             app_id=body.app_id,
             private_key=body.private_key,
             webhook_secret=body.webhook_secret,
             client_id=body.client_id,
             client_secret=body.client_secret,
+        )
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_register_app_manual",
+            target_type="github_app",
+            target_id=str(body.app_id),
+            best_effort=True,
         )
         return RegisterManualResponse(**result)
     except HTTPException:
@@ -553,6 +613,7 @@ async def github_app_status(
 async def github_app_revalidate(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
 ) -> RevalidateAppResponse:
     """Re-check the App's live configuration on GitHub (Issue #4017).
 
@@ -571,7 +632,16 @@ async def github_app_revalidate(
         )
 
     try:
+        mark_admin_effects()
         result = await revalidate_app_config(actor=current_user.user_id)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_revalidate_app",
+            target_type="github_app",
+            target_id="deployment",
+            best_effort=True,
+        )
         return RevalidateAppResponse(**result)
     except HTTPException:
         raise
@@ -584,6 +654,7 @@ async def github_app_revalidate(
 async def github_app_rotate_key(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
 ) -> RotateKeyResponse:
     """Rotate the GitHub App's private key.
 
@@ -599,7 +670,17 @@ async def github_app_rotate_key(
         )
 
     try:
-        return await rotate_app_key()
+        mark_admin_effects()
+        result = await rotate_app_key()
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_rotate_app_key",
+            target_type="github_app",
+            target_id="deployment",
+            best_effort=True,
+        )
+        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -611,6 +692,7 @@ async def github_app_rotate_key(
 async def github_app_disconnect(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
 ) -> DisconnectAppResponse:
     """Disconnect (deregister) the GitHub App from this deployment.
 
@@ -626,7 +708,17 @@ async def github_app_disconnect(
         )
 
     try:
-        return await disconnect_app()
+        mark_admin_effects()
+        result = await disconnect_app()
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_disconnect_app",
+            target_type="github_app",
+            target_id="deployment",
+            best_effort=True,
+        )
+        return result
     except HTTPException:
         raise
     except Exception as exc:

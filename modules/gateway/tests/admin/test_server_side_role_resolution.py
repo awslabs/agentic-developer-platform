@@ -99,10 +99,14 @@ def least_privilege_config():
 
 
 @pytest.fixture(autouse=True)
-def reset_config():
+def reset_config(monkeypatch):
     """Keep the module-level config singleton from leaking across tests."""
-    yield
-    set_admin_config(AdminConfig())
+    from src.admin import config
+
+    # Reconstruct lazily from this test's environment. Constructing AdminConfig
+    # during teardown can cache the rollback test's env before monkeypatch
+    # restores it, leaving the next test with the permissive fallback.
+    monkeypatch.setattr(config, "_admin_config", None)
 
 
 class TestMembershipRoleMapping:

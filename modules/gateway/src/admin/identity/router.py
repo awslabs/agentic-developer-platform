@@ -11,6 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
+from src.admin.audit import write_admin_audit
+from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
@@ -37,6 +39,7 @@ from .users_service import UsersService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
+    route_class=AuditedAdminRoute,
     prefix="/api/admin/identity",
     tags=["identity-admin"],
     dependencies=[Depends(require_admin)],
@@ -69,7 +72,17 @@ async def create_organization(
     """
     svc = OrganizationsService(db)
     try:
-        return await svc.create_organization(req)
+        mark_admin_effects()
+        result = await svc.create_organization(req)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="identity_create_organization",
+            target_type="organization",
+            target_id=req.id,
+            org_id=req.id,
+        )
+        return result
     except IntegrityError as e:
         # Unique/PK violation — the id or name is taken. The one genuine 409.
         logger.warning("Conflict creating organization %s: %s", req.id, e)
@@ -157,9 +170,18 @@ async def update_organization(
         ) from None
 
     svc = OrganizationsService(db)
+    mark_admin_effects()
     org = await svc.update_organization(org_id, req)
     if org is None:
         raise HTTPException(status_code=404, detail=f"Organization {org_id} not found")
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="identity_update_organization",
+        target_type="organization",
+        target_id=org_id,
+        org_id=org_id,
+    )
     return org
 
 
@@ -171,9 +193,18 @@ async def delete_organization(
 ):
     """Soft-delete (archive) an organization."""
     svc = OrganizationsService(db)
+    mark_admin_effects()
     deleted = await svc.delete_organization(org_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Organization {org_id} not found")
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="identity_delete_organization",
+        target_type="organization",
+        target_id=org_id,
+        org_id=org_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +232,17 @@ async def create_user(
 
     svc = UsersService(db, identity_writer=IdentityIndexWriter())
     try:
-        return await svc.create_user(org_id, req)
+        mark_admin_effects()
+        result = await svc.create_user(org_id, req)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="identity_create_user",
+            target_type="user",
+            target_id=result.id if hasattr(result, "id") else str(req.email),
+            org_id=org_id,
+        )
+        return result
     except BedrockGatewayError:
         raise
     except IntegrityError as e:
@@ -232,9 +273,18 @@ async def delete_user(
 ):
     """Delete a user from an organization."""
     svc = UsersService(db, identity_writer=IdentityIndexWriter())
+    mark_admin_effects()
     deleted = await svc.delete_user(org_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found in org {org_id}")
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="identity_delete_user",
+        target_type="user",
+        target_id=user_id,
+        org_id=org_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -251,9 +301,18 @@ async def add_identity(
 ):
     """Add a new provider identity to an existing user (cross-channel linkage)."""
     svc = IdentitiesService(db, identity_writer=IdentityIndexWriter())
+    mark_admin_effects()
     result = await svc.add_identity(user_id, req)
     if result is None:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="identity_add_identity",
+        target_type="identity",
+        target_id=result.id if hasattr(result, "id") else user_id,
+        extra={"user_id": user_id, "provider": req.provider if hasattr(req, "provider") else None},
+    )
     return result
 
 
@@ -278,6 +337,15 @@ async def delete_identity(
 ):
     """Remove a provider identity from a user."""
     svc = IdentitiesService(db, identity_writer=IdentityIndexWriter())
+    mark_admin_effects()
     deleted = await svc.delete_identity(user_id, identity_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Identity {identity_id} not found for user {user_id}")
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="identity_delete_identity",
+        target_type="identity",
+        target_id=identity_id,
+        extra={"user_id": user_id},
+    )

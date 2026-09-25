@@ -7,21 +7,34 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
 from src.admin.config import AdminRole
 from src.admin.routes import get_access_control, get_admin_service, get_current_user, router
 from src.admin.schemas import OrganizationResponse, PoolAccountResponse, PoolStatusResponse
 from src.admin.service import AdminService
+from src.shared.database import get_db
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 
 
+@pytest.fixture(autouse=True)
+def _isolate_unit_test_audit_sink(monkeypatch):
+    # These service/response unit tests use fake database sessions. Keep the
+    # route's audit staging and permission gates; durable SQL is exercised by
+    # test_admin_audit_durability.py and test_admin_audit_postgres.py.
+    from src.admin import audit_operation
+
+    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
+
+
 @pytest.fixture
-def app():
+def app(mock_db):
     """Create a test FastAPI app."""
     app = FastAPI()
     app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     # Add exception handler for BedrockGatewayError (same as in app.py)
     @app.exception_handler(BedrockGatewayError)
@@ -35,9 +48,17 @@ def app():
 
 
 @pytest.fixture
-def mock_admin_service():
+def mock_db():
+    db = AsyncMock(spec=AsyncSession)
+    db.get.return_value = None
+    return db
+
+
+@pytest.fixture
+def mock_admin_service(mock_db):
     """Create a mock admin service."""
     service = MagicMock(spec=AdminService)
+    service.db = mock_db
     return service
 
 

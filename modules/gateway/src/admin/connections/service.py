@@ -28,6 +28,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.audit_operation import callback_actor, callback_target_org, mark_admin_effects
 from src.auth.magic_link import (
     NonceAlreadyConsumedError,
     NonceNotFoundError,
@@ -501,6 +502,7 @@ async def install_callback(
             installation_id,
             setup_action or "(none)",
         )
+        mark_admin_effects()
         return await _handle_no_nonce_install(
             installation_id=installation_id,
             db=db,
@@ -539,6 +541,7 @@ async def install_callback(
     # available on GitHub's redirect. Recheck the binding again after provider I/O.
     try:
         user_row, caller_org_id = await _assert_install_setup_authority(nonce, db)
+        callback_actor(user_row, caller_org_id)
     except SetupAuthorityError as exc:
         raise TargetUserMismatchError(str(exc)) from exc
 
@@ -641,6 +644,8 @@ async def install_callback(
             .returning(MagicLinkNonce.jti)
             .execution_options(synchronize_session="fetch")
         )
+        callback_target_org(target_org_id)
+        mark_admin_effects()
         consumed_jti = (await db.execute(consume_stmt)).scalar_one_or_none()
         if consumed_jti is None:
             raise NonceAlreadyConsumedError("State token was used or expired during verification")
@@ -1346,6 +1351,7 @@ async def _handle_no_nonce_install(
             "no_nonce": True,
         }
 
+    callback_target_org(resolved_org_id)
     if not promote:
         logger.warning(
             "event=no_nonce_install_partial installation_id=%d account=%s tenant=%s created_via=%s "
@@ -3284,7 +3290,9 @@ async def register_app_callback(
     # shared credentials. Re-derive platform-admin standing from the recorded
     # initiator, BEFORE the nonce is consumed, so a refusal burns nothing and the
     # legitimate admin can still complete the flow.
-    await _assert_platform_setup_authority(nonce=nonce, db=db)
+    initiator = await _assert_platform_setup_authority(nonce=nonce, db=db)
+    callback_actor(initiator, initiator.org_id)
+    callback_target_org("platform")
 
     # 1b. Overwrite guard (#5664). `_check_existing_app_secret` previously ran only
     # in register-app-START — a different, earlier request — so by the time this
@@ -3303,6 +3311,8 @@ async def register_app_callback(
         )
         raise SetupAuthorityError("A GitHub App is already registered for this deployment. Disconnect the existing App before registering a new one.")
 
+    # Exchanging the one-use provider code is already an external effect.
+    mark_admin_effects()
     # 2. Exchange code for App credentials via GitHub API
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(

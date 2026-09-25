@@ -36,6 +36,8 @@ from src.admin.agent_schemas import (
     AgentUpdateRequest,
 )
 from src.admin.agent_service import AgentService
+from src.admin.audit import write_admin_audit
+from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
 from src.admin.cognito_service import CognitoService
 from src.admin.config import (
     ASSIGNABLE_ROLES,
@@ -113,7 +115,7 @@ from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(route_class=AuditedAdminRoute, prefix="/admin", tags=["admin"])
 
 
 # Issue #133: CRITICAL SECURITY FIX
@@ -247,7 +249,10 @@ async def update_organization(
 ) -> OrganizationResponse:
     """Update organization details."""
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
-    return await service.update_organization(org_id, request)
+    mark_admin_effects()
+    result = await service.update_organization(org_id, request)
+    await write_admin_audit(service.db, actor=current_user, action="update_organization", target_type="organization", target_id=org_id, org_id=org_id)
+    return result
 
 
 @router.delete("/organizations/{org_id}", status_code=204)
@@ -262,7 +267,9 @@ async def delete_organization(
     Requires platform admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_DELETE)
+    mark_admin_effects()
     await service.delete_organization(org_id)
+    await write_admin_audit(service.db, actor=current_user, action="delete_organization", target_type="organization", target_id=org_id, org_id=org_id)
 
 
 # Budget Configuration Endpoints
@@ -316,7 +323,17 @@ async def update_budget_config(
     no budget matched, so a no-op edit looked like a successful one.
     """
     await access.check_permission(current_user, Permission.BUDGET_UPDATE, target_org_id=org_id)
-    return await service.update_budget_config(org_id, entity_type, entity_id, request)
+    mark_admin_effects()
+    result = await service.update_budget_config(org_id, entity_type, entity_id, request)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="update_budget",
+        target_type="budget",
+        target_id=f"{entity_type}/{entity_id}",
+        org_id=org_id,
+    )
+    return result
 
 
 # Budget List/Create/Delete Endpoints (Issue #185)
@@ -355,7 +372,17 @@ async def create_budget(
     Issue #185: Explicit create endpoint for budget configurations.
     """
     await access.check_permission(current_user, Permission.BUDGET_UPDATE, target_org_id=org_id)
-    return await service.create_budget(org_id, request)
+    mark_admin_effects()
+    result = await service.create_budget(org_id, request)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="create_budget",
+        target_type="budget",
+        target_id=f"{request.entity_type}/{request.entity_id}",
+        org_id=org_id,
+    )
+    return result
 
 
 @router.delete("/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}", status_code=204)
@@ -373,7 +400,16 @@ async def delete_budget(
     Issue #185: Delete endpoint for budget configurations.
     """
     await access.check_permission(current_user, Permission.BUDGET_UPDATE, target_org_id=org_id)
+    mark_admin_effects()
     await service.delete_budget(org_id, entity_type, entity_id, period_type)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="delete_budget",
+        target_type="budget",
+        target_id=f"{entity_type}/{entity_id}",
+        org_id=org_id,
+    )
 
 
 # Rate Limit Configuration Endpoints
@@ -405,7 +441,17 @@ async def update_ratelimit_config(
 ) -> RateLimitConfigResponse:
     """Update rate limit configuration for an entity."""
     await access.check_permission(current_user, Permission.RATELIMIT_UPDATE, target_org_id=org_id)
-    return await service.update_ratelimit_config(org_id, entity_type, entity_id, request)
+    mark_admin_effects()
+    result = await service.update_ratelimit_config(org_id, entity_type, entity_id, request)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="update_ratelimit",
+        target_type="ratelimit",
+        target_id=f"{entity_type}/{entity_id}",
+        org_id=org_id,
+    )
+    return result
 
 
 # Rate Limit List/Create/Delete Endpoints (Issue #185)
@@ -443,7 +489,17 @@ async def create_ratelimit(
     Issue #185: Explicit create endpoint for rate limit configurations.
     """
     await access.check_permission(current_user, Permission.RATELIMIT_UPDATE, target_org_id=org_id)
-    return await service.create_ratelimit(org_id, request)
+    mark_admin_effects()
+    result = await service.create_ratelimit(org_id, request)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="create_ratelimit",
+        target_type="ratelimit",
+        target_id=f"{request.entity_type}/{request.entity_id}",
+        org_id=org_id,
+    )
+    return result
 
 
 @router.delete("/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}", status_code=204)
@@ -460,7 +516,16 @@ async def delete_ratelimit(
     Issue #185: Delete endpoint for rate limit configurations.
     """
     await access.check_permission(current_user, Permission.RATELIMIT_UPDATE, target_org_id=org_id)
+    mark_admin_effects()
     await service.delete_ratelimit(org_id, entity_type, entity_id)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="delete_ratelimit",
+        target_type="ratelimit",
+        target_id=f"{entity_type}/{entity_id}",
+        org_id=org_id,
+    )
 
 
 # Pool Management Endpoints
@@ -492,7 +557,10 @@ async def add_pool_account(
     Requires platform admin privileges.
     """
     await access.check_permission(current_user, Permission.POOL_MANAGE)
-    return await service.add_pool_account(request)
+    mark_admin_effects()
+    result = await service.add_pool_account(request)
+    await write_admin_audit(service.db, actor=current_user, action="add_pool_account", target_type="pool_account", target_id=request.account_id)
+    return result
 
 
 @router.delete("/pool/accounts/{account_id}", status_code=204)
@@ -507,7 +575,9 @@ async def remove_pool_account(
     Requires platform admin privileges.
     """
     await access.check_permission(current_user, Permission.POOL_MANAGE)
+    mark_admin_effects()
     await service.remove_pool_account(account_id)
+    await write_admin_audit(service.db, actor=current_user, action="remove_pool_account", target_type="pool_account", target_id=account_id)
 
 
 # Log Viewer Endpoints
@@ -693,7 +763,10 @@ async def create_department(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
-    return await service.create_department(org_id, request, cognito_service)
+    mark_admin_effects()
+    result = await service.create_department(org_id, request, cognito_service)
+    await write_admin_audit(service.db, actor=current_user, action="create_department", target_type="department", target_id=result.id, org_id=org_id)
+    return result
 
 
 @router.get("/organizations/{org_id}/departments", response_model=DepartmentListResponse)
@@ -743,7 +816,10 @@ async def update_department(
 ) -> DepartmentResponse:
     """Update department details."""
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
-    return await service.update_department(org_id, dept_id, request)
+    mark_admin_effects()
+    result = await service.update_department(org_id, dept_id, request)
+    await write_admin_audit(service.db, actor=current_user, action="update_department", target_type="department", target_id=dept_id, org_id=org_id)
+    return result
 
 
 @router.delete("/organizations/{org_id}/departments/{dept_id}", status_code=204)
@@ -757,7 +833,9 @@ async def delete_department(
 ) -> None:
     """Delete a department."""
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+    mark_admin_effects()
     await service.delete_department(org_id, dept_id, cognito_service)
+    await write_admin_audit(service.db, actor=current_user, action="delete_department", target_type="department", target_id=dept_id, org_id=org_id)
 
 
 # Team Endpoints
@@ -777,7 +855,10 @@ async def create_team(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
-    return await service.create_team(org_id, dept_id, request)
+    mark_admin_effects()
+    result = await service.create_team(org_id, dept_id, request)
+    await write_admin_audit(service.db, actor=current_user, action="create_team", target_type="team", target_id=result.id, org_id=org_id)
+    return result
 
 
 @router.get("/organizations/{org_id}/departments/{dept_id}/teams", response_model=TeamListResponse)
@@ -815,7 +896,10 @@ async def update_team(
 ) -> TeamResponse:
     """Update team details."""
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
-    return await service.update_team(org_id, team_id, request)
+    mark_admin_effects()
+    result = await service.update_team(org_id, team_id, request)
+    await write_admin_audit(service.db, actor=current_user, action="update_team", target_type="team", target_id=team_id, org_id=org_id)
+    return result
 
 
 @router.delete("/organizations/{org_id}/teams/{team_id}", status_code=204)
@@ -828,7 +912,9 @@ async def delete_team(
 ) -> None:
     """Delete a team."""
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+    mark_admin_effects()
     await service.delete_team(org_id, team_id)
+    await write_admin_audit(service.db, actor=current_user, action="delete_team", target_type="team", target_id=team_id, org_id=org_id)
 
 
 @router.get("/organizations/{org_id}/teams", response_model=TeamListResponse)
@@ -905,14 +991,18 @@ async def replace_user_teams(
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
 
+    mark_admin_effects()
     await team_memberships.replace_memberships(
         db,
         user_id=user_id,
         org_id=org_id,
         desired=[m.model_dump() for m in request.memberships],
     )
+    mark_admin_effects()
     await commit_team_memberships(db, user_id=user_id, org_id=org_id)
+    await write_admin_audit(db, actor=current_user, action="replace_user_teams", target_type="user", target_id=user_id, org_id=org_id)
 
+    mark_admin_effects()
     refreshed = await team_memberships.list_memberships(db, user_id=user_id, org_id=org_id)
     return TeamMembershipListResponse(
         items=[TeamMembershipResponse.model_validate(row) for row in refreshed],
@@ -970,15 +1060,20 @@ async def add_org_member(
     # correct if the gate is ever widened.
     await access.require_assignable_role(current_user, request.role, target_org_id=org_id)
 
+    mark_admin_effects()
     user = await org_members.add_user_to_org(db, user_id=request.user_id, org_id=org_id, role=request.role)
+    mark_admin_effects()
     await db.commit()
+    mark_admin_effects()
     await db.refresh(user)
 
     # Post-commit, per project_member_org_ids' own contract: the projection is a
     # read-optimized copy of COMMITTED state, and it is what the platform-mode
     # sign-in gate reads — without this the person is a member in Postgres and still
     # ineligible to sign in.
+    mark_admin_effects()
     await project_member_org_ids(db, user_id=user.id)
+    await write_admin_audit(db, actor=current_user, action="add_org_member", target_type="user", target_id=request.user_id, org_id=org_id)
 
     return UserResponse.model_validate(user)
 
@@ -1000,6 +1095,7 @@ async def add_team_member(
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
 
+    mark_admin_effects()
     membership = await team_memberships.add_membership(
         db,
         user_id=request.user_id,
@@ -1010,8 +1106,18 @@ async def add_team_member(
         source=request.source or "admin",
         external_id=request.external_id,
     )
+    mark_admin_effects()
     await commit_team_memberships(db, user_id=request.user_id, org_id=org_id)
+    mark_admin_effects()
     await db.refresh(membership)
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="add_team_member",
+        target_type="team_membership",
+        target_id=f"{request.user_id}/{team_id}",
+        org_id=org_id,
+    )
     return TeamMembershipResponse.model_validate(membership)
 
 
@@ -1031,8 +1137,18 @@ async def remove_team_member(
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
 
+    mark_admin_effects()
     await team_memberships.remove_membership(db, user_id=user_id, team_id=team_id, org_id=org_id)
+    mark_admin_effects()
     await commit_team_memberships(db, user_id=user_id, org_id=org_id)
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="remove_team_member",
+        target_type="team_membership",
+        target_id=f"{user_id}/{team_id}",
+        org_id=org_id,
+    )
 
 
 # User Management Endpoints
@@ -1058,7 +1174,10 @@ async def add_user(
     # their own privilege. Without this an org_admin could create a user with
     # role="platform_admin" and escalate out of their own organization.
     await access.require_assignable_role(current_user, request.role, target_org_id=org_id)
-    return await service.add_user(org_id, team_id, request, cognito_service)
+    mark_admin_effects()
+    result = await service.add_user(org_id, team_id, request, cognito_service)
+    await write_admin_audit(service.db, actor=current_user, action="add_user", target_type="user", target_id=result.id, org_id=org_id)
+    return result
 
 
 @router.get("/organizations/{org_id}/users", response_model=UserListResponse)
@@ -1169,7 +1288,10 @@ async def update_user(
         if current_user.user_id in {target.cognito_sub, target.user_id}:
             raise AccessDeniedError(message="Cannot change your own role")
 
-    return await service.update_user(org_id, user_id, request)
+    mark_admin_effects()
+    result = await service.update_user(org_id, user_id, request)
+    await write_admin_audit(service.db, actor=current_user, action="update_user", target_type="user", target_id=user_id, org_id=org_id)
+    return result
 
 
 @router.delete("/organizations/{org_id}/users/{user_id}", status_code=204)
@@ -1195,7 +1317,9 @@ async def remove_user(
     )
     if current_user.user_id in {target.cognito_sub, target.user_id}:
         raise AccessDeniedError(message="Cannot remove your own account")
+    mark_admin_effects()
     await service.remove_user(org_id, user_id, cognito_service)
+    await write_admin_audit(service.db, actor=current_user, action="remove_user", target_type="user", target_id=user_id, org_id=org_id)
 
 
 # Service Account Endpoints
@@ -1216,7 +1340,17 @@ async def create_service_account(
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
     # For org-level service accounts, we'll use placeholder values
-    return await service.create_service_account(org_id, "default", "default", request)
+    mark_admin_effects()
+    result = await service.create_service_account(org_id, "default", "default", request)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="create_service_account",
+        target_type="service_account",
+        target_id=result.id,
+        org_id=org_id,
+    )
+    return result
 
 
 @router.get("/organizations/{org_id}/service-accounts", response_model=ServiceAccountListResponse)
@@ -1255,7 +1389,16 @@ async def delete_service_account(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=org_id)
+    mark_admin_effects()
     await service.delete_service_account(org_id, sa_id)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="delete_service_account",
+        target_type="service_account",
+        target_id=sa_id,
+        org_id=org_id,
+    )
 
 
 # =============================================================================
@@ -1283,7 +1426,18 @@ async def create_agent(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=request.org_id)
-    return await service.create_agent(request)
+    mark_admin_effects()
+    result = await service.create_agent(request)
+    await write_admin_audit(
+        access.db,
+        actor=current_user,
+        action="create_agent",
+        target_type="agent",
+        target_id=result.client_id,
+        org_id=request.org_id,
+        best_effort=True,
+    )
+    return result
 
 
 @router.get("/agents", response_model=AgentListResponse)
@@ -1369,7 +1523,18 @@ async def update_agent(
     # Get agent first to check org
     agent = await service.get_agent(client_id, current_user.org_id)
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=agent.org_id)
-    return await service.update_agent(client_id, current_user.org_id, request)
+    mark_admin_effects()
+    result = await service.update_agent(client_id, current_user.org_id, request)
+    await write_admin_audit(
+        access.db,
+        actor=current_user,
+        action="update_agent",
+        target_type="agent",
+        target_id=client_id,
+        org_id=agent.org_id,
+        best_effort=True,
+    )
+    return result
 
 
 @router.delete("/agents/{client_id}", status_code=204)
@@ -1389,7 +1554,17 @@ async def delete_agent(
     # Get agent first to check org
     agent = await service.get_agent(client_id, current_user.org_id)
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=agent.org_id)
+    mark_admin_effects()
     await service.delete_agent(client_id, current_user.org_id)
+    await write_admin_audit(
+        access.db,
+        actor=current_user,
+        action="delete_agent",
+        target_type="agent",
+        target_id=client_id,
+        org_id=agent.org_id,
+        best_effort=True,
+    )
 
 
 # =============================================================================
@@ -1799,7 +1974,18 @@ async def create_registry_agent(
         request.org_id,
         request.role_arn,
     )
-    return await service.create_agent(request)
+    mark_admin_effects()
+    result = await service.create_agent(request)
+    await write_admin_audit(
+        access.db,
+        actor=current_user,
+        action="create_registry_agent",
+        target_type="agent_registry",
+        target_id=result.agent_id,
+        org_id=request.org_id,
+        best_effort=True,
+    )
+    return result
 
 
 @router.get(
@@ -1907,7 +2093,18 @@ async def update_registry_agent(
         agent_id,
         request.role_arn,
     )
-    return await service.update_agent(agent_id, request)
+    mark_admin_effects()
+    result = await service.update_agent(agent_id, request)
+    await write_admin_audit(
+        access.db,
+        actor=current_user,
+        action="update_registry_agent",
+        target_type="agent_registry",
+        target_id=agent_id,
+        org_id=agent.org_id,
+        best_effort=True,
+    )
+    return result
 
 
 @router.delete(
@@ -1930,7 +2127,17 @@ async def delete_registry_agent(
     """
     agent = await service.get_agent(agent_id)
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=agent.org_id)
+    mark_admin_effects()
     await service.delete_agent(agent_id)
+    await write_admin_audit(
+        access.db,
+        actor=current_user,
+        action="delete_registry_agent",
+        target_type="agent_registry",
+        target_id=agent_id,
+        org_id=agent.org_id,
+        best_effort=True,
+    )
 
 
 # =============================================================================
@@ -2055,7 +2262,10 @@ async def onboard_agent(
         request.level,
         request.role_arn,
     )
-    return await service.onboard_agent(request)
+    mark_admin_effects()
+    result = await service.onboard_agent(request)
+    await write_admin_audit(db, actor=current_user, action="onboard_agent", target_type="agent", target_id=result.agent_id, org_id=request.org_id)
+    return result
 
 
 async def _validate_onboard_target_scope(
@@ -2263,3 +2473,10 @@ async def list_agent_types(
     ]
 
     return AgentTypesListResponse(agent_types=agent_types)
+
+
+# Issue #6037 (S13): mount the audit retrieval sub-router so it is discoverable
+# without editing src/app.py (which is outside S13's ownership boundary).
+from src.admin.audit_routes import router as _audit_sub_router  # noqa: E402
+
+router.include_router(_audit_sub_router)

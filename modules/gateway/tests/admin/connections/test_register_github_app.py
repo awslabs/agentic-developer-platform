@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import src.admin.connections.service as svc
 from src.admin.connections.routes import router
@@ -29,6 +30,21 @@ from src.shared.schemas.auth import TokenContext
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_durable_audit_sink(monkeypatch):
+    # Provider/redirect unit tests use fake SQL sessions. Real mounted SQL audit
+    # durability is covered without this stub in test_admin_audit_durability.py.
+    from src.admin import audit_operation
+
+    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
+    import boto3
+
+    original_client = boto3.client
+    ssm = MagicMock()
+    ssm.get_parameter.return_value = {"Parameter": {"Value": "https://fixture.execute-api.example.test"}}
+    monkeypatch.setattr(boto3, "client", lambda name, *args, **kwargs: ssm if name == "ssm" else original_client(name, *args, **kwargs))
 
 
 def _make_user(
@@ -104,7 +120,7 @@ def app():
 
 @pytest.fixture
 def mock_db():
-    return MagicMock()
+    return AsyncMock(spec=AsyncSession)
 
 
 def _make_client(

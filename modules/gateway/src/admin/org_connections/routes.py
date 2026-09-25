@@ -32,6 +32,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
+from src.admin.audit import write_admin_audit
+from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user, require_admin
 from src.shared.database import get_db
@@ -52,6 +54,7 @@ from .service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
+    route_class=AuditedAdminRoute,
     prefix="/admin/organizations",
     tags=["org-connections"],
     dependencies=[Depends(require_admin)],
@@ -115,7 +118,17 @@ async def attach_github_connection(
     """
     _require_platform_admin(db, current_user, org_id, "attach")
     try:
-        return await OrgConnectionsService(db).attach_github(org_id, req)
+        mark_admin_effects()
+        result = await OrgConnectionsService(db).attach_github(org_id, req)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="org_connection_attach",
+            target_type="github_connection",
+            target_id=str(req.installation_id),
+            org_id=org_id,
+        )
+        return result
     except OrganizationNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -140,6 +153,16 @@ async def detach_github_connection(
     """
     _require_platform_admin(db, current_user, org_id, "detach")
     try:
-        return await OrgConnectionsService(db).detach_github(org_id, installation_id)
+        mark_admin_effects()
+        result = await OrgConnectionsService(db).detach_github(org_id, installation_id)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="org_connection_detach",
+            target_type="github_connection",
+            target_id=str(installation_id),
+            org_id=org_id,
+        )
+        return result
     except (OrganizationNotFoundError, ConnectionNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

@@ -17,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
+from src.admin.audit import write_admin_audit
+from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
@@ -74,6 +76,7 @@ class LinkedOrgsListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 router = APIRouter(
+    route_class=AuditedAdminRoute,
     prefix="/admin/tenants",
     tags=["tenant-org-links"],
 )
@@ -171,6 +174,15 @@ async def link_org_to_tenant(
 
     # Already linked to this tenant — idempotent success
     if child_org.parent_tenant_id == tenant_id:
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="tenant_link_org",
+            target_type="tenant_org_link",
+            target_id=child_org.id,
+            org_id=tenant_id,
+            extra={"github_org_id": body.github_org_id},
+        )
         return LinkOrgResponse(
             linked=True,
             tenant_id=tenant_id,
@@ -180,6 +192,16 @@ async def link_org_to_tenant(
 
     # Perform the link (Postgres-only — no DDB write-through needed for this column)
     child_org.parent_tenant_id = tenant_id
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="tenant_link_org",
+        target_type="tenant_org_link",
+        target_id=child_org.id,
+        org_id=tenant_id,
+        extra={"github_org_id": body.github_org_id, "child_org_name": child_org.name},
+    )
+    mark_admin_effects()
     await db.commit()
 
     logger.info(
@@ -241,6 +263,16 @@ async def unlink_org_from_tenant(
 
     # Perform the unlink
     child_org.parent_tenant_id = None
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="tenant_unlink_org",
+        target_type="tenant_org_link",
+        target_id=child_org.id,
+        org_id=tenant_id,
+        extra={"github_org_id": github_org_id, "child_org_name": child_org.name},
+    )
+    mark_admin_effects()
     await db.commit()
 
     logger.info(

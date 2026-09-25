@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.connections.routes import router
 from src.admin.connections.schemas import (
@@ -40,6 +41,16 @@ def _make_user(*, is_admin: bool = False, org_id: str = "org-001") -> TokenConte
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_unit_test_audit_sink(monkeypatch):
+    # These service/response unit tests use fake database sessions. Keep the
+    # route's audit staging and permission gates; durable SQL is exercised by
+    # test_admin_audit_durability.py and test_admin_audit_postgres.py.
+    from src.admin import audit_operation
+
+    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
+
+
 @pytest.fixture
 def app():
     application = FastAPI()
@@ -53,7 +64,7 @@ def mock_db():
     result.scalar_one_or_none.return_value = None
     result.scalars.return_value.all.return_value = []
     result.all.return_value = []
-    db = MagicMock()
+    db = AsyncMock(spec=AsyncSession)
     db.execute = AsyncMock(return_value=result)
     db.get = AsyncMock(return_value=None)
     db.scalar = AsyncMock(return_value=None)
@@ -168,7 +179,7 @@ class TestInstallCallbackRoute:
         assert "success=1" in resp.headers["location"]
         assert "installation_id=124731131" in resp.headers["location"]
 
-    def test_missing_state_returns_html_page_not_an_error_redirect(self, app, mock_db):
+    def test_missing_state_returns_html_page_not_an_error_redirect(self, app, mock_db, monkeypatch):
         """Issue #2952: Missing state triggers the no-nonce public-App install path.
 
         Returns an HTML page (200) rather than an error redirect, because
@@ -180,6 +191,11 @@ class TestInstallCallbackRoute:
         the fail-soft this issue removes. The success wording is asserted
         separately below.
         """
+        from src.admin.connections import service
+
+        # Missing deployment credentials are part of this fixture, not a live
+        # Secrets Manager lookup on the developer/CI runner's account.
+        monkeypatch.setattr(service, "_get_github_app_credentials", lambda: ("", ""))
         user = _make_user()
         client = _make_client(app, user=user, mock_db=mock_db)
 
