@@ -280,7 +280,15 @@ resource "aws_dynamodb_table_item" "agent_authority_worker" {
     requires_run_identity = { BOOL = true }
     status                = { S = "active" }
     allowed_models        = { SS = ["*"] }
-    credential_scopes     = { SS = ["credential:raw-read", "credential:materialize"] }
-    budget_config_id      = { S = "" }
+    # Protected adp-cred producers: client.py list/proxy/materialize/raw-read,
+    # assume.py customer role delivery, task_credentials.py SDK source session.
+    # These are transport capabilities; canonical run/user/tenant and accepted
+    # execution-policy checks remain mandatory at the gateway. Legacy seeds are
+    # deliberately unchanged. See docs/security/s12-credential-capabilities.md.
+    credential_scopes = { SS = [
+      "credential:list", "credential:proxy", "credential:assume-role",
+      "credential:task-session", "credential:raw-read", "credential:materialize"
+    ] }
+    budget_config_id = { S = "" }
   })
 }

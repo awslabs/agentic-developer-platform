@@ -12,10 +12,32 @@ Missing identity, empty scopes and shared-key-only callers fail closed.
 from __future__ import annotations
 
 import logging
+from types import MappingProxyType
 
 from fastapi import HTTPException, Request
 
 logger = logging.getLogger(__name__)
+
+# Every user-credential broker has an explicit registry capability. Provider
+# tokens and domain-operation delivery keep their separate authorization rules.
+BROKER_CAPABILITIES = MappingProxyType(
+    {
+        "/internal/v1/user-credentials": "credential:list",
+        "/internal/v1/proxy-request": "credential:proxy",
+        "/internal/v1/credential-assume-role": "credential:assume-role",
+        "/internal/v1/worker-task-credentials": "credential:task-session",
+        "/internal/v1/credential-raw-read": "credential:raw-read",
+        "/internal/v1/credential-materialize": "credential:materialize",
+    }
+)
+
+
+def require_broker_capability(request: Request) -> None:
+    """Unknown credential operations fail closed rather than inheriting a grant."""
+    capability = BROKER_CAPABILITIES.get(request.url.path)
+    if capability is None:
+        raise HTTPException(403, {"error": "insufficient_scope", "message": "No credential capability is defined for this operation"})
+    require_credential_capability(request, capability)
 
 
 def require_credential_capability(request: Request, capability: str) -> None:

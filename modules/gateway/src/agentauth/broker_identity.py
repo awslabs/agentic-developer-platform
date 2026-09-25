@@ -18,18 +18,9 @@ from src.agentauth.execution import ExecutionStateError
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
+from src.internal.credential_authorization import BROKER_CAPABILITIES, require_broker_capability
 
-BROKER_PATHS = frozenset(
-    {
-        "/internal/v1/github-installation-token",
-        "/internal/v1/credential-assume-role",
-        "/internal/v1/credential-raw-read",
-        "/internal/v1/proxy-request",
-        "/internal/v1/credential-materialize",
-        "/internal/v1/user-credentials",
-        "/internal/v1/worker-task-credentials",
-    }
-)
+BROKER_PATHS = frozenset({*BROKER_CAPABILITIES, "/internal/v1/github-installation-token"})
 logger = logging.getLogger(__name__)
 
 
@@ -71,16 +62,8 @@ async def verify_broker_worker(request: Request) -> None:
         caller = context[1]
         if not isinstance(body, dict) or body.get("invocation_id") != caller.invocation_id:
             raise BootstrapRefusedError("broker invocation mismatch")
-        required_scope = {
-            "/internal/v1/credential-raw-read": "credential:raw-read",
-            "/internal/v1/credential-materialize": "credential:materialize",
-        }.get(request.url.path)
-        if required_scope:
-            # Header scopes remain the client's requested operation. Only the
-            # registered IAM identity can grant that capability to a worker.
-            identity = getattr(request.state, "token_context", None)
-            if required_scope not in (getattr(identity, "credential_scopes", None) or []):
-                raise BootstrapRefusedError("worker credential capability unavailable")
+        if request.url.path != "/internal/v1/github-installation-token":
+            require_broker_capability(request)
         execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
         if not execution:
             raise BootstrapRefusedError("broker execution unavailable")

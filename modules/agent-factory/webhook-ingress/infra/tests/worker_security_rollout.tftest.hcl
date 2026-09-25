@@ -150,6 +150,13 @@ override_resource {
   values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-agent-authority-boundary" }
 }
 
+# Pin the role ARN so the configured registry JSON is known during plan.
+override_resource {
+  target          = aws_iam_role.agent_authority_worker
+  override_during = plan
+  values          = { arn = "arn:aws:iam::123456789012:role/adp-dev-agent-authority-worker-role" }
+}
+
 override_resource {
   target          = aws_iam_role.keda_operator
   override_during = plan
@@ -250,6 +257,14 @@ run "activated_worker_uses_protected_identity" {
     agent_worker_admission_paused          = true
     task_api_worker_enabled                = true
   }
+  assert {
+    condition = toset(jsondecode(aws_dynamodb_table_item.agent_authority_worker[0].item).credential_scopes.SS) == toset([
+      "credential:list", "credential:proxy", "credential:assume-role",
+      "credential:task-session", "credential:raw-read", "credential:materialize"
+    ])
+    error_message = "Protected worker capabilities must match the reviewed adp-cred producer inventory."
+  }
+
   assert {
     condition     = strcontains(local.agent_worker_pause_annotation, "autoscaling.keda.sh/paused")
     error_message = "The staged activation must keep admissions paused."

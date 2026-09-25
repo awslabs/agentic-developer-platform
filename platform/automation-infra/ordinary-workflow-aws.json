@@ -42,12 +42,6 @@
       "secretsmanager get-secret-value"
     ]
   },
-  "credential-binding-flip.yml/flip": {
-    "authority": "existing-oidc",
-    "operations": [
-      "ssm put-parameter"
-    ]
-  },
   "cyber-security-ci.yml/production-image": {
     "authority": "runtime",
     "operations": [

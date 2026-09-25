@@ -650,7 +650,7 @@ class TestConfigDefault:
             aws_region="us-east-1",
             database_url="sqlite:///test.db",
         )
-        assert s.enforce_credential_binding is True
+        assert "enforce_credential_binding" not in type(s).model_fields
 
 
 @pytest.fixture(autouse=True)

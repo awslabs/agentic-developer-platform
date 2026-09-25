@@ -158,9 +158,9 @@ def resolve_installation_binding(
     resolves the authoritative pair from the webhook-events row written at
     ingress and rejects anything that disagrees.
 
-    Deliberately distinct from :func:`resolve_credential_binding`, which resolves
-    a *user* (``authorized_user_id``) and has no notion of an installation or a
-    tenant — it cannot perform this check.
+    Deliberately distinct from :func:`resolve_credential_binding`, which consumes
+    the authenticated user and tenant binding; installation authorization is
+    a separate resource check.
 
     Two properties this must have, both learned the hard way:
 
@@ -169,10 +169,8 @@ def resolve_installation_binding(
       row legitimately may not carry one. That is a *reject*, not a pass: an
       unbound mint request is exactly the confused-deputy primitive this guard
       exists to deny.
-    * **Independent of ``ENFORCE_CREDENTIAL_BINDING``.** That flag is ``false``
-      on at least one live environment, so a control gated on it silently
-      shadows instead of enforcing. This function never reads it. Its caller must
-      not gate it either.
+    * **Unconditional.** Installation binding never permits a shadow-mode
+      bypass. The former credential-binding flag has been removed.
 
     This legacy lookup does not authenticate a run. Production routes consume
     middleware state established from the authenticated execution and exact event.

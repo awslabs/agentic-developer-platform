@@ -26,7 +26,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -236,7 +236,12 @@ class TestAssumeRoleHappyPath:
         mock_sm = MagicMock()
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
         client = _make_app(db, mock_sm)
-        client.app.dependency_overrides[verify_internal_or_irsa] = verify_broker_worker
+
+        async def verified_transport(request: Request):
+            request.state.token_context = SimpleNamespace(user_id="test-worker", credential_scopes=["credential:assume-role"])
+            await verify_broker_worker(request)
+
+        client.app.dependency_overrides[verify_internal_or_irsa] = verified_transport
         with (
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,

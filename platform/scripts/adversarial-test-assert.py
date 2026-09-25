@@ -135,7 +135,7 @@ def verify_sandbox_config(
 
     Checks:
       - ENABLE_USER_CREDENTIALS=true (feature is on)
-      - ENFORCE_CREDENTIAL_BINDING=true (enforcement path, not shadow)
+      - credential_binding_mode=authenticated_run (mandatory server authority)
 
     Returns (passed, detail_message).
     """
@@ -180,13 +180,13 @@ def verify_sandbox_config(
         )
         return _verify_sandbox_config_ssm(sandbox_tenant, aws_region=aws_region)
     enable_user_creds = config.get("enable_user_credentials", False)
-    enforce_binding = config.get("enforce_credential_binding", False)
+    binding_mode = config.get("credential_binding_mode")
 
     issues = []
     if not enable_user_creds:
         issues.append("ENABLE_USER_CREDENTIALS is not true")
-    if not enforce_binding:
-        issues.append("ENFORCE_CREDENTIAL_BINDING is not true")
+    if binding_mode != "authenticated_run":
+        issues.append("Gateway does not report mandatory authenticated run binding")
 
     if issues:
         return False, f"Anti-gaming check FAILED: {'; '.join(issues)}"
@@ -213,17 +213,9 @@ def _verify_sandbox_config_ssm(
     except Exception as exc:
         issues.append(f"SSM check failed: {exc}")
 
-    try:
-        resp = ssm.get_parameter(
-            Name=f"/adp/dev/{sandbox_tenant}/enforce-credential-binding"
-        )
-        val = resp["Parameter"]["Value"].lower()
-        if val not in ("true", "1"):
-            issues.append(f"ENFORCE_CREDENTIAL_BINDING={val} (expected true)")
-    except ssm.exceptions.ParameterNotFound:
-        issues.append("ENFORCE_CREDENTIAL_BINDING parameter not found in SSM")
-    except Exception as exc:
-        issues.append(f"SSM check failed: {exc}")
+    # SSM cannot attest which mandatory authorization code the gateway serves.
+    # An unavailable/malformed gateway report is not evidence of enforcement.
+    issues.append("Gateway authenticated run binding report unavailable; SSM cannot attest it")
 
     if issues:
         return False, f"Anti-gaming check FAILED (SSM): {'; '.join(issues)}"

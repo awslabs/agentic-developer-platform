@@ -917,12 +917,6 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     CHAT_LOGGING_SCRUB_LEVEL="standard"
   fi
 
-  # #3182/#3477: Credential binding enforcement. Default "true" (safe-by-default
-  # for fresh accounts). Existing deployments pin via SSM param; dev stays in
-  # shadow mode via /adp/dev/gateway/enforce-credential-binding=false.
-  ENFORCE_CREDENTIAL_BINDING=$(_get_ssm "/adp/$ENVIRONMENT/gateway/enforce-credential-binding" "true")
-  if [ "$ENFORCE_CREDENTIAL_BINDING" = "None" ]; then ENFORCE_CREDENTIAL_BINDING="true"; fi
-
   # #4075: Budget enforcement fail mode. Default "closed" (safe-by-default: a failed
   # budget check must not admit uncapped spend). A bounded, alarmed 30s grace window
   # keeps transient DB blips from downing inference. Set to "open" via this SSM param
@@ -1112,7 +1106,6 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|${CHAT_LOGGING_SCRUB_LEVEL}|g" \
       -e "s|__TRUST_APIGW_HEADERS__|${TRUST_APIGW_HEADERS}|g" \
       -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
-      -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
       -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
       -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
       -e "s|__AGENT_RUN_LOGS_BUCKET__|${AGENT_RUN_LOGS_BUCKET}|g" \

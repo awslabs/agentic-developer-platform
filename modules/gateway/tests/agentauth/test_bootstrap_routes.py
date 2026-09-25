@@ -533,7 +533,18 @@ def broker_harness(store, kubernetes, monkeypatch):
     lease = runtime.bootstrap(BootstrapRequest(invocation_id="run-a", envelope_digest=envelope_digest(envelope)), "pod-token")
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.config.get_settings", lambda: SimpleNamespace(webhook_events_table="broker-events"))
-    identity = SimpleNamespace(scope="internal", user_id="shared-worker", credential_scopes=["credential:raw-read", "credential:materialize"])
+    identity = SimpleNamespace(
+        scope="internal",
+        user_id="shared-worker",
+        credential_scopes=[
+            "credential:list",
+            "credential:proxy",
+            "credential:assume-role",
+            "credential:task-session",
+            "credential:raw-read",
+            "credential:materialize",
+        ],
+    )
 
     # Issue #5653 (A01): this fixture's premise is a REAL agent worker whose
     # X-Caller-Identity was written by API Gateway from a verified SigV4 signature
@@ -639,7 +650,7 @@ def test_vault_scope_header_cannot_grant_missing_registry_capability(broker_harn
         client.post(
             "/internal/v1/" + path, json={"invocation_id": "run-a", "user_id": "human"}, headers={**headers, "X-Agent-Scopes": scope}
         ).status_code
-        == 404
+        == 403
     )
     assert effects == []
 

@@ -861,9 +861,7 @@ async def github_installation_token(
         await verify_shared_review_worker(request)
 
     # Layer 1 — bind the run to the installation its originating webhook carried.
-    # Fail-closed, and deliberately NOT gated on ENFORCE_CREDENTIAL_BINDING:
-    # that flag is false on at least one live environment, so a control behind it
-    # shadows instead of enforcing.
+    # Installation binding is unconditional; missing authenticated state fails closed.
     binding = getattr(request.state, "agent_installation_binding", None)
     if binding is None:
         raise HTTPException(403, "authenticated run installation binding required")

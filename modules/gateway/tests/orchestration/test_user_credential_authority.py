@@ -128,7 +128,18 @@ async def broker(session, assignment, monkeypatch):
         trust_apigw_headers=True,
         apigw_provenance_secret="authority-edge-provenance",
     )
-    identity = SimpleNamespace(scope="internal", user_id="worker-identity", credential_scopes=["credential:raw-read", "credential:materialize"])
+    identity = SimpleNamespace(
+        scope="internal",
+        user_id="worker-identity",
+        credential_scopes=[
+            "credential:list",
+            "credential:proxy",
+            "credential:assume-role",
+            "credential:task-session",
+            "credential:raw-read",
+            "credential:materialize",
+        ],
+    )
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: SessionContext)

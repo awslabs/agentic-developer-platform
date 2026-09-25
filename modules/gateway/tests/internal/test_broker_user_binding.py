@@ -45,7 +45,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -186,10 +186,15 @@ def _client(db: AsyncSession, mock_sm: MagicMock) -> TestClient:
 
     app.dependency_overrides[get_db] = _get_db
     app.dependency_overrides[get_secrets_manager] = lambda: mock_sm
+
     # The substitution the live app performs for BROKER_PATHS when a worker presents
     # agent-authority headers. Overriding this rather than stubbing the dependency is
     # what makes these tests exercise a real authorization decision.
-    app.dependency_overrides[verify_internal_or_irsa] = verify_broker_worker
+    async def verified_transport(request: Request):
+        request.state.token_context = SimpleNamespace(user_id="test-worker", credential_scopes=["credential:assume-role"])
+        await verify_broker_worker(request)
+
+    app.dependency_overrides[verify_internal_or_irsa] = verified_transport
     return TestClient(app, raise_server_exceptions=False)
 
 

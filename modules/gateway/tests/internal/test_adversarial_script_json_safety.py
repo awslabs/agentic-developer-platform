@@ -106,7 +106,7 @@ class TestVerifySandboxConfigJsonSafety:
         mock_get.return_value = _mock_response(
             status_code=200,
             content_type="application/json",
-            body='{"enable_user_credentials": true, "enforce_credential_binding": true}',
+            body='{"enable_user_credentials": true, "credential_binding_mode": "authenticated_run"}',
         )
 
         ok, detail = verify_sandbox_config(
@@ -125,7 +125,7 @@ class TestVerifySandboxConfigJsonSafety:
         mock_get.return_value = _mock_response(
             status_code=200,
             content_type="application/json",
-            body='{"enable_user_credentials": false, "enforce_credential_binding": false}',
+            body='{"enable_user_credentials": false, "credential_binding_mode": "authenticated_run"}',
         )
 
         ok, detail = verify_sandbox_config(
@@ -326,3 +326,13 @@ class TestAcceptanceEvidence:
             ],
         )
         assert _module.main() == 1
+
+
+def test_ssm_cannot_attest_removed_enforcement_switch():
+    module = sys.modules["adversarial_test_assert"]
+    with patch.object(module.boto3, "client") as client:
+        client.return_value.get_parameter.return_value = {"Parameter": {"Value": "true"}}
+        ok, detail = module._verify_sandbox_config_ssm("fixture-tenant")
+    assert not ok
+    assert "SSM cannot attest" in detail
+    assert client.return_value.get_parameter.call_count == 1

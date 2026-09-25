@@ -418,11 +418,6 @@ jobs:
           # is safe — registry routes still mount; dispatch returns 503 until set.
           INGESTION_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/agent-context/ingestion-queue-url" "")
 
-          # #3182/#3477: Credential binding enforcement flag. Default "true" (safe-by-default
-          # for fresh clones). Existing deployments pin via SSM param; dev stays in shadow
-          # mode via /adp/dev/gateway/enforce-credential-binding=false.
-          ENFORCE_CREDENTIAL_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/enforce-credential-binding" "true")
-
           # #4075: Budget enforcement fail mode. Default "closed" (safe-by-default:
           # a failed budget check must not admit uncapped spend). A bounded, alarmed
           # 30s grace window keeps transient DB blips from downing inference.
@@ -559,7 +554,6 @@ jobs:
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
               -e "s|__AGENT_RUN_LOGS_BUCKET__|adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}|g" \
-              -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
               -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \

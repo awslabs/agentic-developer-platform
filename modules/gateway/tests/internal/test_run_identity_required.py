@@ -45,10 +45,12 @@ async def test_shared_key_cannot_select_another_run_even_with_flags_off(monkeypa
 
 @pytest.mark.parametrize("enforce", [False, True])
 def test_body_selected_lookup_never_substitutes_for_verified_binding(monkeypatch, enforce):
+    monkeypatch.setenv("BG_ENFORCE_CREDENTIAL_BINDING", str(enforce).lower())
+    monkeypatch.setenv("ENFORCE_CREDENTIAL_BINDING", str(enforce).lower())
     lookup = MagicMock(side_effect=AssertionError("must not query caller-selected event"))
     monkeypatch.setattr("src.internal.credential_binding._get_dynamodb_table", lookup)
     with pytest.raises(HTTPException):
-        resolve_credential_binding(invocation_id="other-run", body_user_id="user", settings=Settings(enforce_credential_binding=enforce))
+        resolve_credential_binding(invocation_id="other-run", body_user_id="user", settings=Settings())
     lookup.assert_not_called()
 
 
