@@ -43,6 +43,16 @@ class Cloud:
             "NetworkInterfaces": [{"NetworkInterfaceId": "eni-0123456789abcdef0"}],
         }
 
+    @property
+    def node_region(self):
+        # Provider-observed location follows SkyPilot's actual selection, never
+        # the region of the bound EKS control plane.
+        return self.launched_region or self.data["region"]
+
+    @property
+    def node_zone(self):
+        return self.node_region + "a"
+
     def client(self, name, region_name=None, **kwargs):
         self._client_region = region_name
         return self
@@ -176,6 +186,7 @@ class Cloud:
                         dict(
                             self.instance,
                             State={"Name": "running" if self.exists else "terminated"},
+                            Placement={"AvailabilityZone": self.node_zone},
                         )
                     ]
                 }
@@ -202,6 +213,39 @@ class Cloud:
         return {"Addresses": []}
 
 
+def completed_job_pod(job):
+    """Declared completed ordinary Pod from the actual submitted Job template."""
+    pod = json.loads(json.dumps(job["spec"]["template"]))
+    pod["metadata"].update(
+        name=job["metadata"]["name"] + "-pod",
+        namespace=job["metadata"]["namespace"],
+        uid="pod-" + job["metadata"]["uid"],
+        resourceVersion="1",
+        ownerReferences=[
+            {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "name": job["metadata"]["name"],
+                "uid": job["metadata"]["uid"],
+                "controller": True,
+                "blockOwnerDeletion": True,
+            }
+        ],
+    )
+    pod["spec"].update(nodeName="allocated-node", dnsPolicy="ClusterFirst")
+    pod["status"] = {
+        "phase": "Succeeded",
+        "podIP": "10.1.2.3",
+        "containerStatuses": [
+            {
+                "name": "workload",
+                "state": {"terminated": {"exitCode": 0}},
+            }
+        ],
+    }
+    return pod
+
+
 class Kubernetes(Workspace):
     def __init__(self, cloud):
         self.cloud = cloud
@@ -222,11 +266,24 @@ class Kubernetes(Workspace):
                 json={
                     "items": [
                         {
+                            "metadata": {
+                                "name": "allocated-node",
+                                "uid": "allocated-node-uid",
+                                "labels": {
+                                    "superplane.ai/capacity": self.cloud.sky_tasks[-1][
+                                        "name"
+                                    ],
+                                    "superplane.ai/workspace": operation.grant.lease.workspace_id,
+                                    "topology.kubernetes.io/region": self.cloud.node_region,
+                                    "topology.kubernetes.io/zone": self.cloud.node_zone,
+                                },
+                            },
                             "spec": {
-                                "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
+                                "providerID": f"aws:///{self.cloud.node_zone}/{self.cloud.instance['InstanceId']}"
                             },
                             "status": {
-                                "conditions": [{"type": "Ready", "status": "True"}]
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                                "allocatable": {"nvidia.com/gpu": "1"},
                             },
                         }
                     ]
@@ -235,7 +292,22 @@ class Kubernetes(Workspace):
                 },
             )
         if "/pods?" in path:
-            return httpx.Response(200, json={"items": []})
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        completed_job_pod(obj)
+                        for obj in self.stored.values()
+                        if obj["kind"] == "Job"
+                    ]
+                },
+            )
+        if method == "GET" and "/pods/" in path:
+            for obj in self.stored.values():
+                if obj["kind"] == "Job":
+                    pod = completed_job_pod(obj)
+                    if path.endswith("/" + pod["metadata"]["name"]):
+                        return httpx.Response(200, json=pod)
         if "/secrets/" in path:
             return httpx.Response(
                 200,
