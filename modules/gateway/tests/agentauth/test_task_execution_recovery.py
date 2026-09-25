@@ -317,3 +317,65 @@ def test_confirmed_child_exit_drains_without_claiming_provider_success(runtime, 
     assert repository.read_task(identity.task_id)["error"] == task["error"]
     assert repository._get(task_ops_partition(identity.task_id), "MODEL#unknown") == model
     assert not sqs.receive_message(QueueUrl=queue).get("Messages")
+
+
+@pytest.mark.parametrize("budget_confirmed", [True, False])
+def test_durable_child_exit_releases_execution_slots_without_live_pod(runtime, monkeypatch, budget_confirmed):
+    from src.tasks.records import task_authority_partition, task_run_grant_sort_key
+    from src.tasks.task_commands import TaskCommands
+
+    service, pod, _ = _settlement_fixture(runtime)
+    repository = service.repository
+    identity = service.authenticate_settlement(pod=pod)
+    # Final reporting records a real child stop; it deliberately does not invoke
+    # the later settlement endpoint, reproducing the leaked execution slots.
+    original_release = TaskCommands._release_execution_on_finalize
+    monkeypatch.setattr(TaskCommands, "_release_execution_on_finalize", lambda *args: None)
+    TaskCommands(repository).finalize(
+        identity,
+        {
+            "schema_version": "1.0",
+            "outcome": "failed",
+            "final_report_id": "00000000-0000-4000-8000-000000000042",
+            "child_exit": {"confirmed": True, "exit_code": 1, "signal": None, "stopped_at": "2026-09-24T12:00:00Z"},
+            "result": None,
+            "error": {
+                "schema_version": "1.0",
+                "outcome": "failed",
+                "code": "process_failed",
+                "message": "child stopped",
+                "committed_at": "2026-09-24T12:00:00Z",
+                "child_exit_confirmed": True,
+                "recovery_required": False,
+                "provider_outcome": "unknown",
+                "total_usd": None,
+            },
+            "committed_result_refs": [],
+        },
+    )
+    monkeypatch.setattr(TaskCommands, "_release_execution_on_finalize", original_release)
+    original_error = repository.read_task(identity.task_id)["error"]
+    pk = task_authority_partition(identity.tenant)
+    sk = task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation)
+    grant = repository._get_authority(pk, sk)
+    assert grant["execution_capacity_released"] is False
+    assert all(repository._get_authority(key, "ACTIVE")["active_count"] == 1 for key in grant["execution_capacity_keys"])
+
+    def no_pod(*args, **kwargs):
+        raise AssertionError("durable child stop must not need an existing pod")
+
+    monkeypatch.setattr(recovery, "terminated_workload", no_pod)
+
+    async def budget(*args):
+        return budget_confirmed
+
+    monkeypatch.setattr(recovery, "settle_task_admission", budget)
+    claimed = repository.claim_due_work(shard=work_shard(identity.task_id), now=datetime.now(UTC))
+    claim = next(row for row in claimed if row["kind"] == "execution")
+    for _ in range(2):
+        assert asyncio.run(
+            recovery.recover_execution(repository, SimpleNamespace(workloads=None), work_id=claim["work_id"], lease_token=claim["lease_token"])
+        ) == ("unknown", "failed")
+    assert repository._get_authority(pk, sk)["execution_capacity_released"] is True
+    assert all(repository._get_authority(key, "ACTIVE")["active_count"] == 0 for key in grant["execution_capacity_keys"])
+    assert repository.read_task(identity.task_id)["error"] == original_error

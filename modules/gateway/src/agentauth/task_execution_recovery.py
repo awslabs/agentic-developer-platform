@@ -122,6 +122,27 @@ async def recover_execution(repository, runtime, *, work_id, lease_token):
             {"stop_evidence": {"child_exit_confirmed": False, "workload_terminated": True, "observed_at": observed}, "queue_ack_status": "pending"},
             verified_workload=True,
         )
+    if stopped and not grant.get("execution_capacity_released", False):
+        # A normal final report already proves child exit, but finalization does
+        # not release execution slots. Reconcile those slots even if there is
+        # no remaining pod to observe and queue acknowledgment already exists.
+        stop = task.get("stop_evidence") or {}
+        observed = task.get("child_exit", {}).get("stopped_at") or stop.get("observed_at")
+        if not observed:
+            raise TaskStoreError("durable task stop timestamp unavailable")
+        await run_in_threadpool(
+            TaskCommands(repository).settlement,
+            identity,
+            {
+                "stop_evidence": {
+                    "child_exit_confirmed": bool(task.get("child_exit", {}).get("confirmed")),
+                    "workload_terminated": bool(stop.get("workload_terminated")),
+                    "observed_at": observed,
+                },
+                "queue_ack_status": task.get("queue_ack_status", "pending"),
+            },
+            verified_workload=bool(task.get("server_workload_terminated")),
+        )
     # Durable process/observed workload evidence survives pod garbage collection.
     # Financial uncertainty must never hold a Kubernetes finalizer indefinitely.
     if name:

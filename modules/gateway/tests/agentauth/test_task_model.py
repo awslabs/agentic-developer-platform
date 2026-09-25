@@ -312,3 +312,50 @@ async def test_consumed_command_tracks_provider_handoff_without_replaying(model,
     assert len(model.repository.read_events(task_id=model.identity.task_id)) == len(events)
     if outcome == "event_race":
         assert any(e["type"] == "progress.updated" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_three_sequential_completed_tasks_release_slots_and_duplicate_settlement_is_safe(model, runtime):
+    import json
+
+    from src.agentauth.bootstrap import envelope_digest
+    from src.tasks.task_commands import TaskCommands
+    from tests.tasks.test_store import _request
+    from tests.tasks.test_task_commands import final_body
+
+    service = runtime[0]
+    for number in range(3):
+        if number:
+            request = _request(idempotency_key=f"sequential-completion-{number}")
+            model.repository.accept(request)
+            pod = SimpleNamespace(uid=str(uuid.uuid4()), namespace="adp-agents")
+            body = {
+                "task_id": request.task_id,
+                "invocation_id": request.invocation_id,
+                "envelope_digest": envelope_digest(request.envelope),
+                "workload": {"pod_uid": pod.uid, "namespace": pod.namespace},
+            }
+            delivery = SimpleNamespace(require_assignment=lambda *args: None, read=lambda uid: {"body": json.dumps(request.envelope)})
+            model.identity = _attempt_identity((service, pod, body, delivery))
+            model.turn_id = str(uuid.uuid4())
+            TaskTurnStore(model.repository, clock=lambda: NOW).commit(
+                identity=model.identity, request_id=model.turn_id, expected_transcript_version=1
+            )
+        assert (await execute(model))["operation_status"] == "confirmed"
+        commands = TaskCommands(model.repository)
+        body = final_body(model.identity)
+        result = commands.finalize(model.identity, body)
+        assert result["status"] == "completed"
+        assert commands.finalize(model.identity, body) == result
+        grant = service._grant(model.identity.tenant, model.identity.invocation_id, model.identity.generation)
+        assert grant["execution_capacity_released"] is True
+        for _ in range(2):
+            commands.settlement(
+                model.identity,
+                {
+                    "stop_evidence": {"child_exit_confirmed": True, "workload_terminated": False, "observed_at": "2026-09-24T12:00:00Z"},
+                    "queue_ack_status": "confirmed",
+                },
+            )
+        assert all(model.repository._get_authority(key, "ACTIVE")["active_count"] == 0 for key in grant["execution_capacity_keys"])
+    assert model.provider.await_count == 3
