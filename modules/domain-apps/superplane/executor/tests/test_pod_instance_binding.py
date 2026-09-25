@@ -21,13 +21,28 @@ class AWS:
             "State": {"Name": "running"},
         }
         self.fail_region = None
+        self.identity = {
+            "Account": "123456789012",
+            "Arn": "arn:aws:sts::123456789012:assumed-role/worker/session",
+        }
+        self.assumptions = []
 
     def client(self, service, *, region_name):
         self.region = region_name
         return self
 
     def get_caller_identity(self):
-        return {"Arn": "arn:aws:sts::123456789012:assumed-role/worker/session"}
+        return deepcopy(self.identity)
+
+    def assume_role(self, **arguments):
+        self.assumptions.append(arguments)
+        return {
+            "Credentials": {
+                "AccessKeyId": "simulated-key",
+                "SecretAccessKey": "simulated-secret",
+                "SessionToken": "simulated-token",
+            }
+        }
 
     def get_paginator(self, method):
         assert method == "describe_instances"
@@ -248,3 +263,98 @@ async def test_shared_target_refuses_before_dedicated_provider_or_node_read(
     with pytest.raises(OperationRefused, match="separate trusted Node"):
         await capture(f.provider, f.operation, f.target, f.plan, (), f.authorize)
     assert not f.aws.reads and f.state.node_reads == 0 and f.state.checks == 0
+
+
+@pytest.mark.parametrize("account", ["999999999999", None])
+async def test_direct_session_requires_actual_sts_account(binding, account):
+    f = binding
+    f.aws.identity["Account"] = account
+    with pytest.raises(OperationRefused, match="session identity"):
+        await proof(f)
+    assert not f.aws.reads and not f.aws.assumptions
+    assert f.state.node_reads == 0
+
+
+@pytest.mark.parametrize(
+    "role_arn",
+    [
+        "arn:aws:iam::999999999999:role/worker",
+        "arn:aws:sts::123456789012:assumed-role/worker/session",
+        "arn:aws:iam::123456789012:role/",
+    ],
+)
+async def test_delivered_role_must_match_approved_account(binding, role_arn):
+    f = binding
+
+    async def delivery_role(operation):
+        assert operation is f.operation
+        return {"role_arn": role_arn}
+
+    f.provider.registry.authority.delivery_role = delivery_role
+    with pytest.raises(OperationRefused, match="delivered AWS role"):
+        await proof(f)
+    assert not f.aws.reads and not f.aws.assumptions
+    assert f.state.node_reads == 0
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "wrong-account",
+        "wrong-arn-account",
+        "wrong-role",
+        "empty-session",
+        "missing-account",
+    ],
+)
+async def test_inventory_uses_the_verified_assumed_session(
+    binding, monkeypatch, change
+):
+    from superplane_executor import provider as provider_module
+
+    f = binding
+    # The ambient control-plane caller is allowed to be in a different account;
+    # only the delivered and subsequently verified role may enumerate capacity.
+    f.aws.identity = {
+        "Account": "999999999999",
+        "Arn": "arn:aws:sts::999999999999:assumed-role/control/session",
+    }
+    assumed = AWS()
+    if change == "wrong-account":
+        assumed.identity["Account"] = "999999999999"
+    elif change == "wrong-arn-account":
+        assumed.identity["Arn"] = (
+            "arn:aws:sts::999999999999:assumed-role/worker/session"
+        )
+    elif change == "wrong-role":
+        assumed.identity["Arn"] = "arn:aws:sts::123456789012:assumed-role/other/session"
+    elif change == "empty-session":
+        assumed.identity["Arn"] = "arn:aws:sts::123456789012:assumed-role/worker/"
+    elif change == "missing-account":
+        assumed.identity.pop("Account")
+    created = []
+
+    def session(**kwargs):
+        assert kwargs == {
+            "aws_access_key_id": "simulated-key",
+            "aws_secret_access_key": "simulated-secret",
+            "aws_session_token": "simulated-token",
+            "region_name": "us-east-1",
+        }
+        created.append(assumed)
+        return assumed
+
+    monkeypatch.setattr(provider_module.boto3, "Session", session)
+    if change == "none":
+        result = await proof(f)
+        assert result[5] == assumed.identity["Account"]
+        assert assumed.reads and f.state.node_reads == 1
+    else:
+        with pytest.raises(OperationRefused, match="session identity"):
+            await proof(f)
+        assert not assumed.reads and f.state.node_reads == 0
+    assert created == [assumed]
+    assert not f.aws.reads
+    assert len(f.aws.assumptions) == 1
+    assert f.aws.assumptions[0]["RoleArn"] == "arn:aws:iam::123456789012:role/worker"

@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 
 import boto3
@@ -37,12 +38,33 @@ class Provider:
         # session is not region-pinned -- every call below passes its own
         # explicit region_name, since a multi-region plan has more than one.
         role = await self.registry.authority.delivery_role(operation)
+        account = plan.data["provider_account_id"]
+        role_arn = role.get("role_arn")
+        if not isinstance(role_arn, str) or not re.fullmatch(
+            r"arn:aws:iam::" + re.escape(account) + r":role/[A-Za-z0-9+=,.@_/-]+",
+            role_arn,
+        ):
+            raise OperationRefused("delivered AWS role does not match approved account")
+        expected = (
+            rf"arn:aws:sts::{re.escape(account)}:assumed-role/"
+            + re.escape(role_arn.rsplit("/", 1)[-1])
+            + r"/[A-Za-z0-9+=,.@_-]+"
+        )
+
+        def matches(identity):
+            return re.fullmatch(expected, identity.get("Arn", "")) is not None
+
+        def verify(identity):
+            if identity.get("Account") != account or not matches(identity):
+                raise OperationRefused(
+                    "AWS session identity does not match approved role"
+                )
 
         def resolve():
             sts = self.session.client("sts", region_name=plan.cluster_region)
             identity = sts.get_caller_identity()
-            expected = f"arn:aws:sts::{plan.data['provider_account_id']}:assumed-role/{role['role_arn'].rsplit('/', 1)[-1]}/"
-            if identity.get("Arn", "").startswith(expected):
+            if matches(identity):
+                verify(identity)
                 return self.session
             arguments = {
                 "RoleArn": role["role_arn"],
@@ -55,12 +77,20 @@ class Provider:
             if role.get("external_id"):
                 arguments["ExternalId"] = role["external_id"]
             credentials = sts.assume_role(**arguments)["Credentials"]
-            return boto3.Session(
+            session = boto3.Session(
                 aws_access_key_id=credentials["AccessKeyId"],
                 aws_secret_access_key=credentials["SecretAccessKey"],
                 aws_session_token=credentials["SessionToken"],
                 region_name=plan.cluster_region,
             )
+            # Verify the exact credential session returned to inventory/effects,
+            # not the ambient caller or just the requested AssumeRole ARN.
+            verify(
+                session.client(
+                    "sts", region_name=plan.cluster_region
+                ).get_caller_identity()
+            )
+            return session
 
         return await asyncio.to_thread(resolve), role["role_arn"]
 
