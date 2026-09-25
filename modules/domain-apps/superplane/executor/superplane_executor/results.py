@@ -71,6 +71,11 @@ async def capture(provider, operation, target, plan, known_references, authorize
     job_path = workspace.path(target, "Job", spec["name"])
     await authorize()
 
+    if plan.node_bootstrap is not None:
+        from .node_command_inventory import require_completed
+
+        await require_completed(provider, operation, plan, authorize)
+
     async def get(path):
         response = await workspace.request(operation, target, "GET", path)
         if response.status_code != 200:
@@ -184,6 +189,8 @@ async def capture(provider, operation, target, plan, known_references, authorize
         != placement
     ):
         raise OperationRefused("batch result placement changed during observation")
+    if plan.node_bootstrap is not None:
+        await require_completed(provider, operation, plan, authorize)
     await authorize()
     text, redacted = content
     digest = hashlib.sha256(text.encode()).hexdigest()

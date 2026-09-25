@@ -99,7 +99,8 @@ class Finalizer:
         creating = {
             call["operation_kind"]: call["idempotency_key"]
             for call in calls
-            if call["operation_kind"] in ("launch", "deploy")
+            if call["operation_kind"]
+            in ("launch", "deploy", "run-node-bootstrap", "run-node-probe")
         }
 
         def add(reference, kind, operation_kind, region=None):
@@ -217,9 +218,17 @@ class Finalizer:
             )
             for reference, resource in network.items():
                 resources.setdefault(reference, resource)
+        if plan.node_bootstrap is not None:
+            from .node_command_inventory import discover
+
+            resources.update(await discover(self.provider, operation))
         return resources
 
     async def observe(self, operation, target, plan, resource):
+        if resource.kind == "node_command":
+            from .node_command_inventory import observe
+
+            return await observe(self.provider, operation, plan, resource)
         if resource.kind == "network_dependency":
             from .network_inventory import observe
 
