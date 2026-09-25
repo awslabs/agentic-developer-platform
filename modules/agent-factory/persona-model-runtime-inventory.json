@@ -87,7 +87,6 @@
       "modules/agent-factory/gateway/lambdas/ingest/classifier.py",
       "modules/agent-factory/infra/modules/lambda-gateway/variables.tf",
       "modules/agent-factory/scripts/deepwiki-smoke-test.sh",
-      "modules/agent-factory/scripts/verify-e2e.sh",
       "modules/agent-factory/webhook-ingress/lambda/common/model_validate.py",
       "modules/agent-factory/webhook-ingress/lambda/common/persona_model_catalogue.json",
       "platform/scripts/bedrock-routing-validate.sh"
