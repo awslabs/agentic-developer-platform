@@ -7,7 +7,7 @@
 # Upstream commit pinned for reproducible builds; bump explicitly when updating.
 # Vulnerability constraints applied via constraints.txt after install.
 
-FROM public.ecr.aws/docker/library/python:3.14-slim-bookworm
+FROM public.ecr.aws/docker/library/python:3.14-slim-trixie
 
 LABEL maintainer="agent-operations"
 LABEL description="MCP Agent Mail - Agent registration, messaging, FTS5 search, Web UI"
