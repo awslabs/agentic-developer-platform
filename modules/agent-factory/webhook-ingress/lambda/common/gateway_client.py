@@ -111,10 +111,45 @@ def _resolve_internal_api_key() -> str:
         )
         resp = client.get_secret_value(SecretId=arn)
         _internal_api_key = resp["SecretString"]
+    elif os.environ.get("INTERNAL_API_KEY_PARAMETER_NAME"):
+        import boto3
+
+        _internal_api_key = boto3.client(
+            "ssm", region_name=os.environ.get("AWS_REGION", "us-east-1")
+        ).get_parameter(
+            Name=os.environ["INTERNAL_API_KEY_PARAMETER_NAME"], WithDecryption=True
+        )["Parameter"]["Value"]
     else:
         _internal_api_key = os.environ.get("BG_INTERNAL_API_KEY", "")
 
     return _internal_api_key
+
+
+def _sign_internal_lookup(request):
+    """Authenticate canonical read-only lookups at the existing IAM API edge."""
+    hostname = urllib.parse.urlsplit(request.full_url).hostname or ""
+    if ".execute-api." not in hostname or not hostname.endswith(".amazonaws.com"):
+        return request  # Existing direct internal-plane callers retain their key auth.
+    import boto3
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+
+    region = hostname.split(".execute-api.", 1)[1].split(".", 1)[0]
+    credentials = boto3.Session().get_credentials()
+    if credentials is None:
+        raise RuntimeError("Gateway lookup execution credentials unavailable")
+    signed = AWSRequest(
+        method=request.get_method(),
+        url=request.full_url,
+        data=request.data,
+        headers=dict(request.header_items()),
+    )
+    SigV4Auth(credentials.get_frozen_credentials(), "execute-api", region).add_auth(
+        signed
+    )
+    for name, value in signed.headers.items():
+        request.add_header(name, value)
+    return request
 
 
 def resolve_user_state(
@@ -174,7 +209,7 @@ def resolve_user_state(
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(_sign_internal_lookup(req), timeout=10) as resp:
             if resp.status in (200, 201):
                 data = json.loads(resp.read().decode("utf-8"))
                 return {
@@ -353,7 +388,7 @@ def resolve_installation_by_id(installation_id: str) -> dict:
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(_sign_internal_lookup(req), timeout=10) as resp:
             if resp.status in (200, 201):
                 data = json.loads(resp.read().decode("utf-8"))
                 tenant_id = data.get("tenant_id", "")
