@@ -131,3 +131,15 @@ def test_created_status_is_only_accepted_for_artifact_upload(transport, monkeypa
     else:
         with pytest.raises(client.TaskRunClientError, match="refused"):
             run._post(action, body, run_bound=True)
+
+
+def test_model_wire_preserves_utf8_instead_of_expanding_unicode(transport):
+    calls, _ = transport
+    run = client.TaskRunClient()
+    run._run_credential = "test-run-secret"
+    body = {"messages": [{"role": "user", "content": [{"type": "text", "text": "€" * 10000}]}]}
+    run._post("model", body, run_bound=True)
+    wire = calls[-1][1]["data"]
+    assert b"\\u20ac" not in wire
+    assert len(wire) < 32000
+    assert json.loads(wire) == body

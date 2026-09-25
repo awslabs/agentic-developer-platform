@@ -849,7 +849,7 @@ def test_confirmed_model_result_reaches_child_protocol(assignment_and_bootstrap)
     client.model_response.update(
         {
             "request_digest": _canonical_digest(
-                {"messages": [{"role": "user", "content": "évidence"}], "max_tokens": 32}
+                {"messages": [{"role": "user", "content": [{"type": "text", "text": "évidence"}]}], "max_tokens": 32}
             ),
             "automatic_replay_permitted": False,
             "handoff": "confirmed",
@@ -893,7 +893,7 @@ def test_nonconfirmed_model_result_cannot_leak_content(status, assignment_and_bo
         {
             "schema_version": "1.0",
             "request_digest": _canonical_digest(
-                {"messages": [{"role": "user", "content": "test"}], "max_tokens": 32}
+                {"messages": [{"role": "user", "content": [{"type": "text", "text": "test"}]}], "max_tokens": 32}
             ),
             "automatic_replay_permitted": False,
         }
@@ -949,7 +949,7 @@ def test_model_receipt_must_match_request_and_confirmed_handoff(
 
     assignment, _, bootstrap = assignment_and_bootstrap
     turn_id = str(__import__("uuid").uuid4())
-    request = {"messages": [{"role": "user", "content": "test"}], "max_tokens": 32}
+    request = {"messages": [{"role": "user", "content": [{"type": "text", "text": "test"}]}], "max_tokens": 32}
     receipt = {
         "schema_version": "1.0",
         "task_id": assignment.task_id,
@@ -964,7 +964,7 @@ def test_model_receipt_must_match_request_and_confirmed_handoff(
     }
     host = TaskHost(client=FakeClient(bootstrap, [], model_response=receipt))
     with pytest.raises(TaskHostError, match="receipt"):
-        host._model(assignment, {}, {"turn_id": turn_id, **request}, 32)
+        host._model(assignment, {}, {"turn_id": turn_id, "messages": [{"role": "user", "content": "test"}], "max_tokens": 32}, 32)
 
 
 def test_host_commits_model_turn_before_provider_call(assignment_and_bootstrap):

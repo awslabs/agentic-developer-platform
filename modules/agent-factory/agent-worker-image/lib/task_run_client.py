@@ -113,7 +113,7 @@ class TaskRunClient:
         if run_bound and not self._run_credential:
             raise TaskRunClientError("task run credential unavailable")
         url = f"{self._base}/task/{action}"
-        data = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        data = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=action != "model").encode("utf-8")
         headers = {
             "Content-Type": "application/json",
             WORKLOAD_HEADER: workload_token or read_workload_token(),

@@ -156,6 +156,9 @@ function renderEvidence(start: StartFrame, artifactNames: ReadonlyMap<string, st
 /** Select deterministic prefixes against the actual serialized model frame. */
 export function boundedModelMessages(start: StartFrame, names: ReadonlyMap<string, string>, followUps: unknown[], maxTokens: number): { messages: unknown[]; omissions: string[] } {
   const artifacts = start.artifacts ?? [];
+  // The host wraps string messages as gateway text blocks plus attempt/digest
+  // metadata. Reserve bounded headroom without changing the 64 KiB protocol.
+  const modelFrameBudget = MAX_FRAME_BYTES - 2048;
   const build = (characters: number) => {
     const omissions: string[] = [];
     const selected = artifacts.map((artifact) => {
@@ -179,16 +182,16 @@ export function boundedModelMessages(start: StartFrame, names: ReadonlyMap<strin
   };
   const maximum = Math.max(0, ...artifacts.map((artifact) => artifact.content.length));
   const full = build(maximum);
-  if (full.bytes <= MAX_FRAME_BYTES) return full;
+  if (full.bytes <= modelFrameBudget) return full;
   const empty = build(0);
-  if (empty.bytes > MAX_FRAME_BYTES) throw new ProtocolViolation('task instructions and follow-up input exceed the bounded model request');
+  if (empty.bytes > modelFrameBudget) throw new ProtocolViolation('task instructions and follow-up input exceed the bounded model request');
   let low = 0;
   let high = maximum;
   let chosen = empty;
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
     const candidate = build(middle);
-    if (candidate.bytes <= MAX_FRAME_BYTES) { chosen = candidate; low = middle + 1; }
+    if (candidate.bytes <= modelFrameBudget) { chosen = candidate; low = middle + 1; }
     else high = middle - 1;
   }
   return chosen;
