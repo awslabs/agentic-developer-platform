@@ -274,11 +274,22 @@ class Finalizer:
                     "GET",
                     self.provider.workspace.path(target, "Pod")
                     + "?labelSelector="
-                    + selector,
+                    + selector
+                    + "&limit=257",
                 )
                 if pods.status_code != 200:
                     raise ValueError("dependent pod read unavailable")
-                if pods.json().get("items"):
+                listing = pods.json()
+                if (
+                    not isinstance(listing, dict)
+                    or not isinstance(listing.get("metadata", {}), dict)
+                    or listing.get("metadata", {}).get("continue")
+                    or not isinstance(listing.get("items"), list)
+                    or len(listing["items"]) > 256
+                    or any(not isinstance(pod, dict) for pod in listing["items"])
+                ):
+                    raise ValueError("complete bounded dependent pod listing required")
+                if listing["items"]:
                     return ResourceObservation(
                         ResourcePresence.PRESENT, ref, "dependent_pods_present"
                     )
