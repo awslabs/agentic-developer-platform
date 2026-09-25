@@ -123,8 +123,22 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
-    """Build a minimal FastAPI test app with the credential routes router."""
+def _fake_token_context(*, credential_scopes: list[str] | None = None) -> MagicMock:
+    """Issue #6050: build a minimal mock TokenContext for registry scope gating."""
+    ctx = MagicMock()
+    ctx.credential_scopes = credential_scopes if credential_scopes is not None else []
+    ctx.scope = "internal"
+    ctx.user_id = "worker-test"
+    ctx.org_id = "org-ext"
+    ctx.requires_run_identity = False
+    return ctx
+
+
+def _make_app(db_session: AsyncSession, mock_sm=None, *, token_context=None) -> TestClient:
+    """Build a minimal FastAPI test app with the credential routes router.
+
+    Issue #6050: token_context sets registry-granted scopes via middleware.
+    """
     app = FastAPI()
     app.include_router(credential_router)
 
@@ -134,6 +148,17 @@ def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[cr_get_secrets_manager] = lambda: mock_sm
+
+    if token_context is not None:
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        class _TokenCtxMw(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                request.state.token_context = token_context
+                return await call_next(request)
+
+        app.add_middleware(_TokenCtxMw)
+
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -432,7 +457,7 @@ class TestMaterializeBinding:
             mock_boto3.return_value = mock_s3
             mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
 
-            client = _make_app(db, mock_sm)
+            client = _make_app(db, mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -445,7 +470,6 @@ class TestMaterializeBinding:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 
@@ -472,7 +496,7 @@ class TestMaterializeBinding:
             mock_boto3.return_value = mock_s3
             mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
 
-            client = _make_app(db, mock_sm)
+            client = _make_app(db, mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -485,7 +509,6 @@ class TestMaterializeBinding:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 

@@ -171,7 +171,24 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_raw_read_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
+def _fake_token_context(*, credential_scopes: list[str] | None = None) -> MagicMock:
+    """Issue #6050: build a minimal mock TokenContext for registry scope gating."""
+    ctx = MagicMock()
+    ctx.credential_scopes = credential_scopes if credential_scopes is not None else []
+    ctx.scope = "internal"
+    ctx.user_id = "worker-test"
+    ctx.org_id = "org-adv"
+    ctx.requires_run_identity = False
+    return ctx
+
+
+# Issue #6050: default token_context with raw-read scope for adversarial tests
+# that exercise credential-raw-read. These tests focus on binding/authorization
+# behavior and need the scope gate to pass.
+_DEFAULT_RAW_READ_CTX = _fake_token_context(credential_scopes=["credential:raw-read"])
+
+
+def _make_raw_read_app(db_session: AsyncSession, mock_sm=None, *, token_context=_DEFAULT_RAW_READ_CTX) -> TestClient:
     app = FastAPI()
     app.include_router(credential_router)
 
@@ -181,6 +198,18 @@ def _make_raw_read_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[cr_get_secrets_manager] = lambda: mock_sm
+
+    # Issue #6050: set registry-granted token_context via middleware.
+    if token_context is not None:
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        class _TokenCtxMw(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                request.state.token_context = token_context
+                return await call_next(request)
+
+        app.add_middleware(_TokenCtxMw)
+
     return TestClient(app, raise_server_exceptions=False)
 
 

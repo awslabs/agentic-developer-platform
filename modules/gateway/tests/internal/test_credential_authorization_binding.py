@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from moto import mock_aws
 from sqlalchemy import select
@@ -144,7 +144,7 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_raw_read_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
+def _make_raw_read_app(db_session: AsyncSession, mock_sm=None, *, registry_raw_read: bool = False) -> TestClient:
     """Build a minimal FastAPI test app with the credential routes router."""
     app = FastAPI()
     app.include_router(credential_router)
@@ -155,6 +155,25 @@ def _make_raw_read_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[cr_get_secrets_manager] = lambda: mock_sm
+    if registry_raw_read:
+        # These cases exercise binding/tenant behavior AFTER successful IAM auth.
+        # Explicit opt-in keeps ungranted/shared-key fixtures denied by default.
+        from src.auth.agent_registry import agent_entry_to_token_context
+        from src.internal.auth_deps import verify_internal_or_irsa
+
+        async def _verified_registry_identity(request: Request):
+            request.state.token_context = agent_entry_to_token_context(
+                {
+                    "agent_id": "binding-test-worker",
+                    "agent_name": "binding-test-worker",
+                    "org_id": "org-binding",
+                    "team_id": "team-eng-b",
+                    "scope": "internal",
+                    "credential_scopes": ["credential:raw-read"],
+                }
+            )
+
+        app.dependency_overrides[verify_internal_or_irsa] = _verified_registry_identity
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -252,7 +271,7 @@ class TestRawReadBinding:
             mock_get_table.return_value = mock_table
             mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
-            client = _make_raw_read_app(db, mock_sm)
+            client = _make_raw_read_app(db, mock_sm, registry_raw_read=True)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -296,7 +315,7 @@ class TestRawReadBinding:
             # Registry says alice, but body says bob.
             mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
-            client = _make_raw_read_app(db)
+            client = _make_raw_read_app(db, registry_raw_read=True)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -327,7 +346,7 @@ class TestRawReadBinding:
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
-            client = _make_raw_read_app(db)
+            client = _make_raw_read_app(db, registry_raw_read=True)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -362,7 +381,7 @@ class TestRawReadBinding:
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
-            client = _make_raw_read_app(db, mock_sm)
+            client = _make_raw_read_app(db, mock_sm, registry_raw_read=True)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -402,7 +421,7 @@ class TestRawReadBinding:
             # Registry says alice, body says bob — drift! But shadow mode = no block.
             mock_table.query.return_value = _mock_ddb_query_response(_USER_ALICE_ID)
 
-            client = _make_raw_read_app(db, mock_sm)
+            client = _make_raw_read_app(db, mock_sm, registry_raw_read=True)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -927,7 +946,7 @@ class TestOrgDerivedFromResolvedUser:
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
-            client = _make_raw_read_app(db, mock_sm)
+            client = _make_raw_read_app(db, mock_sm, registry_raw_read=True)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -985,7 +1004,7 @@ class TestOrgDerivedFromResolvedUser:
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
-            client = _make_raw_read_app(db, mock_sm)
+            client = _make_raw_read_app(db, mock_sm, registry_raw_read=True)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -1005,3 +1024,21 @@ class TestOrgDerivedFromResolvedUser:
         assert resp.json()["detail"]["error"] == "credential_not_found"
         # The secret was never fetched — denial happened before Secrets Manager.
         mock_sm.get_secret.assert_not_called()
+
+
+async def test_shared_key_fixture_without_registry_grant_still_denied(db):
+    """Binding fixture opt-in must not grant a shared-key caller capability."""
+    settings = _settings_mock(enforce=False)
+    sm = MagicMock()
+    with (
+        patch("src.internal.auth_deps.get_settings", return_value=settings),
+        patch("src.internal.credential_routes.get_settings", return_value=settings),
+    ):
+        response = _make_raw_read_app(db, sm).post(
+            "/internal/v1/credential-raw-read",
+            json={"user_id": _USER_ALICE_ID, "agent_id": "developer", "task_id": "no-grant", "service": "github", "label": "main"},
+            headers={"X-Internal-Api-Key": _VALID_KEY, "X-Agent-Scopes": "credential:raw-read"},
+        )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "insufficient_scope"
+    sm.get_secret.assert_not_called()

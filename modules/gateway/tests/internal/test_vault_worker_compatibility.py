@@ -210,7 +210,9 @@ async def test_raw_key_existing_and_protected_refusals_precede_secret_read(vault
     if reason == "disabled":
         vault.settings.vault_raw_read_enabled = False
     elif reason == "missing-scope":
-        headers.pop("X-Agent-Scopes")
+        # Issue #6050: scope gate reads registry credential_scopes, not the
+        # X-Agent-Scopes header. Clear the registry scopes to test denial.
+        vault.identity.credential_scopes = []
     elif reason == "registry-scope":
         vault.identity.credential_scopes = []
     else:

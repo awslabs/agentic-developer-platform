@@ -135,8 +135,15 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
-    """Build a minimal FastAPI test app with the credential router."""
+def _make_app(db_session: AsyncSession, mock_sm=None, *, token_context=None) -> TestClient:
+    """Build a minimal FastAPI test app with the credential router.
+
+    Issue #6050: when token_context is provided, the auth override sets it on
+    request.state to simulate a verified IRSA identity with registry-granted
+    credential_scopes.  This is required for the raw-read and materialize
+    endpoints, which now check credential_scopes from token_context instead
+    of the X-Agent-Scopes header.
+    """
     app = FastAPI()
     app.include_router(router)
 
@@ -155,6 +162,18 @@ def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
 
     from src.internal.auth_deps import verify_internal_or_irsa
 
+    if token_context is not None:
+        # Issue #6050: when a token_context is provided, use middleware to set
+        # it on request.state before the endpoint runs.
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        class _TokenContextMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                request.state.token_context = token_context
+                return await call_next(request)
+
+        app.add_middleware(_TokenContextMiddleware)
+
     async def _verify(x_internal_api_key: str | None = Header(default=None)) -> None:
         if x_internal_api_key != _VALID_KEY:
             raise HTTPException(status_code=403, detail={"error": "forbidden"})
@@ -164,6 +183,17 @@ def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     if mock_sm is not None:
         app.dependency_overrides[get_secrets_manager] = lambda: mock_sm
     return TestClient(app, raise_server_exceptions=False)
+
+
+def _fake_token_context(*, credential_scopes: list[str] | None = None) -> MagicMock:
+    """Issue #6050: build a minimal mock TokenContext for registry scope gating."""
+    ctx = MagicMock()
+    ctx.credential_scopes = credential_scopes if credential_scopes is not None else []
+    ctx.scope = "internal"
+    ctx.user_id = "worker-test"
+    ctx.org_id = "org-test"
+    ctx.requires_run_identity = False
+    return ctx
 
 
 def _settings_mock(
@@ -1265,7 +1295,7 @@ class TestCredentialMaterialize:
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("asyncio.to_thread", new=_selective_to_thread),
         ):
-            client = _make_app(db, mock_sm=mock_sm)
+            client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -1277,7 +1307,6 @@ class TestCredentialMaterialize:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 
@@ -1303,7 +1332,7 @@ class TestCredentialMaterialize:
         mock_sm = self._mock_sm("tok")
 
         with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
-            client = _make_app(db, mock_sm=mock_sm)
+            client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -1315,7 +1344,6 @@ class TestCredentialMaterialize:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 
@@ -1404,7 +1432,7 @@ class TestCredentialMaterialize:
         mock_sm = self._mock_sm("cert-data")
 
         with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
-            client = _make_app(db, mock_sm=mock_sm)
+            client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -1416,7 +1444,6 @@ class TestCredentialMaterialize:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 
@@ -1450,7 +1477,7 @@ class TestCredentialMaterialize:
             patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("asyncio.to_thread", new=_selective_to_thread),
         ):
-            client = _make_app(db, mock_sm=mock_sm)
+            client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -1462,7 +1489,6 @@ class TestCredentialMaterialize:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 
@@ -1504,7 +1530,7 @@ class TestCredentialRawRead:
         mock_sm = self._mock_sm("super-secret-value")
 
         with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
-            client = _make_app(db, mock_sm=mock_sm)
+            client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:raw-read"]))
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -1517,7 +1543,6 @@ class TestCredentialRawRead:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:raw-read",
                 },
             )
 
@@ -1606,7 +1631,7 @@ class TestCredentialRawRead:
         mock_sm = self._mock_sm("audit-secret")
 
         with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
-            client = _make_app(db, mock_sm=mock_sm)
+            client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:raw-read"]))
             client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -1619,7 +1644,6 @@ class TestCredentialRawRead:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:raw-read",
                 },
             )
 
@@ -1655,7 +1679,7 @@ class TestCredentialRawRead:
         mock_sm = self._mock_sm("lu-token")
 
         with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
-            client = _make_app(db, mock_sm=mock_sm)
+            client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:raw-read"]))
             client.post(
                 "/internal/v1/credential-raw-read",
                 json={
@@ -1666,7 +1690,6 @@ class TestCredentialRawRead:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:raw-read",
                 },
             )
 

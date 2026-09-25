@@ -14,10 +14,12 @@ Authentication:
     identity is asserted. Protected worker brokers additionally require their
     run-bound identity. See src/internal/auth_deps.py.
 
-Scope gating:
-    materialize   — requires X-Agent-Scopes header to contain "credential:materialize"
-    raw-read      — requires X-Agent-Scopes to contain "credential:raw-read" AND
-                    BG_VAULT_RAW_READ_ENABLED=true (org-level feature flag)
+Scope gating (Issue #6050):
+    materialize   — requires registry-granted credential_scopes to contain
+                    "credential:materialize" (verified via token_context)
+    raw-read      — requires registry-granted credential_scopes to contain
+                    "credential:raw-read" AND BG_VAULT_RAW_READ_ENABLED=true
+                    (org-level feature flag)
 
 Every credential access (proxy, materialize, raw-read) writes an audit_log entry
 and updates UserCredential.last_used_at.
@@ -34,13 +36,14 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agentauth.broker_identity import user_credential_audit, verify_selected_user_credential, worker_tenant
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_authorization import require_credential_capability
 from src.internal.credential_binding import resolve_credential_binding
 from src.internal.credential_egress import allowed_hosts_for, host_matches, is_binding_enforced
 from src.internal.credential_injector import FILE_CREDENTIAL_TYPES, inject_credential
@@ -230,25 +233,9 @@ async def _write_audit(
     await db.flush()
 
 
-def _check_agent_scope(x_agent_scopes: str | None, required: str) -> None:
-    """Raise 403 if the required scope is missing from X-Agent-Scopes."""
-    if not x_agent_scopes:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "insufficient_scope",
-                "message": f"Agent manifest scope {required!r} is required for this operation.",
-            },
-        )
-    scopes = {s.strip() for s in x_agent_scopes.split(",")}
-    if required not in scopes:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "insufficient_scope",
-                "message": f"Agent manifest scope {required!r} is required for this operation.",
-            },
-        )
+# Issue #6050: _check_agent_scope (header-based) removed.  Replaced by
+# require_credential_capability() in credential_authorization.py, which reads
+# the registry-granted credential_scopes from verified token_context.
 
 
 def _validate_proxy_url(url: str, settings: Settings) -> None:
@@ -643,13 +630,12 @@ async def proxy_request(
         "Only valid for file-oriented credential types: ssh_key, certificate, config_file. "
         "Fetches the credential from Secrets Manager, writes it to a short-lived S3 object, "
         "and returns a presigned GET URL the agent can use to write the file to its tmpfs. "
-        "Requires X-Agent-Scopes: credential:materialize."
+        "Requires registry-granted credential:materialize capability."
     ),
 )
 async def credential_materialize(
     body: MaterializeBody,
     request: Request,
-    x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -667,8 +653,8 @@ async def credential_materialize(
     )
     effective_user_id = binding.resolved_user_id
 
-    # Scope gate.
-    _check_agent_scope(x_agent_scopes, "credential:materialize")
+    # Issue #6050: registry-based scope gate (replaces header-based _check_agent_scope).
+    require_credential_capability(request, "credential:materialize")
 
     user = await _get_user_context(effective_user_id, db, calling_endpoint="credential-materialize", expected_org=worker_tenant(request))
     # Issue #700: use canonical user's id and org_id for credential resolution.
@@ -781,14 +767,13 @@ async def credential_materialize(
     description=(
         "Returns the raw credential value. "
         "Gated by BG_VAULT_RAW_READ_ENABLED=true (per-deployment feature flag) AND "
-        "X-Agent-Scopes header containing 'credential:raw-read'. "
+        "registry-granted credential:raw-read capability. "
         "Every call is audit-logged regardless of outcome."
     ),
 )
 async def credential_raw_read(
     body: RawReadBody,
     request: Request,
-    x_agent_scopes: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -807,8 +792,8 @@ async def credential_raw_read(
             },
         )
 
-    # Scope gate.
-    _check_agent_scope(x_agent_scopes, "credential:raw-read")
+    # Issue #6050: registry-based scope gate (replaces header-based _check_agent_scope).
+    require_credential_capability(request, "credential:raw-read")
 
     # Issue #3175: Credential-authorization binding (S2).
     # Resolve the effective user from the webhook-events registry.
