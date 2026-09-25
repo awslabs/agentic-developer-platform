@@ -148,3 +148,60 @@ cluster ARN, endpoint and CA are independently checked through its SDK client.
 EKS authentication must be `API`, matching the maintained workspace module.
 BYOC clusters using legacy `aws-auth` mappings refuse because EKS access-entry
 enumeration alone cannot prove the permissions of those additional identities.
+
+## Shared namespace composition
+
+`bootstrap_workspace(..., membership=SharedMembership, authority_factory=...)`
+selects the namespace-only branch. It requires `SharedBootstrapAuthorityFactory`
+from `superplane_bootstrap.shared_authority`; the dedicated factory cannot execute
+this placement. The API must already have reserved the exact membership. Shared
+members record cluster ownership as `adopted`: the physical cluster's lifecycle
+does not become a workspace's deletion authority.
+
+The shared factory uses the same registration, `AuthorityJournal`,
+`TemporaryAuthority`, and `ComponentJournal` as dedicated bootstrap. Its grant
+plan contains only the member Namespace. It reads existing CRDs/system workloads,
+then creates namespace-scoped credential delegation through
+`authority.establish_components(delegation_specs)`. It never installs CRDs,
+patches kube-system, changes node taints or installs a second controller.
+
+Trusted installation supplies `ClusterAuthorityReference`: exact organization,
+cluster ARN, issuer role/access-entry ARN, Kubernetes username/group, and admission
+policy/binding UIDs. `namespace_admission.policy_documents(group)` produces the
+required cluster-owned ValidatingAdmissionPolicy and binding for a separately
+authorized platform installation. Bootstrap only reads those documents. The
+policy denies Pod creation/update in closed member namespaces except to the
+explicit issuer group, allowing the existing restricted isolation probes to run.
+Opening/restoring a gate patches only the original namespace UID and
+resourceVersion. This is an admission interlock, not a networking policy or quota.
+
+`SharedBootstrapServices` requires six trusted callbacks:
+
+- `verify_membership(membership, recovery=...)`: fresh canonical reservation and
+  cluster-use/platform authorization; recovery retains original ownership.
+- `prepare_credentials(authority, namespace_uid)`: journal actual SA/RBAC, issue
+  separate reader/mutator tokens and publish their projections; return the opaque
+  issued credential reference, not the old static configuration placeholder.
+- `verify_credentials(authority, namespace_uid)`: recheck exact generation,
+  revision, namespace/SA UIDs and consumer acknowledgement; prove admission denial
+  using the delivered tenant identity while the gate is closed.
+- `withdraw_credentials(authority, namespace_uid)`: revoke/remove only the
+  original member credential projections before component cleanup.
+- `verify_cluster_dependencies(authority)`: verify pinned CRD schemas, approved
+  connectivity, compatible sole management controller and platform eligibility.
+- `tenant_principals(authority)`: freshly enumerate tenant EKS identities, keeping
+  explicitly registered platform authority separate. The existing isolation
+  verifier also checks namespace service accounts and RBAC.
+
+The existing scoped `ManagementObservation` remains mandatory. These callbacks
+belong to the protected operation/vault/controller composer and have no permissive
+defaults. They are not proofs supplied by an API caller. Without this composition,
+shared production creation remains unavailable.
+
+Failures retain the original claim. Public `recover_interrupted_bootstrap` routes
+the shared factory to namespace recovery, closes its gate, withdraws credentials,
+deletes only UID/version-matching journal-owned SA/RBAC and releases the claim.
+The namespace remains closed and can be adopted by a retry only through its
+original creation journal. Successful member retirement requires separate
+admitted authority consuming those ownership records; bootstrap never deletes a
+cluster-owned entry, policy or dependency.
