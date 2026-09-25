@@ -1,4 +1,5 @@
 """Gateway-owned snapshots survive storage/bootstrap; changes revoke bindings."""
+
 # ruff: noqa: F811
 import copy
 import hashlib
@@ -23,8 +24,7 @@ ROOT = Path(__file__).resolve().parents[4]
 def snapshot(key="intent-refinement"):
     definition = json.loads((ROOT / f"modules/agent-factory/codex-harness/personas/{key}.json").read_text())
     raw = rfc8785.dumps(definition).decode()
-    return {"definition": raw, "digest": hashlib.sha256(raw.encode()).hexdigest(),
-            "instructions": definition["instructions"], "skillSources": "[]"}
+    return {"definition": raw, "digest": hashlib.sha256(raw.encode()).hexdigest(), "instructions": definition["instructions"], "skillSources": "[]"}
 
 
 @pytest.fixture
@@ -35,8 +35,13 @@ def frozen(tmp_path, monkeypatch):
     monkeypatch.setattr(harness, "persona_compatibility_class", lambda name: "codex-sdk" if name == "agent-task-gpt-intent-refinement" else None)
     model = {**_request().model_binding, "model_id": "gpt-5-codex", "transport": "openai_responses"}
     policy = {"allowed_personas": ["agent-task-gpt-intent-refinement"], "limits": {"max_duration_minutes": 30}}
-    arguments = {"persona": policy["allowed_personas"][0], "model_binding": model,
-                 "limits": _request().run_limits, "service_policy": policy, "env": {"ADP_CODEX_PERSONA_CATALOG_FILE": str(file)}}
+    arguments = {
+        "persona": policy["allowed_personas"][0],
+        "model_binding": model,
+        "limits": _request().run_limits,
+        "service_policy": policy,
+        "env": {"ADP_CODEX_PERSONA_CATALOG_FILE": str(file)},
+    }
     return arguments, harness.freeze_harness(**arguments), file
 
 
@@ -82,8 +87,12 @@ def test_catalogue_rejects_tampering_and_unimplemented_permissions(frozen, mutat
 
 def admit_frozen(client, store, frozen):
     arguments, value, _ = frozen
-    client.update_item(TableName=AUTHORITY_TABLE, Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}},
-                       UpdateExpression="SET personas = :p", ExpressionAttributeValues={":p": {"SS": [arguments["persona"]]}})
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}},
+        UpdateExpression="SET personas = :p",
+        ExpressionAttributeValues={":p": {"SS": [arguments["persona"]]}},
+    )
     request = _request(persona=arguments["persona"], model_binding=arguments["model_binding"], harness=value)
     store.accept(request)
     assert store.accept(request).replayed
@@ -99,8 +108,11 @@ def test_snapshot_is_protected_by_durable_grant_digest(client, store, frozen, mu
     if mutation != "remove":
         path = "harness.snapshot.instructions" if mutation == "instructions" else "harness.policy.capabilityLayers.runtime"
         names = {"#p" + str(i): part for i, part in enumerate(path.split("."))}
-        update = {"UpdateExpression": "SET " + ".".join(names) + " = :v", "ExpressionAttributeNames": names, "ExpressionAttributeValues": {
-            ":v": {"S": "changed"} if mutation == "instructions" else {"L": [{"S": "aws.mutate"}]}}}
+        update = {
+            "UpdateExpression": "SET " + ".".join(names) + " = :v",
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": {":v": {"S": "changed"} if mutation == "instructions" else {"L": [{"S": "aws.mutate"}]}},
+        }
     client.update_item(TableName=AUTHORITY_TABLE, Key=key, **update)
     with pytest.raises(WorkBindingError):
         store.resolve_work(request.dispatch_id)
@@ -111,8 +123,12 @@ def test_bootstrap_returns_frozen_snapshot_without_reading_changed_catalogue(cli
     frozen[2].write_text("changed catalogue")
     runtime = TaskRuntime(store, env={"AGENT_RUN_CREDENTIAL_KEY": "fixture-key-012345678901234567890123456789"}, clock=lambda: NOW)
     pod = SimpleNamespace(uid=str(uuid.uuid4()), namespace="adp-agents")
-    body = {"task_id": request.task_id, "invocation_id": request.invocation_id, "envelope_digest": envelope_digest(request.envelope),
-            "workload": {"pod_uid": pod.uid, "namespace": pod.namespace}}
+    body = {
+        "task_id": request.task_id,
+        "invocation_id": request.invocation_id,
+        "envelope_digest": envelope_digest(request.envelope),
+        "workload": {"pod_uid": pod.uid, "namespace": pod.namespace},
+    }
     delivery = SimpleNamespace(require_assignment=lambda *args: None, read=lambda uid: {"body": json.dumps(request.envelope)})
     result = runtime.bootstrap(body=body, pod=pod, delivery=delivery)
     assert result["harness"] == request.harness
@@ -120,6 +136,7 @@ def test_bootstrap_returns_frozen_snapshot_without_reading_changed_catalogue(cli
     bad = copy.deepcopy(request.harness)
     bad["policy"]["deadlineMs"] += 1
     from src.tasks.store import TaskStoreError
+
     with pytest.raises(TaskStoreError):
         store.accept(replace(request, harness=bad, idempotency_key="bad"))
 
@@ -129,6 +146,7 @@ def test_atomic_operation_fence_detects_harness_change_after_read(client, store,
     from botocore.exceptions import ClientError
 
     from src.tasks.store import _serialize_authority
+
     if with_harness:
         request = admit_frozen(client, store, frozen)
     else:
@@ -139,8 +157,9 @@ def test_atomic_operation_fence_detects_harness_change_after_read(client, store,
     if with_harness:
         client.update_item(TableName=AUTHORITY_TABLE, Key=key, UpdateExpression="REMOVE harness")
     else:
-        client.update_item(TableName=AUTHORITY_TABLE, Key=key, UpdateExpression="SET harness = :h",
-                           ExpressionAttributeValues=_serialize_authority({":h": frozen[1]}))
+        client.update_item(
+            TableName=AUTHORITY_TABLE, Key=key, UpdateExpression="SET harness = :h", ExpressionAttributeValues=_serialize_authority({":h": frozen[1]})
+        )
     with pytest.raises(ClientError, match="TransactionCanceledException"):
         client.transact_write_items(TransactItems=checks)
 
@@ -149,12 +168,14 @@ def test_large_persona_and_input_are_refused_before_worker_handoff(frozen):
     args, value, _ = frozen
     harness.assert_bootstrap_size(value, immutable_input={"instructions": "fixture"}, model_binding=args["model_binding"], limits=args["limits"])
     with pytest.raises(harness.TaskHarnessError, match="frame bound"):
-        harness.assert_bootstrap_size(value, immutable_input={"instructions": "x" * 65536},
-                                      model_binding=args["model_binding"], limits=args["limits"])
+        harness.assert_bootstrap_size(
+            value, immutable_input={"instructions": "x" * 65536}, model_binding=args["model_binding"], limits=args["limits"]
+        )
 
 
 def test_exported_codex_schemas_match_gateway_models():
     import importlib.util
+
     spec = importlib.util.spec_from_file_location("export_harness", ROOT / "modules/gateway/scripts/export_task_harness_contracts.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -165,19 +186,38 @@ def test_exported_codex_schemas_match_gateway_models():
 @pytest.mark.asyncio
 async def test_admission_freezes_before_reservation_and_replay_ignores_changed_catalogue(client, store, frozen, monkeypatch):
     from src.agentauth.task_admission import TaskAdmission, TaskAdmissionError
+
     arguments, _, file = frozen
-    client.update_item(TableName=AUTHORITY_TABLE, Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}},
-                       UpdateExpression="SET personas = :p", ExpressionAttributeValues={":p": {"SS": [arguments["persona"]]}})
-    policy = {**arguments["service_policy"], "status": "active", "task_scopes": ["submit"], "version": 1, "model_policy_version": "1",
-              "limits": {"max_duration_minutes": 30, "max_turns": 8, "max_output_tokens_per_turn": 4096, "max_usd_per_task": 1}}
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}},
+        UpdateExpression="SET personas = :p",
+        ExpressionAttributeValues={":p": {"SS": [arguments["persona"]]}},
+    )
+    policy = {
+        **arguments["service_policy"],
+        "status": "active",
+        "task_scopes": ["submit"],
+        "version": 1,
+        "model_policy_version": "1",
+        "limits": {"max_duration_minutes": 30, "max_turns": 8, "max_output_tokens_per_turn": 4096, "max_usd_per_task": 1},
+    }
     reservations = []
+
     async def reserve(**kwargs):
         reservations.append(kwargs)
         return {"status": "reserved", "reservation_id": "fixture-only"}
+
     async def model(*args, **kwargs):
         return arguments["model_binding"]
-    service = TaskAdmission(store, policies=SimpleNamespace(get=lambda **kw: policy),
-                            budget=SimpleNamespace(reserve_admission=reserve), model_resolver=model, clock=lambda: NOW)
+
+    service = TaskAdmission(
+        store,
+        policies=SimpleNamespace(get=lambda **kw: policy),
+        budget=SimpleNamespace(reserve_admission=reserve),
+        model_resolver=model,
+        clock=lambda: NOW,
+    )
     caller = SimpleNamespace(tenant_id="tenant-a", principal_id="svc-principal-1", require=lambda scope: None)
     submit = {"persona": arguments["persona"], "instructions": "Use supplied evidence."}
     monkeypatch.delenv("ADP_CODEX_PERSONA_CATALOG_FILE", raising=False)
@@ -198,12 +238,15 @@ async def test_admission_freezes_before_reservation_and_replay_ignores_changed_c
 def test_shared_sdk_catalogue_fixture_validates_without_reencoding():
     value = json.loads((ROOT / "docs/task-api/contracts/v1/fixtures/valid/bootstrap-codex-response.json").read_text())
     assert harness.validate_snapshot(value["harness"]["snapshot"])[0].digest == value["harness"]["snapshot"]["digest"]
-    assert harness.validate_harness(value["harness"], persona=value["persona"],
-                                    model_binding=value["model_binding"], limits=value["limits"]) == value["harness"]
+    assert (
+        harness.validate_harness(value["harness"], persona=value["persona"], model_binding=value["model_binding"], limits=value["limits"])
+        == value["harness"]
+    )
 
 
 def test_storage_refuses_combined_snapshot_and_input_larger_than_start_frame(store, frozen):
     from src.tasks.store import TaskStoreError
+
     args, value, _ = frozen
     value = copy.deepcopy(value)
     definition = json.loads(value["snapshot"]["definition"])
@@ -212,8 +255,7 @@ def test_storage_refuses_combined_snapshot_and_input_larger_than_start_frame(sto
     digest = hashlib.sha256(raw.encode()).hexdigest()
     value["snapshot"].update(definition=raw, digest=digest, instructions=definition["instructions"])
     value["policy"]["personaDigest"] = digest
-    request = _request(persona=args["persona"], model_binding=args["model_binding"], harness=value,
-                       request_payload={"instructions": "t" * 16000})
+    request = _request(persona=args["persona"], model_binding=args["model_binding"], harness=value, request_payload={"instructions": "t" * 16000})
     with pytest.raises(TaskStoreError, match="frame bound"):
         store.accept(request)
     assert store.read_task(request.task_id) is None
@@ -221,6 +263,7 @@ def test_storage_refuses_combined_snapshot_and_input_larger_than_start_frame(sto
 
 def test_responses_acceptance_cannot_omit_snapshot(store, frozen):
     from src.tasks.store import TaskStoreError
+
     args, _, _ = frozen
     with pytest.raises(TaskStoreError, match="requires a frozen harness"):
         store.accept(_request(persona=args["persona"], model_binding=args["model_binding"]))

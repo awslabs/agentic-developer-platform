@@ -3560,6 +3560,7 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
         raise TaskStoreError("invalid frozen tool grants")
     if request.harness is not None:
         from src.agentauth.task_harness import TaskHarnessError, validate_harness
+
         try:
             validate_harness(request.harness, persona=request.persona, model_binding=request.model_binding, limits=request.run_limits)
         except TaskHarnessError:
@@ -3680,6 +3681,7 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
         raise TaskStoreError("run deadline disagrees with task acceptance")
     if request.harness is not None:
         from src.agentauth.task_harness import TaskHarnessError, assert_bootstrap_size
+
         try:
             assert_bootstrap_size(request.harness, immutable_input=immutable_input, model_binding=model, limits=limits)
         except TaskHarnessError:

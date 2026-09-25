@@ -396,9 +396,11 @@ class TaskModel:
             if persona_compatibility_class(task["persona"]) != "codex-sdk":
                 raise TaskStoreError("Responses requires an admitted Codex persona")
             from src.agentauth.task_harness import TaskHarnessError, validate_harness
+
             try:
-                harness = validate_harness(grant.get("harness"), persona=task["persona"],
-                                           model_binding=grant["model_binding"], limits=grant["limits"])
+                harness = validate_harness(
+                    grant.get("harness"), persona=task["persona"], model_binding=grant["model_binding"], limits=grant["limits"]
+                )
             except TaskHarnessError:
                 raise TaskStoreError("Responses harness binding unavailable") from None
             frozen_policy = harness["policy"]

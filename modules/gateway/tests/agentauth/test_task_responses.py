@@ -102,6 +102,7 @@ def responses_fixture(model, monkeypatch):
     from pathlib import Path
 
     import rfc8785
+
     golden = Path(__file__).resolve().parents[4] / "docs/task-api/contracts/v1/fixtures/valid/bootstrap-codex-response.json"
     harness = json.loads(golden.read_text())["harness"]
     definition = json.loads(harness["snapshot"]["definition"])
@@ -109,10 +110,16 @@ def responses_fixture(model, monkeypatch):
     raw = rfc8785.dumps(definition).decode()
     digest = hashlib.sha256(raw.encode()).hexdigest()
     harness["snapshot"].update(definition=raw, digest=digest)
-    grant = model.repository._get_authority("TENANT#" + model.identity.tenant,
-        f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}")
-    harness["policy"].update(personaKey="gpt-fixture", personaDigest=digest, canonicalModel=binding["model_id"], allowedEfforts=["medium"],
-        deadlineMs=int(datetime.fromisoformat(grant["limits"]["deadline_at"].replace("Z", "+00:00")).timestamp() * 1000))
+    grant = model.repository._get_authority(
+        "TENANT#" + model.identity.tenant, f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}"
+    )
+    harness["policy"].update(
+        personaKey="gpt-fixture",
+        personaDigest=digest,
+        canonicalModel=binding["model_id"],
+        allowedEfforts=["medium"],
+        deadlineMs=int(datetime.fromisoformat(grant["limits"]["deadline_at"].replace("Z", "+00:00")).timestamp() * 1000),
+    )
     _make_model_fixture(model, "agent-task-gpt-fixture", binding, harness)
     monkeypatch.setattr(
         "src.admin.persona_models.catalogue.persona_compatibility_class", lambda persona: "codex-sdk" if persona == "agent-task-gpt-fixture" else None
@@ -292,9 +299,11 @@ def test_inline_reasoning_contract_preserves_ciphertext_and_assistant_phase():
 @pytest.mark.parametrize("violation", ["missing", "effort", "deadline"])
 async def test_responses_enforces_frozen_persona_before_budget_or_provider(model, monkeypatch, violation):
     from tests.tasks.test_store import NOW
+
     responses_fixture(model, monkeypatch)
-    grant = model.repository._get_authority("TENANT#" + model.identity.tenant,
-        f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}")
+    grant = model.repository._get_authority(
+        "TENANT#" + model.identity.tenant, f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}"
+    )
     if violation == "effort":
         model.request["reasoning"]["effort"] = "high"
     else:
@@ -315,6 +324,7 @@ async def test_codex_autonomous_turn_is_real_and_stops_at_frozen_budget(model, m
 
     from src.agentauth.task_turns import TaskTurnStore
     from tests.tasks.test_store import NOW
+
     responses_fixture(model, monkeypatch)
     await execute(model, responses_request=True)
     turns = TaskTurnStore(model.repository, clock=lambda: NOW)
@@ -324,8 +334,9 @@ async def test_codex_autonomous_turn_is_real_and_stops_at_frozen_budget(model, m
     model.turn_id = second
     await execute(model, responses_request=True)
     assert model.provider.await_count == 2
-    grant = model.repository._get_authority("TENANT#" + model.identity.tenant,
-        f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}")
+    grant = model.repository._get_authority(
+        "TENANT#" + model.identity.tenant, f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}"
+    )
     grant["harness"]["policy"]["limits"]["maxTurns"] = 2
     _make_model_fixture(model, "agent-task-gpt-fixture", grant["model_binding"], grant["harness"])
     with pytest.raises(TaskStoreError, match="persona turn budget"):

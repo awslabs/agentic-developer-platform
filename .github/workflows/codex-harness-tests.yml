@@ -5,6 +5,8 @@ on:
     paths:
       - 'modules/agent-factory/codex-harness/**'
       - 'docs/task-api/contracts/v1/**'
+      - 'modules/gateway/src/agentauth/task*.py'
+      - 'modules/gateway/src/tasks/**'
       - 'modules/tools/task-sdk/**'
       - 'modules/agent-factory/agent-worker-image/lib/task*.py'
       - 'modules/agent-factory/agent-worker-image/Dockerfile'
@@ -15,6 +17,8 @@ on:
     paths:
       - 'modules/agent-factory/codex-harness/**'
       - 'docs/task-api/contracts/v1/**'
+      - 'modules/gateway/src/agentauth/task*.py'
+      - 'modules/gateway/src/tasks/**'
       - 'modules/tools/task-sdk/**'
       - 'modules/agent-factory/agent-worker-image/lib/task*.py'
       - 'modules/agent-factory/agent-worker-image/Dockerfile'
@@ -58,3 +62,7 @@ jobs:
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install pytest==9.0.3 requests==2.32.5 rfc8785==0.1.4 boto3==1.36.0 cryptography==50.0.1
       - name: Real worker and Codex SDK Task lifecycle with fixture inference
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_task_codex_host.py -q
+      - name: Install gateway fixture dependencies
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install -e "../../gateway[dev]"
+      - name: Combined gateway, worker and SDK lifecycle with fixture inference
+        run: python3 test/run-isolated.py -- env AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_DEFAULT_REGION=us-east-1 "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_gateway_runtime.py -q

@@ -4,6 +4,7 @@ The catalogue file is deployment configuration, never a path supplied by a Task.
 It contains snapshots emitted by the shared harness, not a second compatibility
 registry. Registered persona class and live model evidence remain prerequisites.
 """
+
 # The shared TypeScript wire schema deliberately uses camelCase.
 # ruff: noqa: N815
 from __future__ import annotations
@@ -21,9 +22,19 @@ from src.admin.persona_models.catalogue import persona_compatibility_class
 
 REVISION = "codex-sdk-0.155.1/adp-v1"
 CAPABILITIES = Literal[
-    "repository.read", "repository.write", "branch.push", "change.create", "change.update",
-    "review.submit", "change.merge", "story.create", "tests.run", "artifacts.publish",
-    "agents.delegate", "aws.assume", "aws.mutate",
+    "repository.read",
+    "repository.write",
+    "branch.push",
+    "change.create",
+    "change.update",
+    "review.submit",
+    "change.merge",
+    "story.create",
+    "tests.run",
+    "artifacts.publish",
+    "agents.delegate",
+    "aws.assume",
+    "aws.mutate",
 ]
 Effort = Literal["low", "medium", "high", "xhigh"]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -75,7 +86,8 @@ class Persona(Closed):
         required = {
             "validated-change": {"repository.read", "repository.write", "tests.run", "branch.push", "change.create"},
             "review-repair-merge": {"repository.read", "repository.write", "tests.run", "branch.push", "review.submit", "change.merge"},
-            "operations": {"aws.assume"}, "aidlc": {"agents.delegate", "artifacts.publish"},
+            "operations": {"aws.assume"},
+            "aidlc": {"agents.delegate", "artifacts.publish"},
         }.get(self.completionPolicy, set())
         if not required.issubset(self.requiredCapabilities):
             raise ValueError("completion policy lacks required capabilities")
@@ -130,8 +142,10 @@ def validate_snapshot(value):
     if _sha(definition) != snapshot.digest or definition != snapshot.definition:
         raise TaskHarnessError("snapshot definition digest mismatch")
     sources = json.loads(snapshot.skillSources)
-    if not isinstance(sources, list) or len(sources) > 16 or any(
-        not isinstance(pair, list) or len(pair) != 2 or not all(isinstance(v, str) for v in pair) for pair in sources
+    if (
+        not isinstance(sources, list)
+        or len(sources) > 16
+        or any(not isinstance(pair, list) or len(pair) != 2 or not all(isinstance(v, str) for v in pair) for pair in sources)
     ):
         raise TaskHarnessError("invalid skill sources")
     skills = dict(sources)
@@ -153,12 +167,20 @@ def validate_harness(value, *, persona, model_binding, limits):
         snapshot, definition = validate_snapshot(harness.snapshot.model_dump())
         policy = harness.policy
         from datetime import datetime
+
         deadline_ms = int(datetime.fromisoformat(limits["deadline_at"].replace("Z", "+00:00")).timestamp() * 1000)
-        if (persona != "agent-task-" + definition.key or policy.personaKey != definition.key
-                or policy.personaDigest != snapshot.digest or policy.canonicalModel != model_binding["model_id"]
-                or model_binding["transport"] != "openai_responses" or model_binding["invocability_verified"] is not True
-                or policy.deadlineMs > deadline_ms or policy.limits.maxTurns > limits["max_turns"]
-                or definition.effort not in policy.allowedEfforts or "task-api" not in definition.surfaces):
+        if (
+            persona != "agent-task-" + definition.key
+            or policy.personaKey != definition.key
+            or policy.personaDigest != snapshot.digest
+            or policy.canonicalModel != model_binding["model_id"]
+            or model_binding["transport"] != "openai_responses"
+            or model_binding["invocability_verified"] is not True
+            or policy.deadlineMs > deadline_ms
+            or policy.limits.maxTurns > limits["max_turns"]
+            or definition.effort not in policy.allowedEfforts
+            or "task-api" not in definition.surfaces
+        ):
             raise TaskHarnessError("task harness binding mismatch")
         layers = policy.capabilityLayers.model_dump()
         if any(len(layer) > 32 or len(set(layer)) != len(layer) for layer in layers.values()):
@@ -189,8 +211,12 @@ def freeze_harness(*, persona, model_binding, limits, service_policy, env=None):
         if len(raw) > 2097152:
             raise TaskHarnessError("persona catalogue exceeds bound")
         catalogue = json.loads(raw)
-        if (not isinstance(catalogue, dict) or set(catalogue) != {"schemaVersion", "snapshots"}
-                or type(catalogue["schemaVersion"]) is not int or catalogue["schemaVersion"] != 1):
+        if (
+            not isinstance(catalogue, dict)
+            or set(catalogue) != {"schemaVersion", "snapshots"}
+            or type(catalogue["schemaVersion"]) is not int
+            or catalogue["schemaVersion"] != 1
+        ):
             raise TaskHarnessError("invalid persona catalogue")
         snapshots = catalogue["snapshots"]
         if not isinstance(snapshots, list) or not 1 <= len(snapshots) <= 64:
@@ -203,19 +229,29 @@ def freeze_harness(*, persona, model_binding, limits, service_policy, env=None):
             entries[definition.key] = (snapshot, definition)
         snapshot, definition = entries[persona.removeprefix("agent-task-")]
         from datetime import datetime
+
         deadline = int(datetime.fromisoformat(limits["deadline_at"].replace("Z", "+00:00")).timestamp() * 1000)
         # Submit authority already permits the worker's report publication. No
         # executable permission is conferred by instructions or catalogue content.
         layers = {key: list(TASK_RUNTIME_CAPABILITIES) for key in ("tenant", "principal", "run", "surface", "runtime")}
-        value = {"snapshot": snapshot.model_dump(), "policy": {
-            "personaKey": definition.key, "personaDigest": snapshot.digest,
-            "compatibilityClass": "codex-sdk", "harnessRevision": REVISION,
-            "canonicalModel": model_binding["model_id"], "allowedEfforts": [definition.effort],
-            "capabilityLayers": layers, "limits": {
-                "maxTurns": min(definition.limits.maxTurns, limits["max_turns"]),
-                "maxContextBytes": definition.limits.maxContextBytes,
-                "maxDurationMs": min(definition.limits.maxDurationMs, int(service_policy["limits"]["max_duration_minutes"]) * 60000),
-            }, "deadlineMs": deadline}}
+        value = {
+            "snapshot": snapshot.model_dump(),
+            "policy": {
+                "personaKey": definition.key,
+                "personaDigest": snapshot.digest,
+                "compatibilityClass": "codex-sdk",
+                "harnessRevision": REVISION,
+                "canonicalModel": model_binding["model_id"],
+                "allowedEfforts": [definition.effort],
+                "capabilityLayers": layers,
+                "limits": {
+                    "maxTurns": min(definition.limits.maxTurns, limits["max_turns"]),
+                    "maxContextBytes": definition.limits.maxContextBytes,
+                    "maxDurationMs": min(definition.limits.maxDurationMs, int(service_policy["limits"]["max_duration_minutes"]) * 60000),
+                },
+                "deadlineMs": deadline,
+            },
+        }
         return validate_harness(value, persona=persona, model_binding=model_binding, limits=limits)
     except (OSError, ValidationError, ValueError, TypeError, KeyError) as error:
         raise TaskHarnessError("task harness prerequisite unavailable") from error

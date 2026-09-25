@@ -27,8 +27,8 @@ const UUID = '1e14b86d-50d6-45e6-9cc9-5f4cc30365aa';
 const REPORT_ID = '9a734313-2f31-484b-9349-d52c41ad2497';
 
 describe('published valid fixtures are accepted', () => {
-  // The host-side frames: whatever the contract says the host may send, this
-  // child must be able to read. A rejection here means the agent would fail a
+  // Host-side frames in the investigator profile must remain readable.
+  // Codex profile extensions are explicitly refused in the tests below. A rejection here means the agent would fail a
   // run the platform considers well-formed.
   for (const fixture of [
     loadFixture('valid', 'process-start-frame.json'),
@@ -141,6 +141,32 @@ describe('published invalid fixtures are refused', () => {
   });
 });
 
+const codexFixtures = [
+  { bucket: 'valid', name: 'process-codex-start-frame.json', inbound: true },
+  { bucket: 'valid', name: 'process-codex-model-result.json', inbound: true },
+  { bucket: 'valid', name: 'process-control-result.json', inbound: true },
+  { bucket: 'valid', name: 'process-codex-model-request.json', inbound: false },
+  { bucket: 'valid', name: 'process-control-request.json', inbound: false },
+  { bucket: 'invalid', name: 'process-codex-model-override.json', inbound: false },
+  { bucket: 'invalid', name: 'process-codex-unknown-content.json', inbound: true },
+] as const;
+
+describe('Codex profile fixtures cannot enable capabilities in the investigator', () => {
+  for (const { bucket, name, inbound } of codexFixtures) {
+    test(`${name} requires the separate Codex Task profile`, () => {
+      const fixture = loadFixture(bucket, name);
+      assert.throws(
+        () => inbound ? parseHostFrame(asLine(fixture)) : assertChildFrame(fixture.body as unknown as ChildFrame),
+        (error: unknown) => {
+          assert.ok(error instanceof ProtocolViolation);
+          assert.match(error.message, /unrecognised field|unknown (?:host )?frame type/);
+          return true;
+        },
+      );
+    });
+  }
+});
+
 describe('fixture corpus coverage', () => {
   test('every published process-protocol fixture is exercised by name', () => {
     // Guards against the corpus growing without these tests noticing. A new
@@ -170,7 +196,8 @@ describe('fixture corpus coverage', () => {
       'valid/process-result-frame.json',
       'valid/process-start-artifact-reference-frame.json',
       'valid/process-start-frame.json',
-    ]);
+      ...codexFixtures.map(({ bucket, name }) => `${bucket}/${name}`),
+    ].sort());
   });
 
   test('fixtures claiming T5 ownership are all consumed here', () => {

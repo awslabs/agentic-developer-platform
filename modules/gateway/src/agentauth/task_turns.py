@@ -54,6 +54,7 @@ class TaskTurnStore:
             raise TaskStoreError("invalid autonomous turn flag")
         if allow_autonomous and task["persona"] != "agent-task-cyber":
             from src.admin.persona_models.catalogue import persona_compatibility_class
+
             if persona_compatibility_class(task["persona"]) != "codex-sdk" or not task["persona"].startswith("agent-task-"):
                 raise TaskStoreError("autonomous turn requires cyber persona or admitted Codex harness")
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
@@ -70,9 +71,11 @@ class TaskTurnStore:
             raise TaskStoreError("task turn budget exhausted")
         if grant["model_binding"]["transport"] == "openai_responses":
             from src.agentauth.task_harness import TaskHarnessError, validate_harness
+
             try:
-                frozen = validate_harness(grant.get("harness"), persona=task["persona"],
-                                          model_binding=grant["model_binding"], limits=grant["limits"])["policy"]
+                frozen = validate_harness(
+                    grant.get("harness"), persona=task["persona"], model_binding=grant["model_binding"], limits=grant["limits"]
+                )["policy"]
             except TaskHarnessError:
                 raise TaskStoreError("Codex turn requires a protected harness") from None
             if count >= frozen["limits"]["maxTurns"] or int(self.clock().timestamp() * 1000) >= frozen["deadlineMs"]:

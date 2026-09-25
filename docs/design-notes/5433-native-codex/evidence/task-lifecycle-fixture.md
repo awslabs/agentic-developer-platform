@@ -41,7 +41,45 @@ mtime 21:21:03 UTC); no attribution is made from that comparison. Its baseline
 was preserved. A new read-only fingerprint at 21:28 UTC remained unchanged in
 subsequent testing; no live login/settings files were rewritten.
 
-Remaining acceptance work includes authoritative gateway snapshot admission,
-executable capability brokers, persona-specific completion policies, OTLP
+Gateway snapshot admission is now implemented and covered by the combined
+runtime fixture below. Remaining acceptance work includes executable capability brokers, persona-specific completion policies, OTLP
 export/operations, live model qualification, cost/latency/quality evaluation and
 real story runs. Structural report grounding does not establish semantic truth.
+
+
+## Combined gateway and worker runtime
+
+`integration/test_gateway_runtime.py` adds five passing scenarios using actual
+TaskAdmission, protected grants, TaskRuntime bootstrap, TaskHost child execution,
+the packaged official SDK, TaskTurnStore, TaskModel, DynamoTaskReadStore and
+TaskCommands. Moto supplies DynamoDB and S3. The Task client preserves bootstrap,
+credential handling and request augmentation; its HTTP delivery is substituted.
+
+| Scenario | Durable assertions |
+| --- | --- |
+| Success | Report bytes stored; validated exit, terminal state and acknowledgement; admission reservation reconciled |
+| Repair | Invalid report corrected using two distinct canonical model turns |
+| Amendment | Committed follow-up included in the next model request |
+| Cancellation | Cancelled outcome persisted; no accepted report |
+| Unknown model outcome | Failed outcome without replay; admission budget hold retained |
+
+These scenarios use fixture inference and budget/usage sinks. They do not qualify
+HTTP/IAM/TokenReview delivery, live model readiness, billed inference or cloud
+operations. Run separately from `test_task_codex_host.py`: the gateway and worker
+fixture helpers both publish a Python `tests` package.
+
+From the repository root, after installing gateway development dependencies in
+the dedicated fixture virtual environment and building the runtime:
+
+```sh
+python3 modules/agent-factory/codex-harness/test/run-isolated.py -- env \
+  AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_DEFAULT_REGION=us-east-1 \
+  ADP_CODEX_TEST_NODE=/absolute/node24 \
+  /absolute/fixture-venv/bin/python -m pytest \
+  modules/agent-factory/codex-harness/integration/test_gateway_runtime.py -q
+```
+
+CI now runs this combined fixture separately. Formatting fixes address the six
+files flagged by the gateway CI format gate. Investigator corpus tests explicitly
+exercise rejection of the new unsupported Codex process extensions; all 109
+investigator tests pass without changing its runtime behavior.
