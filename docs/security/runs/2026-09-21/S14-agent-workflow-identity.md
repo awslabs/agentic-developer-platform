@@ -61,3 +61,32 @@ are source tests, not proof of live IAM or Kubernetes behavior.
 
 S14 and older finding #4725 also require S13's separately owned admin-audit
 acceptance. Installing this pool does not complete that requirement.
+
+## Secret decryption prerequisite
+
+The first actual developer workflow passed the STS guard but failed App-secret
+retrieval with `Access to KMS is not allowed` (run 36092740128). Secret metadata
+inspection does not exercise decryption. Even the AWS-managed Secrets Manager
+key was blocked by the boundary's explicit deny of APIs outside its ceiling.
+The shared identity module now resolves each secret's actual KMS key (including
+the default `alias/aws/secretsmanager`) and allows only `kms:Decrypt` on those
+keys, through Secrets Manager in the configured region and with an encryption
+context naming one of the two exact App secrets. Explicit boundary denies
+preserve these service/context constraints against other attached policies.
+No Encrypt, data-key generation, key administration or direct decrypt is granted.
+
+The dev repair plan updated only the dedicated boundary and inline policy,
+without resource creation/deletion or shared-runner changes. Live policy
+simulation verified the allowed context and six denied missing/wrong service,
+secret-context and key cases; all six were also denied with a hypothetical
+broad attached decrypt policy. Workflow retry remains the actual secret-access
+and end-to-end acceptance check.
+
+The second attempt successfully retrieved App credentials, generated its App
+token, checked out source and built the agent. EKS Auto Mode then evicted the
+runner as `Underutilized`, interrupting the job with exit 130 before the agent
+started. Match the shared ARC pool's `karpenter.sh/do-not-disrupt: "true"` pod
+annotation for this dedicated pool and the standalone installer. This protects
+active jobs from voluntary consolidation; it does not guarantee survival of
+involuntary node failures. The correction changes only the dedicated Helm
+release and is covered by its rendered-template test.

@@ -19,6 +19,10 @@ run "separate_pool_cannot_inherit_shared_role" {
     agent_workflow_role_arn      = "arn:aws:iam::123456789012:role/adp-test-agent-workflow"
   }
   assert {
+    condition = yamldecode(helm_release.agent_workflow[0].values[0]).template.metadata.annotations["karpenter.sh/do-not-disrupt"] == "true"
+    error_message = "Active developer runs must not be evicted for node consolidation."
+  }
+  assert {
     condition     = jsondecode(jsonencode(yamldecode(helm_release.agent_workflow[0].values[0]))).template.spec.serviceAccountName == "agent-workflow-sa"
     error_message = "The dedicated pool must execute with its distinct service account."
   }

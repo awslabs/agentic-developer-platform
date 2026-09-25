@@ -19,7 +19,7 @@ values = {
                                  'name': os.environ.get('ARC_CONTROLLER_SERVICE_ACCOUNT', 'arc-gha-rs-controller')},
     'githubConfigUrl': config['github_config_url'], 'githubConfigSecret': 'github-arc-secret',
     'runnerScaleSetName': 'arc-runner-agent', 'minRunners': 0, 'maxRunners': 5,
-    'template': {'spec': {'serviceAccountName': 'agent-workflow-sa', 'containers': [{
+    'template': {'metadata': {'annotations': {'karpenter.sh/do-not-disrupt': 'true'}}, 'spec': {'serviceAccountName': 'agent-workflow-sa', 'containers': [{
         'name': 'runner', 'image': os.environ['AGENT_WORKFLOW_RUNNER_IMAGE'],
         'command': ['/home/runner/run.sh'],
         'env': [{'name': 'GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT', 'value': '120'}],

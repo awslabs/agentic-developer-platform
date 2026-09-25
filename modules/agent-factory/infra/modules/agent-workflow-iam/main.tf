@@ -32,6 +32,12 @@ data "aws_secretsmanager_secret" "github_dev" {
   for_each = toset(["id", "key"])
   name     = "adp/${var.github_org}/gh-app-dev-${each.key}"
 }
+# Secrets encrypted with the AWS-managed default key still require KMS access:
+# the boundary's explicit deny otherwise overrides the key's service policy.
+data "aws_kms_key" "github_dev" {
+  for_each = data.aws_secretsmanager_secret.github_dev
+  key_id   = coalesce(each.value.kms_key_id, "alias/aws/secretsmanager")
+}
 module "runtime" {
   source                 = "../runner-runtime-policy"
   account_id             = data.aws_caller_identity.current.account_id
@@ -44,9 +50,19 @@ module "runtime" {
 locals {
   service_account = "agent-workflow-sa"
   runner_label    = "arc-runner-agent"
-  grants = [for grant in module.runtime.grants : grant if contains([
+  runtime_grants = [for grant in module.runtime.grants : grant if contains([
     "Identity", "ModelInference", "GatewayEndpoint", "GatewayTransport", "LegacyEngineTransport"
   ], grant.Sid)]
+  kms_resources    = distinct([for key in data.aws_kms_key.github_dev : key.arn])
+  secret_resources = [for secret in data.aws_secretsmanager_secret.github_dev : secret.arn]
+  kms_service      = "secretsmanager.${var.aws_region}.amazonaws.com"
+  grants = concat(local.runtime_grants, [{
+    Sid = "DeveloperSecretDecryption", Effect = "Allow", Action = ["kms:Decrypt"], Resource = local.kms_resources
+    Condition = { StringEquals = {
+      "kms:ViaService"                  = local.kms_service
+      "kms:EncryptionContext:SecretARN" = local.secret_resources
+    } }
+  }])
   actions = distinct(flatten([for grant in local.grants : grant.Action]))
   boundary = concat([
     { Sid = "AgentApiCeiling", Effect = "Allow", Action = local.actions, Resource = "*" },
@@ -54,7 +70,12 @@ locals {
     ], [for grant in local.grants : {
       Sid    = "DenyOther${grant.Sid}Resources", Effect = "Deny",
       Action = grant.Action, NotResource = grant.Resource
-  } if grant.Resource != ["*"]])
+    } if grant.Resource != ["*"]], [
+    { Sid = "DenyDirectKeyDecryption", Effect = "Deny", Action = ["kms:Decrypt"], Resource = "*",
+    Condition = { StringNotEquals = { "kms:ViaService" = local.kms_service } } },
+    { Sid = "DenyOtherSecretDecryption", Effect = "Deny", Action = ["kms:Decrypt"], Resource = "*",
+    Condition = { StringNotEquals = { "kms:EncryptionContext:SecretARN" = local.secret_resources } } }
+  ])
 }
 resource "aws_iam_policy" "boundary" {
   name   = "${var.name_prefix}-agent-workflow-boundary"

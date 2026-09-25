@@ -20,18 +20,20 @@ resource "helm_release" "agent_workflow" {
     runnerScaleSetName       = "arc-runner-agent"
     minRunners               = 0
     maxRunners               = 5
-    template = { spec = {
-      serviceAccountName = kubernetes_service_account.agent_workflow[0].metadata[0].name
-      containers = [{
-        name    = "runner"
-        image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
-        command = ["/home/runner/run.sh"]
-        env     = [{ name = "GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT", value = "120" }]
-        resources = {
-          requests = { cpu = "4", memory = "4Gi" }
-          limits   = { cpu = "4", memory = "8Gi" }
-        }
-      }]
+    template = {
+      metadata = { annotations = { "karpenter.sh/do-not-disrupt" = "true" } }
+      spec = {
+        serviceAccountName = kubernetes_service_account.agent_workflow[0].metadata[0].name
+        containers = [{
+          name    = "runner"
+          image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
+          command = ["/home/runner/run.sh"]
+          env     = [{ name = "GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT", value = "120" }]
+          resources = {
+            requests = { cpu = "4", memory = "4Gi" }
+            limits   = { cpu = "4", memory = "8Gi" }
+          }
+        }]
     } }
   })]
   lifecycle {

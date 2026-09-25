@@ -1,4 +1,5 @@
 mock_provider "aws" {
+  mock_data "aws_kms_key" { defaults = { arn = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555" } }
   mock_data "aws_caller_identity" { defaults = { account_id = "123456789012" } }
 }
 variables {
@@ -12,11 +13,11 @@ variables {
 }
 override_data {
   target = data.aws_secretsmanager_secret.github_dev["id"]
-  values = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/example/gh-app-dev-id-ABC123" }
+  values = { kms_key_id = "alias/aws/secretsmanager", arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/example/gh-app-dev-id-ABC123" }
 }
 override_data {
   target = data.aws_secretsmanager_secret.github_dev["key"]
-  values = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/example/gh-app-dev-key-DEF456" }
+  values = { kms_key_id = "alias/aws/secretsmanager", arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/example/gh-app-dev-key-DEF456" }
 }
 override_resource {
   target          = aws_iam_policy.boundary
@@ -48,7 +49,7 @@ run "legitimate_work_without_deployment_authority" {
   assert {
     condition = toset(local.actions) == toset([
       "sts:GetCallerIdentity", "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
-      "ssm:GetParameter", "execute-api:Invoke", "secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"
+      "kms:Decrypt", "ssm:GetParameter", "execute-api:Invoke", "secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"
     ])
     error_message = "Developer work needs model, exact gateway and dev-app access; no deployment/build/PassRole APIs."
   }
@@ -82,4 +83,19 @@ run "namespace_patterns_refused" {
   command = plan
   variables { runner_namespace = "arc-runners*" }
   expect_failures = [var.runner_namespace]
+}
+
+run "decryption_is_bound_to_secret_and_service" {
+  command = plan
+  assert {
+    condition = one([for s in local.grants : s if s.Sid == "DeveloperSecretDecryption"]).Condition.StringEquals == {
+      "kms:ViaService" = "secretsmanager.us-east-1.amazonaws.com"
+      "kms:EncryptionContext:SecretARN" = local.secret_resources
+    }
+    error_message = "Decrypt must require Secrets Manager and only the two exact App secret contexts."
+  }
+  assert {
+    condition = length([for s in local.boundary : s if contains(["DenyDirectKeyDecryption", "DenyOtherSecretDecryption"], s.Sid)]) == 2
+    error_message = "The boundary must deny missing/wrong service and encryption context even if another policy allows decryption."
+  }
 }
