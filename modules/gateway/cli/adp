@@ -793,6 +793,19 @@ cmd_codex_launch() {
     exec codex ${pinned[@]+"${pinned[@]}"} "$@"
 }
 
+# --- kimi (launch) ----------------------------------------------------------
+# The isolated Kimi adapter owns its proxy and consumes the selected deployment
+# through BG_CONFIG_DIR. Never fall back to an unconfigured native Kimi binary.
+cmd_kimi_launch() {
+    local launcher="${HOME}/.local/share/kimi-adp/launch.py"
+    if [ ! -x "${launcher}" ]; then
+        print_error "The isolated Kimi ADP adapter is not installed at ${launcher}."
+        print_warning "Install/configure the Kimi ADP adapter before using 'adp kimi'."
+        exit 1
+    fi
+    exec "${launcher}" "$@"
+}
+
 # --- claude (launch) --------------------------------------------------------
 # Preflight, then hand over. No proxy and no env var by design: Claude Code's
 # apiKeyHelper calls `adp token` per request, so bare `claude` works and keeps
@@ -1623,6 +1636,7 @@ Wire up a tool (config only — sign in once, then set up as many as you like):
 Run a tool:
     codex [args...]       Launch Codex: starts the auth proxy if needed, then execs
     claude [args...]      Launch Claude Code (optional — bare 'claude' also works)
+    kimi [args...]        Launch the configured isolated Kimi Code CLI through ADP
     serve                 Run the localhost auth proxy in the FOREGROUND
 
 Connect a repository (uses the platform's GitHub App — you supply no secrets):
@@ -1792,11 +1806,11 @@ main() {
         *) resolve_deployment "${requested_deployment}" ;;
     esac
 
-    # Every verb below EXCEPT the two tool launchers owns its own flag surface, so
+    # Every verb below EXCEPT the tool launchers owns its own flag surface, so
     # a `--deployment` among its arguments is a misplaced global option rather than
     # the tool's own flag, and is refused instead of silently ignored.
     case "${command}" in
-        codex|claude|help|--help|-h|version|--version|-v|"") ;;
+        codex|claude|kimi|help|--help|-h|version|--version|-v|"") ;;
         *) ADP_CURRENT_VERB="${command}" reject_post_verb_deployment "$@" ;;
     esac
 
@@ -1837,6 +1851,10 @@ main() {
                 --)    shift; cmd_codex_launch "$@" ;;
                 *)     cmd_codex_launch "$@" ;;
             esac
+            ;;
+        kimi)
+            if [ "${1:-}" = "--" ]; then shift; fi
+            cmd_kimi_launch "$@"
             ;;
         claude)
             case "${1:-}" in

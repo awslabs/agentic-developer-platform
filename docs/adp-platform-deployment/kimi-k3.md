@@ -14,7 +14,7 @@ resolved destination account, which may differ from the platform hosting account
 
 This release supports Kimi through Responses. The legacy Chat Completions
 translator constructs Claude payloads and is not a Kimi transport. Hosted Kimi
-personas and a bundled `adp kimi` launcher are outside this gateway release.
+personas and automatic Kimi installation are outside this gateway release.
 
 ## Pricing and rollout
 
@@ -74,3 +74,13 @@ inspect gateway usage for the exact model, destination, successful requests and
 priced tokens. Verify streaming and upstream errors separately. Remove temporary
 sessions, test resources and the EC2 instance afterward. A successful catalogue
 lookup or initialized CLI session alone is not successful inference.
+
+## ADP command for an existing isolated installation
+
+`adp kimi [args...]` launches the configured adapter at
+`~/.local/share/kimi-adp/launch.py`. The adapter must consume `BG_CONFIG_DIR`
+from ADP's deployment selection for its gateway URL and authentication helper.
+`adp --deployment NAME kimi` selects the same deployment used by other ADP verbs.
+The command preserves Kimi arguments and exit status. It fails with an installation
+hint when the adapter is absent; it does not install Kimi or launch an unconfigured
+native binary. `adp kimi -- --help` explicitly forwards arguments to Kimi.
