@@ -111,3 +111,22 @@ Assert zero duplicate create/SendCommand/workload POST calls, no mutation under 
 Add a production composition test from the actual cleanup request handler through exact approval/admission, paid-task assignment/`TaskRegistry`, RPC and real `Provider` against PostgreSQL with simulated provider I/O. Start from an authenticated cancelled source whose original creation intent is still INTENDED and whose lease is recovered/fenced. Prove a separately admitted removal can remove only known original resources while the source intent, source reservation and allocation uncertainty remain intact; the finalizer must refuse completion/release. Pair it with missing cancellation, active source dispatch, wrong source/cluster/generation, stale source fence, absent cleanup approval and concurrent duplicate cleanup requests. Do not replace this with a test that invokes `Provider.delete_cluster` directly under a made-up grant. A second case resolves original claims using actual protected recovery observations and then proves final accounting can complete under existing shared rules without replaying creation.
 
 Live GPU drain, CRI/plugin behavior, native SSM lifecycle, AWS async request termination, network teardown and actual billing attribution remain acceptance evidence to collect under separately authorized installation/release inputs. A code merge alone does not satisfy these.
+
+## Remaining interruption boundaries after this implementation
+
+Cleanup still executes workload drain, SkyPilot down, exact Node removal and
+network cleanup inside one shared `delete_cluster` call. If that process stops
+between effects, the read-only observer cannot execute the remaining deletions.
+A successful original SkyPilot request alone does not establish full cleanup;
+unremoved Node/network inventory retains exposure and prevents allocation release.
+This implementation therefore does not establish resumable cleanup at every
+interruption boundary. A separately reviewed, versioned teardown graph must expose
+individually observable removal stages through existing Harness continuation,
+while preserving previously approved single-step plans and original identities.
+
+A cleanup ownership binding can also survive failed admission until its original
+approval expires. Safe replacement requires a shared admission retirement contract
+that excludes writers which validated approval before waiting for the admission
+lock. Absence of an operation or admission intent is insufficient proof. The app
+currently refuses replacement, retaining the original binding; no shared engine
+change is included in this app-only implementation.
