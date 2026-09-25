@@ -369,7 +369,7 @@ async def test_sdk_request_refused_for_investigator_before_provider(model):
     model.enforcement.check_budget_hierarchy.assert_not_awaited()
 
 
-def _make_model_fixture(model, persona="agent-task-cyber", model_binding=None):
+def _make_model_fixture(model, persona="agent-task-cyber", model_binding=None, harness=None):
     from src.tasks.records import task_binding_sort_key, task_policy_sort_key
     from src.tasks.store import _protected_grant_digest, _serialize
 
@@ -379,6 +379,8 @@ def _make_model_fixture(model, persona="agent-task-cyber", model_binding=None):
     grant["persona"] = persona
     if model_binding is not None:
         grant["model_binding"] = model_binding
+    if harness is not None:
+        grant["harness"] = harness
     digest = _protected_grant_digest(grant)
     binding = repo._get_authority(pk, task_binding_sort_key(identity.task_id))
     binding.update(persona=persona, grant_digest=digest)

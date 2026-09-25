@@ -50,8 +50,12 @@ class TaskTurnStore:
             identity.runtime_attempt_id,
         ):
             raise TaskStoreError("task attempt changed")
-        if type(allow_autonomous) is not bool or (allow_autonomous and task["persona"] != "agent-task-cyber"):
-            raise TaskStoreError("autonomous turn requires cyber persona")
+        if type(allow_autonomous) is not bool:
+            raise TaskStoreError("invalid autonomous turn flag")
+        if allow_autonomous and task["persona"] != "agent-task-cyber":
+            from src.admin.persona_models.catalogue import persona_compatibility_class
+            if persona_compatibility_class(task["persona"]) != "codex-sdk" or not task["persona"].startswith("agent-task-"):
+                raise TaskStoreError("autonomous turn requires cyber persona or admitted Codex harness")
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         existing = next((turn for turn in self.list_turns(identity.task_id) if turn["turn_id"] == request_id), None)
         if existing:
@@ -64,6 +68,15 @@ class TaskTurnStore:
         grant = self.repository._get_authority("TENANT#" + identity.tenant, f"TASK_RUN#{identity.invocation_id}#GEN#{identity.generation:010d}")
         if grant is None or count >= int(grant["limits"]["max_turns"]):
             raise TaskStoreError("task turn budget exhausted")
+        if grant["model_binding"]["transport"] == "openai_responses":
+            from src.agentauth.task_harness import TaskHarnessError, validate_harness
+            try:
+                frozen = validate_harness(grant.get("harness"), persona=task["persona"],
+                                          model_binding=grant["model_binding"], limits=grant["limits"])["policy"]
+            except TaskHarnessError:
+                raise TaskStoreError("Codex turn requires a protected harness") from None
+            if count >= frozen["limits"]["maxTurns"] or int(self.clock().timestamp() * 1000) >= frozen["deadlineMs"]:
+                raise TaskStoreError("Codex persona turn budget or deadline exhausted")
         now = self.clock().strftime("%Y-%m-%dT%H:%M:%SZ")
         if task["deadline_at"] <= now:
             raise TaskStoreError("task deadline elapsed")

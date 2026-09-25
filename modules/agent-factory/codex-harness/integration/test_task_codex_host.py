@@ -72,7 +72,7 @@ class CodexClient(FakeClient):
         text = json.dumps(report())
         if self.mode == "repair" and len(self.requests) == 1:
             text = "invalid report"
-        if self.mode == "invalid":
+        if self.mode in {"invalid", "budget"}:
             text = "invalid report"
         if self.mode == "cancel":
             self.cancel = True
@@ -93,7 +93,7 @@ class CodexClient(FakeClient):
 @pytest.mark.parametrize("mode,expected_calls,outcome", [("success", 1, "completed"), ("repair", 2, "completed"),
                                                          ("invalid", 2, "failed"), ("cancel", 1, "cancelled"),
                                                          ("steer", 2, "completed"), ("unknown", 1, "failed"),
-                                                         ("tampered", 0, "failed")])
+                                                         ("tampered", 0, "failed"), ("budget", 1, "failed")])
 def test_real_codex_task_lifecycle(tmp_path, monkeypatch, assignment_and_bootstrap, mode, expected_calls, outcome):
     node = os.environ.get("ADP_CODEX_TEST_NODE") or shutil.which("node")
     assert node, "Node >=24 and built Codex/investigator packages are required"
@@ -103,6 +103,8 @@ def test_real_codex_task_lifecycle(tmp_path, monkeypatch, assignment_and_bootstr
     envelope["persona"] = bootstrap["persona"] = persona
     bootstrap["model_binding"].update(model_id="gpt-5-codex", transport="openai_responses")
     bootstrap["harness"] = harness(bootstrap["deadline_at"])
+    if mode == "budget":
+        bootstrap["harness"]["policy"]["limits"]["maxTurns"] = 1
     if mode == "tampered":
         bootstrap["harness"]["snapshot"]["instructions"] = "Unpinned instructions"
     events = []

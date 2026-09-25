@@ -42,3 +42,11 @@ test("Report citations must match host evidence, declared references and shared 
   assert.throws(() => parseTaskReport(JSON.stringify({ ...report, evidence_refs: [{ ...citation, source: "artifact" }] }), evidence, () => {}), /unsupported/);
   assert.throws(() => parseTaskReport(JSON.stringify({ ...report, evidence_refs: [citation, citation] }), evidence, () => {}), /unsupported/);
 });
+
+test("Shared gateway bootstrap fixture is accepted by the SDK snapshot and Task adapter", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const raw = await readFile(new URL("../../../../docs/task-api/contracts/v1/fixtures/valid/bootstrap-codex-response.json", import.meta.url), "utf8");
+  const value = JSON.parse(raw);
+  const { snapshot } = taskHarness(value);
+  assert.deepEqual(snapshot, value.harness.snapshot);
+});

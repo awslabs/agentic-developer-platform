@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'modules/agent-factory/codex-harness/**'
+      - 'docs/task-api/contracts/v1/**'
       - 'modules/tools/task-sdk/**'
       - 'modules/agent-factory/agent-worker-image/lib/task*.py'
       - 'modules/agent-factory/agent-worker-image/Dockerfile'
@@ -13,6 +14,7 @@ on:
     branches: [main]
     paths:
       - 'modules/agent-factory/codex-harness/**'
+      - 'docs/task-api/contracts/v1/**'
       - 'modules/tools/task-sdk/**'
       - 'modules/agent-factory/agent-worker-image/lib/task*.py'
       - 'modules/agent-factory/agent-worker-image/Dockerfile'
@@ -50,7 +52,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Create isolated fixture environment
+        run: python3 test/run-isolated.py -- python3 -m venv "$RUNNER_TEMP/codex-task-fixtures"
       - name: Install fixture worker dependencies
-        run: python3 test/run-isolated.py -- python3 -m pip install pytest requests rfc8785 boto3
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install pytest==9.0.3 requests==2.32.5 rfc8785==0.1.4 boto3==1.36.0 cryptography==50.0.1
       - name: Real worker and Codex SDK Task lifecycle with fixture inference
-        run: python3 test/run-isolated.py -- python3 -m pytest integration/test_task_codex_host.py -q
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_task_codex_host.py -q

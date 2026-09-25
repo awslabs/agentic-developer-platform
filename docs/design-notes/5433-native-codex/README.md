@@ -310,6 +310,38 @@ Relocated-package tests exercise seven fixture scenarios: success, repair,
 repeated invalid output, cancellation during inference, an amendment requiring
 a second canonical turn, unknown model outcome without replay, and tampered
 instructions rejected before inference. These are runtime integration results,
-not semantic quality or live provider qualification. The gateway does not yet
-freeze/provide the harness snapshot; no new Task persona or command is enabled.
+not semantic quality or live provider qualification. The gateway now freezes/provides the harness snapshot as described below;
+no new Task persona or command is enabled.
 See [the lifecycle evidence](evidence/task-lifecycle-fixture.md).
+
+### Protected gateway persona admission
+
+Gateway admission loads reviewed SDK-generated snapshots from the server-owned
+`ADP_CODEX_PERSONA_CATALOG_FILE`. It requires the existing authoritative persona
+compatibility registry and standing principal policy, plus the resolved live model
+binding. Catalogue content cannot grant executable permissions: the current Task
+runtime supports only report publication. Missing, tampered, duplicate or
+incompatible snapshots fail before budget reservation. Combined snapshot/input
+size is checked against the worker's frame bound before acceptance.
+
+The snapshot and intersected policy are stored within the existing protected run
+grant, included in its digest and conditional operation checks, and returned by
+bootstrap. A catalogue update affects future admissions; existing tasks and
+idempotent retries retain their exact admitted snapshot. No second persona-class
+registry is introduced. `scripts/catalogue.mjs` compiles reviewed persona JSON and
+pinned skill content using the shared TypeScript validator. Changing configuration
+does not register, enable or grant authority to a persona.
+
+The Task schemas now describe Codex bootstrap metadata, current-authority IPC,
+and closed Responses request/result frames. Pydantic-derived schema exports have
+a drift check, and a shared bootstrap fixture validates in both the gateway and
+TypeScript runtime. The evaluation manifest's lifetime threshold now matches the
+already-existing 360-minute contract maximum; runtime/per-principal limits are
+unchanged. See [gateway admission evidence](evidence/task-harness-admission.md).
+
+The real turn API now admits autonomous continuations for protected Codex Task
+runs; its previous cyber-only gate would have rejected Codex requests despite
+the local worker fixture passing. Turn creation and model handoff enforce the
+frozen persona budget/deadline, and model execution rejects non-admitted effort
+before reservation or provider effects. The child also applies the smallest
+persona, policy and Task operation limit across report repairs and amendments.

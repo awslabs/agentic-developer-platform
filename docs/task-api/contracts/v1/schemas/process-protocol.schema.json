@@ -28,6 +28,7 @@
       "oneOf": [
         { "$ref": "process-protocol.schema.json#/$defs/artifact_chunk_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/start_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/control_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/turn_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/model_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/report_ack_frame" },
@@ -39,6 +40,7 @@
       "description": "Child-to-host frame types: ready, progress, model.request, input.required, result, cancelled, error.",
       "oneOf": [
         { "$ref": "process-protocol.schema.json#/$defs/ready_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/control_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/progress_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/model_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/input_required_frame" },
@@ -50,6 +52,19 @@
 
     "start_frame": {
       "type": "object",
+      "allOf": [
+        {
+          "if": { "required": ["model_binding"], "properties": { "model_binding": { "required": ["transport"], "properties": { "transport": { "const": "openai_responses" } } } } },
+          "then": { "required": ["harness"] }
+        },
+        {
+          "if": { "required": ["harness"] },
+          "then": {
+            "required": ["model_binding", "persona", "deadline_at"],
+            "properties": { "model_binding": { "properties": { "transport": { "const": "openai_responses" } } } }
+          }
+        }
+      ],
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "invocation_id", "generation", "instructions"],
       "properties": {
@@ -60,6 +75,10 @@
         "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
         "generation": { "$ref": "common.schema.json#/$defs/generation" },
         "runtime_attempt_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "harness": { "$ref": "codex-harness.schema.json#" },
+        "persona": { "type": "string", "pattern": "^agent-task-gpt-[a-z][a-z0-9-]{0,62}$" },
+        "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
+        "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
         "inputs": { "type": "object" },
         "acceptance_criteria": {
@@ -254,6 +273,7 @@
           "description": "Anthropic Messages-format content blocks when confirmed; null otherwise."
         },
         "stop_reason": { "type": ["string", "null"], "maxLength": 64 },
+        "responses_response": { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesResult" },
         "error_code": {
           "type": ["string", "null"],
           "enum": ["model_access_denied", "budget_exceeded", "authority_revoked", "model_outcome_unknown", "deadline_exceeded", null]
@@ -263,7 +283,7 @@
         {
           "description": "An unknown outcome carries no content; the child must not treat it as a usable answer or request an automatic resend.",
           "if": { "properties": { "operation_status": { "const": "unknown" } }, "required": ["operation_status"] },
-          "then": { "properties": { "content": { "type": "null" } } }
+          "then": { "properties": { "content": { "type": "null" } }, "not": { "required": ["responses_response"] } }
         },
         {
           "if": { "properties": { "operation_status": { "const": "confirmed" } }, "required": ["operation_status"] },
@@ -350,7 +370,102 @@
       }
     },
 
+    "control_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "control.request"
+        }
+      }
+    },
+    "control_result_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type",
+        "current"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "control.result"
+        },
+        "current": {
+          "type": "boolean"
+        }
+      }
+    },
     "model_request_frame": {
+      "oneOf": [
+        {
+          "$ref": "process-protocol.schema.json#/$defs/messages_request_frame"
+        },
+        {
+          "$ref": "process-protocol.schema.json#/$defs/responses_request_frame"
+        }
+      ]
+    },
+    "responses_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type",
+        "turn_id",
+        "responses_request"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "model.request"
+        },
+        "turn_id": {
+          "$ref": "common.schema.json#/$defs/turn_id"
+        },
+        "responses_request": {
+          "$ref": "codex-responses.schema.json#/$defs/TaskResponsesRequest"
+        }
+      }
+    },
+
+    "messages_request_frame": {
       "type": "object",
       "description": "The child asks the host to perform a model call. The child holds no credential and cannot reach a provider itself.",
       "additionalProperties": false,

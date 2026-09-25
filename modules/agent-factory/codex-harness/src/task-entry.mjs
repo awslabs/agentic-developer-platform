@@ -30,12 +30,13 @@ async function run() {
   bridge.progress('Validated the task and persona bindings.', 'evidence_inventory');
   const amendments = [];
   let operations = 0;
+  const maxOperations = Math.min(start.limits.max_turns, policy.limits.maxTurns, JSON.parse(snapshot.definition).limits.maxTurns);
   let repair = false;
   let previous;
   const input = { instructions: start.instructions, inputs: start.inputs ?? {}, acceptance_criteria: start.acceptance_criteria ?? [], artifacts: start.artifacts ?? [] };
   const outputContract = 'Return only a JSON Task report with summary (string), findings (array of {statement,evidence_refs,confidence?}), uncertainties (string array), recommendations (string array), and evidence_refs (exact objects from the supplied evidence list). Every finding must cite existing evidence. Do not invent actions, tests, approvals, artifacts or citations. Address every acceptance criterion; state unmet requirements and missing evidence as uncertainties.';
   for (;;) {
-    if (operations >= start.limits.max_turns) throw new Error('task model budget exhausted');
+    if (operations >= maxOperations) throw new Error('task model budget exhausted');
     amendments.push(...bridge.takeSteering());
     const evidence = await runAdmittedSession({
       runId: start.invocation_id, snapshot, policy, source: { kind: 'task-api', taskId: start.task_id, generation: start.generation },
@@ -46,20 +47,20 @@ async function run() {
       async assertCurrent(signal) { signal.throwIfAborted(); await bridge.current(); signal.throwIfAborted(); },
       async model(request, signal) {
         signal.throwIfAborted();
-        if (++operations > start.limits.max_turns) throw new Error('task model operation budget exhausted');
+        if (++operations > maxOperations) throw new Error('task model operation budget exhausted');
         return bridge.responses(request);
       },
       async progress(event) { if (event.type === 'turn.started') bridge.progress('Analysing the admitted task and supplied evidence.', 'analysis'); },
     });
     if (bridge.steering.length) {
-      if (operations >= start.limits.max_turns) throw new Error('task amendments require more model budget');
+      if (operations >= maxOperations) throw new Error('task amendments require more model budget');
       repair = false;
       continue;
     }
     let report;
     try { report = parseTaskReport(evidence.response, bridge.evidence, assertInvestigatorReport); }
     catch (error) {
-      if (repair || operations >= start.limits.max_turns) throw error;
+      if (repair || operations >= maxOperations) throw error;
       repair = true; previous = evidence.response;
       bridge.progress('Checking and correcting the report structure and citations.', 'synthesis');
       continue;

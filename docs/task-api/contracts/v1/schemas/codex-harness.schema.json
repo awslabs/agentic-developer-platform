@@ -1,0 +1,279 @@
+{
+  "$defs": {
+    "Layers": {
+      "additionalProperties": false,
+      "properties": {
+        "tenant": {
+          "items": {
+            "enum": [
+              "repository.read",
+              "repository.write",
+              "branch.push",
+              "change.create",
+              "change.update",
+              "review.submit",
+              "change.merge",
+              "story.create",
+              "tests.run",
+              "artifacts.publish",
+              "agents.delegate",
+              "aws.assume",
+              "aws.mutate"
+            ],
+            "type": "string"
+          },
+          "title": "Tenant",
+          "type": "array"
+        },
+        "principal": {
+          "items": {
+            "enum": [
+              "repository.read",
+              "repository.write",
+              "branch.push",
+              "change.create",
+              "change.update",
+              "review.submit",
+              "change.merge",
+              "story.create",
+              "tests.run",
+              "artifacts.publish",
+              "agents.delegate",
+              "aws.assume",
+              "aws.mutate"
+            ],
+            "type": "string"
+          },
+          "title": "Principal",
+          "type": "array"
+        },
+        "run": {
+          "items": {
+            "enum": [
+              "repository.read",
+              "repository.write",
+              "branch.push",
+              "change.create",
+              "change.update",
+              "review.submit",
+              "change.merge",
+              "story.create",
+              "tests.run",
+              "artifacts.publish",
+              "agents.delegate",
+              "aws.assume",
+              "aws.mutate"
+            ],
+            "type": "string"
+          },
+          "title": "Run",
+          "type": "array"
+        },
+        "surface": {
+          "items": {
+            "enum": [
+              "repository.read",
+              "repository.write",
+              "branch.push",
+              "change.create",
+              "change.update",
+              "review.submit",
+              "change.merge",
+              "story.create",
+              "tests.run",
+              "artifacts.publish",
+              "agents.delegate",
+              "aws.assume",
+              "aws.mutate"
+            ],
+            "type": "string"
+          },
+          "title": "Surface",
+          "type": "array"
+        },
+        "runtime": {
+          "items": {
+            "enum": [
+              "repository.read",
+              "repository.write",
+              "branch.push",
+              "change.create",
+              "change.update",
+              "review.submit",
+              "change.merge",
+              "story.create",
+              "tests.run",
+              "artifacts.publish",
+              "agents.delegate",
+              "aws.assume",
+              "aws.mutate"
+            ],
+            "type": "string"
+          },
+          "title": "Runtime",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tenant",
+        "principal",
+        "run",
+        "surface",
+        "runtime"
+      ],
+      "title": "Layers",
+      "type": "object"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "properties": {
+        "maxTurns": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Maxturns",
+          "type": "integer"
+        },
+        "maxContextBytes": {
+          "maximum": 262144,
+          "minimum": 1024,
+          "title": "Maxcontextbytes",
+          "type": "integer"
+        },
+        "maxDurationMs": {
+          "maximum": 21600000,
+          "minimum": 1000,
+          "title": "Maxdurationms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxTurns",
+        "maxContextBytes",
+        "maxDurationMs"
+      ],
+      "title": "Limits",
+      "type": "object"
+    },
+    "Policy": {
+      "additionalProperties": false,
+      "properties": {
+        "personaKey": {
+          "title": "Personakey",
+          "type": "string"
+        },
+        "personaDigest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Personadigest",
+          "type": "string"
+        },
+        "compatibilityClass": {
+          "const": "codex-sdk",
+          "title": "Compatibilityclass",
+          "type": "string"
+        },
+        "harnessRevision": {
+          "const": "codex-sdk-0.155.1/adp-v1",
+          "title": "Harnessrevision",
+          "type": "string"
+        },
+        "canonicalModel": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Canonicalmodel",
+          "type": "string"
+        },
+        "allowedEfforts": {
+          "items": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Allowedefforts",
+          "type": "array"
+        },
+        "capabilityLayers": {
+          "$ref": "#/$defs/Layers"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "deadlineMs": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Deadlinems",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "personaKey",
+        "personaDigest",
+        "compatibilityClass",
+        "harnessRevision",
+        "canonicalModel",
+        "allowedEfforts",
+        "capabilityLayers",
+        "limits",
+        "deadlineMs"
+      ],
+      "title": "Policy",
+      "type": "object"
+    },
+    "Snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "definition": {
+          "maxLength": 65536,
+          "title": "Definition",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "instructions": {
+          "maxLength": 262144,
+          "title": "Instructions",
+          "type": "string"
+        },
+        "skillSources": {
+          "maxLength": 2097152,
+          "title": "Skillsources",
+          "type": "string"
+        }
+      },
+      "required": [
+        "definition",
+        "digest",
+        "instructions",
+        "skillSources"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "snapshot": {
+      "$ref": "#/$defs/Snapshot"
+    },
+    "policy": {
+      "$ref": "#/$defs/Policy"
+    }
+  },
+  "required": [
+    "snapshot",
+    "policy"
+  ],
+  "title": "Harness",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-harness.schema.json",
+  "description": "Frozen server-owned Codex Task harness. Digest, capability, model and deadline bindings are additionally validated by admission and runtime."
+}

@@ -143,7 +143,7 @@
       "note": "Separate from the engine development budget, so evaluation spend cannot be hidden inside it."
     },
     "task_lifetime": {
-      "value": 30,
+      "value": 360,
       "unit": "minutes",
       "source": "contracts/v1/limits.json#/lifetime/task_lifetime_minutes",
       "criteria": [

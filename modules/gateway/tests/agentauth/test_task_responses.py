@@ -97,7 +97,23 @@ def responses_fixture(model, monkeypatch):
     binding = {**model.service.readiness.return_value[0], "transport": "openai_responses", "model_id": "openai.gpt-6-astra"}
     # No production persona is enabled by this fixture. Real admission still
     # requires the authoritative registry and distinct invocability evidence.
-    _make_model_fixture(model, "agent-task-gpt-fixture", binding)
+    import hashlib
+    from datetime import datetime
+    from pathlib import Path
+
+    import rfc8785
+    golden = Path(__file__).resolve().parents[4] / "docs/task-api/contracts/v1/fixtures/valid/bootstrap-codex-response.json"
+    harness = json.loads(golden.read_text())["harness"]
+    definition = json.loads(harness["snapshot"]["definition"])
+    definition.update(key="gpt-fixture", effort="medium")
+    raw = rfc8785.dumps(definition).decode()
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    harness["snapshot"].update(definition=raw, digest=digest)
+    grant = model.repository._get_authority("TENANT#" + model.identity.tenant,
+        f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}")
+    harness["policy"].update(personaKey="gpt-fixture", personaDigest=digest, canonicalModel=binding["model_id"], allowedEfforts=["medium"],
+        deadlineMs=int(datetime.fromisoformat(grant["limits"]["deadline_at"].replace("Z", "+00:00")).timestamp() * 1000))
+    _make_model_fixture(model, "agent-task-gpt-fixture", binding, harness)
     monkeypatch.setattr(
         "src.admin.persona_models.catalogue.persona_compatibility_class", lambda persona: "codex-sdk" if persona == "agent-task-gpt-fixture" else None
     )
@@ -270,3 +286,49 @@ def test_inline_reasoning_contract_preserves_ciphertext_and_assistant_phase():
     response = result()
     response["output"].insert(0, {**reasoning, "id": "rs_fixture"})
     assert TaskResponsesResult.model_validate(response).model_dump(exclude_none=True) == response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("violation", ["missing", "effort", "deadline"])
+async def test_responses_enforces_frozen_persona_before_budget_or_provider(model, monkeypatch, violation):
+    from tests.tasks.test_store import NOW
+    responses_fixture(model, monkeypatch)
+    grant = model.repository._get_authority("TENANT#" + model.identity.tenant,
+        f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}")
+    if violation == "effort":
+        model.request["reasoning"]["effort"] = "high"
+    else:
+        frozen = grant["harness"] if violation == "deadline" else {}
+        if violation == "deadline":
+            frozen["policy"]["deadlineMs"] = int(NOW.timestamp() * 1000) - 1
+        _make_model_fixture(model, "agent-task-gpt-fixture", grant["model_binding"], frozen)
+    with pytest.raises(TaskStoreError, match="harness binding|effort is not admitted|deadline expired"):
+        await execute(model, responses_request=True)
+    model.enforcement.check_budget_hierarchy.assert_not_awaited()
+    model.provider.assert_not_awaited()
+    assert model.service._read(model.identity.task_id, model.turn_id) is None
+
+
+@pytest.mark.asyncio
+async def test_codex_autonomous_turn_is_real_and_stops_at_frozen_budget(model, monkeypatch):
+    import uuid
+
+    from src.agentauth.task_turns import TaskTurnStore
+    from tests.tasks.test_store import NOW
+    responses_fixture(model, monkeypatch)
+    await execute(model, responses_request=True)
+    turns = TaskTurnStore(model.repository, clock=lambda: NOW)
+    second = str(uuid.uuid4())
+    receipt = turns.commit(identity=model.identity, request_id=second, expected_transcript_version=2, allow_autonomous=True)
+    assert receipt["turn"]["turn_number"] == 2
+    model.turn_id = second
+    await execute(model, responses_request=True)
+    assert model.provider.await_count == 2
+    grant = model.repository._get_authority("TENANT#" + model.identity.tenant,
+        f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}")
+    grant["harness"]["policy"]["limits"]["maxTurns"] = 2
+    _make_model_fixture(model, "agent-task-gpt-fixture", grant["model_binding"], grant["harness"])
+    with pytest.raises(TaskStoreError, match="persona turn budget"):
+        turns.commit(identity=model.identity, request_id=str(uuid.uuid4()), expected_transcript_version=3, allow_autonomous=True)
+    assert len(turns.list_turns(model.identity.task_id)) == 2
+    assert model.provider.await_count == 2

@@ -206,10 +206,13 @@ class TaskModel:
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         return task
 
-    def _claim(self, *, identity, turn_id, digest, model_id):
+    def _claim(self, *, identity, turn_id, digest, model_id, max_turns=None):
         task = self._current(identity)
-        if not any(turn["turn_id"] == turn_id for turn in TaskTurnStore(self.repository).list_turns(identity.task_id)):
+        turn = next((turn for turn in TaskTurnStore(self.repository).list_turns(identity.task_id) if turn["turn_id"] == turn_id), None)
+        if turn is None:
             raise TaskStoreError("model turn has not been committed")
+        if max_turns is not None and int(turn["turn_number"]) > max_turns:
+            raise TaskStoreError("model turn exceeds frozen persona budget")
         operation = base_item(
             partition=task_ops_partition(identity.task_id), sort_key=model_operation_sort_key(turn_id), record_type="TASK_OPS", scope=task["scope"]
         ) | {
@@ -386,11 +389,24 @@ class TaskModel:
         transport = "openai_responses" if responses_request else "anthropic_messages"
         if grant["model_binding"].get("transport") != transport:
             raise TaskStoreError("task model transport does not match grant")
+        max_persona_turns = None
         if responses_request:
             from src.admin.persona_models.catalogue import persona_compatibility_class
 
             if persona_compatibility_class(task["persona"]) != "codex-sdk":
                 raise TaskStoreError("Responses requires an admitted Codex persona")
+            from src.agentauth.task_harness import TaskHarnessError, validate_harness
+            try:
+                harness = validate_harness(grant.get("harness"), persona=task["persona"],
+                                           model_binding=grant["model_binding"], limits=grant["limits"])
+            except TaskHarnessError:
+                raise TaskStoreError("Responses harness binding unavailable") from None
+            frozen_policy = harness["policy"]
+            if request["reasoning"]["effort"] not in frozen_policy["allowedEfforts"]:
+                raise TaskStoreError("Responses effort is not admitted")
+            if int(self.clock().timestamp() * 1000) >= frozen_policy["deadlineMs"]:
+                raise TaskStoreError("Responses persona deadline expired")
+            max_persona_turns = frozen_policy["limits"]["maxTurns"]
         output_field = "max_output_tokens" if responses_request else "max_tokens"
         if request[output_field] > int(grant["limits"]["max_output_tokens_per_turn"]):
             raise TaskStoreError("task model output bound exceeded")
@@ -406,7 +422,7 @@ class TaskModel:
         if binding != grant["model_binding"]:
             raise TaskStoreError("task model binding changed")
         operation, owned = await run_in_threadpool(
-            self._claim, identity=identity, turn_id=turn_id, digest=request_digest, model_id=binding["model_id"]
+            self._claim, identity=identity, turn_id=turn_id, digest=request_digest, model_id=binding["model_id"], max_turns=max_persona_turns
         )
         if not owned:
             return self.receipt(operation)

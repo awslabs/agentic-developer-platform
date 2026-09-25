@@ -78,7 +78,7 @@ native tool declarations from the host request. The host callback must supply a
 confirmed durable model receipt. `HostBridge.responses` provides the IPC method;
 TaskHost and the gateway understand the corresponding request/receipt. The
 packaged Codex Task entrypoint connects these components; gateway-bound snapshot
-admission is still required before registration.
+admission is implemented; persona/model qualification is still required before registration.
 
 The current bridge accepts complete message history and inline encrypted
 reasoning, preserving assistant phase. Function calls, hosted tools, external history, media and
@@ -120,3 +120,20 @@ package with the real Python TaskHost and official SDK, using fixture gateway
 receipts and inference. It covers successful completion, correction, invalid
 output, cancellation, committed amendments, unknown outcomes and snapshot
 tampering. No live story acceptance or image deployment is implied.
+
+Gateway configuration can be compiled after building this package:
+
+```sh
+node scripts/catalogue.mjs --skills ./reviewed-skills personas/intent-refinement.json > reviewed-catalogue.json
+```
+
+Each referenced skill is `<id>.md` in that directory and must match its manifest
+SHA-256. Mount the reviewed output as deployment-owned configuration and set
+`ADP_CODEX_PERSONA_CATALOG_FILE` in the gateway. This command emits configuration;
+it does not change the live gateway, register a persona or grant capabilities.
+Admission verifies the authoritative persona class, standing service policy,
+model binding and snapshot. It freezes the snapshot inside the protected Task
+grant before reservations, and refuses a combined bootstrap exceeding the IPC
+frame bound. Existing tasks never reload instructions from a changed catalogue.
+The current runtime's capability ceiling remains report publication until the
+executable brokers and persona completion policies are qualified.

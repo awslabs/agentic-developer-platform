@@ -122,6 +122,8 @@ def validate_bootstrap(value: object, assignment) -> dict:
         or model["invocability_verified"] is not True
     ):
         raise TaskProtocolError("task model binding is not invocable")
+    if model["transport"] == "openai_responses" and "harness" not in body:
+        raise TaskProtocolError("Responses bootstrap requires a frozen harness")
     if "harness" in body:
         if model["transport"] != "openai_responses":
             raise TaskProtocolError("harness metadata requires Responses transport")

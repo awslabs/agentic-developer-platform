@@ -52,6 +52,19 @@
 
     "bootstrap_response": {
       "type": "object",
+      "allOf": [
+        {
+          "if": { "required": ["model_binding"], "properties": { "model_binding": { "required": ["transport"], "properties": { "transport": { "const": "openai_responses" } } } } },
+          "then": { "required": ["harness"] }
+        },
+        {
+          "if": { "required": ["harness"] },
+          "then": {
+            "required": ["model_binding", "persona", "deadline_at"],
+            "properties": { "model_binding": { "properties": { "transport": { "const": "openai_responses" } } } }
+          }
+        }
+      ],
       "description": "Task-scoped run credential plus immutable bindings. Existing service principals are denied until an explicit task policy exists.",
       "additionalProperties": false,
       "required": [
@@ -85,6 +98,7 @@
         "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "input": { "$ref": "bootstrap.schema.json#/$defs/immutable_input" },
         "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
+        "harness": { "$ref": "codex-harness.schema.json#" },
         "limits": { "$ref": "bootstrap.schema.json#/$defs/run_limits" },
         "capabilities": {
           "type": "array",

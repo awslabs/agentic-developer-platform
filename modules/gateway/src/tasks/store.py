@@ -354,6 +354,7 @@ class AcceptanceRequest:
     capacity_reservation_id: str
     generation: int = 1
     tool_grants: tuple[str, ...] = field(default_factory=tuple)
+    harness: dict[str, Any] | None = None
     input_reference: dict[str, Any] | None = None
     artifact_ids: tuple[str, ...] = field(default_factory=tuple)
     budget_reservation: dict[str, Any] | None = None
@@ -650,6 +651,8 @@ class TaskStore:
             "runtime_attempt_id": None,
             "created_at": now_iso,
         }
+        if request.harness is not None:
+            run_grant["harness"] = request.harness
         if request.budget_reservation is not None:
             if request.budget_reservation.get("status") != "reserved" or not request.budget_reservation.get("reservation_id"):
                 raise TaskStoreError("acceptance requires a confirmed budget reservation")
@@ -1177,6 +1180,12 @@ class TaskStore:
             grant_condition += " AND #tool_grants = :grant_tool_grants"
             grant_values[":grant_tool_grants"] = grant["tool_grants"]
             grant_names["#tool_grants"] = "tool_grants"
+        grant_names["#harness"] = "harness"
+        if "harness" in grant:
+            grant_condition += " AND #harness = :grant_harness"
+            grant_values[":grant_harness"] = grant["harness"]
+        else:
+            grant_condition += " AND attribute_not_exists(#harness)"
         if required_turn_number is not None:
             limits = grant.get("limits")
             maximum_turns = limits.get("max_turns") if isinstance(limits, dict) else None
@@ -3539,6 +3548,8 @@ def _protected_grant_digest(grant: dict[str, Any]) -> str:
         fields += ("budget_reservation",)
     if "tool_grants" in grant:
         fields += ("tool_grants",)
+    if "harness" in grant:
+        fields += ("harness",)
     return payload_digest({field_name: grant[field_name] for field_name in fields})
 
 
@@ -3547,6 +3558,14 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
 
     if not isinstance(request.tool_grants, tuple) or not valid_tools(list(request.tool_grants)):
         raise TaskStoreError("invalid frozen tool grants")
+    if request.harness is not None:
+        from src.agentauth.task_harness import TaskHarnessError, validate_harness
+        try:
+            validate_harness(request.harness, persona=request.persona, model_binding=request.model_binding, limits=request.run_limits)
+        except TaskHarnessError:
+            raise TaskStoreError("invalid frozen harness") from None
+    if isinstance(request.model_binding, dict) and request.model_binding.get("transport") == "openai_responses" and request.harness is None:
+        raise TaskStoreError("Responses acceptance requires a frozen harness")
     immutable_input = request.immutable_input
     allowed_input = {"instructions", "inputs", "acceptance_criteria", "artifacts", "input_digest"}
     if not isinstance(immutable_input, dict) or not {"instructions", "input_digest"}.issubset(immutable_input):
@@ -3659,6 +3678,12 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
             raise TaskStoreError(f"run limit {field_name} is invalid")
     if limits.get("deadline_at") != _iso(request.deadline_at):
         raise TaskStoreError("run deadline disagrees with task acceptance")
+    if request.harness is not None:
+        from src.agentauth.task_harness import TaskHarnessError, assert_bootstrap_size
+        try:
+            assert_bootstrap_size(request.harness, immutable_input=immutable_input, model_binding=model, limits=limits)
+        except TaskHarnessError:
+            raise TaskStoreError("frozen harness exceeds process frame bound") from None
 
 
 def _validated_envelope(request: AcceptanceRequest, request_digest: str) -> dict[str, Any]:

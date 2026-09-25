@@ -119,6 +119,14 @@ class TaskAdmission:
             "max_usd": float(policy["limits"]["max_usd_per_task"]),
             "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        from src.agentauth.task_harness import TaskHarnessError, assert_bootstrap_size, freeze_harness
+
+        try:
+            harness = freeze_harness(persona=submit["persona"], model_binding=binding, limits=limits, service_policy=policy)
+            if harness is not None:
+                assert_bootstrap_size(harness, immutable_input=immutable_input, model_binding=binding, limits=limits)
+        except TaskHarnessError:
+            raise TaskAdmissionError("prerequisite_unavailable", 503) from None
         scope = hashlib.sha256(("task-nonterminal:tenant:" + caller.tenant_id).encode()).hexdigest()
         try:
             await run_in_threadpool(
@@ -151,6 +159,7 @@ class TaskAdmission:
             idempotency_key=idempotency_key,
             persona=submit["persona"],
             tool_grants=tool_grants,
+            harness=harness,
             request_payload=submit,
             deadline_at=deadline,
             grant_reference=assignment["grant_sk"],
