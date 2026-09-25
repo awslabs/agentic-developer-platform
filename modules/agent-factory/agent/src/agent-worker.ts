@@ -19,12 +19,13 @@ import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './l
 
 import { loadHumanCommunication } from './human-communication';
 import { assistantText } from './reporting-text';
+import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { TmpSpillStore } from './utils/spill';
 import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
-import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
+import { initTokenManager, isTokenManagerInitialized, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
 import { AuthWatchdog } from './lib/authWatchdog';
 import { isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
@@ -165,6 +166,8 @@ import { mintSyntheticPresence, extractGateAnswerComment, findPendingGateStage a
 // ============================================================================
 // Configuration
 // ============================================================================
+
+const runtimeAppAuth = captureRuntimeAppAuth();
 
 const REPO_OWNER = process.env.REPO_OWNER || '';
 const REPO_NAME = process.env.REPO_NAME || '';
@@ -470,7 +473,7 @@ async function refreshAppToken(): Promise<void> {
   // in a mediated run means a call that should have gone through the gateway, and
   // re-minting is neither possible nor the fix.
   if (isMediatedRun()) return;
-  if (isBrokerEnabled()) {
+  if (isTokenManagerInitialized() || isBrokerEnabled()) {
     await getRuntimeGitHubToken();
     return;
   }
@@ -1627,6 +1630,7 @@ Now, complete the assigned task.`;
         queryParams: {
           prompt,
           options: {
+            spawnClaudeCodeProcess: spawnSdkWithoutAppKey,
             model: MODEL,
             cwd: CWD,
             allowedTools: [
@@ -2097,11 +2101,13 @@ async function main(): Promise<void> {
   console.log('═'.repeat(60));
   console.log('');
 
+  // Validate the external token directory before the manager can publish.
+  configureRuntimeGitHubAdapters(CWD);
   await initCloudWatch();
 
   // Initialize token refresh for long-running tasks (tokens expire after 1 hour)
   const appId = process.env.GH_APP_ID || '';
-  const appKey = process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY || '';
+  const appKey = runtimeAppAuth.privateKey || '';
   const repoOwner = process.env.REPO_OWNER || '';
   // Issue #4272: in broker mode there is no private key in this process — the
   // gateway gatekeeper mints. The predicate MUST NOT require appKey then, or the
@@ -2109,10 +2115,9 @@ async function main(): Promise<void> {
   // dies at the 1-hour mark with a 401 while git/gh degrade quietly.
   const brokerMode = isBrokerEnabled();
 
-  // canInitTokenManager() rather than a hand-written predicate: this decision is
-  // tested once in token-refresh.ts. A local copy here is what silently goes
-  // false when the key stops being exported.
-  if (canInitTokenManager()) {
+  // Capture uses canInitTokenManager before removing signing aliases from env.
+  // Re-evaluating the local-mint predicate now would silently disable renewal.
+  if (runtimeAppAuth.enabled) {
     initTokenManager({
       appId,
       privateKey: brokerMode ? undefined : appKey,
@@ -2167,11 +2172,10 @@ async function main(): Promise<void> {
     // Write the initial token to file BEFORE the SDK query starts, so that
     // GIT_ASKPASS and the gh wrapper can read it from day one (issue #1469).
     try {
-      const initialToken = await getToken();
-      writeTokenFile(initialToken);
+      await initializeRuntimeGitHubToken();
       log('INFO', 'Initial token written to token file for SDK subprocess');
     } catch (err) {
-      if (brokerMode) throw err;
+      if (brokerMode || runtimeAppAuth.required) throw err;
       log('WARN', `Initial token file write failed: ${(err as Error).message}`);
     }
   } else if (isMediatedRun()) {
@@ -2181,7 +2185,7 @@ async function main(): Promise<void> {
     // through would abort every mediated run at startup.
     log('INFO', 'Mediated GitHub operations: no token to refresh; writes go through the gateway');
   } else if (process.env.ADP_TOKEN_MODE !== 'pat') {
-    if (brokerMode) throw new Error('Brokered GitHub renewal configuration unavailable');
+    if (brokerMode || runtimeAppAuth.required) throw new Error('GitHub renewal configuration unavailable');
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');
   }
 

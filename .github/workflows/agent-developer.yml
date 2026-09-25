@@ -120,6 +120,7 @@ jobs:
         with:
           repository: ${{ vars.AGENT_SOURCE_REPO || 'aws-e/adp' }}
           token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
           path: adp-agent
 
       - name: Checkout target repository
@@ -127,6 +128,7 @@ jobs:
         with:
           repository: ${{ env.TARGET_REPO }}
           token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
           path: workspace
 
       - name: Configure Git for GitHub App
@@ -196,6 +198,16 @@ jobs:
         working-directory: ./adp-agent/modules/agent-factory/agent
         run: npx ts-node src/arc-model-preflight.ts
 
+      - name: Prepare private GitHub runtime directory
+        env:
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          auth_dir=$(mktemp -d "$RUNNER_TEMP_DIR/adp-github.XXXXXXXX")
+          chmod 700 "$auth_dir"
+          echo "ADP_GITHUB_AUTH_DIR=$auth_dir" >> "$GITHUB_ENV"
+          echo "ADP_TOKEN_FILE=$auth_dir/token" >> "$GITHUB_ENV"
+
       - name: Run @agent-developer
         id: agent
         working-directory: ./adp-agent/modules/agent-factory/agent
@@ -203,6 +215,11 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_ID: ${{ steps.aws-secrets.outputs.app_id }}
+          GH_APP_PRIVATE_KEY: ${{ steps.aws-secrets.outputs.app_key }}
+          GH_APP_INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
+          ADP_REQUIRE_RENEWABLE_GITHUB: 'true'
+          ADP_AGENT_SOURCE_DIR: ${{ github.workspace }}/adp-agent
           ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
@@ -214,13 +231,26 @@ jobs:
           BEADS_ENABLED: 'false'
         run: npx ts-node src/agent-worker.ts
 
+      # The worker's timer has stopped; never reuse its bootstrap token here.
+      - name: Generate fresh finalization token
+        id: final-token
+        if: always() && steps.app-token.outcome == 'success'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ env.REPO_OWNER }}
+          repositories: ${{ env.REPO_NAME }}
+
       - name: Commit and push changes
         id: commit
-        if: success()
+        if: success() && steps.final-token.outcome == 'success'
         working-directory: ./workspace
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.final-token.outputs.token }}
           GH_REPO: ${{ env.TARGET_REPO }}
+          ADP_GITHUB_FINALIZATION: 'true'
+          AUTH_HELPER: ${{ github.workspace }}/adp-agent/modules/agent-factory/agent/scripts/github-auth/git-credential
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
@@ -233,7 +263,9 @@ jobs:
             # Create PR branch and push
             BRANCH_NAME="agent/issue-$ISSUE_NUMBER"
             git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
-            git push -u origin "$BRANCH_NAME" --force
+            git -c credential.helper= -c "credential.https://github.com.helper=!'$AUTH_HELPER'" \
+              -c credential.useHttpPath=true -c http.extraheader= -c http.https://github.com/.extraheader= \
+              push -u origin "$BRANCH_NAME" --force
 
             # Create PR if it doesn't exist on this branch
             echo "Changes committed and pushed (fallback)"
@@ -244,9 +276,9 @@ jobs:
           fi
 
       - name: Notify completion
-        if: always() && steps.agent.outcome == 'success'
+        if: always() && steps.agent.outcome == 'success' && steps.commit.outcome == 'success' && steps.final-token.outcome == 'success'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.final-token.outputs.token }}
           GH_REPO: ${{ env.TARGET_REPO }}
         run: |
           gh issue comment $ISSUE_NUMBER -R "$GH_REPO" --body "## @agent-developer Complete
@@ -259,12 +291,19 @@ jobs:
       # and GitHub auto-closes the issue (via "Closes #NNN" in PR body)
 
       - name: Handle failure
-        if: failure()
+        if: failure() && steps.final-token.outcome == 'success'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.final-token.outputs.token }}
           GH_REPO: ${{ env.TARGET_REPO }}
         run: |
           gh issue comment $ISSUE_NUMBER -R "$GH_REPO" --body "## @agent-developer Failed
 
           Check [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
           gh issue edit $ISSUE_NUMBER -R "$GH_REPO" --add-label "agent-failed"
+
+      - name: Remove runtime GitHub credentials
+        if: always()
+        run: |
+          if [ -n "${ADP_GITHUB_AUTH_DIR:-}" ]; then
+            rm -rf -- "$ADP_GITHUB_AUTH_DIR"
+          fi
