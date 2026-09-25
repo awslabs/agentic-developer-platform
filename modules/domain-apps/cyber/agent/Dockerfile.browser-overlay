@@ -1,0 +1,6 @@
+# Scoped browser release preserving the verified protected-worker runtime.
+# Supply an immutable, verified worker digest. No platform binaries are replaced.
+ARG WORKER_BASE_IMAGE
+FROM ${WORKER_BASE_IMAGE}
+COPY --chown=agent:agent modules/domain-apps/cyber/agent/skills/url-analysis/ /app/skills/url-analysis/
+USER agent

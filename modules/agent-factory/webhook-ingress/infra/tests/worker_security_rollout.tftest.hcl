@@ -470,3 +470,26 @@ run "continuation_cannot_outrun_reporting" {
   }
   expect_failures = [kubernetes_config_map.worker_gateway]
 }
+
+run "native_browser_preserves_protected_worker_boundary" {
+  command = plan
+  variables {
+    agent_authority_prepared = true
+    agent_authority_enabled  = false
+    domain_app_settings      = { cyber = { browser_mode = "native" } }
+  }
+  assert {
+    condition = length([
+      for statement in jsondecode(aws_iam_policy.agent_authority_boundary[0].policy).Statement : statement
+      if try(statement.Sid, "") == "DirectAgentCoreBrowser" && try(statement.Effect, "") == "Allow"
+    ]) == 1
+    error_message = "Protected worker boundary must allow the configured native Browser lifecycle."
+  }
+  assert {
+    condition = alltrue([
+      for sid in ["DenyDirectArtifacts", "DenyAllSecrets", "DenyDirectModelInvocation"] :
+      length([for statement in jsondecode(aws_iam_policy.agent_authority_boundary[0].policy).Statement : statement if statement.Sid == sid && statement.Effect == "Deny"]) == 1
+    ])
+    error_message = "Browser access must preserve artifact, secret and model-invocation restrictions."
+  }
+}

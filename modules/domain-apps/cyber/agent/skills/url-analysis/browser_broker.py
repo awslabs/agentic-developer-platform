@@ -392,6 +392,7 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    os.environ["URL_ANALYSIS_BROWSER_MODE"] = "broker"
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     host = os.environ.get("URL_ANALYSIS_BROKER_HOST", "0.0.0.0")
     port = int(os.environ.get("URL_ANALYSIS_BROKER_PORT", "8765"))

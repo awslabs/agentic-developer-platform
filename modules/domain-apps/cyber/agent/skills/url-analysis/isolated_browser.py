@@ -70,10 +70,16 @@ class ProcessActor:
         self.cleanup_lock = threading.Lock()
         self.call_lock = threading.Lock()
         self.failure = None
+        child_env = os.environ.copy()
+        if command and "--native" in command:
+            # Injected Node preloads corrupt Playwright's private driver protocol.
+            # Keep the agent's telemetry; isolate only the browser subprocess.
+            child_env.pop("NODE_OPTIONS", None)
         self.process = subprocess.Popen(
             command or [sys.executable, str(Path(__file__).resolve()), "--worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
+            env=child_env,
             text=True,
             start_new_session=True,
             bufsize=1,
@@ -194,6 +200,7 @@ class ProcessActor:
                     reason_code=self.failure["reason_code"],
                 ),
             )
+            error.cleanup = self.close_result
             error.browser_start_unattempted = (
                 self.failure.get("browser_start_unattempted") is True
             )
@@ -279,6 +286,7 @@ def worker():
     from playwright.sync_api import sync_playwright
     from bedrock_agentcore.tools.browser_client import BrowserClient
     from browser_guard import open_guarded_browser
+    from native_browser import open_native_browser
     from case_capture import recorded_browser
     from investigation_browser import BrowserInvestigation
 
@@ -303,7 +311,30 @@ def worker():
     try:
         initial = json.loads(sys.stdin.readline(32769))
         with sync_playwright() as playwright:
-            opener = partial(open_guarded_browser, client_factory=TrackedClient)
+            opener = partial(
+                open_native_browser if "--native" in sys.argv else open_guarded_browser,
+                client_factory=TrackedClient,
+            )
+            if "_capture" in initial["payload"] and "--native" in sys.argv:
+                recorder = recorded_browser(
+                    initial["payload"]["_capture"], playwright, opener=opener
+                )
+                try:
+                    result, _ = next(recorder)
+                finally:
+                    recorder.close()
+                emit(
+                    {
+                        "event": "closed",
+                        "result": {
+                            "session_id": result["session_id"],
+                            "cleanup_status": result["cleanup_status"],
+                            "session_open": False,
+                        },
+                    }
+                )
+                emit({"event": "result", "id": "start", "result": result})
+                return
             browser = BrowserInvestigation(
                 initial["payload"],
                 playwright,

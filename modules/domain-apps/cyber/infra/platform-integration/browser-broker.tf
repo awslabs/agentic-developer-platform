@@ -1,7 +1,5 @@
-# The reasoning worker executes generated code, so it must never hold browser
-# credentials. This broker is a separate pod and role whose only API performs a
-# guarded capture or investigation step; no raw session, CDP endpoint or InvokeBrowser action
-# is exposed to callers.
+# Legacy broker resources retained for a staged migration. Native workers connect
+# directly to AgentCore; scale this deployment to zero after lease drain.
 
 locals {
   url_analysis_browser_actions = [
@@ -113,7 +111,7 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
   }
 
   spec {
-    replicas = 2
+    replicas = var.browser_broker_enabled ? 2 : 0
     selector {
       match_labels = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
     }
@@ -157,6 +155,10 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
           port {
             name           = "http"
             container_port = 8765
+          }
+          env {
+            name  = "URL_ANALYSIS_BROWSER_MODE"
+            value = "broker"
           }
           env {
             name  = "AWS_REGION"

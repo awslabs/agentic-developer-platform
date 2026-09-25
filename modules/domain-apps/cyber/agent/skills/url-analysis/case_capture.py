@@ -1,4 +1,4 @@
-"""Maintained research collector, executed only inside the trusted browser broker."""
+"""Research evidence recorder for direct and legacy AgentCore sessions."""
 
 from __future__ import annotations
 
@@ -130,6 +130,15 @@ def _navigation_refusal(session) -> None:
             )
 
 
+NATIVE_LIMITATIONS = [
+    "Only the recorded profile, time and AgentCore Browser egress were tested.",
+    "Page networking, scripts, service workers, WebSockets and popups use native Chromium behavior.",
+    "AgentCore isolates browser sessions; this collector does not filter every page request or pin DNS destinations.",
+    *LIMITATIONS[1:2],
+    *LIMITATIONS[4:],
+]
+
+
 def recorded_browser(request: dict, playwright, *, opener=None):
     """Broker-owned recorder; yield between agent decisions without closing context.
 
@@ -137,6 +146,17 @@ def recorded_browser(request: dict, playwright, *, opener=None):
     The generator and all Playwright operations must stay on their owning thread.
     """
     profile, delay = validate_options(request)
+    if opener is None:
+        if os.environ.get("URL_ANALYSIS_BROWSER_MODE", "native") == "broker":
+            opener = open_guarded_browser
+        else:
+            from native_browser import open_native_browser
+
+            opener = open_native_browser
+    native = (
+        getattr(getattr(opener, "func", opener), "__name__", "")
+        == "open_native_browser"
+    )
     started = utcnow()
     subject = digest(request["url"])
     result = {
@@ -149,7 +169,8 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         "profile": profile,
         "profile_options": PROFILES[profile],
         "observations": [],
-        "limitations": LIMITATIONS.copy(),
+        "limitations": (NATIVE_LIMITATIONS if native else LIMITATIONS).copy(),
+        "browser_transport": "agentcore_native" if native else "broker_pinned",
         "cleanup_status": "not_started",
     }
     network, redirects, downloads, timeline = [], [], [], []
@@ -166,11 +187,15 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         else:
             dropped[kind] += 1
 
-    session = (opener or open_guarded_browser)(
+    session = opener(
         request["url"],
         playwright,
         region=result["region"],
-        context_options={**PROFILES[profile], "accept_downloads": False},
+        context_options={
+            **PROFILES[profile],
+            **request.get("_context_options", {}),
+            "accept_downloads": False,
+        },
         read_only=True,
         navigation_check=request.get("_navigation_check"),
     )
@@ -444,7 +469,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         try:
             response = session.goto(
                 request["url"],
-                wait_until="domcontentloaded",
+                wait_until=request.get("_wait_until", "domcontentloaded"),
                 timeout=request["timeout_ms"],
             )
             status = response.status if response else status

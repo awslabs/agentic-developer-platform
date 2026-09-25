@@ -41,3 +41,19 @@ variable "session_owner_routing" {
   default     = false
   description = "Enable with matching new broker and worker images: balance new sessions and route existing capabilities to their owning pod."
 }
+
+variable "browser_mode" {
+  type        = string
+  default     = "broker"
+  description = "Use native for direct AgentCore Browser after the protected worker image and IAM are ready."
+  validation {
+    condition     = contains(["native", "broker"], var.browser_mode)
+    error_message = "browser_mode must be native or broker."
+  }
+}
+
+variable "browser_broker_enabled" {
+  type        = bool
+  default     = true
+  description = "Keep the legacy broker running until existing sessions drain; disable after native acceptance."
+}

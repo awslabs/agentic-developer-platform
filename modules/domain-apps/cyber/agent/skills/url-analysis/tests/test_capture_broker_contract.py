@@ -122,3 +122,9 @@ def test_client_rejects_malformed_envelopes(body):
         pytest.raises(BrowserBrokerError, match="invalid response"),
     ):
         capture_url("https://public.test/")
+
+
+@pytest.fixture(autouse=True)
+def legacy_broker_mode(monkeypatch):
+    """These tests exercise the explicitly selected legacy transport."""
+    monkeypatch.setenv("URL_ANALYSIS_BROWSER_MODE", "broker")

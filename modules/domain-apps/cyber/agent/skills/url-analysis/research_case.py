@@ -1,7 +1,7 @@
-"""Capture, extend and assess a durable researcher case through the browser broker.
+"""Capture, extend and assess a durable researcher case using maintained browser collection.
 
 The existing cyber agent supplies investigation choices and evidence-linked
-assessments. This module does not instantiate a model or hold browser credentials.
+assessments. This module does not instantiate a model; collection uses the worker browser runtime.
 """
 
 from __future__ import annotations

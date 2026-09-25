@@ -1,7 +1,7 @@
 # Cyber app
 
 The cyber app owns the malware-analysis persona, file-analysis pipeline, URL/domain
-investigations, browser broker, sandbox infrastructure, images, build automation,
+investigations, direct AgentCore browsing, sandbox infrastructure, images, build automation,
 and operational documentation. It uses ADP's shared agent runtime, model gateway,
 identity, and GitHub integration.
 
@@ -9,9 +9,9 @@ identity, and GitHub integration.
 | --- | --- |
 | `agent/` | Persona, skills, investigation/report code, hosted Python dependencies |
 | `workers/` | Isolated triage/static worker image, handlers, and worker tests |
-| `browser/` | Standalone browser broker image and its dependencies |
+| `browser/` | Legacy browser broker image retained for migration |
 | `infra/` | Cyber sandbox, queues, evidence storage, IAM, and networking |
-| `infra/platform-integration/` | Broker resources hosted on the platform cluster and worker integration outputs |
+| `infra/platform-integration/` | Direct browser permissions, legacy broker resources and worker integration outputs |
 | `k8s/` | Cyber worker manifests |
 | `image-builder/`, `bootstrap-scripts/` | CAPE hosts and guest image builds |
 | `codebuild/` | Authoritative buildspecs and build-project declarations |

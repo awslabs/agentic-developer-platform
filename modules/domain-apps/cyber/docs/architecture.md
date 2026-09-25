@@ -45,7 +45,7 @@ The original v1 diagram (see EPIC #224 §Architecture) was drawn when the cyber 
 │   ╰────────────────────────────────────────────────────────╯        │
 │                                                                     │
 │   ╭─── URL investigation (adaptive skill) ───────────────────╮        │
-│   │  Unprivileged client → trusted guarded-browser broker   │        │
+│   │  Worker → direct AgentCore Browser (native mode)         │        │
 │   │  → pinned transport → AgentCore Browser session         │        │
 │   │  → Review evidence → choose action → inspect result    │        │
 │   │  → Revise hypothesis → validated finish → report       │        │
@@ -419,11 +419,21 @@ Reference #304 (T1059.004 closed-loop):
 | Platform infra (VPC, EKS, IAM, Secrets Manager, CloudTrail) | Threat Research VPC peers to ADP VPC on port 443. AgentCore Browser access via IAM only. Standard IRSA everywhere. |
 | Chat-artifacts bucket | Case files land in the existing artifact layout. Existing UI renders them. |
 
-The URL path is isolated to the Cyber skill and its dedicated broker boundary.
+The native URL path uses the Cyber skill and a direct AgentCore Browser session.
 
 ---
 
 ## 8. IAM surface summary
+
+### Protected reasoning worker (`adp-dev-agent-authority-worker-role`)
+
+Native browser mode adds only regional Browser start/get/list/stop and CDP stream
+access to the protected role and its permissions boundary. The other worker
+restrictions remain. Model calls and artifact access use platform-authorized paths.
+Native page networking happens in AgentCore without the legacy HTTP broker.
+
+The following legacy role summary describes the earlier shared-worker deployment;
+its broad permissions are not the protected-worker configuration.
 
 ### Reasoning-tier role (`adp-dev-agent-scaledjob-role`)
 

@@ -4,8 +4,8 @@ The researcher supplies a seed URL and a question. The existing cyber agent
 queries Common Crawl through Athena, records an initial hypothesis, then
 inspects live evidence, chooses a useful next browser action, and
 revises its assessment from the result. It can explore multiple pages in one
-browser context. The broker executes individual actions and enforces boundaries;
-it does not choose the route or instantiate another model.
+browser context. In native mode, the worker connects directly to AgentCore Browser.
+The model selects actions; the local driver records evidence and manages cleanup.
 
 For example: “Investigate this account-verification link. Determine what it asks
 for, who operates it, and whether the claimed brand affiliation is supported.
@@ -26,7 +26,7 @@ Follow relevant pages within this domain and cite the evidence.”
 
 The agent must review new evidence before selecting the next action. It does not
 receive a fixed URL list or automatically crawl every link. Browser choices have
-IDs tied to the current view; stale or invented choices are refused. The broker
+IDs tied to the current view; stale or invented choices are refused. The session process
 keeps exact destinations private, so query redaction does not break link navigation.
 Cookies, session storage and history survive between decisions. A profile change
 creates a new context and retains both sets of evidence in the same case.
@@ -34,7 +34,8 @@ creates a new context and retains both sets of evidence in the same case.
 The default `observed_external` scope allows the model to follow relevant observed
 links and redirects across public hosts, including sibling hosts. The researcher
 can explicitly select `host` to restrict navigation to the seed hostname and its
-subdomains. Private destinations remain prohibited in either mode. Forms,
+subdomains for analyst-selected actions. Native mode does not filter all page
+requests or redirects. Private-service probing remains outside the task. Forms,
 credentials, downloads and challenge bypass remain excluded from this transport.
 Supported controls are observed disclosure elements and tabs, not arbitrary
 selectors or JavaScript supplied by the agent.
@@ -59,23 +60,21 @@ python /app/skills/url-analysis/domain_investigation.py step follow \
 Inspect each result before writing the next review and decision. Additional
 operations are `step expand`, `root`, `back`, `scroll`, `wait --seconds N`,
 `profile mobile`, `status`, `close`, `assess`, and `verify`. There are at most
-12 steps per 300-second context and two contexts/24 steps per case. Agent reasoning
-time consumes the lease. The broker pumps browser events while the agent reasons
+12 steps per 600-second context and two contexts/24 steps per case. Agent reasoning
+time consumes the lease. The local Playwright process pumps browser events while the agent reasons
 and retains network/navigation evidence. It closes abandoned contexts on expiry.
 A lost context is reported; it is not recreated and its actions are not replayed.
 
-The worker stores the broker capability privately under `/tmp/adp-url-browser-leases`,
+The worker stores the session capability privately under `/tmp/adp-url-browser-leases`,
 outside run artifacts. The capability is removed after confirmed close. The report
 contains session IDs and cleanup outcomes, never the capability or CDP endpoints.
 
-The broker exposes `/v1/investigation/start`, `/step` and `/close` over its existing
-internal service. Each lease runs in one supervised process, keeping Playwright's
-sync API on that process's main thread. With owner routing enabled, new sessions
-are balanced across available replicas and subsequent steps use a private
-capability naming their owner. The broker Pod opts out of voluntary Karpenter consolidation to
-avoid disrupting active contexts. Unexpected replica loss still fails closed;
-the managed 300-second session timeout is the cleanup backstop. Legacy `/v1/capture`
-and `/v1/analyze` operations remain compatible.
+Native sessions use private Unix sockets within the worker pod between CLI calls.
+There is no HTTP broker service or alternate browser identity. Each session runs
+in a supervised process. The supervisor can kill a stalled driver and stop its
+AgentCore session independently. The managed session timeout is the backstop if
+the entire pod disappears. `capture` and `analyze` remain supported.
+Explicit broker mode supports installations awaiting migration.
 
 ## Researcher output
 
@@ -129,10 +128,10 @@ measurement of threat-detection accuracy. They used a real Bedrock model and loc
 guarded Chromium, not the deployed UI/GitHub entrypoint. No public Lambda fixture
 is permitted or needed. Fixture CI stays on `arc-runner-org` without AWS credentials.
 
-Release requires matching broker and worker code before enabling owner routing.
-The compatibility mode retains `ClientIP` affinity until that coordinated change.
-Drain existing investigations before changing routing. Preserve running jobs and the
-separate protected-worker migration hold. Follow the canonical deployment guide
-and use only reviewed scoped saved plans for the relevant resources.
+Native release requires a compatible worker image and regional Browser lifecycle/
+CDP permissions. Validate native collection, then drain legacy investigations and
+scale the broker to zero. Preserve running jobs and the separate protected-worker
+migration hold. Follow the canonical deployment guide and use reviewed scoped
+saved plans for the relevant resources.
 See [Common Crawl setup and runtime recovery](common-crawl-investigation.md) for
 the archive configuration, query bounds and isolated-process acceptance requirements.

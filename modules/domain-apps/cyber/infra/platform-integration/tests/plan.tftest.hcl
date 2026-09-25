@@ -82,3 +82,27 @@ run "archive_first_isolated_browser_release" {
     error_message = "New session admission must use available replicas instead of worker-IP affinity."
   }
 }
+
+run "native_browser_has_no_broker_dependency" {
+  command = plan
+  variables {
+    browser_mode           = "native"
+    browser_broker_enabled = false
+  }
+  assert {
+    condition     = output.worker_environment.URL_ANALYSIS_BROWSER_MODE == "native" && !contains(keys(output.worker_environment), "URL_ANALYSIS_BROWSER_BROKER") && length(output.worker_egress) == 0
+    error_message = "Native workers must not require the broker endpoint or network policy."
+  }
+  assert {
+    condition     = kubernetes_deployment.url_analysis_browser_broker.spec[0].replicas == "0"
+    error_message = "The drained legacy broker must scale to zero."
+  }
+  assert {
+    condition = toset(output.worker_browser_permissions[0].Action) == toset([
+      "bedrock-agentcore:StartBrowserSession", "bedrock-agentcore:GetBrowserSession",
+      "bedrock-agentcore:StopBrowserSession", "bedrock-agentcore:ListBrowserSessions",
+      "bedrock-agentcore:ConnectBrowserAutomationStream"
+    ]) && output.worker_browser_permissions[0].Condition.StringEquals["aws:RequestedRegion"] == var.aws_region
+    error_message = "Native permissions must grant only regional Browser lifecycle and CDP access."
+  }
+}

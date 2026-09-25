@@ -61,3 +61,9 @@ def test_capacity_and_liveness_are_separate_and_client_preserves_retry_advice():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+@pytest.fixture(autouse=True)
+def legacy_broker_mode(monkeypatch):
+    """These tests exercise the explicitly selected legacy transport."""
+    monkeypatch.setenv("URL_ANALYSIS_BROWSER_MODE", "broker")

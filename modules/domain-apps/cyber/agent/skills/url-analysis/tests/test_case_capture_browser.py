@@ -70,7 +70,8 @@ class FixtureTransport:
 
 
 @pytest.fixture
-def capture_fixture():
+def capture_fixture(monkeypatch):
+    monkeypatch.setenv("URL_ANALYSIS_BROWSER_MODE", "broker")
     clients, transports = [], []
     with playwright.sync_playwright() as p:
 
@@ -232,3 +233,9 @@ def test_relative_dom_urls_are_redacted(capture_fixture):
     o = capture_fixture[0]("https://public.test/relative")["observations"][0]
     assert "private-value" not in o["dom_snapshot"]
     assert "campaign=REDACTED" in o["dom_snapshot"]
+
+
+@pytest.fixture(autouse=True)
+def legacy_broker_mode(monkeypatch):
+    """These tests exercise the explicitly selected legacy transport."""
+    monkeypatch.setenv("URL_ANALYSIS_BROWSER_MODE", "broker")

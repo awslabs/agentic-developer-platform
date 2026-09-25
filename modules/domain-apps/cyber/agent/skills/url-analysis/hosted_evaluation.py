@@ -50,7 +50,7 @@ def run_case(directory, row, model, *, run=subprocess.run):
             "then write assessment/review files outside the case directory and call finish. "
             "Never edit case.json or captured evidence directly. Do not post messages or use GitHub. "
             "This acceptance caller publishes the complete case to S3. Do not upload separately. "
-            "Browser access remains exclusively through the broker. " + row["objective"]
+            "Use the maintained browser CLI to preserve session state; native mode connects directly to AgentCore Browser. " + row["objective"]
         ),
     }
     error = None

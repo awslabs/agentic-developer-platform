@@ -6,9 +6,8 @@ describe the compatible single-URL case collector and shared evidence artifacts.
 
 The cyber agent can collect a reproducible browser case, choose bounded follow-up
 views, and assess findings against captured evidence. The maintained collector
-runs in the trusted browser broker; the existing cyber agent supplies the
-reasoning. This is the first researcher-workflow milestone, not a new autonomous
-model service.
+connects directly to AgentCore Browser in native mode; the existing cyber agent
+supplies the reasoning. Explicit broker mode supports legacy deployments.
 
 ## What a researcher receives
 
@@ -22,7 +21,7 @@ model service.
 | `indicators.csv` | Observed URLs/domains/connected IPs, role, observation ID and unassessed disposition |
 
 Observations include UTC timestamps, redirects, main-document HTTP status,
-network request/response metadata, actual pinned connection IPs, forms without
+network request/response metadata, forms without
 input values, orphan credential fields, up to five child frames, and bounded
 script samples. Each probe records its session ID, region, collector/Playwright/
 browser versions, exact-input SHA-256, profile configuration and cleanup outcome.
@@ -36,8 +35,8 @@ prohibits scripts and external fetches. Keep all files together to view the repo
 ## Commands
 
 Requirements: Python 3.11+, pydantic 2 and the existing skill dependencies. The
-broker additionally needs Playwright 1.48+ and its managed AgentCore connection.
-The client does not launch a local browser or hold AgentCore credentials.
+worker needs Playwright and the AgentCore SDK plus regional Browser permissions.
+The browser runs in AgentCore; a local driver preserves session state.
 
 From the installed runtime:
 
@@ -50,9 +49,9 @@ python "$URL_SKILL/research_case.py" capture "$TARGET_URL" \
 ```
 
 In a repository checkout, set `URL_SKILL` to
-`modules/domain-apps/cyber/agent/skills/url-analysis` instead. The default broker is
-`http://url-analysis-browser-broker.adp-agents.svc.cluster.local:8765`; override
-`URL_ANALYSIS_BROWSER_BROKER` only with the trusted broker's address.
+`modules/domain-apps/cyber/agent/skills/url-analysis` instead. Native mode is the
+client default. Terraform explicitly selects the deployment mode; use
+`browser_mode = "native"` after the protected worker image and IAM are ready.
 
 Capture normally exits **2** because evidence awaits assessment. Read `case.json`
 even if the probe failed: its intent and safe diagnostic are retained. A failed
@@ -148,11 +147,11 @@ Linux hosts may also need `python -m playwright install-deps chromium`. The
 browser fixtures fail if Chromium is missing. These checks measure known
 regressions, not phishing-detection accuracy against a representative threat corpus.
 
-The new code targets main's guarded broker architecture (PR #5721). The broker
-and reasoning worker both use the agent runtime image. Releasing requires a
-coordinated image update and the existing broker identity/service/network-policy
-infrastructure. Do not update workers to the broker-only skill against a cluster
-that lacks the broker. There is no direct-browser fallback.
+The native transport removes the broker dependency. Prepare the protected worker's
+regional Browser lifecycle/CDP permission, validate the image and native capture,
+then switch worker mode. Drain existing leases before setting
+`browser_broker_enabled = false`. See the [browser contract](../agent/skills/url-analysis/agentcore-browser-contract.md).
+The September 23 record below describes the earlier guarded deployment.
 
 The collector was deployed and live-tested in Embark1 (`879318057152`,
 `us-east-1`) on 2026-09-23. The worker/broker path captured `example.com` and

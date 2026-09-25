@@ -1,4 +1,4 @@
-"""Unprivileged client for the guarded URL-analysis browser broker."""
+"""Direct AgentCore browser client; explicit broker mode supports legacy rollouts."""
 
 from __future__ import annotations
 
@@ -52,13 +52,13 @@ def _decode_json(payload: bytes) -> dict[str, Any]:
 def analyze_url(
     url: str,
     *,
-    wait_until: str = "networkidle",
+    wait_until: str = "domcontentloaded",
     timeout_ms: int = 30_000,
     ignore_https_errors: bool = False,
     broker_url: str | None = None,
     request_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Analyze ``url`` through the broker that exclusively owns browser access."""
+    """Analyze a URL in an ephemeral AgentCore session."""
     return _request(
         "analyze",
         {
@@ -81,7 +81,7 @@ def capture_url(
     broker_url: str | None = None,
     request_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    """Collect a versioned research bundle through the guarded broker."""
+    """Collect a versioned research bundle with direct AgentCore browsing."""
     return _request(
         "capture",
         {
@@ -99,6 +99,13 @@ def investigation_request(operation, payload, *, broker_url=None):
     """One reasoning-selected operation; never replay a timed-out browser action."""
     if operation not in {"start", "step", "close"}:
         raise ValueError("Unsupported investigation operation")
+    if (
+        broker_url is None
+        and os.environ.get("URL_ANALYSIS_BROWSER_MODE", "native") == "native"
+    ):
+        from local_browser import investigation_request as direct_request
+
+        return direct_request(operation, payload)
     token = payload.get("session_token", "")
     if operation != "start" and "~" in token:
         owner, capability = token.split("~", 1)
@@ -120,6 +127,13 @@ def investigation_request(operation, payload, *, broker_url=None):
 
 
 def _request(operation, payload, broker_url, request_timeout_seconds):
+    if (
+        broker_url is None
+        and os.environ.get("URL_ANALYSIS_BROWSER_MODE", "native") == "native"
+    ):
+        from direct_capture import capture
+
+        return capture(operation, payload)
     url = payload.get("url", "")
     endpoint = (
         broker_url

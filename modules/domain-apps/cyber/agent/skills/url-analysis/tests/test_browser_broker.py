@@ -246,3 +246,9 @@ def test_client_does_not_treat_broker_failure_as_allow() -> None:
         pytest.raises(BrowserBrokerError, match="failed"),
     ):
         analyze_url("https://public.example", broker_url="http://broker")
+
+
+@pytest.fixture(autouse=True)
+def legacy_broker_mode(monkeypatch):
+    """These tests exercise the explicitly selected legacy transport."""
+    monkeypatch.setenv("URL_ANALYSIS_BROWSER_MODE", "broker")
