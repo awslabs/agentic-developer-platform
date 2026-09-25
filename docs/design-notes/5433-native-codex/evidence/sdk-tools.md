@@ -82,3 +82,46 @@ calls, namespace substitution, invalid/parallel output calls, refusal before
 model handoff and completed-call replay. All 51 harness/IPC tests and the actual
 SDK→Responses bridge→MCP→SDK continuation fixture pass. Inference and tool effects
 remain deterministic local fixtures; no live story has been accepted by this test.
+
+
+## Shared admitted session with receipt binding
+
+`runAdmittedSession` now accepts an explicit reviewed host tool broker and an
+admitted repository binding. Capability planning still intersects every policy
+layer and provider support. Every executable capability needs a corresponding
+host tool; the MCP catalogue is checked against the resulting admitted set.
+The broker definition is snapshotted before asynchronous work. Without a broker,
+report-only sessions retain their existing behavior and executable requests fail.
+
+`ToolReceipts` binds the sole outstanding confirmed model call to the exact MCP
+tool/arguments. It records only confirmed host receipts and validates the entire
+ordered SDK tool history, including exact result text. It rejects foreign or
+missing history, argument/output substitutions, duplicate or concurrent calls,
+operation-budget exhaustion and unknown/oversized receipts. It is session-local,
+not a durable journal or a safe-resume mechanism; gateway authorization and
+mutation persistence remain the invocation adapter's responsibility.
+
+The SDK tool fixture now runs through `runAdmittedSession` instead of assembling
+its own SDK/MCP/model wiring. Success and confirmed tool error both exercise the
+actual SDK, shared transports, shared receipt validator, live-authority callbacks,
+model continuation and cleanup. Missing repository/broker authority fails before
+inference. Five receipt-binding tests pass. The existing report-only actual-SDK
+session fixture also passes. CI runs both tool outcomes explicitly.
+
+This does not enable the Task API's executable contract, register personas or
+claim story acceptance. The embedded Task entrypoint supplies no tool broker;
+its gateway grant/Responses profile remains report-only. Durable tool receipt
+validation, concrete repository/AWS/delegation adapters and completion gates
+remain necessary for enabled personas.
+
+
+The response bridge installs an executable session call only after validating
+model output and usage; invalid usage cannot make a tool callable. Its regression
+test passes alongside the 56-test suite run before adding that final check.
+
+The post-test live-auth fingerprint check detected a changed gateway `tokens.json`
+with modification time 2026-09-25 22:16:12 UTC. The earlier baseline and current
+token were preserved; no restore or token/config rewrite was performed. Tests
+used the isolation wrapper and temporary SDK storage. A fingerprint difference
+alone cannot establish attribution. A separate current checkpoint is retained
+for subsequent read-only comparisons; the original baseline is not replaced.

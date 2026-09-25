@@ -51,6 +51,7 @@ jobs:
       - run: python3 test/run-isolated.py -- node test/sdk-request-shape.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-turn.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --tool-error
       - run: python3 test/run-isolated.py -- node test/sdk-proxy.mjs
       - run: python3 test/run-isolated.py -- node --test test/task-bridge.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-session.mjs

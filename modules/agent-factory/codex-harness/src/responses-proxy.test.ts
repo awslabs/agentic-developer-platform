@@ -186,3 +186,18 @@ test("provider cannot replay a completed call ID into SDK tool execution", async
     assert.equal((await post(proxy, toolRequest())).status, 409);
   } finally { await proxy.close(); }
 });
+
+
+test("invalid model usage cannot install an executable session call", async () => {
+  let accepted = 0;
+  const config = toolPolicy();
+  config.tools!.acceptResponse = () => { accepted++; return true; };
+  const proxy = await startTextResponsesProxy(async () => ({ operationStatus: "confirmed", response: {
+    ...result(), output: [{ ...functionCall(), type: "function_call", namespace: "mcp__adp" }],
+    usage: { input_tokens: 20, output_tokens: 101 },
+  } }), config);
+  try {
+    assert.equal((await post(proxy, toolRequest())).status, 502);
+    assert.equal(accepted, 0);
+  } finally { await proxy.close(); }
+});

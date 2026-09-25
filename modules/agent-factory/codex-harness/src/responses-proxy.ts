@@ -41,6 +41,8 @@ export interface ResponsesTools {
   /** Must compare every call/result with this run's confirmed model/tool
    * receipts. Structural call-ID pairing is not evidence authenticity. */
   validateHistory(history: readonly ToolHistory[]): true;
+  /** Commit session call binding only after the bridge validates output/usage. */
+  acceptResponse?(response: TextResponsesResult): true;
 }
 const sdkRequest = z.strictObject({
   model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput, functionInput, functionResult])).min(1).max(64)]),
@@ -257,6 +259,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
         throw new Error("Provider repeated a completed tool call");
       }
       const output = textResponseEvents(receipt.response, { ...policy, maxOutputTokens: request.max_output_tokens });
+      if (policy.tools?.acceptResponse && policy.tools.acceptResponse(receipt.response) !== true) throw new Error("Tool response binding refused");
       res.writeHead(200, { "content-type": "text/event-stream" }).end(output);
     } catch {
       // No automatic replay after possible handoff or malformed input. Arbitrary
