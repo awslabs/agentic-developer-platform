@@ -33,3 +33,38 @@ aws iam put-role-policy \
   --policy-name cli-uplift-eval-e02-fixtures \
   --policy-document file://docs/evaluations/cli-uplift/orchestrator-e02-fixtures-policy.json
 ```
+
+
+## Protected GitHub OIDC admission (#6004)
+
+`orchestrator-trust-policy.json` is the reviewed trust document for
+`adp-cli-uplift-eval-orchestrator`. It adds only the GitHub OIDC provider with
+`aud=sts.amazonaws.com` and exact subject
+`repo:aws-e/adp:environment:dev`. The existing shared-runner/scaledjob AWS
+principals are retained for compatibility until their callers are audited;
+this artifact does not grant any new service actions or change session duration.
+
+Before updating the live trust, re-read the role and compare its current AWS
+principal statements with the retained statements in this file. Stop if another
+operator changed them; reconcile the reviewed artifact rather than overwriting
+concurrent changes. Verify the `dev` GitHub environment admits only the `main`
+branch (no tags), then configure `AWS_CLI_UPLIFT_EVAL_ROLE_ARN` in that environment.
+Other environment names require separately reviewed trust and role bindings.
+
+The workflow explicitly clears ambient credentials and uses OIDC without role
+chaining. Both evaluation and recovery use the same role selection and reject
+non-main refs. Source merge alone does not prove deployment: acceptance requires
+live trust readback, successful OIDC exchange with the expected role, and the
+existing bounded evaluation/cleanup checks. The executor workflow independently
+uses the reviewed-project build dispatcher in `adp-build-dev`; its binding and
+existing reviewed executor project must be provisioned before dispatch.
+
+
+Rollout observation (2026-09-25): the supervising operator applied this additive
+trust after a freshness comparison and AWS Access Analyzer validation, and
+verified the exact OIDC condition plus unchanged existing AWS principals, service
+policies and 10,800-second session limit. The `dev` and `adp-build-dev` GitHub
+environments now admit only the `main` branch. At this checkpoint, the eval role
+binding and actual OIDC exchange have not been verified, and the executor build
+identity/project rollout is still pending. These remaining checks must pass
+before claiming live workflow compatibility.

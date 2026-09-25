@@ -27,8 +27,12 @@ concurrency:
 jobs:
   build:
     runs-on: arc-runner-org
+    # The existing reviewed-project dispatcher uses this exact OIDC subject.
+    # Its main-only environment protection and role binding are rollout gates.
+    environment: adp-build-dev
     permissions:
       contents: read
+      id-token: write
     env:
       ACCOUNT_ID: ${{ inputs.account_id }}
       AWS_REGION: ${{ inputs.region }}
@@ -36,10 +40,28 @@ jobs:
       STATE_BUCKET: ${{ inputs.state_bucket }}
       PYTHON_IMAGE: ${{ inputs.python_image }}
     steps:
+      - name: Refuse an untrusted ref
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::This workflow requires reviewed main."
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+
+      - name: Establish reviewed build dispatcher identity
+        uses: ./.github/actions/trusted-build
+        with:
+          role_arn: ${{ vars.ADP_BUILD_ROLE_ARN }}
+          region: ${{ inputs.region }}
+
       - name: Validate release inputs and existing build target
         shell: bash
         run: |

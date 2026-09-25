@@ -119,17 +119,5 @@
       "ecr describe-images",
       "examples literal"
     ]
-  },
-  "superplane-executor-build.yml/build": {
-    "authority": "runtime",
-    "operations": [
-      "codebuild batch-get-builds",
-      "codebuild batch-get-projects",
-      "codebuild start-build",
-      "codebuild stop-build",
-      "ecr describe-images",
-      "s3 cp",
-      "sts get-caller-identity"
-    ]
   }
 }

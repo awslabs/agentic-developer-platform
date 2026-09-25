@@ -7666,7 +7666,7 @@ def test_live_job_is_gated_on_a_protected_environment_and_oidc():
     assert "aws-access-key-id" not in steps.lower()
 
 
-def test_live_job_refuses_a_ref_that_is_not_main_or_a_tag():
+def test_live_job_refuses_any_ref_other_than_main():
     document, _ = workflow()
     guard = document["jobs"]["evaluate"]["steps"][0]
     assert "refs/heads/main" in guard["run"]
@@ -9259,7 +9259,13 @@ def test_login_fixture_reader_accepts_the_established_unprefixed_keys():
     module._SECRET_CACHE.clear()
 
 
-def test_ci_binds_a_scoped_role_and_chains_only_when_oidc_is_absent():
+def test_ci_uses_explicit_oidc_without_role_chaining():
+    """#6004: the bounded runtime ceiling denies role-chaining's sts:AssumeRole.
+
+    Both jobs must use explicit OIDC (secrets only, no hardcoded fallback ARN),
+    no role-chaining, and no static keys. Ambient credentials must be cleared
+    before acquiring the purpose-scoped OIDC identity.
+    """
     document, _ = workflow()
     for job in ("evaluate", "recover"):
         auth = next(
@@ -9268,25 +9274,62 @@ def test_ci_binds_a_scoped_role_and_chains_only_when_oidc_is_absent():
             if "configure-aws-credentials@" in s.get("uses", "")
         )
         role = auth["with"]["role-to-assume"]
-        # OIDC stays first, so a configured secret keeps the preferred path.
-        assert role.index("AWS_CLI_UPLIFT_EVAL_ROLE_ARN") < role.index(
-            "adp-cli-uplift-eval-orchestrator"
+        # Only secrets, no vars or hardcoded ARN fallback.
+        assert "AWS_CLI_UPLIFT_EVAL_ROLE_ARN" in role
+        assert "AWS_E2E_ROLE_ARN" in role
+        assert "adp-cli-uplift-eval-orchestrator" not in role, (
+            "Hardcoded fallback ARN must be removed"
         )
-        assert "role-chaining" in auth["with"]
+        assert "CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN" not in role, (
+            "vars-based fallback must be removed"
+        )
+        # No role chaining at all.
+        assert auth["with"]["role-chaining"] is False
+        assert auth["with"]["unset-current-credentials"] is True
+        assert auth["with"]["force-skip-oidc"] is False
         # No static-key path anywhere.
         assert "aws-access-key-id" not in auth["with"]
-        # Session tagging must stay off: the ARC runner role's permissions
-        # boundary allows sts:AssumeRole but not sts:TagSession, so tagging fails
-        # the assume outright (runs 35081336556, 35081819775). Widening that
-        # shared boundary to re-enable tags would weaken an unrelated control.
+        # Session tagging must stay off.
         assert auth["with"]["role-skip-session-tagging"] is True
-    # A chained STS session is capped at one hour; asking for more hard-fails.
+    # OIDC allows the full 3h duration (no chained-session cap).
     evaluate_auth = next(
         s
         for s in document["jobs"]["evaluate"]["steps"]
         if "configure-aws-credentials@" in s.get("uses", "")
     )
-    assert "3600" in str(evaluate_auth["with"]["role-duration-seconds"])
+    assert evaluate_auth["with"]["role-duration-seconds"] == 10800
+
+
+def test_ci_fails_closed_when_oidc_secret_is_missing():
+    """#6004: a missing OIDC secret must fail the job with a clear error,
+    not silently fall back to ambient runner authority."""
+    document, _ = workflow()
+    for job in ("evaluate", "recover"):
+        steps = document["jobs"][job]["steps"]
+        # Find the fail-closed guard step — it must exist and precede credentials.
+        guard_indices = [
+            i
+            for i, s in enumerate(steps)
+            if "ROLE_ARN" in (s.get("env", {}).get("ROLE_ARN", "") or s.get("run", ""))
+            and "exit 1" in (s.get("run") or "")
+        ]
+        assert guard_indices, (
+            f"Job '{job}' must have a fail-closed guard for the OIDC role"
+        )
+        guard_at = guard_indices[0]
+        creds_at = next(
+            i
+            for i, s in enumerate(steps)
+            if "configure-aws-credentials@" in s.get("uses", "")
+        )
+        assert guard_at < creds_at, (
+            f"Job '{job}': fail-closed guard must precede the credential step"
+        )
+        guard = steps[guard_at]
+        assert "AWS_CLI_UPLIFT_EVAL_ROLE_ARN" in guard["run"], (
+            "The error message must name the missing secret"
+        )
+        assert "AWS_E2E_ROLE_ARN" in guard["run"]
 
 
 def test_ci_points_both_jobs_at_the_same_reviewed_bindings_file():

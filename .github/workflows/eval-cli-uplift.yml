@@ -98,6 +98,10 @@ on:
     paths:
       - 'tests/e2e/cli_uplift/**'
       - 'tests/unit/test_cli_uplift.py'
+      - 'tests/unit/test_superplane_executor_build.py'
+      - '.github/workflows/superplane-executor-build.yml'
+      - '.github/actions/trusted-build/action.yml'
+      - 'docs/evaluations/cli-uplift/orchestrator-trust-policy.json'
       - 'docs/runbooks/cli-uplift-evaluation.md'
       - '.github/workflows/eval-cli-uplift.yml'
     branches:
@@ -144,8 +148,8 @@ jobs:
       - name: Lint and format check
         run: |
           set -euo pipefail
-          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
-          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_superplane_executor_build.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_superplane_executor_build.py
 
       - name: Offline guards
         # --disable-socket is the load-bearing flag: it proves these guards
@@ -159,7 +163,7 @@ jobs:
         # make full acceptance non-successful.
         env:
           AWS_EC2_METADATA_DISABLED: 'true'
-        run: python -m pytest tests/unit/test_cli_uplift.py -q --timeout=60 --disable-socket
+        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
 
       - name: Assert the published result schema still matches the report builder
         # report.schema.json is a deliverable other tooling validates against, so
@@ -207,8 +211,8 @@ jobs:
     needs: [offline]
     runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     timeout-minutes: 200
-    # Protected environment: required reviewers and the secret scope live here,
-    # so a dispatch cannot reach the destination account without approval.
+    # This environment must have main-only protection and an explicit OIDC
+    # role binding before rollout; selecting a name alone is not protection.
     environment: ${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write
@@ -261,12 +265,12 @@ jobs:
     steps:
       - name: Refuse an untrusted ref
         # The live path must only ever run code that has been reviewed on the
-        # default branch or a release tag. A dispatch against an arbitrary branch
+        # default branch. A dispatch against an arbitrary branch
         # would execute that branch's runner against the real account.
         run: |
           set -euo pipefail
-          if [ "${{ github.ref }}" != "refs/heads/main" ] && [[ "${{ github.ref }}" != refs/tags/* ]]; then
-            echo "::error::Live evaluation refuses ref ${{ github.ref }}; dispatch from main or a tag."
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::This workflow requires reviewed main."
             exit 1
           fi
 
@@ -314,17 +318,11 @@ jobs:
         env:
           EVAL_SUITES: ${{ inputs.suites || 'login' }}
           EVAL_MODE: ${{ inputs.mode || 'start' }}
-          # Falls back to the purpose-scoped orchestrator role assumed from the
-          # ARC runner's own short-lived identity. Neither OIDC secret is set and
-          # no GitHub OIDC provider exists in the platform account, so the OIDC
-          # path cannot resolve; the runner already holds an authorized session in
-          # 879318057152 (the recovery job proved this by passing its account
-          # assertion with an empty role ARN). GitHub OIDC remains a supported
-          # means, not an acceptance goal — when its secret IS set it wins here.
-          # Still no static keys and no laptop profile: this is an assumed role
-          # scoped to tag-conditioned EC2 lifecycle, SSM to eval-tagged instances,
-          # PassRole of only the eval instance role, and this run's bucket.
-          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
+          # Explicit OIDC role only. No ambient runner authority, no role
+          # chaining, no hardcoded fallback ARN. The secret must be configured
+          # in the protected deployment environment; the fail-closed guard above
+          # the credential step refuses to proceed without it.
+          EVAL_ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
         run: |
           set -euo pipefail
           ARGS=("$EVAL_RUN_CONFIG")
@@ -342,59 +340,45 @@ jobs:
           git fetch --no-tags --depth 1 origin "$REVISION"
           git cat-file -e "$REVISION:modules/gateway/cli/install.sh"
 
-      - name: Configure AWS credentials (short-lived, scoped role)
-        # Short-lived assumed-role session only. There is no access-key path and
-        # no laptop profile: the issue is explicit that operator profiles are not
-        # available credentials.
-        #
-        # Two ways in, in this order of preference:
-        #  1. GitHub OIDC, when AWS_CLI_UPLIFT_EVAL_ROLE_ARN / AWS_E2E_ROLE_ARN is
-        #     set. Unchanged behaviour, and still the preferred path.
-        #  2. Otherwise role CHAINING from the ARC runner's own short-lived
-        #     identity into the purpose-scoped orchestrator role. Needed because
-        #     neither secret is set and the platform account has no GitHub OIDC
-        #     provider at all (only 4 EKS ones), so path 1 cannot resolve today.
-        #
-        # `role-duration-seconds` is 3600 on the chained path because STS caps a
-        # chained session at one hour and asking for more is a hard
-        # ValidationError. That is shorter than `max_run_minutes: 180`, so a FULL
-        # suite would outlive its credentials — acceptable for this login
-        # checkpoint, which is minutes long, and the reason path 1 stays
-        # preferred for the eventual full run.
+      - name: Require an explicit OIDC role (fail closed)
+        # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
+        # needs. Require the reviewed OIDC identity; refuse to proceed without it
+        # so a misconfigured environment fails loudly rather than falling back to
+        # ambient runner authority.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys, no hardcoded
+        # fallback ARN. The fail-closed guard above ensures the secret is set.
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
           aws-region: us-east-1
-          role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
-          # The action tags the session by default, which needs `sts:TagSession`
-          # in ADDITION to `sts:AssumeRole`. The ARC runner role carries a
-          # permissions boundary (`adp-dev-agent-runner-boundary`) that allows
-          # `sts:AssumeRole` but NOT `sts:TagSession`, so every attempt failed 12
-          # times with "not authorized to perform: sts:TagSession" (runs
-          # 35081336556, 35081819775) even though the target role's trust policy
-          # permits it — a boundary caps the principal regardless of trust.
-          #
-          # Skipping the tags is the correct fix: that boundary is a shared
-          # guardrail on a role many workflows use, and widening it to let this
-          # evaluation pass would weaken an unrelated security control. The tags
-          # are audit metadata only; nothing here authorizes on them, and the
-          # session is still a distinct short-lived identity named by
-          # `role-session-name` and the run ID.
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
           role-skip-session-tagging: true
-          role-duration-seconds: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && '10800' || '3600' }}
+          role-duration-seconds: 10800
           role-session-name: cli-uplift-eval-${{ github.run_id }}
 
       - name: Publish when these credentials expire
         # The run has to know when its own AWS session dies, and this step is the
         # only place that can tell it: `role-duration-seconds` above is what was
-        # ASKED for, and on the chained path STS silently caps the answer at one
-        # hour. So the duration is read back from the session itself rather than
-        # assumed from the input.
+        # ASKED for, but STS may cap the actual grant. So the duration is read
+        # back from the session itself rather than assumed from the input.
         #
-        # Why it matters: `max_run_minutes` is 180. A chained one-hour session is
-        # therefore shorter than the run it is meant to cover, and before this the
-        # expiry surfaced as whichever AWS call happened to be in flight when the
-        # token died — an ExpiredToken attributed to an instance launch, or a
+        # Why it matters: if the session is shorter than `max_run_minutes: 180`,
+        # the expiry surfaced as whichever AWS call happened to be in flight when
+        # the token died — an ExpiredToken attributed to an instance launch, or a
         # cleanup that could not authenticate and so could not honestly report
         # what it had failed to delete. The runner now stops between stages with
         # `credentials_expired` and a named reason, while it still has enough
@@ -406,13 +390,11 @@ jobs:
           # The session's own view of its lifetime, via a role it can always read:
           # itself. `--duration-seconds` on get-session-token is not available to
           # an assumed-role principal, so the expiry comes from the credential
-          # file the action wrote, falling back to the conservative one-hour
-          # chained cap when it cannot be determined. Conservative is the right
-          # direction: guessing SHORTER than reality stops the run early and
-          # cleanly, guessing longer is what we are fixing.
+          # action environment, falling back conservatively to one hour when
+          # actual expiration is unavailable. Never infer a longer lifetime.
           EXPIRY="${AWS_CREDENTIAL_EXPIRATION:-}"
           if [ -z "$EXPIRY" ]; then
-            echo "No AWS_CREDENTIAL_EXPIRATION was exported; assuming the STS chained cap of 1h."
+            echo "No AWS_CREDENTIAL_EXPIRATION was exported; conservatively limiting this run to 1h."
             EXPIRY="$(python -c 'import datetime;print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(seconds=3600)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
           fi
           echo "Orchestrator credentials expire at $EXPIRY"
@@ -604,8 +586,8 @@ jobs:
         # to terminate) would come from that untrusted ref.
         run: |
           set -euo pipefail
-          if [ "${{ github.ref }}" != "refs/heads/main" ] && [[ "${{ github.ref }}" != refs/tags/* ]]; then
-            echo "::error::Recovery sweep refuses ref ${{ github.ref }}; dispatch from main or a tag."
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::This workflow requires reviewed main."
             exit 1
           fi
 
@@ -622,33 +604,36 @@ jobs:
         # ImportError, which the step then swallowed into a warning.
         run: pip install boto3
 
-      - name: Configure AWS credentials (short-lived, scoped role)
-        # Same two-path resolution as the evaluate job, and it must stay
-        # identical: this job is the one that still runs after a cancellation, so
-        # if it resolved credentials differently it would lose exactly the
-        # termination rights the run depends on. Previously this step "succeeded"
-        # with an empty role ARN and silently kept the runner's own ambient
-        # identity — which worked, but meant the destructive sweep ran with far
-        # broader rights than the scoped role it was supposed to use.
+      - name: Require an explicit OIDC role (fail closed)
+        # Same fail-closed guard as the evaluate job, and it must stay identical:
+        # this job is the one that still runs after a cancellation, so if it
+        # resolved credentials differently it would lose exactly the termination
+        # rights the run depends on. Previously this step "succeeded" with an
+        # empty role ARN and silently kept the runner's own ambient identity —
+        # which worked, but meant the destructive sweep ran with far broader
+        # rights than the scoped role it was supposed to use.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys. Identical
+        # resolution to the evaluate job so the recovery sweep holds exactly
+        # the same termination rights.
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN || vars.CLI_UPLIFT_EVAL_ORCHESTRATOR_ROLE_ARN || 'arn:aws:iam::879318057152:role/adp-cli-uplift-eval-orchestrator' }}
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
           aws-region: us-east-1
-          role-chaining: ${{ (secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN) && 'false' || 'true' }}
-          # The action tags the session by default, which needs `sts:TagSession`
-          # in ADDITION to `sts:AssumeRole`. The ARC runner role carries a
-          # permissions boundary (`adp-dev-agent-runner-boundary`) that allows
-          # `sts:AssumeRole` but NOT `sts:TagSession`, so every attempt failed 12
-          # times with "not authorized to perform: sts:TagSession" (runs
-          # 35081336556, 35081819775) even though the target role's trust policy
-          # permits it — a boundary caps the principal regardless of trust.
-          #
-          # Skipping the tags is the correct fix: that boundary is a shared
-          # guardrail on a role many workflows use, and widening it to let this
-          # evaluation pass would weaken an unrelated security control. The tags
-          # are audit metadata only; nothing here authorizes on them, and the
-          # session is still a distinct short-lived identity named by
-          # `role-session-name` and the run ID.
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
           role-skip-session-tagging: true
           role-session-name: cli-uplift-recover-${{ github.run_id }}
 
