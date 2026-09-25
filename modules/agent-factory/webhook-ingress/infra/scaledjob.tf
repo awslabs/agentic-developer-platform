@@ -183,8 +183,6 @@ ${local.agent_worker_pause_annotation}
       pollingInterval: 5
       minReplicaCount: 0
       maxReplicaCount: 50
-      rollout:
-        strategy: gradual
       # Issue #4031: keep at most ONE Completed job visible. FIFO group
       # serialization makes KEDA spawn speculative pods that receive nothing
       # and exit 0 (entrypoint.py: "No message available after long-poll") —

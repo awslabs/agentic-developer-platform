@@ -25,9 +25,9 @@ gateway_authority_managed_policies = true
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
 
-# Evidence-led cyber analyst (#5917), preserving deployed worker source.
-# Worker and browser broker share this digest; protected-worker migration stays off.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:9b07180e2304cd075bfb5d3309f010b8a458f2973a7cf034c0ef82a79b3900f4"
+# Task API image source ba086a30d; preserves the existing cyber worker runtime.
+# Browser broker keeps its independently reviewed image below.
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3"
 
 # The matching broker and worker support session-owner capabilities.
 domain_app_images = {
@@ -45,3 +45,10 @@ domain_app_settings = {
 # Reserve additional node capacity as well as raising the per-worker ceiling.
 agent_worker_memory_request = "8Gi"
 agent_worker_memory_limit   = "16Gi"
+
+# Task-only workload proof uses prepared TokenReview RBAC; generic authority stays off.
+agent_authority_prepared   = true
+agent_authority_enabled    = false
+task_api_worker_enabled    = true
+task_api_admission_enabled = false
+task_api_recovery_enabled  = false
