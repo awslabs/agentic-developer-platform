@@ -285,6 +285,13 @@ CASES = (
         "Own Activity pagination and missing-run status/state/detail errors are structured; no active-control claim",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E24",
+        "#5631",
+        "story-reads",
+        "Credential/identity metadata and mutation previews use the served CLI without reading secrets or writing provider claims",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

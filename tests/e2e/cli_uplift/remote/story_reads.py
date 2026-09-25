@@ -119,7 +119,74 @@ def activity(cli, evidence):
     )
 
 
-SCENARIOS = {"capabilities": capabilities, "usage": usage, "activity": activity}
+def vault(cli, evidence):
+    for area in ("credential", "identity"):
+        result = detail(cli.json([area, "list"]))
+        common.require(
+            isinstance(result.get("items"), list), "Vault list lacks metadata rows"
+        )
+        for row in result["items"]:
+            common.require(
+                isinstance(row, dict)
+                and row.get("id")
+                and not {
+                    "value",
+                    "secret_arn",
+                    "access_token",
+                    "refresh_token",
+                }.intersection(row),
+                "Vault metadata exposed secret fields or lacks an ID",
+            )
+    # Deliberately unreadable input: dry-run must not open it or issue a write.
+    preview = cli.json(
+        [
+            "credential",
+            "add",
+            "--service",
+            "cli-regression",
+            "--label",
+            "preview",
+            "--type",
+            "api_key",
+            "--operation-id",
+            str(uuid.uuid4()),
+            "--value-file",
+            "/nonexistent-cli-dry-run-secret",
+            "--dry-run",
+        ]
+    )
+    common.require(
+        preview.get("status") == "dry_run",
+        "Credential preview did not remain a dry-run",
+    )
+    claim = cli.json(
+        [
+            "identity",
+            "link",
+            "--provider",
+            "github",
+            "--provider-user-id",
+            "cli-regression-preview",
+            "--dry-run",
+        ]
+    )
+    common.require(
+        claim.get("status") == "dry_run", "Identity preview did not remain a dry-run"
+    )
+    evidence["cases"] = [
+        "credential-metadata",
+        "identity-metadata",
+        "credential-dry-run-no-secret",
+        "identity-dry-run",
+    ]
+
+
+SCENARIOS = {
+    "capabilities": capabilities,
+    "usage": usage,
+    "activity": activity,
+    "vault": vault,
+}
 
 
 def execute(config, evidence):

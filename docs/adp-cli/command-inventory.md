@@ -143,3 +143,16 @@ Usage and metadata commands added by #5628 (source implementation; live acceptan
 | `adp admin usage users` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
 | `adp admin usage departments` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
 | `adp admin usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--org`, `--page-size`, `--request-id`, `--run`, `--start` |
+
+Credential and identity additions ([usage](vault.md)); source implemented, live acceptance pending:
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp credential list` |  | `--json`, `--scope` |
+| `adp credential show` | `id` | `--json` |
+| `adp credential add` |  | `--domain-app-id`, `--dry-run`, `--expires-at`, `--json`, `--label`, `--operation-id`, `--scope`, `--service`, `--strict`, `--type`, `--value-file`, `--value-stdin`, `--yes` |
+| `adp credential update` | `id` | `--dry-run`, `--expected-revision`, `--expires-at`, `--json`, `--label`, `--strict`, `--yes` |
+| `adp credential delete` | `id` | `--dry-run`, `--json`, `--yes` |
+| `adp identity list` |  | `--json`, `--provider` |
+| `adp identity link` |  | `--dry-run`, `--json`, `--provider`, `--provider-user-id`, `--resume`, `--yes` |
+| `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |

@@ -55,9 +55,10 @@ from .magic_link import (
     verify_token,
 )
 from .middleware import get_current_user_context
-from .vault_schemas import VALID_SCOPES, CredentialCreate, CredentialResponse, CredentialUpdate, IdentityResponse
+from .vault_schemas import VALID_SCOPES, CredentialCreate, CredentialMetadataUpdate, CredentialResponse, CredentialUpdate, IdentityResponse
 from .vault_service import (
     CredentialNotFoundError,
+    CredentialRevisionConflictError,
     DuplicateCredentialError,
     IdentityNotFoundError,
     InsufficientPrivilegesError,
@@ -282,6 +283,10 @@ async def update_credential_endpoint(
         await _resolve_user_id_in_context(token_context, db)
         cred = await update_credential(credential_id, data, db, token_context)
         return CredentialResponse.from_model(cred)
+    except CredentialRevisionConflictError:
+        raise HTTPException(
+            status_code=409, detail={"error": "stale_revision", "message": "Credential metadata changed; inspect it before retrying."}
+        )
     except CredentialNotFoundError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Credential not found"})
     except InsufficientPrivilegesError as exc:
@@ -293,6 +298,17 @@ async def update_credential_endpoint(
     except Exception:
         logger.exception("Unexpected error updating credential %s", credential_id)
         raise HTTPException(status_code=500, detail={"error": "update_failed", "message": "Failed to update credential"})
+
+
+@router.patch("/credentials/{credential_id}/metadata", response_model=CredentialResponse)
+async def update_credential_metadata_endpoint(
+    credential_id: str,
+    data: CredentialMetadataUpdate,
+    token_context=Depends(get_current_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> CredentialResponse:
+    """Require a revision precondition; unsupported servers return 404, never ignore it."""
+    return await update_credential_endpoint(credential_id, data, token_context, db)
 
 
 @router.delete(
@@ -531,6 +547,8 @@ async def issue_identity_magic_link(
     # before anything else — including before any persistence, so the answer to
     # "is this provider linkable" cannot vary with deployment config.
     _require_linkable_provider(provider)
+
+    await _resolve_user_id_in_context(token_context, db)
 
     # The caller's row supplies team_id, which UserIdentity requires.
     user = (await db.execute(select(User).where(User.id == token_context.user_id))).scalar_one_or_none()
