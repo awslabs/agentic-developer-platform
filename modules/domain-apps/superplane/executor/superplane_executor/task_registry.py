@@ -46,7 +46,8 @@ class TaskRegistry(AssignmentRegistry):
             row = await connection.fetchrow(
                 "SELECT w.id::text AS workspace_id,w.org_id::text AS domain_org_id,"
                 "w.namespace_name AS namespace,c.id::text AS cluster_id,"
-                "c.eks_cluster_arn AS cluster_arn,c.endpoint,l.expires_at AS controller_expires_at "
+                "c.eks_cluster_arn AS cluster_arn,c.endpoint,l.expires_at AS controller_expires_at,"
+                "w.shared_cluster_id::text AS shared_cluster_id "
                 "FROM workspaces w JOIN clusters c ON c.id=w.cluster_id AND c.org_id=w.org_id "
                 "JOIN observation_leases l ON l.scope='controller_management/' || w.org_id::text "
                 "WHERE w.id::text=$1 AND w.org_id::text=$2 AND l.expires_at>clock_timestamp() "
@@ -58,7 +59,15 @@ class TaskRegistry(AssignmentRegistry):
             )
         if row is None:
             raise OperationRefused("canonical workspace registration unavailable")
-        return dict(row)
+        target = dict(row)
+        if target.pop("shared_cluster_id") is not None:
+            # Paid execution requires Node observation unavailable to shared
+            # namespace credentials. Refuse before issuing an assignment or
+            # creating capacity, including when placement changed after admission.
+            raise OperationRefused(
+                "shared placement requires separate trusted Node observation authority"
+            )
+        return target
 
     async def publish(self, operation_id):
         operation, target, holder, handoff = await self.verify(operation_id)
