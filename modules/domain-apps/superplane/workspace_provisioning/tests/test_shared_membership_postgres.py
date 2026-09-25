@@ -248,6 +248,9 @@ def test_canonical_publication_retains_the_pre_namespace_reservation(
         claim = await asyncio.to_thread(
             registry.reserve, binding.workspace_id, _target_mapping(target)
         )
+        authority = await _stage_shared_authority(
+            harness, binding, target, claim["attempt_token"]
+        )
         if drift:
             with pytest.raises(
                 BootstrapRefused, match="reservation is missing or changed"
@@ -273,15 +276,58 @@ def test_canonical_publication_retains_the_pre_namespace_reservation(
         )
         assert replay["replayed"] is True
         await _assert_shared_result_anchor(
-            harness, binding, target, claim["attempt_token"]
+            harness, binding, target, claim["attempt_token"], authority
         )
 
     harness.run(run())
 
 
-async def _assert_shared_result_anchor(harness, binding, target, attempt_token):
-    """Authority rows are fixture evidence, not a claim of live shared bootstrap."""
+async def _stage_shared_authority(harness, binding, target, attempt_token):
+    """Stage completed fixture evidence before the real publication transaction.
+
+    This tests canonical publication, not provider bootstrap; composed provider
+    effects and recovery races are exercised by test_shared_workspace_postgres.
+    """
     import hashlib
+    import json
+
+    from superplane_bootstrap.state import claim_fingerprint
+
+    operation_id = str(uuid4())
+    claim = claim_fingerprint(attempt_token)
+    generation = hashlib.sha256((operation_id + ":" + claim).encode()).hexdigest()
+    progress = json.dumps(
+        {
+            "phase": "revoked",
+            "complete": True,
+            "retain_workspace": True,
+            "component_inventory_complete": True,
+            "component_inventory_mode": "shared-namespace",
+            "member_gate": "open",
+            "workspace-namespace": {"identity": {"uid": target.namespace_uid}},
+            "member_credential_reference": target.credential_reference_id,
+        }
+    )
+    async with harness.connect() as connection:
+        await connection.execute(
+            "INSERT INTO workspace_bootstrap_authority(workspace_id,generation,operation_id,org_id,cluster_arn,claim,plan_json,progress_json,revoked) "
+            "VALUES($1,$2,$3,$4,$5,$6,$8,$7,true)",
+            binding.workspace_id,
+            generation,
+            operation_id,
+            binding.org_id,
+            binding.cluster_arn,
+            claim,
+            progress,
+            json.dumps({"mode": "shared-namespace", "membership": binding.encode()}),
+        )
+    return operation_id, generation, progress
+
+
+async def _assert_shared_result_anchor(
+    harness, binding, target, attempt_token, authority
+):
+    """Read the same authority evidence that authorized canonical publication."""
     import json
     from types import SimpleNamespace
 
@@ -289,17 +335,8 @@ async def _assert_shared_result_anchor(harness, binding, target, attempt_token):
     from superplane_bootstrap.state import claim_fingerprint
     from workspace_provisioning.bootstrap_result import read_bootstrap_anchor
 
-    operation_id = str(uuid4())
+    operation_id, generation, progress = authority
     claim = claim_fingerprint(attempt_token)
-    generation = hashlib.sha256(("fixture-authority:" + claim).encode()).hexdigest()
-    progress = json.dumps(
-        {
-            "phase": "revoked",
-            "complete": True,
-            "retain_workspace": True,
-            "component_inventory_complete": True,
-        }
-    )
     peer_id = uuid4()
     metadata = json.dumps({"workspace_bootstrap": {"peer": "original-registration"}})
     async with harness.connect() as connection:
@@ -315,17 +352,6 @@ async def _assert_shared_result_anchor(harness, binding, target, attempt_token):
             metadata,
             UUID(binding.cluster_id),
         )
-        await connection.execute(
-            "INSERT INTO workspace_bootstrap_authority(workspace_id,generation,operation_id,org_id,cluster_arn,claim,plan_json,progress_json,revoked) "
-            "VALUES($1,$2,$3,$4,$5,$6,'{}',$7,true)",
-            binding.workspace_id,
-            generation,
-            operation_id,
-            binding.org_id,
-            binding.cluster_arn,
-            claim,
-            progress,
-        )
     arguments = dict(
         context=SimpleNamespace(domain_connect=harness.connect),
         operation_id=operation_id,
@@ -339,6 +365,17 @@ async def _assert_shared_result_anchor(harness, binding, target, attempt_token):
     assert anchored["current_generation"] == generation
     with pytest.raises(LifecycleRefused, match="unique original authority"):
         await read_bootstrap_anchor(**{**arguments, "claim": "b" * 64})
+    async with harness.connect() as connection:
+        recovered = {**json.loads(progress), "member_recovery_started": True}
+        await connection.execute(
+            "UPDATE workspace_bootstrap_authority SET progress_json=$1",
+            json.dumps(recovered),
+        )
+        with pytest.raises(LifecycleRefused, match="recovered or changed"):
+            await read_bootstrap_anchor(**arguments)
+        await connection.execute(
+            "UPDATE workspace_bootstrap_authority SET progress_json=$1", progress
+        )
     async with harness.connect() as connection:
         await connection.execute(
             "UPDATE cluster_memberships SET namespace_uid='replaced-namespace'"
