@@ -239,3 +239,71 @@ async def test_cancellation_racing_prepared_transaction_blocks_send(model, monke
     monkeypatch.setattr(model.repository._client, "transact_write_items", race)
     assert (await execute(model))["operation_status"] == "rejected"
     model.provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["confirmed", "unknown", "version_race", "event_race"])
+async def test_consumed_command_tracks_provider_handoff_without_replaying(model, monkeypatch, outcome):
+    from datetime import timedelta
+
+    from src.tasks.records import task_partition
+    from src.tasks.store import _serialize
+    from src.tasks.task_commands import TaskCommands
+
+    commands = TaskCommands(model.repository)
+    command_id = str(uuid.uuid4())
+    commands.admit(
+        task_id=model.identity.task_id,
+        command_id=command_id,
+        kind="input",
+        payload={"text": "follow up"},
+        principal=model.identity.canonical_principal,
+        tenant=model.identity.tenant,
+        expires_at=NOW + timedelta(minutes=5),
+    )
+    model.turn_id = str(uuid.uuid4())
+    TaskTurnStore(model.repository, clock=lambda: NOW).commit(identity=model.identity, request_id=model.turn_id, expected_transcript_version=2)
+    assert commands.commands(model.identity.task_id)[0]["handoff"] == "not_started"
+    if outcome == "unknown":
+        model.provider.side_effect = TimeoutError()
+    if outcome in {"version_race", "event_race"}:
+        original = model.repository._client.transact_write_items
+        raced = False
+
+        def write(**kwargs):
+            nonlocal raced
+            first = kwargs["TransactItems"][0].get("Put", {}).get("Item", {})
+            if first.get("handoff") == {"S": "confirmed"} and not raced:
+                raced = True
+                if outcome == "version_race":
+                    model.repository._client.update_item(
+                        TableName=model.repository.table_name,
+                        Key=_serialize({"event_id": task_partition(model.identity.task_id), "arrived_at": "META"}),
+                        UpdateExpression="ADD #version :one",
+                        ExpressionAttributeNames={"#version": "version"},
+                        ExpressionAttributeValues=_serialize({":one": 1}),
+                    )
+                else:
+                    model.repository.append_report(
+                        task_id=model.identity.task_id,
+                        invocation_id=model.identity.invocation_id,
+                        generation=model.identity.generation,
+                        runtime_attempt_id=model.identity.runtime_attempt_id,
+                        report_id=str(uuid.uuid4()),
+                        kind="progress.updated",
+                        data={"message": "Still checking", "stage": "analysis"},
+                    )
+            return original(**kwargs)
+
+        monkeypatch.setattr(model.repository._client, "transact_write_items", write)
+    receipt = await execute(model)
+    expected = "unknown" if outcome == "unknown" else "confirmed"
+    assert receipt["handoff"] == expected
+    assert commands.commands(model.identity.task_id)[0]["handoff"] == expected
+    events = model.repository.read_events(task_id=model.identity.task_id)
+    assert [e["data"]["handoff"] for e in events if e["type"] == "command.updated"] == ["prepared", expected]
+    assert await execute(model) == receipt
+    model.provider.assert_awaited_once()
+    assert len(model.repository.read_events(task_id=model.identity.task_id)) == len(events)
+    if outcome == "event_race":
+        assert any(e["type"] == "progress.updated" for e in events)
