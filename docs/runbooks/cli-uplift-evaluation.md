@@ -343,3 +343,5 @@ two fresh full runs against the same deployed revision, plus interruption/resume
 repeat cleanup, and failure-injection evidence. The shared nightly workflow now
 schedules the key install/login checkpoint; full runs remain manually selectable,
 and blocked cases still prevent full acceptance.
+
+Budget story #5589 adds E26 to `story-reads` and `nightly`: served `adp budget me` reads daily, weekly and monthly periods without inference or cap mutation. This checks response and uncapped semantics; it does not establish live hard/soft enforcement.
