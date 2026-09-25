@@ -54,6 +54,26 @@ it rejects wildcard prefixes, tenant vaults and deployment credentials. This doe
 not rotate keys or switch the engine transport. Do not omit required existing
 transport inputs during cutover.
 
+## Scope a build dispatcher to one component
+
+Existing installations retain their current ECR read scope and Cyber worker
+image-tag publication when the new inputs are omitted. For an executor-only
+installation, supply both restrictions alongside the exact project inventory:
+
+```hcl
+build_project_names             = ["adp-dev-superplane-executor"]
+build_ecr_repository_names      = ["adp-superplane-executor"]
+build_publish_worker_image_tag = false
+```
+
+`build_ecr_repository_names` accepts exact repository names, not ARNs or
+wildcards. Its default `null` retains the previous `adp-*` read scope for existing
+multi-image consumers. `build_publish_worker_image_tag` defaults to `true` for
+existing Cyber worker publication; set it to `false` to remove the entire SSM
+write statement. Project dispatch and source staging remain limited to
+`build_project_names`. These inputs do not create a CodeBuild project or ECR
+repository; verify those separately in their canonical owning states.
+
 ## Ordered rollout
 
 This is an upgrade procedure after GitHub has already been connected. It does
