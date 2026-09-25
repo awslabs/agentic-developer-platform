@@ -141,7 +141,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "034_provider_request_region"
+    assert observed["revision"] == "035_shared_cluster_membership"
     async with engine.connect() as conn:
         assert (
             await conn.execute(
@@ -211,7 +211,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
         async with engine.connect() as conn:
             assert (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == "034_provider_request_region"
+            ).scalar_one() == "035_shared_cluster_membership"
             assert (
                 await conn.execute(
                     text("SELECT workload_kind FROM deployments WHERE id=:id"),
@@ -246,7 +246,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
             ).scalar_one() == "kept"
             assert (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == "034_provider_request_region"
+            ).scalar_one() == "035_shared_cluster_membership"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))
@@ -618,4 +618,4 @@ async def test_audit_migration_preserves_unattributed_evidence_on_downgrade(
         ).one() == ("unresolved", "denied")
         assert (
             await conn.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "034_provider_request_region"
+        ).scalar_one() == "035_shared_cluster_membership"
