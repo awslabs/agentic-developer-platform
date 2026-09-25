@@ -358,7 +358,7 @@ ${local.agent_authority_mount_block}
                     protocol: TCP
                 resources:
                   requests:
-                    cpu: "1"
+                    cpu: "4"
                     memory: ${var.agent_worker_memory_request}
                     ephemeral-storage: 50Gi
                   limits:
