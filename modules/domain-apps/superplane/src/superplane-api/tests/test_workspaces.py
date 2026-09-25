@@ -307,6 +307,69 @@ class TestWorkspaceSchemas:
         assert req.account is None
 
 
+class TestClusterPlacementChoice:
+    """Issue #6048: the explicit dedicated/shared placement choice at creation."""
+
+    def test_default_placement_is_dedicated(self):
+        """An old client that never heard of shared placement keeps dedicated behavior."""
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        req = CreateWorkspaceRequest(operation_id=uuid.uuid4(), name="my-workspace")
+        assert req.cluster_placement == "dedicated"
+        assert req.shared_cluster_id is None
+
+    def test_shared_placement_requires_a_cluster_id(self):
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError, match="shared_cluster_id"):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="shared",
+            )
+
+    def test_dedicated_placement_forbids_a_cluster_id(self):
+        """Naming a cluster on the dedicated path must not silently opt into sharing it."""
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError, match="cluster_placement=shared"):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="dedicated",
+                shared_cluster_id=uuid.uuid4(),
+            )
+
+    def test_shared_placement_with_a_cluster_id_is_valid(self):
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        cluster_id = uuid.uuid4()
+        req = CreateWorkspaceRequest(
+            operation_id=uuid.uuid4(),
+            name="my-workspace",
+            cluster_placement="shared",
+            shared_cluster_id=cluster_id,
+        )
+        assert req.cluster_placement == "shared"
+        assert req.shared_cluster_id == cluster_id
+
+    def test_invalid_placement_value_rejected(self):
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="borrowed",
+            )
+
+
 class TestWorkspaceDisplayName:
     """Test workspace display name with isolation mode tags."""
 

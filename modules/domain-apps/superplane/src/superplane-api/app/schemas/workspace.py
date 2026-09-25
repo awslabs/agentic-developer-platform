@@ -24,6 +24,20 @@ class CreateWorkspaceRequest(BaseModel):
     isolation_mode: str = Field(
         default="dedicated", pattern="^(dedicated|namespace|research)$"
     )
+    # Issue #6048: the explicit dedicated/shared placement choice. Defaults to
+    # "dedicated" so an old client that has never heard of shared placement keeps
+    # its existing behavior exactly — see DESIGN.md's "default dedicated behavior
+    # remains" requirement. Never inferred from `cluster_reference`: that field
+    # is the pre-existing "adopt an existing cluster as MY dedicated cluster"
+    # input, and naming a cluster there must not silently opt into sharing it.
+    cluster_placement: str = Field(
+        default="dedicated", pattern="^(dedicated|shared)$"
+    )
+    # Opaque cluster identifier, required for `cluster_placement == "shared"` and
+    # forbidden otherwise. Resolved and verified server-side under the caller's
+    # authenticated organization (see `app/services/cluster_sharing.py`) — this
+    # field is a selection, never itself proof of eligibility or ownership.
+    shared_cluster_id: uuid.UUID | None = None
     account: str | None = Field(
         default=None,
         description="AWS account name or ID — mandatory for research isolation mode",
@@ -49,6 +63,24 @@ class CreateWorkspaceRequest(BaseModel):
         """Research isolation mode requires an AWS account."""
         if self.isolation_mode == "research" and not self.account:
             raise ValueError("Research workspaces require an AWS account (--account)")
+        return self
+
+    @model_validator(mode="after")
+    def shared_placement_names_exactly_one_cluster(self) -> "CreateWorkspaceRequest":
+        """Shared placement requires a cluster selection; dedicated forbids one.
+
+        A `shared_cluster_id` supplied alongside dedicated placement would be a
+        selection with no expressed intent to use it, which is exactly the kind
+        of ambiguous input DESIGN.md says must be refused rather than guessed at.
+        """
+        if self.cluster_placement == "shared" and self.shared_cluster_id is None:
+            raise ValueError(
+                "shared cluster placement requires shared_cluster_id"
+            )
+        if self.cluster_placement == "dedicated" and self.shared_cluster_id is not None:
+            raise ValueError(
+                "shared_cluster_id is only valid with cluster_placement=shared"
+            )
         return self
 
 

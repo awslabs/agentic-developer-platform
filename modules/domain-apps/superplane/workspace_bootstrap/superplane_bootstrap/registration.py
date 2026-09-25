@@ -176,6 +176,13 @@ class WorkspaceTarget:
     cluster_ownership: str
     credential_reference_id: str
     contract_version: str
+    # Issue #6048. Defaults to "dedicated" so every existing caller that never
+    # names this field — including every test fixture that predates it —
+    # constructs the exact same record it always did. Deliberately EXCLUDED from
+    # `_IMMUTABLE_FIELDS`/`_RESERVATION_FIELDS`: those drive the pre-mutation
+    # rebinding refusal, which must keep comparing only cluster/tenant identity.
+    # `canonical.py` (via `_target_mapping`) is the sole reader of this field.
+    cluster_placement: str = "dedicated"
 
     def __post_init__(self) -> None:
         for spec in fields(self):

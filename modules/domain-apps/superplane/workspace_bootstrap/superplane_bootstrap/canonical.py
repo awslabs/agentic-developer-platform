@@ -2,19 +2,71 @@
 
 Runs inside the reservation transaction; any conflict rolls back publication and
 leaves the claim reserved. Credential references are opaque, never credentials.
+
+## Shared placement (issue #6048)
+
+`identity["cluster_placement"]` is an OPTIONAL key. Every caller before this
+change omits it; `.get(...)` below defaults the absence to ``"dedicated"``, and
+the dedicated path is byte-for-byte the original behavior this module always had
+— same locks, same reads, same refusals, same writes. This is what keeps this an
+additive change rather than a rewrite: nothing about how a dedicated workspace
+gets registered is different.
+
+The gap this closes is named explicitly in
+`../../executor/ORG-SHARED-CLUSTERS.md`: canonical registration refused ANY
+second workspace naming an already-bound cluster, with no way to express "this
+one is explicitly shared." The `"shared"` branch below is admitted only onto a
+cluster that (a) already exists and is registered and (b) is explicitly marked
+`clusters.sharing_enabled` — never onto a cluster this call would otherwise
+create (a first member cannot bootstrap as "shared"; sharing requires something
+already there to share), and never by inferring eligibility from the cluster's
+name or AWS account. A `"dedicated"` identity is refused under EXACTLY the
+conditions it always was.
+
+The shared branch never overwrites `clusters.workspace_id` or the cluster's
+`actual_state_json["workspace_bootstrap"]` key — both are single-owner-shaped
+by the module's original design (see `observations.py`'s docstring on why only
+`workspaces.cluster_id`/dedicated ownership can answer "who owns this cluster"),
+and a second member's own registration must not corrupt the first member's
+replay check. A shared member's registration is durable in its own
+`cluster_memberships` row instead — the schema issue #6048 adds specifically
+because a single JSON key cannot hold more than one workspace's binding safely.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from uuid import UUID, uuid4
 
 from .errors import BootstrapRefused
 
+_DEDICATED = "dedicated"
+_SHARED = "shared"
+
+
+def _membership_generation(identity: dict) -> str:
+    """A deterministic 64-hex fingerprint of this exact identity.
+
+    Distinct from the execution-authority `generation`
+    `authority_journal.generation_for` derives from a live attempt token: that one
+    changes every attempt by design, so it cannot also be the value a replay of
+    the SAME publish call needs to reproduce unchanged. This one only changes
+    when the registered identity itself changes.
+    """
+    canonical = json.dumps(dict(identity), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
 
 def publish(store, identity):
     workspace_id = str(UUID(identity["workspace_id"]))
     org_binding = identity["org_id"]
+    cluster_placement = identity.get("cluster_placement") or _DEDICATED
+    if cluster_placement not in (_DEDICATED, _SHARED):
+        raise BootstrapRefused(
+            f"unknown cluster_placement {cluster_placement!r}; expected "
+            f"{_DEDICATED!r} or {_SHARED!r}"
+        )
     store.execute(
         "SELECT pg_advisory_xact_lock(hashtextextended(:binding, 0))",
         {"binding": "superplane-bootstrap:" + org_binding},
@@ -48,8 +100,9 @@ def publish(store, identity):
             "canonical workspace belongs to another tenant or namespace"
         )
     clusters = store.execute(
-        "SELECT id, org_id, workspace_id, eks_cluster_arn, endpoint, actual_state_json "
-        "FROM clusters WHERE eks_cluster_arn = :arn OR id = CAST(:cluster_id AS uuid) FOR UPDATE",
+        "SELECT id, org_id, workspace_id, eks_cluster_arn, endpoint, actual_state_json, "
+        "sharing_enabled FROM clusters "
+        "WHERE eks_cluster_arn = :arn OR id = CAST(:cluster_id AS uuid) FOR UPDATE",
         {
             "arn": identity["cluster_arn"],
             "cluster_id": str(workspace["cluster_id"])
@@ -60,6 +113,126 @@ def publish(store, identity):
     if len(clusters) > 1:
         raise BootstrapRefused("canonical cluster identity is ambiguous")
     cluster = clusters[0] if clusters else None
+
+    if cluster_placement == _SHARED:
+        if cluster is None:
+            raise BootstrapRefused(
+                "shared cluster placement requires an already-registered cluster; "
+                "a first member cannot bootstrap a cluster as shared"
+            )
+        if str(cluster["org_id"]) != org_id:
+            raise BootstrapRefused(
+                "canonical cluster is bound to another target or tenant"
+            )
+        if not cluster["sharing_enabled"]:
+            raise BootstrapRefused(
+                "cluster is not explicitly marked sharing_enabled; shared "
+                "placement is never inferred from adoption or dedicated use"
+            )
+        if cluster["eks_cluster_arn"] != identity["cluster_arn"] or cluster[
+            "endpoint"
+        ] != identity["endpoint"]:
+            raise BootstrapRefused(
+                "shared cluster identity does not match the reviewed target"
+            )
+        # The cluster row itself is untouched: `workspace_id` and
+        # `actual_state_json["workspace_bootstrap"]` remain whichever workspace's
+        # dedicated/first registration set them, per the module docstring. This
+        # workspace's own binding is recorded in `cluster_memberships` instead.
+        #
+        # `SELECT ... FOR UPDATE` first, then branch, rather than `INSERT ...
+        # ON CONFLICT` — matching this function's existing idiom above, and so a
+        # conflicting case (this workspace already bound elsewhere; another
+        # workspace already holds this namespace) is a clean `BootstrapRefused`
+        # rather than a raw database integrity error surfacing from a commit.
+        existing_memberships = store.execute(
+            "SELECT id, cluster_id, workspace_id, namespace, state FROM cluster_memberships "
+            "WHERE org_id = CAST(:org_id AS uuid) "
+            "AND (workspace_id = CAST(:workspace_id AS uuid) "
+            "OR (cluster_id = CAST(:cluster_id AS uuid) AND namespace = :namespace)) "
+            "AND state <> 'removed' FOR UPDATE",
+            {
+                "org_id": org_id,
+                "workspace_id": workspace_id,
+                "cluster_id": str(cluster["id"]),
+                "namespace": identity["namespace"],
+            },
+        )
+        own_membership = next(
+            (
+                row
+                for row in existing_memberships
+                if str(row["workspace_id"]) == workspace_id
+            ),
+            None,
+        )
+        for row in existing_memberships:
+            if str(row["workspace_id"]) == workspace_id:
+                if str(row["cluster_id"]) != str(cluster["id"]):
+                    raise BootstrapRefused(
+                        "this workspace already holds a live membership on a "
+                        "different cluster; cluster migration is a separate "
+                        "explicit operation, not an implicit rebind"
+                    )
+            elif row["namespace"] == identity["namespace"]:
+                raise BootstrapRefused(
+                    "canonical bootstrap credential or namespace binding differs"
+                )
+        # The workspace row must exist BEFORE the membership row: `cluster_memberships
+        # .workspace_id` is a foreign key into `workspaces`, and a workspace created by
+        # this same bootstrap run (the "no prior admitted workspace row" case) does not
+        # exist yet until this statement runs.
+        if workspace:
+            store.execute(
+                "UPDATE workspaces SET status = 'active', updated_at = now() "
+                "WHERE id = CAST(:workspace_id AS uuid) AND org_id = CAST(:org_id AS uuid)",
+                {"workspace_id": workspace_id, "org_id": org_id},
+            )
+        else:
+            store.execute(
+                "INSERT INTO workspaces (id, org_id, name, isolation_mode, "
+                "shared_cluster_id, namespace_name, status, is_default) VALUES "
+                "(CAST(:workspace_id AS uuid), CAST(:org_id AS uuid), :namespace, "
+                "'namespace', CAST(:cluster_id AS uuid), :namespace, 'active', false)",
+                {
+                    "workspace_id": workspace_id,
+                    "org_id": org_id,
+                    "cluster_id": str(cluster["id"]),
+                    "namespace": identity["namespace"],
+                },
+            )
+        membership_params = {
+            "id": str(own_membership["id"]) if own_membership else str(uuid4()),
+            "org_id": org_id,
+            "workspace_id": workspace_id,
+            "cluster_id": str(cluster["id"]),
+            "generation": _membership_generation(identity),
+            "namespace": identity["namespace"],
+            "namespace_uid": identity.get("namespace_uid") or None,
+            "credential_reference_id": identity.get("credential_reference_id")
+            or None,
+        }
+        if own_membership:
+            store.execute(
+                "UPDATE cluster_memberships SET generation = :generation, "
+                "namespace = :namespace, namespace_uid = :namespace_uid, "
+                "state = 'active', credential_reference_id = :credential_reference_id, "
+                "updated_at = now() WHERE id = CAST(:id AS uuid)",
+                membership_params,
+            )
+        else:
+            store.execute(
+                "INSERT INTO cluster_memberships "
+                "(id, org_id, workspace_id, cluster_id, generation, namespace, "
+                "namespace_uid, state, credential_reference_id) "
+                "VALUES (CAST(:id AS uuid), CAST(:org_id AS uuid), "
+                "CAST(:workspace_id AS uuid), CAST(:cluster_id AS uuid), :generation, "
+                ":namespace, :namespace_uid, 'active', :credential_reference_id)",
+                membership_params,
+            )
+        return
+
+    # --- dedicated placement: the module's original behavior, unchanged ---
     if cluster and (
         str(cluster["org_id"]) != org_id
         or cluster["eks_cluster_arn"] not in (None, identity["cluster_arn"])
