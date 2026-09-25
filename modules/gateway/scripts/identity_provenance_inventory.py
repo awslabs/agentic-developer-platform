@@ -128,7 +128,7 @@ def validate_snapshot(raw: Any, tenant: str) -> None:
                 for field in ("user_id", "provider", "provider_user_id"):
                     string(row[field])
                 string(row["verification_method"], empty=True)
-                string(row["team_id"], nullable=True)
+                string(row["team_id"], nullable=True, empty=True)
                 if type(row["is_primary"]) is not bool:
                     raise SnapshotError("invalid_boolean")
                 timestamp(row["created_at"])

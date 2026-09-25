@@ -408,3 +408,15 @@ def test_exported_absent_ownership_claim_is_null_and_not_proof(inv, snapshot):
         )
     ]
     assert entry(inv, snapshot)["classification"] == "review_required"
+
+
+def test_empty_optional_team_preserves_state_without_granting_proof(inv, snapshot):
+    absent = inv.compute_row_fingerprint(snapshot["user_identities"][0])
+    snapshot["user_identities"][0]["team_id"] = ""
+    manifest = inv.build_manifest(snapshot, TENANT)
+    assert manifest["has_unresolved"] is True
+    assert manifest["entries"][0]["authority_action"] == "none"
+    assert inv.compute_row_fingerprint(snapshot["user_identities"][0]) != absent
+    snapshot["user_identities"][0]["provider_user_id"] = ""
+    with pytest.raises(inv.SnapshotError, match="invalid_string_field"):
+        inv.build_manifest(snapshot, TENANT)
