@@ -122,13 +122,22 @@ async def reserve(connection, binding: SharedMembership):
 
 
 async def verify(connection, binding: SharedMembership, *, states):
+    """Verify this member without inheriting its historical creator's lifecycle.
+
+    New/reserved membership remains blocked while that creator retires: its old
+    dedicated deletion operation may already have passed an inventory read.
+    Active peers have independent lifetime. Their cluster's current readiness,
+    sharing policy and membership (not the creator workspace status) authorize
+    continued use. Dedicated retirement separately locks the cluster and refuses
+    sharing/live peers; this read never authorizes cluster deletion.
+    """
     binding = _canonical_binding(binding)
     if not states or set(states) - {"reserved", "active"}:
         raise LifecycleRefused("membership verification requires live states")
     row = await connection.fetchrow(
-        "SELECT m.generation,m.namespace,m.state,m.operation_id::text,c.eks_cluster_arn,c.endpoint,c.status,c.sharing_enabled,w.namespace_name,owner.status AS owner_status "
+        "SELECT m.generation,m.namespace,m.state,m.operation_id::text,c.eks_cluster_arn,c.endpoint,c.status,c.sharing_enabled,w.namespace_name,w.status AS workspace_status,owner.status AS owner_status "
         "FROM cluster_memberships m JOIN clusters c ON c.id=m.cluster_id AND c.org_id=m.org_id "
-        "JOIN workspaces w ON w.id=m.workspace_id AND w.org_id=m.org_id AND w.cluster_id=m.cluster_id "
+        "JOIN workspaces w ON w.id=m.workspace_id AND w.org_id=m.org_id AND w.cluster_id=m.cluster_id AND w.shared_cluster_id=m.cluster_id "
         "LEFT JOIN workspaces owner ON owner.id=c.workspace_id AND owner.org_id=c.org_id "
         "WHERE m.workspace_id::text=$1 AND m.org_id::text=$2 AND m.cluster_id::text=$3 AND m.generation=$4",
         binding.workspace_id,
@@ -141,7 +150,8 @@ async def verify(connection, binding: SharedMembership, *, states):
         or row["state"] not in states
         or not row["sharing_enabled"]
         or row["status"] not in {"Ready", "Active"}
-        or row["owner_status"] in RETIRING_OWNER_STATES
+        or row["workspace_status"] in RETIRING_OWNER_STATES
+        or (row["state"] != "active" and row["owner_status"] in RETIRING_OWNER_STATES)
         or any(
             row[key] != value
             for key, value in {
