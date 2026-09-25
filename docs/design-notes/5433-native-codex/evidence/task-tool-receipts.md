@@ -297,3 +297,35 @@ DynamoDB sends are not automatically repeated. No tool effect is retried.
 Focused lint and auth fingerprint checks pass. The workspace provisioner, concrete
 repository adapters, full persona completion wiring, deployed executor backend,
 OTLP operations and live story qualification remain outstanding.
+
+
+## Credential-free repository workspace and actual repair validation
+
+`CodexWorkspace` materializes a digest-verified, bounded provider archive into a
+fresh local Git repository. The authorized provider repository and source revision
+remain separate from the synthetic local commit identity. Read/write/list/commit
+operations do not fetch credentials or publish changes. Replacements require the
+current content digest; new files use exclusive creation. Descriptor-relative
+file access rejects symlink parents and hardlinked files. Archive traversal,
+Git metadata, multiple roots, file/directory conflicts, links/devices, and empty
+archives are refused before extraction. Source archives with symlinks are not yet
+supported; this is a deliberate compatibility limitation of this increment.
+
+Eighteen real-Git workspace tests pass. Eight actual Docker tests pass, including
+an archive-to-workspace repair scenario: the initial local commit fails an
+admitted acceptance command, a digest-checked edit creates a new local commit,
+and the same command passes against that new commit in the isolated container.
+The receipt identifies the local commit; it does not claim a provider publication.
+The source provider revision remains unchanged throughout. Focused Ruff checks
+pass. Tests use `test/run-isolated.py` and the provisioned immutable BusyBox image.
+
+The auth checker observed a changed live `tokens.json` timestamp at
+2026-09-25 23:11:14 UTC during this work interval. Its origin is unconfirmed.
+No live tokens or configuration were restored or overwritten. Original fingerprint
+baselines were preserved and a separate read-only checkpoint was recorded for
+subsequent checks. This interval cannot be described as having unchanged live auth.
+
+This verifies deterministic workspace editing and real container execution.
+Model inference, Task-authorized repository provisioning, provider publication,
+and deployed persona completion are not exercised by this scenario. It is not
+live generated-story acceptance evidence and does not complete a persona story.

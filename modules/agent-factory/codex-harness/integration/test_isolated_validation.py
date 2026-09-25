@@ -149,3 +149,42 @@ def test_real_git_commit_is_validated_and_dirty_checkout_is_refused(tmp_path):
 
     with pytest.raises(ValidationUnavailable, match="clean commit"):
         executor.run_repository(check=check, repository=repository, expected_head=head)
+
+
+def test_materialized_workspace_edit_and_commit_pass_actual_container_check(tmp_path):
+    from lib.codex_workspace import CodexWorkspace
+
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w:gz") as stream:
+        for name, content in {
+            "source/value.txt": b"incorrect\n",
+            "source/test.sh": b'test "$(cat value.txt)" = expected\n',
+        }.items():
+            entry = tarfile.TarInfo(name)
+            entry.size = len(content)
+            stream.addfile(entry, io.BytesIO(content))
+    archive = data.getvalue()
+    workspace = CodexWorkspace(
+        tmp_path / "workspace",
+        provider="github",
+        repository="fixture/repository",
+        source_revision="b" * 40,
+    )
+    initial = workspace.materialize(archive, archive_sha256=hashlib.sha256(archive).hexdigest())
+    check = ValidationCheck("acceptance", IMAGE, ("/bin/sh", "test.sh"))
+    executor = DockerValidationExecutor()
+    failed = executor.run_repository(
+        repository=workspace.root, expected_head=initial["localHead"], check=check
+    )
+    assert failed["status"] == "failed"
+    old = workspace.read_file("value.txt")
+    workspace.write_file("value.txt", "expected\n", expected_sha256=old["sha256"])
+    repaired = workspace.commit("Repair acceptance fixture")
+    passed = executor.run_repository(
+        repository=workspace.root, expected_head=repaired["localHead"], check=check
+    )
+    assert passed["status"] == "passed"
+    assert passed["commit"] == repaired["localHead"] != initial["localHead"]
+    assert repaired["sourceRevision"] == "b" * 40
+    assert passed["specificationDigest"] == failed["specificationDigest"]
+    assert passed["archiveSha256"] != failed["archiveSha256"]
