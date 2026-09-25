@@ -3029,6 +3029,24 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # errs toward "not proven durable" rather than toward a silent claim.
     abort_terminal_persisted = False
 
+    # GitHub's clipped display is separate from the readable explanation archive.
+    # Read outside the check-run block so archival remains independent of finalize.
+    final_text, transcript_text = _read_run_reports()
+    if review_note:
+        final_text = _join_notes(final_text or "", review_note)
+        transcript_text = _join_notes(transcript_text or "", review_note)
+
+    # Own-run artifact writes require a live execution. Archive and attach its
+    # server-derived key before a terminal handler ends that authority. Staging
+    # metadata does not select the outcome; the handler below still owns it.
+    transcript_key = _upload_transcript_to_s3(
+        transcript_text, repo, issue, message_id, arrived_at, persona
+    )
+    if transcript_key:
+        update_invocation_status(
+            message_id, arrived_at, "in_progress", transcript_key=transcript_key
+        )
+
     # Step 11/12: Post-agent actions
     if abort_outcome is not None:
         exit_code, abort_terminal_persisted = _handle_abort(
@@ -3044,13 +3062,6 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         exit_code = _handle_failure(
             repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url, **review_options
         )
-
-    # GitHub's clipped display is separate from the readable explanation archive.
-    # Read outside the check-run block so archival remains independent of finalize.
-    final_text, transcript_text = _read_run_reports()
-    if review_note:
-        final_text = _join_notes(final_text or "", review_note)
-        transcript_text = _join_notes(transcript_text or "", review_note)
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
@@ -3111,13 +3122,6 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         except Exception as exc:
             logger.warning("Failed to finalize check run (non-fatal): %s", exc)
 
-    # Persist the independent transcript, preserving explanations beyond GitHub's
-    # display limit. This includes captured explanations and selected previews,
-    # not raw tool results or a complete terminal log. Upload remains best-effort.
-    transcript_key = _upload_transcript_to_s3(
-        transcript_text, repo, issue, message_id, arrived_at, persona
-    )
-
     # Issue #4187: a run the gateway stopped on a spend cap is neither a success
     # nor a crash, so it gets its own terminal status and a reason. Resolved
     # BEFORE the write below because that write is unconditional: it would
@@ -3126,10 +3130,9 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # being made.
     stop_reason = _budget_stop_reason(_read_result_metadata())
 
-    # Issue #3069: Write-back the S3 key to the DDB invocation row so the
-    # gateway can serve the transcript from the Agent Activity UI.
-    # Fail-soft: reuses the same update_invocation_status contract (logs, never raises).
-    if transcript_key or stop_reason:
+    # Preserve the existing spend-cap classification path. Transcript metadata
+    # was staged before the terminal handler and needs no later status write.
+    if stop_reason:
         if abort_outcome is not None:
             # Issue #3963: resolved first, for the same reason `budget_stopped` is —
             # this write is unconditional, and `exit_code` is 0 for an abort, so
@@ -3149,7 +3152,6 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             message_id,
             arrived_at,
             terminal_status,
-            transcript_key=transcript_key,
             stop_reason=stop_reason,
         )
 
