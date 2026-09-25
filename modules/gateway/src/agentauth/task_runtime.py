@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -189,6 +190,38 @@ class TaskRuntime:
         return VerifiedTaskAttempt(
             task["task_id"], claims.invocation_id, claims.attempt, attempt, claims.tenant_id, task["scope"]["canonical_principal"], pod.uid
         )
+
+    def authenticate_settlement(self, *, pod):
+        """Resolve stop-only authority from the server-retained pod assignment."""
+        delivery = self.repository._get_authority(f"PODTASK#{pod.uid}", "DELIVERY")
+        try:
+            envelope = json.loads(delivery["body"]) if delivery else None
+            if not envelope or envelope.get("kind") != "adp.task":
+                raise ValueError("not a Task assignment")
+            task = self.repository.read_task(envelope["task_id"])
+            assignment = envelope["assignment_ref"]
+        except (KeyError, TypeError, ValueError):
+            raise BootstrapRefusedError("task settlement assignment unavailable") from None
+        if task is None or task["invocation_id"] != envelope.get("invocation_id") or task["request_digest"] != envelope.get("request_digest"):
+            raise BootstrapRefusedError("task settlement binding unavailable")
+        tenant, generation = task["scope"]["tenant"], int(task["generation"])
+        if assignment != {
+            "grant_pk": task_authority_partition(tenant),
+            "grant_sk": task_run_grant_sort_key(invocation_id=task["invocation_id"], generation=generation),
+            "generation": generation,
+        }:
+            raise BootstrapRefusedError("task settlement generation mismatch")
+        grant = self._grant(tenant, task["invocation_id"], generation, stop_only=True)
+        attempt = task.get("runtime_attempt_id")
+        if (
+            grant.get("task_id") != task["task_id"]
+            or grant.get("workload_uid") != pod.uid
+            or grant.get("workload_namespace") != pod.namespace
+            or not attempt
+            or grant.get("runtime_attempt_id") != attempt
+        ):
+            raise BootstrapRefusedError("task settlement workload or attempt mismatch")
+        return VerifiedTaskAttempt(task["task_id"], task["invocation_id"], generation, attempt, tenant, task["scope"]["canonical_principal"], pod.uid)
 
     def register_attempt(self, *, identity, body):
         if (body["task_id"], body["invocation_id"], body["generation"]) != (identity.task_id, identity.invocation_id, identity.generation):

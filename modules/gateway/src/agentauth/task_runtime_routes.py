@@ -87,7 +87,18 @@ async def authenticate_task_attempt(request: Request):
 
 async def authenticate_task_settlement(request: Request):
     """Only terminal/stop evidence routes may consume this restricted identity."""
-    return await _authenticate(request, require_attempt=True, stop_only=True)
+    runtime = get_agent_runtime()
+    try:
+        token = request.headers.get(WORKLOAD_HEADER, "")
+        pod = await run_in_threadpool(runtime.workloads.verify, token)
+        identity = await run_in_threadpool(task_runtime(runtime, stop_only=True).authenticate_settlement, pod=pod)
+        if await run_in_threadpool(runtime.workloads.verify, token) != pod:
+            raise WorkloadRefusedError("workload changed")
+        return identity
+    except (BootstrapRefusedError, WorkloadRefusedError, TaskStoreError, WorkBindingError):
+        from src.tasks import errors
+
+        raise errors.not_found() from None
 
 
 @router.post("/bootstrap")

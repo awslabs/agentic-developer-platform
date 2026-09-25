@@ -270,3 +270,63 @@ def test_live_turn_route_cannot_skip_or_exceed_eight_turns(runtime):
     with pytest.raises(TaskStoreError, match="budget"):
         turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=9)
     assert len(turns.list_turns(identity.task_id)) == 8
+
+
+def _settlement_fixture(runtime):
+    from src.tasks.store import _serialize
+
+    service, pod, body, delivery = runtime
+    result = service.bootstrap(body=body, pod=pod, delivery=delivery)
+    identity = service.authenticate(credential=result["run_credential"], pod=pod, require_attempt=False)
+    service.register_attempt(
+        identity=identity,
+        body={
+            "task_id": identity.task_id,
+            "invocation_id": identity.invocation_id,
+            "generation": identity.generation,
+            "runtime_attempt_id": str(uuid.uuid4()),
+        },
+    )
+    service.repository._client.put_item(
+        TableName=service.repository.authority_table_name, Item=_serialize({"pk": f"PODTASK#{pod.uid}", "sk": "DELIVERY", **delivery.read(pod.uid)})
+    )
+    return service, pod, result
+
+
+def test_credentialless_settlement_only_resolves_retained_assignment(runtime):
+    from datetime import timedelta
+
+    from src.agentauth.run_credential import CredentialError
+
+    service, pod, _ = _settlement_fixture(runtime)
+    service.clock = lambda: NOW + timedelta(minutes=31)
+    identity = service.authenticate_settlement(pod=pod)
+    assert identity.runtime_attempt_id is not None
+    with pytest.raises(CredentialError):
+        service.authenticate(credential="", pod=pod)
+    other = SimpleNamespace(uid=str(uuid.uuid4()), namespace=pod.namespace)
+    with pytest.raises(BootstrapRefusedError):
+        service.authenticate_settlement(pod=other)
+    with pytest.raises(BootstrapRefusedError):
+        service.authenticate_settlement(pod=SimpleNamespace(uid=pod.uid, namespace="other"))
+
+
+def test_settlement_rejects_mismatched_current_attempt(runtime):
+    service, pod, _ = _settlement_fixture(runtime)
+    identity = service.authenticate_settlement(pod=pod)
+    from src.tasks.records import task_authority_partition, task_run_grant_sort_key
+    from src.tasks.store import _serialize
+
+    service.repository._client.update_item(
+        TableName=service.repository.authority_table_name,
+        Key=_serialize(
+            {
+                "pk": task_authority_partition(identity.tenant),
+                "sk": task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation),
+            }
+        ),
+        UpdateExpression="SET runtime_attempt_id = :other",
+        ExpressionAttributeValues=_serialize({":other": str(uuid.uuid4())}),
+    )
+    with pytest.raises(BootstrapRefusedError):
+        service.authenticate_settlement(pod=pod)
