@@ -79,12 +79,14 @@ async def test_worker_cannot_publish_result_for_changed_actual_placement(
     monkeypatch.setattr(results, "capture", capture)
     worker = await runtime.publish(SimpleNamespace(**output.created))
     if change == "revoked-at-capture":
-        # The provider retains an uncertain outcome, but the harness must reject
-        # recording it under the now-stale lease fence.
+        # The provider retains an uncertain outcome. Recording its reference
+        # first checks the original dispatch fence and refuses our revoked lease.
         with pytest.raises(
-            ProviderCallRefused, match="Executor lease is no longer live"
+            ProviderCallRefused,
+            match="^Returned provider reference differs from its original dispatch$",
         ):
             await runtime.execute(worker)
+        assert runtime.cloud.launches == 1 and runtime.cloud.exists
     else:
         await runtime.execute(worker)
     result = await read(output)
