@@ -214,18 +214,30 @@ def enabled(monkeypatch):
     monkeypatch.setenv(http.FLAG_WORKER, "true")
 
 
+class MemoryStreamRegistry(StreamRegistry):
+    """Test-only adapter: production has no fallback from shared Redis leases."""
+
+    async def acquire_lease(self, *, tenant_id, principal_id, task_id):
+        self.acquire(task_id=task_id, principal_id=principal_id)
+        registry = self
+
+        class Lease:
+            def remaining(self):
+                return float("inf")
+
+            async def renew(self):
+                return True
+
+            async def release(self):
+                registry.release(task_id=task_id, principal_id=principal_id)
+
+        return Lease()
+
+
 @pytest.fixture(autouse=True)
 def isolated_module_state(monkeypatch):
-    """Give each test its own stream registry and no inherited store.
-
-    ``routes._STREAMS`` is process-wide by design — the caps bound what one replica
-    holds open — which makes it shared mutable state in a test process. A test that
-    abandoned two streams would push the next test over the per-task cap of 2 and
-    fail it with a 429 that has nothing to do with what it asserts. Replacing the
-    registry per test removes that coupling without weakening the production
-    behaviour.
-    """
-    monkeypatch.setattr(routes_module, "_STREAMS", StreamRegistry())
+    """Isolate routes with a test-only in-memory lease adapter."""
+    monkeypatch.setattr(routes_module, "_STREAMS", MemoryStreamRegistry())
     monkeypatch.setattr(routes_module, "_STORE", None)
     monkeypatch.setattr(report_routes, "_STORE", None)
     monkeypatch.setattr(report_routes, "_AUTHENTICATOR", None)
