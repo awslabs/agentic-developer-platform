@@ -4,7 +4,7 @@
 #
 # Base image pinned to specific Node 22 LTS patch for reproducibility and
 # vulnerability tracking. Bump when a newer 22.x patch ships OS-level fixes.
-FROM public.ecr.aws/docker/library/node:22.23.3-slim
+FROM public.ecr.aws/docker/library/node:22.23.3-trixie-slim
 ENV HOME=/home/appuser
 ENV BUN_INSTALL=/opt/bun
 ENV PATH=/opt/bun/bin:$PATH
