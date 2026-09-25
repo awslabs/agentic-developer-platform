@@ -341,7 +341,7 @@ resource "aws_iam_role" "project" {
   for_each = local.projects
 
   name        = "${var.name_prefix}-codebuild-${each.key}"
-  description = "Build role for ${var.name_prefix}-${each.key} — scoped to that project's own resources (A18, #5674)"
+  description = "Build role for ${var.name_prefix}-${each.key} - scoped to that project's own resources (A18, #5674)"
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{
     Effect    = "Allow", Principal = { Service = "codebuild.amazonaws.com" }, Action = "sts:AssumeRole",
     Condition = { StringEquals = { "aws:SourceAccount" = var.account_id, "aws:SourceArn" = "arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${var.name_prefix}-${each.key}" } }
