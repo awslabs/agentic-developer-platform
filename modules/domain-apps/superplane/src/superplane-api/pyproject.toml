@@ -38,6 +38,11 @@ dependencies = [
     "httpx>=0.27.0",
     "pyyaml>=6.0",
     "kubernetes>=29.0.0",
+    # Issue #6116 (security residual). Replace stdlib xml.etree.ElementTree with
+    # defusedxml in scanner feed parsers to reject XXE, entity expansion, and DTD
+    # attacks. Pure-Python, zero transitive dependencies. Image rebuild coordinated
+    # via #6124 image owner.
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]
