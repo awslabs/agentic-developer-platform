@@ -189,10 +189,6 @@ class ObservationBackend(Ledger):
                 claim.workspace_id,
                 claim.org_id,
             )
-        if journal["operation_kind"] == "delete_cluster":
-            # Aggregate removal now performs an inventory snapshot before it can
-            # report success, including when a leak defers final settlement.
-            self.inventory_reads += 1
         outcome, reference = await observe_request(
             self.provider,
             operation,
@@ -487,13 +483,25 @@ async def test_inventory_refuses_another_authenticated_recovery_subject(system):
 
 @pytest.mark.parametrize("leaked", [False, True])
 async def test_actual_inventory_decides_retirement_and_terminal_settlement(
-    system, leaked
+    system, leaked, monkeypatch
 ):
+    from workspace_provisioning.recovery_inventory import ProviderInventory
+
+    snapshot = ProviderInventory.snapshot
+    completed_snapshots = []
+
+    async def measured_snapshot(self, *args, **kwargs):
+        result = await snapshot(self, *args, **kwargs)
+        completed_snapshots.append(result)
+        return result
+
+    monkeypatch.setattr(ProviderInventory, "snapshot", measured_snapshot)
     operation, backend, recovery = await retiring(system)
     system[3].leaked_volume = leaked
     launches = system[3].launches
     (result,) = await recovery.run()
-    assert backend.inventory_reads >= (1 if leaked else 3), backend.finalization_errors
+    assert completed_snapshots and completed_snapshots[0]["complete"]
+    assert backend.inventory_reads >= (0 if leaked else 3), backend.finalization_errors
     assert system[3].launches == launches
     if leaked:
         assert result.action == "deferred"
