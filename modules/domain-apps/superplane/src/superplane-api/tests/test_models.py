@@ -85,6 +85,9 @@ def test_all_tables_registered():
         # ownership (issue #6048). Lets two workspaces share one cluster while
         # keeping distinct namespaces, registrations and credential scope.
         "cluster_memberships",
+        "membership_credentials",
+        "cluster_credential_authorities",
+        "membership_credential_components",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (
