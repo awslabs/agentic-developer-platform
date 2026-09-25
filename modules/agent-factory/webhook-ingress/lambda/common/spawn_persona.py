@@ -235,9 +235,17 @@ def spawn_persona(
         )
 
         try:
+            # The raw directive is retained for worker diagnostics, but only a
+            # validated override may enter model selection. Re-submitting a
+            # rejected alias here would defeat the handler's lenient fallback.
+            selection_envelope = dict(envelope)
+            if model_requested is not None:
+                selection_envelope["model_requested"] = model_resolved
             envelope = select_persona_model(
-                envelope, user_id=spawned_ctx.get("root_human_id", "")
+                selection_envelope, user_id=spawned_ctx.get("root_human_id", "")
             )
+            if model_requested is not None:
+                envelope["model_requested"] = model_requested
         except ModelSelectionError:
             logger.exception("Saved persona model selection failed; no work published")
             try:
