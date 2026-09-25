@@ -306,7 +306,12 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
         "provision", admitted_request=preview.request, prepare_registration=register
     )
     if deny_node_role:
-        with pytest.raises(OperationRefused, match="prerequisites do not match"):
+        # Provider failures are deliberately recorded UNKNOWN by the paid-call
+        # boundary. The after-step finalizer then refuses an empty inventory;
+        # the provider's prerequisite exception is not the RPC response.
+        with pytest.raises(
+            OperationRefused, match="provider resource inventory is not established"
+        ):
             await server.dispatch(
                 {
                     "token": token,
@@ -315,6 +320,23 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
                 }
             )
         assert access_checks and cloud.launches == 0
+        assert not cloud.exists and not cloud.ever_created
+        assert not aws.attachments and not aws.peerings and not aws.routes
+        async with pool.acquire() as c:
+            assert (
+                await c.fetchval(
+                    "SELECT outcome FROM harness_provider_call_intent WHERE operation_id=$1",
+                    operation.grant.lease.operation_id,
+                )
+                == "unknown"
+            )
+            assert (
+                await c.fetchval(
+                    "SELECT count(*) FROM controller_provider_requests WHERE operation_id=$1",
+                    operation.grant.lease.operation_id,
+                )
+                == 0
+            )
     elif deny_network:
         with pytest.raises(
             OperationRefused, match="provider resource inventory is not established"
