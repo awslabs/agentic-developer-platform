@@ -16093,11 +16093,28 @@ def fixture_pivot_payload():
         target_test_runs=[dict(revision='c'*40, exit_code=0, tests_passed=2, command='pytest test_target.py', observed_by='CI job')])
 
 
-def run_fixture_pivot(tmp_path, payload):
+def run_fixture_pivot(tmp_path, payload, **overrides):
     config = wave3_config(tmp_path, artifact_payloads={'steer_fixture_pr': payload, **steering_artifact_payloads()},
         fixture_run_id=fixture_identity()['run_id'], authorized_fixture_repo='test-org/disposable', authorized_fixture_branch='fixture/pivot',
         authorized_fixture_base='main', fixture_target_path='target.txt', fixture_expected_content='steered target\n')
+    config.update(overrides)
     return run_wave3('W3-10', tmp_path, config=config)
+
+
+def test_fixture_pivot_can_bind_a_separate_declared_worker(tmp_path):
+    payload = fixture_pivot_payload()
+    payload['fixture_identity']['run_id'] = 'normal-pr-worker'
+    result = run_fixture_pivot(tmp_path, payload, steer_fixture_run_id='normal-pr-worker')
+    assert result.status == _mod.STATUS_PASSED, result.message
+
+
+@pytest.mark.parametrize('declared', [None, '', 'another-worker'])
+def test_fixture_pivot_rejects_undeclared_or_different_worker(tmp_path, declared):
+    payload = fixture_pivot_payload()
+    payload['fixture_identity']['run_id'] = 'normal-pr-worker'
+    overrides = {} if declared is None else {'steer_fixture_run_id': declared}
+    result = run_fixture_pivot(tmp_path, payload, **overrides)
+    assert result.status != _mod.STATUS_PASSED
 
 
 def test_fixture_pivot_requires_merged_artifact_and_observed_handoff(tmp_path):

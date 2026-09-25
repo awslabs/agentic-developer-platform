@@ -23,6 +23,11 @@ export async function runRegisteredControlFixture(): Promise<number> {
   const events: Event[] = [];
   let droppedEvents = 0;
   let sdkQueries = 0;
+  // Final private evidence, separate from the credential/body-free progress file.
+  const sdkInputs: unknown[] = [];
+  let inputCaptureComplete = true;
+  let attemptDisposals = 0;
+  let queryCloses = 0;
   let toolStarts = 0;
   let activeTools: number | null = 0;
   let countersComplete = true;
@@ -93,6 +98,9 @@ export async function runRegisteredControlFixture(): Promise<number> {
         ? 'This is an authorized disposable streaming fixture. First explain to the reader that a bounded history supports reconnects, choosing bounded memory over complete live replay. Include the marker STREAM-MECHANISM. Then run foreground Bash sleep 20. Next explain that seeing two live messages proves incremental delivery but not durable cross-pod replay; include STREAM-EVIDENCE. Then run foreground Bash sleep 20 and finish. Do not combine both explanations in one message. Do not use background work.'
       : 'Validate foreground tool execution in this disposable directory. Perform exactly three steps in order. For each step, use Bash to run sleep 60 with timeout 90000, wait for that foreground call to finish, then use Write to put the step number in progress.txt. Use separate calls; never background the command or combine the steps into a shell loop. A later user instruction may change the task. Keep all files within this working directory.';
     const attach = runtime.adapter.onAttemptHandle();
+    const inputFactory = runtime.adapter.attemptInputFactory(pauseHooks => ({
+      hooks: createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(cwd), pauseHooks }),
+    }));
     for await (const message of resilientQuery({
       queryParams: { prompt, options: {
         cwd, model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-6',
@@ -102,9 +110,25 @@ export async function runRegisteredControlFixture(): Promise<number> {
       } },
       maxRetries: 0,
       idleTimeoutMs: 120_000,
-      attemptInputFactory: runtime.adapter.attemptInputFactory(pauseHooks => ({
-        hooks: createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(cwd), pauseHooks }),
-      })),
+      attemptInputFactory: context => {
+        const input = inputFactory(context);
+        const iterator = input.input[Symbol.asyncIterator]();
+        const observed: AsyncIterableIterator<unknown> = {
+          [Symbol.asyncIterator]() { return this; },
+          async next() {
+            const item = await iterator.next();
+            if (!item.done) {
+              if (sdkInputs.length < 32) sdkInputs.push(item.value);
+              else inputCaptureComplete = false;
+            }
+            return item;
+          },
+          ...(iterator.return ? { return: iterator.return.bind(iterator) } : {}),
+        };
+        return { ...input, input: observed, dispose: async () => {
+          await input.dispose(); attemptDisposals++;
+        } };
+      },
       beforeOutput: () => runtime.gate.waitForOutput(),
       cancellation: runtime.adapter.cancellationSource(),
       idleSuspended: () => runtime.gate.isPauseActive(),
@@ -112,6 +136,8 @@ export async function runRegisteredControlFixture(): Promise<number> {
         sdkQueries++;
         await attach(attempt);
         handle = attempt.session as NativeHandle;
+        const close = handle.close.bind(handle);
+        handle.close = () => { close(); queryCloses++; };
         record('sdk_attempt_attached', { attempt: attempt.attemptNumber });
       },
       log: () => {},
@@ -173,6 +199,8 @@ export async function runRegisteredControlFixture(): Promise<number> {
       result_seen: resultSeen, timed_out: timedOut, exit_code: exitCode,
       dropped_events: droppedEvents, cleanup_errors: cleanupErrors, events,
       authored_explanations: authored.replay().events,
+      sdk_input_messages: sdkInputs, input_capture_complete: inputCaptureComplete,
+      attempt_disposals: attemptDisposals, query_close_calls: queryCloses,
       counters: { sdk_queries: sdkQueries, tool_starts: toolStarts, active_tools: activeTools,
         counters_complete: countersComplete },
     };

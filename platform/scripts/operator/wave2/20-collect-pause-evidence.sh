@@ -48,6 +48,11 @@ ok()   { printf 'ok   %s\n' "$*"; }
 note() { printf '     %s\n' "$*"; }
 
 [ -n "$EVIDENCE_DIR" ] || fail "--evidence-dir is required"
+case "${ADP_CONTROL_EVAL_SUITE:-pause}" in
+  pause) ;;
+  steering-input) [ -z "$REUSE" ] || fail "targeted steering observations require a fresh run" ;;
+  *) fail "unknown ADP_CONTROL_EVAL_SUITE" ;;
+esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
@@ -59,6 +64,9 @@ ASSEMBLER="$HERE/21-assemble-pause-artifacts.py"
 
 mkdir -p "$EVIDENCE_DIR/artifacts"
 RAW="$EVIDENCE_DIR/artifacts/raw-pause-experiments.json"
+if [ "${ADP_CONTROL_EVAL_SUITE:-pause}" = "steering-input" ]; then
+  RAW="$EVIDENCE_DIR/artifacts/steering-input-stream.json"
+fi
 
 BINDING="$HERE/lib/experiment_binding.py"
 [ -f "$BINDING" ] || fail "missing $BINDING"
@@ -374,7 +382,11 @@ print((doc.get("binding") or doc).get("run_nonce") or "")
   # Non-zero exit means one or more experiments failed. We still assemble, so the
   # artifact records the real (failing) observation rather than nothing.
   set +e
-  npx --no-install ts-node src/control-runtime.integration.ts --heartbeat --json "$RAW"
+  if [ "${ADP_CONTROL_EVAL_SUITE:-pause}" = "steering-input" ]; then
+    npx --no-install ts-node src/steering-input.integration.ts --json "$RAW"
+  else
+    npx --no-install ts-node src/control-runtime.integration.ts --heartbeat --json "$RAW"
+  fi
   RUN_RC=$?
   set -e
   [ -f "$RAW" ] || fail "the experiment run produced no JSON at $RAW (rc=$RUN_RC)"
@@ -436,6 +448,11 @@ print((doc.get("binding") or doc).get("source_revision") or "")
        binding it to either would misattribute it. Re-run on a settled tree."
   fi
   ok "experiment output bound to revision ${POST_REV:0:12} (raw digest recorded)"
+fi
+
+if [ "${ADP_CONTROL_EVAL_SUITE:-pause}" = "steering-input" ]; then
+  note "Targeted steering input observations only; no pause or wave acceptance claimed."
+  exit "${RUN_RC:-1}"
 fi
 
 printf '\n== assembling harness artifacts ==\n'
