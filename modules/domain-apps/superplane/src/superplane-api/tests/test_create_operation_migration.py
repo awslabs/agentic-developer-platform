@@ -13,7 +13,11 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["039_controller_node_commands"]
+    assert scripts.get_heads() == ["040_controller_cleanup_bindings"]
+    assert (
+        scripts.get_revision("040_controller_cleanup_bindings").down_revision
+        == "039_controller_node_commands"
+    )
     assert (
         scripts.get_revision("039_controller_node_commands").down_revision
         == "038_cluster_grant_scopes"

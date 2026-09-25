@@ -370,7 +370,7 @@ def validate(
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         # #6048 advances it to 038 for explicit cluster grant scopes.
         require(
-            head == "039_controller_node_commands",
+            head == "040_controller_cleanup_bindings",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})

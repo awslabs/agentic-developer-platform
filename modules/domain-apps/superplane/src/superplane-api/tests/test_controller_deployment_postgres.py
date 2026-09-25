@@ -86,6 +86,9 @@ async def workload(lifecycle, monkeypatch, tmp_path, request):  # noqa: F811
     async with engine.begin() as connection:
         await connection.run_sync(Deployment.__table__.create)
         await connection.run_sync(ControllerDeploymentOperation.__table__.create)
+        from app.models.controller_cleanup import ControllerCleanupBinding
+
+        await connection.run_sync(ControllerCleanupBinding.__table__.create)
         from app.models.controller_execution import ControllerBatchResult
 
         await connection.run_sync(ControllerBatchResult.__table__.create)
@@ -714,6 +717,10 @@ async def worker_runtime(workload, tmp_path):
     from tests.controller_provider_support import Cloud, Kubernetes
 
     pool = SimpleNamespace(acquire=workload.connections.connect)
+    from app.models.controller_workload_submission import ControllerWorkloadSubmission
+
+    async with workload.sessions.kw["bind"].begin() as connection:
+        await connection.run_sync(ControllerWorkloadSubmission.__table__.create)
     async with pool.acquire() as connection:
         await connection.execute("""
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);
