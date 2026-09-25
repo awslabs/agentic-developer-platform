@@ -2,6 +2,9 @@
 # ruff: noqa: F811 - imported pytest fixtures are parameter names
 
 from uuid import UUID, uuid4
+import json
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from superplane_bootstrap.membership import SharedMembership
@@ -67,6 +70,49 @@ def test_shared_reservation_replays_without_rebinding_and_preserves_peers(
                     await reserve(c, value)
                 await verify(c, value, states={"reserved"})
             assert await c.fetchval("SELECT count(*) FROM cluster_memberships") == 2
+            from workspace_provisioning.runtime import run_lifecycle
+
+            operation = SimpleNamespace(
+                request=SimpleNamespace(
+                    parameters={
+                        "lifecycle_inputs": json.dumps(
+                            {
+                                "cluster_placement": "shared",
+                                "shared_cluster_id": second.cluster_id,
+                            }
+                        ),
+                        "lifecycle_request": json.dumps(
+                            {
+                                "mode": "bring-existing-cluster",
+                                "workspace_id": second.workspace_id,
+                                "target_account_id": "123456789012",
+                                "region": "us-east-1",
+                                "existing_cluster_name": "shared",
+                            }
+                        ),
+                        "shared_membership": second.encode(),
+                    }
+                ),
+                grant=SimpleNamespace(
+                    lease=SimpleNamespace(
+                        org_id=second.org_id,
+                        workspace_id=second.workspace_id,
+                    )
+                ),
+            )
+            # Real committed reservation reaches the actual worker entry point.
+            # No provider session, credential transport or runtime binaries exist
+            # in this context: unsupported composition must fail before all three.
+            with pytest.raises(
+                LifecycleRefused, match="renewable workspace credential"
+            ):
+                await run_lifecycle(
+                    operation, SimpleNamespace(domain_connect=harness.connect)
+                )
+            with pytest.raises(LifecycleRefused, match="identity is invalid"):
+                await verify(
+                    c, replace(second, namespace=first.namespace), states={"reserved"}
+                )
             await c.execute(
                 "UPDATE cluster_memberships SET state='removed' WHERE workspace_id=$1",
                 UUID(first.workspace_id),
@@ -83,6 +129,37 @@ def test_shared_reservation_replays_without_rebinding_and_preserves_peers(
             )
             with pytest.raises(LifecycleRefused, match="withdrawn"):
                 await verify(c, second, states={"reserved"})
+            # The retirement admission block outlives the inventory transaction.
+            # Reopening sharing cannot permit a new member between that block
+            # and the original owner's later provider deletion steps.
+            await c.execute(
+                "UPDATE clusters SET status='Ready',sharing_enabled=true,workspace_id=$1 WHERE id=$2",
+                UUID(second.workspace_id),
+                UUID(cluster_id),
+            )
+            await c.execute(
+                "UPDATE workspaces SET status='Teardown' WHERE id=$1",
+                UUID(second.workspace_id),
+            )
+            newcomer = SharedMembership.create(
+                org_id=second.org_id,
+                workspace_id=str(uuid4()),
+                cluster_id=cluster_id,
+                request_id=str(uuid4()),
+                cluster_arn=arn,
+                endpoint=endpoint,
+            )
+            await c.execute(
+                "INSERT INTO workspaces(id,org_id,name,isolation_mode,status,is_default) VALUES($1,$2,'newcomer','namespace','Provisioning',false)",
+                UUID(newcomer.workspace_id),
+                UUID(newcomer.org_id),
+            )
+            with pytest.raises(LifecycleRefused, match="no longer eligible"):
+                async with c.transaction():
+                    await reserve(c, newcomer)
+            with pytest.raises(LifecycleRefused, match="withdrawn"):
+                await verify(c, second, states={"reserved"})
+            assert await c.fetchval("SELECT count(*) FROM cluster_memberships") == 2
             await c.execute(
                 "UPDATE clusters SET sharing_enabled=true,status='Deleting' WHERE id=$1",
                 UUID(cluster_id),

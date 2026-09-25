@@ -79,6 +79,13 @@ def load_policy(context, org_id):
 
 def validated_request(operation, context):
     parameters = operation.request.parameters
+    from .shared_membership import approved_membership
+
+    approved_membership(
+        parameters,
+        org_id=operation.grant.lease.org_id,
+        workspace_id=operation.grant.lease.workspace_id,
+    )
     policy = load_policy(context, operation.grant.lease.org_id)
     if parameters["lifecycle_policy_sha256"] != policy_digest(policy):
         raise LifecycleRefused("approved lifecycle policy changed")

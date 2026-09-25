@@ -298,6 +298,8 @@ async def create_workspace(
     from app.services.onboarding import normalized_request, preview
     from app.services.provisioning import start_planned_provision
     from harness_jobs.identity import OperationRequest
+    from workspace_provisioning.runtime_config import LifecycleRefused
+    from workspace_provisioning.shared_membership import approved_membership
 
     body = normalized_request(body)
     operation_request = _operation_request(body)
@@ -318,6 +320,26 @@ async def create_workspace(
                 409, "Workspace plan changed; review and approve the current revision"
             )
         approved_request = plan["approval_request"]
+        membership = None
+        if (
+            body.cluster_placement == "shared"
+            or "shared_membership" in approved_request["parameters"]
+        ):
+            membership = approved_membership(
+                approved_request["parameters"],
+                org_id=str(org_id),
+                workspace_id=plan["workspace_id"],
+            )
+        if body.cluster_placement == "dedicated" and membership is not None:
+            raise ProvisioningRefused(
+                "shared membership differs from requested placement"
+            )
+        if body.cluster_placement == "shared" and (
+            membership is None or membership.request_id != str(body.operation_id)
+        ):
+            raise ProvisioningRefused(
+                "approved membership names another creation request"
+            )
         if body.approval_id is not None:
             authority = GrantBackedAuthority(async_session_factory)
             principal = await authority.resolve(
@@ -345,7 +367,7 @@ async def create_workspace(
             org_id=str(org_id),
             parameters=approved_request["parameters"],
         )
-    except ProvisioningRefused as error:
+    except (ProvisioningRefused, LifecycleRefused) as error:
         raise HTTPException(403, str(error)) from None
     except ProvisioningError:
         raise HTTPException(
@@ -378,6 +400,10 @@ async def create_workspace(
     db.add(workspace)
     try:
         await db.flush()
+        if body.cluster_placement == "shared":
+            from app.adapters.shared_membership import reserve_workspace_membership
+
+            await reserve_workspace_membership(db, membership)
         db.add(
             WorkspaceGrantRecord(
                 workspace_id=workspace.id,
@@ -388,6 +414,12 @@ async def create_workspace(
             )
         )
         await db.commit()
+    except LifecycleRefused:
+        await db.rollback()
+        raise HTTPException(
+            409,
+            "Approved shared membership changed; retain the admitted request identity",
+        ) from None
     except IntegrityError:
         await db.rollback()
         existing = await _workspace_for_operation(db, org_id, body, operation_request)

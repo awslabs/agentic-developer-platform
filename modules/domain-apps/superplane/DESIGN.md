@@ -48,6 +48,16 @@ organization policy, provider compatibility, available capacity and approved bud
 | Non-AWS GPU workers joining AWS EKS | Required hybrid topology; historical Nebius-to-EKS evidence exists, but maintained governed execution and live acceptance remain pending. |
 | Complete Azure, GCP and neocloud data planes with AWS management | Required in #6051; provider adapters and provider-specific live evidence remain pending. |
 
+The shared-placement reservation adapter now participates in the API workspace
+transaction, and the worker validates immutable membership before any credential
+delivery or provider effects. Creation preview remains unavailable: namespace
+admission, cluster-owned bootstrap delegation and renewable Kubernetes credential
+issuance/projection are not yet composed. The static bootstrap credential reference
+is registration metadata, not evidence of credential delivery. Dedicated retirement
+refuses clusters open for sharing or holding live peers; membership reservation
+also refuses clusters whose original owner has entered retirement. Completing
+member-only retirement requires its own scoped ownership inventory.
+
 No live end-to-end capability is established by this document. The phrase “done
 in a day” has not been resolved into a provisioning-time objective or implementation
 deadline and is not an accepted SLA. Establish prerequisites, timing boundaries and

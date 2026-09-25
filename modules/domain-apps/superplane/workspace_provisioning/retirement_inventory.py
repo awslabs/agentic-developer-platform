@@ -129,6 +129,28 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
             )
         if target.cluster_ownership not in {"adopted", "adp-created"}:
             raise BootstrapRefused("retirement cluster ownership is unknown")
+        # A dedicated bootstrap can become the first owner of a cluster later
+        # opened for sharing. Its old Terraform/network/actor inventory does not
+        # become permission to remove resources used by the new members. Keep
+        # this fence in the canonical loader: execution calls it again under
+        # current authority, rather than trusting an earlier preview.
+        sharing = db.execute(
+            "SELECT c.sharing_enabled, EXISTS(SELECT 1 FROM cluster_memberships m "
+            "WHERE m.cluster_id=c.id AND m.state<>'removed' "
+            "AND m.workspace_id<>w.id) AS has_peers "
+            "FROM workspaces w JOIN clusters c ON c.id=w.cluster_id AND c.org_id=w.org_id "
+            "WHERE w.id=CAST(:workspace_id AS uuid) FOR UPDATE OF c",
+            {"workspace_id": workspace_id},
+        )
+        if (
+            len(sharing) != 1
+            or sharing[0]["sharing_enabled"]
+            or sharing[0]["has_peers"]
+        ):
+            raise BootstrapRefused(
+                "shared cluster dependencies require membership-scoped retirement; "
+                "dedicated bootstrap ownership cannot authorize their removal"
+            )
         canonical = db.execute(
             "SELECT w.namespace_name, c.eks_cluster_arn, c.endpoint, c.actual_state_json "
             "FROM workspaces w JOIN clusters c ON c.id=w.cluster_id AND c.workspace_id=w.id "
