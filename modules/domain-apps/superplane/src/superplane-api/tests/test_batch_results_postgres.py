@@ -17,6 +17,7 @@ from tests.controller_provider_support import completed_job_pod
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.services import batch_results
 from superplane_executor import results
+from harness_jobs.execution import ProviderCallRefused
 from harness_jobs.identity import OperationRefused
 from tests.test_batch_deployment_postgres import (
     batch_workload as batch_workload,
@@ -137,10 +138,23 @@ async def test_result_is_captured_before_success_and_survives_owned_cleanup(outp
 
 async def test_foreign_labelled_pod_cannot_publish_result(output):
     output.foreign = True
-    await output.runtime.execute(
-        await output.runtime.publish(SimpleNamespace(**output.created))
-    )
-    assert (await read(output))["status"] == "not_captured"
+    worker = await output.runtime.publish(SimpleNamespace(**output.created))
+    # A foreign-owned Pod never establishes readiness. Preserve the real lease
+    # deadline and require the resulting executor refusal, not successful status.
+    with pytest.raises(ProviderCallRefused, match="^Executor lease is no longer live$"):
+        await output.runtime.execute(worker)
+    result = await read(output)
+    assert result["status"] == "not_captured" and result["result"] is None
+    assert output.runtime.cloud.exists
+    assert output.runtime.cloud.launches == 1
+    async with output.c.connections.connect() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                output.created["operation_id"],
+            )
+            != "succeeded"
+        )
 
 
 @pytest.mark.parametrize(
