@@ -45,6 +45,7 @@ class Cloud:
         self.lose_status_response = False
         self.instance = {
             "InstanceId": "i-0123456789abcdef0",
+            "Placement": {"AvailabilityZone": data["region"] + "a"},
             "ImageId": data["image_id"],
             "InstanceType": data["instance_type"],
             "State": {"Name": "running"},
@@ -167,11 +168,20 @@ class Kubernetes(Workspace):
                 json={
                     "items": [
                         {
+                            "metadata": {
+                                "labels": {
+                                    "superplane.ai/capacity": self.cloud.cluster_name,
+                                    "superplane.ai/workspace": operation.grant.lease.workspace_id,
+                                    "topology.kubernetes.io/region": "us-east-1",
+                                    "topology.kubernetes.io/zone": "us-east-1a",
+                                }
+                            },
                             "spec": {
                                 "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
                             },
                             "status": {
-                                "conditions": [{"type": "Ready", "status": "True"}]
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                                "allocatable": {"nvidia.com/gpu": "1"},
                             },
                         }
                     ]
@@ -180,7 +190,23 @@ class Kubernetes(Workspace):
                 },
             )
         if "/pods?" in path:
-            return httpx.Response(200, json={"items": []})
+            from workload_support import completed_job_pod
+
+            pods = [
+                completed_job_pod(obj)
+                for obj in self.stored.values()
+                if obj.get("kind") == "Job"
+            ]
+            return httpx.Response(200, json={"items": pods})
+        if "/pods/" in path and method == "GET":
+            from workload_support import completed_job_pod
+
+            for obj in self.stored.values():
+                if obj.get("kind") == "Job":
+                    pod = completed_job_pod(obj)
+                    if path.endswith("/" + pod["metadata"]["name"]):
+                        return httpx.Response(200, json=pod)
+
         if method == "POST":
             obj = json.loads(json.dumps(body))
             obj["metadata"]["uid"] = str(uuid4())
@@ -322,6 +348,7 @@ async def system(pool, tmp_path):
             payload = json.loads(request.content)
             assert isinstance(payload["task"], str)
             task = json.loads(payload["task"])
+            cloud.cluster_name = task["name"]
             assert "SSM_ACTIVATION" not in payload["task"]
             assert "nodeadm init" in task["setup"] and "remaining=" in task["run"]
             assert payload["retry_until_up"] is False

@@ -374,6 +374,17 @@ class Plan:
                 "cluster_id"
             ):
                 raise ValueError("approved network cluster identity changed")
+            from .network_probe_contract import read as probe_contract
+
+            probe_contract(
+                data,
+                org_id=org_id,
+                workspace_id=workspace_id,
+                request_id=request.idempotency_key
+                if request.action == "provision"
+                else None,
+                allocation_id=allocation,
+            )
             return cls(data, name, expected, network)
         except (KeyError, TypeError, ValueError, AttributeError, ssl.SSLError):
             raise OperationRefused(

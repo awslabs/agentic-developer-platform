@@ -12,6 +12,8 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from tests.controller_provider_support import completed_job_pod
+
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.services import batch_results
 from superplane_executor import results
@@ -34,7 +36,7 @@ pytestmark = [] if os.environ.get("CI") else postgres_available
 
 
 @pytest.fixture
-async def output(batch_workload, batch_runtime, monkeypatch):
+async def output(batch_workload, batch_runtime, monkeypatch):  # noqa: F811 - imported fixtures
     c, runtime = batch_workload, batch_runtime
     context = SimpleNamespace(
         c=c,
@@ -55,49 +57,18 @@ async def output(batch_workload, batch_runtime, monkeypatch):
             )
             if job is None:
                 return httpx.Response(200, json={"items": []})
-            pod = {
-                "metadata": {
-                    "name": "result-pod",
-                    "namespace": target["namespace"],
-                    "uid": "original-pod",
-                    "resourceVersion": "1",
-                    "ownerReferences": [
-                        {
-                            "apiVersion": "batch/v1",
-                            "kind": "Job",
-                            "name": job["metadata"]["name"],
-                            "uid": "foreign"
-                            if context.foreign
-                            else job["metadata"]["uid"],
-                            "controller": True,
-                        }
-                    ],
-                },
-                "spec": {
-                    "containers": json.loads(
-                        json.dumps(job["spec"]["template"]["spec"]["containers"])
-                    )
-                },
-                "status": {
-                    "phase": "Succeeded",
-                    "containerStatuses": [
-                        {
-                            "name": "workload",
-                            "state": {
-                                "terminated": {
-                                    "exitCode": 0,
-                                    "message": json.dumps(
-                                        {
-                                            "superplane_result_version": 1,
-                                            "text": context.text,
-                                        }
-                                    ),
-                                }
-                            },
-                        }
-                    ],
-                },
-            }
+            pod = completed_job_pod(job)
+            pod["metadata"].update(name="result-pod", uid="original-pod")
+            if context.foreign:
+                pod["metadata"]["ownerReferences"][0]["uid"] = "foreign"
+            pod["status"]["containerStatuses"][0]["state"]["terminated"]["message"] = (
+                json.dumps(
+                    {
+                        "superplane_result_version": 1,
+                        "text": context.text,
+                    }
+                )
+            )
             if context.change == "image":
                 pod["spec"]["containers"][0]["image"] = "foreign"
             elif context.change == "namespace":
@@ -166,10 +137,23 @@ async def test_result_is_captured_before_success_and_survives_owned_cleanup(outp
 
 async def test_foreign_labelled_pod_cannot_publish_result(output):
     output.foreign = True
-    await output.runtime.execute(
-        await output.runtime.publish(SimpleNamespace(**output.created))
-    )
-    assert (await read(output))["status"] == "not_captured"
+    worker = await output.runtime.publish(SimpleNamespace(**output.created))
+    # A foreign-owned Pod never establishes readiness. The real 30-second
+    # assignment expires before the 60-second lease; finalization refuses it.
+    with pytest.raises(OperationRefused, match="^execution assignment revoked$"):
+        await output.runtime.execute(worker)
+    result = await read(output)
+    assert result["status"] == "not_captured" and result["result"] is None
+    assert output.runtime.cloud.exists
+    assert output.runtime.cloud.launches == 1
+    async with output.c.connections.connect() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                output.created["operation_id"],
+            )
+            != "succeeded"
+        )
 
 
 @pytest.mark.parametrize(

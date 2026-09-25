@@ -184,7 +184,8 @@ def build_deployment_preview(
     try:
         request_id = str(uuid.UUID(str(request_id)))
         profile = json.loads(compact(profile))
-        if set(profile) not in (
+        profile_fields = set(profile) - {"network_probe"}
+        if profile_fields not in (
             PROFILE_FIELDS,
             GPU_PROFILE_FIELDS,
             REGIONAL_PROFILE_FIELDS,
@@ -271,6 +272,17 @@ def build_deployment_preview(
         deployment_id, allocation_id = deployment_identity(
             org_id, workspace_id, request_id
         )
+        if "network_probe" in profile:
+            from .network_probe_contract import invocation
+
+            workload["args"] = invocation(
+                profile,
+                org_id=org_id,
+                workspace_id=workspace_id,
+                request_id=request_id,
+                allocation_id=allocation_id,
+                target=target,
+            )
         is_regional = "regions" in profile
         shared_fields = (
             "cluster_arn",

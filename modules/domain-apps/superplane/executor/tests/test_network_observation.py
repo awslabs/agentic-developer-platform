@@ -68,7 +68,20 @@ def test_node_private_api_probe_requires_verified_tls():
 
 
 @pytest.mark.parametrize(
-    "wrong", ["node", "uid", "hostNetwork", "allocation", "log", "replacement", None]
+    "wrong",
+    [
+        "node",
+        "uid",
+        "hostNetwork",
+        "allocation",
+        "log",
+        "replacement",
+        "hostAliases",
+        "dnsConfig",
+        "dnsPolicy",
+        "resolver_changed",
+        None,
+    ],
 )
 async def test_pod_network_evidence_binds_uid_allocation_node_and_real_log_path(wrong):
     pod = {
@@ -84,12 +97,24 @@ async def test_pod_network_evidence_binds_uid_allocation_node_and_real_log_path(
         pod["spec"]["hostNetwork"] = True
     if wrong == "allocation":
         pod["metadata"]["labels"]["superplane.ai/capacity"] = "foreign"
+    if wrong == "hostAliases":
+        pod["spec"]["hostAliases"] = [
+            {"ip": "10.11.0.4", "hostnames": ["service.tenant.svc"]}
+        ]
+    if wrong == "dnsConfig":
+        pod["spec"]["dnsConfig"] = {"nameservers": ["10.11.0.53"]}
+    if wrong == "dnsPolicy":
+        pod["spec"]["dnsPolicy"] = "Default"
     before = httpx.Response(200, json=pod)
     after = (
         httpx.Response(200, json={"metadata": {"uid": "replacement"}})
         if wrong == "replacement"
         else before
     )
+    if wrong == "resolver_changed":
+        after = httpx.Response(
+            200, json={**pod, "spec": {**pod["spec"], "dnsPolicy": "Default"}}
+        )
     workspace = SimpleNamespace(
         request=AsyncMock(
             side_effect=[
@@ -113,6 +138,8 @@ async def test_pod_network_evidence_binds_uid_allocation_node_and_real_log_path(
     if wrong:
         with pytest.raises(OperationRefused):
             await pod_service(workspace, None, {"namespace": "tenant"}, **args)
+        if wrong in {"hostAliases", "dnsConfig", "dnsPolicy"}:
+            assert workspace.request.await_count == 1
     else:
         result = await pod_service(workspace, None, {"namespace": "tenant"}, **args)
         assert result["api_to_kubelet"]["log_read"] is True

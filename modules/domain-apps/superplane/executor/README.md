@@ -501,8 +501,8 @@ never tries to associate EKS's service-managed private hosted zone directly.
 
 `Provider` checks every candidate network before launching capacity. Once SkyPilot
 reports the actual compute region, the provider establishes the approved path
-before reporting launch completion. Nodes still join in the separate node-join
-story. Network setup includes VPC attachments, peering acceptance in the receiving
+while the generated native nodeadm setup attempts the approved cluster join.
+Network setup includes VPC attachments, peering acceptance in the receiving
 region, TGW table associations, local/remote TGW routes, VPC routes and scoped
 security rules. Routed pod CIDRs and namespace NetworkPolicy must be supported by
 the selected CNI; this does not certify arbitrary CNI or hybrid-node combinations.
@@ -525,3 +525,25 @@ node placement, pod UID and fresh logs; the API-to-kubelet log read is a separat
 proof. EndpointSlice readiness and Route53 association alone are never traffic
 proof. Package the probe module in the approved immutable workload/bootstrap image
 and record its digest for #5930; no live support is established by fixture tests.
+
+Governed batch completion now requires the original Job's single completed Pod,
+its approved image/command/resources, allocation/workspace ownership, ordinary
+pod networking mode and a successful container exit. Namespace-only observations
+are reread before completion; a Job success counter without retained Pod evidence
+is insufficient. This check does not assert DNS or Service connectivity or replace
+the allocation's separate exact node-identity gate.
+
+Remaining #5927 acceptance contracts: node-side traffic and same-machine
+bootstrap retry still need the governed post-launch transport; SkyPilot setup
+`nodeadm init` is not evidence of a separate transport.
+Prepared AMI/runtime/CNI/device-plugin compatibility and shared-cluster Node
+observation authority remain installation/integration requirements. No live
+networking or end-to-end join acceptance is established by these source checks.
+
+An opt-in approved network probe batch profile is specified in
+[NETWORK-PROBE-DESIGN.md](NETWORK-PROBE-DESIGN.md). It binds the existing Service
+UID and destination plus a request-specific nonce into the reviewed invocation,
+then requires matching original-Pod logs and retained termination results. It
+uses the existing workload lifecycle; no extra probe effect is added to existing
+admissions. Image release and exact shared-cluster node-placement observation
+remain pending prerequisites.

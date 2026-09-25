@@ -24,10 +24,19 @@ from tests.conftest import requires_postgres
 pytestmark = requires_postgres
 
 
-@pytest.mark.parametrize("deny_network", [False, True])
+@pytest.mark.parametrize(
+    "deny_network,deny_node_role,probe_mode",
+    [
+        (False, False, None),
+        (True, False, None),
+        (False, True, None),
+        (False, False, "approved"),
+        (False, False, "foreign_service"),
+    ],
+)
 @pytest.mark.parametrize("shared_membership", [False, True])
 async def test_registered_worker_networks_selected_region_before_launch_success(
-    system, deny_network, shared_membership
+    system, deny_network, deny_node_role, shared_membership, probe_mode
 ):
     pool, admit, server, cloud, _kube, _registry, _ = system
     await schema(pool)
@@ -148,6 +157,7 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
 
     aws.respond = respond
     original_client = cloud.client
+    access_checks = []
 
     def client(service, **kwargs):
         region = kwargs.get("region_name", HOME)
@@ -173,6 +183,16 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
                 return Paginator()
 
             def __getattr__(self, name):
+                if name == "describe_access_entry":
+
+                    def access(**arguments):
+                        access_checks.append((region, arguments))
+                        assert region == HOME
+                        if deny_node_role:
+                            return {"accessEntry": {"type": "STANDARD"}}
+                        return cloud.describe_access_entry(**arguments)
+
+                    return access
                 if name in {
                     "get_caller_identity",
                     "get_instance_profile",
@@ -228,6 +248,53 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
         },
         "serving_auth_contract": None,
     }
+    service_reads = []
+    if probe_mode:
+        from superplane_executor.network_probe_contract import COMMAND
+        import httpx
+
+        workload.update(
+            command=COMMAND, args=[], image="registry.example/probe@sha256:" + "b" * 64
+        )
+        profile["network_probe"] = {
+            "version": 1,
+            "namespace": target["namespace"],
+            "service_name": "acceptance",
+            "service_uid": "approved-service",
+            "port": 8080,
+            "cidrs": ["172.20.1.4/32"],
+        }
+        original_request = _kube.request
+
+        async def request(operation, actual_target, method, path, **kwargs):
+            if path.endswith("/services/acceptance"):
+                assert (
+                    method == "GET"
+                    and actual_target["namespace"] == target["namespace"]
+                )
+                service_reads.append(cloud.launches)
+                return httpx.Response(
+                    200,
+                    json={
+                        "metadata": {
+                            "name": "acceptance",
+                            "namespace": target["namespace"],
+                            "uid": "foreign-service"
+                            if probe_mode == "foreign_service"
+                            else "approved-service",
+                        },
+                        "spec": {
+                            "type": "ClusterIP",
+                            "clusterIP": "172.20.1.4",
+                            "ports": [{"port": 8080}],
+                        },
+                    },
+                )
+            return await original_request(
+                operation, actual_target, method, path, **kwargs
+            )
+
+        _kube.request = request
     preview = build_deployment_preview(
         org_id=ws["org_id"],
         workspace_id=ws["id"],
@@ -292,7 +359,53 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
     operation, token = await admit(
         "provision", admitted_request=preview.request, prepare_registration=register
     )
-    if deny_network:
+    if probe_mode:
+        from superplane_executor.network_probe_contract import for_operation
+        from superplane_executor.plan import Plan
+
+        contract = for_operation(operation, Plan.read(operation, target))
+        assert contract["org_id"] == ws["org_id"]
+        assert contract["workspace_id"] == ws["id"]
+        assert contract["service_uid"] == "approved-service"
+        assert preview.deployment_request["args"] == []
+    if deny_node_role or probe_mode == "foreign_service":
+        # The provider returns UNKNOWN; Harness retains the original unsettled
+        # intent for recovery rather than terminalizing it as unresolved. The
+        # finalizer refuses empty inventory, not the prerequisite exception.
+        with pytest.raises(
+            OperationRefused, match="provider resource inventory is not established"
+        ):
+            await server.dispatch(
+                {
+                    "token": token,
+                    "method": "execute_step",
+                    "arguments": {"step_id": "1"},
+                }
+            )
+        if deny_node_role:
+            assert access_checks
+        else:
+            # Service proof runs before cloud/node-role checks and before spend.
+            assert service_reads == [0] and not access_checks
+        assert cloud.launches == 0
+        assert not cloud.exists and not cloud.ever_created
+        assert not aws.attachments and not aws.peerings and not aws.routes
+        async with pool.acquire() as c:
+            intent = await c.fetchrow(
+                "SELECT stage,outcome,provider_ref FROM harness_provider_call_intent WHERE operation_id=$1",
+                operation.grant.lease.operation_id,
+            )
+            assert intent is not None
+            assert intent["stage"] == "intended" and intent["outcome"] is None
+            assert json.loads(intent["provider_ref"])["request_id"] is None
+            assert (
+                await c.fetchval(
+                    "SELECT count(*) FROM controller_provider_requests WHERE operation_id=$1",
+                    operation.grant.lease.operation_id,
+                )
+                == 0
+            )
+    elif deny_network:
         with pytest.raises(
             OperationRefused, match="provider resource inventory is not established"
         ):
@@ -312,6 +425,8 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
         )
         assert result[1] == "settle"
         assert cloud.launches == 1 and aws.peerings and aws.routes
+        if probe_mode:
+            assert service_reads == [0]
         async with pool.acquire() as c:
             assert (
                 await c.fetchval(
