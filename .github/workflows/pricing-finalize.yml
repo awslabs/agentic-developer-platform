@@ -46,8 +46,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+      group: Default
+      labels: arc-runner-org
     permissions:
       id-token: write
       contents: read
