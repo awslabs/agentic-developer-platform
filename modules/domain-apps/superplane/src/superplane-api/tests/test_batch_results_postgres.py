@@ -17,7 +17,6 @@ from tests.controller_provider_support import completed_job_pod
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.services import batch_results
 from superplane_executor import results
-from harness_jobs.execution import ProviderCallRefused
 from harness_jobs.identity import OperationRefused
 from tests.test_batch_deployment_postgres import (
     batch_workload as batch_workload,
@@ -139,9 +138,9 @@ async def test_result_is_captured_before_success_and_survives_owned_cleanup(outp
 async def test_foreign_labelled_pod_cannot_publish_result(output):
     output.foreign = True
     worker = await output.runtime.publish(SimpleNamespace(**output.created))
-    # A foreign-owned Pod never establishes readiness. Preserve the real lease
-    # deadline and require the resulting executor refusal, not successful status.
-    with pytest.raises(ProviderCallRefused, match="^Executor lease is no longer live$"):
+    # A foreign-owned Pod never establishes readiness. The real 30-second
+    # assignment expires before the 60-second lease; finalization refuses it.
+    with pytest.raises(OperationRefused, match="^execution assignment revoked$"):
         await output.runtime.execute(worker)
     result = await read(output)
     assert result["status"] == "not_captured" and result["result"] is None
