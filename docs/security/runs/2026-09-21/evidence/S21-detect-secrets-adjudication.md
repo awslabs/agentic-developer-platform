@@ -14,9 +14,10 @@ with no raw candidate values or source-line content published.
 | Original scan record disposition | Count |
 | --- | ---: |
 | Existing Git object identifiers, independently resolved | 209 |
-| Exact AWS published example identifier | 41 |
+| Exact AWS published example identifier or secret-access-key example | 72 |
+| Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 443 |
-| Pending context review, retained by #6110 | 1166 |
+| Pending context review, retained by #6110 | 1129 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -54,6 +55,28 @@ a `sha256` constructor argument, and the pricing seed tuple's exact mapping to
 bytes read from the frozen Git revision; no file was executed to adjudicate it.
 The second receipt is `S21-detect-secrets-artifact-digest-review-2.json`.
 
-Current verified nonsecret dispositions: **693/1859**. **1,166** original scan
-records remain pending, and #6110 remains open. The overlapping audit population
+That second batch reached **693/1859** verified nonsecret dispositions and left
+**1,166** original scan records pending. The overlapping audit population
 is reconciled separately; fixtures are not accepted merely by pathname.
+
+A third review verifies **31** exact AWS-published secret-access-key examples
+and **six** whole public PEM delimiter literals with no key payload. The AWS
+values match complete HTML code elements in the official IAM access-key guide;
+its URL, retrieval time and document SHA256 are recorded in
+`S21-detect-secrets-public-example-review.json`. The six delimiter findings are
+parsed Python string literals containing only the public delimiter and optional
+hyphens/whitespace. Adjacent literals are parsed together, preventing a header
+from being accepted when key material is appended. The other 27 marker-associated
+records remain pending; no fixture is accepted merely by path or test naming.
+
+The verifier `scripts/security/s21/verify_public_secret_examples.py` checks
+private full original candidate joins, exact immutable Git source lines, and the
+public evidence without printing values. The document snapshot is retained at
+`/tmp/security6110-aws-public-example.html` for independent local verification;
+its contents and candidate values are not published in this receipt. Nine
+synthetic regression cases cover public-example substring mismatches, document
+tampering, dirty checkouts, delimiter payloads/adjacent strings and duplicates.
+
+Current verified nonsecret dispositions: **730/1859**. **1,129** original scan
+records remain pending. #6110 stays open; this review makes no credential-rotation
+or zero-secrets claim.
