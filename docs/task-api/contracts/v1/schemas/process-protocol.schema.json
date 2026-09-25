@@ -24,8 +24,9 @@
     },
 
     "host_to_child": {
-      "description": "Host-to-child frame types: start, turn, model.result, report.ack, cancel.",
+      "description": "Host-to-child frame types: artifact.chunk before start, then start, turn, model.result, report.ack, cancel.",
       "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/artifact_chunk_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/start_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/turn_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/model_result_frame" },
@@ -70,16 +71,57 @@
           "type": "array",
           "maxItems": 4,
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["artifact_id", "content_type", "content"],
-            "properties": {
-              "artifact_id": { "$ref": "common.schema.json#/$defs/artifact_id" },
-              "content_type": { "$ref": "common.schema.json#/$defs/content_type" },
-              "content": { "type": "string", "maxLength": 262144 }
-            }
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "artifact_id",
+                  "content_type",
+                  "content"
+                ],
+                "properties": {
+                  "artifact_id": {
+                    "$ref": "common.schema.json#/$defs/artifact_id"
+                  },
+                  "content_type": {
+                    "$ref": "common.schema.json#/$defs/content_type"
+                  },
+                  "content": {
+                    "type": "string",
+                    "maxLength": 262144
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "artifact_id",
+                  "content_type",
+                  "content_sha256",
+                  "byte_length"
+                ],
+                "properties": {
+                  "artifact_id": {
+                    "$ref": "common.schema.json#/$defs/artifact_id"
+                  },
+                  "content_type": {
+                    "$ref": "common.schema.json#/$defs/content_type"
+                  },
+                  "content_sha256": {
+                    "$ref": "common.schema.json#/$defs/sha256_digest"
+                  },
+                  "byte_length": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 262144
+                  }
+                }
+              }
+            ]
           },
-          "description": "Artifact bytes are supplied by the host. The child performs no fetch of its own."
+          "description": "Legacy embedded bytes or descriptors of completed artifact.chunk transfers. The child performs no fetch. Transfers and embedded bytes together remain at most four artifacts and one MiB; chunk data is verified before start."
         },
         "limits": {
           "type": "object",
@@ -101,6 +143,67 @@
           { "required": ["run_credential"] },
           { "required": ["api_key"] }
         ]
+      }
+    },
+
+    "artifact_chunk_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Before start only. Reserve total_bytes before buffering; at most four artifacts and one MiB. Each decoded chunk is exactly 32768 bytes except the last remainder; sequence starts at one and last is true exactly at total_bytes. Metadata cannot change; digest and strict UTF-8 are verified before use.",
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "artifact_id",
+        "content_type",
+        "content_sha256",
+        "sequence",
+        "total_bytes",
+        "data_base64",
+        "last"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "artifact.chunk"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "artifact_id": {
+          "$ref": "common.schema.json#/$defs/artifact_id"
+        },
+        "content_type": {
+          "$ref": "common.schema.json#/$defs/content_type"
+        },
+        "content_sha256": {
+          "$ref": "common.schema.json#/$defs/sha256_digest"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "data_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 43692,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "last": {
+          "type": "boolean"
+        }
       }
     },
 

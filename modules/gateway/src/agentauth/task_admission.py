@@ -1,0 +1,121 @@
+"""Compose authenticated Task admission into the single T1 transaction."""
+from __future__ import annotations
+
+import hashlib
+import uuid
+from datetime import UTC, datetime, timedelta
+
+from botocore.exceptions import ClientError
+from starlette.concurrency import run_in_threadpool
+
+from src.agentauth.task_budget import task_budget
+from src.agentauth.task_model_binding import resolve_task_model
+from src.agentauth.task_service_policy import TaskServicePolicyStore
+from src.tasks.records import idempotency_partition, payload_digest, task_artifact_partition
+from src.tasks.store import AcceptanceConditionError, AcceptanceRequest, IdempotencyConflictError, TaskStoreError
+
+
+class TaskAdmissionError(Exception):
+    def __init__(self, code, status):
+        self.code, self.status = code, status
+        super().__init__(code)
+
+
+class TaskAdmission:
+    def __init__(self, repository, *, policies=None, budget=None, model_resolver=resolve_task_model, clock=None):
+        self.repository = repository
+        self.policies = policies or TaskServicePolicyStore(table_name=repository.authority_table_name, client=repository._client)
+        self.budget = budget or task_budget(repository)
+        self.model_resolver = model_resolver
+        self.clock = clock or (lambda: datetime.now(UTC))
+
+    @staticmethod
+    def receipt(task, *, replayed):
+        return {"schema_version": "1.0", "task_id": task["task_id"], "invocation_id": task["invocation_id"],
+                "status": "accepted", "created_at": task["created_at"], "deadline_at": task["deadline_at"],
+                "status_url": "/v1/tasks/" + task["task_id"], "events_url": "/v1/tasks/" + task["task_id"] + "/events",
+                "request_id": task["dispatch_id"], "idempotent_replay": replayed}
+
+    async def admit(self, *, caller, submit, idempotency_key, db):
+        caller.require("adp-tasks/submit")
+        policy = await run_in_threadpool(self.policies.get, tenant_id=caller.tenant_id, canonical_principal_id=caller.principal_id)
+        if not policy or policy["status"] != "active" or "submit" not in policy["task_scopes"]:
+            raise TaskAdmissionError("disallowed_scope", 403)
+        if submit["persona"] not in policy["allowed_personas"]:
+            raise TaskAdmissionError("disallowed_persona", 403)
+        digest = payload_digest(submit)
+        idem_key = idempotency_partition(tenant=caller.tenant_id, canonical_principal=caller.principal_id, idempotency_key=idempotency_key)
+        existing = await run_in_threadpool(self.repository._read_idempotency, idem_key)
+        if existing:
+            if existing["request_digest"] != digest:
+                raise TaskAdmissionError("idempotency_conflict", 409)
+            task = await run_in_threadpool(self.repository.read_task, existing["task_id"])
+            if task is None:
+                raise TaskStoreError("accepted task unavailable")
+            return self.receipt(task, replayed=True)
+        now = self.clock()
+        deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
+        binding = await self.model_resolver(db, tenant=caller.tenant_id, principal=caller.principal_id,
+            deadline=deadline, expected_policy_version=policy["model_policy_version"])
+        refs = []
+        total_bytes = 0
+        for artifact_id in submit.get("artifact_ids", []):
+            artifact = await run_in_threadpool(self.repository._get, task_artifact_partition(artifact_id), "META")
+            if (artifact is None or artifact.get("scope") != {"tenant": caller.tenant_id, "canonical_principal": caller.principal_id}
+                    or artifact.get("binding_state") != "unclaimed" or int(artifact.get("expires_at", 0)) <= int(now.timestamp())):
+                raise TaskAdmissionError("not_found", 404)
+            total_bytes += int(artifact["size_bytes"])
+            refs.append({key: artifact[key] for key in ("artifact_id", "version", "content_sha256", "content_type")})
+        if total_bytes > 1048576:
+            raise TaskAdmissionError("payload_too_large", 413)
+        task_id, invocation_id, dispatch_id = "tsk_" + str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+        input_ref = {"record_type": "TASK", "input_digest": digest, **({"artifact_refs": refs} if refs else {})}
+        assignment = {"grant_pk": "TENANT#" + caller.tenant_id, "grant_sk": f"TASK_RUN#{invocation_id}#GEN#0000000001", "generation": 1}
+        envelope = {"schema_version": "1.0", "kind": "adp.task", "task_id": task_id, "invocation_id": invocation_id,
+                    "message_id": invocation_id, "dispatch_id": dispatch_id, "persona": submit["persona"],
+                    "request_digest": digest, "input_ref": input_ref, "assignment_ref": assignment}
+        immutable_input = {key: submit[key] for key in ("instructions", "inputs", "acceptance_criteria") if key in submit}
+        immutable_input.update(input_digest=digest)
+        if refs:
+            immutable_input["artifacts"] = refs
+        limits = {"max_turns": int(policy["limits"]["max_turns"]),
+                  "max_output_tokens_per_turn": int(policy["limits"]["max_output_tokens_per_turn"]),
+                  "max_usd": float(policy["limits"]["max_usd_per_task"]), "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        scope = hashlib.sha256(("task-nonterminal:tenant:" + caller.tenant_id).encode()).hexdigest()
+        try:
+            await run_in_threadpool(self.repository._client.put_item, TableName=self.repository.authority_table_name,
+                Item={"pk": {"S": "TASK_CAPACITY#" + scope}, "sk": {"S": "ACTIVE"}, "active_count": {"N": "0"},
+                      "capacity_limit": {"N": "20"}, "reservations": {"M": {}}}, ConditionExpression="attribute_not_exists(pk)")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+        reservation = await self.budget.reserve_admission(tenant=caller.tenant_id, principal=caller.principal_id,
+            idempotency_key=idempotency_key, max_usd=limits["max_usd"], request_digest=digest)
+        rate_scope = hashlib.sha256(
+            ("task-rate:" + caller.tenant_id + ":" + caller.principal_id + ":" + now.strftime("%Y%m%d%H%M")).encode()).hexdigest()
+        request = AcceptanceRequest(task_id=task_id, invocation_id=invocation_id, dispatch_id=dispatch_id,
+            tenant=caller.tenant_id, canonical_principal=caller.principal_id, idempotency_key=idempotency_key,
+            persona=submit["persona"], request_payload=submit, deadline_at=deadline, grant_reference=assignment["grant_sk"],
+            envelope=envelope, immutable_input=immutable_input, model_binding=binding, run_limits=limits,
+            policy_version=int(policy["version"]), capacity_scope_hash=scope, capacity_limit=20,
+            capacity_reservation_id=str(uuid.uuid4()), input_reference=input_ref, artifact_ids=tuple(submit.get("artifact_ids", [])),
+            budget_reservation=reservation, submit_rate_scope_hash=rate_scope, submit_rate_window_end=int(now.timestamp()) + 120)
+        try:
+            accepted = await run_in_threadpool(self.repository.accept, request)
+        except AcceptanceConditionError as exc:
+            # A definitive cancelled transaction and absent idempotency record
+            # proves no provider could have spent this reservation.
+            await self.budget.abort_admission(reservation)
+            if "rate" in str(exc):
+                raise TaskAdmissionError("rate_limited", 429) from None
+            if "capacity" in str(exc):
+                raise TaskAdmissionError("queue_full", 429) from None
+            raise TaskAdmissionError("prerequisite_unavailable", 503) from None
+        except IdempotencyConflictError:
+            # A concurrent successful acceptance owns the same reservation ID.
+            # Never release it from the losing conflicting request.
+            raise TaskAdmissionError("idempotency_conflict", 409) from None
+        # Unknown outcomes retain the upper-bound hold. A retry reads the same
+        # idempotency row; it must never release a possibly committed task's cap.
+        task = await run_in_threadpool(self.repository.read_task, accepted.task_id)
+        return self.receipt(task, replayed=accepted.replayed)

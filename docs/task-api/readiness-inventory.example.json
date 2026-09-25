@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "environment": null,
+  "account_id": null,
+  "region": null,
+  "captured_at": null,
+  "source_sha": null,
+  "queue_arn": null,
+  "gateway_version": null,
+  "producer_version": null,
+  "worker_digest": null,
+  "all_queue_consumers_enumerated": false,
+  "old_jobs_drained_or_proven_nonrestartable": false,
+  "task_projected_token_audience": null,
+  "task_service_account": "agent-scaledjob-sa",
+  "queue_consumers": [],
+  "flags": {
+    "ADP_TASK_API_READ_ENABLED": false,
+    "ADP_TASK_API_SUBMIT_ENABLED": false,
+    "ADP_TASK_API_WORKER_ENABLED": false,
+    "ADP_TASK_API_RECOVERY_ENABLED": false,
+    "ADP_RUN_TASKS_ENABLED": false,
+    "ADP_AGENT_AUTHORITY_ENABLED": false
+  },
+  "policy": {
+    "principal_id": null,
+    "persona": "agent-task-investigator",
+    "max_tasks": 3,
+    "max_total_usd": 3,
+    "expires_at": null
+  },
+  "evidence": {
+    "workers": {
+      "path": null,
+      "sha256": null
+    },
+    "scalers": {
+      "path": null,
+      "sha256": null
+    },
+    "lambda": {
+      "path": null,
+      "sha256": null
+    },
+    "queue": {
+      "path": null,
+      "sha256": null
+    },
+    "flags": {
+      "path": null,
+      "sha256": null
+    },
+    "capability": {
+      "path": null,
+      "sha256": null
+    },
+    "principal": {
+      "path": null,
+      "sha256": null
+    },
+    "legacy_baseline": {
+      "path": null,
+      "sha256": null
+    }
+  },
+  "task_workload_token_file": null,
+  "job_templates_enumerated": false
+}

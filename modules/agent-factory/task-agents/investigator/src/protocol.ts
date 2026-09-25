@@ -99,6 +99,31 @@ export interface StartFrame {
   limits?: StartLimits;
 }
 
+export interface ArtifactReference {
+  artifact_id: string;
+  content_type: 'text/plain' | 'application/json';
+  content_sha256: string;
+  byte_length: number;
+}
+
+export interface WireStartFrame extends Omit<StartFrame, 'artifacts'> {
+  artifacts?: Array<InputArtifact | ArtifactReference>;
+}
+
+export interface ArtifactChunkFrame {
+  protocol_version: 1;
+  type: 'artifact.chunk';
+  request_id: string;
+  task_id: string;
+  artifact_id: string;
+  content_type: 'text/plain' | 'application/json';
+  content_sha256: string;
+  sequence: number;
+  total_bytes: number;
+  data_base64: string;
+  last: boolean;
+}
+
 export interface TurnMessage {
   command_id: string;
   text: string;
@@ -146,7 +171,7 @@ export interface CancelFrame {
   reason?: string;
 }
 
-export type HostFrame = StartFrame | TurnFrame | ModelResultFrame | ReportAckFrame | CancelFrame;
+export type HostFrame = ArtifactChunkFrame | WireStartFrame | TurnFrame | ModelResultFrame | ReportAckFrame | CancelFrame;
 
 export interface ReadyFrame {
   protocol_version: 1;
@@ -306,6 +331,7 @@ const FORBIDDEN = {
  * if someone adds a new one to the schema and not to {@link FORBIDDEN}.
  */
 const FRAME_KEYS: Record<string, readonly string[]> = {
+  'artifact.chunk': ['protocol_version', 'type', 'request_id', 'task_id', 'artifact_id', 'content_type', 'content_sha256', 'sequence', 'total_bytes', 'data_base64', 'last'],
   start: [
     'protocol_version',
     'type',
@@ -505,6 +531,8 @@ export function parseHostFrame(line: string): HostFrame {
   }
 
   switch (type) {
+    case 'artifact.chunk':
+      return parseArtifactChunkFrame(parsed);
     case 'start':
       return parseStartFrame(parsed);
     case 'turn':
@@ -520,7 +548,7 @@ export function parseHostFrame(line: string): HostFrame {
   }
 }
 
-function parseStartFrame(frame: Record<string, unknown>): StartFrame {
+function parseStartFrame(frame: Record<string, unknown>): WireStartFrame {
   // requireEnvelope refuses credentials before anything else is read: if a
   // credential is present, nothing about this frame should be processed,
   // including its instructions.
@@ -530,7 +558,7 @@ function parseStartFrame(frame: Record<string, unknown>): StartFrame {
   const generation = requireInteger(frame, 'generation', 'start frame', 1);
   requireString(frame, 'invocation_id', 'start frame', { pattern: UUID4 });
 
-  const result: StartFrame = {
+  const result: WireStartFrame = {
     protocol_version: PROTOCOL_VERSION,
     type: 'start',
     request_id: frame['request_id'] as string,
@@ -576,7 +604,8 @@ function parseStartFrame(frame: Record<string, unknown>): StartFrame {
       if (!isPlainObject(entry)) {
         throw new ProtocolViolation('each start frame artifact must be an object');
       }
-      requireOnlyFields(entry, ['artifact_id', 'content_type', 'content'], 'start frame artifact');
+      const embedded = Object.hasOwn(entry, 'content');
+      requireOnlyFields(entry, embedded ? ['artifact_id', 'content_type', 'content'] : ['artifact_id', 'content_type', 'content_sha256', 'byte_length'], 'start frame artifact');
       const artifactId = requireString(entry, 'artifact_id', 'start frame artifact', {
         pattern: ARTIFACT_ID,
       });
@@ -585,6 +614,12 @@ function parseStartFrame(frame: Record<string, unknown>): StartFrame {
         throw new ProtocolViolation(
           'start frame artifact content_type must be text/plain or application/json',
         );
+      }
+      if (!embedded) {
+        const byteLength = requireInteger(entry, 'byte_length', 'artifact reference', 1, 262144);
+        const digest = requireString(entry, 'content_sha256', 'artifact reference', { pattern: /^[0-9a-f]{64}$/ });
+        totalArtifactBytes += byteLength;
+        return { artifact_id: artifactId, content_type: contentType, content_sha256: digest, byte_length: byteLength };
       }
       const content = requireString(entry, 'content', 'start frame artifact', { min: 0 });
       const contentBytes = Buffer.byteLength(content, 'utf8');
@@ -626,6 +661,26 @@ function parseStartFrame(frame: Record<string, unknown>): StartFrame {
   }
 
   return result;
+}
+
+function parseArtifactChunkFrame(frame: Record<string, unknown>): ArtifactChunkFrame {
+  requireEnvelope(frame, 'artifact.chunk');
+  const contentType = frame['content_type'];
+  if (contentType !== 'text/plain' && contentType !== 'application/json') {
+    throw new ProtocolViolation('artifact chunk has invalid content_type');
+  }
+  if (typeof frame['last'] !== 'boolean') throw new ProtocolViolation('artifact chunk last must be boolean');
+  return {
+    protocol_version: 1, type: 'artifact.chunk',
+    request_id: frame['request_id'] as string, task_id: frame['task_id'] as string,
+    artifact_id: requireString(frame, 'artifact_id', 'artifact chunk', { pattern: ARTIFACT_ID }),
+    content_type: contentType,
+    content_sha256: requireString(frame, 'content_sha256', 'artifact chunk', { pattern: /^[0-9a-f]{64}$/ }),
+    sequence: requireInteger(frame, 'sequence', 'artifact chunk', 1, 8),
+    total_bytes: requireInteger(frame, 'total_bytes', 'artifact chunk', 1, 262144),
+    data_base64: requireString(frame, 'data_base64', 'artifact chunk', { min: 4, max: 43692, pattern: /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/ }),
+    last: frame['last'],
+  };
 }
 
 function parseTurnFrame(frame: Record<string, unknown>): TurnFrame {

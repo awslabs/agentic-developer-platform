@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.shared.models.persona_models import ALIAS_SOURCES
 
@@ -276,3 +276,36 @@ class AliasResponse(BaseModel):
     canonical_service_principal_id: str
     is_active: bool
     registered_by: str
+
+
+class TaskPolicyLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_duration_minutes: int = Field(ge=1, le=30)
+    max_turns: int = Field(ge=1, le=8)
+    max_output_tokens_per_turn: int = Field(ge=1, le=4096)
+    max_usd_per_task: Decimal = Field(gt=0, le=1)
+
+
+class TaskPolicyPutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=0)
+    status: Literal["active", "disabled"]
+    allowed_personas: list[str] = Field(min_length=1, max_length=16)
+    task_scopes: list[Literal["submit", "read", "input", "cancel", "artifacts"]] = Field(min_length=1, max_length=5)
+    model_policy_version: str = Field(min_length=1, max_length=128)
+    limits: TaskPolicyLimits
+
+
+class TaskPolicyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"] = "1.0"
+    tenant_id: str
+    canonical_principal_id: str
+    version: int
+    status: Literal["active", "disabled"]
+    allowed_personas: list[str]
+    task_scopes: list[str]
+    model_policy_version: str
+    limits: TaskPolicyLimits
+    updated_at: datetime
+    updated_by: str

@@ -32,6 +32,11 @@ output "lambda_function_arn" {
   value       = aws_lambda_function.github_webhook.arn
 }
 
+output "lambda_invoke_arn" {
+  description = "API Gateway integration URI for the shared webhook-ingress Lambda"
+  value       = aws_lambda_function.github_webhook.invoke_arn
+}
+
 output "sqs_queue_url" {
   description = "SQS FIFO queue URL for agent submissions"
   value       = aws_sqs_queue.agent_submit.url

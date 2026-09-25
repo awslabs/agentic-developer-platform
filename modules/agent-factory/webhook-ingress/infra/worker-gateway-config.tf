@@ -15,6 +15,10 @@ locals {
     AGENT_FALLBACK_BUCKET                  = aws_s3_bucket.agent_run_logs.bucket
     ADP_WORK_CLAIMS_ENABLED                = tostring(var.agent_authority_enabled)
     ADP_WORK_CLAIM_PRODUCER_ROLES          = aws_iam_role.lambda_execution.arn
+    ADP_TASK_API_ADMISSION_ENABLED         = tostring(var.task_api_admission_enabled)
+    ADP_TASK_API_RECOVERY_ENABLED          = tostring(var.task_api_recovery_enabled)
+    ADP_TASK_DISPATCH_PRODUCER_ROLES       = aws_iam_role.lambda_execution.arn
+    ADP_TASK_RECOVERY_PRODUCER_ROLES       = aws_iam_role.lambda_execution.arn
     AGENT_WORKER_IMAGE_DIGESTS             = join(",", sort(tolist(var.agent_authority_worker_image_digests)))
     AGENT_CONTROL_ENVELOPE_KEY_ID          = local.agent_authority_key_id
     AGENT_TASK_SOURCE_ROLE_ARN             = aws_iam_role.agent_scaledjob.arn

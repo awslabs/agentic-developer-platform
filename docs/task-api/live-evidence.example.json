@@ -1,0 +1,149 @@
+{
+  "schema_version": "1.0",
+  "environment": null,
+  "account_id": null,
+  "source_sha": null,
+  "image_digest": null,
+  "evaluator": null,
+  "started_at": null,
+  "finished_at": null,
+  "bounds": {
+    "max_tasks": 3,
+    "max_total_usd": 3,
+    "max_observe_seconds": 120
+  },
+  "owned_resources": null,
+  "cleanup": null,
+  "results": [
+    {
+      "criterion_id": "V4-01",
+      "title": "Record actual API Gateway integrations, Lambda version, task module configuration, queue/KEDA target and worker image digest. Prove the Task API uses the existing gateway, Lambda, queue and image family",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V4-02",
+      "title": "From outside the cluster, use a registered external service to submit a task in a tenant without GitHub integration. Receive an ADP task/run handle, not an SQS message ID masquerading as a run ID",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V4-03",
+      "title": "Observe two distinct authored progress markers within the agreed latency before a held-open task completes. Measure emitter and external receiver timestamps through the actual public API/SSE path",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V4-04",
+      "title": "Disconnect and reconnect, answer an input request, retrieve a completed result/artifact and verify its integrity. Submit a separate cancellation fixture and observe confirmed outcome",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V4-05",
+      "title": "Exercise denied cross-tenant, same-tenant nonowner, unregistered persona and revoked-credential cases; record zero unauthorized dispatches/reads. Verify the relevant real IAM/authority boundary",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V4-06",
+      "title": "Run bounded existing GitHub/Claude and Codex-reviewer regression fixtures while task traffic is active. Measure Lambda errors/throttling, queue age, worker scheduling and table latency against the agreed baseline",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V4-07",
+      "title": "Demonstrate platform model access, budget/cost attribution and permitted task credentials under the external service principal, with no GitHub credential bootstrap. Unknown evidence remains unknown",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V5-01",
+      "title": "With task admission disabled, existing flows work and no task is accepted/queued. Enabling a task route does not enable legacy mutation flags or widen existing persona authorization",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V5-02",
+      "title": "Deploy task-capable workers before admission and prove incompatible consumers cannot receive new task messages. Exercise or explicitly exclude mixed-version queue consumption",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V5-03",
+      "title": "Stop admission with accepted/running tasks present. Drain, cancel or durably quarantine those tasks while preserving reads and results. Do not roll back all consumers until task messages are safely handled",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V5-04",
+      "title": "Rollback leaves existing handlers and agents functional; no request table is replaced, shared queue purged, or legacy records/permissions destroyed. Task-only errors stay within the bounded rollout policy",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V5-05",
+      "title": "Retention and cleanup remove only owned fixtures/artifacts/configuration at the appropriate time. List anything intentionally retained, such as sanitized evidence, with its expiry",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    },
+    {
+      "criterion_id": "V5-06",
+      "title": "Produce the final matrix linking every V1-V5 acceptance ID to evidence. Record remaining limitations and obtain release acceptance; merged code or a single happy-path run cannot close the epic",
+      "lane": "live",
+      "outcome": "NOT RUN",
+      "command": null,
+      "exit_status": null,
+      "executed": 0,
+      "artifacts": []
+    }
+  ]
+}

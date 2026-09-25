@@ -1273,6 +1273,13 @@ def handler(event: dict, context) -> dict:
     Returns:
         Response dict (API Gateway format or plain dict for EventBridge).
     """
+    # The recovery alias, not request content, selects this privileged path.
+    # Check it before generic EventBridge routing so ordinary schedules remain unchanged.
+    from common import task_dispatch
+
+    if task_dispatch.invoked_alias(context) == task_dispatch.RECOVERY_ALIAS:
+        return task_dispatch.handle_recovery_event(event, context)
+
     # Issue #2154: shape-based routing for EventBridge events
     if _is_eventbridge_event(event):
         from eventbridge.handler import handle_eventbridge
@@ -1286,6 +1293,15 @@ def handler(event: dict, context) -> dict:
         from agent_trigger import handle_agent_trigger
 
         return handle_agent_trigger(event, context)
+
+    # Issue #5795: dispatch POST /v1/tasks to the Task API handler. The import
+    # is local to this branch so a task-only import or initialization failure
+    # cannot affect the GitHub, EventBridge or agent-trigger paths above
+    # (T2-AC04); the route is authenticated by the gateway, not by HMAC.
+    if resource == "/v1/tasks":
+        from task_api.handler import handle_task_submit
+
+        return handle_task_submit(event, context)
 
     start_time = time.time()
     print("DBG handler:start")

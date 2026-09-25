@@ -1273,6 +1273,17 @@ module "api_gateway" {
   # at plan time (the invoke_arn above is unknown until apply).
   enable_broker_route = var.enable_github_auth_broker
 
+  # Issue #5795 (T2): POST /v1/tasks route in the OpenAPI body.
+  #
+  # These arrive as root variables rather than a module reference because the
+  # ingress Lambda is owned by modules/agent-factory/webhook-ingress, a separate
+  # Terraform state — the same reason internal_alb_arn is an input here. Both
+  # default to empty, and the route is default-off, so a gateway apply that does
+  # not set them publishes no task route and behaves exactly as it does today.
+  task_api_lambda_invoke_arn    = var.task_api_lambda_invoke_arn
+  task_api_lambda_function_name = var.task_api_lambda_function_name
+  enable_task_api_route         = var.enable_task_api_route
+
   depends_on = [module.cognito]
 }
 

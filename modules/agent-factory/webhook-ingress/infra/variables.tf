@@ -433,6 +433,12 @@ variable "enable_adversarial_e2e" {
   default     = false
 }
 
+variable "task_api_admission_enabled" {
+  description = "Allow the ingress Lambda to accept POST /v1/tasks after task-capable storage, dispatch, consumers, and gateway authority are ready."
+  type        = bool
+  default     = false
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.
@@ -517,6 +523,14 @@ variable "agent_control_enabled" {
 # #5222: pause/resume require this protected path and configured signing keys.
 # Keep activation explicit; distributing control keys must not bypass the
 # worker isolation/readiness gates in #5195/#5210.
+
+
+variable "task_api_recovery_enabled" {
+  description = "Enable the independent 60-second task recovery schedule and adapters. Default-off."
+  type        = bool
+  default     = false
+}
+
 variable "agent_authority_enabled" {
   description = "Enable protected dispatch and mandatory pre-repository pod bootstrap. Keep off until the delegated-authority acceptance and writer migration are complete."
   type        = bool

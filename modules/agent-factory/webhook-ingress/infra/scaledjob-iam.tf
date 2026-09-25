@@ -65,6 +65,54 @@ locals {
       Resource = "arn:aws:dynamodb:us-east-1:*:table/adp-*-webhook-events"
     }
   ]
+  agent_task_protection_deny = [
+    {
+      Sid    = "DenyTaskRecordWrites"
+      Effect = "Deny"
+      Action = [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:TransactWriteItems",
+      ]
+      Resource = "arn:aws:dynamodb:*:*:table/adp-*-webhook-events"
+      Condition = {
+        "ForAnyValue:StringLike" = {
+          "dynamodb:LeadingKeys" = [
+            "TASK#*",
+            "TASK_RUN#*",
+            "TASK_EVENTS#*",
+            "TASK_COMMANDS#*",
+            "TASK_TURNS#*",
+            "TASK_OPS#*",
+            "TASK_IDEMP#*",
+            "TASK_WORK#*",
+            "TASK_REPORT#*",
+            "TASK_ARTIFACT#*",
+          ]
+        }
+      }
+    },
+    {
+      Sid    = "DenyTaskAuthorityWrites"
+      Effect = "Deny"
+      Action = [
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:TransactWriteItems",
+      ]
+      Resource = "arn:aws:dynamodb:*:*:table/adp-*-agent-authority"
+    },
+    {
+      Sid      = "DenyDirectTaskArtifacts"
+      Effect   = "Deny"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      Resource = "arn:aws:s3:::adp-*-chat-artifacts-*/tasks/*"
+    },
+  ]
 }
 
 resource "aws_iam_role" "agent_scaledjob" {
@@ -121,7 +169,7 @@ locals {
     Version = "2012-10-17"
     # concat, so the webhook-events write grant can be dropped entirely rather
     # than narrowed in place (#5028 AC4 — see local.agent_worker_events_write).
-    Statement = concat(local.agent_worker_events_write, [
+    Statement = concat(local.agent_worker_events_write, local.agent_task_protection_deny, [
       {
         Sid    = "BedrockModelInvoke"
         Effect = "Allow"

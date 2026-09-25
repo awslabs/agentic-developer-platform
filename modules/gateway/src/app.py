@@ -54,6 +54,7 @@ UNIT_MODULES = [
     "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
     "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
+    "src.agentauth.task_admission_routes",  # Task ingress proof, caller identity and durable admission.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.
@@ -61,6 +62,24 @@ UNIT_MODULES = [
     "src.agentauth.run_services",
     "src.agentauth.knowledge_service",
     "src.agentauth.task_routes",
+    # #5796: the publication protocol's claim/settle/sweep adapters. Separate
+    # from task_routes because these serve the platform's own publisher and
+    # scheduled reconciler (STS producer proof), not a TokenReview-bound pod, and
+    # recovery holds a distinct role allowlist from dispatch.
+    "src.agentauth.task_dispatch_routes",
+    "src.agentauth.task_runtime_routes",
+    # #5799: Task API v1 read, streaming, artifact and host-reporting surface.
+    # Mounted always and gated inside by ADP_TASK_API_READ_ENABLED /
+    # ADP_TASK_API_WORKER_ENABLED (both default false, design section 11), which is
+    # the repo's mount-always/503-when-disabled pattern: conditional registration
+    # would make a disabled surface return 404, indistinguishable from a routing
+    # mistake, and would leave the routes unimported and so unexercised by the
+    # app's own startup.
+    "src.tasks.routes",
+    "src.tasks.artifacts",
+    "src.tasks.internal_artifacts",
+    "src.tasks.report_routes",
+    "src.tasks.command_routes",
     "src.agentauth.artifact_service",
     "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",

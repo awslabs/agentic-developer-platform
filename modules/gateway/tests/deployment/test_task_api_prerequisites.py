@@ -86,6 +86,6 @@ def test_task_policy_has_no_scan_bucket_listing_or_tenant_delete():
         actions = statement["Action"] if isinstance(statement["Action"], list) else [statement["Action"]]
         assert not {"dynamodb:Scan", "s3:ListBucket", "dynamodb:*", "s3:*"} & set(actions)
         if "dynamodb:DeleteItem" in actions and statement["Resource"].endswith("/authority"):
-            assert statement["Condition"]["ForAllValues:StringLike"]["dynamodb:LeadingKeys"] == ["TASK_WORK_ID#*"]
+            assert statement["Condition"]["ForAllValues:StringLike"]["dynamodb:LeadingKeys"] == ["TASK_WORK_ID#*", "TASK_ADMISSION_CLEANUP#*"]
         if "s3:GetObject" in actions:
             assert statement["Resource"] == "arn:aws:s3:::artifacts/tasks/*"

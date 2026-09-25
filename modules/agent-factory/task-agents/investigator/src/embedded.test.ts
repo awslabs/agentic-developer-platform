@@ -24,9 +24,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { test, describe } from 'node:test';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { loadFixture } from './fixtures.js';
-import { type ChildFrame, type StartFrame } from './protocol.js';
+import { type ChildFrame, type StartFrame, type WireStartFrame, type ArtifactChunkFrame } from './protocol.js';
 
 const ENTRYPOINT = join(import.meta.dirname, 'index.js');
 const NETWORK_DENY_HOOK = join(import.meta.dirname, '..', 'test', 'network-deny-hook.cjs');
@@ -46,7 +47,8 @@ interface Observed {
  * the cancellation and stream-close cases are set up.
  */
 async function runChild(options: {
-  start: StartFrame;
+  start: WireStartFrame;
+  beforeStart?: ArtifactChunkFrame[];
   respond: (frame: Record<string, unknown>, send: (frame: unknown) => void) => void;
   /** Extra environment for the child. Deliberately minimal by default. */
   env?: Record<string, string>;
@@ -98,6 +100,7 @@ async function runChild(options: {
       resolve(code ?? 1);
     });
 
+    for (const frame of options.beforeStart ?? []) send(frame);
     send(options.start);
   });
 
@@ -167,15 +170,18 @@ describe('embedded run over the real process protocol', () => {
         if (frame['type'] !== 'model.request') return;
         calls += 1;
         if (calls === 1) {
-          send({
+          const followUp = {
             protocol_version: 1, type: 'turn',
             request_id: '809517ec-8674-49fd-9583-aa5d98cb765f',
             task_id: frame['task_id'],
             turn_id: '9a734313-2f31-484b-9349-d52c41ad2497',
             turn_number: 2,
             messages: [{ command_id: 'f6071829-3a4b-4c5d-9f70-819203142536', text: 'Check the revised window.' }],
-          });
+          };
+          send(followUp);
+          send(followUp); // transport replay must not create a second logical turn
         } else {
+          assert.equal(frame['turn_id'], '9a734313-2f31-484b-9349-d52c41ad2497');
           assert.match(JSON.stringify(frame['messages']), /Check the revised window/);
         }
         confirmModel(frame, send, REPORT_JSON);
@@ -427,4 +433,56 @@ describe('embedded run over the real process protocol', () => {
     // Whatever stderr carried, it must not contain protocol frames.
     assert.doesNotMatch(stderr, /"type":\s*"(result|progress|ready)"/);
   });
+});
+
+for (const count of [1, 4]) {
+  test(`${count} maximum-size chunked artifacts yield a bounded model request and explicit omissions`, async () => {
+    const base = startFrame();
+    const start: WireStartFrame = { ...base, artifacts: [] };
+    const beforeStart: ArtifactChunkFrame[] = [];
+    for (let index = 0; index < count; index += 1) {
+      // JSON escaping expands these bytes; character counting cannot establish
+      // the model-frame bound. The final Euro sign exercises UTF-8 byte counts.
+      const prefix = 'line1\nline2\n';
+      const bytes = Buffer.from(prefix + '"'.repeat(262144 - Buffer.byteLength(prefix) - 3) + '€');
+      const artifactId = `art_${randomUUID()}`;
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      start.artifacts!.push({ artifact_id: artifactId, content_type: 'text/plain', content_sha256: digest, byte_length: bytes.length });
+      for (let offset = 0; offset < bytes.length; offset += 32768) {
+        beforeStart.push({ protocol_version: 1, type: 'artifact.chunk', request_id: randomUUID(), task_id: start.task_id,
+          artifact_id: artifactId, content_type: 'text/plain', content_sha256: digest, sequence: offset / 32768 + 1,
+          total_bytes: bytes.length, data_base64: bytes.subarray(offset, offset + 32768).toString('base64'), last: offset + 32768 >= bytes.length });
+      }
+    }
+    let modelCalls = 0;
+    const result = await runChild({ start, beforeStart, respond(frame, send) {
+      if (frame['type'] === 'model.request') {
+        modelCalls += 1;
+        assert.ok(Buffer.byteLength(JSON.stringify(frame), 'utf8') + 1 <= 65536);
+        assert.match(JSON.stringify(frame['messages']), /Evidence excerpt boundary/);
+        confirmModel(frame, send, REPORT_JSON);
+      }
+    }});
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(modelCalls, 1);
+    const terminal = result.frames.find(({frame}) => frame['type'] === 'result')?.frame;
+    const report = terminal?.['report'] as { uncertainties: string[]; findings: Array<{evidence_refs: string[]}> };
+    assert.ok(report.uncertainties.some(note => /bytes were omitted/.test(note)));
+    assert.equal(report.findings[0]?.evidence_refs[0], 'logs.txt:L2-L3');
+  });
+}
+
+test('incomplete artifact transfer fails before any model request', async () => {
+  const start = startFrame();
+  const bytes = Buffer.alloc(32769, 120);
+  const artifact_id = `art_${randomUUID()}`;
+  const content_sha256 = createHash('sha256').update(bytes).digest('hex');
+  const chunk: ArtifactChunkFrame = { protocol_version: 1, type: 'artifact.chunk', request_id: randomUUID(), task_id: start.task_id,
+    artifact_id, content_type: 'text/plain', content_sha256, sequence: 1, total_bytes: bytes.length,
+    data_base64: bytes.subarray(0, 32768).toString('base64'), last: false };
+  const result = await runChild({ start: { ...start, artifacts: [{ artifact_id, content_type: 'text/plain', content_sha256, byte_length: bytes.length }] },
+    beforeStart: [chunk], respond() {} });
+  assert.notEqual(result.exitCode, 0);
+  assert.ok(!result.frames.some(({ frame }) => frame['type'] === 'model.request'));
+  assert.match(result.stderr, /incomplete/);
 });

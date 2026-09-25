@@ -3,7 +3,7 @@
   "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
   "design_document": "docs/task-api/implementation-design.md",
   "validation_document": "docs/task-api/validation.md",
-  "description": "Maps every delivery and validation criterion to its owner, wave, evidence lane, fixture responsibility and command. Only the V0 contract validator is runnable at this wave: every later command is registered as not_implemented rather than omitted, so an unimplemented evaluation is visible as a gap instead of looking like a pass.",
+  "description": "Maps every delivery and validation criterion to its owner, wave, evidence lane, fixture responsibility and command. The V0 contract validator and T1 owned storage fixtures are runnable. Later commands remain registered as not_implemented rather than omitted, so an unimplemented evaluation is visible as a gap instead of looking like a pass.",
   "criterion_count": 92,
   "counts_by_group": {
     "T0": 4,
@@ -23,7 +23,13 @@
     "V5": 6
   },
   "runnable_now": [
-    "python3 scripts/task-api/check-contracts.py"
+    "python3 scripts/task-api/check-contracts.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers modules/gateway/tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict modules/gateway/tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index modules/gateway/tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority modules/gateway/tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report modules/gateway/tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit modules/gateway/tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically modules/gateway/tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key modules/gateway/tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone modules/gateway/tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention modules/gateway/tests/tasks/test_store.py::test_recovery_paging_is_bounded",
+    "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest"
   ],
   "fixed_thresholds": {
     "legacy_observation_minimum": {
@@ -428,53 +434,53 @@
       "owner": "T1 persistence implementer",
       "wave": "wave 2 - platform primitives",
       "evidence_lane": "unit and integration tests against the existing request table",
-      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [
         "fixtures/valid/error-idempotency-conflict.json",
         "fixtures/valid/submit-response-idempotent-replay.json"
       ],
-      "command": "not yet implemented; to be registered by T1 persistence implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers modules/gateway/tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict modules/gateway/tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
+      "command_status": "runnable"
     },
     "T1-AC02": {
       "title": "Failed/partial writes cannot be reported as accepted or expose an executable unbound assignment",
       "owner": "T1 persistence implementer",
       "wave": "wave 2 - platform primitives",
       "evidence_lane": "unit and integration tests against the existing request table",
-      "fixture_responsibility": "T1 supplies its own evidence against the T0 contract artifacts",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T1 persistence implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
+      "command_status": "runnable"
     },
     "T1-AC03": {
       "title": "Legacy invocation queries have unchanged results for old fixtures and do not count internal task records as runs",
       "owner": "T1 persistence implementer",
       "wave": "wave 2 - platform primitives",
       "evidence_lane": "unit and integration tests against the existing request table",
-      "fixture_responsibility": "T1 supplies its own evidence against the T0 contract artifacts",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T1 persistence implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index modules/gateway/tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
+      "command_status": "runnable"
     },
     "T1-AC04": {
       "title": "Task ownership/input/event/result integrity and stale-attempt writes are checked against the real intended IAM/authority design",
       "owner": "T1 persistence implementer",
       "wave": "wave 2 - platform primitives",
       "evidence_lane": "unit and integration tests against the existing request table",
-      "fixture_responsibility": "T1 supplies its own evidence against the T0 contract artifacts",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T1 persistence implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority modules/gateway/tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report modules/gateway/tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
+      "command_status": "runnable"
     },
     "T1-AC05": {
       "title": "Retention, payload limits and artifact ownership are exercised; no table replacement or full-table recovery scan is introduced",
       "owner": "T1 persistence implementer",
       "wave": "wave 2 - platform primitives",
       "evidence_lane": "unit and integration tests against the existing request table",
-      "fixture_responsibility": "T1 supplies its own evidence against the T0 contract artifacts",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T1 persistence implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit modules/gateway/tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically modules/gateway/tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key modules/gateway/tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone modules/gateway/tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention modules/gateway/tests/tasks/test_store.py::test_recovery_paging_is_bounded",
+      "command_status": "runnable"
     },
     "T2-AC01": {
       "title": "A valid external caller receives durable 202 acceptance through the real new integration; no direct worker launch or GitHub fields are needed",
@@ -487,7 +493,7 @@
         "fixtures/valid/submit-request.json",
         "fixtures/valid/submit-response.json"
       ],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T2-AC02": {
@@ -504,7 +510,7 @@
         "fixtures/invalid/submit-request-nonfinite-number.json",
         "fixtures/valid/error-payload-too-large.json"
       ],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T2-AC03": {
@@ -514,7 +520,7 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T2-AC04": {
@@ -524,8 +530,8 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+      "command_status": "runnable"
     },
     "T2-AC05": {
       "title": "Lambda and gateway agree on principal mapping; the external caller needs no worker/pod credentials",
@@ -534,7 +540,7 @@
       "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
       "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T2 submission implementer",
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
       "command_status": "not_implemented"
     },
     "T3-AC01": {
@@ -919,7 +925,7 @@
       "command_status": "not_implemented"
     },
     "V0-01": {
-      "title": "O1–O8 each have a concrete answer, rationale, evidence and downstream owner. Any departure from D01–D18 has an explicit accepted decision; unresolved choices are BLOCKED",
+      "title": "O1\u2013O8 each have a concrete answer, rationale, evidence and downstream owner. Any departure from D01\u2013D18 has an explicit accepted decision; unresolved choices are BLOCKED",
       "owner": "agent-developer (contract baseline)",
       "wave": "wave 1 - contract implementation",
       "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
@@ -1071,7 +1077,7 @@
       "command_status": "runnable"
     },
     "V0-06": {
-      "title": "A coverage manifest maps every existing T0–T8 and V1–V5 acceptance ID, plus V0-01–V0-08, to its owner, wave, evidence lane and fixture/test responsibility. No original criterion is removed, weakened, silently deferred or counted as passing from a skipped test",
+      "title": "A coverage manifest maps every existing T0\u2013T8 and V1\u2013V5 acceptance ID, plus V0-01\u2013V0-08, to its owner, wave, evidence lane and fixture/test responsibility. No original criterion is removed, weakened, silently deferred or counted as passing from a skipped test",
       "owner": "agent-developer (contract baseline)",
       "wave": "wave 1 - contract implementation",
       "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
