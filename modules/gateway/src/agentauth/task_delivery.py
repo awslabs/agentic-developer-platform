@@ -98,7 +98,9 @@ class TaskDelivery:
         work = repository._get(task_work_partition(task["task_id"]), dispatch_sort_key(task["dispatch_id"]))
         if not work or work.get("envelope") != envelope:
             return False
-        if task.get("state") in {"completed", "failed", "cancelled"} and task.get("server_workload_terminated") is True:
+        if task.get("state") in {"completed", "failed", "cancelled"} and (
+            task.get("server_workload_terminated") is True or task.get("child_exit", {}).get("confirmed") is True
+        ):
             return True  # Exact committed envelope; drain redelivery of stopped work.
         cancelled = TaskCommands(repository).cancel_unstarted(task["task_id"])
         if cancelled:
@@ -298,7 +300,11 @@ class TaskDelivery:
 
         repository = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table)
         task = repository.read_task(receipt["task_id"])
-        if not task or task.get("state") not in {"failed", "cancelled", "completed"} or not task.get("server_workload_terminated"):
+        if (
+            not task
+            or task.get("state") not in {"failed", "cancelled", "completed"}
+            or not (task.get("server_workload_terminated") is True or task.get("child_exit", {}).get("confirmed") is True)
+        ):
             return
         work = repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         if work.get("envelope_digest") != receipt["envelope_digest"] or task["invocation_id"] != receipt["invocation_id"]:
@@ -309,9 +315,10 @@ class TaskDelivery:
                 "Key": _serialize({"event_id": task_partition(task["task_id"]), "arrived_at": "META"}),
                 "UpdateExpression": "SET queue_ack_status = :confirmed, queue_ack_request_id = :request, #version = :next",
                 "ConditionExpression": (
-                    "invocation_id = :invocation AND runtime_attempt_id = :attempt AND server_workload_terminated = :true AND #version = :version"
+                    "invocation_id = :invocation AND runtime_attempt_id = :attempt AND #state = :state AND "
+                    "(server_workload_terminated = :true OR child_exit.confirmed = :true) AND #version = :version"
                 ),
-                "ExpressionAttributeNames": {"#version": "version"},
+                "ExpressionAttributeNames": {"#version": "version", "#state": "state"},
                 "ExpressionAttributeValues": _serialize(
                     {
                         ":confirmed": "confirmed",
@@ -319,6 +326,7 @@ class TaskDelivery:
                         ":invocation": task["invocation_id"],
                         ":attempt": task["runtime_attempt_id"],
                         ":true": True,
+                        ":state": task["state"],
                         ":version": int(task["version"]),
                         ":next": int(task["version"]) + 1,
                     }

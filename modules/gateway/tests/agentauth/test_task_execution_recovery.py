@@ -243,3 +243,77 @@ def test_attempt_receipt_requires_native_exit_retention(monkeypatch, retention_f
     else:
         assert asyncio.run(routes.attempt(body, request, runtime=platform))["operation_status"] == "confirmed"
     assert events == ["bound", "retained"]
+
+
+@pytest.mark.parametrize("mode", ["success", "missing_proof", "stale_attempt"])
+def test_confirmed_child_exit_drains_without_claiming_provider_success(runtime, monkeypatch, mode):
+    from botocore.exceptions import ClientError
+
+    from src.agentauth.task_delivery import TaskDeliveryError
+    from src.tasks.task_commands import TaskCommands
+
+    service, pod, _ = _settlement_fixture(runtime)
+    repository = service.repository
+    identity = service.authenticate_settlement(pod=pod)
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", repository.table_name)
+    model = {
+        "event_id": task_ops_partition(identity.task_id),
+        "arrived_at": "MODEL#unknown",
+        "operation_status": "unknown",
+        "reservation_status": "unknown",
+    }
+    repository._client.put_item(TableName=repository.table_name, Item=_serialize(model))
+    TaskCommands(repository).settlement(
+        identity,
+        {
+            "stop_evidence": {"child_exit_confirmed": True, "workload_terminated": False, "observed_at": "2026-09-24T12:00:00Z"},
+            "queue_ack_status": "unknown",
+        },
+    )
+    task = repository.read_task(identity.task_id)
+    assert task["child_exit"]["confirmed"] is True
+    assert not task.get("server_workload_terminated")
+    assert task["error"]["provider_outcome"] == "unknown"
+    envelope = repository.resolve_work(task["dispatch_id"])["envelope"]
+    sqs = boto3.client("sqs", region_name="us-east-1")
+    queue = sqs.create_queue(QueueName="child-exit-redelivery")["QueueUrl"]
+    sqs.send_message(QueueUrl=queue, MessageBody=json.dumps(envelope))
+    delivery = TaskDelivery(
+        store=BootstrapStore(table_name=repository.authority_table_name, dynamodb_client=repository._client),
+        sqs=sqs,
+        queue_url=queue,
+        clock=lambda: NOW.timestamp(),
+        allow_task_api=True,
+    )
+    if mode == "missing_proof":
+        repository._client.update_item(
+            TableName=repository.table_name,
+            Key=_serialize({"event_id": task_partition(identity.task_id), "arrived_at": "META"}),
+            UpdateExpression="REMOVE child_exit",
+        )
+        assert delivery._cancelled_before_start(json.dumps(envelope)) is False
+        assert repository.read_task(identity.task_id)["queue_ack_status"] == "unknown"
+        return
+    if mode == "stale_attempt":
+        original = delivery._stopped_task_ack_item
+
+        def race(receipt):
+            item = original(receipt)
+            repository._client.update_item(
+                TableName=repository.table_name,
+                Key=_serialize({"event_id": task_partition(identity.task_id), "arrived_at": "META"}),
+                UpdateExpression="SET runtime_attempt_id = :new",
+                ExpressionAttributeValues=_serialize({":new": "00000000-0000-4000-8000-000000000001"}),
+            )
+            return item
+
+        monkeypatch.setattr(delivery, "_stopped_task_ack_item", race)
+        with pytest.raises((TaskDeliveryError, ClientError)):
+            delivery.acquire("child-drainer")
+        assert repository.read_task(identity.task_id)["queue_ack_status"] == "unknown"
+        return
+    assert delivery.acquire("child-drainer") is None
+    assert repository.read_task(identity.task_id)["queue_ack_status"] == "confirmed"
+    assert repository.read_task(identity.task_id)["error"] == task["error"]
+    assert repository._get(task_ops_partition(identity.task_id), "MODEL#unknown") == model
+    assert not sqs.receive_message(QueueUrl=queue).get("Messages")
