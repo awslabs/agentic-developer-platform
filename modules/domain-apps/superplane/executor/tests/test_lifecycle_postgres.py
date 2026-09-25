@@ -269,7 +269,7 @@ async def system(pool, tmp_path):
         await c.execute("""
             CREATE TABLE organizations(id uuid PRIMARY KEY,adp_org_id text UNIQUE);
             CREATE TABLE clusters(id uuid PRIMARY KEY,org_id uuid,eks_cluster_arn text,endpoint text,status text);
-            CREATE TABLE workspaces(id uuid PRIMARY KEY,org_id uuid,cluster_id uuid,namespace_name text,status text);
+            CREATE TABLE workspaces(id uuid PRIMARY KEY,org_id uuid,cluster_id uuid,namespace_name text,status text,shared_cluster_id uuid);
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);
             CREATE TABLE controller_executions(operation_id text PRIMARY KEY,org_id uuid,workspace_id uuid,controller_holder text,assignment json,expires_at timestamptz);
             CREATE TABLE controller_provider_requests(idempotency_key text PRIMARY KEY,operation_id text,org_id text,workspace_id text,cluster_name text,operation_kind text,request_id text,region text);
@@ -287,7 +287,7 @@ async def system(pool, tmp_path):
             data["endpoint"],
         )
         await c.execute(
-            "INSERT INTO workspaces VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,'tenant-a','active')",
+            "INSERT INTO workspaces(id,org_id,cluster_id,namespace_name,status) VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,'tenant-a','active')",
             workspace,
             org,
             cluster,

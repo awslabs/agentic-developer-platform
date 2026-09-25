@@ -16,6 +16,7 @@ ORGANIZATION_READ = "organization:read"
 class OrganizationGrantRecord(Base):
     __tablename__ = "organization_grants"
     __table_args__ = (
+        UniqueConstraint("org_id", "id", name="uq_organization_grants_org_identity"),
         UniqueConstraint(
             "org_id", "principal", name="uq_organization_grants_principal"
         ),

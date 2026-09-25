@@ -1,6 +1,5 @@
 """Anchor completed canonical registration and authority bytes in a result artifact."""
 
-from dataclasses import asdict
 import json
 
 from .artifacts import digest
@@ -12,6 +11,20 @@ async def read_bootstrap_anchor(
 ):
     """Read-only verification; the caller resolves execution or recovery authority."""
     from superplane_bootstrap.registry import _LOCK_PREFIX
+    from superplane_bootstrap.membership import registration_membership
+    from superplane_bootstrap.errors import BootstrapRefused
+
+    placement = registration.get("cluster_placement", "dedicated")
+    if placement not in {"dedicated", "shared"}:
+        raise LifecycleRefused("bootstrap registration placement is invalid")
+    try:
+        membership = registration_membership(registration)
+    except (BootstrapRefused, KeyError, TypeError, ValueError):
+        raise LifecycleRefused("bootstrap membership identity is invalid") from None
+    if placement == "shared" and membership is None:
+        raise LifecycleRefused(
+            "shared bootstrap result requires its approved membership"
+        )
 
     if (registration.get("org_id"), registration.get("workspace_id")) != (
         org_id,
@@ -31,10 +44,11 @@ async def read_bootstrap_anchor(
             raise LifecycleRefused("completed bootstrap registration changed")
         canonical = await connection.fetchrow(
             "SELECT w.namespace_name,c.eks_cluster_arn,c.endpoint,c.actual_state_json "
-            "FROM workspaces w JOIN clusters c ON c.id=w.cluster_id AND c.workspace_id=w.id AND c.org_id=w.org_id "
+            "FROM workspaces w JOIN clusters c ON c.id=w.cluster_id AND ($3 OR c.workspace_id=w.id) AND c.org_id=w.org_id "
             "JOIN organizations o ON o.id=w.org_id WHERE w.id::text=$1 AND (o.id::text=$2 OR o.adp_org_id=$2) FOR UPDATE OF w,c",
             workspace_id,
             org_id,
+            placement == "shared",
         )
         if canonical is None or (
             canonical["namespace_name"],
@@ -46,14 +60,36 @@ async def read_bootstrap_anchor(
             registration["endpoint"],
         ):
             raise LifecycleRefused("canonical bootstrap target changed")
-        actual = canonical["actual_state_json"]
-        if isinstance(actual, str):
-            actual = json.loads(actual)
-        if (
-            not isinstance(actual, dict)
-            or actual.get("workspace_bootstrap") != registration
-        ):
-            raise LifecycleRefused("canonical bootstrap metadata changed")
+        if membership is not None:
+            from .shared_membership import verify
+
+            await verify(connection, membership, states={"active"})
+            member = await connection.fetchrow(
+                "SELECT namespace_uid,credential_reference_id FROM cluster_memberships "
+                "WHERE workspace_id::text=$1 AND org_id::text=$2 AND cluster_id::text=$3 "
+                "AND generation=$4 AND state='active' FOR UPDATE",
+                workspace_id,
+                membership.org_id,
+                membership.cluster_id,
+                membership.generation,
+            )
+            if member is None or (
+                member["namespace_uid"],
+                member["credential_reference_id"],
+            ) != (
+                registration["namespace_uid"],
+                registration["credential_reference_id"],
+            ):
+                raise LifecycleRefused("canonical bootstrap membership changed")
+        else:
+            actual = canonical["actual_state_json"]
+            if isinstance(actual, str):
+                actual = json.loads(actual)
+            if (
+                not isinstance(actual, dict)
+                or actual.get("workspace_bootstrap") != registration
+            ):
+                raise LifecycleRefused("canonical bootstrap metadata changed")
         rows = await connection.fetch(
             "SELECT generation,operation_id,org_id,cluster_arn,claim,plan_json,progress_json,revoked "
             "FROM workspace_bootstrap_authority WHERE workspace_id=$1 ORDER BY generation LIMIT 129 FOR UPDATE",
@@ -93,6 +129,20 @@ async def read_bootstrap_anchor(
                     raise LifecycleRefused(
                         "bootstrap result lacks completed retained component ownership"
                     )
+                if membership is not None:
+                    plan = json.loads(row["plan_json"])
+                    if (
+                        progress.get("member_recovery_started")
+                        or progress.get("member_gate") != "open"
+                        or progress.get("member_gate_intent") is not None
+                        or progress.get("component_inventory_mode")
+                        != "shared-namespace"
+                        or plan.get("mode") != "shared-namespace"
+                        or plan.get("membership") != membership.encode()
+                    ):
+                        raise LifecycleRefused(
+                            "shared bootstrap activation was recovered or changed"
+                        )
                 current.append(anchor)
         if len(current) != 1:
             raise LifecycleRefused(
@@ -107,6 +157,7 @@ async def read_bootstrap_anchor(
 
 async def bootstrap_result_anchor(operation, context, outcome):
     """Capture only a successful canonical result before publishing its artifact."""
+    from superplane_bootstrap.registry import _target_mapping
     from superplane_bootstrap.state import claim_fingerprint
 
     if not outcome.ready or outcome.reservation is None:
@@ -117,6 +168,6 @@ async def bootstrap_result_anchor(operation, context, outcome):
         operation_id=lease.operation_id,
         org_id=lease.org_id,
         workspace_id=lease.workspace_id,
-        registration=asdict(outcome.registration.target),
+        registration=_target_mapping(outcome.registration.target),
         claim=claim_fingerprint(outcome.reservation.attempt_token),
     )

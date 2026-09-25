@@ -4,6 +4,12 @@ from app.models.organization import Organization  # noqa: F401
 from app.models.organization_grant import OrganizationGrantRecord  # noqa: F401
 from app.models.workspace import Workspace  # noqa: F401
 from app.models.cluster import Cluster  # noqa: F401
+from app.models.cluster_membership import ClusterMembership  # noqa: F401
+from app.models.membership_credential import MembershipCredential  # noqa: F401
+from app.models.cluster_credential_authority import (  # noqa: F401
+    ClusterCredentialAuthority,
+    MembershipCredentialComponent,
+)
 from app.models.node_pool import NodePool  # noqa: F401
 from app.models.node import Node  # noqa: F401
 from app.models.deployment import Deployment  # noqa: F401
@@ -54,3 +60,5 @@ from app.models.controller_network import (  # noqa: F401
     ControllerNetworkMember,
     ControllerNetworkEffect,
 )
+
+from app.models.cluster_grant_scope import OrganizationGrantClusterScope  # noqa: F401

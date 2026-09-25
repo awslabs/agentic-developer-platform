@@ -77,7 +77,8 @@ class AssignmentRegistry:
                 SELECT w.id::text AS workspace_id, w.org_id::text AS domain_org_id,
                        w.namespace_name AS namespace, c.id::text AS cluster_id,
                        c.eks_cluster_arn AS cluster_arn, c.endpoint,
-                       l.expires_at AS controller_expires_at
+                       l.expires_at AS controller_expires_at,
+                       w.shared_cluster_id::text AS shared_cluster_id
                   FROM workspaces w
                   JOIN organizations o ON o.id=w.org_id
                   JOIN clusters c ON c.id=w.cluster_id AND c.org_id=w.org_id
@@ -92,6 +93,24 @@ class AssignmentRegistry:
                 holder,
                 operation.request.action,
             )
+            if row is not None:
+                row = dict(row)
+                shared = row.pop("shared_cluster_id")
+                if shared is not None:
+                    from .member_target import credential_target
+
+                    if shared != row["cluster_id"]:
+                        raise OperationRefused(
+                            "shared workspace cluster binding changed"
+                        )
+                    metadata, eligible = await credential_target(
+                        connection,
+                        workspace_id=lease.workspace_id,
+                        org_id=lease.org_id,
+                        scope="mutator",
+                    )
+                    row["membership_credential"] = metadata
+                    row["platform_eligible"] = eligible
         if row is None:
             raise OperationRefused(
                 "workspace registration or controller ownership lost"

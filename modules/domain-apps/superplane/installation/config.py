@@ -173,6 +173,7 @@ def validate(
         "cluster_dns_ip",
         "execution",
         "controller_profiles",
+        "credential_controller",
     }
     require(
         set(env) <= allowed,
@@ -182,6 +183,9 @@ def validate(
     from .execution import validate_execution
 
     validate_execution(env, lock)
+    from .credential_controller import validate as validate_credential_controller
+
+    validate_credential_controller(env, lock)
     require(
         env.get("image_execution", "docker") in {"docker", "cluster"},
         "image_execution must be docker or cluster",
@@ -364,9 +368,9 @@ def validate(
         # (`runner.py`), so an unrecognized head is as much a refusal as a stale one.
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
-        # #5925 advances it to 034 for `controller_provider_requests.region`.
+        # #6048 advances it to 038 for explicit cluster grant scopes.
         require(
-            head == "036_users_cognito_sub_per_org",
+            head == "038_cluster_grant_scopes",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})

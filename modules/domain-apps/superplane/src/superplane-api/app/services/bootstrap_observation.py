@@ -137,7 +137,8 @@ async def provisional_targets(db, *, org, connect):
         if cluster is not None and (
             cluster.org_id != org.id
             or (
-                cluster.workspace_id is not None
+                not identity.get("membership_generation")
+                and cluster.workspace_id is not None
                 and str(cluster.workspace_id) != workspace_id
             )
         ):
@@ -156,7 +157,24 @@ async def provisional_targets(db, *, org, connect):
             "bootstrap_org_id": authority.org_id,
             "registration_claim": claim,
             "provisional_observation": True,
+            "provisional": True,
         }
+        if identity.get("membership_generation"):
+            from app.routers.controller_management import reader_membership
+
+            reader = await reader_membership(
+                db, org.id, workspace_id, provisional_identity=identity
+            )
+            if (
+                reader is None
+                or cluster is None
+                or cluster.endpoint != observed["endpoint"]
+                or reader["membership_credential"]["cluster_arn"]
+                != authority.cluster_arn
+            ):
+                del targets[workspace_id]
+                continue
+            targets[workspace_id].update(reader)
     return list(targets.values())
 
 
@@ -230,8 +248,20 @@ async def verified_observation(db, *, org, target, snapshot):
                 "namespace",
             )
         }
+        if target.get("shared_membership") is True:
+            expected["membership_credential"] = target["membership_credential"]
+            credential_expiry = datetime.fromisoformat(
+                target["membership_credential"]["expires_at"].replace("Z", "+00:00")
+            )
+            if credential_expiry.tzinfo is None or credential_expiry <= now:
+                raise ValueError("bootstrap reader credential expired")
         if (
-            snapshot.get("mode") != "management"
+            snapshot.get("mode")
+            not in (
+                {"management", "governed"}
+                if target.get("shared_membership") is True
+                else {"management"}
+            )
             or snapshot.get("registry_ready") is not True
             or reconciled.tzinfo is None
             or expiry.tzinfo is None
@@ -258,7 +288,7 @@ async def verified_observation(db, *, org, target, snapshot):
         or expiry <= datetime.now(UTC)
     ):
         raise HTTPException(409, "Controller observation lease is stale")
-    return {
+    result = {
         "workspace_id": target["workspace_id"],
         "org_id": target["bootstrap_org_id"],
         "operation_id": target["bootstrap_operation_id"],
@@ -270,3 +300,6 @@ async def verified_observation(db, *, org, target, snapshot):
         "lease_expires_at": expiry,
         "target_status": "observed_execution_unavailable",
     }
+    if target.get("shared_membership") is True:
+        result["membership_credential"] = target["membership_credential"]
+    return result

@@ -459,3 +459,47 @@ def test_a_credential_arriving_through_any_field_is_refused(target, installation
         )
 
     assert store.finalized == []
+
+
+def test_shared_finalization_preserves_the_membership_reserved_before_namespace_creation(
+    target, installation
+):
+    from uuid import uuid4
+    from superplane_bootstrap.membership import SharedMembership
+
+    membership = SharedMembership.create(
+        org_id=target.org_id,
+        workspace_id=target.workspace_id,
+        cluster_id=str(uuid4()),
+        request_id=str(uuid4()),
+        cluster_arn=target.cluster_arn,
+        endpoint=target.endpoint,
+    )
+    store = FakeRegistrationStore()
+    reservation = reserve_registration(
+        store=store,
+        target=target,
+        namespace=membership.namespace,
+        membership=membership,
+    )
+    assert dict(reservation.identity)["membership_generation"] == membership.generation
+    actual_installation = dataclasses.replace(
+        installation, namespace=membership.namespace
+    )
+    arguments = dict(
+        store=store,
+        reservation=reservation,
+        target=target,
+        installation=actual_installation,
+        evidence=_evidence(namespace=membership.namespace),
+        readiness=_readiness(namespace=membership.namespace),
+        credential_reference_id=CREDENTIAL_ID,
+        contract_version=CONTRACT_VERSION,
+        screen=assert_no_secret_material,
+    )
+    with pytest.raises(BootstrapRefused, match="identity being registered differs"):
+        finalize_registration(**arguments)
+    completed = finalize_registration(**arguments, membership=membership)
+    assert completed.target.membership_generation == membership.generation
+    assert completed.target.namespace_uid == installation.namespace_uid
+    assert completed.target.cluster_placement == "shared"

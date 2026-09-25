@@ -123,6 +123,66 @@ class TestListWorkspaces:
         assert response.status_code in (401, 403)
 
 
+class TestListEligibleClusters:
+    """Test GET /workspaces?view=eligible-clusters — issue #6048."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, client):
+        response = await client.get("/workspaces?view=eligible-clusters")
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_legacy_org_token_cannot_discover_shared_clusters(
+        self, client
+    ):
+        from app.models.cluster import Cluster
+        from app.models.organization import Organization
+
+        org_id = uuid.uuid4()
+        other_org_id = uuid.uuid4()
+        shared_cluster_id = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add_all(
+                [
+                    Organization(id=org_id, name="org-eligible"),
+                    Organization(id=other_org_id, name="org-other-eligible"),
+                ]
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    Cluster(
+                        id=shared_cluster_id,
+                        org_id=org_id,
+                        name="shared-eligible",
+                        status="Ready",
+                        sharing_enabled=True,
+                        eks_cluster_arn="arn:aws:eks:us-east-1:000000000000:cluster/shared-eligible",
+                    ),
+                    Cluster(
+                        id=uuid.uuid4(),
+                        org_id=org_id,
+                        name="dedicated-not-eligible",
+                        status="Ready",
+                        sharing_enabled=False,
+                    ),
+                    Cluster(
+                        id=uuid.uuid4(),
+                        org_id=other_org_id,
+                        name="other-org-shared",
+                        status="Ready",
+                        sharing_enabled=True,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        response = await client.get(
+            "/workspaces?view=eligible-clusters", headers=_auth_header(org_id)
+        )
+        assert response.status_code == 403
+
+
 class TestGetWorkspace:
     """Test GET /workspaces/{id}."""
 
@@ -305,6 +365,106 @@ class TestWorkspaceSchemas:
             operation_id=uuid.uuid4(), name="my-ws", isolation_mode="namespace"
         )
         assert req.account is None
+
+
+class TestClusterPlacementChoice:
+    """Issue #6048: the explicit dedicated/shared placement choice at creation."""
+
+    def test_default_placement_is_dedicated(self):
+        """An old client that never heard of shared placement keeps dedicated behavior."""
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        req = CreateWorkspaceRequest(operation_id=uuid.uuid4(), name="my-workspace")
+        assert req.cluster_placement == "dedicated"
+        assert req.shared_cluster_id is None
+
+    def test_shared_placement_requires_a_cluster_id(self):
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError, match="shared_cluster_id"):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="shared",
+            )
+
+    def test_dedicated_placement_forbids_a_cluster_id(self):
+        """Naming a cluster on the dedicated path must not silently opt into sharing it."""
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError, match="cluster_placement=shared"):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="dedicated",
+                shared_cluster_id=uuid.uuid4(),
+            )
+
+    def test_shared_placement_with_a_cluster_id_is_valid(self):
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        cluster_id = uuid.uuid4()
+        req = CreateWorkspaceRequest(
+            operation_id=uuid.uuid4(),
+            name="my-workspace",
+            cluster_placement="shared",
+            shared_cluster_id=cluster_id,
+        )
+        assert req.cluster_placement == "shared"
+        assert req.shared_cluster_id == cluster_id
+
+    def test_invalid_placement_value_rejected(self):
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="borrowed",
+            )
+
+
+class TestSharedPlacementPreviewIsExplicitlyUnavailable:
+    """Issue #6048: preview must fail closed for shared placement, not fall
+
+    through to dedicated resolution. The schema, `cluster_sharing.py`'s
+    eligibility resolver and canonical bootstrap registration all support
+    shared placement; `onboarding.py::preview`'s execution-step generation does
+    not yet resolve a shared target. Silently proceeding with dedicated
+    resolution would hand back a plan for a cluster the caller never asked
+    for — this checks the explicit refusal that prevents that.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shared_placement_is_refused_before_touching_the_database_or_principal(
+        self, monkeypatch
+    ):
+        from app.schemas.workspace import CreateWorkspaceRequest
+        from app.services import onboarding
+        from app.services.provisioning import ProvisioningUnavailable
+
+        # `route_preview` (autouse, module-level) replaces `onboarding.preview`
+        # with a mock for every other test in this file. Undo that here — this
+        # test's whole point is the REAL function's early refusal, which the
+        # mock does not implement and would otherwise mask.
+        monkeypatch.undo()
+
+        body = CreateWorkspaceRequest(
+            name="my-workspace",
+            cluster_placement="shared",
+            shared_cluster_id=uuid.uuid4(),
+        )
+        # `db=None` and no acting principal set: if the refusal did not run
+        # before the first database/principal access, this would raise a
+        # different, less specific error (or hang), not `ProvisioningUnavailable`.
+        with pytest.raises(ProvisioningUnavailable, match="not yet executable"):
+            await onboarding.preview(None, uuid.uuid4(), body)
 
 
 class TestWorkspaceDisplayName:
