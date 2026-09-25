@@ -122,6 +122,9 @@ data:
 
   # --- File paths ---
   CLONE_BASE: "/platform-data/repos"
+  # Bounded local POSIX scratch for Git clone/diff/worktree operations.
+  # Must NOT be an S3 Mountpoint path — Git locking/random writes fail there.
+  SCRATCH_BASE: "/tmp"
   CODE_INDEX_DIR: "/platform-data/code-indexes"
   LEARNING_DIR: "/platform-data/learning"
   STATE_DIR: "/platform-data"

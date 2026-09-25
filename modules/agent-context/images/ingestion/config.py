@@ -88,6 +88,8 @@ class Settings(BaseSettings):
 
     # --- File paths -----------------------------------------------------------
     clone_base: str = "/platform-data/repos"
+    # Local POSIX scratch for Git clone/diff/worktree ops (never S3 Mountpoint)
+    scratch_base: str = "/tmp"
     code_index_dir: str = "/platform-data/code-indexes"
     learning_dir: str = "/platform-data/learning"
     state_dir: str = "/platform-data"
