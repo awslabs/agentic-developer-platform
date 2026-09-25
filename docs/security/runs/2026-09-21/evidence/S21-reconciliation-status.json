@@ -1,0 +1,1798 @@
+{
+  "snapshot_at": "2026-09-25T08:57:52.624237+00:00",
+  "repository_revision": "209762ff0",
+  "source_plan_commit": "7b0004eda47a82c0d33a5f78f699ca83fe5053c2",
+  "source_findings_commit": "3193c78b167f583eed5026c582ab58794c88c34e",
+  "final_scan_status": "pending",
+  "counts": {
+    "aws_closed": 19,
+    "daily_closed": 17,
+    "total_packages": 45
+  },
+  "packages": [
+    {
+      "key": "S01",
+      "issue": 5600,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5725,
+          "state": "MERGED",
+          "merge_commit": "76c91c245c7c0392c2a95c0164a6fe8c90354680"
+        }
+      ]
+    },
+    {
+      "key": "S02",
+      "issue": 5601,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5783,
+          "state": "MERGED",
+          "merge_commit": "27a5b943cb4081152069af76d9f5a90b18c918db"
+        }
+      ]
+    },
+    {
+      "key": "S03",
+      "issue": 5602,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5724,
+          "state": "MERGED",
+          "merge_commit": "c742c08750f0fbd9cce485560868d00600d17f28"
+        }
+      ]
+    },
+    {
+      "key": "S04",
+      "issue": 5603,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5774,
+          "state": "MERGED",
+          "merge_commit": "ebde4b403cf8050e5695cce3ad64b62215dafba6"
+        }
+      ]
+    },
+    {
+      "key": "S05",
+      "issue": 5604,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5704,
+          "state": "MERGED",
+          "merge_commit": "9614f88191b9c03efdad80c0b6068c4e2a855862"
+        }
+      ]
+    },
+    {
+      "key": "S06",
+      "issue": 5605,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5701,
+          "state": "MERGED",
+          "merge_commit": "ccff2bea442a4923bc9cd86e62a0646cc7a57662"
+        }
+      ]
+    },
+    {
+      "key": "S07",
+      "issue": 5606,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5706,
+          "state": "MERGED",
+          "merge_commit": "32c06c1ae18928f527d2a83c16a821fc2c047846"
+        }
+      ]
+    },
+    {
+      "key": "S08",
+      "issue": 5607,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5753,
+          "state": "MERGED",
+          "merge_commit": "4275564cb2dc8dce222cdf5f0437f54421eeb24e"
+        }
+      ]
+    },
+    {
+      "key": "S09",
+      "issue": 5608,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5765,
+          "state": "MERGED",
+          "merge_commit": "c2553b5f40e8004c121fd5cb3545bbf4c584daed"
+        }
+      ]
+    },
+    {
+      "key": "S10",
+      "issue": 5609,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5890,
+          "state": "MERGED",
+          "merge_commit": "d0b8089d8a6395fce67feab42f05758bde06094a"
+        },
+        {
+          "number": 6027,
+          "state": "MERGED",
+          "merge_commit": "2eee18c20fd57c58f294336c251af8322c00e51b"
+        }
+      ]
+    },
+    {
+      "key": "S11",
+      "issue": 5610,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 6081,
+          "state": "MERGED",
+          "merge_commit": "7f1c8d7c78a6744467b541dcfd28f8fb0fbd8566"
+        }
+      ]
+    },
+    {
+      "key": "S12",
+      "issue": 5611,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 6062,
+          "state": "MERGED",
+          "merge_commit": "700bacb923adefcaadc0a8d33a6e1954c5d4824f"
+        },
+        {
+          "number": 6084,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "S13",
+      "issue": 5612,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 6053,
+          "state": "MERGED",
+          "merge_commit": "85d8e6e6ef77bd14f7a252df2952683150f515e5"
+        },
+        {
+          "number": 5959,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "S14",
+      "issue": 5613,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5850,
+          "state": "MERGED",
+          "merge_commit": "51a78e34b31771d05d58dd795ea2827e2dc7db64"
+        },
+        {
+          "number": 6066,
+          "state": "MERGED",
+          "merge_commit": "e0ba2fad854861c7967aa8843720c9511ac5bc14"
+        }
+      ]
+    },
+    {
+      "key": "S15",
+      "issue": 5614,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5851,
+          "state": "MERGED",
+          "merge_commit": "c180d10ed2ad247d1f317a72add1fbaed42c6370"
+        },
+        {
+          "number": 6043,
+          "state": "MERGED",
+          "merge_commit": "79aa4134266d850a5aa8229cd2f72906c7f8dd30"
+        },
+        {
+          "number": 6060,
+          "state": "MERGED",
+          "merge_commit": "35953b3674d86631c2f4f58b92ad6c13e1aa294b"
+        },
+        {
+          "number": 6068,
+          "state": "MERGED",
+          "merge_commit": "7ffef8f638f2dfa64114b4a4698cda57f28d9a29"
+        },
+        {
+          "number": 6069,
+          "state": "MERGED",
+          "merge_commit": "1ca9ee5078ab9cedc9a2ad33dcc273b86022ef07"
+        },
+        {
+          "number": 6079,
+          "state": "MERGED",
+          "merge_commit": "b361419c0d3eaf20727f422e3dadccd2dab1ed4f"
+        }
+      ]
+    },
+    {
+      "key": "S16",
+      "issue": 5615,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5857,
+          "state": "MERGED",
+          "merge_commit": "0ea010afe13d5d9c51eb1aa6b4b6872f06af322f"
+        },
+        {
+          "number": 5987,
+          "state": "MERGED",
+          "merge_commit": "228b01850d4e32825c50d45b6d87426cfbded2c5"
+        },
+        {
+          "number": 5995,
+          "state": "MERGED",
+          "merge_commit": "c614fca7a37e4a9448c19d7c038ff48d4544d3e6"
+        }
+      ]
+    },
+    {
+      "key": "S17",
+      "issue": 5616,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5758,
+          "state": "MERGED",
+          "merge_commit": "eed0fbe7866bc8a97bfe99f5074e84d250bb22fe"
+        }
+      ]
+    },
+    {
+      "key": "S18",
+      "issue": 5617,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 6093,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "S19",
+      "issue": 5618,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5756,
+          "state": "MERGED",
+          "merge_commit": "42fbe6cdace21b899caecd2d56ad041ba2195602"
+        }
+      ]
+    },
+    {
+      "key": "S20",
+      "issue": 5619,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5702,
+          "state": "MERGED",
+          "merge_commit": "956a60da9b8b075e4e401d9af4f7d04d9945bca0"
+        }
+      ]
+    },
+    {
+      "key": "S21",
+      "issue": 5620,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 5957,
+          "state": "MERGED",
+          "merge_commit": "8f21f1759dcf0b3dc73db4b004ea46f64be48896"
+        },
+        {
+          "number": 6090,
+          "state": "MERGED",
+          "merge_commit": "209762ff0f8677814ab8354e1904d3d2461c6311"
+        },
+        {
+          "number": 6092,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "A01",
+      "issue": 5653,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5737,
+          "state": "MERGED",
+          "merge_commit": "6455f8b5c7cb962078deaa3c6fc0b6dd484c3fb5"
+        }
+      ]
+    },
+    {
+      "key": "A02",
+      "issue": 5682,
+      "depends_on": [
+        "A01",
+        "A04"
+      ],
+      "contributes_to": [
+        "A03"
+      ],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5786,
+          "state": "MERGED",
+          "merge_commit": "3cb303b00ac50cf98586092c7e5d0119b8b822ce"
+        }
+      ]
+    },
+    {
+      "key": "A03",
+      "issue": 5655,
+      "depends_on": [
+        "A02",
+        "A06",
+        "A12",
+        "A14"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 6088,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "A04",
+      "issue": 5683,
+      "depends_on": [],
+      "contributes_to": [
+        "A05"
+      ],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5739,
+          "state": "MERGED",
+          "merge_commit": "a5f3570cfda0175db9426459a927e920747a65af"
+        }
+      ]
+    },
+    {
+      "key": "A05",
+      "issue": 5656,
+      "depends_on": [
+        "A01",
+        "A04"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5787,
+          "state": "MERGED",
+          "merge_commit": "058745bc4a59fffea16508558975ec63ce06400a"
+        }
+      ]
+    },
+    {
+      "key": "A06",
+      "issue": 5658,
+      "depends_on": [
+        "A01"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5790,
+          "state": "MERGED",
+          "merge_commit": "e6e8f3226afd9eac356e0fedc20ce5416b422894"
+        }
+      ]
+    },
+    {
+      "key": "A07",
+      "issue": 5660,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5742,
+          "state": "MERGED",
+          "merge_commit": "a38cecbc8cbf1a485571830da8fcbef35c1f6aab"
+        }
+      ]
+    },
+    {
+      "key": "A08",
+      "issue": 5662,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5721,
+          "state": "MERGED",
+          "merge_commit": "1786f856c1852084edc4fb848e2024f072520567"
+        }
+      ]
+    },
+    {
+      "key": "A09",
+      "issue": 5663,
+      "depends_on": [
+        "A01",
+        "A10"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5950,
+          "state": "MERGED",
+          "merge_commit": "207518e4accf89aecbda2afd242c3c6c91e1eef7"
+        },
+        {
+          "number": 6027,
+          "state": "MERGED",
+          "merge_commit": "2eee18c20fd57c58f294336c251af8322c00e51b"
+        }
+      ]
+    },
+    {
+      "key": "A10",
+      "issue": 5664,
+      "depends_on": [
+        "A05"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5848,
+          "state": "MERGED",
+          "merge_commit": "d23d60dcb1ba6a9dc90570f41e8f72e0afc9a017"
+        }
+      ]
+    },
+    {
+      "key": "A11",
+      "issue": 5666,
+      "depends_on": [
+        "A10"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 5959,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "A12",
+      "issue": 5668,
+      "depends_on": [
+        "A11"
+      ],
+      "contributes_to": [
+        "A03"
+      ],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 6087,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "A13",
+      "issue": 5669,
+      "depends_on": [
+        "A11"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 6093,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "A14",
+      "issue": 5670,
+      "depends_on": [
+        "A13"
+      ],
+      "contributes_to": [
+        "A03"
+      ],
+      "current_issue_state": "OPEN",
+      "review_references": [
+        {
+          "number": 6085,
+          "state": "OPEN",
+          "merge_commit": null
+        }
+      ]
+    },
+    {
+      "key": "A15",
+      "issue": 5671,
+      "depends_on": [
+        "A02"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5826,
+          "state": "MERGED",
+          "merge_commit": "20612976bbd89211ce76ffa60d8a265757382040"
+        }
+      ]
+    },
+    {
+      "key": "A16",
+      "issue": 5672,
+      "depends_on": [],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5762,
+          "state": "MERGED",
+          "merge_commit": "69bd15f40ceeaa1c95cc8834d88f0a4245e5b4f3"
+        }
+      ]
+    },
+    {
+      "key": "A17",
+      "issue": 5673,
+      "depends_on": [
+        "A02"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5824,
+          "state": "MERGED",
+          "merge_commit": "c4635f45a26598082b20bdb0c492067b8b14c827"
+        }
+      ]
+    },
+    {
+      "key": "A18",
+      "issue": 5674,
+      "depends_on": [
+        "A19",
+        "A24"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5767,
+          "state": "MERGED",
+          "merge_commit": "d264659304550ef5134ab2b78f502bb6852cda53"
+        }
+      ]
+    },
+    {
+      "key": "A19",
+      "issue": 5684,
+      "depends_on": [],
+      "contributes_to": [
+        "A18"
+      ],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5741,
+          "state": "MERGED",
+          "merge_commit": "aacfabfac15fad38f16cfc7bff6f5d51f10d7f00"
+        }
+      ]
+    },
+    {
+      "key": "A20",
+      "issue": 5675,
+      "depends_on": [
+        "A21"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5768,
+          "state": "MERGED",
+          "merge_commit": "70c8d6b42700537f7dff04fb13f170043cd0c524"
+        }
+      ]
+    },
+    {
+      "key": "A21",
+      "issue": 5685,
+      "depends_on": [],
+      "contributes_to": [
+        "A20"
+      ],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5755,
+          "state": "MERGED",
+          "merge_commit": "a6fcb67e43f729b27b2fea69cc9876920c92f8cd"
+        }
+      ]
+    },
+    {
+      "key": "A22",
+      "issue": 5676,
+      "depends_on": [
+        "A04",
+        "A23"
+      ],
+      "contributes_to": [],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5785,
+          "state": "MERGED",
+          "merge_commit": "8d9e767e139508ec8af0f750f0f111c905c1b931"
+        }
+      ]
+    },
+    {
+      "key": "A23",
+      "issue": 5686,
+      "depends_on": [],
+      "contributes_to": [
+        "A22"
+      ],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5726,
+          "state": "MERGED",
+          "merge_commit": "e9ef11f358b485b561b1b6aed98936be5191fa4c"
+        }
+      ]
+    },
+    {
+      "key": "A24",
+      "issue": 5687,
+      "depends_on": [],
+      "contributes_to": [
+        "A18"
+      ],
+      "current_issue_state": "CLOSED",
+      "review_references": [
+        {
+          "number": 5708,
+          "state": "MERGED",
+          "merge_commit": "4457a3b4535a48e6ab2d417e8826544a6ebda866"
+        }
+      ]
+    }
+  ],
+  "aws_findings": [
+    {
+      "finding_id": "f-042c16e1-fe62-4a70-8bd9-cc283c652004",
+      "owner": "A01",
+      "issue": 5653,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-1473858b-602e-481f-bf8e-10a166560fd5",
+      "owner": "A01",
+      "issue": 5653,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-0054d7ee-bbe7-4b3d-8f88-91695dbc247f",
+      "owner": "A03",
+      "issue": 5655,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-16d7f58c-3049-4afc-8715-99b824be7108",
+      "owner": "A03",
+      "issue": 5655,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-93db06c3-561a-49cf-8f42-16c66137301c",
+      "owner": "A03",
+      "issue": 5655,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-4fcee527-02cd-46d8-8036-7672b9375688",
+      "owner": "A05",
+      "issue": 5656,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-9289cf29-ffbf-4f94-820e-ad446874fa1a",
+      "owner": "A05",
+      "issue": 5656,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-1416bf9f-8e69-4b54-a47f-a64e3ff8af95",
+      "owner": "A06",
+      "issue": 5658,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-2c92584b-b7f1-47d3-97ce-68008910aa21",
+      "owner": "A06",
+      "issue": 5658,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-3633a91e-c67a-4a45-b255-5701159813f1",
+      "owner": "A06",
+      "issue": 5658,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-5065d163-b429-4a57-9d3d-a8b9cec7e30c",
+      "owner": "A06",
+      "issue": 5658,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-83ad0918-2ceb-44b3-a153-096829422ed5",
+      "owner": "A06",
+      "issue": 5658,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-a9f8dda7-7bce-48fc-a001-a95faffa373a",
+      "owner": "A06",
+      "issue": 5658,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-afbff07b-0f5a-406c-8185-3a692aa29858",
+      "owner": "A06",
+      "issue": 5658,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-10be6bbc-1e9c-4e97-ac46-b5d56f5d3938",
+      "owner": "A07",
+      "issue": 5660,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-1c42a409-3bee-41bb-97c8-868d035090e2",
+      "owner": "A07",
+      "issue": 5660,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-ee68a4da-688e-42aa-b973-854ee12bea34",
+      "owner": "A07",
+      "issue": 5660,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-a7de2523-ae6a-4230-8ed7-cf4380d30ade",
+      "owner": "A08",
+      "issue": 5662,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-37867072-eabe-4eaf-9b67-946581e17141",
+      "owner": "A09",
+      "issue": 5663,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-5716ea91-dddb-4cb1-9555-7dedb75e9f44",
+      "owner": "A09",
+      "issue": 5663,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-5efb8f93-04db-442b-8879-d01dd7bf0bc8",
+      "owner": "A09",
+      "issue": 5663,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-7c46ead6-06bf-4726-94a7-b09ea88efbb5",
+      "owner": "A09",
+      "issue": 5663,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-32c4047a-643a-45cc-821a-e45ca5586239",
+      "owner": "A10",
+      "issue": 5664,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-5726d42e-1699-417a-8cd1-7ef62b29e0f5",
+      "owner": "A10",
+      "issue": 5664,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-a265c73e-f2e5-4a41-a7b8-5de3dcd63744",
+      "owner": "A10",
+      "issue": 5664,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-f72357f3-911b-4046-94fa-b20a30b3286b",
+      "owner": "A10",
+      "issue": 5664,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-169973a3-5eaa-4e21-aab8-2511d308cb38",
+      "owner": "A11",
+      "issue": 5666,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-47879254-cca8-4e12-baf8-2db1d18c78f7",
+      "owner": "A11",
+      "issue": 5666,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-7aa10bca-c6d1-44e2-9329-acd0e51411e4",
+      "owner": "A11",
+      "issue": 5666,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-f070371e-2653-48e9-bac3-32e671285e7f",
+      "owner": "A11",
+      "issue": 5666,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-4bb47eec-8e4f-4496-8bf7-59019021e065",
+      "owner": "A12",
+      "issue": 5668,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-a16723b6-5efa-465f-9ae9-7e0ce8029013",
+      "owner": "A12",
+      "issue": 5668,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-0c88fc4e-8abd-4b23-b913-27360a71a31c",
+      "owner": "A13",
+      "issue": 5669,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-0ff37a38-1f7f-4892-8bdc-e1b182995d64",
+      "owner": "A13",
+      "issue": 5669,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-37399a05-b05a-463c-8309-21fd16b284ec",
+      "owner": "A14",
+      "issue": 5670,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-f9e5efa9-7a0e-4568-b048-c2bf53eab3c3",
+      "owner": "A14",
+      "issue": 5670,
+      "owner_issue_state": "OPEN"
+    },
+    {
+      "finding_id": "f-96315bea-5e27-4d48-aacb-ca91301cf971",
+      "owner": "A15",
+      "issue": 5671,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-f27c7448-7885-4cf7-abf5-4b89f96260a3",
+      "owner": "A15",
+      "issue": 5671,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-5c6b7efb-9108-4bad-bc96-bef27072cb92",
+      "owner": "A16",
+      "issue": 5672,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-80675759-b1d9-4f93-a7a0-4691685aeb12",
+      "owner": "A16",
+      "issue": 5672,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-93177516-24d1-451e-bfd1-ddd2e3c60048",
+      "owner": "A17",
+      "issue": 5673,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-51343273-7105-40c2-90e7-8011a508e996",
+      "owner": "A18",
+      "issue": 5674,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-c47fb5bc-a9e9-4927-972d-768be914c047",
+      "owner": "A18",
+      "issue": 5674,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-50fd079e-3650-4184-87ae-2bdd91b19bab",
+      "owner": "A20",
+      "issue": 5675,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-b6bc5a6d-433f-4be1-9a72-9b824172c155",
+      "owner": "A20",
+      "issue": 5675,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-ac1f6bcf-d79b-4411-a399-25d336eee878",
+      "owner": "A22",
+      "issue": 5676,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "finding_id": "f-fe6aaade-4cf3-4fb2-adbf-4c1942fef222",
+      "owner": "A22",
+      "issue": 5676,
+      "owner_issue_state": "CLOSED"
+    }
+  ],
+  "source_rated_occurrences": [
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=1",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=22",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=25",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=26",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=47",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=53",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=54",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-controller.sarif|ri=55",
+      "owner": "S01",
+      "issue": 5600,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/modules-domain-apps-superplane-src-superplane-api.sarif|ri=94",
+      "owner": "S02",
+      "issue": 5601,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/superplane-skypilot-api.sarif|ri=104",
+      "owner": "S03",
+      "issue": 5602,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/superplane-skypilot-api.sarif|ri=440",
+      "owner": "S03",
+      "issue": 5602,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/superplane-skypilot-api.sarif|ri=442",
+      "owner": "S03",
+      "issue": 5602,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/superplane-skypilot-api.sarif|ri=444",
+      "owner": "S03",
+      "issue": 5602,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "grype|superplane/grype/superplane-skypilot-api.sarif|ri=448",
+      "owner": "S03",
+      "issue": 5602,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2066",
+      "owner": "S04",
+      "issue": 5603,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2178",
+      "owner": "S04",
+      "issue": 5603,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2180",
+      "owner": "S04",
+      "issue": 5603,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2243",
+      "owner": "S04",
+      "issue": 5603,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2245",
+      "owner": "S04",
+      "issue": 5603,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2347",
+      "owner": "S05",
+      "issue": 5604,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2348",
+      "owner": "S05",
+      "issue": 5604,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=2418",
+      "owner": "S05",
+      "issue": 5604,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "bandit|original/bandit/bandit-results.sarif|ri=8712",
+      "owner": "S08",
+      "issue": 5607,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=758",
+      "owner": "S09",
+      "issue": 5608,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/agent-factory/agent|brace-expansion",
+      "owner": "S06",
+      "issue": 5605,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/agent-factory/agent|fast-uri",
+      "owner": "S06",
+      "issue": 5605,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/agent-factory/agent|ip-address",
+      "owner": "S06",
+      "issue": 5605,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/agent-factory/agent|js-yaml",
+      "owner": "S06",
+      "issue": 5605,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/gateway/frontend|brace-expansion",
+      "owner": "S07",
+      "issue": 5606,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/gateway/frontend|browserslist",
+      "owner": "S07",
+      "issue": 5606,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/gateway/frontend|js-yaml",
+      "owner": "S07",
+      "issue": 5606,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/gateway/frontend|nanoid",
+      "owner": "S07",
+      "issue": 5606,
+      "owner_issue_state": "CLOSED"
+    },
+    {
+      "selector": "npm-audit|modules/gateway/frontend|undici",
+      "owner": "S07",
+      "issue": 5606,
+      "owner_issue_state": "CLOSED"
+    }
+  ],
+  "older_tickets": [
+    {
+      "issue": 4701,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S10",
+          "issue": 5609,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4702,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S12",
+          "issue": 5611,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "issue": 4703,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S11",
+          "issue": 5610,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4704,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S11",
+          "issue": 5610,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4706,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S13",
+          "issue": 5612,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "issue": 4707,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S13",
+          "issue": 5612,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "issue": 4709,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S18",
+          "issue": 5617,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "issue": 4710,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S18",
+          "issue": 5617,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "issue": 4718,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S15",
+          "issue": 5614,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4719,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S15",
+          "issue": 5614,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4720,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S15",
+          "issue": 5614,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4722,
+      "state": "CLOSED",
+      "owners": [
+        {
+          "key": "S16",
+          "issue": 5615,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4724,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S12",
+          "issue": 5611,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "issue": 4725,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S14",
+          "issue": 5613,
+          "state": "CLOSED"
+        },
+        {
+          "key": "S13",
+          "issue": 5612,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "issue": 4729,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S17",
+          "issue": 5616,
+          "state": "CLOSED"
+        }
+      ]
+    },
+    {
+      "issue": 4730,
+      "state": "OPEN",
+      "owners": [
+        {
+          "key": "S17",
+          "issue": 5616,
+          "state": "CLOSED"
+        }
+      ]
+    }
+  ],
+  "s20_retained": {
+    "path": "triage/s20-dispositions.json",
+    "sha256": "42838f1a59611094a2ec6f60c4c8c87de629da170059761b2783abc4771e62e9",
+    "reconciliation": {
+      "source_semgrep": 234,
+      "source_checkov": 626,
+      "source_total": 860,
+      "dispositioned_total": 860,
+      "unique_keys": 860,
+      "unaccounted": 0
+    },
+    "owner_counts": {
+      "S20-reviewed": 464,
+      "S12": 27,
+      "S14": 27,
+      "FOLLOWON-C": 4,
+      "S17": 4,
+      "FOLLOWON-G": 1,
+      "FOLLOWON-H": 1,
+      "FOLLOWON-D-IMDSV2": 1,
+      "S21": 4,
+      "FOLLOWON-D-SECRET-ROTATION": 15,
+      "FOLLOWON-D-DEFAULT-SG": 3,
+      "FOLLOWON-E": 244,
+      "FOLLOWON-F": 41,
+      "FOLLOWON-I": 8,
+      "FOLLOWON-A": 10,
+      "FOLLOWON-B": 6
+    },
+    "verdict_counts": {
+      "false-positive-partial-backend": 12,
+      "routed-existing-owner": 61,
+      "accepted-risk-required": 31,
+      "accepted-risk-documented": 5,
+      "accepted-risk-low": 139,
+      "not-security": 60,
+      "false-positive-by-design": 11,
+      "false-positive-guarded": 5,
+      "false-positive-resolved-configuration": 3,
+      "needs-followon": 335,
+      "false-positive-fixture": 51,
+      "not-currently-reachable": 1,
+      "intended-behavior": 3,
+      "false-positive-nonsensitive": 43,
+      "false-positive-callsite-controlled": 2,
+      "false-positive-fixed-paths": 12,
+      "false-positive-constrained-context": 14,
+      "false-positive-pattern-match": 6,
+      "false-positive-bound-params": 36,
+      "false-positive-intended": 2,
+      "false-positive-operator-tooling": 28
+    }
+  },
+  "issue_states": [
+    {
+      "number": 5600,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T01:29:18Z"
+    },
+    {
+      "number": 5601,
+      "state": "CLOSED",
+      "closedAt": "2026-09-23T10:35:48Z"
+    },
+    {
+      "number": 5602,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T13:36:09Z"
+    },
+    {
+      "number": 5603,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T20:54:51Z"
+    },
+    {
+      "number": 5604,
+      "state": "CLOSED",
+      "closedAt": "2026-09-21T07:23:55Z"
+    },
+    {
+      "number": 5605,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T09:56:50Z"
+    },
+    {
+      "number": 5606,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T19:00:28Z"
+    },
+    {
+      "number": 5607,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T10:51:25Z"
+    },
+    {
+      "number": 5608,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T19:00:32Z"
+    },
+    {
+      "number": 5609,
+      "state": "CLOSED",
+      "closedAt": "2026-09-25T08:00:37Z"
+    },
+    {
+      "number": 5610,
+      "state": "CLOSED",
+      "closedAt": "2026-09-25T08:50:00Z"
+    },
+    {
+      "number": 5611,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5612,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5613,
+      "state": "CLOSED",
+      "closedAt": "2026-09-25T08:00:36Z"
+    },
+    {
+      "number": 5614,
+      "state": "CLOSED",
+      "closedAt": "2026-09-25T08:54:29Z"
+    },
+    {
+      "number": 5615,
+      "state": "CLOSED",
+      "closedAt": "2026-09-25T05:03:24Z"
+    },
+    {
+      "number": 5616,
+      "state": "CLOSED",
+      "closedAt": "2026-09-24T07:13:07Z"
+    },
+    {
+      "number": 5617,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5618,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T19:00:35Z"
+    },
+    {
+      "number": 5619,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T20:17:50Z"
+    },
+    {
+      "number": 5620,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5653,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T20:43:14Z"
+    },
+    {
+      "number": 5682,
+      "state": "CLOSED",
+      "closedAt": "2026-09-23T11:02:43Z"
+    },
+    {
+      "number": 5655,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5683,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T20:09:09Z"
+    },
+    {
+      "number": 5656,
+      "state": "CLOSED",
+      "closedAt": "2026-09-23T10:46:07Z"
+    },
+    {
+      "number": 5658,
+      "state": "CLOSED",
+      "closedAt": "2026-09-23T21:56:33Z"
+    },
+    {
+      "number": 5660,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T20:29:18Z"
+    },
+    {
+      "number": 5662,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T20:36:30Z"
+    },
+    {
+      "number": 5663,
+      "state": "CLOSED",
+      "closedAt": "2026-09-25T08:49:03Z"
+    },
+    {
+      "number": 5664,
+      "state": "CLOSED",
+      "closedAt": "2026-09-24T19:28:46Z"
+    },
+    {
+      "number": 5666,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5668,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5669,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5670,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 5671,
+      "state": "CLOSED",
+      "closedAt": "2026-09-24T08:26:48Z"
+    },
+    {
+      "number": 5672,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T20:14:46Z"
+    },
+    {
+      "number": 5673,
+      "state": "CLOSED",
+      "closedAt": "2026-09-24T08:27:01Z"
+    },
+    {
+      "number": 5674,
+      "state": "CLOSED",
+      "closedAt": "2026-09-24T06:44:43Z"
+    },
+    {
+      "number": 5684,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T19:00:39Z"
+    },
+    {
+      "number": 5675,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T21:02:36Z"
+    },
+    {
+      "number": 5685,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T12:41:20Z"
+    },
+    {
+      "number": 5676,
+      "state": "CLOSED",
+      "closedAt": "2026-09-23T10:42:59Z"
+    },
+    {
+      "number": 5686,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T07:29:27Z"
+    },
+    {
+      "number": 5687,
+      "state": "CLOSED",
+      "closedAt": "2026-09-22T19:00:43Z"
+    },
+    {
+      "number": 4701,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4702,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4703,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4704,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4706,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4707,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4709,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4710,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4718,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4719,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4720,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4722,
+      "state": "CLOSED",
+      "closedAt": "2026-09-25T05:03:27Z"
+    },
+    {
+      "number": 4724,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4725,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4729,
+      "state": "OPEN",
+      "closedAt": null
+    },
+    {
+      "number": 4730,
+      "state": "OPEN",
+      "closedAt": null
+    }
+  ],
+  "reference_corrections": {
+    "A13/S18": "PR #6093 verified OPEN after snapshot; original issue states retained."
+  }
+}
