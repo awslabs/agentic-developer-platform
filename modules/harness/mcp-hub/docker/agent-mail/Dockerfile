@@ -50,6 +50,9 @@ RUN pip uninstall -y ruff diskcache 2>/dev/null || true
 # after the runtime constraints upgrade them. Keep only the installed runtime.
 RUN rm -rf /root/.cache/uv /root/.cache/pip
 
+COPY stdlib-security /tmp/stdlib-security
+RUN python /tmp/stdlib-security/apply.py && rm -rf /tmp/stdlib-security
+
 COPY patch_naive_datetimes.py /tmp/patch_naive_datetimes.py
 RUN python /tmp/patch_naive_datetimes.py && rm /tmp/patch_naive_datetimes.py
 
