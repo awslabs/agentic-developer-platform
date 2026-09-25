@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import os
 import sys
-from urllib.parse import urlparse
-from urllib.request import Request, build_opener, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, build_opener
+
+from lib.authenticated_http import open_authenticated as urlopen
 
 
 def _get_config() -> tuple[str, str | None, str, str, str, bool]:
