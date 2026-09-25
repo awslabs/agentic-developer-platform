@@ -103,10 +103,12 @@ class TestWorkspaceTargetClusterPlacement:
         target = WorkspaceTarget(**self._base, cluster_placement="shared")
         assert target.cluster_placement == "shared"
 
-    def test_cluster_placement_is_not_part_of_the_immutable_identity(self):
-        """The rebinding refusal must keep comparing only cluster/tenant identity —
-        adding placement to it would make a dedicated->shared re-registration read
-        as a conflict rather than the explicitly authorized migration it is."""
+    def test_cluster_placement_is_part_of_the_immutable_identity(self):
         dedicated = WorkspaceTarget(**self._base, cluster_placement="dedicated")
         shared = WorkspaceTarget(**self._base, cluster_placement="shared")
-        assert dedicated.immutable_identity == shared.immutable_identity
+        assert dedicated.immutable_identity != shared.immutable_identity
+
+    def test_dedicated_registration_preserves_historical_document_shape(self):
+        from superplane_bootstrap.registry import _target_mapping
+
+        assert _target_mapping(WorkspaceTarget(**self._base)) == self._base

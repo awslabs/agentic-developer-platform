@@ -111,6 +111,7 @@ _IMMUTABLE_FIELDS: tuple[str, ...] = (
     "cluster_arn",
     "namespace",
     "namespace_uid",
+    "cluster_placement",
 )
 
 # The subset of the immutable identity that is known BEFORE the cluster is mutated,
@@ -176,12 +177,8 @@ class WorkspaceTarget:
     cluster_ownership: str
     credential_reference_id: str
     contract_version: str
-    # Issue #6048. Defaults to "dedicated" so every existing caller that never
-    # names this field — including every test fixture that predates it —
-    # constructs the exact same record it always did. Deliberately EXCLUDED from
-    # `_IMMUTABLE_FIELDS`/`_RESERVATION_FIELDS`: those drive the pre-mutation
-    # rebinding refusal, which must keep comparing only cluster/tenant identity.
-    # `canonical.py` (via `_target_mapping`) is the sole reader of this field.
+    # Historical registrations omitted dedicated placement. Shared placement is
+    # immutable; changing it requires its own separately authorized lifecycle.
     cluster_placement: str = "dedicated"
 
     def __post_init__(self) -> None:
@@ -264,7 +261,11 @@ def _refuse_conflict(existing: object, proposed: WorkspaceTarget) -> None:
     """
     divergent: list[str] = []
     for name, value in proposed.immutable_identity:
-        observed = getattr(existing, name, None)
+        observed = getattr(
+            existing, name, "dedicated" if name == "cluster_placement" else None
+        )
+        if name == "cluster_placement" and observed in (None, ""):
+            observed = "dedicated"
         if observed != value:
             divergent.append(name)
     if divergent:

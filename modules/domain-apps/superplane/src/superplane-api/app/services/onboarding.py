@@ -66,11 +66,17 @@ def workspace_id_for(org_id, request_id):
     return uuid.uuid5(RESOURCE_NAMESPACE, f"{org_id}/{request_id}")
 
 
+def placement_document(body: CreateWorkspaceRequest, *, exclude):
+    document = body.model_dump(mode="json", exclude=exclude)
+    if body.cluster_placement == "dedicated":
+        # Preserve the exact request bytes of already admitted dedicated work.
+        document.pop("cluster_placement", None)
+        document.pop("shared_cluster_id", None)
+    return document
+
+
 def request_document(body: CreateWorkspaceRequest):
-    # An approval reference is added after preview. It does not alter the work.
-    return body.model_dump(
-        mode="json", exclude={"operation_id", "approval_id", "plan_revision"}
-    )
+    return placement_document(body, exclude={"operation_id", "approval_id", "plan_revision"})
 
 
 async def preview(db, org_id, body: CreateWorkspaceRequest):

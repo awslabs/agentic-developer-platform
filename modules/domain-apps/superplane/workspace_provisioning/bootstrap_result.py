@@ -1,6 +1,5 @@
 """Anchor completed canonical registration and authority bytes in a result artifact."""
 
-from dataclasses import asdict
 import json
 
 from .artifacts import digest
@@ -107,6 +106,7 @@ async def read_bootstrap_anchor(
 
 async def bootstrap_result_anchor(operation, context, outcome):
     """Capture only a successful canonical result before publishing its artifact."""
+    from superplane_bootstrap.registry import _target_mapping
     from superplane_bootstrap.state import claim_fingerprint
 
     if not outcome.ready or outcome.reservation is None:
@@ -117,6 +117,6 @@ async def bootstrap_result_anchor(operation, context, outcome):
         operation_id=lease.operation_id,
         org_id=lease.org_id,
         workspace_id=lease.workspace_id,
-        registration=asdict(outcome.registration.target),
+        registration=_target_mapping(outcome.registration.target),
         claim=claim_fingerprint(outcome.reservation.attempt_token),
     )

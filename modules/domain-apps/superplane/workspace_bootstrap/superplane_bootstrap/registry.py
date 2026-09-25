@@ -705,10 +705,9 @@ def _target_mapping(target: object) -> Mapping[str, str]:
         "cluster_ownership",
         "credential_reference_id",
         "contract_version",
-        # Issue #6048. `getattr(..., "") or ""` falls back to "" for a target
-        # shape that predates this field, which `canonical.publish` treats the
-        # same as an absent key (defaults to dedicated) — so a store double
-        # built before this change keeps working unmodified.
-        "cluster_placement",
     )
-    return {name: str(getattr(target, name, "") or "") for name in names}
+    identity = {name: str(getattr(target, name, "") or "") for name in names}
+    placement = getattr(target, "cluster_placement", "dedicated") or "dedicated"
+    if placement != "dedicated":
+        identity["cluster_placement"] = placement
+    return identity

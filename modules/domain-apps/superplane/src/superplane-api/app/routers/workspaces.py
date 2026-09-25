@@ -107,8 +107,10 @@ def _workspace_to_response(
 
 
 def _operation_request(body: CreateWorkspaceRequest) -> str:
+    from app.services.onboarding import placement_document
+
     return json.dumps(
-        body.model_dump(mode="json", exclude={"operation_id", "approval_id"}),
+        placement_document(body, exclude={"operation_id", "approval_id"}),
         sort_keys=True,
         separators=(",", ":"),
     )
