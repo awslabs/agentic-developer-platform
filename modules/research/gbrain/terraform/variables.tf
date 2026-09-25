@@ -65,3 +65,13 @@ variable "memory" {
   type        = number
   default     = 2048
 }
+
+variable "container_image_digest" {
+  description = "Verified OCI digest. Empty only for the storage/build bootstrap targets; ECS refuses activation without a digest."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.container_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.container_image_digest))
+    error_message = "container_image_digest must be an OCI sha256 digest."
+  }
+}

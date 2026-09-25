@@ -65,7 +65,7 @@ module "fargate" {
   cpu                = var.cpu
   memory             = var.memory
   desired_count      = var.desired_count
-  container_image    = "${module.storage.ecr_repo_url}:latest"
+  container_image    = "${module.storage.ecr_repo_url}@${var.container_image_digest}"
   db_endpoint        = module.rds.endpoint
   db_credentials_arn = module.rds.credentials_secret_arn
   mcp_token_arn      = aws_secretsmanager_secret.mcp_token.arn

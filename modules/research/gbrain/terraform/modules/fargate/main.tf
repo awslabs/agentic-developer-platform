@@ -20,6 +20,13 @@ resource "aws_ecs_cluster_capacity_providers" "gbrain" {
 }
 
 resource "aws_ecs_task_definition" "serve" {
+  lifecycle {
+    precondition {
+      condition     = can(regex("@sha256:[0-9a-f]{64}$", var.container_image))
+      error_message = "ECS activation requires a registry-verified image digest; bootstrap only storage/build before publication."
+    }
+  }
+
   family                   = "${var.name_prefix}-serve"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
