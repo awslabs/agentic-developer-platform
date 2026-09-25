@@ -42,11 +42,21 @@ These initial probes use the authenticated public Activity API and are **API qua
 |---|---|
 | Pause | Accepted, delivered; remained `pause_requested` with zero tracked active tools and reason `background work behind completed tools is not observable`. Full quiescence was **not confirmed**. |
 | Replay | Same pause ID/payload returned the existing delivered command; changed payload returned HTTP 409. |
-| Steer | Accepted while pause was pending; after resume, journal reports instruction handed to runtime. Application requested a specifically named operator-login isolation regression; code evidence is still pending. |
+| Steer | Accepted while pause was pending; after resume, journal reports instruction handed to runtime. Application requested a specifically named operator-login isolation regression; the retained final transcript contains neither the acknowledgement marker nor the requested regression; comprehension is unconfirmed. |
 | Resume | Applied on the same invocation/generation; state returned to running. Pending pause was explicitly cancelled as unconfirmed. |
 | Explanation stream | HTTP 200 SSE returned authored explanation sequence 1 and heartbeats. Reconnect with saved `Last-Event-ID` returned sequence 2, without repeating sequence 1. |
-| Abort | Not yet exercised; preserve useful implementation before the bounded abort test. |
+| Abort | Accepted, then terminal stream sequence 4; final Activity status `aborted`, liveness `exited`. Final report/transcript retained. Repeated abort after exit refused with HTTP 410. |
 
 The public streaming route is `/activity/invocations/{invocation_id}/agent/events` under the selected gateway's `/api` mount. Control state is the sibling `/state`; signed human mutations use `/pause`, `/resume`, `/steer`, `/abort`. This does not alter the separate Task API `/v1/tasks/{task_id}/events` and `/cancel` contracts.
 
 CLI testing isolation: shared fixtures remove inherited `BG_CONFIG_DIR`, `ADP_LEGACY_CONFIG_DIR`, deployment pins and other ADP/store overrides before using temporary homes. A separate process wrapper isolates home, XDG and AWS stores. Live login/configuration digests were checked unchanged after isolated runs. No test writes operator tokens.
+
+## Final result of this bounded run
+
+The run ended by authorized abort after approximately 23 minutes and $2.950319 of recorded inference usage (115,188 tokens). It pushed only its initial WIP branch marker and opened no implementation PR. #5629 remains open. The stream delivered terminal sequence 4; reconnect after worker exit returned HTTP 409, so this run establishes live reconnect before termination, not durable replay after exit. The [redacted observation record](live-api-observations.json) retains command identities and outcomes.
+
+Confirmed: authenticated streaming, cursor reconnect, same-ID replay, changed-payload conflict, resume within the same run, abort and terminal reporting. Unconfirmed: full pause quiescence and steering comprehension. Foreign-tenant, concurrent-command, installed-CLI and independent queue-ack evidence were not established by this run. These limitations remain visible rather than being counted as a complete remote-control acceptance pass.
+
+Publication remains blocked on the existing protected deployment runner: the gateway release workflow's backend job requires group `adp-deployment`, label `arc-runner-deployment`, and remains queued. Public download checks returned 404 for Task helpers, doctor and the command manifest. An older superseded queued gateway deployment was cancelled to release the serialization lock; no runner permissions or deployment controls were bypassed.
+
+Next eligible coverage to assign after capability integration is #5628 (usage/spend readback). #5516 needs explicit Task API human-authentication and developer-persona support; #5629 should resume from its existing issue with a narrower implementation request. Neither should introduce another dispatcher or reset the paused Epic's expired policy.
