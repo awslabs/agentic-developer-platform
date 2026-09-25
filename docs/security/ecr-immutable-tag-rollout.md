@@ -77,8 +77,10 @@ terraform show -json skypilot-adoption.tfplan > skypilot-adoption.plan.json
 Check command exit status and inspect `resource_changes[].change.actions` in the
 JSON, including exact repository and lifecycle-policy addresses. Human-plan grep
 output is not an acceptance test. Reject any repository delete/replacement or
-unrelated change. The lifecycle's `tagStatus=any`/count30 rule does not guarantee
-permanent retention of the pinned tag: verify/protect its retention before apply.
+unrelated change. SkyPilot source retention now expires only untagged images; its tagged S03
+release is excluded from count-based expiration. Verify the live lifecycle
+policy matches this source before adoption acceptance. Other repositories retain
+their existing count30 policy.
 Re-read the preserved digest from ECR after adoption. These commands are a runbook,
 not evidence that import, retention protection or apply has happened.
 

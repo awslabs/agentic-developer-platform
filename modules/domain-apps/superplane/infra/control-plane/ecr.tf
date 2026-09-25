@@ -118,13 +118,15 @@ resource "aws_ecr_repository" "superplane" {
 
 # Keep the repositories from growing without bound. Untagged images accumulate on every
 # rebuild of a digest-pinned image, and nothing references them once superseded.
+# SkyPilot retains tagged release/rollback images: its pinned S03 artifact must
+# survive later publications. Only untagged cleanup applies to that repository.
 resource "aws_ecr_lifecycle_policy" "superplane" {
   for_each = aws_ecr_repository.superplane
 
   repository = each.value.name
 
   policy = jsonencode({
-    rules = [
+    rules = concat([
       {
         rulePriority = 1
         description  = "Expire untagged images after 14 days"
@@ -136,6 +138,7 @@ resource "aws_ecr_lifecycle_policy" "superplane" {
         }
         action = { type = "expire" }
       },
+      ], each.key == "adp-superplane-skypilot" ? [] : [
       {
         rulePriority = 2
         description  = "Keep the 30 most recent tagged images"
@@ -146,6 +149,6 @@ resource "aws_ecr_lifecycle_policy" "superplane" {
         }
         action = { type = "expire" }
       },
-    ]
+    ])
   })
 }
