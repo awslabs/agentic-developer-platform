@@ -1015,7 +1015,7 @@ def test_report_is_deduplicated_with_event_under_current_attempt_authority(store
     assert second == first
     assert _query_count(client, task_report_partition(request.task_id)) == 1
     events = store.read_events(task_id=request.task_id)
-    assert [event["sequence"] for event in events] == [1, 2]
+    assert [event["sequence"] for event in events] == [1, 2, 3]
     assert events[-1]["runtime_attempt_id"] == attempt_id
     assert events[-1]["producer_timestamp"] == "2026-09-24T12:00:00Z"
 
@@ -2884,3 +2884,105 @@ def test_recovery_refuses_due_key_from_another_second(store, client, caplog):
     )
     assert store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(minutes=1)) == []
     assert any(getattr(record, "error_code", "") == "invalid_due_key" for record in caplog.records)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_first_authored_report_atomically_starts_run_and_public_snapshot(store, queued):
+    from src.tasks.dynamo_read_store import DynamoTaskReadStore
+
+    request = _request()
+    store.accept(request)
+    version = 1
+    if queued:
+        store.transition(task_id=request.task_id, expected_version=version, target_state=TaskState.QUEUED)
+        version += 1
+    attempt = _bind_attempt(store, request.task_id, request.invocation_id, expected_version=version)
+    adapter = DynamoTaskReadStore(store, s3_client=None, artifact_bucket="unused")
+    body = dict(
+        task_id=request.task_id,
+        report_id=str(uuid.uuid4()),
+        event_type="progress.updated",
+        data={"message": "Authored first observation", "stage": "analysis"},
+        producer_timestamp=None,
+        timestamp="2026-09-24T12:00:00Z",
+        expect_generation=1,
+        expect_runtime_attempt_id=attempt,
+    )
+    result = adapter.append_event(**body)
+    snapshot = adapter.load_task(task_id=request.task_id)
+    assert snapshot.status == "running"
+    assert snapshot.execution_health == "unknown"
+    assert snapshot.version == version + 2
+    events = store.read_events(task_id=request.task_id)
+    assert [row["type"] for row in events][-2:] == ["run.started", "progress.updated"]
+    assert events[-2]["data"] == {"status": "running", "version": version + 2}
+    assert events[-2]["runtime_attempt_id"] == attempt
+    assert adapter.append_event(**body).event.event_id == result.event.event_id
+    assert adapter.load_task(task_id=request.task_id).version == snapshot.version
+    assert len(store.read_events(task_id=request.task_id)) == len(events)
+
+
+def test_terminal_race_prevents_report_from_resurrecting_task(store, client):
+    request = _request()
+    store.accept(request)
+    attempt = _bind_attempt(store, request.task_id, request.invocation_id)
+    competitor = TaskStore(table_name=TABLE, authority_table_name=AUTHORITY_TABLE, dynamodb_client=client, clock=lambda: NOW)
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: competitor.transition(task_id=request.task_id, expected_version=2, target_state=TaskState.FAILED),
+    )
+    with pytest.raises(StaleAttemptError):
+        store.append_report(
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=1,
+            runtime_attempt_id=attempt,
+            report_id=str(uuid.uuid4()),
+            kind="progress.updated",
+            data={"message": "Too late", "stage": "analysis"},
+        )
+    store._client = client
+    assert store.read_task(request.task_id)["state"] == "failed"
+    assert _query_count(client, task_report_partition(request.task_id)) == 0
+    assert all(row["type"] != "run.started" for row in store.read_events(task_id=request.task_id))
+
+
+def test_current_attempt_report_retries_after_concurrent_input_version_change(store, client):
+    from src.tasks.task_commands import TaskCommands
+
+    request = _request()
+    store.accept(request)
+    attempt = _bind_attempt(store, request.task_id, request.invocation_id)
+    competitor = TaskStore(table_name=TABLE, authority_table_name=AUTHORITY_TABLE, dynamodb_client=client, clock=lambda: NOW)
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: TaskCommands(competitor).admit(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": "New observation"},
+            principal=request.canonical_principal,
+            tenant=request.tenant,
+            expires_at=NOW + timedelta(minutes=5),
+        ),
+    )
+    body = dict(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=1,
+        runtime_attempt_id=attempt,
+        report_id=str(uuid.uuid4()),
+        kind="progress.updated",
+        data={"message": "Still working", "stage": "analysis"},
+    )
+    with pytest.raises(TaskStoreError, match="retry the same report ID"):
+        store.append_report(**body)
+    store._client = client
+    first = store.append_report(**body)
+    assert store.append_report(**body) == first
+    assert store.read_task(request.task_id)["state"] == "running"
+    events = store.read_events(task_id=request.task_id)
+    assert sum(row["type"] == "run.started" for row in events) == 1
+    assert sum(row["type"] == "progress.updated" for row in events) == 1

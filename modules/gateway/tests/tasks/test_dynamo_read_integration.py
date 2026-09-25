@@ -98,9 +98,11 @@ def test_report_uses_real_attempt_transaction_and_dedup(adapter, store):
         expect_runtime_attempt_id=attempt,
     )
     result = adapter.append_event(**args)
-    assert result.event.sequence == 2
-    assert adapter.append_event(**args).event.sequence == 2
-    assert len(adapter.read_events(task_id=request.task_id, after_sequence=0, limit=10)) == 2
+    assert result.event.sequence == 3
+    assert adapter.append_event(**args).event.sequence == 3
+    events = adapter.read_events(task_id=request.task_id, after_sequence=0, limit=10)
+    assert [event.type for event in events] == ["task.accepted", "run.started", "progress.updated"]
+    assert adapter.load_task(task_id=request.task_id).status == "running"
     with pytest.raises(ReportConflictError):
         adapter.append_event(**{**args, "data": {"message": "changed", "stage": "analysis"}})
     with pytest.raises(SequenceFencedError):
