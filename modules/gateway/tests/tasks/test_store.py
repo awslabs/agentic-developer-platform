@@ -2855,3 +2855,32 @@ def _query_count(client, partition: str) -> int:
         Select="COUNT",
         ConsistentRead=True,
     )["Count"]
+
+
+def test_recovery_claims_persisted_subsecond_due_key_without_early_lease(store):
+    """Production clocks have milliseconds while persisted due_at has seconds."""
+    due = NOW + timedelta(microseconds=181000)
+    store._clock = lambda: due
+    request = _request()
+    store.accept(request)
+    work = store.resolve_work(request.dispatch_id)
+    assert work["task_due"].split("#")[0].endswith("181")
+    assert work["due_at"].endswith("00Z")
+    assert store._lease_recovery(record=work, now=NOW + timedelta(microseconds=180000), lease_seconds=30) is None
+    claimed = store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(seconds=1))
+    assert [item["work_id"] for item in claimed] == [request.dispatch_id]
+    assert store.resolve_work(request.dispatch_id)["task_due"] == work["task_due"]
+    assert store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(seconds=1)) == []
+
+
+def test_recovery_refuses_due_key_from_another_second(store, client, caplog):
+    request = _request()
+    store.accept(request)
+    client.update_item(
+        TableName=TABLE,
+        Key={"event_id": {"S": task_work_partition(request.task_id)}, "arrived_at": {"S": f"DISPATCH#{request.dispatch_id}"}},
+        UpdateExpression="SET due_at = :past",
+        ExpressionAttributeValues={":past": {"S": (NOW - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}},
+    )
+    assert store.claim_due_work(shard=work_shard(request.task_id), now=NOW + timedelta(minutes=1)) == []
+    assert any(getattr(record, "error_code", "") == "invalid_due_key" for record in caplog.records)
