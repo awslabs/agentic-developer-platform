@@ -205,3 +205,40 @@ The namespace remains closed and can be adopted by a retry only through its
 original creation journal. Successful member retirement requires separate
 admitted authority consuming those ownership records; bootstrap never deletes a
 cluster-owned entry, policy or dependency.
+
+
+The service adapter is `workspace_provisioning.shared_bootstrap_runtime`.
+`bootstrap_runtime.bootstrap(..., shared_runtime=SharedRuntimeHooks(...))`
+selects it only for the original request's approved membership. It loads the
+installed credential authority from the domain registry, verifies the discovery
+artifact against its cluster ARN/endpoint/CA, then composes issuer-only bootstrap
+clients and the separately delivered management projection transport. No
+request field or static configuration enables this route. The lifecycle worker's
+shared capability remains disabled until deployment wires the hooks and renewal.
+
+`SharedRuntimeHooks` must provide an explicitly delivered management source
+session, a fresh cluster dependency verifier (including registered controller
+compatibility, connectivity, policy/schema versions and platform eligibility),
+and a trusted complete tenant-principal inventory. The inventory must distinguish
+installed cluster administration from member identities using registered authority;
+it must never exempt arbitrary request-selected principals or return an empty
+inventory merely to pass isolation. The installed issuer needs the read/probe
+permissions exercised by `KubectlClusterAccess`, including the bounded namespace
+probes and authorization reviews. These remain installation-owned prerequisites.
+
+`SharedCredentialServices` implements the credential callbacks using the existing
+membership credential journal and the bootstrap claim's SQL connection. It commits
+revision/delegation intent before TokenRequest and commits the exact projection
+target/digest before Secret writes, then reacquires the claim/phase fence for each
+provider call. Reader and mutator stay projected through provisional management
+observation and activate together after both delivered credentials pass live
+verification. The consumer proof uses SelfSubjectReview UID/username, a namespaced
+read, denied namespace mutation and a denied closed-gate mutator dry run. It does
+not parse JWT claims as authentication evidence.
+
+Recovery fences revisions, removes only digest-owned projection bytes, revokes
+original SA UIDs, reconciles lost component-create acknowledgements, and records
+absence. An unacknowledged projection intent's public receipt is reconstructed
+from committed metadata/digest; actual Secret resourceVersion is read again for
+CAS cleanup. Bootstrap claims do not authorize renewal after publication: the
+installed credential controller's independent lease owns later revisions.

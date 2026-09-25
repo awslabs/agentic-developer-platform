@@ -125,7 +125,14 @@ def test_production_bootstrap_composer_registers_with_retained_sts_and_revoked_g
         )
         lease = await harness.lease(progress.operation_id)
         grant = ExecutionGrant(replace(principal, subject=lease.holder), lease)
-        operation = SimpleNamespace(grant=grant)
+        operation = SimpleNamespace(
+            grant=grant,
+            request=SimpleNamespace(
+                parameters={
+                    "lifecycle_inputs": json.dumps({"cluster_placement": "dedicated"})
+                }
+            ),
+        )
         context = SimpleNamespace(
             connect=harness.connect, domain_connect=harness.connect
         )
