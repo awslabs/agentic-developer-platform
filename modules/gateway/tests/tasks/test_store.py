@@ -2946,3 +2946,43 @@ def test_terminal_race_prevents_report_from_resurrecting_task(store, client):
     assert store.read_task(request.task_id)["state"] == "failed"
     assert _query_count(client, task_report_partition(request.task_id)) == 0
     assert all(row["type"] != "run.started" for row in store.read_events(task_id=request.task_id))
+
+
+def test_current_attempt_report_retries_after_concurrent_input_version_change(store, client):
+    from src.tasks.task_commands import TaskCommands
+
+    request = _request()
+    store.accept(request)
+    attempt = _bind_attempt(store, request.task_id, request.invocation_id)
+    competitor = TaskStore(table_name=TABLE, authority_table_name=AUTHORITY_TABLE, dynamodb_client=client, clock=lambda: NOW)
+    store._client = _InterleavingClient(
+        client,
+        before="transact_write_items",
+        action=lambda: TaskCommands(competitor).admit(
+            task_id=request.task_id,
+            command_id=str(uuid.uuid4()),
+            kind="input",
+            payload={"text": "New observation"},
+            principal=request.canonical_principal,
+            tenant=request.tenant,
+            expires_at=NOW + timedelta(minutes=5),
+        ),
+    )
+    body = dict(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=1,
+        runtime_attempt_id=attempt,
+        report_id=str(uuid.uuid4()),
+        kind="progress.updated",
+        data={"message": "Still working", "stage": "analysis"},
+    )
+    with pytest.raises(TaskStoreError, match="retry the same report ID"):
+        store.append_report(**body)
+    store._client = client
+    first = store.append_report(**body)
+    assert store.append_report(**body) == first
+    assert store.read_task(request.task_id)["state"] == "running"
+    events = store.read_events(task_id=request.task_id)
+    assert sum(row["type"] == "run.started" for row in events) == 1
+    assert sum(row["type"] == "progress.updated" for row in events) == 1

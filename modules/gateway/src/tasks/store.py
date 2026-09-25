@@ -1954,6 +1954,13 @@ class TaskStore:
             live = self.read_task(task_id)
             if live is not None and int(live.get("generation", 0)) != generation:
                 raise StaleGenerationError(task_id=task_id, supplied=generation, current=int(live.get("generation", 0))) from None
+            if (
+                live is not None
+                and live.get("runtime_attempt_id") == runtime_attempt_id
+                and live.get("state") == current_state.value
+                and int(live.get("version", 0)) != int(snapshot["version"])
+            ):
+                raise TaskStoreError("task report version changed; retry the same report ID") from None
             raise StaleAttemptError("runtime attempt is stale or authority was revoked") from None
         except BotoCoreError as exc:
             raise TaskStoreError("task report store unavailable") from exc
