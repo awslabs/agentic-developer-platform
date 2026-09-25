@@ -13,15 +13,21 @@ from pricing_policy.policy import parse_rate
 from pricing_policy.storage import MISSING_SCHEMA_SQLSTATES, RATE_CACHE_TTL_SECONDS, RETRY_MAX_SECONDS, RETRY_MIN_SECONDS, SCHEMA_REPROBE_SECONDS
 
 logger = logging.getLogger(__name__)
-_SAVEPOINT = "pricing_legacy_probe"
 _rates = {}
 _next_probe = 0.0
 _retry_seconds = RETRY_MIN_SECONDS
 
+# Static SQL for savepoint management — these must never interpolate external
+# input.  Using literal strings (not f-strings) so static-analysis tools can
+# confirm no injection vector exists.
+_SQL_SAVEPOINT = "SAVEPOINT pricing_legacy_probe"
+_SQL_ROLLBACK = "ROLLBACK TO SAVEPOINT pricing_legacy_probe"
+_SQL_RELEASE = "RELEASE SAVEPOINT pricing_legacy_probe"
+
 
 def _load(conn):
     with conn.cursor() as cur:
-        cur.execute(f"SAVEPOINT {_SAVEPOINT}")
+        cur.execute(_SQL_SAVEPOINT)
         try:
             cur.execute("SELECT current_setting('statement_timeout')")
             previous_timeout = cur.fetchone()[0]
@@ -42,10 +48,10 @@ def _load(conn):
                 rates[model_id] = values
             cur.execute("SELECT set_config('statement_timeout', %s, true)", (previous_timeout,))
         except Exception:
-            cur.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT}")
-            cur.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+            cur.execute(_SQL_ROLLBACK)
+            cur.execute(_SQL_RELEASE)
             raise
-        cur.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+        cur.execute(_SQL_RELEASE)
     return rates
 
 

@@ -39,9 +39,13 @@ from pricing_policy.storage import (
 
 logger = logging.getLogger(__name__)
 
-#: Named savepoint for the probe. A fixed name is safe because the probe never
-#: nests inside itself: it is released or rolled back before returning.
-_SAVEPOINT = "pricing_v2_probe"
+# Static SQL for savepoint management — these must never interpolate external
+# input.  Using literal strings (not f-strings) so static-analysis tools can
+# confirm no injection vector exists.  The name is safe because the probe never
+# nests inside itself: it is released or rolled back before returning.
+_SQL_SAVEPOINT = "SAVEPOINT pricing_v2_probe"
+_SQL_ROLLBACK = "ROLLBACK TO SAVEPOINT pricing_v2_probe"
+_SQL_RELEASE = "RELEASE SAVEPOINT pricing_v2_probe"
 
 _cache = V2RateCache()
 _metrics = ReaderMetrics()
@@ -66,7 +70,7 @@ def _fetch_active_generation(conn) -> ActiveGeneration:
     rollback is unconditional in the failure path for exactly that reason.
     """
     with conn.cursor() as cur:
-        cur.execute(f"SAVEPOINT {_SAVEPOINT}")
+        cur.execute(_SQL_SAVEPOINT)
         try:
             cur.execute(SQL_ACTIVE_POINTER)
             pointer_row = cur.fetchone()
@@ -83,8 +87,8 @@ def _fetch_active_generation(conn) -> ActiveGeneration:
             # connection must be usable again no matter which branch we take, and
             # an exception raised while still in the aborted state would leave the
             # caller holding a dead transaction.
-            cur.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT}")
-            cur.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+            cur.execute(_SQL_ROLLBACK)
+            cur.execute(_SQL_RELEASE)
             failure = classify_sqlstate(_sqlstate(exc))
             if failure is MissingV2SchemaError:
                 _metrics.schema_missing += 1
@@ -94,7 +98,7 @@ def _fetch_active_generation(conn) -> ActiveGeneration:
                 logger.warning("V2 pricing read failed (%s): %s", _sqlstate(exc), exc)
             raise failure(str(exc)) from exc
         else:
-            cur.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+            cur.execute(_SQL_RELEASE)
 
     # Outside the except block, so a V2DisabledError from here is not misreported as
     # a query failure and does not need the savepoint dance — nothing failed.
