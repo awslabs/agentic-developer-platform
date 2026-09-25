@@ -101,9 +101,14 @@ RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/ku
     && chmod +x /usr/local/bin/kubectl \
     && kubectl version --client
 
-# ── Helm 3.17.x ─────────────────────────────────────────────────────────────
-RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
-    DESIRED_VERSION=v3.17.4 bash \
+# ── Helm 3 (security refresh, checksum-verified upstream binary) ─────────────
+ENV HELM_VERSION=3.22.0
+RUN curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" \
+        -o /tmp/helm.tar.gz \
+    && echo "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb  /tmp/helm.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm \
+    && install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm \
+    && rm -rf /tmp/helm.tar.gz /tmp/linux-amd64 \
     && helm version
 
 # ── gh CLI (latest) ─────────────────────────────────────────────────────────
