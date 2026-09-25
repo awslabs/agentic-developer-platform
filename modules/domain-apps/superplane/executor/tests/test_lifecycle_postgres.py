@@ -177,6 +177,7 @@ class Kubernetes(Workspace):
         if "/superplane.ai/" in path:
             return httpx.Response(200, json={"items": []})
         if path.startswith("/api/v1/nodes?"):
+            zone = self.cloud.instance["Placement"]["AvailabilityZone"]
             return httpx.Response(
                 200,
                 json={
@@ -188,12 +189,12 @@ class Kubernetes(Workspace):
                                 "labels": {
                                     "superplane.ai/capacity": self.cloud.cluster_name,
                                     "superplane.ai/workspace": operation.grant.lease.workspace_id,
-                                    "topology.kubernetes.io/region": "us-east-1",
-                                    "topology.kubernetes.io/zone": "us-east-1a",
+                                    "topology.kubernetes.io/region": zone[:-1],
+                                    "topology.kubernetes.io/zone": zone,
                                 },
                             },
                             "spec": {
-                                "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
+                                "providerID": f"aws:///{zone}/{self.cloud.instance['InstanceId']}"
                             },
                             "status": {
                                 "conditions": [{"type": "Ready", "status": "True"}],

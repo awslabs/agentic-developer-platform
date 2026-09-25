@@ -216,7 +216,7 @@ async def nodes(pool):
     provider = SimpleNamespace(
         execution_pool=pool,
         domain_pool=pool,
-        workspace=Kube(),
+        workspace=Kube("/unused-credentials", "https://management.example"),
         instances=instances,
         session_for=session_for,
         registry=SimpleNamespace(authenticate=lambda _: None),
