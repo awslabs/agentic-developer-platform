@@ -181,16 +181,18 @@ def test_real_shell_global_selector_and_token_helper_transport(tmp_path):
         # A different terminal's tenant default cannot retarget that setup.
         configured = subprocess.run(
             ["bash", str(CLI / "adp"), "--tenant", "work", "claude", "setup"],
-            text=True, capture_output=True, timeout=30,
+            text=True,
+            capture_output=True,
+            timeout=30,
         )
         assert configured.returncode == 0, configured.stderr + configured.stdout
         helper = json.loads((tmp_path / ".claude/settings.json").read_text())["apiKeyHelper"]
         import shlex
+
         words = shlex.split(helper)
         # The installed bundle is executable; source fixtures invoke bash.
         words.insert(words.index(str(CLI / "adp")), "bash")
-        resumed = subprocess.run(words, env={**os.environ, "ADP_TENANT": "home"},
-                                 text=True, capture_output=True, timeout=30)
+        resumed = subprocess.run(words, env={**os.environ, "ADP_TENANT": "home"}, text=True, capture_output=True, timeout=30)
         assert resumed.returncode == 0, resumed.stderr + resumed.stdout
         assert requested_tenants[-1] == "work"
         assert resumed.stdout == "adpctx1~signed.lease.value~" + token()
