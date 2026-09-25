@@ -27,6 +27,7 @@ the ordinary gateway pre-submit suite.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -223,12 +224,36 @@ class TestTheRouteDoesNotShadowGatewayRoutes:
         in its OpenAPI, and simply never receives a request.
         """
         src = GATEWAY_ROOT / "src"
-        route_declaration = re.compile(
-            r"(?:APIRouter\([^)]*prefix\s*=|@\w+\.(?:post|api_route)\()"
-            r'[^\n]*["\']/v1/tasks["\']'
-        )
-        hits = [path for path in src.rglob("*.py") if route_declaration.search(path.read_text())]
-        assert hits == [], f"the gateway app now declares /v1/tasks ({hits}); the explicit API Gateway route would shadow it"
+        hits = []
+        for path in src.rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            prefixes = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                    call = node.value
+                    if isinstance(call.func, ast.Name) and call.func.id == "APIRouter":
+                        prefix = next((kw.value.value for kw in call.keywords if kw.arg == "prefix" and isinstance(kw.value, ast.Constant)), "")
+                        for target in node.targets:
+                            if isinstance(target, ast.Name):
+                                prefixes[target.id] = prefix
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                for decorator in node.decorator_list:
+                    if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+                        continue
+                    method = decorator.func.attr
+                    if method not in {"post", "api_route"} or not decorator.args or not isinstance(decorator.args[0], ast.Constant):
+                        continue
+                    if method == "api_route":
+                        methods = next((ast.literal_eval(kw.value) for kw in decorator.keywords if kw.arg == "methods"), ["GET"])
+                        if "POST" not in methods:
+                            continue
+                    receiver = decorator.func.value
+                    prefix = prefixes.get(receiver.id, "") if isinstance(receiver, ast.Name) else ""
+                    if prefix + decorator.args[0].value == ROUTE:
+                        hits.append(path)
+        assert hits == [], f"the gateway app now declares POST {ROUTE} ({hits}); the explicit API Gateway route would shadow it"
 
     def test_the_declared_route_set_is_what_this_story_intended(self):
         """Equality, so an unreviewed route addition breaks CI immediately."""
