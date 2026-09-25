@@ -165,6 +165,8 @@ async def test_recovery_provider_assumes_only_read_policy_and_refuses_kubernetes
                 "Effect": "Allow",
                 "Action": [
                     "ec2:Describe*",
+                    "ec2:SearchTransitGatewayRoutes",
+                    "ec2:GetTransitGatewayRouteTableAssociations",
                     "eks:DescribeCluster",
                     "sts:GetCallerIdentity",
                 ],

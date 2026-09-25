@@ -333,6 +333,17 @@ class Provider:
                 self.registry.check_handoff(current, handoff)
 
             await self.cloud(operation, plan)
+            networking = None
+            if plan.network is not None:
+                from .network_runtime import Network
+
+                session, _ = await self.session_for(operation, plan)
+                networking = Network(self, operation, target, plan, session, authorize)
+                if call.operation_kind == "launch":
+                    # Check every candidate before SkyPilot can incur spend; compute
+                    # selection remains SkyPilot's responsibility.
+                    for region in plan.network["regions"]:
+                        await networking.prerequisites(region)
             reference = json.dumps({"cluster_name": plan.cluster_name})
             if call.operation_kind == "launch":
                 # The allocation has exactly one creating attempt for this stable
@@ -380,6 +391,29 @@ class Provider:
                 reference = json.dumps(
                     {"cluster_name": plan.cluster_name, "request_id": request_id}
                 )
+                if networking is not None:
+                    # SkyPilot setup starts nodeadm, which needs the private API.
+                    # Discover its selected instances while launch is still pending.
+                    async with asyncio.timeout(800):
+                        while True:
+                            await authorize()
+                            instances = await self.instances(operation, plan)
+                            if len(instances) == plan.data["node_count"]:
+                                selected_regions = {
+                                    i["SuperplaneRegion"] for i in instances
+                                }
+                                if len(selected_regions) != 1:
+                                    raise OperationRefused(
+                                        "network allocation spans compute regions"
+                                    )
+                                await networking.establish(next(iter(selected_regions)))
+                                break
+                            if await self.sky.status(request_id) not in {
+                                "PENDING",
+                                "RUNNING",
+                            }:
+                                return CallOutcome.UNKNOWN, None, reference
+                            await asyncio.sleep(2)
                 if not await self.sky.complete(request_id, authorize):
                     return CallOutcome.UNKNOWN, None, reference
                 instances = await self.instances(operation, plan)
@@ -395,9 +429,15 @@ class Provider:
                     request_id,
                     region=next(iter(regions_used)) if len(regions_used) == 1 else None,
                 )
+                if networking is not None:
+                    if len(regions_used) != 1:
+                        raise OperationRefused(
+                            "one allocation must resolve to one approved compute region"
+                        )
+                    await networking.establish(next(iter(regions_used)))
                 return (
                     CallOutcome.SUCCEEDED,
-                    "SkyPilot launch completed; join remains a separate step",
+                    "SkyPilot launch and approved network completed; join remains a separate step",
                     plan.resource_reference(
                         "instance",
                         instances[0]["InstanceId"],
@@ -567,6 +607,8 @@ class Provider:
                     request_id, authorize
                 ) or await self.instances(operation, plan):
                     return CallOutcome.UNKNOWN, None, reference
+                if networking is not None:
+                    await networking.cleanup()
                 # Success records the approved removal call, not allocation release.
                 # The trusted after-step hook must independently enumerate, seal and
                 # assess ALL durable handles before publishing zero exposure.

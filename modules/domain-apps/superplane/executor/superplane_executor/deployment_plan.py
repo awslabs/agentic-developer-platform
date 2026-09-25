@@ -188,6 +188,7 @@ def build_deployment_preview(
             PROFILE_FIELDS,
             GPU_PROFILE_FIELDS,
             REGIONAL_PROFILE_FIELDS,
+            REGIONAL_PROFILE_FIELDS | {"network"},
         ) or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", profile_id):
             raise ValueError("unsupported profile")
         if (
@@ -328,6 +329,15 @@ def build_deployment_preview(
         }
         if is_regional:
             parameters["controller_regions"] = compact(profile["regions"])
+        if "network" in profile:
+            if set(profile["network"]) != {"cluster", "regions"}:
+                raise ValueError("closed network profile required")
+            parameters["controller_network_cluster"] = compact(
+                profile["network"]["cluster"]
+            )
+            parameters["controller_network_regions"] = compact(
+                profile["network"]["regions"]
+            )
         request = OperationRequest(
             action="provision", idempotency_key=str(request_id), parameters=parameters
         )
@@ -345,6 +355,10 @@ def validate_request(request, target, *, org_id, workspace_id):
     )
     if json.loads(request.parameters.get("controller_plan", "{} ")).get("version") == 4:
         fields = fields | {"controller_regions"}
+    from .network_plan import PARAMETERS
+
+    if PARAMETERS & set(request.parameters):
+        fields = fields | PARAMETERS
     if set(request.parameters) != fields:
         raise OperationRefused(
             "controller deployment request has unsupported parameters"

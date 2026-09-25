@@ -366,7 +366,7 @@ def validate(
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         # #5925 advances it to 034 for `controller_provider_requests.region`.
         require(
-            head == "034_provider_request_region",
+            head == "035_controller_network_journal",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})

@@ -13,7 +13,8 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["034_provider_request_region"]
+    assert scripts.get_heads() == ["035_controller_network_journal"]
+    assert scripts.get_revision("035_controller_network_journal").down_revision == "034_provider_request_region"
     assert (
         scripts.get_revision("034_provider_request_region").down_revision
         == "033_retained_batch_results"

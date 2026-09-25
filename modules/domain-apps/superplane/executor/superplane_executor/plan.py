@@ -28,6 +28,7 @@ class Plan:
     data: dict
     cluster_name: str
     steps: tuple
+    network: dict | None = None
 
     @classmethod
     def read(cls, operation, target):
@@ -366,7 +367,14 @@ class Plan:
                     raise ValueError("serving authentication required")
             elif workload["port"] is not None or workload["auth_secret"] is not None:
                 raise ValueError("batch cannot expose a serving endpoint")
-            return cls(data, name, expected)
+            from .network_plan import read_network
+
+            network = read_network(request.parameters, data)
+            if network is not None and network["cluster"]["cluster_id"] != target.get(
+                "cluster_id"
+            ):
+                raise ValueError("approved network cluster identity changed")
+            return cls(data, name, expected, network)
         except (KeyError, TypeError, ValueError, AttributeError, ssl.SSLError):
             raise OperationRefused(
                 "approved controller plan is invalid or unsupported"

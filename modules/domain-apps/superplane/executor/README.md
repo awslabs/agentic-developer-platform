@@ -480,3 +480,48 @@ Validation uses the pinned parser, installed pre-create guard, real registered
 worker/PostgreSQL lifecycle, recovery-provider boundary and regional inventory
 observation tests. AWS/SkyPilot/Kubernetes responses in these tests are simulated;
 passing them does not establish live multi-region GPU execution or billed cost.
+
+## Approved private AWS networks (#5926)
+
+A regional capacity profile can opt into the version-1 `network` contract. The
+producer carries its `cluster` and `regions` documents as
+`controller_network_cluster` and `controller_network_regions` in the same immutable
+operation approval. Each document must fit the shared 2,000-character bound;
+unsupported or oversized profiles are refused before admission. Existing capacity
+approvals do not inherit mutable networking defaults.
+
+The cluster document contains its canonical cluster UUID, membership generation
+and home network. Each remote region contains its reviewed network, an optional
+adopted peering ID, and a retained Route53 Resolver forwarding path. Network sides
+name exact VPC/subnet, TGW/table, VPC route-table and security-group IDs with bounded
+IPv4 VPC/node/pod ranges. A null attachment or peering ID requests owned creation;
+a supplied ID requests validated adoption. TGWs, route tables, security groups and
+Resolver endpoints/rules are explicit installation prerequisites. The adapter
+never tries to associate EKS's service-managed private hosted zone directly.
+
+`Provider` checks every candidate network before launching capacity. Once SkyPilot
+reports the actual compute region, the provider establishes the approved path
+before reporting launch completion. Nodes still join in the separate node-join
+story. Network setup includes VPC attachments, peering acceptance in the receiving
+region, TGW table associations, local/remote TGW routes, VPC routes and scoped
+security rules. Routed pod CIDRs and namespace NetworkPolicy must be supported by
+the selected CNI; this does not certify arbitrary CNI or hybrid-node combinations.
+
+Schema `035_controller_network_journal` records original effects and resource
+handles, allocation dependencies and completion. Resource locks serialize attach
+and retirement across workers. Lost mutation replies retain the original intent;
+subsequent observations can confirm it without issuing a duplicate create. Cleanup
+reconstructs the original recipes after compute removal, retains adopted resources
+and active peers, and reports unresolved inventory conservatively. Protected
+recovery remains observation-only: SkyPilot success alone cannot certify unfinished
+network setup, and unresolved effects retain exposure for the recovery lifecycle.
+
+Network resource readiness is configuration evidence. Live traffic acceptance
+requires the separate `network_probe` and `network_observation` helpers: execute a
+nonce-bound DNS/TLS probe on the allocated node through its approved transport,
+and an ordinary pod-to-Service probe on the verified remote node through the
+existing governed workload path. The collector verifies namespace/allocation,
+node placement, pod UID and fresh logs; the API-to-kubelet log read is a separate
+proof. EndpointSlice readiness and Route53 association alone are never traffic
+proof. Package the probe module in the approved immutable workload/bootstrap image
+and record its digest for #5930; no live support is established by fixture tests.

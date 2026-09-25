@@ -308,6 +308,14 @@ async def system(pool, tmp_path):
                     "role_arn": "arn:aws:iam::123456789012:role/approved",
                     "credential_source": "web_identity",
                     "allocation_tags": ["instance", "volume", "network-interface"],
+                    **(
+                        {
+                            "regional_binding_guard": 1,
+                            "capacity_constraints": ["physical_gpu_limit"],
+                        }
+                        if getattr(cloud, "network_mode", False)
+                        else {}
+                    ),
                 },
             )
         if path == "/launch":
@@ -326,6 +334,10 @@ async def system(pool, tmp_path):
             assert json.loads(request.content)["purge"] is False
             cloud.exists = False
         elif path == "/api/status":
+            if getattr(cloud, "network_mode", False):
+                assert cloud.network_ready(), (
+                    "private network must precede launch completion"
+                )
             if cloud.lose_status_response:
                 raise httpx.ReadError("simulated status loss")
             return httpx.Response(
@@ -368,7 +380,14 @@ async def system(pool, tmp_path):
         after_step=finalizer,
     )
 
-    async def admit(action, key=None):
+    async def admit(
+        action,
+        key=None,
+        *,
+        extra_parameters=None,
+        admitted_request=None,
+        prepare_registration=None,
+    ):
         actor = principal(org=org, workspace=workspace, subject="invocation#1")
         name = (
             "sp-"
@@ -402,8 +421,11 @@ async def system(pool, tmp_path):
                 "credential_id": "approved",
                 "credential_service": "aws",
                 "credential_label": "selected",
+                **(extra_parameters or {}),
             },
         )
+        if admitted_request is not None:
+            req = admitted_request
         async with pool.acquire() as c:
             admitted = await admit_paid(OperationStore(), c, actor, req)
             # The outbox helper's placeholder digest is insufficient for the
@@ -429,6 +451,9 @@ async def system(pool, tmp_path):
             3600,
             5000000,
         )
+        if prepare_registration is not None:
+            async with pool.acquire() as c:
+                await prepare_registration(c, op)
         verified[lease.operation_id] = op
         # The trusted service only reaches execution for operations its run was
         # actually granted, so the grant is delivered alongside each admission.
