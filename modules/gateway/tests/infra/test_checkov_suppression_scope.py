@@ -118,15 +118,14 @@ def test_exact_workflow_scope_has_no_unsuppressed_hardening_failures():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_only_ingestion_has_a_local_runtime_user_exception():
+def test_runtime_user_checks_have_no_local_exceptions():
     exceptions = []
     for dockerfile in ROOT.rglob("Dockerfile"):
         for line in dockerfile.read_text().splitlines():
             if "checkov:skip=CKV_DOCKER_3:" in line:
                 exceptions.append((dockerfile.relative_to(ROOT).as_posix(), line.partition(":")[-1]))
 
-    assert [path for path, _ in exceptions] == ["modules/agent-context/images/ingestion/Dockerfile"]
-    assert len(exceptions[0][1].strip()) > 80
+    assert exceptions == [], "All runtime images must satisfy the non-root check without local waivers"
 
 
 def test_privilege_escalation_has_no_resource_waivers():

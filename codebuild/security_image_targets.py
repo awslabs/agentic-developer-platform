@@ -24,6 +24,7 @@ BUILD_CONFIG = {
         "prepare": [
             ["copy-tree", "modules/agent-context/pipeline", "modules/agent-context/images/ingestion/pipeline"],
             ["copy-tree", "modules/agent-context/alembic", "modules/agent-context/images/ingestion/alembic"],
+            ["copy-tree", "modules/agent-context/personal_context", "modules/agent-context/images/ingestion/personal_context"],
         ],
     },
     "modules/agent-factory/agent-worker-image/Dockerfile": {"context": "."},

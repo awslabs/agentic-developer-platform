@@ -21,7 +21,6 @@ SHELL ["/bin/sh", "-c"]
 RUN cp "$(command -v zoekt-git-index || find / -name zoekt-git-index -type f 2>/dev/null | head -1)" /tmp/zoekt-git-index
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
-#checkov:skip=CKV_DOCKER_3:Runtime executes language indexers and browser/scanner toolchains whose root-owned caches and writable paths have not yet been relocated; keep this exception local to the ingestion image.
 
 # System deps: git for cloning, build tools for tree-sitter native extensions
 RUN apt-get update && \
@@ -55,8 +54,8 @@ RUN npm install -g \
 ARG GO_VERSION=1.25.4
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -xz -C /usr/local
-ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
-ENV GOPATH="/root/go"
+ENV GOPATH="/opt/go"
+ENV PATH="/usr/local/go/bin:/opt/go/bin:${PATH}"
 
 # scip-go (module at github.com/scip-code/scip-go, binary in cmd/scip-go)
 RUN go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
@@ -97,6 +96,8 @@ RUN curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_S
 # Python deps
 RUN pip install --no-cache-dir \
     codegraphcontext \
+    "httpx>=0.27.0" \
+    "python-ulid>=2.0.0" \
     python-hcl2 \
     tree-sitter \
     tree-sitter-python \
@@ -128,8 +129,11 @@ RUN curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
         https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
     && test -s /etc/ssl/certs/rds-global-bundle.pem
 
-# Install Playwright browsers for crawl4ai JS rendering
-RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continuing"
+# Install Playwright browsers for crawl4ai JS rendering.
+# PLAYWRIGHT_BROWSERS_PATH puts browser binaries at a fixed, root-owned location
+# readable (but not writable) by the non-root runtime user (#6038).
+ENV PLAYWRIGHT_BROWSERS_PATH="/opt/browsers"
+RUN crawl4ai-setup && python -m playwright install chromium
 
 # Copy pipeline scripts (config.py must be first — all scripts import it)
 # scope.py + status_callback.py are imported by sqs-worker.py / ingest-repo.py /
@@ -160,6 +164,7 @@ RUN cd /app && python -c "import registry_reader, scope, status_callback, lang_g
 
 # Vulnerability scanner pipeline package (used by scan-vulns.py, #2536)
 COPY pipeline/ /app/pipeline/
+COPY personal_context/ /app/personal_context/
 
 # GitHub App token minting script (from scripts/github-app-token.py)
 COPY github-app-token.py /app/github-app-token.py
@@ -175,6 +180,39 @@ COPY alembic/script.py.mako /app/alembic/script.py.mako
 COPY alembic/versions/ /app/alembic/versions/
 
 WORKDIR /app
+
+# ---------------------------------------------------------------------------
+# Non-root runtime user (#6038 — S15 ingestion hardening)
+# ---------------------------------------------------------------------------
+# Matches the UID/GID pattern used by sibling images (context-mcp, deepwiki,
+# codegraph-context, litellm-proxy). All image-installed binaries and scripts
+# remain root-owned; the runtime user cannot modify them.
+#
+# Writable locations at runtime (provided by K8s emptyDir mounts per manifest):
+#   /tmp          — clone scratch, tool temp files, pip/trivy caches
+#   /home/appuser — HOME for Go mod cache, Git config, npm temp, dotfiles
+#
+# /platform-data is a PVC mounted with fsGroup:1001 in the manifests so files
+# are group-writable without blanket chmod.
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --ingroup appgroup --home /home/appuser appuser
+
+# Ensure the home directory exists and is owned by appuser (adduser usually
+# creates it, but be explicit).
+# Upstream multi-stage COPY/tar metadata carries its original numeric owner;
+# Trivy's release tar uses UID 1001, which is our runtime user. Normalize these
+# two installed binaries explicitly before dropping privilege.
+RUN chown 0:0 /usr/local/bin/zoekt-git-index /usr/local/bin/trivy && \
+    mkdir -p /home/appuser && chown appuser:appgroup /home/appuser
+
+ENV HOME="/home/appuser" \
+    GOMODCACHE="/home/appuser/go/pkg/mod" \
+    GOCACHE="/home/appuser/.cache/go-build" \
+    XDG_CACHE_HOME="/home/appuser/.cache" \
+    NPM_CONFIG_CACHE="/home/appuser/.npm" \
+    PYTHONDONTWRITEBYTECODE="1"
+
+USER appuser
 
 # Default: run refresh (CronJob entrypoint)
 CMD ["python", "/app/refresh-repos.py"]

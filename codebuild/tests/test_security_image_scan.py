@@ -74,7 +74,7 @@ def test_all_scope_inventory_uses_production_contexts_and_preparation():
         ),
         "modules/agent-context/images/ingestion/Dockerfile": (
             "modules/agent-context/images/ingestion",
-            {"pipeline/", "alembic/"},
+            {"pipeline/", "alembic/", "personal_context/"},
         ),
         "modules/gateway/Dockerfile": ("modules/gateway", {"contracts/"}),
         "modules/research/gbrain/docker/Dockerfile": (

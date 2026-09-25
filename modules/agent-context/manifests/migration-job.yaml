@@ -28,9 +28,23 @@ spec:
     spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
       restartPolicy: Never
+      # Pod-level security context (#6038 — S15 non-root hardening).
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: migration
           image: ${INGESTION_IMAGE}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -56,6 +70,11 @@ spec:
               value: "${AC_RDS_DBNAME}"
             - name: AC_AWS_REGION
               value: "${AC_AWS_REGION}"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/appuser
           resources:
             requests:
               cpu: "100m"
@@ -63,3 +82,10 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: home
+          emptyDir:
+            sizeLimit: 256Mi
