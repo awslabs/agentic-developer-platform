@@ -44,6 +44,10 @@ class ControllerProviderRequest(Base):
     cluster_name: Mapped[str] = mapped_column(String(255), nullable=False)
     operation_kind: Mapped[str] = mapped_column(String(255), nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Which approved region a launch actually used, once known (#5925). Only
+    # meaningful for a multi-region plan; a single-region plan already names
+    # its one region in the approved controller_plan itself.
+    region: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class ControllerCapacity(Base):

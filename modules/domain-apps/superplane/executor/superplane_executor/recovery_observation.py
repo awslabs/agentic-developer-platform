@@ -26,4 +26,8 @@ async def observe_request(provider, operation, plan, *, operation_kind, request_
         set(references)
     ) != len(references):
         raise OperationRefused("recovered launch resource identity unavailable")
+    references = [
+        plan.resource_reference("instance", reference, instance.get("SuperplaneRegion"))
+        for reference, instance in zip(references, instances, strict=True)
+    ]
     return "succeeded", references[0]

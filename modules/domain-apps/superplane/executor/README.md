@@ -439,3 +439,40 @@ the original allocation and requests no additional GPU/cost reservation.
 This extends the existing AWS launch/join/workload lifecycle. It does not enable
 cross-provider credentials or WireGuard hybrid joins; those remain required for
 the mixed-provider demo. No deployment or live acceptance follows from code CI.
+
+## Approved regional capacity (#5925)
+
+Version 4 GPU profiles replace the five flat location fields (`region`,
+`image_id`, `vpc_name`, `security_group`, `instance_profile`) with `regions`.
+Each of its 1–4 entries contains those fields plus exact `vpc_id`,
+`security_group_id` and `subnet_ids` (1–4 distinct subnet IDs). All entries use
+one approved provider account/credential. The existing workload and aggregate
+GPU/runtime/cost bounds remain required. The approved subnet set must cover the
+subnets eligible for the prepared SkyPilot VPC; a different selected subnet is
+refused, never silently adopted. Remote private connectivity and post-launch
+bootstrap completion are delivered by #5926/#5927.
+
+The producer stores compact regional metadata in `controller_regions` and binds
+its SHA-256 in the version-4 controller plan. Both parameters remain subject to
+the shared 2,000-character limit. SkyPilot receives a single region × GPU choice
+set; each candidate carries its own network/profile configuration and binding
+labels. The backend verifies the actual account, region/image, subnet/VPC,
+security-group ID, node profile, encrypted disk bound and instance count before
+RunInstances, in addition to the existing physical GPU guard. V4 requires
+`regional_binding_guard: 1` in backend attestation. Old backends cannot execute
+new regional admissions. V1–V3 retain their original format.
+
+Regional inventory uses EC2 ARNs with account, region, kind and resource ID,
+including instances, volumes, network interfaces and addresses. Discovery scans
+all approved regions to find partial/fallback allocations; subsequent observations
+query each original resource in its recorded region. Denied/incomplete discovery
+retains the obligation. A lost launch reply may leave the optional request-level
+`region` null, but discovered resource ARNs persist through the original fenced
+inventory and do not rely on that successful-reply projection. Bare IDs in a v4
+allocation are unresolved rather than guessed or adopted. Legacy v1–V3 IDs remain
+supported.
+
+Validation uses the pinned parser, installed pre-create guard, real registered
+worker/PostgreSQL lifecycle, recovery-provider boundary and regional inventory
+observation tests. AWS/SkyPilot/Kubernetes responses in these tests are simulated;
+passing them does not establish live multi-region GPU execution or billed cost.

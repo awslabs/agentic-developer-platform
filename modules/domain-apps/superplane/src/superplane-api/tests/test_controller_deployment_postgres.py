@@ -42,7 +42,42 @@ async def workload(lifecycle, monkeypatch, tmp_path, request):  # noqa: F811
     context = lifecycle
     workspace_id, cluster_id, request_id = [uuid.uuid4() for _ in range(3)]
     profile = profile_fixture(cluster_id)
-    if getattr(request, "param", False):
+    param = getattr(request, "param", False)
+    if param == "regions":
+        # #5925: a bounded regional profile. The second region reuses the same
+        # account/namespace/cluster target -- only the compute location and
+        # its network/image/identity binding vary.
+        del profile["instance_type"], profile["region"], profile["image_id"]
+        del profile["vpc_name"], profile["security_group"], profile["instance_profile"]
+        profile.update(
+            regions=[
+                {
+                    "region": "us-west-2",
+                    "image_id": "ami-0123456789abcdef0",
+                    "vpc_name": "workspace",
+                    "security_group": "approved-workers",
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "security_group_id": "sg-0123456789abcdef0",
+                    "subnet_ids": ["subnet-0123456789abcdef0"],
+                    "instance_profile": "approved-nodes",
+                },
+                {
+                    "region": "us-east-1",
+                    "image_id": "ami-0123456789abcdef1",
+                    "vpc_name": "workspace-east",
+                    "security_group": "approved-workers-east",
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "security_group_id": "sg-0123456789abcdef0",
+                    "subnet_ids": ["subnet-0123456789abcdef0"],
+                    "instance_profile": "approved-nodes-east",
+                },
+            ],
+            accelerators=["A10G:1", "L4:1"],
+            max_gpus_per_node=1,
+            cpus=4,
+            memory_gb=32,
+        )
+    elif param:
         del profile["instance_type"]
         profile.update(
             accelerators=["A10G:1", "L4:1"], max_gpus_per_node=1, cpus=4, memory_gb=32
@@ -682,7 +717,7 @@ async def worker_runtime(workload, tmp_path):
     async with pool.acquire() as connection:
         await connection.execute("""
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);
-            CREATE TABLE controller_provider_requests(idempotency_key text PRIMARY KEY,operation_id text,org_id text,workspace_id text,cluster_name text,operation_kind text,request_id text);
+            CREATE TABLE controller_provider_requests(idempotency_key text PRIMARY KEY,operation_id text,org_id text,workspace_id text,cluster_name text,operation_kind text,request_id text,region text);
             CREATE TABLE controller_capacity(org_id text,workspace_id text,cluster_name text,state text,PRIMARY KEY(org_id,workspace_id,cluster_name));
             CREATE TABLE controller_execution_accounting(operation_id text PRIMARY KEY,org_id uuid,workspace_id uuid,observation json);
         """)
@@ -695,7 +730,23 @@ async def worker_runtime(workload, tmp_path):
     data["certificate_authority"] = workload.preview.request.parameters[
         "controller_certificate_authority"
     ]
+    if data["version"] == 4:
+        data["regions"] = json.loads(
+            workload.preview.request.parameters["controller_regions"]
+        )
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "regional_guard_fixture",
+        Path(__file__).resolve().parents[3] / "installation/skypilot_runtime.py",
+    )
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
     cloud, verified = Cloud(data), {}
+    guard.selected_account = lambda _: cloud.sky_account
+    cloud.selected_region_override = None
+    cloud.selected_subnet_override = None
     cloud.sky_tasks = []
     cloud.capacity_constraints = ["physical_gpu_limit"]
     kube = Kubernetes(cloud)
@@ -727,16 +778,69 @@ async def worker_runtime(workload, tmp_path):
                     "credential_source": "web_identity",
                     "allocation_tags": ["instance", "volume", "network-interface"],
                     "capacity_constraints": cloud.capacity_constraints,
+                    "regional_binding_guard": getattr(
+                        cloud, "regional_binding_guard", 1
+                    ),
                 },
             )
         if path == "/launch":
-            cloud.sky_tasks.append(json.loads(json.loads(request.content)["task"]))
+            task = json.loads(json.loads(request.content)["task"])
+            cloud.sky_tasks.append(task)
+            if "regions" in data:
+                # SkyPilot's own selection, simulated: pick the first candidate
+                # whose region actually has capacity, never ranked by this app.
+                candidates = task["resources"]["any_of"]
+                chosen = next(
+                    (c for c in candidates if c["region"] == cloud.capacity_region),
+                    None,
+                )
+                if chosen is None:
+                    raise httpx.ReadError("no capacity in any candidate region")
+                # This is simulated provider selection; invoke the real installed
+                # RunInstances guard, including mutated provider arguments.
+                binding = next(
+                    b for b in data["regions"] if b["region"] == chosen["region"]
+                )
+                region = cloud.selected_region_override or chosen["region"]
+                cloud.client("ec2", region_name=region)
+                args = {
+                    "ImageId": chosen["image_id"],
+                    "InstanceType": "g6.xlarge",
+                    "MinCount": 1,
+                    "MaxCount": 1,
+                    "IamInstanceProfile": {"Name": binding["instance_profile"]},
+                    "SubnetId": cloud.selected_subnet_override
+                    or binding["subnet_ids"][0],
+                    "SecurityGroupIds": [binding["security_group_id"]],
+                    "BlockDeviceMappings": [
+                        {
+                            "DeviceName": "/dev/sda1",
+                            "Ebs": {"VolumeSize": data["disk_size"], "Encrypted": True},
+                        }
+                    ],
+                    "TagSpecifications": [
+                        {
+                            "ResourceType": "instance",
+                            "Tags": [
+                                {"Key": k, "Value": v}
+                                for k, v in chosen["labels"].items()
+                            ],
+                        }
+                    ],
+                }
+                guard.verify_region_binding(cloud, args)
+                guard.verify_selected_binding(cloud, args)
+                cloud.launched_region = region
             cloud.launches += 1
             cloud.exists = cloud.ever_created = True
+            if cloud.lose_launch_response:
+                raise httpx.ReadError("simulated response loss")
         elif path == "/down":
             assert json.loads(request.content)["purge"] is False
             cloud.exists = False
         elif path == "/api/status":
+            if cloud.lose_status_response:
+                raise httpx.ReadError("simulated status loss")
             return httpx.Response(
                 200,
                 json=[
@@ -847,15 +951,23 @@ async def worker_runtime(workload, tmp_path):
     async def execute(worker):
         results = []
         for step in worker.plan.steps:
-            results.append(
-                await worker.server.dispatch(
+            try:
+                result = await worker.server.dispatch(
                     {
                         "token": worker.token,
                         "method": "execute_step",
                         "arguments": {"step_id": step["step_id"]},
                     }
                 )
-            )
+            except Exception as error:
+                # Production deliberately suppresses provider details. Preserve
+                # simulated-provider failure context in CI diagnostics only.
+                if error.__context__ is not None:
+                    import traceback
+
+                    traceback.print_exception(error.__context__)
+                raise
+            results.append(result)
         return results
 
     try:
@@ -918,7 +1030,7 @@ async def assert_completed_worker(worker_runtime, worker):
 
 
 @pytest.mark.parametrize("leaked_volume", [False, True])
-@pytest.mark.parametrize("workload", [False, True], indirect=True)
+@pytest.mark.parametrize("workload", [False, True, "regions"], indirect=True)
 async def test_actual_api_dispatch_paid_worker_rpc_and_owned_absence_quota_projection(
     workload, worker_runtime, leaked_volume
 ):
@@ -929,15 +1041,38 @@ async def test_actual_api_dispatch_paid_worker_rpc_and_owned_absence_quota_proje
     worker = await worker_runtime.publish(created)
     assert all(result[1] == "settle" for result in await worker_runtime.execute(worker))
     assert worker_runtime.cloud.launches == 1
-    if worker.plan.data["version"] == 3:
+    if worker.plan.data["version"] in (3, 4):
         resources = worker_runtime.cloud.sky_tasks[0]["resources"]
         assert "instance_type" not in resources
-        assert resources["any_of"] == [
-            {"accelerators": "A10G:1"},
-            {"accelerators": "L4:1"},
-        ]
         assert resources["labels"]["superplane-max-gpus-per-node"] == "1"
         assert resources["cpus"] == "4+" and resources["memory"] == "32+"
+        if worker.plan.data["version"] == 3:
+            assert resources["any_of"] == [
+                {"accelerators": "A10G:1"},
+                {"accelerators": "L4:1"},
+            ]
+        else:
+            # #5925: SkyPilot -- not this app -- picked the actually-used
+            # region/image among the eligible alternatives; every candidate
+            # still names its own approved region, image and network/identity.
+            assert "region" not in resources and "image_id" not in resources
+            regions_offered = {c["region"] for c in resources["any_of"]}
+            assert regions_offered == {"us-west-2", "us-east-1"}
+            assert worker_runtime.cloud.launched_region in regions_offered
+            used = next(
+                c
+                for c in resources["any_of"]
+                if c["region"] == worker_runtime.cloud.launched_region
+            )
+            assert used["image_id"] in (
+                "ami-0123456789abcdef0",
+                "ami-0123456789abcdef1",
+            )
+            async with worker_runtime.pool.acquire() as connection:
+                recorded_region = await connection.fetchval(
+                    "SELECT region FROM controller_provider_requests WHERE operation_kind='launch'"
+                )
+                assert recorded_region == worker_runtime.cloud.launched_region
     # A completed task's closed lease cannot authorize a duplicate launch.
     from harness_jobs.execution import ProviderCallRefused
 
@@ -1019,6 +1154,123 @@ async def test_gpu_selection_requires_backend_physical_limit_support(
         await worker_runtime.execute(worker)
     assert worker_runtime.cloud.launches == 0
     assert not worker_runtime.kube.stored
+
+
+@pytest.mark.parametrize("workload", ["regions"], indirect=True)
+async def test_first_choice_region_unavailable_selects_the_other_approved_region(
+    workload, worker_runtime
+):
+    """#5925 acceptance 1 & 5: capacity absent in the first-listed region,
+    SkyPilot (simulated) lands in the other approved region -- the plan names
+    both as eligible and the executor never ranks or picks between them.
+    """
+    created = await api_create(workload)
+    worker = await worker_runtime.publish(created)
+    regions_offered = {c["region"] for c in worker.plan.data["regions"]}
+    first_choice = worker.plan.data["regions"][0]["region"]
+    worker_runtime.cloud.capacity_region = next(
+        r for r in regions_offered if r != first_choice
+    )
+    assert all(result[1] == "settle" for result in await worker_runtime.execute(worker))
+    assert worker_runtime.cloud.launches == 1
+    assert worker_runtime.cloud.launched_region == worker_runtime.cloud.capacity_region
+    assert worker_runtime.cloud.launched_region != first_choice
+    async with worker_runtime.pool.acquire() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT region FROM controller_provider_requests WHERE operation_kind='launch'"
+            )
+            == worker_runtime.cloud.launched_region
+        )
+
+
+@pytest.mark.parametrize("workload", ["regions"], indirect=True)
+async def test_capacity_exhausted_across_every_approved_region_fails_without_launch(
+    workload, worker_runtime
+):
+    """#5925 acceptance 5: exhausted alternatives -- no approved region has
+    capacity, so the launch step must not report success or fabricate a
+    resource. Unlike a lost reply after a real launch (where an instance may
+    already exist and recovery must find it), true exhaustion means nothing
+    was ever created anywhere -- the finalizer correctly has zero resources to
+    track and refuses rather than reporting empty success.
+    """
+    from harness_jobs.execution import ProviderCallRefused
+
+    created = await api_create(workload)
+    worker = await worker_runtime.publish(created)
+    worker_runtime.cloud.capacity_region = None
+    with pytest.raises((OperationRefused, ProviderCallRefused)):
+        await worker_runtime.execute(worker)
+    assert worker_runtime.cloud.launches == 0
+    assert worker_runtime.cloud.launched_region is None
+
+
+@pytest.mark.parametrize("workload", ["regions"], indirect=True)
+async def test_ambiguous_launch_across_regions_retains_without_repeating_creation(
+    workload, worker_runtime
+):
+    """#5925 acceptance criteria 3 & 4: a lost launch reply after SkyPilot
+    selected a non-default approved region must not allocate again on retry,
+    and the region actually used must be discoverable (from the durable
+    journal and from cross-region instance discovery) rather than defaulting
+    to "no resources".
+    """
+    from harness_jobs.execution import ProviderCallRefused
+
+    regions_offered = None
+    created = await api_create(workload)
+    worker = await worker_runtime.publish(created)
+    regions_offered = {c["region"] for c in worker.plan.data["regions"]}
+    other_region = next(
+        r for r in regions_offered if r != worker.plan.data["regions"][0]["region"]
+    )
+    worker_runtime.cloud.capacity_region = other_region
+    worker_runtime.cloud.lose_launch_response = True
+    result = await worker.server.dispatch(
+        {
+            "token": worker.token,
+            "method": "execute_step",
+            "arguments": {"step_id": worker.plan.steps[0]["step_id"]},
+        }
+    )
+    assert result[1] == "retain"
+    assert worker_runtime.cloud.launches == 1
+    assert worker_runtime.cloud.launched_region == other_region
+    with pytest.raises(ProviderCallRefused):
+        await worker.server.dispatch(
+            {
+                "token": worker.token,
+                "method": "execute_step",
+                "arguments": {"step_id": worker.plan.steps[0]["step_id"]},
+            }
+        )
+    # Persisted resource identity retains the selected region even when the
+    # request reply never arrived. Recovery cannot depend on process memory.
+    async with worker_runtime.pool.acquire() as connection:
+        members = await connection.fetch(
+            "SELECT provider_reference FROM harness_allocation_resource"
+        )
+        assert len(members) == 3
+        assert all(
+            row["provider_reference"].startswith(
+                f"arn:aws:ec2:{other_region}:{worker.plan.data['provider_account_id']}:"
+            )
+            for row in members
+        )
+    # No second allocation: exactly one launch occurred across the retry.
+    assert worker_runtime.cloud.launches == 1
+    async with worker_runtime.pool.acquire() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM harness_allocation_resource"
+            )
+            == 3
+        )
+        assert (
+            await connection.fetchval("SELECT state FROM controller_capacity")
+            == "creating"
+        )
 
 
 @pytest.mark.parametrize("kind", ["Deployment", "Service"])
@@ -1524,3 +1776,24 @@ async def test_serving_catalog_checks_current_grants_profiles_and_transport_with
             )
             == 0
         )
+
+
+@pytest.mark.parametrize("workload", ["regions"], indirect=True)
+@pytest.mark.parametrize("mutation", ["region", "subnet", "old-backend"])
+async def test_selected_region_outside_the_approved_set_is_never_bound(
+    workload, worker_runtime, mutation
+):
+    from harness_jobs.execution import ProviderCallRefused
+
+    created = await api_create(workload)
+    worker = await worker_runtime.publish(created)
+    if mutation == "region":
+        worker_runtime.cloud.selected_region_override = "eu-west-1"
+    elif mutation == "subnet":
+        worker_runtime.cloud.selected_subnet_override = "subnet-fffffffffffffffff"
+    else:
+        worker_runtime.cloud.regional_binding_guard = None
+    with pytest.raises((OperationRefused, ProviderCallRefused)):
+        await worker_runtime.execute(worker)
+    assert worker_runtime.cloud.launches == 0
+    assert not worker_runtime.kube.stored

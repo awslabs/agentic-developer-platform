@@ -81,6 +81,19 @@ GPU_PROFILE_FIELDS = (PROFILE_FIELDS - {"instance_type"}) | {
     "cpus",
     "memory_gb",
 }
+# A bounded set of complete regional bindings (account/role stays shared; each
+# entry still names its own region-scoped image, VPC, security group and node
+# identity). Replaces the single-region fields; nothing else about the profile
+# widens -- SkyPilot picks among these, this app never ranks or falls back.
+REGIONAL_BINDING_TUPLE = (
+    "region",
+    "image_id",
+    "vpc_name",
+    "security_group",
+    "instance_profile",
+)
+REGIONAL_BINDING_FIELDS = frozenset(REGIONAL_BINDING_TUPLE)
+REGIONAL_PROFILE_FIELDS = (GPU_PROFILE_FIELDS - REGIONAL_BINDING_FIELDS) | {"regions"}
 
 
 def compact(value):
@@ -171,9 +184,11 @@ def build_deployment_preview(
     try:
         request_id = str(uuid.UUID(str(request_id)))
         profile = json.loads(compact(profile))
-        if set(profile) not in (PROFILE_FIELDS, GPU_PROFILE_FIELDS) or not re.fullmatch(
-            r"[a-z][a-z0-9-]{0,62}", profile_id
-        ):
+        if set(profile) not in (
+            PROFILE_FIELDS,
+            GPU_PROFILE_FIELDS,
+            REGIONAL_PROFILE_FIELDS,
+        ) or not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", profile_id):
             raise ValueError("unsupported profile")
         if (
             workload_kind not in {"serving", "batch"}
@@ -255,27 +270,23 @@ def build_deployment_preview(
         deployment_id, allocation_id = deployment_identity(
             org_id, workspace_id, request_id
         )
-        data = {
-            key: profile[key]
-            for key in (
-                "cluster_arn",
-                "endpoint",
-                "namespace",
-                "provider_account_id",
-                "region",
-                "image_id",
-                "node_count",
-                "disk_size",
-                "instance_profile",
-                "vpc_name",
-                "security_group",
-                "service_cidr",
-                "certificate_authority",
-            )
-        }
+        is_regional = "regions" in profile
+        shared_fields = (
+            "cluster_arn",
+            "endpoint",
+            "namespace",
+            "provider_account_id",
+            "node_count",
+            "disk_size",
+            "service_cidr",
+            "certificate_authority",
+        ) + (() if is_regional else REGIONAL_BINDING_TUPLE)
+        data = {key: profile[key] for key in shared_fields}
         certificate = data.pop("certificate_authority")
+        if is_regional:
+            data["regions_sha256"] = document_digest(profile["regions"])
         data.update(
-            version=3 if "accelerators" in profile else 2,
+            version=4 if is_regional else (3 if "accelerators" in profile else 2),
             workload=workload,
             certificate_authority_sha256=hashlib.sha256(
                 certificate.encode()
@@ -283,7 +294,7 @@ def build_deployment_preview(
         )
         capacity_fields = (
             ("accelerators", "max_gpus_per_node", "cpus", "memory_gb")
-            if data["version"] == 3
+            if data["version"] in (3, 4)
             else ("instance_type",)
         )
         data.update({key: profile[key] for key in capacity_fields})
@@ -315,6 +326,8 @@ def build_deployment_preview(
             ),
             **reference,
         }
+        if is_regional:
+            parameters["controller_regions"] = compact(profile["regions"])
         request = OperationRequest(
             action="provision", idempotency_key=str(request_id), parameters=parameters
         )
@@ -330,6 +343,8 @@ def validate_request(request, target, *, org_id, workspace_id):
     fields = REQUEST_FIELDS | (
         {"controller_source_operation_id"} if request.action == "teardown" else set()
     )
+    if json.loads(request.parameters.get("controller_plan", "{} ")).get("version") == 4:
+        fields = fields | {"controller_regions"}
     if set(request.parameters) != fields:
         raise OperationRefused(
             "controller deployment request has unsupported parameters"

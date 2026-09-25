@@ -246,7 +246,7 @@ async def system(pool, tmp_path):
             CREATE TABLE workspaces(id uuid PRIMARY KEY,org_id uuid,cluster_id uuid,namespace_name text,status text);
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);
             CREATE TABLE controller_executions(operation_id text PRIMARY KEY,org_id uuid,workspace_id uuid,controller_holder text,assignment json,expires_at timestamptz);
-            CREATE TABLE controller_provider_requests(idempotency_key text PRIMARY KEY,operation_id text,org_id text,workspace_id text,cluster_name text,operation_kind text,request_id text);
+            CREATE TABLE controller_provider_requests(idempotency_key text PRIMARY KEY,operation_id text,org_id text,workspace_id text,cluster_name text,operation_kind text,request_id text,region text);
             CREATE TABLE controller_capacity(org_id text,workspace_id text,cluster_name text,state text,PRIMARY KEY(org_id,workspace_id,cluster_name));
             CREATE TABLE controller_execution_accounting(operation_id text PRIMARY KEY,org_id uuid,workspace_id uuid,observation json);
         """)

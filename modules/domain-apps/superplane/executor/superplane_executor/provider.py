@@ -33,10 +33,13 @@ class Provider:
     async def session_for(self, operation, plan):
         # Re-read the admitted vault role, never select a provider from ambient
         # profiles. Temporary AWS credentials stay in this trusted process only.
+        # STS is queried in the cluster's own (fixed) region; the returned
+        # session is not region-pinned -- every call below passes its own
+        # explicit region_name, since a multi-region plan has more than one.
         role = await self.registry.authority.delivery_role(operation)
 
         def resolve():
-            sts = self.session.client("sts", region_name=plan.data["region"])
+            sts = self.session.client("sts", region_name=plan.cluster_region)
             identity = sts.get_caller_identity()
             expected = f"arn:aws:sts::{plan.data['provider_account_id']}:assumed-role/{role['role_arn'].rsplit('/', 1)[-1]}/"
             if identity.get("Arn", "").startswith(expected):
@@ -56,7 +59,7 @@ class Provider:
                 aws_access_key_id=credentials["AccessKeyId"],
                 aws_secret_access_key=credentials["SecretAccessKey"],
                 aws_session_token=credentials["SessionToken"],
-                region_name=plan.data["region"],
+                region_name=plan.cluster_region,
             )
 
         return await asyncio.to_thread(resolve), role["role_arn"]
@@ -66,33 +69,19 @@ class Provider:
         session, role = await self.session_for(operation, plan)
 
         def inspect():
-            region = data["region"]
-            sts = session.client("sts", region_name=region).get_caller_identity()
-            eks = session.client("eks", region_name=region)
+            # The EKS control plane is checked once, in its own fixed region.
+            # Every approved regional binding is then independently verified
+            # against live AWS truth before any of them may be used to launch --
+            # this is the pre-create enforcement the design requires, run for
+            # every eligible region SkyPilot could select, not only the first.
+            cluster_region = plan.cluster_region
+            sts = session.client(
+                "sts", region_name=cluster_region
+            ).get_caller_identity()
+            eks = session.client("eks", region_name=cluster_region)
             cluster = eks.describe_cluster(name=data["cluster_arn"].split("/")[-1])[
                 "cluster"
             ]
-            ec2 = session.client("ec2", region_name=region)
-            vpcs = ec2.describe_vpcs(
-                Filters=[{"Name": "tag:Name", "Values": [data["vpc_name"]]}]
-            )["Vpcs"]
-            groups = ec2.describe_security_groups(
-                Filters=[
-                    {"Name": "group-name", "Values": [data["security_group"]]},
-                    {
-                        "Name": "vpc-id",
-                        "Values": [cluster["resourcesVpcConfig"]["vpcId"]],
-                    },
-                ]
-            )["SecurityGroups"]
-            profile = session.client("iam").get_instance_profile(
-                InstanceProfileName=data["instance_profile"]
-            )["InstanceProfile"]
-            if len(profile["Roles"]) != 1:
-                raise OperationRefused("node instance role ambiguous")
-            access = eks.describe_access_entry(
-                clusterName=cluster["name"], principalArn=profile["Roles"][0]["Arn"]
-            )["accessEntry"]
             if (
                 sts["Account"] != data["provider_account_id"]
                 or cluster["arn"] != data["cluster_arn"]
@@ -102,15 +91,81 @@ class Provider:
                 != data["certificate_authority"]
                 or cluster["kubernetesNetworkConfig"].get("serviceIpv4Cidr")
                 != data["service_cidr"]
-                or len(vpcs) != 1
-                or vpcs[0]["VpcId"] != cluster["resourcesVpcConfig"]["vpcId"]
-                or len(groups) != 1
-                or access["type"] != "EC2_LINUX"
-                or profile["Arn"].split(":")[4] != data["provider_account_id"]
             ):
                 raise OperationRefused(
                     "approved AWS/EKS prerequisites do not match provider truth"
                 )
+            for binding in plan.region_bindings:
+                region = binding["region"]
+                ec2 = session.client("ec2", region_name=region)
+                vpcs = ec2.describe_vpcs(
+                    Filters=[{"Name": "tag:Name", "Values": [binding["vpc_name"]]}]
+                )["Vpcs"]
+                # A non-home region has no EKS resourcesVpcConfig to compare
+                # against; the VPC's own account/tag match is the available
+                # provider truth there. The home region keeps the stricter
+                # exact-VPC-ID cross-check against the live cluster.
+                groups = ec2.describe_security_groups(
+                    Filters=[
+                        {
+                            "Name": "group-name",
+                            "Values": [binding["security_group"]],
+                        },
+                        {"Name": "vpc-id", "Values": [v["VpcId"] for v in vpcs]},
+                    ]
+                )["SecurityGroups"]
+                profile = session.client(
+                    "iam", region_name=region
+                ).get_instance_profile(InstanceProfileName=binding["instance_profile"])[
+                    "InstanceProfile"
+                ]
+                if len(profile["Roles"]) != 1:
+                    raise OperationRefused("node instance role ambiguous")
+                if (
+                    len(vpcs) != 1
+                    or (
+                        region == cluster_region
+                        and vpcs[0]["VpcId"] != cluster["resourcesVpcConfig"]["vpcId"]
+                    )
+                    or len(groups) != 1
+                    or profile["Arn"].split(":")[4] != data["provider_account_id"]
+                ):
+                    raise OperationRefused(
+                        "approved AWS/EKS prerequisites do not match provider truth"
+                    )
+                if data["version"] == 4:
+                    subnets = ec2.describe_subnets(SubnetIds=binding["subnet_ids"])[
+                        "Subnets"
+                    ]
+                    images = ec2.describe_images(ImageIds=[binding["image_id"]])[
+                        "Images"
+                    ]
+                    if (
+                        vpcs[0]["VpcId"] != binding["vpc_id"]
+                        or groups[0]["GroupId"] != binding["security_group_id"]
+                        or {s["SubnetId"] for s in subnets}
+                        != set(binding["subnet_ids"])
+                        or any(
+                            s["VpcId"] != binding["vpc_id"]
+                            or s["OwnerId"] != data["provider_account_id"]
+                            for s in subnets
+                        )
+                        or len(images) != 1
+                        or images[0]["ImageId"] != binding["image_id"]
+                        or images[0].get("State") != "available"
+                    ):
+                        raise OperationRefused(
+                            "regional network/image prerequisites mismatch"
+                        )
+                if region == cluster_region:
+                    access = eks.describe_access_entry(
+                        clusterName=cluster["name"],
+                        principalArn=profile["Roles"][0]["Arn"],
+                    )["accessEntry"]
+                    if access["type"] != "EC2_LINUX":
+                        raise OperationRefused(
+                            "approved AWS/EKS prerequisites do not match provider truth"
+                        )
 
         await asyncio.to_thread(inspect)
         sky_identity = await self.sky.identity()
@@ -123,17 +178,27 @@ class Provider:
             or sky_identity.get("allocation_tags")
             != ["instance", "volume", "network-interface"]
             or (
-                data["version"] == 3
+                data["version"] == 4 and sky_identity.get("regional_binding_guard") != 1
+            )
+            or (
+                data["version"] in (3, 4)
                 and sky_identity.get("capacity_constraints") != ["physical_gpu_limit"]
             )
         ):
             raise OperationRefused("SkyPilot provider identity mismatch")
 
     async def instances(self, operation, plan, *, include_terminated=False):
+        """Every instance for this allocation, searched across every approved region.
+
+        A region whose own listing fails stays unresolved rather than silently
+        being treated as empty -- callers that need certainty of absence (down
+        verification, ambiguous-launch recovery) must see that failure, never a
+        quietly shortened result that reads as "nothing there".
+        """
         session, _ = await self.session_for(operation, plan)
 
-        def inspect():
-            ec2 = session.client("ec2", region_name=plan.data["region"])
+        def inspect(region):
+            ec2 = session.client("ec2", region_name=region)
             paginator = ec2.get_paginator("describe_instances")
             result = []
             filters = [
@@ -155,26 +220,35 @@ class Provider:
             if include_terminated:
                 filters = filters[:1]
             for page in paginator.paginate(Filters=filters):
-                result.extend(
-                    instance
-                    for reservation in page["Reservations"]
-                    for instance in reservation["Instances"]
-                )
+                for reservation in page["Reservations"]:
+                    for instance in reservation["Instances"]:
+                        # Not an AWS field: the region a launch actually landed
+                        # in must be discoverable from the instance itself, not
+                        # re-derived by re-running every approved region's check.
+                        result.append({**instance, "SuperplaneRegion": region})
             return result
 
-        return await asyncio.to_thread(inspect)
+        found = []
+        for binding in plan.region_bindings:
+            found.extend(await asyncio.to_thread(inspect, binding["region"]))
+        return found
 
-    async def remember(self, call, plan, request_id=None):
+    async def remember(self, call, plan, request_id=None, region=None):
         # A separate domain journal supplements the shared, already committed
         # intent with the asynchronous handle BEFORE waiting for SkyPilot. A kill
         # during the wait must not discard the only provider request reference.
+        # `region` is filled in as soon as it is known (after SkyPilot reports
+        # which approved region it actually used), so a later recovery run does
+        # not have to re-derive it by re-checking every approved region.
         async with self.domain_pool.acquire() as connection:
             await connection.execute(
                 """
                 INSERT INTO controller_provider_requests
-                  (idempotency_key, operation_id, org_id, workspace_id, cluster_name, operation_kind, request_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7)
-                ON CONFLICT (idempotency_key) DO UPDATE SET request_id=COALESCE(EXCLUDED.request_id, controller_provider_requests.request_id)
+                  (idempotency_key, operation_id, org_id, workspace_id, cluster_name, operation_kind, request_id, region)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                ON CONFLICT (idempotency_key) DO UPDATE SET
+                  request_id=COALESCE(EXCLUDED.request_id, controller_provider_requests.request_id),
+                  region=COALESCE(EXCLUDED.region, controller_provider_requests.region)
                 """,
                 call.idempotency_key,
                 call.operation_id,
@@ -183,6 +257,7 @@ class Provider:
                 plan.cluster_name,
                 call.operation_kind,
                 request_id,
+                region,
             )
 
     async def __call__(self, call):
@@ -278,25 +353,29 @@ class Provider:
                     )
                 await self.remember(call, plan)
                 await authorize()
-                request_id = await self.sky.submit(
-                    "/launch",
-                    {
-                        "task": plan.task(operation),
-                        "cluster_name": plan.cluster_name,
-                        "retry_until_up": False,
-                        "down": True,
-                        "idle_minutes_to_autostop": 0,
-                        "env_vars": plan.request_environment,
-                        "override_skypilot_config": {
-                            "aws": {
-                                "remote_identity": plan.data["instance_profile"],
-                                "vpc_name": plan.data["vpc_name"],
-                                "security_group_name": plan.data["security_group"],
-                                "disk_encrypted": True,
-                            }
-                        },
-                    },
-                )
+                launch_body = {
+                    "task": plan.task(operation),
+                    "cluster_name": plan.cluster_name,
+                    "retry_until_up": False,
+                    "down": True,
+                    "idle_minutes_to_autostop": 0,
+                    "env_vars": plan.request_environment,
+                }
+                if plan.data["version"] != 4:
+                    # A single-region plan's identity/network binding is set once,
+                    # server-wide. A multi-region plan instead carries its own
+                    # binding per approved region inside the task's own `any_of`
+                    # entries (built in `Plan.task`), since a single server-wide
+                    # override cannot differ per candidate region.
+                    launch_body["override_skypilot_config"] = {
+                        "aws": {
+                            "remote_identity": plan.data["instance_profile"],
+                            "vpc_name": plan.data["vpc_name"],
+                            "security_group_name": plan.data["security_group"],
+                            "disk_encrypted": True,
+                        }
+                    }
+                request_id = await self.sky.submit("/launch", launch_body)
                 await self.remember(call, plan, request_id)
                 reference = json.dumps(
                     {"cluster_name": plan.cluster_name, "request_id": request_id}
@@ -306,10 +385,24 @@ class Provider:
                 instances = await self.instances(operation, plan)
                 if len(instances) != plan.data["node_count"]:
                     return CallOutcome.UNKNOWN, None, reference
+                # The selected region is now known. Persist it beside the
+                # existing request handle so a later recovery run does not have
+                # to re-derive it by re-checking every approved region.
+                regions_used = {i["SuperplaneRegion"] for i in instances}
+                await self.remember(
+                    call,
+                    plan,
+                    request_id,
+                    region=next(iter(regions_used)) if len(regions_used) == 1 else None,
+                )
                 return (
                     CallOutcome.SUCCEEDED,
                     "SkyPilot launch completed; join remains a separate step",
-                    instances[0]["InstanceId"],
+                    plan.resource_reference(
+                        "instance",
+                        instances[0]["InstanceId"],
+                        instances[0]["SuperplaneRegion"],
+                    ),
                 )
             if call.operation_kind == "deploy":
                 from harness_jobs.inventory import (

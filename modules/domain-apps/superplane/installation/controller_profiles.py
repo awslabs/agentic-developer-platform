@@ -41,6 +41,20 @@ GPU_PROFILE_FIELDS = (PROFILE_FIELDS - {"instance_type"}) | {
     "cpus",
     "memory_gb",
 }
+# A bounded set of complete regional bindings replacing the single-region
+# fields. Each entry names its own region, image, VPC, security group and
+# node identity; SkyPilot -- not this installer or the executor -- selects
+# among them. The workspace's own EKS cluster stays in the fixed region
+# named by cluster_arn regardless of which entry is eventually used.
+REGIONAL_BINDING_FIELDS = {
+    "region",
+    "image_id",
+    "vpc_name",
+    "security_group",
+    "instance_profile",
+}
+REGIONAL_PROFILE_FIELDS = (GPU_PROFILE_FIELDS - REGIONAL_BINDING_FIELDS) | {"regions"}
+REGIONAL_BINDING_FIELDS |= {"vpc_id", "security_group_id", "subnet_ids"}
 
 
 def policy(env):
@@ -80,9 +94,42 @@ def policy(env):
                 isinstance(profile_id, str)
                 and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", profile_id)
                 and isinstance(profile, dict)
-                and set(profile) in (PROFILE_FIELDS, GPU_PROFILE_FIELDS),
+                and set(profile)
+                in (PROFILE_FIELDS, GPU_PROFILE_FIELDS, REGIONAL_PROFILE_FIELDS),
                 "controller_profiles has an invalid profile identity",
             )
+            if "regions" in profile:
+                require(
+                    isinstance(profile["regions"], list)
+                    and 1 <= len(profile["regions"]) <= 4
+                    and all(
+                        isinstance(entry, dict)
+                        and set(entry) == REGIONAL_BINDING_FIELDS
+                        and all(
+                            isinstance(entry[key], str)
+                            for key in entry
+                            if key != "subnet_ids"
+                        )
+                        and isinstance(entry["subnet_ids"], list)
+                        and 1 <= len(entry["subnet_ids"]) <= 4
+                        and all(
+                            isinstance(s, str)
+                            and re.fullmatch(r"subnet-[a-f0-9]{8,17}", s)
+                            for s in entry["subnet_ids"]
+                        )
+                        and re.fullmatch(r"vpc-[a-f0-9]{8,17}", entry["vpc_id"])
+                        and re.fullmatch(
+                            r"sg-[a-f0-9]{8,17}", entry["security_group_id"]
+                        )
+                        for entry in profile["regions"]
+                    )
+                    and len({entry["region"] for entry in profile["regions"]})
+                    == len(profile["regions"])
+                    and len({entry["image_id"] for entry in profile["regions"]})
+                    == len(profile["regions"]),
+                    "controller_profiles regional bindings must be a bounded set of "
+                    "distinct regions with distinct, region-scoped image IDs",
+                )
             workload = profile.get("workload", {})
             require(
                 isinstance(workload, dict)
@@ -168,11 +215,19 @@ def validate_profiles(env, *, control_plane_only):
             "cluster_arn": f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{env['workspace_cluster']}",
             "namespace": env["workspace_namespace"],
             "provider_account_id": env["account_id"],
-            "region": env["region"],
         }
         for profile in selected_profiles(env).values():
+            # The EKS control plane's own region is always the installation's
+            # region above. A regional profile's compute "regions" name where
+            # SkyPilot may place machines, which is a separate, bounded choice
+            # checked by REGIONAL_BINDING_FIELDS validation above -- not here.
+            checks = (
+                expected
+                if "regions" in profile
+                else {**expected, "region": env["region"]}
+            )
             require(
-                all(profile[key] == value for key, value in expected.items()),
+                all(profile[key] == value for key, value in checks.items()),
                 "Selected controller profile does not match the installation workspace target",
             )
 

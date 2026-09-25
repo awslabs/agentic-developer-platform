@@ -638,7 +638,7 @@ async def test_cursor_survives_restart_and_does_not_limit_permanent_history(syst
     async with pool.acquire() as connection:
         for i in range(40):
             await connection.execute(
-                "INSERT INTO controller_provider_requests VALUES($1,$2,$3,$4,'old','launch','old-request')",
+                "INSERT INTO controller_provider_requests VALUES($1,$2,$3,$4,'old','launch','old-request',NULL)",
                 "old-key-" + str(i),
                 "000-history-" + str(i),
                 actor.org_id,
@@ -691,7 +691,7 @@ async def test_bounded_cursor_pages_all_eligible_leases_across_restart(system):
             )
             ids.add(record.operation_id)
             await connection.execute(
-                "INSERT INTO controller_provider_requests VALUES($1,$2,$3,$4,'old','launch','old-request')",
+                "INSERT INTO controller_provider_requests VALUES($1,$2,$3,$4,'old','launch','old-request',NULL)",
                 "page-key-" + str(index),
                 record.operation_id,
                 domain_org,

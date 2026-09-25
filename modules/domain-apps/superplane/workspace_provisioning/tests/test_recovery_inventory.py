@@ -14,6 +14,7 @@ from harness_jobs.inventory import (
 
 from workspace_provisioning.recovery_inventory import ProviderInventory
 from superplane_executor.recovery_observation import observe_request
+from superplane_executor.plan import Plan
 
 
 @pytest.mark.asyncio
@@ -39,7 +40,7 @@ async def test_recovery_returns_resource_identity_never_request_receipt(
         sky=SimpleNamespace(status=AsyncMock(return_value=status)),
         instances=AsyncMock(return_value=instances),
     )
-    operation, plan = object(), SimpleNamespace(data={"node_count": 1})
+    operation, plan = object(), Plan({"version": 3, "node_count": 1}, "allocation", ())
     assert (
         await observe_request(
             provider, operation, plan, operation_kind=kind, request_id="request-receipt"

@@ -102,7 +102,9 @@ class Finalizer:
             if call["operation_kind"] in ("launch", "deploy")
         }
 
-        def add(reference, kind, operation_kind):
+        def add(reference, kind, operation_kind, region=None):
+            if region is not None and plan.data["version"] == 4:
+                reference = plan.resource_reference(kind, reference, region)
             keys = (
                 frozenset({creating[operation_kind]})
                 if operation_kind in creating
@@ -117,14 +119,29 @@ class Finalizer:
             operation, plan, include_terminated=True
         )
         for instance in instances:
-            add(instance["InstanceId"], "instance", "launch")
+            add(
+                instance["InstanceId"],
+                "instance",
+                "launch",
+                instance["SuperplaneRegion"],
+            )
             for block in instance.get("BlockDeviceMappings", []):
                 if "Ebs" in block:
-                    add(block["Ebs"]["VolumeId"], "volume", "launch")
+                    add(
+                        block["Ebs"]["VolumeId"],
+                        "volume",
+                        "launch",
+                        instance["SuperplaneRegion"],
+                    )
             for interface in instance.get("NetworkInterfaces", []):
-                add(interface["NetworkInterfaceId"], "network_interface", "launch")
+                add(
+                    interface["NetworkInterfaceId"],
+                    "network_interface",
+                    "launch",
+                    instance["SuperplaneRegion"],
+                )
                 if allocation := interface.get("Association", {}).get("AllocationId"):
-                    add(allocation, "address", "launch")
+                    add(allocation, "address", "launch", instance["SuperplaneRegion"])
         for obj in self.provider.workspace.objects(operation, target, plan):
             response = await self.provider.workspace.request(
                 operation,
@@ -161,8 +178,8 @@ class Finalizer:
         # resources that no longer appear on an instance's attachments.
         session, _ = await self.provider.session_for(operation, plan)
 
-        def tagged():
-            ec2 = session.client("ec2", region_name=plan.data["region"])
+        def tagged(region):
+            ec2 = session.client("ec2", region_name=region)
             filters = [
                 {"Name": "tag:superplane-capacity", "Values": [plan.cluster_name]}
             ]
@@ -182,8 +199,12 @@ class Finalizer:
                 found.append((item["AllocationId"], "address"))
             return found
 
-        for reference, kind in await asyncio.to_thread(tagged):
-            add(reference, kind, "launch")
+        # Every approved region is scanned, not only the one the plan's flat
+        # fields might otherwise suggest. A lost launch reply must be
+        # discoverable no matter which approved region SkyPilot actually used.
+        for binding in plan.region_bindings:
+            for reference, kind in await asyncio.to_thread(tagged, binding["region"]):
+                add(reference, kind, "launch", binding["region"])
         return resources
 
     async def observe(self, operation, target, plan, resource):
@@ -235,8 +256,37 @@ class Finalizer:
 
         session, _ = await self.provider.session_for(operation, plan)
 
-        def cloud():
-            ec2 = session.client("ec2", region_name=plan.data["region"])
+        raw_ref = ref
+        regions = [binding["region"] for binding in plan.region_bindings]
+        if ref.startswith("arn:"):
+            parts = ref.split(":", 5)
+            if (
+                len(parts) != 6
+                or parts[:3] != ["arn", "aws", "ec2"]
+                or parts[3] not in regions
+                or parts[4] != plan.data["provider_account_id"]
+                or not parts[5].startswith(
+                    (
+                        resource.kind.replace("_", "-")
+                        if resource.kind != "address"
+                        else "elastic-ip"
+                    )
+                    + "/"
+                )
+            ):
+                return ResourceObservation(
+                    ResourcePresence.UNKNOWN, ref, detail="foreign regional identity"
+                )
+            regions = [parts[3]]
+            raw_ref = parts[5].split("/", 1)[1]
+        elif plan.data["version"] == 4:
+            # Never adopt ambiguous historical bare IDs into a regional allocation.
+            return ResourceObservation(
+                ResourcePresence.UNKNOWN, ref, detail="regional identity missing"
+            )
+
+        def cloud(region):
+            ec2 = session.client("ec2", region_name=region)
             methods = {
                 "instance": (
                     "describe_instances",
@@ -265,7 +315,7 @@ class Finalizer:
             }
             method, argument, result, missing = methods[resource.kind]
             try:
-                items = getattr(ec2, method)(**{argument: [ref]})[result]
+                items = getattr(ec2, method)(**{argument: [raw_ref]})[result]
             except ClientError as error:
                 if error.response.get("Error", {}).get("Code") == missing:
                     return ResourceObservation(ResourcePresence.ABSENT, ref)
@@ -285,12 +335,27 @@ class Finalizer:
                 state = state["Name"]
             return ResourceObservation(ResourcePresence.PRESENT, ref, str(state))
 
+        # v4 ARNs select the original account-qualified region. Legacy bare
+        # IDs use the legacy plan binding. Failed reads remain UNKNOWN so a
+        # missing observation cannot authorize cleanup completion.
         try:
-            return await asyncio.to_thread(cloud)
+            observations = [
+                await asyncio.to_thread(cloud, region) for region in regions
+            ]
         except Exception:
             return ResourceObservation(
                 ResourcePresence.UNKNOWN, ref, detail="provider observation unavailable"
             )
+        present = next(
+            (o for o in observations if o.presence is ResourcePresence.PRESENT), None
+        )
+        if present is not None:
+            return present
+        if any(o.presence is ResourcePresence.UNKNOWN for o in observations):
+            return ResourceObservation(
+                ResourcePresence.UNKNOWN, ref, detail="provider observation unavailable"
+            )
+        return ResourceObservation(ResourcePresence.ABSENT, ref)
 
     async def query(self, lease, resources, query_id):
         operation, target, plan = await self.context(lease.operation_id)

@@ -24,9 +24,17 @@ class Cloud:
         # A kill AFTER the durable handle is journalled but BEFORE the launch is
         # observed: the state scoped recovery exists to resolve.
         self.lose_status_response = False
+        # #5925: which approved region actually has capacity, for a version-4
+        # (multi-region) plan. `None` names every region as capacity-exhausted.
+        # Ignored entirely for version 1-3 plans (still single-region).
+        self.capacity_region = (
+            data["regions"][0]["region"] if "regions" in data else None
+        )
+        self.launched_region = None
+        self._client_region = None
         self.instance = {
             "InstanceId": "i-0123456789abcdef0",
-            "ImageId": data["image_id"],
+            "ImageId": data.get("image_id", "ami-0000000000000000"),
             # The simulated SkyPilot transport chooses this machine for GPU
             # requirement plans; the producer itself no longer picks one.
             "InstanceType": data.get("instance_type", "g6.xlarge"),
@@ -35,8 +43,18 @@ class Cloud:
             "NetworkInterfaces": [{"NetworkInterfaceId": "eni-0123456789abcdef0"}],
         }
 
-    def client(self, name, **kwargs):
+    def client(self, name, region_name=None, **kwargs):
+        self._client_region = region_name
         return self
+
+    @property
+    def meta(self):
+        cloud = self
+
+        class Meta:
+            region_name = cloud._client_region
+
+        return Meta()
 
     def get_caller_identity(self):
         return {
@@ -54,15 +72,52 @@ class Cloud:
                 "status": "ACTIVE",
                 "certificateAuthority": {"data": d["certificate_authority"]},
                 "kubernetesNetworkConfig": {"serviceIpv4Cidr": d["service_cidr"]},
-                "resourcesVpcConfig": {"vpcId": "vpc-approved"},
+                "resourcesVpcConfig": {
+                    "vpcId": "vpc-0123456789abcdef0"
+                    if "regions" in d
+                    else "vpc-approved"
+                },
             }
         }
 
     def describe_vpcs(self, **kwargs):
-        return {"Vpcs": [{"VpcId": "vpc-approved"}]}
+        return {
+            "Vpcs": [
+                {
+                    "VpcId": "vpc-0123456789abcdef0"
+                    if "regions" in self.data
+                    else "vpc-approved"
+                }
+            ]
+        }
 
     def describe_security_groups(self, **kwargs):
-        return {"SecurityGroups": [{"GroupId": "sg-approved"}]}
+        return {
+            "SecurityGroups": [
+                {
+                    "GroupId": "sg-0123456789abcdef0"
+                    if "regions" in self.data
+                    else "sg-approved",
+                    "VpcId": "vpc-0123456789abcdef0",
+                    "OwnerId": self.data["provider_account_id"],
+                }
+            ]
+        }
+
+    def describe_subnets(self, SubnetIds):
+        return {
+            "Subnets": [
+                {
+                    "SubnetId": s,
+                    "VpcId": "vpc-0123456789abcdef0",
+                    "OwnerId": self.data["provider_account_id"],
+                }
+                for s in SubnetIds
+            ]
+        }
+
+    def describe_images(self, ImageIds):
+        return {"Images": [{"ImageId": i, "State": "available"} for i in ImageIds]}
 
     def get_instance_profile(self, **kwargs):
         return {
@@ -98,8 +153,21 @@ class Cloud:
 
         return Paginator()
 
+    def _here(self):
+        """Whether the requested resource belongs in the client's own region.
+
+        Single-region (version 1-3) plans never set `launched_region`, so this
+        is always True for them -- unchanged existing behavior. A version-4
+        (multi-region) plan only reports its instance/attachments present in
+        the one region SkyPilot actually used; every other approved region
+        legitimately reports empty, the way real capacity absence looks.
+        """
+        return (
+            self.launched_region is None or self._client_region == self.launched_region
+        )
+
     def describe_instances(self, **kwargs):
-        if not self.ever_created:
+        if not self.ever_created or not self._here():
             return {"Reservations": []}
         return {
             "Reservations": [
@@ -117,7 +185,7 @@ class Cloud:
     def describe_volumes(self, **kwargs):
         return {
             "Volumes": [{"VolumeId": "vol-0123456789abcdef0", "State": "in-use"}]
-            if self.exists or self.leaked_volume
+            if (self.exists or self.leaked_volume) and self._here()
             else []
         }
 
@@ -126,7 +194,7 @@ class Cloud:
             "NetworkInterfaces": [
                 {"NetworkInterfaceId": "eni-0123456789abcdef0", "Status": "in-use"}
             ]
-            if self.exists
+            if self.exists and self._here()
             else []
         }
 

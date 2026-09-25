@@ -96,3 +96,107 @@ def test_actual_executor_task_preserves_choices_join_and_physical_limit(monkeypa
         assert resource.labels["superplane-max-gpus-per-node"] == "4"
         assert resource.cpus == "4+"
         assert resource.memory == "32+"
+
+
+def test_actual_executor_task_offers_multiple_regions_without_pinning_one(
+    monkeypatch,
+):
+    """#5925: a plan with >=2 eligible regions reaches the real pinned parser
+
+    without pinning a single region or instance type, each candidate retaining
+    its own approved region's image, VPC, security group and node identity.
+    """
+    root = Path(__file__).resolve().parents[4]
+    monkeypatch.syspath_prepend(str(root / "modules/harness/jobs"))
+    monkeypatch.syspath_prepend(str(root / "modules/domain-apps/superplane/executor"))
+    from superplane_executor.plan import Plan
+
+    plan = Plan(
+        {
+            "version": 4,
+            "provider_account_id": "123456789012",
+            "cluster_arn": "arn:aws:eks:us-east-1:123456789012:cluster/workspace",
+            "endpoint": "https://workspace.example.invalid",
+            "certificate_authority": "public-test-ca",
+            "service_cidr": "172.20.0.0/16",
+            "node_count": 2,
+            "disk_size": 100,
+            "regions": [
+                {
+                    "region": "us-east-1",
+                    "image_id": "ami-0123456789abcdef0",
+                    "vpc_name": "vpc-a",
+                    "security_group": "sg-a",
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "security_group_id": "sg-0123456789abcdef0",
+                    "subnet_ids": ["subnet-0123456789abcdef0"],
+                    "instance_profile": "profile-a",
+                },
+                {
+                    "region": "us-west-2",
+                    "image_id": "ami-0123456789abcdef1",
+                    "vpc_name": "vpc-b",
+                    "security_group": "sg-b",
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "security_group_id": "sg-0123456789abcdef0",
+                    "subnet_ids": ["subnet-0123456789abcdef0"],
+                    "instance_profile": "profile-b",
+                },
+            ],
+            "accelerators": ["A10G:1", "L4:1"],
+            "max_gpus_per_node": 4,
+            "cpus": 4,
+            "memory_gb": 32,
+        },
+        "sp-" + "a" * 32,
+        (),
+    )
+    operation = SimpleNamespace(
+        grant=SimpleNamespace(
+            lease=SimpleNamespace(
+                workspace_id="workspace",
+                runtime_deadline=datetime.now(UTC) + timedelta(seconds=900),
+            )
+        )
+    )
+    raw = json.loads(plan.task(operation))
+    assert "region" not in raw["resources"]
+    assert "image_id" not in raw["resources"]
+    assert "instance_type" not in raw["resources"]
+    parsed = sky.Task.from_yaml_config(copy.deepcopy(raw))
+    assert parsed.num_nodes == 2
+    # Two regions x two GPU choices = four independently selectable candidates.
+    assert len(parsed.resources) == 4
+    seen_regions = set()
+    for resource in parsed.resources:
+        assert resource.instance_type is None
+        assert str(resource.cloud).lower() == "aws"
+        assert resource.region in ("us-east-1", "us-west-2")
+        assert resource.accelerators in ({"A10G": 1}, {"L4": 1})
+        assert resource.cpus == "4+"
+        assert resource.memory == "32+"
+        assert resource.labels["superplane-max-gpus-per-node"] == "4"
+        bound_image = {
+            "us-east-1": "ami-0123456789abcdef0",
+            "us-west-2": "ami-0123456789abcdef1",
+        }
+        assert resource.image_id == {resource.region: bound_image[resource.region]}
+        bound_overrides = {
+            "us-east-1": {
+                "remote_identity": "profile-a",
+                "vpc_name": "vpc-a",
+                "security_group_name": "sg-a",
+                "disk_encrypted": True,
+            },
+            "us-west-2": {
+                "remote_identity": "profile-b",
+                "vpc_name": "vpc-b",
+                "security_group_name": "sg-b",
+                "disk_encrypted": True,
+            },
+        }
+        assert resource.cluster_config_overrides == {
+            "aws": bound_overrides[resource.region]
+        }
+        seen_regions.add(resource.region)
+    assert seen_regions == {"us-east-1", "us-west-2"}

@@ -287,6 +287,114 @@ def test_gpu_constraints_use_skypilot_selection_with_an_exact_physical_envelope(
     )
 
 
+def regional_profile_fixture(cluster_id):
+    profile = profile_fixture(cluster_id)
+    del profile["instance_type"]
+    for key in ("region", "image_id", "vpc_name", "security_group", "instance_profile"):
+        del profile[key]
+    profile.update(
+        regions=[
+            {
+                "region": "us-west-2",
+                "image_id": "ami-0123456789abcdef0",
+                "vpc_name": "workspace-west",
+                "security_group": "approved-workers-west",
+                "vpc_id": "vpc-0123456789abcdef0",
+                "security_group_id": "sg-0123456789abcdef0",
+                "subnet_ids": ["subnet-0123456789abcdef0"],
+                "instance_profile": "approved-nodes-west",
+            },
+            {
+                "region": "us-east-1",
+                "image_id": "ami-0123456789abcdef1",
+                "vpc_name": "workspace-east",
+                "security_group": "approved-workers-east",
+                "vpc_id": "vpc-0123456789abcdef0",
+                "security_group_id": "sg-0123456789abcdef0",
+                "subnet_ids": ["subnet-0123456789abcdef0"],
+                "instance_profile": "approved-nodes-east",
+            },
+        ],
+        accelerators=["A10G:1", "L4:1"],
+        max_gpus_per_node=4,
+        physical_gpus=4,
+        cpus=4,
+        memory_gb=32,
+    )
+    return profile
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "single-region",
+        "duplicate-region",
+        "duplicate-image",
+        "too-many",
+        "empty",
+        "extra-field",
+    ],
+)
+def test_regional_plan_reaches_skypilot_without_pinning_one_region(change):
+    """#5925 acceptance 1: >=2 eligible regions reach the plan unpinned; a
+    single-region request (the existing v1-3 shape) still works unchanged.
+    """
+    profile = regional_profile_fixture(uuid4())
+    if change == "single-region":
+        profile["regions"] = profile["regions"][:1]
+    elif change == "duplicate-region":
+        profile["regions"][1]["region"] = profile["regions"][0]["region"]
+    elif change == "duplicate-image":
+        profile["regions"][1]["image_id"] = profile["regions"][0]["image_id"]
+    elif change == "too-many":
+        profile["regions"] = profile["regions"] * 3
+    elif change == "empty":
+        profile["regions"] = []
+    elif change == "extra-field":
+        profile["regions"][0]["zone"] = "us-west-2a"
+    if change in (
+        "duplicate-region",
+        "duplicate-image",
+        "too-many",
+        "empty",
+        "extra-field",
+    ):
+        with pytest.raises(OperationRefused):
+            build(profile)
+        return
+    preview, values = build(profile)
+    parsed = validate_request(
+        preview.request,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    assert parsed.data["version"] == 4
+    assert "region" not in parsed.data
+    assert "image_id" not in parsed.data
+    assert "instance_type" not in parsed.data
+    assert len(parsed.data["regions"]) == (1 if change == "single-region" else 2)
+    bindings = parsed.region_bindings
+    assert len(bindings) == len(parsed.data["regions"])
+    assert preview.request.parameters["max_resource_units"] == "4"
+    # Teardown preserves the original bounded region set unchanged.
+    stopped = teardown_request(
+        preview.request,
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+        request_id=str(uuid4()),
+        source_operation_id="original-paid-operation",
+    )
+    teardown = validate_request(
+        stopped,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    assert parsed.data == teardown.data
+
+
 @pytest.mark.parametrize(
     "change",
     ["missing", "certificate", "digest", "oversize", "non-certificate", "target"],

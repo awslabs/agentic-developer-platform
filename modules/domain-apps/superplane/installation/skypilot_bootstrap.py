@@ -60,6 +60,8 @@ def provider_identity():
             "credential_source": "web_identity",
             "allocation_tags": ["instance", "volume", "network-interface"],
         }
+        if getattr(BaseClient._make_api_call, "_superplane_regional_binding", False):
+            value["regional_binding_guard"] = 1
         if getattr(BaseClient._make_api_call, "_superplane_gpu_limit", False):
             value["capacity_constraints"] = ["physical_gpu_limit"]
     temporary = path.with_suffix(".tmp")

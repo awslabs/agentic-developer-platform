@@ -210,7 +210,7 @@ async def observation_provider(request, claim):
 
             def assume():
                 result = self.session.client(
-                    "sts", region_name=plan.data["region"]
+                    "sts", region_name=plan.cluster_region
                 ).assume_role(
                     RoleArn=role,
                     RoleSessionName="superplane-recovery-observe",
@@ -221,7 +221,7 @@ async def observation_provider(request, claim):
                     aws_access_key_id=result["AccessKeyId"],
                     aws_secret_access_key=result["SecretAccessKey"],
                     aws_session_token=result["SessionToken"],
-                    region_name=plan.data["region"],
+                    region_name=plan.cluster_region,
                 )
 
             session = await asyncio.to_thread(assume)

@@ -9,6 +9,19 @@ from dataclasses import dataclass
 
 from harness_jobs.identity import MAX_PARAMETER_VALUE_LENGTH, OperationRefused
 
+REGIONAL_BINDING_FIELDS = frozenset(
+    {
+        "region",
+        "image_id",
+        "vpc_name",
+        "security_group",
+        "instance_profile",
+        "vpc_id",
+        "security_group_id",
+        "subnet_ids",
+    }
+)
+
 
 @dataclass(frozen=True)
 class Plan:
@@ -74,17 +87,19 @@ class Plan:
                 "certificate_authority",
                 "workload",
             }
-            if data.get("version") in {2, 3}:
+            if data.get("version") in {2, 3, 4}:
                 fields = (required - {"certificate_authority"}) | {
                     "certificate_authority_sha256"
                 }
-                if data["version"] == 3:
+                if data["version"] in {3, 4}:
                     fields = (fields - {"instance_type"}) | {
                         "accelerators",
                         "max_gpus_per_node",
                         "cpus",
                         "memory_gb",
                     }
+                if data["version"] == 4:
+                    fields = (fields - REGIONAL_BINDING_FIELDS) | {"regions_sha256"}
                 if set(data) != fields:
                     raise ValueError("unsupported versioned plan")
                 ca = request.parameters["controller_certificate_authority"]
@@ -114,7 +129,59 @@ class Plan:
                 for key in ("cluster_arn", "endpoint", "namespace")
             ):
                 raise ValueError("workspace target mismatch")
-            if (
+            if data["version"] == 4:
+                encoded = request.parameters["controller_regions"]
+                if len(encoded) > MAX_PARAMETER_VALUE_LENGTH or hashlib.sha256(
+                    encoded.encode()
+                ).hexdigest() != data.pop("regions_sha256"):
+                    raise ValueError("regional binding digest mismatch")
+                regions = data["regions"] = json.loads(encoded)
+                if (
+                    not isinstance(regions, list)
+                    or not 1 <= len(regions) <= 4
+                    or any(set(entry) != REGIONAL_BINDING_FIELDS for entry in regions)
+                    or any(
+                        not re.fullmatch(
+                            r"[a-z]{2}(?:-gov)?-[a-z]+-\d", entry["region"]
+                        )
+                        or not re.fullmatch(r"ami-[a-f0-9]{8,17}", entry["image_id"])
+                        or not re.fullmatch(r"vpc-[a-f0-9]{8,17}", entry["vpc_id"])
+                        or not re.fullmatch(
+                            r"sg-[a-f0-9]{8,17}", entry["security_group_id"]
+                        )
+                        or not isinstance(entry["subnet_ids"], list)
+                        or not 1 <= len(entry["subnet_ids"]) <= 4
+                        or len(set(entry["subnet_ids"])) != len(entry["subnet_ids"])
+                        or any(
+                            not re.fullmatch(r"subnet-[a-f0-9]{8,17}", subnet)
+                            for subnet in entry["subnet_ids"]
+                        )
+                        or not re.fullmatch(
+                            r"[A-Za-z0-9+=,.@_-]{1,128}", entry["instance_profile"]
+                        )
+                        or any(
+                            not isinstance(entry[key], str)
+                            or not 1 <= len(entry[key]) <= 255
+                            for key in ("vpc_name", "security_group")
+                        )
+                        for entry in regions
+                    )
+                    # Regional AMI IDs are not portable across regions: a repeated
+                    # image id across two entries is a copy-paste error, not a
+                    # legitimate alternative. Repeated regions are ambiguous.
+                    or len({entry["region"] for entry in regions}) != len(regions)
+                    or len({entry["image_id"] for entry in regions}) != len(regions)
+                ):
+                    raise ValueError("unbounded regional resources")
+                if (
+                    not re.fullmatch(r"\d{12}", data["provider_account_id"])
+                    or type(data["node_count"]) is not int
+                    or not 1 <= data["node_count"] <= 16
+                    or type(data["disk_size"]) is not int
+                    or not 20 <= data["disk_size"] <= 2048
+                ):
+                    raise ValueError("unbounded resources")
+            elif (
                 not re.fullmatch(r"\d{12}", data["provider_account_id"])
                 or not re.fullmatch(r"[a-z]{2}(?:-gov)?-[a-z]+-\d", data["region"])
                 or not re.fullmatch(r"ami-[a-f0-9]{8,17}", data["image_id"])
@@ -137,7 +204,7 @@ class Plan:
                 raise ValueError("unbounded resources")
             control = (
                 request.action == "teardown"
-                and data["version"] in {2, 3}
+                and data["version"] in {2, 3, 4}
                 and bool(request.parameters.get("controller_deployment_id"))
                 and bool(request.parameters.get("controller_source_operation_id"))
             )
@@ -155,7 +222,14 @@ class Plan:
                 )
             ):
                 raise ValueError("approved finite envelope required")
-            if data["cluster_arn"].split(":")[3:5] != [
+            # The EKS control plane keeps its own fixed region regardless of which
+            # approved compute region SkyPilot selects (#5926 carries the resulting
+            # cross-region traffic). Versions 1-3 keep the stricter same-region
+            # check: their one compute region must be the cluster's own region.
+            if data["version"] == 4:
+                if data["cluster_arn"].split(":")[4] != data["provider_account_id"]:
+                    raise ValueError("cloud target mismatch")
+            elif data["cluster_arn"].split(":")[3:5] != [
                 data["region"],
                 data["provider_account_id"],
             ]:
@@ -232,7 +306,7 @@ class Plan:
                 or not 0 <= workload["gpu_count"] <= 8
             ):
                 raise ValueError("invalid GPU request")
-            if data["version"] == 3:
+            if data["version"] in {3, 4}:
                 choices = data["accelerators"]
                 limit = data["max_gpus_per_node"]
                 if (
@@ -263,7 +337,7 @@ class Plan:
                 r"[1-9][0-9]{0,4}m?", workload["cpu"]
             ) or not re.fullmatch(r"[1-9][0-9]{0,4}[MG]i", workload["memory"]):
                 raise ValueError("invalid workload resources")
-            if data["version"] == 3:
+            if data["version"] in {3, 4}:
                 cpu_millis = int(workload["cpu"].removesuffix("m")) * (
                     1 if workload["cpu"].endswith("m") else 1000
                 )
@@ -297,6 +371,44 @@ class Plan:
             raise OperationRefused(
                 "approved controller plan is invalid or unsupported"
             ) from None
+
+    @property
+    def region_bindings(self):
+        """Every approved region binding, uniformly, regardless of plan version.
+
+        Versions 1-3 have exactly one binding (their flat single-region fields);
+        version 4 has the approved bounded set. Callers that must check or search
+        every approved region -- pre-create authorization and inventory discovery
+        -- iterate this instead of special-casing `data["regions"]`.
+        """
+        if self.data["version"] == 4:
+            return tuple(self.data["regions"])
+        return (
+            {
+                key: self.data[key]
+                for key in (
+                    "region",
+                    "image_id",
+                    "vpc_name",
+                    "security_group",
+                    "instance_profile",
+                )
+            },
+        )
+
+    def resource_reference(self, kind, reference, region):
+        """Use one durable identity in launch receipts, recovery and inventory."""
+        if self.data["version"] != 4:
+            return reference
+        if region not in {binding["region"] for binding in self.region_bindings}:
+            raise OperationRefused("resource region is outside approval")
+        resource_type = "elastic-ip" if kind == "address" else kind.replace("_", "-")
+        return f"arn:aws:ec2:{region}:{self.data['provider_account_id']}:{resource_type}/{reference}"
+
+    @property
+    def cluster_region(self):
+        """The EKS control plane's own fixed region, independent of compute region."""
+        return self.data["cluster_arn"].split(":")[3]
 
     @property
     def user_id(self):
@@ -348,8 +460,6 @@ class Plan:
             "num_nodes": data["node_count"],
             "resources": {
                 "cloud": "aws",
-                "region": data["region"],
-                "image_id": data["image_id"],
                 "use_spot": False,
                 "disk_size": data["disk_size"],
                 "labels": {"superplane-capacity": self.cluster_name},
@@ -361,9 +471,63 @@ class Plan:
             + str(int(operation.grant.lease.runtime_deadline.timestamp()))
             + ' - $(date +%s))); if [ "$remaining" -gt 0 ]; then sleep "$remaining"; fi',
         }
-        if data["version"] == 3:
+        if data["version"] == 4:
+            # Eligible region x GPU alternatives for this allocation. SkyPilot
+            # performs the actual selection; every candidate retains its own
+            # approved region's image, VPC, security group and node identity.
+            # No executor-side ranking, instance choice or provider fallback.
+            task["resources"]["any_of"] = [
+                {
+                    "region": region["region"],
+                    "image_id": region["image_id"],
+                    "accelerators": accelerator,
+                    "_cluster_config_overrides": {
+                        "aws": {
+                            "remote_identity": region["instance_profile"],
+                            "vpc_name": region["vpc_name"],
+                            "security_group_name": region["security_group"],
+                            "disk_encrypted": True,
+                        }
+                    },
+                }
+                for region in data["regions"]
+                for accelerator in data["accelerators"]
+            ]
+            task["resources"]["labels"]["superplane-max-gpus-per-node"] = str(
+                data["max_gpus_per_node"]
+            )
+            # The pinned backend guard (installation/skypilot_runtime.py) re-checks
+            # this exact approved [region, image_id] set at the moment EC2 would
+            # create the instance -- SkyPilot's own selection is re-verified, not
+            # trusted, before any resource exists.
+            task["resources"]["labels"]["superplane-approved-regions"] = json.dumps(
+                [[region["region"], region["image_id"]] for region in data["regions"]],
+                separators=(",", ":"),
+            )
+            for candidate in task["resources"]["any_of"]:
+                binding = next(
+                    b for b in data["regions"] if b["region"] == candidate["region"]
+                )
+                candidate["labels"] = {
+                    **task["resources"]["labels"],
+                    "superplane-binding-version": "1",
+                    "superplane-account": data["provider_account_id"],
+                    "superplane-region": binding["region"],
+                    "superplane-image": binding["image_id"],
+                    "superplane-vpc": binding["vpc_id"],
+                    "superplane-subnets": ",".join(binding["subnet_ids"]),
+                    "superplane-security-group": binding["security_group_id"],
+                    "superplane-profile": binding["instance_profile"],
+                    "superplane-disk-gb": str(data["disk_size"]),
+                    "superplane-node-count": str(data["node_count"]),
+                }
+            task["resources"]["cpus"] = f"{data['cpus']}+"
+            task["resources"]["memory"] = f"{data['memory_gb']}+"
+        elif data["version"] == 3:
             # Alternatives for this allocation. SkyPilot performs selection;
             # every candidate retains the installed AWS identity/network/image.
+            task["resources"]["region"] = data["region"]
+            task["resources"]["image_id"] = data["image_id"]
             task["resources"]["any_of"] = [
                 {"accelerators": value} for value in data["accelerators"]
             ]
@@ -373,5 +537,7 @@ class Plan:
             task["resources"]["cpus"] = f"{data['cpus']}+"
             task["resources"]["memory"] = f"{data['memory_gb']}+"
         else:
+            task["resources"]["region"] = data["region"]
+            task["resources"]["image_id"] = data["image_id"]
             task["resources"]["instance_type"] = data["instance_type"]
         return json.dumps(task)

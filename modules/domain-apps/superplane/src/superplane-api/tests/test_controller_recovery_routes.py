@@ -143,8 +143,18 @@ async def test_recovery_provider_assumes_only_read_policy_and_refuses_kubernetes
             )
         )
     )
-    plan = SimpleNamespace(
-        data={"provider_account_id": "123456789012", "region": "us-east-1"}
+    from superplane_executor.plan import Plan
+
+    # V4 intentionally has no flat region: exercise the production ReadProvider.
+    plan = Plan(
+        data={
+            "version": 4,
+            "provider_account_id": "123456789012",
+            "cluster_arn": "arn:aws:eks:us-east-1:123456789012:cluster/workspace",
+            "regions": [{"region": "us-west-2"}],
+        },
+        cluster_name="fixture",
+        steps=(),
     )
     async with routes.observation_provider(request, "claim") as provider:
         await provider.session_for(None, plan)
