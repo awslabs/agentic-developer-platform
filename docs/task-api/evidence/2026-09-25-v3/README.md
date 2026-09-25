@@ -1,6 +1,6 @@
 # V3 fault and integrity qualification
 
-The current report records two defects discovered by qualification: missing immutable prior-attempt history and an HTTP write bound that was tested as a helper but not connected to the deployed route. V3 remains blocked until their fixes are deployed and independently verified.
+All ten V3 criteria now pass with explicitly separated deterministic, real AWS, installed-image TCP and public HTTP evidence. Qualification found and corrected two defects: missing immutable prior-attempt history and an HTTP write bound that was tested as a helper but not connected to the route. The final native rerun passed19checks and cleaned23ownedkeys; installed transport pressure closed the slow client within10.054seconds while useful work completed independently.
 
 Native DynamoDB/SQS evidence is executed from the EC2 instance profile against the exact deployed modules. The fixture isolates the recovery discovery shard and private FIFO, journals every owned key before mutation, and cleans them independently even after a failure. It invokes canonical operations directly; this does not claim production recovery scheduling or worker IAM verification. Those boundaries are qualified separately.
 

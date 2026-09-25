@@ -1,0 +1,15 @@
+{
+  "at": "2026-09-25T05:48:56.471109+00:00",
+  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:5e3a8b9e8b7900cd144e9924baf7a7fb63baa2534bbfda1249c5f09514c194a8",
+  "actual_image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:5e3a8b9e8b7900cd144e9924baf7a7fb63baa2534bbfda1249c5f09514c194a8",
+  "fixture_sha256": "9d24886087bad08a57a5f5c2375d3bc21dbba7bb7e783d70da7d2c1ac282779b",
+  "fixture_source": "423188d97",
+  "installed_source_hashes": {
+    "response.py": "a1e9859a1843cfcc226367411f9a7896b74daadc2b973002744b6739b208c012",
+    "routes.py": "dcda25894be55fbde1a0930678b1e3ca8af13a522bdf5c79c4ac606710c95fc3",
+    "streaming.py": "ba201f34c4c6fd6571ac6aa02f8a577545041909caf146ecadffb1dc9a7c0463"
+  },
+  "no_service_account_token": true,
+  "network_policy": "deny all non-loopback ingress/egress",
+  "exit_code": 0
+}
