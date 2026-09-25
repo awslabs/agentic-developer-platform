@@ -101,7 +101,7 @@ def publish(store, identity):
         )
     clusters = store.execute(
         "SELECT id, org_id, workspace_id, eks_cluster_arn, endpoint, actual_state_json, "
-        "sharing_enabled FROM clusters "
+        "sharing_enabled, status FROM clusters "
         "WHERE eks_cluster_arn = :arn OR id = CAST(:cluster_id AS uuid) FOR UPDATE",
         {
             "arn": identity["cluster_arn"],
@@ -124,6 +124,8 @@ def publish(store, identity):
             raise BootstrapRefused(
                 "canonical cluster is bound to another target or tenant"
             )
+        if cluster["status"] not in {"Ready", "Active"}:
+            raise BootstrapRefused("shared cluster is no longer ready for membership")
         if not cluster["sharing_enabled"]:
             raise BootstrapRefused(
                 "cluster is not explicitly marked sharing_enabled; shared "
@@ -146,6 +148,18 @@ def publish(store, identity):
         # conflicting case (this workspace already bound elsewhere; another
         # workspace already holds this namespace) is a clean `BootstrapRefused`
         # rather than a raw database integrity error surfacing from a commit.
+        removed = store.execute(
+            "SELECT id FROM cluster_memberships WHERE org_id=CAST(:org_id AS uuid) "
+            "AND workspace_id=CAST(:workspace_id AS uuid) AND state='removed' "
+            "AND generation=:generation FOR UPDATE",
+            {
+                "org_id": org_id,
+                "workspace_id": workspace_id,
+                "generation": _membership_generation(identity),
+            },
+        )
+        if removed:
+            raise BootstrapRefused("removed membership cannot be reactivated by replay")
         existing_memberships = store.execute(
             "SELECT id, cluster_id, workspace_id, namespace, namespace_uid, generation, credential_reference_id, state FROM cluster_memberships "
             "WHERE org_id = CAST(:org_id AS uuid) "

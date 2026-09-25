@@ -331,3 +331,32 @@ def test_one_live_membership_across_states_preserves_removed_history(database): 
         len(store.fetch("SELECT id FROM cluster_memberships WHERE state='removed'"))
         == 3
     )
+
+
+@pytest.mark.parametrize("status", ["Provisioning", "Deleting", "Failed"])
+def test_shared_registration_rechecks_cluster_readiness(database, status):  # noqa: F811
+    from superplane_bootstrap.canonical import publish
+    from superplane_bootstrap.registry import _target_mapping
+
+    store = database()
+    _seed_shared_cluster(store)
+    store.fetch("UPDATE clusters SET status=$1", status)
+    with pytest.raises(BootstrapRefused, match="no longer ready"), store.transaction():
+        publish(store, _target_mapping(_SharedTarget()))
+    assert store.fetch("SELECT id FROM cluster_memberships") == []
+
+
+def test_removed_membership_cannot_be_resurrected_by_publication(database):  # noqa: F811
+    from superplane_bootstrap.canonical import publish
+
+    store = database()
+    _seed_shared_cluster(store)
+    identity = _register_shared_member(store)
+    store.fetch("UPDATE cluster_memberships SET state='removed'")
+    before = store.fetch("SELECT * FROM cluster_memberships")
+    with (
+        pytest.raises(BootstrapRefused, match="removed membership"),
+        store.transaction(),
+    ):
+        publish(store, identity)
+    assert store.fetch("SELECT * FROM cluster_memberships") == before
