@@ -210,7 +210,8 @@ class Client:
                     "GET",
                     f"/v1/tasks/{segment(task_id)}/events",
                     headers=headers,
-                    timeout=min(15, max(0.1, deadline - time.monotonic())),
+                    # Leave headroom beyond the server's 15-second heartbeat interval.
+                    timeout=min(35, max(0.1, deadline - time.monotonic())),
                 ) as response:
                     for event in parse_sse(response, deadline):
                         event_id = event.get("id")
