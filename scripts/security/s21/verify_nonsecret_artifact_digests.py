@@ -1,10 +1,151 @@
 """Verify reviewed digest candidates against private originals without emitting values."""
 
 import argparse
+import ast
 import hashlib
 import json
 import subprocess
 from pathlib import Path
+
+
+def verify_context(record, candidate, source_bytes):
+    """Require semantic checksum context as well as byte identity."""
+    for evidence in record["context_evidence"]:
+        kind = evidence.get("kind", "json_checksum")
+        if kind in {"json_checksum", "json_module_digest", "yaml_sha256"}:
+            if kind == "yaml_sha256":
+                import yaml
+
+                document = yaml.safe_load(source_bytes)
+            else:
+                document = json.loads(source_bytes)
+            path = evidence["json_path"]
+            assert path, "Empty context path"
+            value = document
+            for key in path:
+                value = value[key]
+            assert value == candidate, "Context does not identify candidate"
+            if kind == "json_module_digest":
+                assert isinstance(path[-1], str)
+                assert any(
+                    artifact.endswith("/" + path[-1].replace(".", "/") + ".py")
+                    for artifact in record["matching_artifacts"]
+                ), "Module does not map to artifact"
+            elif kind == "yaml_sha256":
+                assert path[-1] == "sha256", "Not a dependency checksum field"
+            else:
+                explicit = any(
+                    isinstance(k, str)
+                    and ("sha256" in k.lower() or k.lower() == "file_hashes")
+                    for k in path
+                )
+                linked = isinstance(path[-1], str) and any(
+                    artifact == path[-1] or artifact.endswith("/" + path[-1])
+                    for artifact in record["matching_artifacts"]
+                )
+                assert explicit or linked, "No decisive checksum context"
+            continue
+        tree = ast.parse(source_bytes)
+        parents = {
+            child: node
+            for node in ast.walk(tree)
+            for child in ast.iter_child_nodes(node)
+        }
+        constants = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and node.value == candidate
+            and node.lineno == record["line"] == evidence["line"]
+        ]
+        assert len(constants) == 1, "Ambiguous Python candidate context"
+        node = constants[0]
+        parent = parents[node]
+        if kind == "python_keyword_sha256":
+            assert isinstance(parent, ast.keyword) and parent.arg == "sha256"
+        elif kind == "python_digest_assignment":
+            assert isinstance(parent, ast.Assign) and len(parent.targets) == 1
+            assert isinstance(parent.targets[0], ast.Name)
+            name = parent.targets[0].id
+            assert name == evidence["variable"] and "SHA" in name
+            usage = set()
+            for context in ast.walk(tree):
+                if (
+                    isinstance(context, ast.Compare)
+                    and any(
+                        isinstance(c, ast.Name) and c.id == name
+                        for c in ast.walk(context)
+                    )
+                    and any(
+                        (isinstance(c, ast.Attribute) and c.attr == "sha256")
+                        or (
+                            isinstance(c, ast.Constant)
+                            and isinstance(c.value, str)
+                            and "sha256" in c.value
+                        )
+                        for c in ast.walk(context)
+                    )
+                ):
+                    usage.add(context.lineno)
+                if isinstance(context, ast.Dict):
+                    for key, value in zip(context.keys, context.values):
+                        if (
+                            isinstance(key, ast.Constant)
+                            and isinstance(key.value, str)
+                            and "sha256" in key.value
+                            and isinstance(value, ast.Name)
+                            and value.id == name
+                        ):
+                            usage.add(context.lineno)
+            assert (
+                evidence["checksum_usage_lines"]
+                and set(evidence["checksum_usage_lines"]) <= usage
+            )
+        elif kind == "python_artifact_dictionary":
+            assert isinstance(parent, ast.Dict)
+            key = ast.literal_eval(parent.keys[parent.values.index(node)])
+            path = key[-1] if isinstance(key, tuple) else key
+            assert path == evidence["artifact_key"]
+            assert any(
+                artifact == path or artifact.endswith("/" + path)
+                for artifact in record["matching_artifacts"]
+            )
+        elif kind == "python_seed_source_digest":
+            assert isinstance(parent, ast.Tuple) and parent.elts.index(node) == 13
+            collection = parents[parent]
+            assignment = parents[collection]
+            assert isinstance(assignment, ast.Assign)
+            assert (
+                isinstance(assignment.targets[0], ast.Name)
+                and assignment.targets[0].id == "SEED_ROWS"
+            )
+            mappings = [
+                context
+                for context in ast.walk(tree)
+                if isinstance(context, ast.Dict)
+                and any(
+                    isinstance(key, ast.Constant)
+                    and key.value == "source_content_sha256"
+                    and isinstance(value, ast.Subscript)
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id == "row"
+                    and isinstance(value.slice, ast.Constant)
+                    and value.slice.value == 13
+                    for key, value in zip(context.keys, context.values)
+                )
+            ]
+            assert mappings, "Tuple not mapped to source checksum column"
+            assert any(
+                isinstance(context, ast.For)
+                and isinstance(context.target, ast.Name)
+                and context.target.id == "row"
+                and isinstance(context.iter, ast.Name)
+                and context.iter.id == "SEED_ROWS"
+                and any(mapping in list(ast.walk(context)) for mapping in mappings)
+                for context in ast.walk(tree)
+            ), "Seed checksum mapping is not used"
+        else:
+            raise AssertionError("Unsupported checksum evidence kind")
 
 
 def verify(source, scan_path, audit_path, receipt_path):
@@ -42,7 +183,7 @@ def verify(source, scan_path, audit_path, receipt_path):
             )
         return frozen[path]
 
-    documents, digests = {}, {}
+    digests = {}
     for record in receipt["verified_records"]:
         # Join private full candidate hashes, not prefix/path heuristics.
         originals = [
@@ -66,25 +207,7 @@ def verify(source, scan_path, audit_path, receipt_path):
             assert candidate == digests[artifact], (
                 "Candidate is not the artifact SHA256"
             )
-        if record["file"] not in documents:
-            documents[record["file"]] = json.loads(frozen_bytes(record["file"]))
-        for evidence in record["context_evidence"]:
-            path = evidence["json_path"]
-            assert path, "Empty JSON context path"
-            value = documents[record["file"]]
-            for key in path:
-                value = value[key]
-            assert value == candidate, "JSON context does not identify candidate"
-            explicit = any(
-                isinstance(k, str)
-                and ("sha256" in k.lower() or k.lower() == "file_hashes")
-                for k in path
-            )
-            linked = isinstance(path[-1], str) and any(
-                artifact == path[-1] or artifact.endswith("/" + path[-1])
-                for artifact in record["matching_artifacts"]
-            )
-            assert explicit or linked, "No decisive checksum context"
+        verify_context(record, candidate, frozen_bytes(record["file"]))
     print(
         f"Verified {len(receipt['verified_records'])} original selectors; no candidate values emitted"
     )

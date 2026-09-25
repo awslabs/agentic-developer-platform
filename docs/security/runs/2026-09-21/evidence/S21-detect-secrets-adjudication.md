@@ -15,8 +15,8 @@ with no raw candidate values or source-line content published.
 | --- | ---: |
 | Existing Git object identifiers, independently resolved | 209 |
 | Exact AWS published example identifier | 41 |
-| Artifact SHA256 with exact bytes and JSON checksum context, independently verified | 405 |
-| Pending context review, retained by #6110 | 1204 |
+| Artifact SHA256 with immutable bytes and verified checksum context | 443 |
+| Pending context review, retained by #6110 | 1166 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -34,13 +34,26 @@ requires context-based dispositions for the remaining candidates; this PR does
 not close #6110 or transfer those candidates to the epic owner.
 
 An additional **405 original scan records** are verified artifact SHA256 values,
-bringing verified nonsecret dispositions to **655/1859**. Each candidate was
+bringing that batch to **655/1859** verified nonsecret dispositions. Each candidate was
 joined using the private full original hash, checked at the exact frozen source
 line, compared to SHA256 computed from tracked artifact bytes, and checked in an
 explicit JSON checksum field or matching artifact-filename key. Merely residing
-in a fixture or manifest was not sufficient. Another 38 artifact hash matches
-without the narrow JSON context proof remain pending. The per-selector receipt
+in a fixture or manifest was not sufficient. That first batch held back 38 artifact hash matches without its narrow JSON
+context proof; the second batch below supplies their missing context evidence. The per-selector receipt
 is `S21-detect-secrets-artifact-digest-review.json`; the repeatable verifier is
 `scripts/security/s21/verify_nonsecret_artifact_digests.py`. It requires the
 private original scan/audit files and emits counts only. No raw candidate value
-is published. This does not close #6110; 1,204 original scan records remain.
+is published. That batch left 1,204 original scan records pending.
+
+The second batch verifies those **38** held-back candidates: 20 installed Python
+module digest mappings, three explicit dependency-lock YAML checksums, and 15
+Python literals with AST-confirmed checksum use. The Python checks include
+checksum comparison/metadata consumers, filename-keyed integrity dictionaries,
+a `sha256` constructor argument, and the pricing seed tuple's exact mapping to
+`source_content_sha256`. Every candidate also independently matches artifact
+bytes read from the frozen Git revision; no file was executed to adjudicate it.
+The second receipt is `S21-detect-secrets-artifact-digest-review-2.json`.
+
+Current verified nonsecret dispositions: **693/1859**. **1,166** original scan
+records remain pending, and #6110 remains open. The overlapping audit population
+is reconciled separately; fixtures are not accepted merely by pathname.
