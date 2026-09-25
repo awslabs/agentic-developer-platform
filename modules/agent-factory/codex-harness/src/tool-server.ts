@@ -9,6 +9,8 @@ export interface HostTool {
   description: string;
   capability: Capability;
   input: z.ZodObject;
+  /** Frozen schema when validation was compiled from JSON Schema. */
+  parameters?: Record<string, unknown>;
   readOnly: boolean;
 }
 export interface ToolHost {
@@ -51,7 +53,7 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
     const input = tool.input.strict();
     catalogue.set(tool.name, { input, definition: {
       name: tool.name, description: tool.description,
-      inputSchema: z.toJSONSchema(input, { target: "draft-7" }),
+      inputSchema: tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(input, { target: "draft-7" }),
       annotations: { readOnlyHint: tool.readOnly, destructiveHint: !tool.readOnly, openWorldHint: false },
     } });
   }

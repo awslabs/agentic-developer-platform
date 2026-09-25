@@ -6,6 +6,7 @@ No live model, IAM or service endpoints participate. DynamoDB and S3 use moto.
 
 # ruff: noqa: E402, F811
 import asyncio
+import hashlib
 import base64
 import importlib.util
 import json
@@ -44,24 +45,72 @@ from tests.agentauth.test_task_model import Price
 from tests.tasks import test_store as storage
 from tests.tasks.test_store import client, store  # noqa: F401
 
-spec = importlib.util.spec_from_file_location("worker_fixture", ROOT / "modules/agent-factory/agent-worker-image/tests/test_task_host.py")
+spec = importlib.util.spec_from_file_location(
+    "worker_fixture", ROOT / "modules/agent-factory/agent-worker-image/tests/test_task_host.py"
+)
 worker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker)
 
 
-@pytest.mark.parametrize("scenario", ["success", "repair", "steer", "cancel", "unknown"])
+@pytest.mark.parametrize(
+    "scenario", ["success", "repair", "steer", "cancel", "unknown", "tools", "tools_repair"]
+)
 def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario):
     def now():
         return datetime.now(UTC)
 
     store._clock = now
     persona = "agent-task-gpt-intent-refinement"
-    golden = json.loads((ROOT / "docs/task-api/contracts/v1/fixtures/valid/bootstrap-codex-response.json").read_text())
+    golden = json.loads(
+        (
+            ROOT / "docs/task-api/contracts/v1/fixtures/valid/bootstrap-codex-response.json"
+        ).read_text()
+    )
+    tool_mode = scenario.startswith("tools")
+    from src.agentauth.task_tool_policy import codex_tool_name
+    from src.agentauth.task_model_binding import TASK_RESPONSES_TOOLS_REQUEST_SHAPE
+    import rfc8785
+
+    tool = {
+        "permission": "validation.run",
+        "capability": "tests.run",
+        "definition": {
+            "type": "function",
+            "name": codex_tool_name("validation.run"),
+            "description": "Validate the bound fixture workspace.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "strict": False,
+        },
+    }
+    if tool_mode:
+        definition = json.loads(golden["harness"]["snapshot"]["definition"])
+        definition["optionalCapabilities"] = ["tests.run"]
+        raw = rfc8785.dumps(definition).decode()
+        golden["harness"]["snapshot"].update(
+            definition=raw, digest=hashlib.sha256(raw.encode()).hexdigest()
+        )
+        golden["model_binding"]["request_shape_version"] = TASK_RESPONSES_TOOLS_REQUEST_SHAPE
+        monkeypatch.setenv("ADP_TASK_PERSONA_TOOLS", json.dumps({persona: [tool["permission"]]}))
     catalogue = tmp_path / "catalogue.json"
-    catalogue.write_text(json.dumps({"schemaVersion": 1, "snapshots": [golden["harness"]["snapshot"]]}))
+    catalogue.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "snapshots": [golden["harness"]["snapshot"]],
+                **({"tools": [tool]} if tool_mode else {}),
+            }
+        )
+    )
     monkeypatch.setenv("ADP_CODEX_PERSONA_CATALOG_FILE", str(catalogue))
-    monkeypatch.setattr(task_harness, "persona_compatibility_class", lambda name: "codex-sdk" if name == persona else None)
-    monkeypatch.setattr("src.admin.persona_models.catalogue.persona_compatibility_class", lambda name: "codex-sdk" if name == persona else None)
+    monkeypatch.setattr(
+        task_harness,
+        "persona_compatibility_class",
+        lambda name: "codex-sdk" if name == persona else None,
+    )
+    monkeypatch.setattr(
+        "src.admin.persona_models.catalogue.persona_compatibility_class",
+        lambda name: "codex-sdk" if name == persona else None,
+    )
     client.update_item(
         TableName=storage.AUTHORITY_TABLE,
         Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}},
@@ -75,17 +124,37 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         "task_scopes": ["submit"],
         "version": 1,
         "model_policy_version": "1",
-        "limits": {"max_duration_minutes": 5, "max_turns": 4, "max_output_tokens_per_turn": 4096, "max_usd_per_task": 1},
+        "limits": {
+            "max_duration_minutes": 5,
+            "max_turns": 4,
+            "max_output_tokens_per_turn": 4096,
+            "max_usd_per_task": 1,
+        },
     }
+    if tool_mode:
+        policy["allowed_tools"] = [tool["permission"]]
+        monkeypatch.setattr(
+            "src.agentauth.task_service_policy.TaskServicePolicyStore.get",
+            lambda self, **kwargs: policy,
+        )
     admission_budget = SimpleNamespace(
-        reserve_admission=AsyncMock(return_value={"status": "reserved", "reservation_id": "fixture-admission"}), settle_admission=AsyncMock()
+        reserve_admission=AsyncMock(
+            return_value={"status": "reserved", "reservation_id": "fixture-admission"}
+        ),
+        settle_admission=AsyncMock(),
     )
     admission = TaskAdmission(
-        store, policies=SimpleNamespace(get=lambda **kw: policy), budget=admission_budget, model_resolver=AsyncMock(return_value=binding), clock=now
+        store,
+        policies=SimpleNamespace(get=lambda **kw: policy),
+        budget=admission_budget,
+        model_resolver=AsyncMock(return_value=binding),
+        clock=now,
     )
     receipt = asyncio.run(
         admission.admit(
-            caller=SimpleNamespace(tenant_id="tenant-a", principal_id="svc-principal-1", require=lambda scope: None),
+            caller=SimpleNamespace(
+                tenant_id="tenant-a", principal_id="svc-principal-1", require=lambda scope: None
+            ),
             submit={
                 "persona": persona,
                 "instructions": "Inspect the supplied task; report missing implementation evidence.",
@@ -99,21 +168,40 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     envelope = work["envelope"]
     assignment = parse_task_envelope(envelope)
     pod = SimpleNamespace(uid=str(uuid.uuid4()), namespace="adp-agents", name="fixture-pod")
-    runtime = TaskRuntime(store, env={"AGENT_RUN_CREDENTIAL_KEY": "fixture-key-012345678901234567890123456789"}, clock=now)
-    delivery = SimpleNamespace(require_assignment=lambda *args: None, read=lambda uid: {"body": json.dumps(envelope)})
+    runtime = TaskRuntime(
+        store,
+        env={"AGENT_RUN_CREDENTIAL_KEY": "fixture-key-012345678901234567890123456789"},
+        clock=now,
+    )
+    delivery = SimpleNamespace(
+        require_assignment=lambda *args: None, read=lambda uid: {"body": json.dumps(envelope)}
+    )
     events = []
     budget = SimpleNamespace(
         _target=lambda **kw: ReservationTarget(
-            org_id="fixture", entity_type="run", entity_id="task", period_type="lifetime", period_start="now", headroom_usd=Decimal("1")
+            org_id="fixture",
+            entity_type="run",
+            entity_id="task",
+            period_type="lifetime",
+            period_start="now",
+            headroom_usd=Decimal("1"),
         ),
         _initialize=AsyncMock(),
         verify_settlement=AsyncMock(),
     )
-    enforcement = SimpleNamespace(check_budget_hierarchy=AsyncMock(return_value=SimpleNamespace(allowed=True)), reconcile_reservation=AsyncMock())
+    enforcement = SimpleNamespace(
+        check_budget_hierarchy=AsyncMock(return_value=SimpleNamespace(allowed=True)),
+        reconcile_reservation=AsyncMock(),
+    )
     model_requests = []
     report = {
         "summary": "Implementation evidence is unavailable.",
-        "findings": [{"statement": "The request asks for evidence limitations.", "evidence_refs": ["instructions"]}],
+        "findings": [
+            {
+                "statement": "The request asks for evidence limitations.",
+                "evidence_refs": ["instructions"],
+            }
+        ],
         "uncertainties": ["No implementation or test output was supplied."],
         "recommendations": ["Provide implementation evidence."],
         "evidence_refs": [{"ref": "instructions", "source": "instructions"}],
@@ -128,12 +216,19 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 task_id=assignment.task_id,
                 command_id=str(uuid.uuid4()),
                 kind="input" if scenario == "steer" else "cancel",
-                payload={"text": "Also inspect the retry configuration."} if scenario == "steer" else {},
+                payload={"text": "Also inspect the retry configuration."}
+                if scenario == "steer"
+                else {},
                 principal="svc-principal-1",
                 tenant="tenant-a",
                 expires_at=now() + timedelta(minutes=5),
             )
-        text = "invalid first report" if scenario == "repair" and len(model_requests) == 1 else json.dumps(report)
+        text = (
+            "invalid first report"
+            if (scenario == "repair" and len(model_requests) == 1)
+            or (scenario == "tools_repair" and len(model_requests) == 2)
+            else json.dumps(report)
+        )
         response = {
             "content": [],
             "stop_reason": "completed",
@@ -155,10 +250,30 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "price": Price(),
             "provider_request_id": "provider-fixture",
         }
-        response["responses_response"] = TaskResponsesResult.model_validate(response["responses_response"]).model_dump(exclude_none=True)
+        if tool_mode and len(model_requests) == 1:
+            response["responses_response"]["output"] = [
+                {
+                    "type": "function_call",
+                    "id": "item_tool",
+                    "namespace": "mcp__adp",
+                    "call_id": "fixture_call",
+                    "name": tool["definition"]["name"],
+                    "arguments": "{}",
+                }
+            ]
+        from src.agentauth.task_responses_tools_contract import TaskToolsResponsesResult
+
+        contract = TaskToolsResponsesResult if tool_mode else TaskResponsesResult
+        response["responses_response"] = contract.model_validate(
+            response["responses_response"]
+        ).model_dump(exclude_none=True)
         return response
 
-    monkeypatch.setattr(task_model, "quote_request", AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"))))
+    monkeypatch.setattr(
+        task_model,
+        "quote_request",
+        AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"))),
+    )
     monkeypatch.setattr(task_model, "confirm_quote_spendable", AsyncMock(return_value=None))
     model = task_model.TaskModel(
         store,
@@ -167,7 +282,11 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         provider=provider,
         enforcement=enforcement,
         readiness=AsyncMock(
-            return_value=(binding, SimpleNamespace(context=SimpleNamespace()), SimpleNamespace(region="us-east-1", account_id="123456789012"))
+            return_value=(
+                binding,
+                SimpleNamespace(context=SimpleNamespace()),
+                SimpleNamespace(region="us-east-1", account_id="123456789012"),
+            )
         ),
         usage_writer=AsyncMock(),
         event_writer=AsyncMock(),
@@ -179,8 +298,13 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     commands = TaskCommands(store)
 
     monkeypatch.setenv(CONTROL_ENDPOINT_ENV, "https://fixture.invalid/internal/v1/agent")
-    monkeypatch.setattr("lib.task_run_client.read_workload_token", lambda: "fixture-projected-workload")
-    monkeypatch.setattr("lib.task_run_client.workload_identity", lambda token=None: {"pod_uid": pod.uid, "namespace": pod.namespace})
+    monkeypatch.setattr(
+        "lib.task_run_client.read_workload_token", lambda: "fixture-projected-workload"
+    )
+    monkeypatch.setattr(
+        "lib.task_run_client.workload_identity",
+        lambda token=None: {"pod_uid": pod.uid, "namespace": pod.namespace},
+    )
 
     class Gateway(TaskRunClient):
         finalize_body = None
@@ -190,10 +314,14 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 self._renew_for(action, body)
             # Substitute HTTP/IAM delivery only. Actual client bootstrap/renewal,
             # credential validation, gateway models and durable services run.
-            return getattr(self, "gateway_" + action)(json.loads(json.dumps(body)))
+            return getattr(self, "gateway_" + action.replace("-", "_"))(
+                json.loads(json.dumps(body))
+            )
 
         def identity(self, require_attempt=True):
-            return runtime.authenticate(credential=self._run_credential, pod=pod, require_attempt=require_attempt)
+            return runtime.authenticate(
+                credential=self._run_credential, pod=pod, require_attempt=require_attempt
+            )
 
         def gateway_bootstrap(self, body):
             assert body["envelope_digest"] == envelope_digest(envelope)
@@ -202,7 +330,11 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
 
         def gateway_attempt(self, body):
             runtime.register_attempt(identity=self.identity(False), body=body)
-            return {"schema_version": "1.0", "operation_status": "confirmed", "request_id": body["runtime_attempt_id"]}
+            return {
+                "schema_version": "1.0",
+                "operation_status": "confirmed",
+                "request_id": body["runtime_attempt_id"],
+            }
 
         def gateway_control(self, body):
             return commands.control(self.identity())
@@ -227,6 +359,53 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 )
             )
 
+        def gateway_tool_operation(self, body):
+            from src.agentauth import task_tool_routes as routes
+            from src.agentauth.task_tool_receipts import TaskToolReceipts
+
+            journal = TaskToolReceipts(
+                store,
+                authorize=lambda identity, permission: routes.authorize_tool(
+                    store, SimpleNamespace(get=lambda **kwargs: policy), identity, permission
+                ),
+                catalogue={tool["permission"]: tool["definition"]["name"]},
+                clock=now,
+            )
+            monkeypatch.setattr(
+                routes,
+                "authenticate_task_attempt",
+                AsyncMock(side_effect=lambda request: self.identity()),
+            )
+            monkeypatch.setattr(routes, "tool_journal", lambda identity: journal)
+            parsed = (
+                routes.ToolClaimBody if body["action"] == "claim" else routes.ToolSettleBody
+            ).model_validate(body)
+            return asyncio.run(routes.tool_operation(parsed, SimpleNamespace()))
+
+        def tool(self, name, body):
+            assert name == tool["permission"]
+            events.append("tool-effect")
+            content = b'{"validated":true}'
+            record = reads.put_run_artifact(
+                attempt=self.identity(),
+                content=content,
+                content_type="application/json",
+                digest=hashlib.sha256(content).hexdigest(),
+            )
+            return {
+                "schema_version": "1.0",
+                "task_id": assignment.task_id,
+                "operation_id": body["operation_id"],
+                "operation_status": "confirmed",
+                "result": {"validated": True},
+                "artifact": {
+                    "artifact_id": record.artifact_id,
+                    "content_type": "application/json",
+                    "content_sha256": record.content_sha256,
+                    "byte_length": len(content),
+                },
+            }
+
         def gateway_report(self, body):
             identity = self.identity()
             result = reads.append_event(
@@ -239,7 +418,12 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 expect_generation=identity.generation,
                 expect_runtime_attempt_id=identity.runtime_attempt_id,
             )
-            return {"schema_version": "1.0", "report_id": body["report_id"], "sequence": result.event.sequence, "event_id": result.event.event_id}
+            return {
+                "schema_version": "1.0",
+                "report_id": body["report_id"],
+                "sequence": result.event.sequence,
+                "event_id": result.event.event_id,
+            }
 
         def gateway_artifact(self, body):
             record = reads.put_run_artifact(
@@ -268,22 +452,54 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             return result
 
     gateway = Gateway()
-    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": pod.uid, "namespace": pod.namespace})
+    monkeypatch.setattr(
+        "lib.task_host.workload_identity", lambda: {"pod_uid": pod.uid, "namespace": pod.namespace}
+    )
     node = os.environ.get("ADP_CODEX_TEST_NODE", "node")
     entry = ROOT / "modules/agent-factory/codex-harness/dist/task-entry.mjs"
-    host = TaskHost(client=gateway, work_root=tmp_path / "work", command_resolver=lambda _: [node, str(entry), "--embedded"])
-    result = host.run(assignment, envelope, heartbeat=worker.FakeHeartbeat(events), acknowledge=lambda: events.append("ack"))
+    host = TaskHost(
+        client=gateway,
+        work_root=tmp_path / "work",
+        command_resolver=lambda _: [node, str(entry), "--embedded"],
+    )
+    result = host.run(
+        assignment,
+        envelope,
+        heartbeat=worker.FakeHeartbeat(events),
+        acknowledge=lambda: events.append("ack"),
+    )
     task = store.read_task(assignment.task_id)
     expected_state = {"cancel": "cancelled", "unknown": "failed"}.get(scenario, "completed")
-    assert task["state"] == expected_state, (result, task.get("error"), gateway.finalize_body, events)
-    assert len(model_requests) == (2 if scenario in {"repair", "steer"} else 1)
+    assert task["state"] == expected_state, (
+        result,
+        task.get("error"),
+        gateway.finalize_body,
+        events,
+    )
+    assert len(model_requests) == (
+        3 if scenario == "tools_repair" else 2 if scenario in {"repair", "steer", "tools"} else 1
+    )
+    if tool_mode:
+        assert events.count("tool-effect") == 1
+        for invocation in model_requests[1:]:
+            assert (
+                len(
+                    [
+                        item
+                        for item in invocation["input"]
+                        if item.get("type") == "function_call_output"
+                    ]
+                )
+                == 1
+            )
     if scenario == "unknown":
         enforcement.reconcile_reservation.assert_not_awaited()
         admission_budget.settle_admission.assert_not_awaited()
     else:
         assert enforcement.reconcile_reservation.await_count == len(model_requests)
         admission_budget.settle_admission.assert_awaited_once_with(
-            {"status": "reserved", "reservation_id": "fixture-admission"}, actual_usd=Decimal("0.001") * len(model_requests)
+            {"status": "reserved", "reservation_id": "fixture-admission"},
+            actual_usd=Decimal("0.001") * len(model_requests),
         )
     if expected_state == "completed":
         assert result == 0

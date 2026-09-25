@@ -55,7 +55,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
   const source = structuredClone(input.source);
   const suppliedBroker = host.toolBroker;
   const broker = suppliedBroker ? {
-    definitions: Object.freeze(suppliedBroker.definitions.map(tool => Object.freeze({ ...tool, input: tool.input.strict() }))),
+    definitions: Object.freeze(suppliedBroker.definitions.map(tool => Object.freeze({ ...tool, ...(tool.parameters ? { parameters: structuredClone(tool.parameters) } : {}), input: tool.input.strict() }))),
     repositoryCapabilities: Object.freeze([...suppliedBroker.repositoryCapabilities]),
     maxCalls: suppliedBroker.maxCalls, execute: suppliedBroker.execute.bind(suppliedBroker),
   } : undefined;
@@ -111,6 +111,9 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       config: { ...plan.sdkConfig, developer_instructions: snapshot.instructions,
         ...(tools && broker ? { mcp_servers: { adp: { url: tools.url, bearer_token_env_var: "ADP_TOOL_SESSION_TOKEN",
           required: true, enabled_tools: broker.definitions.map(tool => tool.name), startup_timeout_sec: 10,
+          // Gateway admission and per-effect checks own approval for these exact
+          // host tools. Do not falsely mark write tools as read-only to run headlessly.
+          tools: Object.fromEntries(broker.definitions.map(tool => [tool.name, { approval_mode: "approve" }])),
           tool_timeout_sec: Math.min(120, Math.ceil(plan.limits.maxDurationMs / 1000)) } } } : {}) },
       baseUrl: proxy.baseUrl, apiKey: proxy.token,
       // An allowlist, not a copy of process.env. In particular inherited

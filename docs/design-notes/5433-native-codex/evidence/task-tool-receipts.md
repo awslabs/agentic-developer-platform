@@ -159,3 +159,41 @@ budget sinks remain fixtures. The existing shared SDK Task entrypoint still does
 not consume executable descriptors, and live tool-profile probing, a complete
 Task tool continuation, persona registration and live story acceptance remain
 outstanding. Gateway parsing alone is not persona enablement.
+
+
+## Packaged SDK Task tool round trip
+
+The shared Task entrypoint now consumes frozen descriptors, compiles their JSON
+Schemas with pinned Ajv (no coercion, defaults, property removal or remote fetch),
+and advertises the original schemas unchanged. It binds host tool IPC to the
+canonical turn ID and sole confirmed model call. Confirmed result text survives
+report-repair SDK sessions as tool history; the gateway still authenticates every
+pair against durable receipts. The adapter retains only completed receipts and
+bounds tool calls across repair sessions. Repository-bound tools still require a
+repository admission adapter; this increment does not synthesize one.
+
+The combined tests exposed two real worker gaps: the bootstrap/model IPC parser
+still rejected tool metadata, and the dispatch gate admitted only the legacy
+cyber SDK. Both are updated for the explicitly admitted Responses profile.
+They also exposed an SDK approval requirement for write-capable MCP tools. The
+session now sets per-tool `approval_mode = "approve"` only for its exact admitted
+host catalogue. Gateway authority, capability checks, model-call identity and
+claim/settlement still gate every effect. Tool annotations retain their write
+semantics. Reference: https://developers.openai.com/codex/config-reference/
+(`mcp_servers.<id>.tools.<name>.approval_mode`).
+
+Seven combined gateway→worker→official SDK lifecycle scenarios now pass, including
+a tool call, model continuation and report repair after a tool call. The latter
+uses three model turns and exactly one tool effect. These tests use real protected
+admission, canonical turns, model journal, authenticated attempt validation,
+claim/settle route handlers, tool journal, durable artifacts and finalization.
+Transport/IAM delivery, inference, budget sinks and the domain validation effect
+are fixtures. The two tool scenarios also pass separately after removal of
+local diagnostics. Eight relocated-package SDK scenarios, 61 shared harness/IPC
+tests, 78 worker host tests and 383 contract checks pass; TypeScript build and
+focused lint pass. Live authentication fingerprints remain unchanged.
+
+No real repository story, live model qualification, deployment or persona rollout
+is certified by these fixtures. Concrete repository/validation/AWS/delegation
+brokers, completion policies, OTLP operational observability and live quality,
+cost and latency acceptance remain outstanding.

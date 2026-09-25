@@ -1121,7 +1121,7 @@ class TaskHost:
                                 raise TaskProtocolError("Codex tool claim requires Responses profile")
                             if responses and (frame["type"] != "tool.request" or "model_call" not in frame):
                                 raise TaskProtocolError("Responses tools require a confirmed model-call binding")
-                            if not sdk or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
+                            if (not sdk and not responses) or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
                                 raise TaskProtocolError("cyber operation is not admitted")
                             if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:
                                 raise TaskProtocolError("cyber operation request identity reused or limit exceeded")

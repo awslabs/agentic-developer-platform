@@ -5,6 +5,7 @@ import { parseHostFrame, assertInvestigatorReport } from './task-contracts/proto
 import { HostBridge, decode, encode, MAX_FRAME_BYTES } from './task-sdk/protocol.mjs';
 import { taskHarness, parseTaskReport } from './task-adapter.js';
 import { runAdmittedSession } from './session.js';
+import { TaskTools } from './task-tools.js';
 
 console.log = console.info = console.debug = () => {};
 const transfers = new ArtifactTransfers();
@@ -25,12 +26,13 @@ function finish(error, report) {
 }
 
 async function run() {
-  const { snapshot, policy } = taskHarness(start);
+  const { snapshot, policy, tools } = taskHarness(start);
   policy.deadlineMs = Math.min(policy.deadlineMs, Date.now() + Math.min(policy.limits.maxDurationMs, JSON.parse(snapshot.definition).limits.maxDurationMs));
   bridge.progress('Validated the task and persona bindings.', 'evidence_inventory');
   const amendments = [];
   let operations = 0;
   const maxOperations = Math.min(start.limits.max_turns, policy.limits.maxTurns, JSON.parse(snapshot.definition).limits.maxTurns);
+  const taskTools = tools.length ? new TaskTools(tools, bridge, maxOperations) : undefined;
   let repair = false;
   let previous;
   const input = { instructions: start.instructions, inputs: start.inputs ?? {}, acceptance_criteria: start.acceptance_criteria ?? [], artifacts: start.artifacts ?? [] };
@@ -38,17 +40,19 @@ async function run() {
   for (;;) {
     if (operations >= maxOperations) throw new Error('task model budget exhausted');
     amendments.push(...bridge.takeSteering());
+    const toolSession = taskTools?.session();
     const evidence = await runAdmittedSession({
       runId: start.invocation_id, snapshot, policy, source: { kind: 'task-api', taskId: start.task_id, generation: start.generation },
       prompt: JSON.stringify({ task: input, amendments, evidence_refs: [...bridge.evidence.values()], output_contract: outputContract,
         ...(repair ? { correction: 'Previous output failed the report schema or cited unsupported evidence. Produce a corrected grounded report.', previous_output: previous } : {}) }),
       maxOutputTokens: start.limits.max_output_tokens_per_turn, maxResponseBytes: 48000, signal: bridge.controller.signal,
     }, {
+      ...(toolSession ? { toolBroker: toolSession.toolBroker } : {}),
       async assertCurrent(signal) { signal.throwIfAborted(); await bridge.current(); signal.throwIfAborted(); },
       async model(request, signal) {
         signal.throwIfAborted();
         if (++operations > maxOperations) throw new Error('task model operation budget exhausted');
-        return bridge.responses(request);
+        return toolSession ? toolSession.model(request, signal) : bridge.responses(request);
       },
       async progress(event) { if (event.type === 'turn.started') bridge.progress('Analysing the admitted task and supplied evidence.', 'analysis'); },
     });

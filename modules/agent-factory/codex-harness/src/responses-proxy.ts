@@ -140,7 +140,7 @@ export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy
   const normalized: TextResponsesRequest = {
     ...(policy.tools ? { tools: [{ type: "namespace", name: "mcp__adp", description: "Authorized ADP tools.",
       tools: policy.tools.definitions.map(tool => ({ type: "function", name: tool.name, description: tool.description,
-        parameters: z.toJSONSchema(tool.input.strict(), { target: "draft-7" }), strict: false })) }], parallel_tool_calls: false as const } : {}),
+        parameters: tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(tool.input.strict(), { target: "draft-7" }), strict: false })) }], parallel_tool_calls: false as const } : {}),
     input: parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
     reasoning: { effort: policy.effort },
     max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens),
@@ -209,7 +209,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
   if (policy.tools && (typeof policy.tools.validateHistory !== "function" || policy.tools.definitions.length > 64
     || new Set(policy.tools.definitions.map(tool => tool.name)).size !== policy.tools.definitions.length)) throw new Error("Invalid host tool policy");
   policy = Object.freeze({ ...policy, ...(policy.tools ? { tools: Object.freeze({ ...policy.tools,
-    definitions: Object.freeze(policy.tools.definitions.map(tool => Object.freeze({ ...tool, input: tool.input.strict() }))) }) } : {}) });
+    definitions: Object.freeze(policy.tools.definitions.map(tool => Object.freeze({ ...tool, ...(tool.parameters ? { parameters: structuredClone(tool.parameters) } : {}), input: tool.input.strict() }))) }) } : {}) });
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   let failed = false;
