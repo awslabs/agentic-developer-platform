@@ -102,6 +102,9 @@ class TaskBudget:
             # The original owner's acceptance is fenced by owner_token+lease.
             record.update({name: previous[name] for name in ("amount_usd", "qualification_id", "targets")})
             targets = [_restore_target(value) for value in record["targets"]]
+            # DynamoDB restores numeric TTLs as Decimal. The protected grant
+            # digest requires canonical JSON on retry as well as first admit.
+            record["targets"] = [{**asdict(target), "headroom_usd": str(target.headroom_usd)} for target in targets]
             condition = "owner_token = :old AND #state = :state"
             values = {":old": {"S": previous["owner_token"]}, ":state": {"S": previous["state"]}}
         put = {

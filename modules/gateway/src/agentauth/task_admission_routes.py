@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Annotated, Any, Literal
 
@@ -19,6 +20,7 @@ from src.tasks.records import canonical_json
 
 router = APIRouter(prefix="/internal/v1/tasks", tags=["task-api"])
 _ADMISSION = None
+logger = logging.getLogger(__name__)
 
 
 def require_task_admission_transport(request: Request, *, allowed_roles: set[str]) -> str:
@@ -119,7 +121,11 @@ async def admit(request: Request, db: AsyncSession = Depends(get_db)):
     try:
         receipt = await get_admission().admit(caller=caller, submit=submit, idempotency_key=payload["idempotency_key"], db=db)
     except TaskAdmissionError as exc:
+        logger.warning("Task admission refused", extra={"error_class": type(exc).__name__, "error_code": exc.code})
         raise errors.TaskApiError(exc.status, exc.code, "Task admission was refused.") from None
-    except (TaskStoreError, TaskBudgetError, TaskServicePolicyError, ModelPolicyError):
+    except (TaskStoreError, TaskBudgetError, TaskServicePolicyError, ModelPolicyError) as exc:
+        # Only internal exception classes are emitted; request bodies and
+        # credential-bearing exception text must never enter application logs.
+        logger.warning("Task admission prerequisite unavailable", extra={"error_class": type(exc).__name__})
         raise errors.prerequisite_unavailable("Task admission could not be confirmed; retry the same idempotency key.") from None
     return http.ok(receipt, status=202)

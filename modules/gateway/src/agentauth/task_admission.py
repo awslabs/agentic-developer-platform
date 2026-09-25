@@ -83,7 +83,8 @@ class TaskAdmission:
         if total_bytes > 1048576:
             raise TaskAdmissionError("payload_too_large", 413)
         task_id, invocation_id, dispatch_id = "tsk_" + str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
-        input_ref = {"record_type": "TASK", "input_digest": digest, **({"artifact_refs": refs} if refs else {})}
+        envelope_refs = [{key: ref[key] for key in ("artifact_id", "version", "content_sha256")} for ref in refs]
+        input_ref = {"record_type": "TASK", "input_digest": digest, **({"artifact_refs": envelope_refs} if refs else {})}
         assignment = {"grant_pk": "TENANT#" + caller.tenant_id, "grant_sk": f"TASK_RUN#{invocation_id}#GEN#0000000001", "generation": 1}
         envelope = {
             "schema_version": "1.0",
