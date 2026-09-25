@@ -32,3 +32,4 @@ jobs:
       - run: python3 test/run-isolated.py -- python3 -m unittest discover -s test
       - run: python3 test/run-isolated.py -- npm test
       - run: python3 test/run-isolated.py -- node test/sdk-request-shape.mjs
+      - run: python3 test/run-isolated.py -- node test/sdk-turn.mjs

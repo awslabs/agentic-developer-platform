@@ -36,7 +36,13 @@ export async function runSdkTurn(
   context.signal.throwIfAborted();
   if (Buffer.byteLength(prompt) > context.maxInputBytes) throw new Error("Turn context exceeds admitted budget");
   const local = new AbortController();
-  const cancel = AbortSignal.any([context.signal, local.signal, AbortSignal.timeout(context.timeoutMs)]);
+  // Detach cancellation after stream shutdown. Aborting the pinned SDK after
+  // its iterator exits can emit an unhandled child-process error: the SDK has
+  // already removed its listeners at that point.
+  const abort = () => local.abort(context.signal.reason);
+  context.signal.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => local.abort(new Error("Turn deadline elapsed")), context.timeoutMs);
+  const cancel = local.signal;
   const tracer = trace.getTracer("adp.codex-harness");
   const meter = metrics.getMeter("adp.codex-harness");
   // Deliberately bounded metric dimensions: IDs/model strings belong on spans.
@@ -56,30 +62,37 @@ export async function runSdkTurn(
     try {
       const stream = await thread.runStreamed(prompt, { signal: cancel, outputSchema });
       for await (const event of stream.events) {
-        cancel.throwIfAborted();
-        if (completed) throw new Error("SDK emitted events after terminal completion");
-        if (event.type === "error" || event.type === "turn.failed") {
-          // Provider errors can contain request content or credentials. The host
-          // may archive authorized diagnostics separately; telemetry gets a code.
-          throw new Error("Codex turn failed; inspect authorized run diagnostics");
-        }
-        if (event.type === "turn.started") await progress({ type: "turn.started" });
-        if (event.type === "item.started" || event.type === "item.completed") {
-          const kind = event.item.type;
-          if (kind === "command_execution" || kind === "file_change" || kind === "mcp_tool_call" || kind === "web_search") {
-            const type = event.type === "item.started" ? "tool.started" : "tool.completed";
-            span.addEvent(type, { "adp.tool.kind": kind });
-            await progress({ type, tool: kind });
+        try {
+          cancel.throwIfAborted();
+          if (completed) throw new Error("SDK emitted events after terminal completion");
+          if (event.type === "error" || event.type === "turn.failed") {
+            // Provider errors can contain request content or credentials. The host
+            // may archive authorized diagnostics separately; telemetry gets a code.
+            throw new Error("Codex turn failed; inspect authorized run diagnostics");
           }
-          if (event.type === "item.completed" && kind === "agent_message") {
-            response = event.item.text;
-            if (Buffer.byteLength(response) > context.maxOutputBytes) throw new Error("Model response exceeds output budget");
+          if (event.type === "turn.started") await progress({ type: "turn.started" });
+          if (event.type === "item.started" || event.type === "item.completed") {
+            const kind = event.item.type;
+            if (kind === "command_execution" || kind === "file_change" || kind === "mcp_tool_call" || kind === "web_search") {
+              const type = event.type === "item.started" ? "tool.started" : "tool.completed";
+              span.addEvent(type, { "adp.tool.kind": kind });
+              await progress({ type, tool: kind });
+            }
+            if (event.type === "item.completed" && kind === "agent_message") {
+              response = event.item.text;
+              if (Buffer.byteLength(response) > context.maxOutputBytes) throw new Error("Model response exceeds output budget");
+            }
           }
-        }
-        if (event.type === "turn.completed") {
-          validateUsage(event);
-          usage = event.usage;
-          completed = true;
+          if (event.type === "turn.completed") {
+            validateUsage(event);
+            usage = event.usage;
+            completed = true;
+          }
+        } catch (error) {
+          // Stop a still-active SDK process before iterator cleanup removes its
+          // error listeners (output limits and progress failures included).
+          if (!cancel.aborted) local.abort(error);
+          throw error;
         }
       }
       cancel.throwIfAborted();
@@ -97,7 +110,8 @@ export async function runSdkTurn(
       // Never record arbitrary exception messages, tool text or private reasoning.
       throw error;
     } finally {
-      local.abort();
+      clearTimeout(timer);
+      context.signal.removeEventListener("abort", abort);
       duration.record((performance.now() - started) / 1000, { ...dimensions, outcome: succeeded ? "completed" : "failed" });
       span.end();
     }

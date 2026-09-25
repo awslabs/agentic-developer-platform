@@ -40,7 +40,7 @@ are **not** a security boundary or a substitute for these missing host controls.
 
 The TypeScript SDK is pinned to the existing reviewer version 0.155.1. Its own
 packaged runtime transport is used by the SDK; this package does not spawn or
-parse the Codex CLI. No model request is made by the tests.
+parse the Codex CLI. Tests use only local protocol fixtures; no live model request is made.
 
 Development: Node.js 24, `npm ci --ignore-scripts`,
 `python3 test/run-isolated.py -- npm test`. The wrapper replaces inherited
@@ -61,3 +61,9 @@ The local SDK probe is not a live model, cost or latency evaluation. Run it afte
 build with `python3 test/run-isolated.py -- node test/sdk-request-shape.mjs`.
 The `--baseline` variant compares the pinned SDK's default tool advertisement.
 Both hit only an ephemeral loopback server that rejects inference requests.
+
+The successful SSE fixture (`test/sdk-turn.mjs`) runs the actual pinned SDK
+through `runSdkTurn`, checks usage/progress, and resumes from its temporary
+session store with previous input/output present. It also exercises HTTP fallback
+after WebSocket refusal. This is protocol evidence, not Task API integration,
+authority-safe resume, or a live quality/latency/cost result.
