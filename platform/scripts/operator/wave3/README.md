@@ -211,3 +211,21 @@ workload. Supplying policy scope without workload observations fails; unknown or
 malformed selectors cannot exempt resources. These observations do not establish
 that anything was deleted: independent removal receipts and absence checks remain
 required for every ledger entry, including canaries removed earlier.
+
+
+## Focused retry acceptance (W3-11)
+
+For an authenticated disposable registered-control fixture, set
+`ADP_CONTROL_RETRY_EVAL=true` on its worker template before launch. The existing
+`21-run-registered-control.sh` entrypoint then runs only
+`control-retry.integration.ts`; it does not rerun the pause SDK suite. Pin the
+source bundle in the protected dispatch and collect `registered-runtime.json`
+through the existing handoff collector.
+
+The experiment counts actual SDK inputs across two attempts, records observed
+session identities, injects a lost handoff acknowledgement after a real push,
+and aborts a second real SDK query during retry backoff. The local journal's
+revalidator is controlled by the experiment: these results do not establish
+gateway authorization or the W3-05 security matrix. Failed or absent observations
+remain failures. The private output contains session IDs and must be redacted
+before publishing an acceptance summary.

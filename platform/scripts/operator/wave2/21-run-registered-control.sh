@@ -10,4 +10,7 @@ esac
 : "${ADP_CONTROL_FIXTURE_OUTPUT:?A private output path is required}"
 cd "$repo_root/modules/agent-factory/agent"
 npm ci --include=dev --ignore-scripts
+if [[ "${ADP_CONTROL_RETRY_EVAL:-}" == "true" ]]; then
+  exec node node_modules/ts-node/dist/bin.js src/control-retry.integration.ts
+fi
 exec node node_modules/ts-node/dist/bin.js src/registered-control-fixture.ts

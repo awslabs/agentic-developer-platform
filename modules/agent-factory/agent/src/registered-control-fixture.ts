@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { startControlRuntime } from './control-runtime-factory';
 import { assistantText } from './reporting-text';
-import { ExplanationEvents } from './explanation-events';
+import { ExplanationEvents, HISTORY_BYTES, HISTORY_EVENTS, MAX_SUBSCRIBERS } from './explanation-events';
 import { resilientQuery } from './utils/resilientQuery';
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore } from './utils/spill';
@@ -95,7 +95,7 @@ export async function runRegisteredControlFixture(): Promise<number> {
     const prompt = mode === 'native-interrupt'
       ? 'This is an authorized disposable control fixture. Run Bash sleep 30, then report completion. Do not run background commands.'
       : started.events
-        ? 'This is an authorized disposable streaming fixture. First explain to the reader that a bounded history supports reconnects, choosing bounded memory over complete live replay. Include the marker STREAM-MECHANISM. Then run foreground Bash sleep 20. Next explain that seeing two live messages proves incremental delivery but not durable cross-pod replay; include STREAM-EVIDENCE. Then run foreground Bash sleep 20 and finish. Do not combine both explanations in one message. Do not use background work.'
+        ? `This task checks incremental delivery of technical explanations. Read ${join(__dirname, 'explanation-events.ts')} and ${join(__dirname, 'explanation-events.test.ts')} from this pinned source checkout first, then explain the implementation in your own words. These are the expected limits to verify: modules/agent-factory/agent/src/explanation-events.ts retains at most ${HISTORY_EVENTS} events and ${HISTORY_BYTES} encoded bytes, permits ${MAX_SUBSCRIBERS} subscribers, and replay(cursor) emits a reset for expired, foreign or future cursors. Explain the bounded-memory versus complete-history tradeoff. Reference that code path and modules/agent-factory/agent/src/explanation-events.test.ts. Give the reproducible command: cd modules/agent-factory/agent && npm test -- --runInBand src/explanation-events.test.ts. Do not claim you ran it; this fixture only records the command for a reviewer. Include STREAM-MECHANISM. Do not install dependencies. If the source files are unavailable, report that limitation and do not claim source verification. Run foreground Bash sleep 20 so the browser can observe the first explanation before the second. Next explain why reset means a history gap rather than invented continuity, and why incremental delivery does not establish durable cross-pod replay; include STREAM-EVIDENCE. Then run foreground Bash sleep 20 and finish. Do not combine both explanations in one message. Do not use background work.`
       : 'Validate foreground tool execution in this disposable directory. Perform exactly three steps in order. For each step, use Bash to run sleep 60 with timeout 90000, wait for that foreground call to finish, then use Write to put the step number in progress.txt. Use separate calls; never background the command or combine the steps into a shell loop. A later user instruction may change the task. Keep all files within this working directory.';
     const attach = runtime.adapter.onAttemptHandle();
     const inputFactory = runtime.adapter.attemptInputFactory(pauseHooks => ({
