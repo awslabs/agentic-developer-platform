@@ -57,6 +57,7 @@ PURPOSES = {
     "superplane_domain": ("superplane_domain", {}),
     # Diagnostic checkpoint only; deliberately not mapped to an acceptance case.
     "multi_deployment_sessions": ("multi_deployment_sessions", {}),
+    "usage_readback": ("usage_readback", {}),
     # #5629 terminal diagnostic only; not proof of active-run acceptance.
     "agent_terminal_controls": ("agent_terminal_controls", {}),
 }

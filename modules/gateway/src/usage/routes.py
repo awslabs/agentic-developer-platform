@@ -11,6 +11,7 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
+from src.usage.cli_reads import router as cli_reads_router
 from src.usage.config import AggregationInterval
 from src.usage.schemas import (
     UsageByModelResponse,
@@ -21,6 +22,7 @@ from src.usage.schemas import (
 from src.usage.service import UsageService
 
 router = APIRouter(prefix="/usage", tags=["usage"])
+router.include_router(cli_reads_router)
 
 
 async def get_usage_service(db: Annotated[AsyncSession, Depends(get_db)]) -> UsageService:

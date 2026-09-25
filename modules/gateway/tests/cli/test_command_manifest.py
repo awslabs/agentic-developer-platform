@@ -150,6 +150,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-models.py", ["adp", "models"]),
         ("adp-flow.py", ["adp", "flow"]),
         ("adp-task.py", ["adp", "task"]),
+        ("adp-usage.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
         ("adp-doctor.py", ["adp"]),
     ]
@@ -165,6 +166,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     assert {"adp admin bedrock", "adp admin github"} <= set(admin)
     admin.pop("adp admin bedrock")
     admin.pop("adp admin github")
+    admin.pop("adp admin usage")
     actual.update(admin)
     actual.update(parser_leaves("adp-bedrock.py", ["adp", "admin", "bedrock"]))
     actual.update(parser_leaves("adp-github-admin.py", ["adp", "admin", "github"]))

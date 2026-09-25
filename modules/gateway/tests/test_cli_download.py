@@ -127,6 +127,7 @@ class TestCliScriptDownload:
             COMMAND_MANIFEST,
             # Task commands and reusable protocol code; no embedded credentials.
             "adp-task.py",
+            "adp-usage.py",
             "adp-agent.py",
             "adp_task_client.py",
             # Issue #5730: `adp superplane onboarding`. A sibling helper rather

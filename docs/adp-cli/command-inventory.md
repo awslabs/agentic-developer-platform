@@ -126,3 +126,20 @@ Options are parser options, excluding `--help`; shell launchers pass tool argume
 | `adp token` |  |  |
 | `adp update` |  | `--rollback`, `--to` |
 | `adp version` |  |  |
+
+Usage and metadata commands added by #5628 (source implementation; live acceptance held):
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp usage summary` |  | `--end`, `--json`, `--request-id`, `--run`, `--start` |
+| `adp usage timeline` |  | `--end`, `--json`, `--request-id`, `--run`, `--start` |
+| `adp usage models` |  | `--end`, `--json`, `--request-id`, `--run`, `--start` |
+| `adp usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp usage request` | `request_id` | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--run`, `--start` |
+| `adp logs list` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp logs show` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp logs export` |  | `--cursor`, `--end`, `--format`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp admin usage summary` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
+| `adp admin usage users` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
+| `adp admin usage departments` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
+| `adp admin usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--org`, `--page-size`, `--request-id`, `--run`, `--start` |

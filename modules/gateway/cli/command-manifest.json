@@ -3134,6 +3134,450 @@
       "required_capabilities": []
     },
     {
+      "command": "adp usage summary",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp usage timeline",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp usage models",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp usage requests",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp usage request",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--run",
+        "--start"
+      ],
+      "arguments": [
+        "request_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp logs list",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp logs show",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp logs export",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--format",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "ndjson",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin usage summary",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--org",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin usage users",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--org",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin usage departments",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--org",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin usage requests",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
       "command": "adp agent list",
       "helper": "adp-agent.py",
       "status": "shipped",
