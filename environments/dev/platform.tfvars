@@ -72,3 +72,7 @@ enable_network_policy_controller = true
 #   export TF_VAR_eks_public_access_cidrs='["<your.public.ip>/32"]'
 # The deploy-all.sh and preflight-check.sh scripts autodetect the operator's IP
 # when this variable is unset.
+
+# The legacy customer-source role must not regain platform Kubernetes access.
+agent_legacy_worker_admin_retired      = true
+agent_authority_legacy_workers_drained = true

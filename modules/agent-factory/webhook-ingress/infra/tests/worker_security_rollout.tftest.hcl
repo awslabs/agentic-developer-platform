@@ -248,6 +248,7 @@ run "activated_worker_uses_protected_identity" {
     agent_authority_runtime_ready          = true
     agent_authority_legacy_workers_drained = true
     agent_worker_admission_paused          = true
+    task_api_worker_enabled                = true
   }
   assert {
     condition     = strcontains(local.agent_worker_pause_annotation, "autoscaling.keda.sh/paused")
@@ -260,6 +261,13 @@ run "activated_worker_uses_protected_identity" {
   assert {
     condition     = aws_lambda_function.github_webhook.environment[0].variables.ADP_WORK_CLAIMS_ENABLED == "true"
     error_message = "Protected producers must use work admission."
+  }
+  assert {
+    condition = (
+      kubernetes_config_map.worker_gateway[0].data.ADP_TASK_WORKER_SERVICE_ACCOUNT == local.agent_worker_sa_name &&
+      kubernetes_config_map.worker_gateway[0].data.ADP_TASK_WORKER_IMAGE_DIGESTS == kubernetes_config_map.worker_gateway[0].data.AGENT_WORKER_IMAGE_DIGESTS
+    )
+    error_message = "Task API admission must accept the protected worker identity and approved image."
   }
 }
 

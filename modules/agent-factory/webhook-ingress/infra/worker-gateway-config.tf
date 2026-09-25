@@ -29,6 +29,11 @@ locals {
     WEBHOOK_EVENTS_TABLE     = aws_dynamodb_table.webhook_events.name
     AGENT_DISPATCH_QUEUE_URL = aws_sqs_queue.agent_submit.url
     ADP_RUN_TASK_QUEUE_URL   = aws_sqs_queue.agent_submit.url
+    } : {}, var.agent_authority_enabled && var.task_api_worker_enabled ? {
+    # Task delivery has its own workload verifier. Both verifiers must admit
+    # the same protected pod when the ordinary worker changes identity.
+    ADP_TASK_WORKER_SERVICE_ACCOUNT = local.agent_worker_sa_name
+    ADP_TASK_WORKER_IMAGE_DIGESTS   = join(",", sort(tolist(var.agent_authority_worker_image_digests)))
   } : {})
 }
 

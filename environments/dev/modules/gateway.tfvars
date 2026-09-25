@@ -155,3 +155,6 @@ task_api_runtime_bindings = {
 enable_task_api_route         = true
 task_api_lambda_function_name = "adp-dev-github-webhook"
 task_api_lambda_invoke_arn    = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:879318057152:function:adp-dev-github-webhook/invocations"
+
+# Match the protected worker and gateway dispatch protocol.
+orchestration_agent_authority_enabled = true

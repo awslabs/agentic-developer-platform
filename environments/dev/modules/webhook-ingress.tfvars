@@ -25,9 +25,9 @@ gateway_authority_managed_policies = true
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
 
-# Task API image source 029fdfe9d (validated model adapter, artifacts and child exit race); preserves the existing cyber worker runtime.
+# Protected worker image source e0ba2fad854861c7967aa8843720c9511ac5bc14; includes Task API and remote-control fixes.
 # Browser broker keeps its independently reviewed image below.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132"
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f"
 
 # The matching broker and worker support session-owner capabilities.
 domain_app_images = {
@@ -46,9 +46,9 @@ domain_app_settings = {
 agent_worker_memory_request = "8Gi"
 agent_worker_memory_limit   = "16Gi"
 
-# Task-only workload proof uses prepared TokenReview RBAC; generic authority stays off.
+# Protected workers use workload proof and gateway run services.
 agent_authority_prepared   = true
-agent_authority_enabled    = false
+agent_authority_enabled    = true
 task_api_worker_enabled    = true
 task_api_admission_enabled = true
 task_api_recovery_enabled  = true
@@ -56,3 +56,13 @@ task_api_recovery_enabled  = true
 # Existing ingress resolves canonical identities through the protected gateway.
 gateway_api_url                 = "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev"
 internal_api_key_parameter_name = "/adp/dev/gateway/internal-api-key"
+
+# Controlled rollout: legacy workers drained; customer source has no platform EKS access.
+agent_authority_runtime_ready          = true
+agent_authority_legacy_workers_drained = true
+agent_task_source_isolation_confirmed  = true
+agent_legacy_worker_admin_retired      = true
+agent_worker_admission_paused          = false
+shared_run_reporting_enabled           = true
+shared_worker_continuation_enabled     = false
+agent_authority_worker_image_digests   = ["sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f"]
