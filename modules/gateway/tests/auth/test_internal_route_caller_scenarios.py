@@ -6,7 +6,7 @@ SQLite executes real route queries/writes. Any attempted DNS or AWS operation fa
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -199,6 +199,9 @@ async def test_verified_human_session_cannot_enter_machine_plane(scenario, endpo
     validator = Mock()
     validator.validate_token.side_effect = lambda value: CognitoJWTValidator._parse_claims(validator, jwt.decode(value, key, algorithms=["HS256"]))
     monkeypatch.setattr("src.auth.dependencies._get_cognito_validator", lambda: validator)
+    # This scenario isolates machine-plane classification; revocation is covered
+    # with real membership rows in test_membership_revocation.py.
+    monkeypatch.setattr("src.admin.membership_revocation.require_not_revoked_context", AsyncMock())
     # Exercise the actual human dependency with a cryptographically verified token
     # before presenting that same token to the real internal route.
     human_request = Request({"type": "http", "method": "GET", "path": "/human-control", "headers": []})

@@ -161,7 +161,18 @@ async def _actor_is_member_of(db: AsyncSession, actor_user_id: str, org_id: str)
 
     Either outcome is measured, so neither can hide.
     """
-    rows = (await db.execute(select(TenantMembership.tenant_id).where(TenantMembership.user_id == actor_user_id))).scalars().all()
+    revoked = await db.scalar(
+        select(TenantMembership.id).where(
+            TenantMembership.user_id == actor_user_id, TenantMembership.tenant_id == org_id, TenantMembership.revoked_at.is_not(None)
+        )
+    )
+    if revoked:
+        return False
+    rows = (
+        (await db.execute(select(TenantMembership.tenant_id).where(TenantMembership.user_id == actor_user_id, TenantMembership.revoked_at.is_(None))))
+        .scalars()
+        .all()
+    )
 
     if rows:
         if org_id in set(rows):

@@ -163,3 +163,6 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity list` |  | `--json`, `--provider` |
 | `adp identity link` |  | `--dry-run`, `--json`, `--provider`, `--provider-user-id`, `--resume`, `--yes` |
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
+
+
+Hierarchy administration: `adp admin org`, `department`, `team`, `member`, `team members`, and `tenant org-links`; see [exact flags, examples and revocation semantics](hierarchy.md). The checked manifest records all 25 leaf forms. Live lifecycle qualification remains pending.

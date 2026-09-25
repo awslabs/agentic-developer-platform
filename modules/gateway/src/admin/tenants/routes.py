@@ -9,6 +9,8 @@ Issue #2954: Platform-admin can link multiple GitHub orgs to one tenant
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -37,6 +39,7 @@ class LinkOrgRequest(BaseModel):
     """Request body for linking an org to a tenant."""
 
     github_org_id: str
+    expected_revision: str | None = None
 
 
 class LinkOrgResponse(BaseModel):
@@ -115,7 +118,7 @@ async def link_org_to_tenant(
         )
 
     # Verify the target tenant exists
-    parent_stmt = select(Organization).where(Organization.id == tenant_id)
+    parent_stmt = select(Organization).where(Organization.id == tenant_id).with_for_update()
     parent_org = (await db.execute(parent_stmt)).scalar_one_or_none()
     if not parent_org:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -128,8 +131,12 @@ async def link_org_to_tenant(
         )
 
     # Find the org by github_org_id
-    child_stmt = select(Organization).where(
-        Organization.github_org_id == body.github_org_id,
+    child_stmt = (
+        select(Organization)
+        .where(
+            Organization.github_org_id == body.github_org_id,
+        )
+        .with_for_update()
     )
     child_org = (await db.execute(child_stmt)).scalar_one_or_none()
     if not child_org:
@@ -137,6 +144,9 @@ async def link_org_to_tenant(
             status_code=404,
             detail=f"Organization with github_org_id={body.github_org_id} not found",
         )
+
+    if body.expected_revision is not None and body.expected_revision != _link_revision(parent_org, child_org):
+        raise HTTPException(409, {"error": "stale_revision"})
 
     # Cannot link the parent to itself
     if child_org.id == tenant_id:
@@ -232,6 +242,7 @@ async def link_org_to_tenant(
 async def unlink_org_from_tenant(
     tenant_id: str,
     github_org_id: str,
+    expected_revision: str | None = None,
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
     db: AsyncSession = Depends(get_db),
@@ -249,10 +260,16 @@ async def unlink_org_from_tenant(
             detail="Platform administrator privileges required",
         )
 
+    parent_org = await db.scalar(select(Organization).where(Organization.id == tenant_id).with_for_update())
+
     # Find the linked org
-    stmt = select(Organization).where(
-        Organization.github_org_id == github_org_id,
-        Organization.parent_tenant_id == tenant_id,
+    stmt = (
+        select(Organization)
+        .where(
+            Organization.github_org_id == github_org_id,
+            Organization.parent_tenant_id == tenant_id,
+        )
+        .with_for_update()
     )
     child_org = (await db.execute(stmt)).scalar_one_or_none()
     if not child_org:
@@ -260,6 +277,9 @@ async def unlink_org_from_tenant(
             status_code=404,
             detail=(f"Organization with github_org_id={github_org_id} is not linked to tenant {tenant_id}"),
         )
+
+    if expected_revision is not None and (parent_org is None or expected_revision != _link_revision(parent_org, child_org)):
+        raise HTTPException(409, {"error": "stale_revision"})
 
     # Perform the unlink
     child_org.parent_tenant_id = None
@@ -315,7 +335,7 @@ async def list_linked_orgs(
         )
 
     # Verify the tenant exists
-    parent_stmt = select(Organization).where(Organization.id == tenant_id)
+    parent_stmt = select(Organization).where(Organization.id == tenant_id).with_for_update()
     parent_org = (await db.execute(parent_stmt)).scalar_one_or_none()
     if not parent_org:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -335,3 +355,59 @@ async def list_linked_orgs(
             for org in linked_orgs
         ],
     )
+
+
+def _link_revision(parent, child):
+    values = [parent.id, parent.parent_tenant_id, parent.github_org_id, child.id, child.parent_tenant_id, child.github_org_id]
+    return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
+
+
+@router.get("/{tenant_id}/orgs/{github_org_id}/preview")
+async def preview_org_link(
+    tenant_id: str,
+    github_org_id: str,
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
+):
+    access.require_platform_admin(current_user)
+    parent = await db.scalar(select(Organization).where(Organization.id == tenant_id))
+    child = await db.scalar(select(Organization).where(Organization.github_org_id == github_org_id))
+    if parent is None or child is None:
+        raise HTTPException(404, "Tenant or GitHub organization not found")
+    return {
+        "tenant_id": tenant_id,
+        "github_org_id": github_org_id,
+        "org_id": child.id,
+        "parent_tenant_id": child.parent_tenant_id,
+        "revision": _link_revision(parent, child),
+    }
+
+
+@router.get("/{tenant_id}/orgs/page")
+async def linked_org_page(
+    tenant_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import func
+
+    access.require_platform_admin(current_user)
+    if not 1 <= page <= 10000 or not 1 <= page_size <= 100:
+        raise HTTPException(422, "Pagination is out of bounds")
+    if await db.get(Organization, tenant_id) is None:
+        raise HTTPException(404, "Tenant not found")
+    predicate = Organization.parent_tenant_id == tenant_id
+    total = await db.scalar(select(func.count()).select_from(Organization).where(predicate))
+    rows = (await db.scalars(select(Organization).where(predicate).order_by(Organization.id).offset((page - 1) * page_size).limit(page_size))).all()
+    return {
+        "tenant_id": tenant_id,
+        "linked_orgs": [{"org_id": row.id, "org_name": row.name, "github_org_id": row.github_org_id} for row in rows],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "has_more": page * page_size < total,
+    }

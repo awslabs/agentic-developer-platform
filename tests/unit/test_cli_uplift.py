@@ -8432,7 +8432,20 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     # take down the cases that do not depend on it.
     assert {
         case_id for case_id, entry in matrix.items() if entry["status"] == cases.NOT_RUN
-    } == {"E01", "E02", "E03", "E13", "E14", "E15", "E20", "E21", "E22", "E23", "E24"}
+    } == {
+        "E01",
+        "E02",
+        "E03",
+        "E13",
+        "E14",
+        "E15",
+        "E20",
+        "E21",
+        "E22",
+        "E23",
+        "E24",
+        "E29",
+    }
 
 
 # --------------------------------------------------------------------------
@@ -10223,6 +10236,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E23",
         "E24",
+        "E29",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10353,3 +10367,40 @@ def test_vault_nightly_is_selected_and_shipped():
     assert cases.BY_ID["E24"].owner == "#5631"
     assert "E24" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()
+
+
+def test_hierarchy_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E29"].owner == "#5623"
+    assert "E29" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E29"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        *[
+            {"status": "ok", "detail": {"org_id": "org", "kind": kind, "items": []}}
+            for kind in ("department", "team", "member")
+        ],
+    ]
+    evidence = {}
+    module.hierarchy(cli, evidence)
+    assert evidence["org_id"] == "org"
+    cli.run.assert_not_called()
+
+
+def test_hierarchy_read_refuses_foreign_row(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        {
+            "status": "ok",
+            "detail": {
+                "org_id": "org",
+                "kind": "department",
+                "items": [{"org_id": "foreign"}],
+            },
+        },
+    ]
+    with pytest.raises(common.RemoteError, match="Foreign hierarchy"):
+        module.hierarchy(cli, {})

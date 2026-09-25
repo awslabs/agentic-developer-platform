@@ -48,6 +48,7 @@ from src.admin.config import (
     Permission,
 )
 from src.admin.exceptions import AccessDeniedError
+from src.admin.hierarchy import router as hierarchy_router
 from src.admin.log_service import LogService
 from src.admin.memberships import project_member_org_ids
 from src.admin.policy_scoping_schemas import (
@@ -2480,3 +2481,7 @@ async def list_agent_types(
 from src.admin.audit_routes import router as _audit_sub_router  # noqa: E402
 
 router.include_router(_audit_sub_router)
+
+
+# Guarded CLI adapters reuse the services and permissions above.
+router.include_router(hierarchy_router)

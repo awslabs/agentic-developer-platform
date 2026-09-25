@@ -308,6 +308,11 @@ CASES = (
         "Two owned memberships retain explicit tenant scope during concurrent reads, local default changes and Cognito refresh; no model inference claim",
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
+    Case(
+        "E29", "#5623", "story-reads",
+        "Bounded administrator hierarchy reads preserve organization scope; no mutation lifecycle acceptance claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

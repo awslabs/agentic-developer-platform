@@ -847,7 +847,7 @@ class AdminService:
             ResourceConflictError: If department name already exists in org
         """
         # Verify organization exists
-        org_result = await self.db.execute(select(Organization).where(Organization.id == org_id))
+        org_result = await self.db.execute(select(Organization).where(Organization.id == org_id).with_for_update())
         if not org_result.scalar_one_or_none():
             raise ResourceNotFoundError("Organization", org_id)
 
@@ -856,7 +856,11 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Department", "name", request.name)
 
+        if request.id and await self.db.get(Department, request.id) is not None:
+            raise ResourceConflictError("Department", "id", request.id)
+
         dept = Department(
+            **({"id": request.id} if request.id else {}),
             org_id=org_id,
             name=request.name,
             description=request.description,
@@ -1075,7 +1079,7 @@ class AdminService:
             ResourceConflictError: If team name already exists in department
         """
         # Verify department exists and belongs to org
-        dept_result = await self.db.execute(select(Department).where(Department.id == dept_id, Department.org_id == org_id))
+        dept_result = await self.db.execute(select(Department).where(Department.id == dept_id, Department.org_id == org_id).with_for_update())
         if not dept_result.scalar_one_or_none():
             raise ResourceNotFoundError("Department", dept_id)
 
@@ -1084,7 +1088,11 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Team", "name", request.name)
 
+        if request.id and await self.db.get(Team, request.id) is not None:
+            raise ResourceConflictError("Team", "id", request.id)
+
         team = Team(
+            **({"id": request.id} if request.id else {}),
             org_id=org_id,
             department_id=dept_id,
             name=request.name,

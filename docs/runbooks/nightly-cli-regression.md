@@ -147,3 +147,5 @@ case 7 independently verifies real model usage accrual. Spending through a cap
 with a newly triggered agent remains outside this key-scenario regression.
 
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
+
+E29 (#5623) adds bounded administrator organization/department/team/member reads with the served CLI. It performs no mutation or inference; a missing authorized organization cannot pass. Membership lifecycle and cleanup acceptance need separate owned fixtures.
