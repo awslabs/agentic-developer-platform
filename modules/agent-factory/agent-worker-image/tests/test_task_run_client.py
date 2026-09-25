@@ -107,3 +107,27 @@ def test_bootstrap_has_only_workload_proof_run_calls_add_opaque_credential(trans
     assert "X-Adp-Run-Credential" not in settlement[1]["headers"]
     assert all(call[1]["headers"]["X-Adp-Workload-Token"] == proof for call in calls)
     assert all(call[2] is False and call[1]["allow_redirects"] is False for call in calls)
+
+
+@pytest.mark.parametrize(("action", "body", "status", "accepted"), [
+    ("artifact", {"content_base64": "eA=="}, 201, True),
+    ("artifact", {"operation": "read"}, 200, True),
+    ("artifact", {"operation": "read"}, 201, False),
+    ("artifact", {"content_base64": "eA=="}, 200, False),
+    ("model", {}, 201, False),
+])
+def test_created_status_is_only_accepted_for_artifact_upload(transport, monkeypatch, action, body, status, accepted):
+    session = client.requests.Session
+    original = session.post
+    def post(self, url, **kwargs):
+        response = original(self, url, **kwargs)
+        response.status_code = status
+        return response
+    monkeypatch.setattr(session, "post", post)
+    run = client.TaskRunClient()
+    run._run_credential = "test-run-secret"
+    if accepted:
+        assert isinstance(run._post(action, body, run_bound=True), dict)
+    else:
+        with pytest.raises(client.TaskRunClientError, match="refused"):
+            run._post(action, body, run_bound=True)
