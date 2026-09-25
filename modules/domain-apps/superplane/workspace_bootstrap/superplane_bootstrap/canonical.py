@@ -129,9 +129,10 @@ def publish(store, identity):
                 "cluster is not explicitly marked sharing_enabled; shared "
                 "placement is never inferred from adoption or dedicated use"
             )
-        if cluster["eks_cluster_arn"] != identity["cluster_arn"] or cluster[
-            "endpoint"
-        ] != identity["endpoint"]:
+        if (
+            cluster["eks_cluster_arn"] != identity["cluster_arn"]
+            or cluster["endpoint"] != identity["endpoint"]
+        ):
             raise BootstrapRefused(
                 "shared cluster identity does not match the reviewed target"
             )
@@ -146,7 +147,7 @@ def publish(store, identity):
         # workspace already holds this namespace) is a clean `BootstrapRefused`
         # rather than a raw database integrity error surfacing from a commit.
         existing_memberships = store.execute(
-            "SELECT id, cluster_id, workspace_id, namespace, state FROM cluster_memberships "
+            "SELECT id, cluster_id, workspace_id, namespace, namespace_uid, generation, credential_reference_id, state FROM cluster_memberships "
             "WHERE org_id = CAST(:org_id AS uuid) "
             "AND (workspace_id = CAST(:workspace_id AS uuid) "
             "OR (cluster_id = CAST(:cluster_id AS uuid) AND namespace = :namespace)) "
@@ -178,22 +179,37 @@ def publish(store, identity):
                 raise BootstrapRefused(
                     "canonical bootstrap credential or namespace binding differs"
                 )
+        if own_membership and own_membership["state"] == "active":
+            expected = {
+                "namespace": identity["namespace"],
+                "namespace_uid": identity["namespace_uid"],
+                "credential_reference_id": identity["credential_reference_id"],
+                "generation": _membership_generation(identity),
+            }
+            if any(own_membership[key] != value for key, value in expected.items()):
+                raise BootstrapRefused("active membership immutable identity changed")
         # The workspace row must exist BEFORE the membership row: `cluster_memberships
         # .workspace_id` is a foreign key into `workspaces`, and a workspace created by
         # this same bootstrap run (the "no prior admitted workspace row" case) does not
         # exist yet until this statement runs.
         if workspace:
             store.execute(
-                "UPDATE workspaces SET status = 'active', updated_at = now() "
+                "UPDATE workspaces SET status = 'active', cluster_id=CAST(:cluster_id AS uuid), "
+                "shared_cluster_id=CAST(:cluster_id AS uuid), namespace_name=:namespace, updated_at = now() "
                 "WHERE id = CAST(:workspace_id AS uuid) AND org_id = CAST(:org_id AS uuid)",
-                {"workspace_id": workspace_id, "org_id": org_id},
+                {
+                    "workspace_id": workspace_id,
+                    "org_id": org_id,
+                    "cluster_id": str(cluster["id"]),
+                    "namespace": identity["namespace"],
+                },
             )
         else:
             store.execute(
                 "INSERT INTO workspaces (id, org_id, name, isolation_mode, "
-                "shared_cluster_id, namespace_name, status, is_default) VALUES "
+                "cluster_id, shared_cluster_id, namespace_name, status, is_default) VALUES "
                 "(CAST(:workspace_id AS uuid), CAST(:org_id AS uuid), :namespace, "
-                "'namespace', CAST(:cluster_id AS uuid), :namespace, 'active', false)",
+                "'namespace', CAST(:cluster_id AS uuid), CAST(:cluster_id AS uuid), :namespace, 'active', false)",
                 {
                     "workspace_id": workspace_id,
                     "org_id": org_id,
@@ -209,8 +225,7 @@ def publish(store, identity):
             "generation": _membership_generation(identity),
             "namespace": identity["namespace"],
             "namespace_uid": identity.get("namespace_uid") or None,
-            "credential_reference_id": identity.get("credential_reference_id")
-            or None,
+            "credential_reference_id": identity.get("credential_reference_id") or None,
         }
         if own_membership:
             store.execute(

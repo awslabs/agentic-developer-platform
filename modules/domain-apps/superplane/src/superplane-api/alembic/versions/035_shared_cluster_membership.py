@@ -71,9 +71,7 @@ def upgrade():
         sa.Column("generation", sa.String(64), nullable=False),
         sa.Column("namespace", sa.String(255), nullable=False),
         sa.Column("namespace_uid", sa.String(255), nullable=True),
-        sa.Column(
-            "state", sa.String(32), nullable=False, server_default="reserved"
-        ),
+        sa.Column("state", sa.String(32), nullable=False, server_default="reserved"),
         sa.Column("operation_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("credential_reference_id", sa.String(255), nullable=True),
         sa.Column("removal_reason", sa.Text(), nullable=True),
@@ -98,25 +96,17 @@ def upgrade():
             "generation ~ '^[a-f0-9]{64}$'",
             name="ck_cluster_memberships_generation",
         ),
-        # One non-removed membership per workspace (DESIGN.md §3.2: "exactly one
-        # active membership for an execution-ready workspace"). `state` is part of
-        # the unique key rather than a partial index predicate so this reads
-        # identically under SQLite in the offline test lane, which has no
-        # `postgresql_where` support — the Postgres-only tests additionally
-        # exercise the *reserved+active-both-live* race this alone cannot catch.
-        sa.UniqueConstraint(
-            "workspace_id", "state", name="uq_cluster_memberships_workspace_live"
-        ),
     )
     op.create_index(
-        "ix_cluster_memberships_org_id", _TABLE, ["org_id"]
+        "uq_cluster_memberships_workspace_live",
+        _TABLE,
+        ["workspace_id"],
+        unique=True,
+        postgresql_where=sa.text("state <> 'removed'"),
     )
-    op.create_index(
-        "ix_cluster_memberships_cluster_id", _TABLE, ["cluster_id"]
-    )
-    op.create_index(
-        "ix_cluster_memberships_workspace_id", _TABLE, ["workspace_id"]
-    )
+    op.create_index("ix_cluster_memberships_org_id", _TABLE, ["org_id"])
+    op.create_index("ix_cluster_memberships_cluster_id", _TABLE, ["cluster_id"])
+    op.create_index("ix_cluster_memberships_workspace_id", _TABLE, ["workspace_id"])
     # Unique non-retired (cluster_id, namespace) binding (DESIGN.md §3.2). Only
     # enforced across live (non-removed) rows: a removed membership's namespace
     # name is not reserved forever, but two *live* memberships on one cluster must
@@ -131,9 +121,13 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index(
-        "uq_cluster_memberships_cluster_namespace_live", table_name=_TABLE
-    )
+    op.execute("""DO $$ BEGIN
+        IF EXISTS(SELECT 1 FROM cluster_memberships) THEN
+            RAISE EXCEPTION 'Retain membership identity and removal history before rollback';
+        END IF;
+    END $$""")
+    op.drop_index("uq_cluster_memberships_workspace_live", table_name=_TABLE)
+    op.drop_index("uq_cluster_memberships_cluster_namespace_live", table_name=_TABLE)
     op.drop_index("ix_cluster_memberships_workspace_id", table_name=_TABLE)
     op.drop_index("ix_cluster_memberships_cluster_id", table_name=_TABLE)
     op.drop_index("ix_cluster_memberships_org_id", table_name=_TABLE)

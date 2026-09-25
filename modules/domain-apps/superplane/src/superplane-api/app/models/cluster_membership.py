@@ -34,7 +34,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,15 +67,31 @@ class ClusterMembership(Base):
 
     __tablename__ = "cluster_memberships"
     __table_args__ = (
-        # One non-removed membership per workspace. A workspace migrating clusters
-        # first has its old membership marked `removed`, so this never blocks that
-        # explicit, separately authorized operation — it only blocks a workspace
-        # silently gaining a second *concurrent* target.
-        UniqueConstraint(
-            "workspace_id",
-            "state",
-            name="uq_cluster_memberships_workspace_live",
+        CheckConstraint(
+            "state IN ('reserved', 'active', 'removed')",
+            name="ck_cluster_memberships_state",
         ),
+        CheckConstraint(
+            "generation ~ '^[a-f0-9]{64}$'", name="ck_cluster_memberships_generation"
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "uq_cluster_memberships_workspace_live",
+            "workspace_id",
+            unique=True,
+            postgresql_where=text("state <> 'removed'"),
+            sqlite_where=text("state <> 'removed'"),
+        ),
+        Index(
+            "uq_cluster_memberships_cluster_namespace_live",
+            "cluster_id",
+            "namespace",
+            unique=True,
+            postgresql_where=text("state <> 'removed'"),
+            sqlite_where=text("state <> 'removed'"),
+        ),
+        Index("ix_cluster_memberships_org_id", "org_id"),
+        Index("ix_cluster_memberships_cluster_id", "cluster_id"),
+        Index("ix_cluster_memberships_workspace_id", "workspace_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -87,7 +112,9 @@ class ClusterMembership(Base):
     generation: Mapped[str] = mapped_column(String(64), nullable=False)
     namespace: Mapped[str] = mapped_column(String(255), nullable=False)
     namespace_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default=STATE_RESERVED)
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=STATE_RESERVED
+    )
     # The operation that created this membership, for replay/idempotency —
     # mirrors `Workspace.operation_id`'s role for workspace creation.
     operation_id: Mapped[uuid.UUID | None] = mapped_column(

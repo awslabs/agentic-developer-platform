@@ -110,7 +110,11 @@ def test_two_workspaces_share_one_cluster_with_distinct_namespaces_and_membershi
     registry.finalize(_SharedTarget(), str(claim_a["attempt_token"]))
 
     _seed_second_workspace(store)
-    identity_b = {**identity_a, "workspace_id": SECOND_WORKSPACE_ID, "namespace": SHARED_NAMESPACE_B}
+    identity_b = {
+        **identity_a,
+        "workspace_id": SECOND_WORKSPACE_ID,
+        "namespace": SHARED_NAMESPACE_B,
+    }
     claim_b = registry.reserve(SECOND_WORKSPACE_ID, identity_b)
     registry.finalize(_second_member_target(), str(claim_b["attempt_token"]))
 
@@ -143,9 +147,8 @@ def test_two_workspaces_share_one_cluster_with_distinct_namespaces_and_membershi
     assert {str(w["id"]) for w in workspaces} == {WORKSPACE_ID, SECOND_WORKSPACE_ID}
     for w in workspaces:
         assert w["status"] == "active"
-        # Neither workspace's dedicated `cluster_id` projection is set by a shared
-        # registration — that column remains the dedicated-path projection.
-        assert w["cluster_id"] is None
+        assert str(w["cluster_id"]) == SHARED_CLUSTER_ID
+        assert str(w["shared_cluster_id"]) == SHARED_CLUSTER_ID
 
 
 def test_shared_placement_refuses_a_cluster_that_never_opted_into_sharing(database):  # noqa: F811
@@ -270,3 +273,61 @@ def test_dedicated_placement_is_unaffected_by_the_shared_branch(database):  # no
 
     with pytest.raises(BootstrapRefused, match="bound to another target or tenant"):
         registry.finalize(_DedicatedSecond(), str(claim_b["attempt_token"]))
+
+
+def _register_shared_member(store):
+    from superplane_bootstrap.registry import _target_mapping
+
+    target = _SharedTarget()
+    registry = SqlRegistrationStore(store=store)
+    claim = registry.reserve(WORKSPACE_ID, _target_mapping(target))
+    registry.finalize(target, str(claim["attempt_token"]))
+    return _target_mapping(target)
+
+
+@pytest.mark.parametrize(
+    "field", ["generation", "namespace_uid", "credential_reference_id"]
+)
+def test_active_membership_drift_is_not_overwritten_on_replay(database, field):  # noqa: F811
+    from superplane_bootstrap.canonical import publish
+
+    store = database()
+    _seed_shared_cluster(store)
+    identity = _register_shared_member(store)
+    changed = "b" * 64 if field == "generation" else "changed-reference"
+    store.fetch(f"UPDATE cluster_memberships SET {field}=$1", changed)
+    with (
+        pytest.raises(BootstrapRefused, match="immutable identity"),
+        store.transaction(),
+    ):
+        publish(store, identity)
+    assert store.fetch(f"SELECT {field} FROM cluster_memberships")[0][field] == changed
+
+
+def test_one_live_membership_across_states_preserves_removed_history(database):  # noqa: F811
+    from uuid import uuid4
+
+    import asyncpg
+
+    store = database()
+    _seed_shared_cluster(store)
+    _register_shared_member(store)
+    with pytest.raises(asyncpg.UniqueViolationError):
+        store.fetch(
+            "INSERT INTO cluster_memberships(id,org_id,workspace_id,cluster_id,generation,namespace,state) "
+            "SELECT $1,org_id,workspace_id,cluster_id,generation,namespace||'-reserved','reserved' "
+            "FROM cluster_memberships WHERE state='active'",
+            uuid4(),
+        )
+    store.fetch("UPDATE cluster_memberships SET state='removed'")
+    for _ in range(2):
+        store.fetch(
+            "INSERT INTO cluster_memberships(id,org_id,workspace_id,cluster_id,generation,namespace,state) "
+            "SELECT $1,org_id,workspace_id,cluster_id,generation,namespace,'removed' "
+            "FROM cluster_memberships LIMIT 1",
+            uuid4(),
+        )
+    assert (
+        len(store.fetch("SELECT id FROM cluster_memberships WHERE state='removed'"))
+        == 3
+    )
