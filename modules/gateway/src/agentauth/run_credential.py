@@ -217,13 +217,19 @@ def mint_credential(
 
 
 def verify_credential(
-    token: str, *, now: datetime | None = None, env: dict[str, str] | None = None,
+    token: str,
+    *,
+    now: datetime | None = None,
+    env: dict[str, str] | None = None,
 ) -> RunCredential:
     return _verify_credential(token, now=now, env=env, allow_expired=False)
 
 
 def verify_credential_for_task_settlement(
-    token: str, *, now: datetime | None = None, env: dict[str, str] | None = None,
+    token: str,
+    *,
+    now: datetime | None = None,
+    env: dict[str, str] | None = None,
 ) -> RunCredential:
     """Authenticate an expired token only for workload-bound stop evidence.
 
@@ -234,7 +240,11 @@ def verify_credential_for_task_settlement(
 
 
 def _verify_credential(
-    token: str, *, now: datetime | None, env: dict[str, str] | None, allow_expired: bool,
+    token: str,
+    *,
+    now: datetime | None,
+    env: dict[str, str] | None,
+    allow_expired: bool,
 ) -> RunCredential:
     """Verify a credential and return the execution identity it asserts.
 

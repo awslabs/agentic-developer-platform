@@ -83,9 +83,13 @@ def test_command_event_and_terminal_result_preserve_json(store):
         )
         attempt_arguments = {"invocation_id": request.invocation_id, "generation": 1, "runtime_attempt_id": attempt_id}
         store.commit_turn(
-            task_id=request.task_id, invocation_id=request.invocation_id,
-            generation=1, runtime_attempt_id=attempt_id, turn_number=1,
-            turn_id=str(uuid.uuid4()), command_ids=[command_id],
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=1,
+            runtime_attempt_id=attempt_id,
+            turn_number=1,
+            turn_id=str(uuid.uuid4()),
+            command_ids=[command_id],
             expected_version=store.read_task(request.task_id)["version"],
         )
     store.transition(

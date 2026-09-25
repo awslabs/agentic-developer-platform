@@ -50,10 +50,15 @@ async def own_task(request: Request, runtime: AgentRuntime, delivery: TaskDelive
 
                 from src.tasks.command_routes import settle_admission_headroom
                 from src.tasks.store import TaskStore
+
                 repository = TaskStore(dynamodb_client=runtime.store.client, authority_table_name=runtime.store.table)
                 for task in delivery.cancelled_tasks.values():
-                    await settle_admission_headroom(repository, SimpleNamespace(task_id=task["task_id"],
-                        invocation_id=task["invocation_id"], generation=int(task["generation"]), runtime_attempt_id=None))
+                    await settle_admission_headroom(
+                        repository,
+                        SimpleNamespace(
+                            task_id=task["task_id"], invocation_id=task["invocation_id"], generation=int(task["generation"]), runtime_attempt_id=None
+                        ),
+                    )
         else:
             await run_in_threadpool(delivery.maintain, pod.uid, acknowledge=action == "ack")
             result = {"accepted": True}

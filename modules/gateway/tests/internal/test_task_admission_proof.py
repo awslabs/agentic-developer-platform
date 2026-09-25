@@ -22,25 +22,18 @@ def _proof(*, request_body: bytes, caller_token: str, idempotency_key: str) -> s
         body=request_body,
     )
     headers = {
-        "authorization": (
-            "AWS4-HMAC-SHA256 Credential=fixture,"
-            "SignedHeaders=content-type;x-adp-work-invocation;x-amz-date,"
-            "Signature=fixture"
-        ),
+        "authorization": ("AWS4-HMAC-SHA256 Credential=fixture,SignedHeaders=content-type;x-adp-work-invocation;x-amz-date,Signature=fixture"),
         "content-type": "application/x-www-form-urlencoded",
         "x-amz-date": "20260924T120000Z",
         PROOF_BINDING_HEADER: binding,
     }
-    return base64.b64encode(
-        json.dumps(headers, sort_keys=True, separators=(",", ":")).encode()
-    ).decode()
+    return base64.b64encode(json.dumps(headers, sort_keys=True, separators=(",", ":")).encode()).decode()
 
 
-def _payload(
-    *, request_body: bytes, caller_token: str, idempotency_key: str, proof: str
-) -> bytes:
+def _payload(*, request_body: bytes, caller_token: str, idempotency_key: str, proof: str) -> bytes:
     def encode(value):
         return json.dumps(value, separators=(",", ":")).encode()
+
     return b"".join(
         (
             b'{"schema_version":"1.0","submit":',
@@ -57,10 +50,7 @@ def _payload(
 
 
 def _valid():
-    request_body = (
-        b' \n{ "schema_version":"1.0", "persona":"agent-task-investigator",'
-        b' "instructions":"Investigate" }\t'
-    )
+    request_body = b' \n{ "schema_version":"1.0", "persona":"agent-task-investigator", "instructions":"Investigate" }\t'
     caller_token = "token-a"
     idempotency_key = "key-a"
     proof = _proof(
@@ -96,10 +86,7 @@ def test_verifier_rejects_every_request_binding_mutation(mutation):
     if mutation == "body":
         request_body = request_body.replace(b"Investigate", b"Exfiltrate")
     elif mutation == "ordering":
-        request_body = (
-            b'{"instructions":"Investigate","persona":"agent-task-investigator",'
-            b'"schema_version":"1.0"}'
-        )
+        request_body = b'{"instructions":"Investigate","persona":"agent-task-investigator","schema_version":"1.0"}'
     elif mutation == "token":
         caller_token = "token-b"
     else:
@@ -163,10 +150,13 @@ def test_verifier_rejects_noncanonical_wrapper_that_drops_byte_provenance():
 
 
 def test_binding_matches_the_cross_component_vector():
-    assert binding_digest(
-        method="POST",
-        route="/v1/tasks",
-        caller_token="token-a",
-        idempotency_key="key-a",
-        body=b'{"schema_version":"1.0","instructions":"Investigate"}',
-    ) == "fa39c63ae897cca037b7b0d622d66a969777500b9b80ef5b80a79b5c553082f3"
+    assert (
+        binding_digest(
+            method="POST",
+            route="/v1/tasks",
+            caller_token="token-a",
+            idempotency_key="key-a",
+            body=b'{"schema_version":"1.0","instructions":"Investigate"}',
+        )
+        == "fa39c63ae897cca037b7b0d622d66a969777500b9b80ef5b80a79b5c553082f3"
+    )

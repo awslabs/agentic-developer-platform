@@ -34,7 +34,9 @@ def envelope():
 
 def assert_schema(value, definition):
     errors = validate(
-        value, ADAPTER_SCHEMA["$defs"][definition], SCHEMAS,
+        value,
+        ADAPTER_SCHEMA["$defs"][definition],
+        SCHEMAS,
         "internal-adapters.schema.json",
     )
     assert errors == []
@@ -46,13 +48,18 @@ def seam(monkeypatch, client, store):
     store.accept(_request(task_id=TASK, invocation_id=INVOCATION, dispatch_id=DISPATCH))
     clock = [NOW.timestamp()]
     store = TaskWorkStore(
-        dynamodb_client=dynamodb, table_name=TABLE, authority_table_name=AUTHORITY_TABLE, clock=lambda: clock[0],
+        dynamodb_client=dynamodb,
+        table_name=TABLE,
+        authority_table_name=AUTHORITY_TABLE,
+        clock=lambda: clock[0],
     )
     env = {
-        "ADP_TASK_API_ADMISSION_ENABLED": "true", "ADP_TASK_API_RECOVERY_ENABLED": "true",
+        "ADP_TASK_API_ADMISSION_ENABLED": "true",
+        "ADP_TASK_API_RECOVERY_ENABLED": "true",
         "ADP_TASK_DISPATCH_PRODUCER_ROLES": "dispatch-role",
         "ADP_TASK_RECOVERY_PRODUCER_ROLES": "recovery-role",
-        "WEBHOOK_EVENTS_TABLE": "requests", "AGENT_AUTHORITY_TABLE": "authority",
+        "WEBHOOK_EVENTS_TABLE": "requests",
+        "AGENT_AUTHORITY_TABLE": "authority",
     }
     runtime = SimpleNamespace(env=env, store=SimpleNamespace(client=dynamodb, table="authority"))
     app = FastAPI()
@@ -68,11 +75,17 @@ def seam(monkeypatch, client, store):
     with TestClient(app) as client:
         yield SimpleNamespace(client=client, store=store, dynamodb=dynamodb, clock=clock)
 
+
 def test_closed_routes_reject_caller_task_or_tenant_fields(seam):
-    response = seam.client.post("/internal/v1/tasks/dispatch/claim", json={
-        "schema_version": "1.0", "dispatch_id": DISPATCH,
-        "task_id": TASK, "producer_proof": "fixture-proof",
-    })
+    response = seam.client.post(
+        "/internal/v1/tasks/dispatch/claim",
+        json={
+            "schema_version": "1.0",
+            "dispatch_id": DISPATCH,
+            "task_id": TASK,
+            "producer_proof": "fixture-proof",
+        },
+    )
     assert response.status_code == 422
     assert seam.client.post("/internal/v1/agent/task-dispatch/claim", json={}).status_code == 404
 
@@ -85,14 +98,25 @@ def test_dispatch_and_recovery_authentication_use_separate_allowlists(seam, monk
         return "ok"
 
     monkeypatch.setattr(task_dispatch_routes, "verify_producer", authenticate)
-    dispatch = seam.client.post("/internal/v1/tasks/dispatch/claim", json={
-        "schema_version": "1.0", "dispatch_id": DISPATCH, "producer_proof": "fixture-proof",
-    })
+    dispatch = seam.client.post(
+        "/internal/v1/tasks/dispatch/claim",
+        json={
+            "schema_version": "1.0",
+            "dispatch_id": DISPATCH,
+            "producer_proof": "fixture-proof",
+        },
+    )
     assert dispatch.status_code == 200
-    recovery = seam.client.post("/internal/v1/tasks/recovery/claim", json={
-        "schema_version": "1.0", "shard": work_shard(TASK), "cursor": None,
-        "limit": 100, "producer_proof": "fixture-proof",
-    })
+    recovery = seam.client.post(
+        "/internal/v1/tasks/recovery/claim",
+        json={
+            "schema_version": "1.0",
+            "shard": work_shard(TASK),
+            "cursor": None,
+            "limit": 100,
+            "producer_proof": "fixture-proof",
+        },
+    )
     assert recovery.status_code == 200
     assert calls == [(DISPATCH, {"dispatch-role"}), (work_shard(TASK), {"recovery-role"})]
 
@@ -148,7 +172,8 @@ def test_actual_gateway_claim_flows_through_actual_lambda_publisher(seam, monkey
     assert sqs.calls[0]["MessageDeduplicationId"] == DISPATCH
     assert sqs.calls[0]["MessageGroupId"] == task_publisher.message_group_id(TENANT, TASK)
     assert [entry[0] for entry in requests_seen] == [
-        "/internal/v1/tasks/dispatch/claim", "/internal/v1/tasks/dispatch/settle",
+        "/internal/v1/tasks/dispatch/claim",
+        "/internal/v1/tasks/dispatch/settle",
     ]
 
 
@@ -158,10 +183,16 @@ def test_actual_recovery_claim_flows_through_publisher_and_both_settlements(seam
     sqs = Sqs()
     monkeypatch.setattr(task_publisher, "_sqs", sqs)
     monkeypatch.setenv("SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/tasks.fifo")
-    response = seam.client.post("/internal/v1/tasks/recovery/claim", json={
-        "schema_version": "1.0", "shard": work_shard(TASK), "cursor": None,
-        "limit": 100, "producer_proof": "fixture-proof",
-    })
+    response = seam.client.post(
+        "/internal/v1/tasks/recovery/claim",
+        json={
+            "schema_version": "1.0",
+            "shard": work_shard(TASK),
+            "cursor": None,
+            "limit": 100,
+            "producer_proof": "fixture-proof",
+        },
+    )
     assert response.status_code == 200
     assert_schema(response.json(), "recovery_claim_response")
 
@@ -193,14 +224,25 @@ def test_unknown_send_recovery_reuses_exact_body_and_id(seam, monkeypatch):
 
 
 def test_recovery_settlement_requires_committed_publication_evidence(seam):
-    claim = seam.client.post("/internal/v1/tasks/recovery/claim", json={
-        "schema_version": "1.0", "shard": work_shard(TASK), "cursor": None,
-        "limit": 100, "producer_proof": "fixture-proof",
-    }).json()["work"][0]
-    response = seam.client.post("/internal/v1/tasks/recovery/settle", json={
-        "schema_version": "1.0", "work_id": DISPATCH, "lease_token": claim["lease_token"],
-        "evidence": {"kind": "publication", "observed": True, "observed_at": "2026-09-24T14:42:04Z"},
-        "producer_proof": "fixture-proof",
-    })
+    claim = seam.client.post(
+        "/internal/v1/tasks/recovery/claim",
+        json={
+            "schema_version": "1.0",
+            "shard": work_shard(TASK),
+            "cursor": None,
+            "limit": 100,
+            "producer_proof": "fixture-proof",
+        },
+    ).json()["work"][0]
+    response = seam.client.post(
+        "/internal/v1/tasks/recovery/settle",
+        json={
+            "schema_version": "1.0",
+            "work_id": DISPATCH,
+            "lease_token": claim["lease_token"],
+            "evidence": {"kind": "publication", "observed": True, "observed_at": "2026-09-24T14:42:04Z"},
+            "producer_proof": "fixture-proof",
+        },
+    )
     assert response.status_code == 409
     assert seam.store.task_status(TASK) == "accepted"

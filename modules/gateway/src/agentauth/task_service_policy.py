@@ -61,16 +61,19 @@ class TaskServicePolicyStore:
         ):
             raise TaskServicePolicyError("corrupt_policy")
         document = {
-            name: _DESERIALIZER.deserialize(value)
-            for name, value in item.items()
-            if name not in {"pk", "sk", "scope", "record_type", "personas"}
+            name: _DESERIALIZER.deserialize(value) for name, value in item.items() if name not in {"pk", "sk", "scope", "record_type", "personas"}
         }
         document["tenant_id"] = tenant_id
         return document
 
     def put(
-        self, *, tenant_id: str, canonical_principal_id: str, expected_version: int,
-        policy: dict, updated_by: str,
+        self,
+        *,
+        tenant_id: str,
+        canonical_principal_id: str,
+        expected_version: int,
+        policy: dict,
+        updated_by: str,
     ) -> dict:
         _validate_policy(policy)
         current = self.get(tenant_id=tenant_id, canonical_principal_id=canonical_principal_id)
@@ -106,9 +109,7 @@ class TaskServicePolicyStore:
         if expected_version:
             put["ExpressionAttributeNames"] = {"#version": "version"}
             put["ExpressionAttributeValues"] = {":expected": {"N": str(expected_version)}}
-        policy_digest = hashlib.sha256(
-            json.dumps(policy, sort_keys=True, separators=(",", ":"), default=str).encode()
-        ).hexdigest()
+        policy_digest = hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
         audit = {
             **self.key(tenant_id, canonical_principal_id),
             "sk": {"S": f"TASK_POLICY_AUDIT#{canonical_principal_id}#VERSION#{version:010d}"},
@@ -122,13 +123,18 @@ class TaskServicePolicyStore:
             "updated_by": {"S": updated_by},
         }
         try:
-            self.client.transact_write_items(TransactItems=[
-                {"Put": put},
-                {"Put": {
-                    "TableName": self.table, "Item": audit,
-                    "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)",
-                }},
-            ])
+            self.client.transact_write_items(
+                TransactItems=[
+                    {"Put": put},
+                    {
+                        "Put": {
+                            "TableName": self.table,
+                            "Item": audit,
+                            "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+                        }
+                    },
+                ]
+            )
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
                 raise TaskServicePolicyError("version_conflict") from None
@@ -149,16 +155,10 @@ def _validate_policy(policy: dict) -> None:
         raise TaskServicePolicyError("invalid_policy")
     if not isinstance(scopes, list) or not scopes or set(scopes) - TASK_SCOPES or len(set(scopes)) != len(scopes):
         raise TaskServicePolicyError("invalid_policy")
-    if (
-        not isinstance(policy.get("model_policy_version"), str)
-        or not policy["model_policy_version"]
-        or len(policy["model_policy_version"]) > 128
-    ):
+    if not isinstance(policy.get("model_policy_version"), str) or not policy["model_policy_version"] or len(policy["model_policy_version"]) > 128:
         raise TaskServicePolicyError("invalid_policy")
     limits = policy.get("limits")
-    if not isinstance(limits, dict) or set(limits) != {
-        "max_duration_minutes", "max_turns", "max_output_tokens_per_turn", "max_usd_per_task"
-    }:
+    if not isinstance(limits, dict) or set(limits) != {"max_duration_minutes", "max_turns", "max_output_tokens_per_turn", "max_usd_per_task"}:
         raise TaskServicePolicyError("invalid_policy")
     ceilings = {
         "max_duration_minutes": MAX_DURATION_MINUTES,
@@ -180,4 +180,3 @@ def _decimal_json(value):
     if isinstance(value, list):
         return [_decimal_json(item) for item in value]
     return value
-

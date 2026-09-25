@@ -192,21 +192,41 @@ class TaskCommands:
     def cancel_unstarted(self, task_id):
         import uuid
         from types import SimpleNamespace
+
         for _ in range(3):
             task = self.snapshot(task_id)
             if task.get("runtime_not_started") and task["state"] == "cancelled":
                 return True
             if task["state"] != "cancel_requested" or task.get("runtime_attempt_id") is not None:
                 return False
-            identity = SimpleNamespace(task_id=task_id, invocation_id=task["invocation_id"], generation=int(task["generation"]),
-                runtime_attempt_id=None, tenant=task["scope"]["tenant"])
+            identity = SimpleNamespace(
+                task_id=task_id,
+                invocation_id=task["invocation_id"],
+                generation=int(task["generation"]),
+                runtime_attempt_id=None,
+                tenant=task["scope"]["tenant"],
+            )
             now = _iso(self.repo._clock())
-            body = {"schema_version": "1.0", "outcome": "cancelled", "final_report_id": str(uuid.uuid4()),
+            body = {
+                "schema_version": "1.0",
+                "outcome": "cancelled",
+                "final_report_id": str(uuid.uuid4()),
                 "child_exit": {"confirmed": False, "exit_code": None, "signal": None, "stopped_at": None},
-                "result": None, "committed_result_refs": [], "error": {"schema_version": "1.0", "outcome": "cancelled",
-                    "code": "cancelled_by_client", "message": "Task cancelled before any runtime attempt started.",
-                    "committed_at": now, "runtime_not_started": True, "child_exit_confirmed": False, "recovery_required": False,
-                    "provider_outcome": "not_started", "total_usd": 0}}
+                "result": None,
+                "committed_result_refs": [],
+                "error": {
+                    "schema_version": "1.0",
+                    "outcome": "cancelled",
+                    "code": "cancelled_by_client",
+                    "message": "Task cancelled before any runtime attempt started.",
+                    "committed_at": now,
+                    "runtime_not_started": True,
+                    "child_exit_confirmed": False,
+                    "recovery_required": False,
+                    "provider_outcome": "not_started",
+                    "total_usd": 0,
+                },
+            }
             try:
                 self.finalize(identity, body, no_child=True)
                 return True
@@ -325,8 +345,10 @@ class TaskCommands:
             updates["recovery_required"] = False
         transaction = [self._meta(snapshot, updates, attempt=identity.runtime_attempt_id)]
         if no_child:
-            grant = self.repo._get_authority(task_authority_partition(identity.tenant),
-                task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation))
+            grant = self.repo._get_authority(
+                task_authority_partition(identity.tenant),
+                task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation),
+            )
             if not grant or grant.get("runtime_attempt_id") is not None:
                 raise errors.state_conflict("Task runtime already started.")
             values = {":task": identity.task_id, ":true": True, ":null": "NULL"}
@@ -336,19 +358,36 @@ class TaskCommands:
             else:
                 condition += " AND workload_uid = :pod"
                 values[":pod"] = grant["workload_uid"]
-            transaction.append({"Update": {"TableName": self.repo.authority_table_name,
-                "Key": _serialize({"pk": task_authority_partition(identity.tenant),
-                    "sk": task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation)}),
-                "UpdateExpression": "SET runtime_start_cancelled = :true, execution_capacity_released = :true",
-                "ConditionExpression": condition, "ExpressionAttributeValues": _serialize(values)}})
+            transaction.append(
+                {
+                    "Update": {
+                        "TableName": self.repo.authority_table_name,
+                        "Key": _serialize(
+                            {
+                                "pk": task_authority_partition(identity.tenant),
+                                "sk": task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation),
+                            }
+                        ),
+                        "UpdateExpression": "SET runtime_start_cancelled = :true, execution_capacity_released = :true",
+                        "ConditionExpression": condition,
+                        "ExpressionAttributeValues": _serialize(values),
+                    }
+                }
+            )
             if not grant.get("execution_capacity_released", False):
                 for capacity_key in grant.get("execution_capacity_keys", []):
-                    transaction.append({"Update": {"TableName": self.repo.authority_table_name,
-                        "Key": _serialize({"pk": capacity_key, "sk": "ACTIVE"}),
-                        "UpdateExpression": "REMOVE reservations.#task ADD active_count :minus",
-                        "ConditionExpression": "reservations.#task = :invocation AND active_count > :zero",
-                        "ExpressionAttributeNames": {"#task": identity.task_id},
-                        "ExpressionAttributeValues": _serialize({":invocation": identity.invocation_id, ":minus": -1, ":zero": 0})}})
+                    transaction.append(
+                        {
+                            "Update": {
+                                "TableName": self.repo.authority_table_name,
+                                "Key": _serialize({"pk": capacity_key, "sk": "ACTIVE"}),
+                                "UpdateExpression": "REMOVE reservations.#task ADD active_count :minus",
+                                "ConditionExpression": "reservations.#task = :invocation AND active_count > :zero",
+                                "ExpressionAttributeNames": {"#task": identity.task_id},
+                                "ExpressionAttributeValues": _serialize({":invocation": identity.invocation_id, ":minus": -1, ":zero": 0}),
+                            }
+                        }
+                    )
         elif stop_only:
             # Stop-only credentials can no longer spend/report. They can settle
             # this exact persisted attempt even after policy revocation.
@@ -437,8 +476,11 @@ class TaskCommands:
                             {
                                 ":settled": "cancelled" if outcome == "cancelled" else "rejected",
                                 ":now": timestamp,
-                                ":reason": ("Task cancelled before any runtime attempt started." if no_child else
-                                            "Task process stopped before this command was consumed."),
+                                ":reason": (
+                                    "Task cancelled before any runtime attempt started."
+                                    if no_child
+                                    else "Task process stopped before this command was consumed."
+                                ),
                                 ":accepted": "accepted",
                             }
                         ),

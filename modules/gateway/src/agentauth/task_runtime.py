@@ -1,4 +1,5 @@
 """GitHub-free task workload binding and current-attempt authorization."""
+
 from __future__ import annotations
 
 import hashlib
@@ -30,8 +31,9 @@ class TaskRuntime:
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def _grant(self, tenant, invocation, generation, *, stop_only=False):
-        grant = self.repository._get_authority(task_authority_partition(tenant), task_run_grant_sort_key(
-            invocation_id=invocation, generation=generation))
+        grant = self.repository._get_authority(
+            task_authority_partition(tenant), task_run_grant_sort_key(invocation_id=invocation, generation=generation)
+        )
         if grant is None or (not stop_only and grant.get("status") != "active"):
             raise BootstrapRefusedError("task authority unavailable")
         return grant
@@ -54,6 +56,7 @@ class TaskRuntime:
         delivery.require_assignment(pod.uid, body["invocation_id"], body["envelope_digest"])
         assignment = delivery.read(pod.uid)
         import json
+
         envelope = json.loads(assignment["body"])
         if envelope.get("kind") != "adp.task" or envelope.get("task_id") != body["task_id"]:
             raise BootstrapRefusedError("task assignment mismatch")
@@ -65,15 +68,16 @@ class TaskRuntime:
             raise BootstrapRefusedError("task envelope mismatch")
         tenant = task["scope"]["tenant"]
         grant = self._grant(tenant, task["invocation_id"], int(task["generation"]))
-        key = {"pk": {"S": task_authority_partition(tenant)}, "sk": {"S": task_run_grant_sort_key(
-            invocation_id=task["invocation_id"], generation=int(task["generation"]))}}
+        key = {
+            "pk": {"S": task_authority_partition(tenant)},
+            "sk": {"S": task_run_grant_sort_key(invocation_id=task["invocation_id"], generation=int(task["generation"]))},
+        }
         # Claiming ownership and all three execution slots is one transaction.
         # Repeat bootstrap by the same pod consumes no additional capacity.
         if grant.get("workload_uid") not in (None, pod.uid):
             raise BootstrapRefusedError("task already owned")
         if grant.get("workload_uid") is None:
-            scopes = [("pilot", 4), ("tenant:" + tenant, 4),
-                      ("principal:" + tenant + ":" + task["scope"]["canonical_principal"], 2)]
+            scopes = [("pilot", 4), ("tenant:" + tenant, 4), ("principal:" + tenant + ":" + task["scope"]["canonical_principal"], 2)]
             capacity_keys = []
             transactions = []
             for scope, limit in scopes:
@@ -81,26 +85,56 @@ class TaskRuntime:
                 capacity_keys.append(partition)
                 capacity_key = {"pk": {"S": partition}, "sk": {"S": "ACTIVE"}}
                 try:
-                    self.repository._client.put_item(TableName=self.repository.authority_table_name,
-                        Item={**capacity_key, "active_count": {"N": "0"}, "capacity_limit": {"N": str(limit)},
-                              "reservations": {"M": {}}}, ConditionExpression="attribute_not_exists(pk)")
+                    self.repository._client.put_item(
+                        TableName=self.repository.authority_table_name,
+                        Item={**capacity_key, "active_count": {"N": "0"}, "capacity_limit": {"N": str(limit)}, "reservations": {"M": {}}},
+                        ConditionExpression="attribute_not_exists(pk)",
+                    )
                 except ClientError as exc:
                     if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                         raise
-                transactions.append({"Update": {"TableName": self.repository.authority_table_name, "Key": capacity_key,
-                    "UpdateExpression": "SET reservations.#task = :invocation ADD active_count :one",
-                    "ConditionExpression": "capacity_limit = :limit AND active_count < :limit AND attribute_not_exists(reservations.#task)",
-                    "ExpressionAttributeNames": {"#task": task["task_id"]},
-                    "ExpressionAttributeValues": {":invocation": {"S": task["invocation_id"]}, ":one": {"N": "1"}, ":limit": {"N": str(limit)}}}})
-            transactions.append({"Update": {"TableName": self.repository.authority_table_name, "Key": key,
-                "UpdateExpression": ("SET workload_uid = :pod, workload_namespace = :namespace, credential_epoch = :epoch, "
-                                     "execution_capacity_keys = :keys, execution_capacity_released = :false"),
-                "ConditionExpression": ("#status = :active AND task_id = :task AND attribute_not_exists(workload_uid) "
-                                        "AND attribute_not_exists(runtime_start_cancelled)"),
-                "ExpressionAttributeNames": {"#status": "status"},
-                "ExpressionAttributeValues": {":pod": {"S": pod.uid}, ":namespace": {"S": pod.namespace}, ":epoch": {"N": "1"},
-                    ":active": {"S": "active"}, ":task": {"S": task["task_id"]}, ":false": {"BOOL": False},
-                    ":keys": {"L": [{"S": value} for value in capacity_keys]}}}})
+                transactions.append(
+                    {
+                        "Update": {
+                            "TableName": self.repository.authority_table_name,
+                            "Key": capacity_key,
+                            "UpdateExpression": "SET reservations.#task = :invocation ADD active_count :one",
+                            "ConditionExpression": "capacity_limit = :limit AND active_count < :limit AND attribute_not_exists(reservations.#task)",
+                            "ExpressionAttributeNames": {"#task": task["task_id"]},
+                            "ExpressionAttributeValues": {
+                                ":invocation": {"S": task["invocation_id"]},
+                                ":one": {"N": "1"},
+                                ":limit": {"N": str(limit)},
+                            },
+                        }
+                    }
+                )
+            transactions.append(
+                {
+                    "Update": {
+                        "TableName": self.repository.authority_table_name,
+                        "Key": key,
+                        "UpdateExpression": (
+                            "SET workload_uid = :pod, workload_namespace = :namespace, credential_epoch = :epoch, "
+                            "execution_capacity_keys = :keys, execution_capacity_released = :false"
+                        ),
+                        "ConditionExpression": (
+                            "#status = :active AND task_id = :task AND attribute_not_exists(workload_uid) "
+                            "AND attribute_not_exists(runtime_start_cancelled)"
+                        ),
+                        "ExpressionAttributeNames": {"#status": "status"},
+                        "ExpressionAttributeValues": {
+                            ":pod": {"S": pod.uid},
+                            ":namespace": {"S": pod.namespace},
+                            ":epoch": {"N": "1"},
+                            ":active": {"S": "active"},
+                            ":task": {"S": task["task_id"]},
+                            ":false": {"BOOL": False},
+                            ":keys": {"L": [{"S": value} for value in capacity_keys]},
+                        },
+                    }
+                }
+            )
             try:
                 self.repository._client.transact_write_items(TransactItems=transactions)
             except ClientError as exc:
@@ -108,16 +142,31 @@ class TaskRuntime:
                     raise BootstrapRefusedError("task execution capacity or ownership unavailable") from None
                 raise
         self._current(task["task_id"])
-        credential = mint_credential(invocation_id=task["invocation_id"], attempt=int(task["generation"]),
-            tenant_id=tenant, credential_epoch=int(grant.get("credential_epoch", 1)), persona=task["persona"],
+        credential = mint_credential(
+            invocation_id=task["invocation_id"],
+            attempt=int(task["generation"]),
+            tenant_id=tenant,
+            credential_epoch=int(grant.get("credential_epoch", 1)),
+            persona=task["persona"],
             ttl_seconds=min(900, int((datetime.fromisoformat(task["deadline_at"].replace("Z", "+00:00")) - self.clock()).total_seconds())),
-            now=self.clock(), env=self.env)
+            now=self.clock(),
+            env=self.env,
+        )
         claims = verify_credential(credential, now=self.clock(), env=self.env)
-        return {"schema_version": "1.0", "task_id": task["task_id"], "invocation_id": task["invocation_id"],
-                "generation": int(task["generation"]), "persona": task["persona"], "run_credential": credential,
-                "run_credential_expires_at": claims.expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "deadline_at": task["deadline_at"], "input": grant["input"], "model_binding": grant["model_binding"],
-                "limits": grant["limits"], "capabilities": grant["capabilities"]}
+        return {
+            "schema_version": "1.0",
+            "task_id": task["task_id"],
+            "invocation_id": task["invocation_id"],
+            "generation": int(task["generation"]),
+            "persona": task["persona"],
+            "run_credential": credential,
+            "run_credential_expires_at": claims.expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "deadline_at": task["deadline_at"],
+            "input": grant["input"],
+            "model_binding": grant["model_binding"],
+            "limits": grant["limits"],
+            "capabilities": grant["capabilities"],
+        }
 
     def authenticate(self, *, credential, pod, require_attempt=True, stop_only=False):
         verifier = verify_credential_for_task_settlement if stop_only else verify_credential
@@ -126,23 +175,32 @@ class TaskRuntime:
         task = self.repository.read_task(grant["task_id"]) if stop_only else self._current(grant["task_id"])
         if task is None or task["scope"]["tenant"] != claims.tenant_id:
             raise BootstrapRefusedError("task binding unavailable")
-        if (grant.get("workload_uid") != pod.uid or grant.get("workload_namespace") != pod.namespace
-                or int(grant.get("credential_epoch", 0)) != claims.credential_epoch
-                or task["invocation_id"] != claims.invocation_id or int(task["generation"]) != claims.attempt):
+        if (
+            grant.get("workload_uid") != pod.uid
+            or grant.get("workload_namespace") != pod.namespace
+            or int(grant.get("credential_epoch", 0)) != claims.credential_epoch
+            or task["invocation_id"] != claims.invocation_id
+            or int(task["generation"]) != claims.attempt
+        ):
             raise BootstrapRefusedError("task workload mismatch")
         attempt = task.get("runtime_attempt_id")
         if (require_attempt and not attempt) or grant.get("runtime_attempt_id") != attempt:
             raise BootstrapRefusedError("task attempt mismatch")
-        return VerifiedTaskAttempt(task["task_id"], claims.invocation_id, claims.attempt, attempt,
-                                   claims.tenant_id, task["scope"]["canonical_principal"], pod.uid)
+        return VerifiedTaskAttempt(
+            task["task_id"], claims.invocation_id, claims.attempt, attempt, claims.tenant_id, task["scope"]["canonical_principal"], pod.uid
+        )
 
     def register_attempt(self, *, identity, body):
-        if (body["task_id"], body["invocation_id"], body["generation"]) != (
-                identity.task_id, identity.invocation_id, identity.generation):
+        if (body["task_id"], body["invocation_id"], body["generation"]) != (identity.task_id, identity.invocation_id, identity.generation):
             raise BootstrapRefusedError("task attempt mismatch")
         task = self._current(identity.task_id)
         if task.get("runtime_attempt_id") == body["runtime_attempt_id"]:
             return  # Response-loss retry of the same committed binding.
-        self.repository.bind_runtime_attempt(task_id=identity.task_id, invocation_id=identity.invocation_id,
-            generation=identity.generation, runtime_attempt_id=body["runtime_attempt_id"],
-            expected_version=int(task["version"]), expected_runtime_attempt_id=identity.runtime_attempt_id)
+        self.repository.bind_runtime_attempt(
+            task_id=identity.task_id,
+            invocation_id=identity.invocation_id,
+            generation=identity.generation,
+            runtime_attempt_id=body["runtime_attempt_id"],
+            expected_version=int(task["version"]),
+            expected_runtime_attempt_id=identity.runtime_attempt_id,
+        )

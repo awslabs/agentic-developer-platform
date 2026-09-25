@@ -73,7 +73,8 @@ def get_store() -> TaskStore:
         if not bucket:
             raise errors.prerequisite_unavailable("Task artifact storage is not configured in this environment.")
         _STORE = DynamoTaskReadStore(
-            DurableTaskStore(), s3_client=boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1")),
+            DurableTaskStore(),
+            s3_client=boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1")),
             artifact_bucket=bucket,
         )
     return _STORE

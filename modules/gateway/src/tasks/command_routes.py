@@ -233,11 +233,14 @@ async def public_command(request: Request, task_id: str, kind: str, db: AsyncSes
     )
     if kind == "cancel":
         from types import SimpleNamespace
+
         cancelled = await run_in_threadpool(TaskCommands(store.repository).cancel_unstarted, task_id)
         if cancelled:
             task = await run_in_threadpool(store.repository.read_task, task_id)
-            await settle_admission_headroom(store.repository, SimpleNamespace(task_id=task_id,
-                invocation_id=task["invocation_id"], generation=int(task["generation"]), runtime_attempt_id=None))
+            await settle_admission_headroom(
+                store.repository,
+                SimpleNamespace(task_id=task_id, invocation_id=task["invocation_id"], generation=int(task["generation"]), runtime_attempt_id=None),
+            )
     return http.ok(result, status=202)
 
 
@@ -309,10 +312,12 @@ async def settle_admission_headroom(repository, identity):
     import logging
 
     from src.agentauth.task_budget_settlement import settle_task_admission
+
     try:
         await settle_task_admission(repository, identity)
     except Exception as exc:
         # Preserve committed terminal evidence and the conservative hold. The
         # host's settlement retry can reconcile; this never retries inference.
-        logging.getLogger(__name__).warning("Task admission settlement remains unconfirmed",
-            extra={"task_id": identity.task_id, "exception_type": type(exc).__name__})
+        logging.getLogger(__name__).warning(
+            "Task admission settlement remains unconfirmed", extra={"task_id": identity.task_id, "exception_type": type(exc).__name__}
+        )

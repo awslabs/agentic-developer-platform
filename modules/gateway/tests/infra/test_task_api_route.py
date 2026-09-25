@@ -27,6 +27,7 @@ the ordinary gateway pre-submit suite.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -51,16 +52,12 @@ def _route_block(tf: str) -> str:
 
 class TestTheRouteIsNarrow:
     def test_the_task_route_exists_as_an_explicit_path(self):
-        assert f'"{ROUTE}" = {{' in APIGW_MAIN_TF.read_text(), (
-            "POST /v1/tasks must be an explicit API Gateway path"
-        )
+        assert f'"{ROUTE}" = {{' in APIGW_MAIN_TF.read_text(), "POST /v1/tasks must be an explicit API Gateway path"
 
     def test_the_route_declares_an_explicit_post_method(self):
         block = _route_block(APIGW_MAIN_TF.read_text())
 
-        assert re.search(r"^\s*post = \{", block, re.MULTILINE), (
-            "the task route must declare an explicit post method"
-        )
+        assert re.search(r"^\s*post = \{", block, re.MULTILINE), "the task route must declare an explicit post method"
 
     def test_non_post_methods_fall_through_to_the_gateway_pod(self):
         """An explicit resource shadows ``/{proxy+}`` for every HTTP method."""
@@ -106,9 +103,7 @@ class TestTheInvokePermissionIsScoped:
         assert 'source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/POST/v1/tasks"' in block, (
             "the task Lambda permission must name exactly POST /v1/tasks"
         )
-        assert "execution_arn}/*/*" not in block, (
-            "the task Lambda permission must not use a wildcard method/path grant"
-        )
+        assert "execution_arn}/*/*" not in block, "the task Lambda permission must not use a wildcard method/path grant"
         assert "var.task_api_lambda_function_name" in block
 
     def test_the_permission_count_is_plan_time_evaluable(self):
@@ -120,9 +115,7 @@ class TestTheInvokePermissionIsScoped:
         block = tf[start:end]
 
         assert "var.enable_task_api_route" in block
-        assert "task_api_lambda_invoke_arn" not in block, (
-            "count must not depend on the invoke ARN, which is unknown until apply"
-        )
+        assert "task_api_lambda_invoke_arn" not in block, "count must not depend on the invoke ARN, which is unknown until apply"
 
 
 class TestProvenanceHeadersAreBlanked:
@@ -131,9 +124,7 @@ class TestProvenanceHeadersAreBlanked:
         block = _route_block(APIGW_MAIN_TF.read_text())
 
         assert "local.blank_caller_identity" in block
-        assert "local.verified_caller_identity" not in block, (
-            "an auth-NONE route must blank, never map a verified identity it lacks"
-        )
+        assert "local.verified_caller_identity" not in block, "an auth-NONE route must blank, never map a verified identity it lacks"
 
 
 class TestThePostconditionStillApplies:
@@ -146,8 +137,7 @@ class TestThePostconditionStillApplies:
         condition = tf[start:end]
 
         assert "for method_key, method_item in path_item" in condition, (
-            "the #5653 postcondition must iterate every method, not only "
-            "x-amazon-apigateway-any-method, or explicit-method routes pass vacuously"
+            "the #5653 postcondition must iterate every method, not only x-amazon-apigateway-any-method, or explicit-method routes pass vacuously"
         )
         assert 'method_item["x-amazon-apigateway-integration"]' in condition
 
@@ -165,9 +155,7 @@ class TestThePostconditionStillApplies:
         end = tf.index("error_message", start)
         condition = tf[start:end]
 
-        assert '!= "MOCK"' in condition, (
-            "MOCK integrations must be exempted explicitly, not incidentally"
-        )
+        assert '!= "MOCK"' in condition, "MOCK integrations must be exempted explicitly, not incidentally"
 
     def test_the_rendered_first_pass_body_has_only_mock_integrations(self):
         """Pins the fact the exemption relies on."""
@@ -175,7 +163,7 @@ class TestThePostconditionStillApplies:
 
         placeholder = tf[tf.index('"/status" = {') :]
         placeholder = placeholder[: placeholder.index("\n  tags =")]
-        assert '"MOCK"' in placeholder or "type = \"MOCK\"" in placeholder
+        assert '"MOCK"' in placeholder or 'type = "MOCK"' in placeholder
 
 
 class TestTheRolloutIsTwoIndependentSwitches:
@@ -220,14 +208,7 @@ class TestTheRolloutIsTwoIndependentSwitches:
         accepting tasks is a gateway apply that removes the route — slow, and it
         returns a 403 from API Gateway rather than the contract's refusal shape.
         """
-        handler = (
-            GATEWAY_ROOT.parents[0]
-            / "agent-factory"
-            / "webhook-ingress"
-            / "lambda"
-            / "task_api"
-            / "handler.py"
-        )
+        handler = GATEWAY_ROOT.parents[0] / "agent-factory" / "webhook-ingress" / "lambda" / "task_api" / "handler.py"
         assert handler.is_file()
         source = handler.read_text()
         assert "ADMISSION_FLAG" in source
@@ -243,19 +224,36 @@ class TestTheRouteDoesNotShadowGatewayRoutes:
         in its OpenAPI, and simply never receives a request.
         """
         src = GATEWAY_ROOT / "src"
-        route_declaration = re.compile(
-            r'(?:APIRouter\([^)]*prefix\s*=|@\w+\.(?:post|api_route)\()'
-            r'[^\n]*["\']/v1/tasks["\']'
-        )
-        hits = [
-            path
-            for path in src.rglob("*.py")
-            if route_declaration.search(path.read_text())
-        ]
-        assert hits == [], (
-            f"the gateway app now declares /v1/tasks ({hits}); the explicit API "
-            "Gateway route would shadow it"
-        )
+        hits = []
+        for path in src.rglob("*.py"):
+            tree = ast.parse(path.read_text())
+            prefixes = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                    call = node.value
+                    if isinstance(call.func, ast.Name) and call.func.id == "APIRouter":
+                        prefix = next((kw.value.value for kw in call.keywords if kw.arg == "prefix" and isinstance(kw.value, ast.Constant)), "")
+                        for target in node.targets:
+                            if isinstance(target, ast.Name):
+                                prefixes[target.id] = prefix
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                for decorator in node.decorator_list:
+                    if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+                        continue
+                    method = decorator.func.attr
+                    if method not in {"post", "api_route"} or not decorator.args or not isinstance(decorator.args[0], ast.Constant):
+                        continue
+                    if method == "api_route":
+                        methods = next((ast.literal_eval(kw.value) for kw in decorator.keywords if kw.arg == "methods"), ["GET"])
+                        if "POST" not in methods:
+                            continue
+                    receiver = decorator.func.value
+                    prefix = prefixes.get(receiver.id, "") if isinstance(receiver, ast.Name) else ""
+                    if prefix + decorator.args[0].value == ROUTE:
+                        hits.append(path)
+        assert hits == [], f"the gateway app now declares POST {ROUTE} ({hits}); the explicit API Gateway route would shadow it"
 
     def test_the_declared_route_set_is_what_this_story_intended(self):
         """Equality, so an unreviewed route addition breaks CI immediately."""
@@ -298,16 +296,10 @@ class TestTheRouteIsValidSwagger:
 
         # Terraform's HCL map syntax for this block is close enough to JSON that
         # the method/integration nesting can be checked structurally.
-        method_keys = re.findall(
-            r"^\s{10}([a-z-]+(?:-[a-z]+)*) = \{", block, re.MULTILINE
-        )
-        assert method_keys == ["x-amazon-apigateway-any-method", "post"], (
-            f"unexpected method keys: {method_keys}"
-        )
+        method_keys = re.findall(r"^\s{10}([a-z-]+(?:-[a-z]+)*) = \{", block, re.MULTILINE)
+        assert method_keys == ["x-amazon-apigateway-any-method", "post"], f"unexpected method keys: {method_keys}"
 
         post = block.split("post = {", 1)[1]
         assert "x-amazon-apigateway-integration" in post
-        assert post.index("x-amazon-apigateway-integration") < post.index(
-            "var.task_api_lambda_invoke_arn"
-        )
+        assert post.index("x-amazon-apigateway-integration") < post.index("var.task_api_lambda_invoke_arn")
         assert json.dumps(ROUTE) == '"/v1/tasks"'

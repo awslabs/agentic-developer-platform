@@ -5,13 +5,14 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from . import test_store as t1_fixtures
-from .test_store import NOW, _request
 
 from src.tasks import errors
 from src.tasks.records import META_SORT_KEY, task_ops_partition, task_partition, task_turns_partition
 from src.tasks.store import _serialize
 from src.tasks.task_commands import TaskCommands
+
+from . import test_store as t1_fixtures
+from .test_store import NOW, _request
 
 client = t1_fixtures.client
 store = t1_fixtures.store

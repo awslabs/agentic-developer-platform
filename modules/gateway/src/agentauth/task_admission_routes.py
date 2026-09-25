@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.agentauth.routes import require_agent_transport
 from src.agentauth.work_routes import verify_producer
+from src.auth.agent_registry import parse_assumed_role_arn
+from src.auth.caller_provenance import verified_caller_identity
 from src.internal.task_admission_proof import TaskAdmissionProofError, binding_digest, verify_admission_binding
 from src.shared.database import get_db
 from src.tasks import authz, errors, http
@@ -18,6 +19,15 @@ from src.tasks.records import canonical_json
 
 router = APIRouter(prefix="/internal/v1/tasks", tags=["task-api"])
 _ADMISSION = None
+
+
+def require_task_admission_transport(request: Request, *, allowed_roles: set[str]) -> str:
+    """Authenticate this one producer route without granting generic agent scope."""
+    identity = verified_caller_identity(request)
+    role = parse_assumed_role_arn(identity) if identity else None
+    if not role or role not in allowed_roles:
+        raise HTTPException(403, "forbidden")
+    return role
 
 
 class SubmitRequest(BaseModel):
@@ -58,7 +68,7 @@ async def admit(request: Request, db: AsyncSession = Depends(get_db)):
     if not roles:
         raise errors.prerequisite_unavailable("Task ingress producer authorization is not configured.")
     try:
-        await require_agent_transport(request)
+        transport_role = require_task_admission_transport(request, allowed_roles=roles)
     except HTTPException:
         raise errors.disallowed_scope("Task admission requires authenticated internal transport.") from None
     raw = bytearray()
@@ -79,11 +89,13 @@ async def admit(request: Request, db: AsyncSession = Depends(get_db)):
     if not 1 <= len(payload["idempotency_key"]) <= 128 or any(not 32 <= ord(char) <= 126 for char in payload["idempotency_key"]):
         raise errors.invalid_request("Task idempotency key must be printable ASCII, at most128 characters.")
     try:
-        await verify_producer(
+        producer_role = await verify_producer(
             proof,
             binding_digest(method="POST", route="/v1/tasks", caller_token=token, idempotency_key=payload["idempotency_key"], body=public_bytes),
             allowed_roles=roles,
         )
+        if producer_role != transport_role:
+            raise HTTPException(403, "forbidden")
     except HTTPException:
         raise errors.disallowed_scope("Task admission producer is not authorized.") from None
     try:

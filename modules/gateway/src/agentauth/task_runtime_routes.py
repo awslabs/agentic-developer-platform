@@ -1,4 +1,5 @@
 """Transport and TokenReview protected task bootstrap/attempt adapters."""
+
 from __future__ import annotations
 
 import os
@@ -57,16 +58,22 @@ def task_runtime(runtime, *, stop_only=False):
     env = os.environ if runtime.env is None else runtime.env
     if not stop_only and env.get("ADP_TASK_API_WORKER_ENABLED", "false").lower() != "true":
         raise HTTPException(503, "task runtime unavailable")
-    return TaskRuntime(TaskStore(dynamodb_client=runtime.store.client,
-        table_name=env.get("WEBHOOK_EVENTS_TABLE"), authority_table_name=runtime.store.table), env=env)
+    return TaskRuntime(
+        TaskStore(dynamodb_client=runtime.store.client, table_name=env.get("WEBHOOK_EVENTS_TABLE"), authority_table_name=runtime.store.table), env=env
+    )
 
 
 async def _authenticate(request, *, require_attempt, stop_only=False):
     runtime = get_agent_runtime()
     try:
         pod = await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, ""))
-        identity = await run_in_threadpool(task_runtime(runtime, stop_only=stop_only).authenticate,
-            credential=request.headers.get(CREDENTIAL_HEADER, ""), pod=pod, require_attempt=require_attempt, stop_only=stop_only)
+        identity = await run_in_threadpool(
+            task_runtime(runtime, stop_only=stop_only).authenticate,
+            credential=request.headers.get(CREDENTIAL_HEADER, ""),
+            pod=pod,
+            require_attempt=require_attempt,
+            stop_only=stop_only,
+        )
         if await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, "")) != pod:
             raise WorkloadRefusedError("workload changed")
         return identity
@@ -87,8 +94,9 @@ async def authenticate_task_settlement(request: Request):
 async def bootstrap(body: BootstrapBody, request: Request, runtime=Depends(get_agent_runtime)):
     try:
         pod = await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, ""))
-        result = await run_in_threadpool(task_runtime(runtime).bootstrap,
-            body=body.model_dump(exclude_none=True), pod=pod, delivery=task_delivery(runtime))
+        result = await run_in_threadpool(
+            task_runtime(runtime).bootstrap, body=body.model_dump(exclude_none=True), pod=pod, delivery=task_delivery(runtime)
+        )
         if await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, "")) != pod:
             raise WorkloadRefusedError("workload changed")
         return result
@@ -129,7 +137,11 @@ class TurnBody(BaseModel):
 
 def require_body_attempt(identity, attempt):
     if (identity.task_id, identity.invocation_id, identity.generation, identity.runtime_attempt_id) != (
-            attempt.run.task_id, attempt.run.invocation_id, attempt.run.generation, attempt.runtime_attempt_id):
+        attempt.run.task_id,
+        attempt.run.invocation_id,
+        attempt.run.generation,
+        attempt.runtime_attempt_id,
+    ):
         raise HTTPException(404, "not found")
 
 
@@ -140,8 +152,12 @@ async def turn(body: TurnBody, request: Request, runtime=Depends(get_agent_runti
     identity = await authenticate_task_attempt(request)
     require_body_attempt(identity, body.attempt)
     try:
-        return await run_in_threadpool(TaskTurnStore(task_runtime(runtime).repository).commit,
-            identity=identity, request_id=body.request_id, expected_transcript_version=body.expected_transcript_version)
+        return await run_in_threadpool(
+            TaskTurnStore(task_runtime(runtime).repository).commit,
+            identity=identity,
+            request_id=body.request_id,
+            expected_transcript_version=body.expected_transcript_version,
+        )
     except (TaskStoreError, WorkBindingError):
         raise HTTPException(409, "task turn refused") from None
 
@@ -179,10 +195,12 @@ async def model(body: ModelBody, request: Request, runtime=Depends(get_agent_run
     require_body_attempt(identity, body.attempt)
     invocation = body.model_dump(include={"messages", "max_tokens", "system"}, exclude_none=True)
     import json
+
     if len(json.dumps(invocation, ensure_ascii=False).encode()) > 65536:
         raise HTTPException(413, "task model request too large")
     try:
-        return await TaskModel(task_runtime(runtime).repository, db=db).execute(identity=identity,
-            turn_id=body.turn_id, request_digest=body.request_digest, request=invocation)
+        return await TaskModel(task_runtime(runtime).repository, db=db).execute(
+            identity=identity, turn_id=body.turn_id, request_digest=body.request_digest, request=invocation
+        )
     except (TaskStoreError, WorkBindingError, ModelPolicyError, TaskBudgetError):
         raise HTTPException(409, "task model refused") from None
