@@ -3,9 +3,9 @@
 The module-wide domain lane installs Gateway dependencies only. API CI installs
 the maintained API/bootstrap/lifecycle/executor packages and the actual SDK.
 These tests retain the production verifier and fake provider transports; no SDK
-stub or skip substitutes for the dependency. API CI currently resolves the API's
-SDK range (>=29), while the executor worker extra constrains >=31,<32. Passing
-here proves the installed API SDK only; it is not worker-image SDK31 acceptance.
+stub or skip substitutes for the dependency. The app-owned transfer constraints
+pin this lane to SDK31, matching the executor worker extra (>=31,<32). These are
+source integration tests; they do not replace built-image or live acceptance.
 """
 
 import sys
