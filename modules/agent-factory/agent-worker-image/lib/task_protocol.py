@@ -195,10 +195,24 @@ def validate_child_frame(value: object, task_id: str) -> dict:
                     raise TaskProtocolError("Responses input exceeds bound")
             elif isinstance(inputs, list) and 1 <= len(inputs) <= 64:
                 for item in inputs:
-                    entry = _exact(item, {"role", "content"}, {"type", "status"})
+                    if isinstance(item, dict) and item.get("type") == "reasoning":
+                        entry = _exact(item, {"type", "encrypted_content", "summary"}, {"status"})
+                        if (not isinstance(entry["encrypted_content"], str)
+                                or not 1 <= len(entry["encrypted_content"]) <= 32768
+                                or entry.get("status", "completed") != "completed"
+                                or not isinstance(entry["summary"], list) or len(entry["summary"]) > 16):
+                            raise TaskProtocolError("Responses reasoning is invalid")
+                        for part in entry["summary"]:
+                            summary = _exact(part, {"type", "text"})
+                            if (summary["type"] != "summary_text" or not isinstance(summary["text"], str)
+                                    or len(summary["text"]) > 32000):
+                                raise TaskProtocolError("Responses summary is invalid")
+                        continue
+                    entry = _exact(item, {"role", "content"}, {"type", "status", "phase"})
                     if (entry["role"] not in {"system", "developer", "user", "assistant"}
                             or entry.get("type", "message") != "message"
-                            or entry.get("status", "completed") != "completed"):
+                            or entry.get("status", "completed") != "completed"
+                            or ("phase" in entry and entry["phase"] not in {"commentary", "final_answer"})):
                         raise TaskProtocolError("Responses message is invalid")
                     content = entry["content"]
                     if isinstance(content, str):

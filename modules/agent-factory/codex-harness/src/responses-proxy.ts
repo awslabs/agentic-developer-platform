@@ -6,11 +6,22 @@ const textPart = z.strictObject({ type: z.enum(["input_text", "output_text"]), t
 const message = z.strictObject({
   type: z.literal("message").optional(), role: z.enum(["system", "developer", "user", "assistant"]),
   content: z.union([z.string(), z.array(textPart).max(64)]),
+  phase: z.enum(["commentary", "final_answer"]).optional(),
   id: z.string().max(200).optional(), status: z.literal("completed").optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional(),
 }).transform(({ internal_chat_message_metadata_passthrough: _discarded, id: _discardedId, ...item }) => item);
+const reasoningFields = {
+  type: z.literal("reasoning"),
+  encrypted_content: z.string().min(1).max(32768),
+  summary: z.array(z.strictObject({ type: z.literal("summary_text"), text: z.string().max(32000) })).max(16),
+  status: z.literal("completed").optional(),
+};
+const reasoningInput = z.strictObject({ ...reasoningFields, id: z.string().max(200).optional(),
+  content: z.null().optional(), internal_chat_message_metadata_passthrough: z.unknown().optional(),
+}).transform(({ id: _discardedId, content: _emptyContent, internal_chat_message_metadata_passthrough: _metadata, ...item }) => item);
+const reasoningOutput = z.strictObject({ ...reasoningFields, id: z.string().min(1).max(200) });
 const sdkRequest = z.strictObject({
-  model: z.string(), input: z.union([z.string().min(1), z.array(message).min(1).max(64)]),
+  model: z.string(), input: z.union([z.string().min(1), z.array(z.union([message, reasoningInput])).min(1).max(64)]),
   instructions: z.string().optional(), stream: z.literal(true), store: z.literal(false),
   reasoning: z.strictObject({ effort: z.enum(["minimal", "low", "medium", "high", "xhigh"]), summary: z.enum(["auto", "concise", "detailed", "none"]).optional() }),
   // These are SDK-owned transport hints, never authority or cross-run cache IDs.
@@ -43,10 +54,11 @@ const usageSchema = z.strictObject({
 });
 const responseSchema = z.strictObject({
   id: z.string().min(1).max(200), status: z.literal("completed"),
-  output: z.array(z.strictObject({
+  output: z.array(z.union([reasoningOutput, z.strictObject({
     id: z.string().min(1).max(200), type: z.literal("message"), role: z.literal("assistant"), status: z.literal("completed"),
+    phase: z.enum(["commentary", "final_answer"]).optional(),
     content: z.array(z.strictObject({ type: z.literal("output_text"), text: z.string(), annotations: z.array(z.never()) })).min(1).max(64),
-  })).min(1).max(16), usage: usageSchema,
+  })])).min(1).max(16), usage: usageSchema,
 });
 export type TextResponsesResult = z.infer<typeof responseSchema>;
 export interface ConfirmedTextOperation {
@@ -79,13 +91,20 @@ export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy
 export function textResponseEvents(value: unknown, policy: TextResponsesPolicy): string {
   if (Buffer.byteLength(JSON.stringify(value)) > policy.maxResponseBytes) throw new Error("Responses result exceeds bound");
   const response = responseSchema.parse(value);
-  if (response.usage.output_tokens > policy.maxOutputTokens
+  if (!Number.isSafeInteger(response.usage.input_tokens + response.usage.output_tokens)
+    || response.usage.output_tokens > policy.maxOutputTokens
     || (response.usage.input_tokens_details?.cached_tokens ?? 0) > response.usage.input_tokens
     || (response.usage.output_tokens_details?.reasoning_tokens ?? 0) > response.usage.output_tokens) throw new Error("Invalid Responses usage");
   const events: string[] = [];
   const emit = (type: string, fields: object) => events.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
   emit("response.created", { response: { id: response.id, object: "response", status: "in_progress", output: [] } });
   response.output.forEach((item, output_index) => {
+    if (item.type === "reasoning") {
+      // Reasoning is replayable protocol state, never a progress/log message.
+      emit("response.output_item.added", { output_index, item: { ...item, summary: [] } });
+      emit("response.output_item.done", { output_index, item });
+      return;
+    }
     emit("response.output_item.added", { output_index, item: { ...item, status: "in_progress", content: [] } });
     item.content.forEach((part, content_index) => {
       const position = { item_id: item.id, output_index, content_index };

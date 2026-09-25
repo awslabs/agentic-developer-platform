@@ -44,7 +44,9 @@ async def invoke_task_responses(db, *, identity, binding, target, request, opera
         or endpoint.path != "/openai/v1/responses"
     ):
         raise TaskStoreError("task Responses destination differs from admitted evidence")
-    body = json.dumps({**request, "model": binding["model_id"], "stream": False, "store": False}, separators=(",", ":")).encode()
+    body = json.dumps(
+        {**request, "model": binding["model_id"], "stream": False, "store": False, "include": ["reasoning.encrypted_content"]}, separators=(",", ":")
+    ).encode()
     body = service._apply_inference_profile(body, prefix=routed.inference_profile_prefix)
     headers = await run_in_threadpool(service._headers, body, routed)
     # No retries or redirects: unknown provider outcomes retain the Task hold.

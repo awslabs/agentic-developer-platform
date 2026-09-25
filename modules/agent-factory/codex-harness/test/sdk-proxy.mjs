@@ -21,7 +21,7 @@ const proxy = await startTextResponsesProxy(async request => {
   for (const forbidden of ['model', 'tools', 'prompt_cache_key', 'client_metadata', 'store']) assert.equal(forbidden in request, false);
   return { operationStatus: 'confirmed', response: {
     id: `resp_fixture_${requests.length}`, status: 'completed',
-    output: [{ id: `msg_fixture_${requests.length}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Fixture host confirmed.', annotations: [] }] }],
+    output: [{ id: `rs_fixture_${requests.length}`, type: 'reasoning', summary: [], encrypted_content: 'fixture-opaque-reasoning' }, { id: `msg_fixture_${requests.length}`, type: 'message', role: 'assistant', status: 'completed', phase: 'final_answer', content: [{ type: 'output_text', text: 'Fixture host confirmed.', annotations: [] }] }],
     usage: { input_tokens: 100, output_tokens: 12, input_tokens_details: { cached_tokens: 20 }, output_tokens_details: { reasoning_tokens: 4 } },
   } };
 }, policy);
@@ -37,6 +37,8 @@ try {
   assert.equal(second.response, first.response);
   assert.equal(requests.length, 2);
   assert.ok(JSON.stringify(requests[1].input).includes(first.response));
+  assert.ok(requests[1].input.some(item => item.type === 'reasoning' && item.encrypted_content === 'fixture-opaque-reasoning' && !('id' in item)));
+  assert.ok(requests[1].input.some(item => item.phase === 'final_answer'));
   console.log('Actual pinned SDK -> text Responses bridge -> fixture host -> validated SSE -> shared turn consumer: two turns passed. No live Task API/model.');
 } finally {
   await proxy.close();

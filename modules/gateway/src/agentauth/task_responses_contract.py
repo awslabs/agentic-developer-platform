@@ -1,7 +1,7 @@
-"""Explicit, bounded text Responses contract for Task Codex transport.
+"""Explicit, bounded inline Responses contract for Task Codex transport.
 
 Model, destination, service tier, server state and credentials are host-owned.
-Tool/reasoning history is not admitted by this initial text contract. Admission
+Encrypted reasoning is inline; executable tool history is not admitted yet. Admission
 uses a distinct revision/probe and never borrows Messages or reviewer evidence.
 """
 
@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TASK_RESPONSES_TRANSPORT = "openai_responses"
-TASK_RESPONSES_REVISION = "task-codex-sdk-text-responses-v1"
+TASK_RESPONSES_REVISION = "task-codex-sdk-inline-responses-v2"
 
 
 class ClosedModel(BaseModel):
@@ -30,6 +30,7 @@ class ResponsesMessage(ClosedModel):
     role: Literal["system", "developer", "user", "assistant"]
     content: str | list[ResponsesText] = Field(max_length=32000)
     status: Literal["completed"] | None = None
+    phase: Literal["commentary", "final_answer"] | None = None
 
     @model_validator(mode="after")
     def bounded_parts(self):
@@ -42,8 +43,24 @@ class ResponsesReasoning(ClosedModel):
     effort: Literal["minimal", "low", "medium", "high", "xhigh"]
 
 
+class ResponsesSummary(ClosedModel):
+    type: Literal["summary_text"]
+    text: str = Field(max_length=32000)
+
+
+class ResponsesReasoningInput(ClosedModel):
+    type: Literal["reasoning"]
+    encrypted_content: str = Field(min_length=1, max_length=32768)
+    summary: list[ResponsesSummary] = Field(max_length=16)
+    status: Literal["completed"] | None = None
+
+
+class ResponsesReasoningOutput(ResponsesReasoningInput):
+    id: str = Field(min_length=1, max_length=200)
+
+
 class TaskResponsesRequest(ClosedModel):
-    input: str | list[ResponsesMessage] = Field(min_length=1, max_length=32000)
+    input: str | list[ResponsesMessage | ResponsesReasoningInput] = Field(min_length=1, max_length=32000)
     instructions: str | None = Field(default=None, max_length=32000)
     reasoning: ResponsesReasoning
     max_output_tokens: int = Field(strict=True, ge=1, le=4096)
@@ -91,11 +108,12 @@ class ResponsesOutputMessage(ClosedModel):
     type: Literal["message"]
     role: Literal["assistant"]
     status: Literal["completed"]
+    phase: Literal["commentary", "final_answer"] | None = None
     content: list[ResponsesOutputText] = Field(min_length=1, max_length=64)
 
 
 class TaskResponsesResult(ClosedModel):
     id: str = Field(min_length=1, max_length=200)
     status: Literal["completed"]
-    output: list[ResponsesOutputMessage] = Field(min_length=1, max_length=16)
+    output: list[ResponsesOutputMessage | ResponsesReasoningOutput] = Field(min_length=1, max_length=16)
     usage: ResponsesUsage

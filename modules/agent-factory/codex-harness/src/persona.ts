@@ -71,5 +71,17 @@ export function snapshotPersona(raw: string, skillContent: ReadonlyMap<string, s
     throw new Error("Persona and skills exhaust the context budget");
   }
   // Return serialized immutable data; callers cannot mutate the admitted snapshot.
-  return Object.freeze({ definition: canonical(persona), digest: sha256(canonical(persona)), instructions });
+  return Object.freeze({ definition: canonical(persona), digest: sha256(canonical(persona)), instructions,
+    skillSources: JSON.stringify(persona.skills.map((skill, index) => [skill.id, skills[index]])),
+  });
+}
+
+/** Reconstruct composed instructions from digest-bound sources after transport. */
+export function verifySnapshot(snapshot: ReturnType<typeof snapshotPersona>) {
+  if (Buffer.byteLength(snapshot.skillSources) > 2 * 1024 * 1024) throw new Error("Snapshot skill sources exceed bound");
+  const sources = z.array(z.tuple([z.string(), z.string()])).max(16).parse(JSON.parse(snapshot.skillSources));
+  if (new Set(sources.map(([id]) => id)).size !== sources.length) throw new Error("Duplicate snapshot skill source");
+  const verified = snapshotPersona(snapshot.definition, new Map(sources));
+  if (verified.digest !== snapshot.digest || verified.instructions !== snapshot.instructions) throw new Error("Snapshot instruction binding mismatch");
+  return verified;
 }

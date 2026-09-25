@@ -70,3 +70,27 @@ outcomes, concurrent requests and a nonresponsive-host deadline. These are local
 transport tests, not live inference, Task API integration or persona acceptance.
 The bridge currently supports text messages only; tool/reasoning history remains
 an explicit future contract. No story is completed by this qualification alone.
+
+## Stateless reasoning and shared session runtime
+
+The inline contract now accepts bounded encrypted reasoning carried in the
+request, without response/item IDs or remote references. Its bytes are covered
+by the quote digest and the existing published context ceiling. Assistant
+`phase` is preserved. The actual SDK resume fixture verifies that both survive
+through the local bridge; SDK-only null content and metadata are removed.
+Unsupported plaintext reasoning fields, server IDs and incomplete items remain
+refused. The new Task transport revision is
+`task-codex-sdk-inline-responses-v2`, so earlier probe evidence cannot admit it.
+
+Official API protocol reference, read 2026-09-25:
+https://developers.openai.com/api/docs/guides/reasoning
+("Preserve reasoning without stored responses"). This documents OpenAI's
+stateless protocol, not destination-specific Bedrock invocability. The latter
+still requires live admission evidence through the configured gateway route.
+
+The shared runtime fixture provisions an actual SDK session, supplies pinned
+persona instructions through SDK configuration, invokes a credential-free host
+callback, verifies live-authority checks before/after inference, and removes its
+temporary session directory. Composed instructions are revalidated against the
+persona definition and pinned skill sources before any session is created.
+This does not implement Task finalization or qualify any persona for release.

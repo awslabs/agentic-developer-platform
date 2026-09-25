@@ -272,7 +272,7 @@ assignment or trigger was issued. Specialist qualification does not imply enable
 
 The gateway now recognizes a separate, closed `responses_request` form on the
 existing model operation endpoint. It uses `openai_responses` bindings, the
-`task-codex-sdk-text-responses-v1` contract and a distinct normalized probe digest;
+`task-codex-sdk-inline-responses-v2` contract and a distinct normalized probe digest;
 Messages or existing reviewer evidence cannot certify it. Readiness resolves the
 Task service principal through the authoritative persona compatibility registry.
 No new persona is registered by this transport implementation.
@@ -286,8 +286,10 @@ no remote history lookup, direct child credential, model fallback or retry after
 an uncertain outcome. The worker IPC preserves request digests and committed
 turn IDs; `HostBridge.responses` returns only confirmed model results.
 
-This milestone remains text-only. GPT reasoning output and multi-step tool
-history must be qualified and added before general GPT persona readiness. The
+This milestone supports messages and inline encrypted reasoning, preserving
+assistant phase without server item references. Multi-step executable tool
+history still requires implementation and qualification before general persona
+readiness. The
 current pilot task spend/turn limits must also be reconciled with the evidenced
 Responses reservation ceiling through explicit policy and contract changes;
 limits must not be silently bypassed to make a canary pass. Deployment, persona

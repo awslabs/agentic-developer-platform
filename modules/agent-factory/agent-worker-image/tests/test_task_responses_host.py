@@ -90,3 +90,14 @@ def test_responses_output_limit_is_checked_before_turn_consumption(assignment_an
     with pytest.raises(TaskProtocolError, match="output bound exceeds grant"):
         host._model_request(assignment, {}, frame, 16)
     assert host._turn_number == 0
+
+
+def test_worker_reasoning_is_inline_without_server_ids(assignment_and_bootstrap):
+    assignment, _, _ = assignment_and_bootstrap
+    frame = request_frame(assignment.task_id)
+    reasoning = {"type": "reasoning", "encrypted_content": "fixture-ciphertext", "summary": []}
+    frame["responses_request"]["input"].insert(0, reasoning)
+    validate_child_frame(frame, assignment.task_id)
+    reasoning["id"] = "foreign"
+    with pytest.raises(TaskProtocolError):
+        validate_child_frame(frame, assignment.task_id)

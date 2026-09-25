@@ -29,14 +29,15 @@ Implemented components:
   capability qualification, authorization or production enablement. Effort settings
   are candidates to evaluate, not proven quality/cost optima.
 
-Not implemented here yet: authoritative grant verification/revocation, SDK
-session provisioning, host tool/network/credential enforcement, durable queue and
-input receipts, model reservation/price integration, authenticated provider
-broker execution/idempotency and GitLab formal review, safe
-resume, output-schema/completion enforcement, collector bootstrap/export,
-dashboards/alerts, domain skills and live qualification. These remain acceptance
-criteria of #6195 and its blocked persona stories. Preflight and sandbox options
-are **not** a security boundary or a substitute for these missing host controls.
+Still required before registration: embedded Task lifecycle wiring, authoritative
+snapshot/grant bootstrap binding, executable tool/network/filesystem enforcement,
+authenticated repository broker execution/idempotency and GitLab formal review,
+authority-safe resume, completion/schema policies, collector export,
+dashboards/alerts, domain skills and live qualification. The gateway's model
+reservation and durable receipt implementation now exists; the embedded Codex
+entrypoint must connect it to this runtime. These remain acceptance criteria of
+#6195 and its persona stories. Preflight and sandbox options alone are not a
+complete security boundary.
 
 The TypeScript SDK is pinned to the existing reviewer version 0.155.1. Its own
 packaged runtime transport is used by the SDK; this package does not spawn or
@@ -78,9 +79,24 @@ confirmed durable model receipt. `HostBridge.responses` provides the IPC method;
 TaskHost and the gateway understand the corresponding request/receipt. The
 Codex runtime entrypoint must connect these components before registration.
 
-The current bridge intentionally accepts only complete text-message history.
-Function calls, reasoning items, hosted tools, external history, media and
+The current bridge accepts complete message history and inline encrypted
+reasoning, preserving assistant phase. Function calls, hosted tools, external history, media and
 unknown fields are refused before host dispatch. It does not claim full persona
 or tool compatibility. `test/sdk-proxy.mjs` exercises the actual SDK through this
 bridge with a deterministic fixture host, including resumed text history; no live
 model, gateway, Task API, credential grant or billed reservation is exercised.
+
+`runAdmittedSession` now provisions the official SDK with fresh temporary HOME,
+CODEX_HOME and workspace, applies digest-bound persona instructions via SDK
+configuration, and connects it to the credential-free Responses bridge. The host
+checks current grant/generation before model dispatch and before output is
+returned. Session files are removed on exit. This stage refuses executable
+capabilities and repository bindings; it does not implement filesystem isolation,
+completion acceptance or the embedded Task process entrypoint.
+
+`test/sdk-session.mjs` runs the actual SDK through this shared runtime with a
+fixture host and verifies instructions, encrypted reasoning output, progress,
+revocation refusal and cleanup. `test/sdk-proxy.mjs` additionally verifies resumed
+encrypted reasoning and assistant phase without server item IDs. The gateway's
+inline Responses contract is now `task-codex-sdk-inline-responses-v2`; it needs new
+invocability evidence. No live provider compatibility is established by fixtures.

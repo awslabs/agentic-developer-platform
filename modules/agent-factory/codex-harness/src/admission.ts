@@ -1,6 +1,6 @@
 import type { ThreadOptions } from "@openai/codex-sdk";
 import { restrictedSdkConfig } from "./sdk-config.js";
-import { personaSchema, type Capability, type Persona, snapshotPersona, sha256 } from "./persona.js";
+import { personaSchema, type Capability, type Persona, snapshotPersona, sha256, verifySnapshot } from "./persona.js";
 
 export const HARNESS_CONTRACT_REVISION = "codex-sdk-0.155.1/adp-v1";
 
@@ -41,6 +41,7 @@ export function planVerifiedRun(
   providerCapabilities: readonly Capability[], nowMs: number,
 ) {
   if (sha256(snapshot.definition) !== snapshot.digest) throw new Error("Snapshot digest mismatch");
+  verifySnapshot(snapshot);
   const persona = personaSchema.parse(JSON.parse(snapshot.definition));
   if (policy.compatibilityClass !== "codex-sdk" || policy.personaKey !== persona.key
       || policy.personaDigest !== snapshot.digest || !policy.canonicalModel.trim()

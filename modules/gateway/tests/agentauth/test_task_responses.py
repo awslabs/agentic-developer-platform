@@ -257,3 +257,16 @@ async def test_destination_must_match_admitted_region_and_aws_endpoint(monkeypat
             request=request(),
             operation_id="fixture-op",
         )
+
+
+def test_inline_reasoning_contract_preserves_ciphertext_and_assistant_phase():
+    reasoning = {"type": "reasoning", "encrypted_content": "fixture-opaque-bytes", "summary": []}
+    invocation = request()
+    invocation["input"] = [reasoning, {"type": "message", "role": "assistant", "phase": "final_answer", "content": "fixture"}]
+    assert TaskResponsesRequest.model_validate(invocation).model_dump(exclude_none=True, exclude_unset=True) == invocation
+    for invalid in ({**reasoning, "id": "foreign"}, {**reasoning, "content": "plaintext"}, {**reasoning, "encrypted_content": ""}):
+        with pytest.raises(ValidationError):
+            TaskResponsesRequest.model_validate({**request(), "input": [invalid]})
+    response = result()
+    response["output"].insert(0, {**reasoning, "id": "rs_fixture"})
+    assert TaskResponsesResult.model_validate(response).model_dump(exclude_none=True) == response

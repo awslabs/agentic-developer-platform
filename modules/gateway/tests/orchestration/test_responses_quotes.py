@@ -993,3 +993,32 @@ async def test_kimi_profile_has_bounded_quote(oracle):
     oracle(rates=[_row(model_id=model, max_input_tokens=1000000, context_tier="flat")], models={model: {"context_tiers": {"flat": 1000000}}})
     result = await quote(body(model="global." + model, max_output_tokens=256))
     assert result.total_usd == Decimal("13.764080")
+
+
+async def test_inline_encrypted_reasoning_uses_same_full_context_bound(oracle):
+    oracle()
+    item = {"type": "reasoning", "encrypted_content": "fixture-opaque-bytes", "summary": []}
+    raw = body(input=[item, {"role": "user", "content": "continue"}])
+    quoted = await quote(raw)
+    assert quoted.total_usd == (await quote()).total_usd
+    await revalidate_quote(quoted, raw, RESPONSES_PATH, now=NOW)
+    changed = body(input=[{**item, "encrypted_content": "changed"}, {"role": "user", "content": "continue"}])
+    with pytest.raises(QuoteRefusedError):
+        await revalidate_quote(quoted, changed, RESPONSES_PATH, now=NOW)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"id": "foreign"},
+        {"content": "private plaintext"},
+        {"encrypted_content": ""},
+        {"encrypted_content": "x" * 65537},
+        {"summary": [{"type": "summary_text", "text": "fixture", "file_id": "foreign"}]},
+        {"status": "in_progress"},
+    ],
+)
+async def test_reasoning_never_admits_server_references_or_partial_state(oracle, extra):
+    oracle()
+    raw = body(input=[{"type": "reasoning", "encrypted_content": "fixture-opaque-bytes", "summary": [], **extra}])
+    assert await refusal(raw) == (QuoteReason.STATEFUL_INPUT, Capability.HISTORY)

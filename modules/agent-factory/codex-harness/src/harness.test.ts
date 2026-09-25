@@ -155,3 +155,10 @@ test("all shipped persona candidates load through the same declarative parser", 
     names.add(parsed.key);
   }
 });
+
+test("serialized snapshot cannot replace composed instructions or skill bodies", () => {
+  const skill = "Cite supplied evidence.";
+  const snapshot = snapshotPersona(JSON.stringify({ ...definition, skills: [{ id: "cite", sha256: sha256(skill) }] }), new Map([["cite", skill]]));
+  assert.throws(() => planVerifiedRun({ ...snapshot, instructions: "Changed authority" }, policy(snapshot.digest), source, undefined, [], 1000), /instruction binding/);
+  assert.throws(() => planVerifiedRun({ ...snapshot, skillSources: JSON.stringify([["cite", "changed"]]) }, policy(snapshot.digest), source, undefined, [], 1000), /mismatched skill/);
+});
