@@ -36,6 +36,22 @@ def prepare(target, root):
             raise ValueError(f"Invalid preparation step for {target['name']}: {step}")
 
 
+def authenticate_registry(image):
+    """Authenticate private ECR pulls without placing the token in logs/argv."""
+    registry = image.split("/", 1)[0]
+    match = re.fullmatch(r"[0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?", registry)
+    if match is None:
+        return
+    password = command(
+        ["aws", "ecr", "get-login-password", "--region", match.group(1)],
+        stdout=subprocess.PIPE, text=True, timeout=60,
+    ).stdout
+    command(
+        ["docker", "login", "--username", "AWS", "--password-stdin", registry],
+        input=password, text=True, stdout=subprocess.DEVNULL, timeout=60,
+    )
+
+
 def scan(target, tool, output, root):
     image = target["image"]
     if image == "-":
@@ -49,6 +65,8 @@ def scan(target, tool, output, root):
             build_args[name] = value
         # Retain the exact base input in coverage provenance, including failures.
         target["build_args"] = build_args
+        for value in build_args.values():
+            authenticate_registry(value)
         prepare(target, root)
         options = [item for name, value in sorted(build_args.items())
                    for item in ("--build-arg", f"{name}={value}")]
@@ -56,6 +74,7 @@ def scan(target, tool, output, root):
                  "-f", target["dockerfile"], "-t", image, target["context"]],
                 timeout=600, cwd=root)
     else:
+        authenticate_registry(image)
         command(["docker", "pull", "--platform", "linux/amd64", image], timeout=600)
     try:
         inspected = command(

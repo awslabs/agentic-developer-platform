@@ -311,24 +311,18 @@ jobs:
         # They are now passed as `env:` variables and substituted by a Python string
         # operation — data at every layer, parsed as neither shell nor sed.
         env:
-          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
           SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
-          SP_CONTROL_PLANE_ROLE_ARN: ${{ steps.config.outputs.control_plane_role_arn }}
           SP_SKYPILOT_ROLE_ARN: ${{ steps.config.outputs.skypilot_role_arn }}
           SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
-          SP_DATABASE_SECRET_NAME: ${{ steps.config.outputs.database_secret_name }}
-          SP_JWT_SECRET_NAME: ${{ steps.config.outputs.jwt_secret_name }}
           SP_AWS_REGION: ${{ steps.config.outputs.aws_region }}
           SP_SOURCE_DIR: ${{ env.MANIFEST_DIR }}
           SP_LOCK_FILE: ${{ env.LOCK_FILE }}
         run: |
           set -euo pipefail
-          # --lock-file is not optional: the renderer reads it to decide whether a value that
-          # no manifest consumes is expected (its component is still `pending_images`, so
-          # there are no manifests for it yet) or a defect (the lock resolved it, so the
-          # manifests that consume it are now owed). Without it a renamed placeholder would
-          # render successfully while silently dropping an identity.
+          # Artifact publication does not expand this lane's SkyPilot-only object set.
+          # Reject extraneous inputs and control-plane placeholders before any cluster call.
           python3 modules/domain-apps/superplane/infra/scripts/render_manifests.py \
+            --lane skypilot \
             --source-dir "$SP_SOURCE_DIR" \
             --output-dir /tmp/rendered \
             --lock-file "$SP_LOCK_FILE"
@@ -416,7 +410,6 @@ jobs:
             echo ""
             echo "### Not rolled out by this lane"
             echo "- \`superplane-api\`, \`superplane-controller\`, \`superplane-platform-monitor\`"
-            echo "  — recorded as pending in the release lock with no digest (blocked by"
-            echo "  \`source_access\`). The preflight refuses any manifest referencing them."
+            echo "  — outside this SkyPilot-only deployment lane, regardless of artifact publication."
             echo "- Schema migrations — \`superplane-migrate.yml\`, blocked on #5045 (U13)."
           } >> "$GITHUB_STEP_SUMMARY"

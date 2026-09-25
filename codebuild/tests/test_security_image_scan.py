@@ -57,7 +57,7 @@ def test_inventory_covers_all_source_components_and_pinned_runtime(source):
     assert all(target["required"] for target in targets)
     external = [target for target in targets if target["dockerfile"] == "-"]
     lock = yaml.safe_load((source / SUPERPLANE / "releases/superplane.lock.yaml").read_text())
-    assert external[0]["image"] == "registry-1.docker.io/berkeleyskypilot/skypilot@" + lock["images"]["skypilot-api"]
+    assert external[0]["image"] == "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@" + lock["images"]["skypilot-api"]
     legacy = source / "modules/agent-factory/gateway"
     legacy.mkdir(parents=True)
     (legacy / "Dockerfile").write_text("FROM scratch\n")
@@ -153,6 +153,10 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
 
     def execute(args, **kwargs):
         calls.append(args)
+        if args[:3] == ["aws", "ecr", "get-login-password"]:
+            return SimpleNamespace(stdout="synthetic-login-token")
+        if args[:2] == ["docker", "login"]:
+            assert kwargs["input"] == "synthetic-login-token"
         if args[0] == "bash":
             return real_run(args, check=True, **kwargs)
         if args[:2] == ["docker", "build"]:
@@ -228,6 +232,10 @@ def test_any_missing_target_fails_even_above_the_old_half_coverage_threshold(sou
     real_run = subprocess.run
 
     def execute(args, **kwargs):
+        if args[:3] == ["aws", "ecr", "get-login-password"]:
+            return SimpleNamespace(stdout="synthetic-login-token")
+        if args[:2] == ["docker", "login"]:
+            assert kwargs["input"] == "synthetic-login-token"
         if args[0] == "bash":
             return real_run(args, check=True, **kwargs)
         # The externally pulled, digest-pinned runtime is the one that fails.
@@ -269,7 +277,8 @@ def test_dispatch_only_scope_and_shared_buildspecs():
         build = next(step for step in job["steps"] if step.get("uses") == "./.github/actions/codebuild-run")
         assert "SECURITY_IMAGE_SCOPE" in build["with"]["environment_variables"]
         assert "SECURITY_SCAN_DATE" in build["with"]["environment_variables"]
-        assert "SECURITY_EXECUTOR_PYTHON_IMAGE" in build["with"]["environment_variables"]
+        for variable in ("SECURITY_EXECUTOR_PYTHON_IMAGE", "SECURITY_PYTORCH_IMAGE", "SECURITY_RUNNER_IMAGE"):
+            assert variable in build["with"]["environment_variables"]
         spec = yaml.safe_load((ROOT / f"codebuild/bs-{tool}-scan.yml").read_text())
         assert spec["phases"]["build"]["commands"] == [f"python3 codebuild/scan_security_images.py {tool}"]
 
@@ -308,12 +317,13 @@ def test_executor_requires_reviewed_base_before_running_tools(source, monkeypatc
     assert not calls
 
 
+@pytest.mark.parametrize("variable", ["SECURITY_EXECUTOR_PYTHON_IMAGE", "SECURITY_PYTORCH_IMAGE", "SECURITY_RUNNER_IMAGE"])
 @pytest.mark.parametrize("image,accepted", [
     ("", True), ("python:3.12-slim@sha256:" + "b" * 64, True),
     ("python:latest", False), ('$(touch SHOULD_NOT_EXIST)', False),
     ('image\" name=OTHER,value=x', False),
 ])
-def test_workflow_validates_base_before_legacy_override_transport(tmp_path, image, accepted):
+def test_workflow_validates_base_before_legacy_override_transport(tmp_path, variable, image, accepted):
     workflow = yaml.load((ROOT / ".github/workflows/security-scan.yml").read_text(),
                          Loader=yaml.BaseLoader)
     for tool in ("grype", "syft"):
@@ -324,6 +334,101 @@ def test_workflow_validates_base_before_legacy_override_transport(tmp_path, imag
                            if step.get("uses") == "./.github/actions/codebuild-run")
         assert guard_index < build_index
         result = subprocess.run(["bash", "-c", steps[guard_index]["run"]], cwd=tmp_path,
-                                env={"SECURITY_EXECUTOR_PYTHON_IMAGE": image}, capture_output=True)
+                                env={variable: image}, capture_output=True)
         assert (result.returncode == 0) is accepted
         assert not (tmp_path / "SHOULD_NOT_EXIST").exists()
+
+
+@pytest.mark.parametrize("failure", [None, "aws", "docker"])
+def test_private_registry_authentication_precedes_pull(monkeypatch, tmp_path, capsys, failure):
+    registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+    target = {"image": registry + "/runtime@sha256:" + "a" * 64}
+    calls = []
+    token = "synthetic-login-token"
+
+    def execute(args, **kwargs):
+        calls.append(args)
+        if args[:3] == ["aws", "ecr", "get-login-password"]:
+            assert args[-1] == "us-east-1"
+            assert kwargs["stdout"] == subprocess.PIPE
+            if failure == "aws":
+                raise subprocess.CalledProcessError(1, args)
+            return SimpleNamespace(stdout=token)
+        if args[:2] == ["docker", "login"]:
+            assert args[-1] == registry
+            assert "--password-stdin" in args
+            assert kwargs["input"] == token
+            assert token not in args
+            if failure == "docker":
+                raise subprocess.CalledProcessError(1, args)
+        if args[:2] == ["docker", "pull"]:
+            raise RuntimeError("pull reached after login")
+
+    monkeypatch.setattr(runner, "command", execute)
+    expected = subprocess.CalledProcessError if failure else RuntimeError
+    with pytest.raises(expected):
+        runner.scan(target, "grype", tmp_path / "scan.sarif", tmp_path)
+    assert any(args[:2] == ["docker", "pull"] for args in calls) is (failure is None)
+    assert token not in capsys.readouterr().out
+
+
+def test_public_registry_does_not_request_ecr_credentials(monkeypatch):
+    monkeypatch.setattr(runner, "command", lambda *a, **k: pytest.fail("unexpected ECR login"))
+    runner.authenticate_registry("docker.io/library/python@sha256:" + "a" * 64)
+
+
+@pytest.mark.parametrize("dockerfile,context,inputs", [
+    ("modules/agent-context/images/parser/Dockerfile", "modules/agent-context/images/ingestion",
+     ["isolated_parser.py", "parser_manifest.py", "scip_indexer.py", "scip_proto", "lang_go.py"]),
+    ("modules/domain-apps/cyber/browser/Dockerfile", "modules/domain-apps/cyber",
+     ["browser/requirements.txt", "agent/skills/url-analysis"]),
+    ("modules/domain-apps/cyber/workers/Dockerfile", "modules/domain-apps/cyber",
+     ["workers/requirements.txt", "workers/isolation.py", "agent/skills/stage-3-static/validate_script.py"]),
+])
+def test_new_image_contexts_contain_actual_copy_inputs(dockerfile, context, inputs):
+    target = next(t for t in discover(ROOT) if t["dockerfile"] == dockerfile)
+    assert target["context"] == context
+    assert all((ROOT / context / source).exists() for source in inputs)
+
+
+@pytest.mark.parametrize("dockerfile,arg,variable", [
+    ("modules/domain-apps/superplane/tests/acceptance/workloads/Dockerfile", "PYTORCH_IMAGE", "SECURITY_PYTORCH_IMAGE"),
+    ("platform/automation-infra/Dockerfile", "RUNNER_IMAGE", "SECURITY_RUNNER_IMAGE"),
+])
+@pytest.mark.parametrize("image", ["", "example:latest", "example@sha256:" + "0" * 64, "example@sha256:" + "g" * 64])
+def test_additional_mandatory_bases_refuse_unreviewed_inputs(monkeypatch, tmp_path, dockerfile, arg, variable, image):
+    target = next(t for t in discover(ROOT) if t["dockerfile"] == dockerfile)
+    assert target["build_arg_env"] == {arg: variable}
+    monkeypatch.setenv(variable, image)
+    calls = []
+    monkeypatch.setattr(runner, "command", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(ValueError, match="requires reviewed digest-pinned"):
+        runner.scan(target, "grype", tmp_path / "result.sarif", ROOT)
+    assert calls == []
+
+
+def test_agent_specific_ignore_preserves_only_required_contract_paths():
+    patterns = (ROOT / "modules/agent-factory/agent/Dockerfile.dockerignore").read_text().splitlines()
+    # The context intentionally starts deny-all. Preserve the exact copied
+    # contracts without admitting every sibling rule or repository artifact.
+    assert "**" in patterns
+    for directory, name in [("agents", "issue-authoring.md"), ("templates", "developer-issue.md")]:
+        assert f"!rules/{directory}/" in patterns
+        assert f"!rules/{directory}/{name}" in patterns
+        assert f"!rules/{directory}/**" not in patterns
+        assert (ROOT / "modules/agent-factory/rules" / directory / name).is_file()
+
+
+def test_private_build_auth_failure_retains_base_provenance(monkeypatch, tmp_path):
+    base = "123456789012.dkr.ecr.us-east-1.amazonaws.com/runner@sha256:" + "a" * 64
+    monkeypatch.setenv("SECURITY_RUNNER_IMAGE", base)
+    target = {"name": "automation", "image": "-", "build_arg_env": {"RUNNER_IMAGE": "SECURITY_RUNNER_IMAGE"}}
+
+    def denied(image):
+        assert image == base
+        raise subprocess.CalledProcessError(1, ["docker", "login"])
+
+    monkeypatch.setattr(runner, "authenticate_registry", denied)
+    with pytest.raises(subprocess.CalledProcessError):
+        runner.scan(target, "grype", tmp_path / "result.sarif", tmp_path)
+    assert target["build_args"] == {"RUNNER_IMAGE": base}

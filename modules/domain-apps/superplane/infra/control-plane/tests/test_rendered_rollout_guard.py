@@ -56,23 +56,21 @@ SKYPILOT_NAMESPACE = "skypilot"
 
 # The digest U2's lock actually resolves for skypilot-api. Read from the lock rather than
 # copied, so this test cannot drift from the contract it is asserting against.
-PINNED_DIGEST = yaml.safe_load(LOCK_FILE.read_text(encoding="utf-8"))["images"][
-    "skypilot-api"
-]
-PINNED_IMAGE = f"registry-1.docker.io/berkeleyskypilot/skypilot@{PINNED_DIGEST}"
+RELEASE_LOCK = yaml.safe_load(LOCK_FILE.read_text(encoding="utf-8"))
+PINNED_DIGEST = RELEASE_LOCK["images"]["skypilot-api"]
+SKYPILOT_SOURCE = RELEASE_LOCK["image_sources"]["skypilot-api"]
+PINNED_IMAGE = (
+    f"{SKYPILOT_SOURCE['registry']}/{SKYPILOT_SOURCE['repository']}@{PINNED_DIGEST}"
+)
 
 # A syntactically perfect digest that the lock does not pin. This is the distinction the old
 # guard could not make: 64 hex characters is a shape, not a provenance.
 UNPINNED_IMAGE = "registry-1.docker.io/berkeleyskypilot/skypilot@sha256:" + "ab" * 32
 
 RENDER_ENV = {
-    "SP_NAMESPACE": NAMESPACE,
     "SP_SKYPILOT_NAMESPACE": SKYPILOT_NAMESPACE,
-    "SP_CONTROL_PLANE_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/adp-{ENVIRONMENT}-superplane-control-plane",
     "SP_SKYPILOT_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/adp-{ENVIRONMENT}-superplane-skypilot-api",
     "SP_SKYPILOT_IMAGE": PINNED_IMAGE,
-    "SP_DATABASE_SECRET_NAME": f"adp/{ENVIRONMENT}/superplane/database",
-    "SP_JWT_SECRET_NAME": f"adp/{ENVIRONMENT}/superplane/jwt-signing-key",
     "SP_AWS_REGION": "us-east-1",
 }
 
@@ -810,13 +808,17 @@ def test_a_compliant_nested_manifest_is_accepted(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _render(tmp_path: Path, **env_overrides) -> subprocess.CompletedProcess:
+def _render(
+    tmp_path: Path, *, lane="skypilot", **env_overrides
+) -> subprocess.CompletedProcess:
     output = tmp_path / "rendered"
     env = {**os.environ, **RENDER_ENV, **env_overrides}
     return subprocess.run(
         [
             sys.executable,
             str(RENDERER),
+            "--lane",
+            lane,
             "--source-dir",
             str(MANIFEST_DIR),
             "--output-dir",
@@ -960,9 +962,9 @@ def test_skypilot_role_grants_no_pod_creation(tmp_path):
 
 
 def test_rendering_refuses_a_value_that_would_restructure_the_document(tmp_path):
-    result = _render(tmp_path, SP_NAMESPACE="superplane\nevil: true")
+    result = _render(tmp_path, SP_SKYPILOT_NAMESPACE="skypilot\nevil: true")
     assert result.returncode != 0
-    assert "SP_NAMESPACE" in result.stdout
+    assert "SP_SKYPILOT_NAMESPACE" in result.stdout
 
 
 def test_rendering_refuses_an_empty_value(tmp_path):
@@ -1089,4 +1091,53 @@ def test_rejected_manifests_never_reach_kubectl(tmp_path):
     assert result.returncode != 0, "the hostile rendered set passed validation"
     assert not log.exists(), (
         f"kubectl was invoked despite a rejected manifest set:\n{log.read_text()}"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SP_NAMESPACE",
+        "SP_CONTROL_PLANE_ROLE_ARN",
+        "SP_DATABASE_SECRET_NAME",
+        "SP_JWT_SECRET_NAME",
+    ],
+)
+def test_skypilot_lane_rejects_unused_control_plane_inputs(tmp_path, name):
+    result = _render(tmp_path, **{name: "control-plane-value"})
+    assert result.returncode == 1
+    assert "control-plane values supplied" in result.stdout
+
+
+def test_full_rollout_still_requires_published_control_plane_manifests(tmp_path):
+    result = _render(
+        tmp_path,
+        lane="rollout",
+        SP_NAMESPACE=NAMESPACE,
+        SP_CONTROL_PLANE_ROLE_ARN=f"arn:aws:iam::{ACCOUNT}:role/control-plane",
+        SP_DATABASE_SECRET_NAME="database",
+        SP_JWT_SECRET_NAME="jwt",
+    )
+    assert result.returncode == 1
+    assert "superplane-api' is no longer pending" in result.stdout
+
+
+def test_workflow_selects_skypilot_lane_and_only_its_inputs():
+    step = next(s for s in _workflow_steps() if s.get("name") == "Render manifests")
+    assert "--lane skypilot" in step["run"]
+    assert set(step["env"]) == set(RENDER_ENV) | {"SP_SOURCE_DIR", "SP_LOCK_FILE"}
+
+
+def test_skypilot_lane_rejects_control_plane_placeholder(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "namespace.yaml").write_text(
+        "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: REPLACE_WITH_NAMESPACE\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "MANIFEST_DIR", source)
+    result = _render(tmp_path)
+    assert result.returncode == 1
+    assert (
+        "placeholder(s) with no value supplied: REPLACE_WITH_NAMESPACE" in result.stdout
     )

@@ -167,7 +167,7 @@ class TestPendingImagesCarryNoDigest:
 
     def test_resolving_a_pending_image_as_a_digest_fails_loudly(self) -> None:
         with pytest.raises(LockError, match="pending"):
-            resolved_digest("superplane-api", LOCK_PATH)
+            resolved_digest("superplane-platform-monitor", LOCK_PATH)
 
 
 class TestUnresolvedInputsAreRecordedNotInvented:
@@ -217,22 +217,23 @@ class TestUnresolvedInputsAreRecordedNotInvented:
     def test_deployment_target_is_unresolved(self, lock: dict) -> None:
         assert lock["skypilot_config"]["deployment_target"]["status"] == "unresolved"
 
-    def test_no_aws_account_id_is_invented(self, lock: dict) -> None:
-        """Upstream's config.env carries upstream's account id — it must not be adopted.
+    def test_release_registry_accounts_have_recorded_publication(
+        self, lock: dict
+    ) -> None:
+        """S21 verifies an actual release registry; deployment account remains independent."""
+        import json
 
-        The plan records no AWS account for this EPIC, so any 12-digit account id in a
-        value position here would be a guess presented as configuration.
-        """
-        text = LOCK_PATH.read_text(encoding="utf-8")
-        values = [
-            ln.split(":", 1)[1]
-            for ln in text.splitlines()
-            if ":" in ln and not ln.strip().startswith("#")
-        ]
-        for value in values:
-            assert not re.search(r"\b\d{12}\b", value), (
-                f"a 12-digit account id appears in a value: {value.strip()!r}"
-            )
+        receipt = json.loads(
+            (
+                LOCK_PATH.parents[4]
+                / "docs/security/runs/2026-09-21/evidence/S21-skypilot-publication.json"
+            ).read_text()
+        )
+        assert receipt["manifest_byte_identity_verified"] is True
+        assert lock["images"]["skypilot-api"] == receipt["digest"]
+        for source in lock["image_sources"].values():
+            assert source["registry"] == receipt["registry"]
+        assert "account_id" not in lock
 
 
 class TestSkypilotConfigurationIsPinned:

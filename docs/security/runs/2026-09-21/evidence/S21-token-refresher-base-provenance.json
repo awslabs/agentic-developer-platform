@@ -1,0 +1,21 @@
+{
+  "verified_at": "2026-09-25",
+  "registry": "public.ecr.aws/amazonlinux/amazonlinux",
+  "index_digest": "sha256:06da5a3362eda00c5114227ac81abe56dd9b943395553b7c64a310457f4d9e2b",
+  "linux_amd64_manifest": "sha256:f954f9b4184531bf898cde8410fb25da37071096aa8e086a5246b14ede291e07",
+  "config_digest": "sha256:8de65f8329768404d6d8f94eafb7cf4b3221276d2e7c3a03d30699de27d32399",
+  "upstream_release": "2023.12.20260918.0",
+  "reason": "Configured 2023.7.20250512 tag returned NOT FOUND; verified official digest restores build input.",
+  "validation": {
+    "build": "Only FROM changed; wrapper build and dnf upgrade/install succeeded",
+    "runtime": "Network disabled, capabilities dropped; UID999, /shared, executable syntax-valid token script, aws/openssl/python3/curl version checks and runtime directory permissions verified",
+    "token_script_executed": false,
+    "deployment": false,
+    "vulnerability_clean_claim": false
+  },
+  "evidence_hashes": {
+    "amazonlinux-2023-manifest.txt": "6884ddbe9903f58f593838cd04d434a02ca55322636764bfa6b197e65dded394",
+    "amazonlinux-manifests-sha256-f954f9b4184531bf898cde8410fb25da37071096aa8e086a5246b14ede291e07.json": "f954f9b4184531bf898cde8410fb25da37071096aa8e086a5246b14ede291e07",
+    "amazonlinux-blobs-sha256-8de65f8329768404d6d8f94eafb7cf4b3221276d2e7c3a03d30699de27d32399.json": "8de65f8329768404d6d8f94eafb7cf4b3221276d2e7c3a03d30699de27d32399"
+  }
+}

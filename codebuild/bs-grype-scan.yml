@@ -2,7 +2,7 @@ version: 0.2
 
 env:
   variables:
-    GRYPE_VERSION: "0.80.2"  # default; can be overridden at start-build time
+    GRYPE_VERSION: "0.119.0"  # default; can be overridden at start-build time
 
 phases:
   install:

@@ -2,11 +2,10 @@
 # =============================================================================
 # SkyPilot API service — Issue #5042 (U3), EPIC #4910.
 # =============================================================================
-# The one component of this domain that is deployable today. U2's lock resolves
-# `skypilot-api` to sha256:de41a5c6… (berkeleyskypilot/skypilot:0.12.0), chosen to match the
-# SkyPilot version the upstream controller reports. The other three images — superplane-api,
-# -controller, -platform-monitor — are `pending_images` with no digest, blocked by
-# `source_access`, and this lane's preflight refuses any manifest referencing them.
+# S21 pins the published S03 derived SkyPilot 0.12.3 image by digest
+# sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec.
+# Registry, repository and artifact provenance live in releases/superplane.lock.yaml.
+# Promotion of other scoped builds does not attest current application deployment.
 #
 # WHY THE SERVICE NAME AND PORT ARE NOT FREE CHOICES
 #
@@ -95,9 +94,9 @@ spec:
           # =====================================================================
           #
           # The pinned image declares `Cmd: ["python3"]` and NO `Entrypoint` — verified
-          # against the registry by digest: index sha256:de41a5c6…5019 (matching the lock) →
-          # amd64 manifest sha256:ab4e67e7…b318 → config blob sha256:528a1f79…62a1, each
-          # response hashed and compared. A container that overrides neither `command` nor
+          # against the S03 derived image fixture and the published immutable manifest.
+          # S21 preserves its OCI manifest bytes on publication. A container that
+          # overrides neither `command` nor
           # `args` therefore starts an interactive interpreter. It stays up, nothing ever
           # listens on 46580, and the only symptom is the readiness probe failing — which
           # reads like a slow or unhealthy server rather than like "no server was ever

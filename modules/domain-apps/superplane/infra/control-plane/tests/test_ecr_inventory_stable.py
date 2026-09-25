@@ -45,6 +45,7 @@ ECR_TF = MODULE_DIR / "ecr.tf"
 # The three images U2's lock records as pending, and the repository each one must keep for
 # the whole of its lifecycle — pending, promoted, and after every other image promotes too.
 EXPECTED_REPOSITORIES = {
+    "skypilot-api": "adp-superplane-skypilot",
     "superplane-api": "adp-superplane-api",
     "superplane-controller": "adp-superplane-controller",
     "superplane-platform-monitor": "adp-superplane-platform-monitor",
@@ -126,13 +127,13 @@ def _lock(pending: dict[str, str], promoted: dict[str, str]) -> str:
         "pending_images": {},
     }
 
-    # skypilot-api is always present and always external: pulled from Docker Hub by digest,
-    # so it carries no `ecr_repository` and must never acquire an ECR repository here.
-    doc["images"]["skypilot-api"] = "sha256:" + "d" * 64
-    doc["image_sources"]["skypilot-api"] = {
+    # External images remain outside the managed inventory. Use a distinct fixture
+    # name because the shipped skypilot-api image is now published to our ECR.
+    doc["images"]["external-fixture"] = "sha256:" + "d" * 64
+    doc["image_sources"]["external-fixture"] = {
         "registry": "registry-1.docker.io",
-        "repository": "berkeleyskypilot/skypilot",
-        "tag": "0.12.0",
+        "repository": "example/external-fixture",
+        "tag": "1.0",
     }
 
     for name, repository in pending.items():
@@ -199,21 +200,14 @@ def test_inventory_stable_when_all_images_promoted():
 
 
 @requires_terraform
-def test_external_skypilot_registry_gets_no_ecr_repository():
-    """skypilot-api is pulled from Docker Hub by digest; it must stay external.
-
-    The union widened what the inventory reads, so this asserts the widening did not sweep
-    in an entry that has no `ecr_repository`. Keeping the external registry external is
-    called out explicitly in the review.
-    """
+def test_external_registry_gets_no_ecr_repository():
+    """An external image without ecr_repository must not enter the inventory."""
     result = _evaluate(
         _lock(pending=dict(EXPECTED_REPOSITORIES), promoted={}),
         "local.superplane_ecr_repositories",
     )
-    assert not any("skypilot" in repository for repository in result), (
-        f"skypilot-api acquired an ECR repository: {result}. It is pulled from Docker Hub "
-        f"by digest and needs none."
-    )
+    assert result == ALL_REPOSITORIES
+    assert not any("external-fixture" in repository for repository in result)
 
 
 @requires_terraform

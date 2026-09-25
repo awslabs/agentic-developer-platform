@@ -26,6 +26,10 @@ RELEASE = Path("modules/domain-apps/superplane/releases")
 def test_first_digest_promotion_preserves_rebuild_inputs(tmp_path, component):
     data = yaml.safe_load((ROOT / RELEASE / "superplane.lock.yaml").read_text())
     data["source_access"]["status"] = "resolved"
+    if component in data["images"]:
+        data["images"].pop(component)
+        data["pending_images"][component] = data["image_sources"].pop(component)
+        data["pending_images"][component]["blocked_by"] = "test first publication"
     lock = tmp_path / "lock.yaml"
     lock.write_text(yaml.safe_dump(data))
     first = resolve_build_inputs(component, lock)
@@ -46,6 +50,7 @@ def test_first_digest_promotion_preserves_rebuild_inputs(tmp_path, component):
 def test_image_cannot_be_pending_and_resolved(tmp_path):
     data = yaml.safe_load((ROOT / RELEASE / "superplane.lock.yaml").read_text())
     data["images"]["superplane-api"] = "sha256:" + "a" * 64
+    data["pending_images"]["superplane-api"] = {"blocked_by": "conflicting fixture"}
     lock = tmp_path / "lock.yaml"
     lock.write_text(yaml.safe_dump(data))
     with pytest.raises(LockError, match="both pending and resolved"):

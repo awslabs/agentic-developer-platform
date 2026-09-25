@@ -1,33 +1,20 @@
 {
   "_comment": [
-    "Facts about the SkyPilot image pinned by releases/superplane.lock.yaml, recorded from",
-    "the Docker registry so the regression tests that depend on them stay OFFLINE.",
-    "",
-    "These are not assumptions. Each was fetched and hashed: the image index body hashes to",
-    "image_index_digest (which is the digest the lock pins, so the lock and this file are",
-    "verified against each other), the amd64 manifest body hashes to amd64_manifest_digest,",
-    "and the config blob body hashes to config_blob_digest. `config` is that blob's",
-    "`.config` object verbatim.",
-    "",
-    "`etc_passwd_uids` and `home_entries` come from extracting EVERY layer of the amd64",
-    "manifest and reading the last /etc/passwd to win (layer 5), plus scanning all layers",
-    "for any path under home/. There is no uid 1000 and no /home entry, which is why the",
-    "Deployment must set HOME explicitly — see test_skypilot_startup_contract.py.",
-    "",
-    "TO RE-VERIFY (needs network; the tests do not):",
-    "  TOK=$(curl -s 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:berkeleyskypilot/skypilot:pull' | jq -r .token)",
-    "  curl -s -H \"Authorization: Bearer $TOK\" -H 'Accept: application/vnd.oci.image.index.v1+json' \\",
-    "    https://registry-1.docker.io/v2/berkeleyskypilot/skypilot/manifests/<image_index_digest> | sha256sum",
-    "The printed hash must equal image_index_digest's hex. Repeat for the manifest and blob."
+    "Replacement image facts for the reproducible S03 OCI rebuild. S21 must publish this exact",
+    "manifest without conversion and apply these facts with the final digest pins.",
+    "The rebuild preserves the complete SkyPilot 0.12.3 base and runtime config, adding only the",
+    "deterministic setuptools 81.0.0 layer recorded in S03-derived-image-provenance.json."
   ],
-  "image_reference": "berkeleyskypilot/skypilot:0.12.0",
-  "skypilot_version": "0.12.0",
-  "image_index_digest": "sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019",
-  "amd64_manifest_digest": "sha256:ab4e67e79048c32e70c2803f548ccbefad2e980a4a7f9dd8d96001f81b04b318",
-  "config_blob_digest": "sha256:528a1f792c49a53499b8d5a090d245c95d485967a25b2752f6728d5528ae62a1",
+  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+  "skypilot_version": "0.12.3",
+  "image_index_digest": "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+  "amd64_manifest_digest": "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+  "config_blob_digest": "sha256:d05a57076d2c5c277b280d37d938716cedc908c25ae4e71931789ca7f7e0ef87",
   "config": {
     "Entrypoint": null,
-    "Cmd": ["python3"],
+    "Cmd": [
+      "python3"
+    ],
     "User": null,
     "WorkingDir": null,
     "Env": [
@@ -39,18 +26,33 @@
     ]
   },
   "etc_passwd_uids": [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 33, 34, 38, 39, 42, 996, 998, 65534
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    13,
+    33,
+    34,
+    38,
+    39,
+    42,
+    996,
+    998,
+    65534
   ],
   "has_uid_1000": false,
   "home_entries": [],
   "package_facts": {
     "_comment": [
-      "Read from the skypilot==0.12.0 wheel — the same version the image installs — so the",
-      "manifest's command/args/env are checked against the code that will run, not against",
-      "an upstream doc or a controller-side constant.",
-      "",
-      "TO RE-VERIFY: pip download skypilot==0.12.0 --no-deps, unzip, and grep the cited",
-      "files. Each value below names its source path."
+      "The derived image preserves the SkyPilot 0.12.3 wheel and every startup contract value.",
+      "Only setuptools-owned site-packages paths change; live startup and restart validation passed."
     ],
     "api_server_cmd": "-m sky.server.server",
     "api_server_cmd_source": "sky/server/common.py: API_SERVER_CMD",
@@ -68,7 +70,10 @@
       "~/.sky/locks/.skypilot_config.lock",
       "~/.sky/generated"
     ],
-    "module_name_guards": ["__main__", "sky.server.server"],
+    "module_name_guards": [
+      "__main__",
+      "sky.server.server"
+    ],
     "has_server_dunder_main_module": false,
     "deploy_flag_enables_consolidation_mode": true,
     "deploy_flag_source": "sky/jobs/utils.py: setup_consolidation_mode_on_startup(deploy)"
