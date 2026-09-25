@@ -19,12 +19,13 @@ import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './l
 
 import { loadHumanCommunication } from './human-communication';
 import { assistantText } from './reporting-text';
+import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { TmpSpillStore } from './utils/spill';
 import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
-import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
+import { initTokenManager, isTokenManagerInitialized, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
 import { AuthWatchdog } from './lib/authWatchdog';
 import { isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
@@ -112,6 +113,7 @@ import { PauseGate } from './pause-gate';
 // this replaced an inline assembly of pause gate + adapter + store + queue +
 // listener that only `main()` could build.
 import { startControlRuntime } from './control-runtime-factory';
+import { isControlCancellation } from './control-runtime';
 import { SteerQueue, steerMarker } from './steer-queue';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
@@ -164,6 +166,8 @@ import { mintSyntheticPresence, extractGateAnswerComment, findPendingGateStage a
 // ============================================================================
 // Configuration
 // ============================================================================
+
+const runtimeAppAuth = captureRuntimeAppAuth();
 
 const REPO_OWNER = process.env.REPO_OWNER || '';
 const REPO_NAME = process.env.REPO_NAME || '';
@@ -469,7 +473,7 @@ async function refreshAppToken(): Promise<void> {
   // in a mediated run means a call that should have gone through the gateway, and
   // re-minting is neither possible nor the fix.
   if (isMediatedRun()) return;
-  if (isBrokerEnabled()) {
+  if (isTokenManagerInitialized() || isBrokerEnabled()) {
     await getRuntimeGitHubToken();
     return;
   }
@@ -1626,6 +1630,7 @@ Now, complete the assigned task.`;
         queryParams: {
           prompt,
           options: {
+            spawnClaudeCodeProcess: spawnSdkWithoutAppKey,
             model: MODEL,
             cwd: CWD,
             allowedTools: [
@@ -1885,7 +1890,9 @@ Now, complete the assigned task.`;
     return lastTurnText || fullResponse.slice(-3000) || 'Task completed but no response returned.';
   } catch (error) {
     const err = error as Error;
-    log('ERROR', 'Agent execution failed', { error: err.message });
+    log(isControlCancellation(error) ? 'INFO' : 'ERROR',
+      isControlCancellation(error) ? 'Agent execution stopped by operator' : 'Agent execution failed',
+      { error: err.message });
     // Issue #4187: a budget stop is a distinct outcome, not a generic failure.
     // The gateway already returns a non-retryable 402 with a `scope`
     // discriminator, and resilientQuery correctly refuses to retry it — but the
@@ -2094,11 +2101,13 @@ async function main(): Promise<void> {
   console.log('═'.repeat(60));
   console.log('');
 
+  // Validate the external token directory before the manager can publish.
+  configureRuntimeGitHubAdapters(CWD);
   await initCloudWatch();
 
   // Initialize token refresh for long-running tasks (tokens expire after 1 hour)
   const appId = process.env.GH_APP_ID || '';
-  const appKey = process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY || '';
+  const appKey = runtimeAppAuth.privateKey || '';
   const repoOwner = process.env.REPO_OWNER || '';
   // Issue #4272: in broker mode there is no private key in this process — the
   // gateway gatekeeper mints. The predicate MUST NOT require appKey then, or the
@@ -2106,10 +2115,9 @@ async function main(): Promise<void> {
   // dies at the 1-hour mark with a 401 while git/gh degrade quietly.
   const brokerMode = isBrokerEnabled();
 
-  // canInitTokenManager() rather than a hand-written predicate: this decision is
-  // tested once in token-refresh.ts. A local copy here is what silently goes
-  // false when the key stops being exported.
-  if (canInitTokenManager()) {
+  // Capture uses canInitTokenManager before removing signing aliases from env.
+  // Re-evaluating the local-mint predicate now would silently disable renewal.
+  if (runtimeAppAuth.enabled) {
     initTokenManager({
       appId,
       privateKey: brokerMode ? undefined : appKey,
@@ -2164,11 +2172,10 @@ async function main(): Promise<void> {
     // Write the initial token to file BEFORE the SDK query starts, so that
     // GIT_ASKPASS and the gh wrapper can read it from day one (issue #1469).
     try {
-      const initialToken = await getToken();
-      writeTokenFile(initialToken);
+      await initializeRuntimeGitHubToken();
       log('INFO', 'Initial token written to token file for SDK subprocess');
     } catch (err) {
-      if (brokerMode) throw err;
+      if (brokerMode || runtimeAppAuth.required) throw err;
       log('WARN', `Initial token file write failed: ${(err as Error).message}`);
     }
   } else if (isMediatedRun()) {
@@ -2178,7 +2185,7 @@ async function main(): Promise<void> {
     // through would abort every mediated run at startup.
     log('INFO', 'Mediated GitHub operations: no token to refresh; writes go through the gateway');
   } else if (process.env.ADP_TOKEN_MODE !== 'pat') {
-    if (brokerMode) throw new Error('Brokered GitHub renewal configuration unavailable');
+    if (brokerMode || runtimeAppAuth.required) throw new Error('GitHub renewal configuration unavailable');
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');
   }
 
@@ -2233,6 +2240,7 @@ async function main(): Promise<void> {
   let memoryContext = '';
   let detectedComponent = 'general';
   let agentSucceeded = false;
+  let agentAborted = false;
   let agentResult = '';
 
   // Issue #3960: the in-pod control listener. Declared outside the try so the
@@ -2518,6 +2526,13 @@ Working on this task...`);
 
   } catch (error) {
     const err = error as Error;
+    if (isControlCancellation(error)) {
+      agentAborted = true;
+      log('INFO', 'Operator abort requested; supervisor will finalize the run');
+      await activeLiveComment?.finalizeAbortRequested().catch(finalizeErr =>
+        log('WARN', `Could not update stopping comment: ${finalizeErr.message}`));
+      throw error;
+    }
     log('ERROR', `Agent failed: ${err.message}`);
     if (activeLiveComment) {
       await activeLiveComment.finalizeFailure({
@@ -2560,7 +2575,7 @@ Please check the workflow logs for details.`);
     // Write agent memory context to adp branch (best-effort, never blocks)
     try {
       const issue = await getIssue().catch(() => null);
-      if (issue) {
+      if (issue && !agentAborted) {
         const component = detectedComponent || detectComponent(issue.labels, issue.body);
         const memStatus = agentSucceeded ? 'success' : 'failed';
         await writeComponentRecord(component, buildComponentRecord({

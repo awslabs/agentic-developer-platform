@@ -90,11 +90,11 @@ export type SubmitOutcome =
   | { kind: 'unsupported' };
 
 /**
- * Maximum live non-resume commands (default 10). Pending, delivered and executor
- * work all consume capacity until both the journal and the executor settle.
- * One separate slot is reserved for resume, so a full pause queue cannot block
- * the command that releases it. A second live resume is refused with 429; retries
- * of an accepted id still return that id's outcome before the capacity check.
+ * Maximum live commands per pause/steer action (default 10 each). Pending,
+ * delivered and executor work consume capacity until both journal and executor
+ * settle. Resume and abort each have one independent slot, so a full steering
+ * queue cannot block release or cancellation. Retries return their existing
+ * outcome before capacity is checked; unique control floods remain bounded.
  */
 export const DEFAULT_MAX_PENDING = 10;
 
@@ -273,9 +273,10 @@ export class ControlStateStore {
       return { kind: 'replayed', record: { ...existing.record } };
     }
 
-    // Resume has one independent slot. Do not let ordinary work consume it,
-    // or repeated unique resumes turn that escape hatch into an unbounded queue.
-    if (this.liveCount(action === 'resume') >= (action === 'resume' ? 1 : this.maxPending)) {
+    // Keep the steering cap independent of a pending pause, and reserve bounded
+    // escape slots so full queues cannot prevent resume or abort.
+    const cap = action === 'resume' || action === 'abort' ? 1 : this.maxPending;
+    if (this.liveCount(action) >= cap) {
       return { kind: 'queue_full' };
     }
 
@@ -521,10 +522,10 @@ export class ControlStateStore {
       .map((entry) => ({ ...entry.record }));
   }
 
-  private liveCount(resume: boolean): number {
+  private liveCount(action: ControlAction): number {
     let count = 0;
     for (const entry of this.journal.values()) {
-      if ((entry.record.action === 'resume') === resume &&
+      if (entry.record.action === action &&
           (entry.settledAt === null || entry.executing || entry.checking)) count += 1;
     }
     return count;

@@ -1317,6 +1317,30 @@ class TaskStore:
                             },
                         }
                     },
+                    {
+                        "Put": {
+                            "TableName": self._table_name,
+                            "Item": _serialize_authority(
+                                base_item(
+                                    partition=task_run_partition(task_id),
+                                    sort_key=run_key["arrived_at"] + "#ATTEMPT#" + runtime_attempt_id,
+                                    record_type="TASK_RUN",
+                                    scope=snapshot["scope"],
+                                )
+                                | {
+                                    "task_id": task_id,
+                                    "invocation_id": invocation_id,
+                                    "generation": generation,
+                                    "runtime_attempt_id": runtime_attempt_id,
+                                    "previous_runtime_attempt_id": expected_runtime_attempt_id,
+                                    "bound_at": now_iso,
+                                    "task_version": expected_version + 1,
+                                    "run_record_kind": "runtime_attempt",
+                                }
+                            ),
+                            "ConditionExpression": "attribute_not_exists(event_id)",
+                        }
+                    },
                     task_binding_check,
                     policy_check,
                     *self._execution_recovery_items(snapshot),

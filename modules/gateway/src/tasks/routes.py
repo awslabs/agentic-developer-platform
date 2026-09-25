@@ -29,23 +29,21 @@ import logging
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.database import get_db, get_session_factory
 from src.tasks import authz, errors, http, snapshot, streaming
 from src.tasks.events import CursorError, parse_cursor
 from src.tasks.read_store import TaskRecord, TaskStore
-from src.tasks.streaming import StreamRegistry
+from src.tasks.response import TaskStreamingResponse
+from src.tasks.stream_leases import configured_registry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/tasks", tags=["task-api"])
 
-#: Per-process stream accounting. Module-level because the caps bound what this
-#: replica will hold open concurrently, which is a property of the process rather
-#: than of any request. See ``StreamRegistry`` for the per-replica caveat.
-_STREAMS = StreamRegistry()
+#: Shared Redis leases enforce the frozen caps across every gateway replica.
+_STREAMS = None
 
 #: The storage backend, injected. ``None`` until T1's DynamoDB store lands, which
 #: is why the read surface answers 503 rather than raising: an unconfigured
@@ -213,41 +211,40 @@ async def read_events(task_id: str, request: Request, db: AsyncSession = Depends
         current.require(authz.SCOPE_READ)
         return authz.authorize_task(current, store, task_id)
 
-    # Acquired here rather than inside the generator, because refusing a stream
-    # has to be a 429 body and a body can only be sent before the response
-    # begins. The cost is a narrow window: if the server discards the response
-    # without ever iterating it, this slot is never released. Releasing in the
-    # generator's ``finally`` covers every path that starts, which is every path
-    # a client can cause.
-    _STREAMS.acquire(task_id=task_id, principal_id=caller.principal_id)
+    # Reserve before response headers so cap refusals retain their JSON body.
+    # The response owns release even if its first send fails before iteration.
+    global _STREAMS
+    if _STREAMS is None:
+        _STREAMS = configured_registry()
+    lease = await _STREAMS.acquire_lease(task_id=task_id, principal_id=caller.principal_id, tenant_id=caller.tenant_id)
     outcome = streaming.StreamOutcome(task_id=task_id)
 
     async def frames() -> AsyncIterator[bytes]:
-        """Drive the loop, and release the slot however it ends.
-
-        The ``finally`` is the load-bearing part. A client disconnect abandons this
-        generator rather than returning from it, so a slot released only on the
-        normal path would leak on exactly the most common ending — and the caps
-        would bind tighter over the life of the pod until every stream was refused.
-        """
         stream = streaming.StreamRequest(task_id=task_id, after_sequence=after, recheck=recheck)
+        iterator = streaming.stream_events(stream, store, outcome, is_disconnected=request.is_disconnected)
         try:
-            async for frame in streaming.stream_events(stream, store, outcome, is_disconnected=request.is_disconnected):
+            async for frame in iterator:
                 yield frame
         finally:
-            _STREAMS.release(task_id=task_id, principal_id=caller.principal_id)
-            logger.info(
-                "Task API stream closed",
-                extra={
-                    "task_id": task_id,
-                    "close_reason": outcome.reason,
-                    "events_emitted": outcome.events_emitted,
-                    "resume_cursor": outcome.resume_cursor,
-                },
-            )
+            await iterator.aclose()
 
-    return StreamingResponse(
+    async def release_stream() -> None:
+        await lease.release()
+        logger.info(
+            "Task API stream closed",
+            extra={
+                "task_id": task_id,
+                "close_reason": outcome.reason,
+                "events_emitted": outcome.events_emitted,
+                "resume_cursor": outcome.resume_cursor,
+            },
+        )
+
+    return TaskStreamingResponse(
         frames(),
+        outcome=outcome,
+        release=release_stream,
+        lease=lease,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )

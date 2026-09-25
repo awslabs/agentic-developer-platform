@@ -269,6 +269,25 @@ describe('LiveStatusComment', () => {
     expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
+  it('reports an operator stop as pending finalization and stops later progress updates', async () => {
+    mockFetch.mockResolvedValueOnce(mockFetchResponse(201, { id: 301 }))
+      .mockResolvedValue(mockFetchResponse(200));
+    const comment = new LiveStatusComment(makeStages(), makeOptions());
+    await comment.post();
+    comment.setExplanation('Waiting for foreground work to finish.');
+    await comment.finalizeAbortRequested();
+    const body = JSON.parse(mockFetch.mock.calls.at(-1)![1].body).body as string;
+    expect(body).toContain('Agent stopping');
+    expect(body).toContain('Finalization is in progress');
+    expect(body).toContain('Waiting for foreground work to finish.');
+    expect(body).not.toContain('Failed');
+    const count = mockFetch.mock.calls.length;
+    comment.appendActivity('late progress');
+    await comment.flush();
+    jest.advanceTimersByTime(60000);
+    expect(mockFetch).toHaveBeenCalledTimes(count);
+  });
+
   describe('finalizeFailure()', () => {
     it('replaces comment body with failure summary', async () => {
       mockFetch

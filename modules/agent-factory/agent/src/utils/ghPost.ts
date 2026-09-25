@@ -44,8 +44,8 @@ export async function refreshGitHubToken(): Promise<void> {
   // so the local mint below cannot run and the `!privateKey` early-return would
   // silently disable refresh for every caller of this helper (agent-pm,
   // agent-superpower, pm-health-monitor, skill-agent).
-  if (isBrokerEnabled()) {
-    const { getRuntimeGitHubToken } = await import('../token-refresh');
+  const { getRuntimeGitHubToken, isTokenManagerInitialized } = await import('../token-refresh');
+  if (isTokenManagerInitialized() || isBrokerEnabled()) {
     await getRuntimeGitHubToken();
     return;
   }

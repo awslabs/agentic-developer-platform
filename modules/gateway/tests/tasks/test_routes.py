@@ -679,3 +679,18 @@ async def test_snapshot_of_a_task_with_lost_heartbeats_reports_unknown(client, s
     assert contract(body, SNAPSHOT_SCHEMA) == []
     assert (body["status"], body["execution_health"], body["recovery_required"]) == ("running", "unknown", True)
     assert body["result"] is None and body["error"] is None
+
+
+async def test_stream_admission_backend_failure_is_json_503_before_headers(client, monkeypatch, contract):
+    from unittest.mock import AsyncMock
+
+    from src.tasks import errors
+
+    registry = AsyncMock()
+    registry.acquire_lease.side_effect = errors.prerequisite_unavailable("Task API stream admission is unavailable.")
+    monkeypatch.setattr(routes_module, "_STREAMS", registry)
+    response = await client.get(f"/v1/tasks/{TASK}/events")
+    assert response.status_code == 503
+    assert response.headers["content-type"].startswith("application/json")
+    assert contract(response.json(), ERROR_SCHEMA) == []
+    assert response.json()["code"] == "prerequisite_unavailable"

@@ -108,6 +108,25 @@ reuse a binding after routing ownership changes without reviewing that mapping.
 The observer sees the controller's settled Deployment/Service metadata, not
 per-pod source inspection, and grants no pod-read/exec access.
 
+### Stream-history release receipt (2026-09-25)
+
+The gateway subsequently rolled to digest
+`sha256:5e3a8b9e8b7900cd144e9924baf7a7fb63baa2534bbfda1249c5f09514c194a8`,
+from source `d8b8a793774f9390c0f28da2499dc9d541b6e369` and successful build
+`adp-dev-gateway-build:83489c91-afb4-4630-84bf-d2795e54fe84`.
+The catalog retains the earlier receipt and adds this independently verified one:
+the uploaded source object, saved build ZIP and fresh Git archive have identical
+SHA256; CodeBuild source and `ADP_SOURCE_SHA`/image tag match; the build log records
+the exact tag's pushed digest. The archive hash and source key are in the catalog.
+
+Evaluation run `36100004960` failed closed during that rollout with
+`Gateway deployment is unsettled or degraded`, before provisioning any resources.
+Its durable manifest was empty, cleanup completed and the lease was released.
+The deployment subsequently settled, but its new digest needs this receipt before
+evaluation can accept it. A future run must still independently check rollout
+readiness, use this release's full expected source revision, and verify served
+CLI hashes; adding a receipt neither runs nor passes an evaluation.
+
 ### Scoped observer rollout (supervisor only)
 
 These artifacts are prepared, not applied by the PR:
