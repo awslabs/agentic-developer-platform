@@ -101,6 +101,9 @@ async def creating_keys(provider, operation, plan):
         "controller_plan",
         "controller_certificate_authority",
         "controller_regions",
+        "controller_node_bootstrap",
+        "controller_network_cluster",
+        "controller_network_regions",
     )
     if request.action != "provision" or any(
         request.parameters.get(key) != operation.request.parameters.get(key)
