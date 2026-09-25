@@ -306,9 +306,9 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
         "provision", admitted_request=preview.request, prepare_registration=register
     )
     if deny_node_role:
-        # Provider failures are deliberately recorded UNKNOWN by the paid-call
-        # boundary. The after-step finalizer then refuses an empty inventory;
-        # the provider's prerequisite exception is not the RPC response.
+        # The provider returns UNKNOWN; Harness retains the original unsettled
+        # intent for recovery rather than terminalizing it as unresolved. The
+        # finalizer refuses empty inventory, not the prerequisite exception.
         with pytest.raises(
             OperationRefused, match="provider resource inventory is not established"
         ):
@@ -323,13 +323,13 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
         assert not cloud.exists and not cloud.ever_created
         assert not aws.attachments and not aws.peerings and not aws.routes
         async with pool.acquire() as c:
-            assert (
-                await c.fetchval(
-                    "SELECT outcome FROM harness_provider_call_intent WHERE operation_id=$1",
-                    operation.grant.lease.operation_id,
-                )
-                == "unknown"
+            intent = await c.fetchrow(
+                "SELECT stage,outcome,provider_ref FROM harness_provider_call_intent WHERE operation_id=$1",
+                operation.grant.lease.operation_id,
             )
+            assert intent is not None
+            assert intent["stage"] == "intended" and intent["outcome"] is None
+            assert json.loads(intent["provider_ref"])["request_id"] is None
             assert (
                 await c.fetchval(
                     "SELECT count(*) FROM controller_provider_requests WHERE operation_id=$1",
