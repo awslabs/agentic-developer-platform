@@ -34,18 +34,40 @@ credentials.
 |---|---|---|---|
 | 1 | CLI onboarding | [A: gate off, B: approval matrix, C5–C10: complete CLI installation, discovery, token import, permissions, direct inference, Claude Code and Codex; D: restore/cleanup](../../platform/evals/cli-onboarding/README.md) | Clean EKS pod |
 | 2 | Budgets and rate limits | [Cases 1–12 and H: user/team/department/org budgets, reset boundaries, tenant isolation, accounting, RPM/TPM/concurrency and agent attribution](../../platform/evals/budget-ratelimit/README.md) | Clean EKS pod; real API/DB enforcement |
-| 3 | CLI Uplift key scenarios | [E01: fresh install and release hashes; C01: native admin login, bad credentials and refresh; cleanup/recovery](../../tests/e2e/cli_uplift/cases.py) | Disposable EC2 |
+| 3 | CLI Uplift key scenarios | [E01 install; C01 login/refresh; E20 capabilities/doctor; E21 usage/export; E22 Activity reads/errors; cleanup/recovery](../../tests/e2e/cli_uplift/cases.py) | Disposable EC2 |
 
-The daily EC2 invocation selects **`login`** (E01 + C01). This is the currently
-supported nightly scope, alongside real Claude/Codex inference in the onboarding
-pod and the entire budget harness. A green daily run means these key scenarios
-passed; it does **not** establish full CLI Uplift acceptance.
+The daily EC2 invocation selects **`nightly`**: E01 install, C01 native login and
+refresh, E20 capabilities/doctor (#5621), E21 own usage views and bounded export
+(#5628), and E22 Activity pagination and missing-run errors (#5629). All product
+commands run from the hash-verified served CLI on the disposable EC2 instance.
+These three new scenarios add no inference or platform mutations. Missing CLI
+helpers, endpoint errors, malformed JSON, or inconsistent exit codes fail the run.
 
-Select `ec2_scope=full` on the same manual trigger for E01–E17: admin challenges
-and setup, AWS connection/handoff, routing, personal/hosted inference, GitHub,
-parity, cleanup and multi-deployment isolation. The full matrix's grading is
-unchanged: blocked/not-run cases keep it red. E02–E17 remain outside the nightly
-gate and are explicitly listed as such in every combined summary.
+`ec2_scope=login` retains the narrow install/login diagnostic. `ec2_scope=full`
+selects E01–E22; blocked/not-run cases keep it red. E02–E19 remain outside the
+nightly scope. Passing read regressions does not establish active remote-control
+acceptance, marked usage/spend reconciliation, or capability permission contrasts.
+
+## Requirement for every CLI story
+
+Each CLI story must deliver regression scenarios in this existing harness as part
+of its implementation PR. Register stable case IDs and story ownership in
+`tests/e2e/cli_uplift/cases.py`, wire the existing stage/remote dispatcher, and add
+routine bounded scenarios to the `nightly` selection. Update the report schema
+and this scenario index together. Do not create another scheduler or dispatcher.
+
+Cover successful commands, JSON/exit-code failures, and relevant authorization,
+pagination, retry/idempotency, or recovery behavior. Mutating scenarios must own
+fixtures and record resources for durable cleanup; inference scenarios must have
+explicit enforced bounds. Missing fixtures must block, never silently pass.
+Publish sanitized results tied to the deployed revision. Keep `BG_CONFIG_DIR`,
+HOME/XDG, deployment overrides and token stores isolated from operator sessions.
+
+Story completion requires the installed-CLI scenarios to pass against the deployed
+revision, plus the story's remaining acceptance criteria. A green offline test or
+a merged scenario is not evidence of a successful nightly execution. Active control
+fixtures must demonstrate pause/resume, steering uptake, streaming/reconnect and
+abort through the existing Task API; read-only E22 does not substitute for them.
 
 The individual workflows remain reusable and manually dispatchable for diagnosis, but have no independent
 cron. A shared live-suite concurrency group serializes standalone runs with

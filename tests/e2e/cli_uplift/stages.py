@@ -768,6 +768,9 @@ JOURNEY_DRIVERS = {
     # workspaces or making one case depend on the other's leftovers.
     "E18": "superplane_domain",
     "E19": "capability_contrast",
+    "E20": "story_capabilities",
+    "E21": "story_usage",
+    "E22": "story_activity",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

@@ -128,7 +128,7 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
   -f mode=start -f suites=full
 ```
 
-Suites: `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+Suites: `nightly`, `story-reads`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
 
 **E16/E17 model execution is currently disabled**, even with reachable gateways.

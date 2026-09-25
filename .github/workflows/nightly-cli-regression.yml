@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       ec2_scope:
-        description: 'login = nightly key scenarios; full = all 18 acceptance cases (requires additional fixtures)'
+        description: 'nightly = install/login plus CLI story read regressions; login = install/login only; full = all acceptance cases'
         type: choice
-        options: [login, full]
-        default: login
+        options: [nightly, login, full]
+        default: nightly
   pull_request:
     branches: [main]
     paths:
@@ -107,7 +107,7 @@ jobs:
       environment: dev
       expected_revision: ${{ needs.prepare.outputs.revision }}
       resolve_revision: true
-      suites: ${{ inputs.ec2_scope || 'login' }}
+      suites: ${{ inputs.ec2_scope || 'nightly' }}
 
   summary:
     name: Nightly regression result
@@ -129,5 +129,5 @@ jobs:
           CLI_REGRESSION_JOBS: ${{ toJSON(needs) }}
           CLI_REGRESSION_REVISION: ${{ needs.prepare.outputs.revision }}
           CLI_REGRESSION_EC2_REVISION: ${{ needs.ec2.outputs.revision }}
-          CLI_REGRESSION_EC2_SCOPE: ${{ inputs.ec2_scope || 'login' }}
+          CLI_REGRESSION_EC2_SCOPE: ${{ inputs.ec2_scope || 'nightly' }}
         run: python -m tests.e2e.cli_regression.report

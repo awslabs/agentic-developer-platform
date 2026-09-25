@@ -17,10 +17,10 @@ REQUIRED = {
 }
 
 
-def render(jobs, revision, ec2_revision="", ec2_scope="login"):
+def render(jobs, revision, ec2_revision="", ec2_scope="nightly"):
     verified = isinstance(revision, str) and REVISION.fullmatch(revision)
     ec2_verified = isinstance(ec2_revision, str) and REVISION.fullmatch(ec2_revision)
-    scope_valid = ec2_scope in {"login", "full"}
+    scope_valid = ec2_scope in {"nightly", "login", "full"}
     lines = [
         "## Nightly CLI regression — combined result",
         "",
@@ -38,6 +38,16 @@ def render(jobs, revision, ec2_revision="", ec2_scope="login"):
             result = "missing"
         passed = passed and result == "success"
         lines.append(f"| {label} | {result} |")
+    if ec2_scope == "nightly":
+        lines.extend(
+            [
+                "",
+                "Daily EC2 cases: E01 install, C01 login/refresh, E20 capabilities/doctor, "
+                "E21 usage/export reads, and E22 Activity reads/missing-run errors.",
+                "**Full CLI story acceptance is not established.** Active controls, "
+                "capability contrasts and marked spend reconciliation need their own fixtures.",
+            ]
+        )
     if ec2_scope == "login":
         lines.extend(
             [
@@ -45,7 +55,7 @@ def render(jobs, revision, ec2_revision="", ec2_scope="login"):
                 "Daily key scenarios: onboarding/Claude/Codex, budgets/rate limits, "
                 "and EC2 E01 install + C01 native login/refresh.",
                 "**Full CLI acceptance is not established by this scope.** "
-                "E02–E17 are outside this nightly gate. The full matrix remains available "
+                "E02–E22 are outside this login-only gate. The full matrix remains available "
                 "with `ec2_scope=full`; see docs/runbooks/nightly-cli-regression.md "
                 "for missing destination/GitHub/hosted/multi-deployment fixtures and "
                 "the E16/E17 model-limit guard.",
@@ -78,7 +88,7 @@ def main():
         jobs,
         os.environ.get("CLI_REGRESSION_REVISION", ""),
         os.environ.get("CLI_REGRESSION_EC2_REVISION", ""),
-        os.environ.get("CLI_REGRESSION_EC2_SCOPE", "login"),
+        os.environ.get("CLI_REGRESSION_EC2_SCOPE", "nightly"),
     )
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(summary)

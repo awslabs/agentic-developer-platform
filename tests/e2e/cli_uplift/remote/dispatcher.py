@@ -29,6 +29,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # purpose -> (module, extra payload the orchestrator does not have to supply)
 PURPOSES = {
+    "story_capabilities": ("story_reads", {"mode": "capabilities"}),
+    "story_usage": ("story_reads", {"mode": "usage"}),
+    "story_activity": ("story_reads", {"mode": "activity"}),
     # E01/E02/E03 — install the served release, then a real Cognito login.
     "install_auth": ("install_auth", {}),
     # E04/E05 — `adp aws connect`, provisioned and handoff variants.

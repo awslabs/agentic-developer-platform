@@ -45,6 +45,8 @@ STATUSES = (PASSED, FAILED, BLOCKED, NOT_RUN)
 # progress while a fixture class is still blocked.
 SUITES = (
     "full",
+    "nightly",
+    "story-reads",
     "login",
     "install",
     "admin",
@@ -262,6 +264,27 @@ CASES = (
         "Freshly served CLI on EC2: adp capabilities distinguishes an enabled operation from an intentionally disabled one and from one the caller may not perform; adp doctor reports read-only bounded findings with no mutation and no paid inference; a foreign request ID is indistinguishable from an absent one",
         (EC2, PLATFORM, CAPABILITY_CONTRAST),
     ),
+    Case(
+        "E20",
+        "#5621",
+        "story-reads",
+        "Served capabilities has distinct operation IDs; bounded auth/API doctor checks succeed",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E21",
+        "#5628",
+        "story-reads",
+        "Own usage views and bounded JSON export preserve scope, shape and incomplete-result exit status; no spend reconciliation claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E22",
+        "#5629",
+        "story-reads",
+        "Own Activity pagination and missing-run status/state/detail errors are structured; no active-control claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance
@@ -282,6 +305,12 @@ def suite_cases(suite):
         raise ValueError(f"Unknown suite {suite!r}; choose from {', '.join(SUITES)}")
     if suite == "full":
         return CASES
+    if suite == "nightly":
+        return (
+            BY_ID["E01"],
+            LOGIN_CHECKPOINT,
+            *(case for case in CASES if case.suite == "story-reads"),
+        )
     if suite == "login":
         return (BY_ID["E01"], LOGIN_CHECKPOINT)
     return tuple(case for case in CASES if case.suite == suite)

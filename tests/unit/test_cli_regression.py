@@ -162,7 +162,7 @@ def test_suites_are_serial_but_failure_does_not_skip_later_suites():
         assert "!cancelled()" in job["if"]
         assert "needs.prepare.result == 'success'" in job["if"]
         assert "continue-on-error" not in job
-    assert jobs["ec2"]["with"]["suites"] == "${{ inputs.ec2_scope || 'login' }}"
+    assert jobs["ec2"]["with"]["suites"] == "${{ inputs.ec2_scope || 'nightly' }}"
     assert jobs["ec2"]["with"]["resolve_revision"] is True
     assert "needs.onboarding.outputs.cleanup_ok == 'true'" in jobs["budgets"]["if"]
     assert "needs.budgets.outputs.cleanup_ok == 'true'" in jobs["ec2"]["if"]
@@ -209,7 +209,7 @@ def test_only_non_secret_job_outcomes_are_sent_to_combined_summary():
         "CLI_REGRESSION_JOBS": "${{ toJSON(needs) }}",
         "CLI_REGRESSION_REVISION": "${{ needs.prepare.outputs.revision }}",
         "CLI_REGRESSION_EC2_REVISION": "${{ needs.ec2.outputs.revision }}",
-        "CLI_REGRESSION_EC2_SCOPE": "${{ inputs.ec2_scope || 'login' }}",
+        "CLI_REGRESSION_EC2_SCOPE": "${{ inputs.ec2_scope || 'nightly' }}",
     }
     assert "python -m tests.e2e.cli_regression.report" in step["run"]
 
@@ -354,9 +354,11 @@ def test_ec2_must_publish_its_own_verified_revision(revision):
 def test_key_scenarios_pass_without_claiming_full_acceptance():
     text, code = report.render(outcomes(), SHA, "b" * 40)
     assert code == 0
-    assert "E02–E17 are outside this nightly gate" in text
+    assert "E20 capabilities/doctor" in text
+    assert "E21 usage/export" in text
+    assert "E22 Activity" in text
     assert "not a single-revision acceptance run" in text
-    assert "Full CLI acceptance is not established" in text
+    assert "Full CLI story acceptance is not established" in text
 
 
 def test_unknown_scope_cannot_go_green():

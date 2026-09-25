@@ -8431,7 +8431,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     # take down the cases that do not depend on it.
     assert {
         case_id for case_id, entry in matrix.items() if entry["status"] == cases.NOT_RUN
-    } == {"E01", "E02", "E03", "E13", "E14", "E15"}
+    } == {"E01", "E02", "E03", "E13", "E14", "E15", "E20", "E21", "E22"}
 
 
 # --------------------------------------------------------------------------
@@ -10210,3 +10210,119 @@ def test_observer_artifacts_grant_only_two_named_reads():
         policy["Statement"][0]["Resource"]
         == "arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster"
     )
+
+
+def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
+    selected = cases.resolve_suites(("nightly",))
+    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22"}
+    assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
+        "#5621",
+        "#5628",
+        "#5629",
+    }
+    assert not cases.is_full(("nightly",))
+    assert all(
+        stages.JOURNEY_DRIVERS[key] in bundle.purposes()
+        for key in ("E20", "E21", "E22")
+    )
+    matrix = cases.new_matrix(("nightly",))
+    for key in matrix:
+        cases.record(matrix, key, cases.PASSED)
+    cases.record(matrix, "E21", cases.FAILED)
+    assert cases.accept(matrix, ("nightly",))[0] == cases.FAILED
+
+
+@pytest.mark.parametrize("status", [401, 403, 500, None])
+def test_story_activity_does_not_mistake_other_errors_for_missing_run(tmp_path, status):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {"status": "ok", "detail": {"items": [], "complete": True}}
+    cli.run.return_value = (5, {"status": "failed", "error": {"http_status": status}})
+    with pytest.raises(common.RemoteError, match="structured HTTP 404"):
+        module.activity(cli, {})
+
+
+@pytest.mark.parametrize(
+    "code,complete,cursor", [(0, False, "next"), (4, True, None), (4, False, None)]
+)
+def test_story_usage_rejects_false_export_success_and_missing_cursor(
+    tmp_path, code, complete, cursor
+):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {"scope": {"kind": "own"}, "items": []},
+    }
+    cli.run.return_value = (
+        code,
+        {
+            "status": "ok" if complete else "pending",
+            "detail": {
+                "scope": {"kind": "own"},
+                "items": [],
+                "complete": complete,
+                "next_cursor": cursor,
+            },
+        },
+    )
+    with pytest.raises(common.RemoteError):
+        module.usage(cli, {})
+
+
+def test_story_capabilities_rejects_unknown_auth_readiness(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"operations": [{"id": "agent.list"}]}},
+        {
+            "status": "ok",
+            "detail": {
+                "checks": {"auth": {"state": "unknown"}, "api": {"state": "ok"}}
+            },
+        },
+    ]
+    with pytest.raises(common.RemoteError, match="readiness"):
+        module.capabilities(cli, {})
+
+
+@pytest.mark.parametrize("mode", ["capabilities", "usage", "activity"])
+def test_story_read_success_requires_no_inference_or_control_write(tmp_path, mode):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    if mode == "capabilities":
+        cli.json.side_effect = [
+            {"status": "ok", "detail": {"operations": [{"id": "agent.list"}]}},
+            {
+                "status": "ok",
+                "detail": {"checks": {"auth": {"state": "ok"}, "api": {"state": "ok"}}},
+            },
+        ]
+    elif mode == "usage":
+        cli.json.return_value = {
+            "status": "ok",
+            "detail": {"scope": {"kind": "own"}, "items": []},
+        }
+        cli.run.return_value = (
+            0,
+            {
+                "status": "ok",
+                "detail": {"scope": {"kind": "own"}, "items": [], "complete": True},
+            },
+        )
+    else:
+        cli.json.return_value = {
+            "status": "ok",
+            "detail": {"items": [], "complete": True},
+        }
+        cli.run.return_value = (5, {"status": "failed", "error": {"http_status": 404}})
+    module.SCENARIOS[mode](cli, {})
+    for call in cli.method_calls:
+        assert not set(call.args[0]) & {
+            "pause",
+            "resume",
+            "steer",
+            "abort",
+            "submit",
+            "chat",
+        }

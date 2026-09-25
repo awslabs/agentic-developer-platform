@@ -50,7 +50,7 @@ on:
         options: [start, resume, status, cleanup]
         default: start
       suites:
-        description: 'Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture. superplane selects #5637 E18 and requires the config superplane object — a domain service actually deployed behind the gateway plus an admin sign-in fixture; it BLOCKS without one.'
+        description: 'nightly selects install/login and CLI story read regressions; story-reads selects E20-E22 only; Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture. superplane selects #5637 E18 and requires the config superplane object — a domain service actually deployed behind the gateway plus an admin sign-in fixture; it BLOCKS without one.'
         required: false
         type: string
         default: login
