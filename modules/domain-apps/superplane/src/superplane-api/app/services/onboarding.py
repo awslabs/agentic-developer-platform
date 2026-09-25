@@ -87,6 +87,20 @@ async def preview(db, org_id, body: CreateWorkspaceRequest):
     )
 
     body = normalized_request(body)
+    if body.cluster_placement == "shared":
+        # Issue #6048: the schema, `cluster_sharing.py`'s eligibility resolver and
+        # the canonical bootstrap registration path all support shared placement,
+        # but the execution-step wiring that would carry a resolved shared target
+        # through account-factory's lifecycle request and into
+        # `initial_execution_steps` does not exist yet. Refusing explicitly here
+        # is the fail-closed choice: silently falling through to the dedicated
+        # resolution below would accept a shared-placement request and hand back
+        # a plan for a dedicated cluster the caller never asked for.
+        raise ProvisioningUnavailable(
+            "shared cluster placement is not yet executable through workspace "
+            "creation; the eligibility and bootstrap paths exist, but preview's "
+            "execution-step generation does not resolve a shared target yet"
+        )
     caller = acting_principal()
     if caller is None or caller.org_id != str(org_id):
         raise ProvisioningRefused("verified operation principal is required")

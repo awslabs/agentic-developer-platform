@@ -370,6 +370,43 @@ class TestClusterPlacementChoice:
             )
 
 
+class TestSharedPlacementPreviewIsExplicitlyUnavailable:
+    """Issue #6048: preview must fail closed for shared placement, not fall
+
+    through to dedicated resolution. The schema, `cluster_sharing.py`'s
+    eligibility resolver and canonical bootstrap registration all support
+    shared placement; `onboarding.py::preview`'s execution-step generation does
+    not yet resolve a shared target. Silently proceeding with dedicated
+    resolution would hand back a plan for a cluster the caller never asked
+    for — this checks the explicit refusal that prevents that.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shared_placement_is_refused_before_touching_the_database_or_principal(
+        self, monkeypatch
+    ):
+        from app.schemas.workspace import CreateWorkspaceRequest
+        from app.services import onboarding
+        from app.services.provisioning import ProvisioningUnavailable
+
+        # `route_preview` (autouse, module-level) replaces `onboarding.preview`
+        # with a mock for every other test in this file. Undo that here — this
+        # test's whole point is the REAL function's early refusal, which the
+        # mock does not implement and would otherwise mask.
+        monkeypatch.undo()
+
+        body = CreateWorkspaceRequest(
+            name="my-workspace",
+            cluster_placement="shared",
+            shared_cluster_id=uuid.uuid4(),
+        )
+        # `db=None` and no acting principal set: if the refusal did not run
+        # before the first database/principal access, this would raise a
+        # different, less specific error (or hang), not `ProvisioningUnavailable`.
+        with pytest.raises(ProvisioningUnavailable, match="not yet executable"):
+            await onboarding.preview(None, uuid.uuid4(), body)
+
+
 class TestWorkspaceDisplayName:
     """Test workspace display name with isolation mode tags."""
 
