@@ -2,7 +2,7 @@
   "evaluation": "V5 #5806",
   "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
   "evaluator": "runtime_contracts independent operations review",
-  "at": "2026-09-25T06:11:02.880467+00:00",
+  "at": "2026-09-25T06:18:55.139213+00:00",
   "criteria": {
     "V5-01": {
       "status": "PASS",
@@ -53,20 +53,21 @@
       "proof": "Owned temporary executionresources removed; expired localfixturetoken removed. Ownedterminal Task content/metadata retention and intentionallyretained configuration/audit records are explicitly inventoried with expiry semantics. No early destruction of active qualification read credentials."
     },
     "V5-06": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "evidence": [
-        "release-matrix.json"
+        "release-matrix.json",
+        "release-acceptance.json"
       ],
-      "proof": "Await final V3 shared Redis/global quota proof, refreshed V4 public transport evidence, and delegated release acceptance. Merged code and a single happy path do not establish epic closure."
+      "proof": "All 40 V1-V5 criteria map to passing reports. Root reviewed merged final V3/V4 evidence and confirmed delegated release acceptance, conditional only on consolidated verifier success. Historical V0 waiver and source/lane limitations remain explicit."
     }
   },
-  "overall": "NOT COMPLETE",
-  "source_note": "Current bindings: gateway fddd951f / source a16a2a851, Lambda 115 / source 200ed6349, and worker 57d. Each retained observation preserves its actual tested source and timestamp; global quota and final public qualification remain pending.",
+  "overall": "PASS",
+  "source_note": "Final bindings: gateway fddd951f / source a16a2a851, webhook Lambda115 / source200ed6349, and worker57d. Each retained observation preserves its actual source, timestamp and scope.",
   "artifact_sha256": {
     "retained-task-metadata.json": "a9ae7e0db0fb1473afcae36e9973a0f16852a96cf214d951d7cafadf8800d46b",
     "cleanup-retention-inventory.json": "9ec23665d7bc93983a1bd1878df9c7421deadcea5f0029908e4b21f026e85490",
     "final-bindings.json": "787e82408a7761e2b1aa22465badfca5f40f7f850af0ce35bb5897629366bff2",
-    "README.md": "6a613b6a29e781250aad46ad416e4a843960af0842a80560dc42529c3710085b",
+    "README.md": "e9d6f8e84a41f84f8b8f071d41e166974c87b44ee825dc1ba5a69cf8d8207326",
     "consumer-boundary.json": "a77aad87c23d885097a44ec9038b041758e7d295ba89a1f038b5c3aee26713a5",
     "admission-off-active.json": "59c72ef88a912e7fa57625bdcddc6f90319e5f411f562a482291f2b9c09816fc",
     "admission-changes.ndjson": "d01bba977e2be97da0748fa7b90e1f2acb6dbb2fc6541404164e7a2c56a44fd8",
@@ -74,9 +75,10 @@
     "engine-paused.json": "55b6659f957eb3a23e831c4a8a0cd61896d89b759b6875823448233511ead511",
     "artifact-lifecycle.json": "3fb97668d38529f0142af1c40c2d84f7080f593a6cd02df3e855fce872b14907",
     "initial-ordering.json": "402e033cc315c0fd240f7c54bc277c0eaa079563497da56201e88dc3f04b338d",
-    "release-matrix.json": "7bc05f0ebd04ea711c163b55212380c5b3391cefe101bb476d4c3e9502ea6c53",
+    "release-matrix.json": "1532d60c6812ddce7ce41721983787f3256b82b1407b2a27987aa03a0a15fa9d",
     "credential-retention.json": "2072c74eef2021917f4436e9c4c2f9f733ead89b102bfca06af25fee82fd3cfb",
     "admission-off-completed.json": "8fee8ee496ff76a65debf6f089083b04a8e93d662c8c4940384df1a83e63d1bb",
-    "prior-active-drain.json": "8617492d75f2c9526e1e79380a99ab4c7792d64de5ed236244408a18675e1289"
+    "prior-active-drain.json": "8617492d75f2c9526e1e79380a99ab4c7792d64de5ed236244408a18675e1289",
+    "release-acceptance.json": "b9d59888e39a370f395c0920e276e1394f3391a007b748cf753a5715cfeacbbe"
   }
 }

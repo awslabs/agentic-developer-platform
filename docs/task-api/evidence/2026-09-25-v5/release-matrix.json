@@ -1,5 +1,5 @@
 {
-  "acceptance": "PENDING finalV3/V4 and release decision",
+  "acceptance": "ACCEPTED",
   "criteria": {
     "V1-01": {
       "status": "PASS",
@@ -70,71 +70,71 @@
       "report": "../2026-09-25-v1-v2/v2-criterion-report.json"
     },
     "V3-01": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-02": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-03": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-04": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-05": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-06": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-07": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-08": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-09": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V3-10": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v3/criterion-report.json"
     },
     "V4-01": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v4/v4-criterion-report.json"
     },
     "V4-02": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v4/v4-criterion-report.json"
     },
     "V4-03": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v4/v4-criterion-report.json"
     },
     "V4-04": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v4/v4-criterion-report.json"
     },
     "V4-05": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v4/v4-criterion-report.json"
     },
     "V4-06": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v4/v4-criterion-report.json"
     },
     "V4-07": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "../2026-09-25-v4/v4-criterion-report.json"
     },
     "V5-01": {
@@ -158,7 +158,7 @@
       "report": "criterion-report.json"
     },
     "V5-06": {
-      "status": "BLOCKED",
+      "status": "PASS",
       "report": "criterion-report.json"
     }
   },
@@ -168,5 +168,7 @@
     "evidence": "../2026-09-25-t5-v0/independent-review.json",
     "review_pr": 5992,
     "chronology_note": "No historical preimplementation approval is fabricated; prior waiver retained."
-  }
+  },
+  "accepted_at": "2026-09-25T06:18:55.139213+00:00",
+  "acceptance_evidence": "release-acceptance.json"
 }
