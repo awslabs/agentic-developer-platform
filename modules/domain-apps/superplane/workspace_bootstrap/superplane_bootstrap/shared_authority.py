@@ -177,6 +177,27 @@ class SharedGrantBackend:
 
 
 class SharedWorkspaceAuthority(TemporaryAuthority):
+    @staticmethod
+    def _require_phase(progress, phase):
+        if progress.get("member_recovery_started"):
+            raise BootstrapRefused(
+                "member recovery permanently withdrew bootstrap mutation authority"
+            )
+        TemporaryAuthority._require_phase(progress, phase)
+
+    @staticmethod
+    def _require_openable(progress):
+        if (
+            progress.get("member_recovery_started")
+            or progress.get("phase") != "revoked"
+            or not progress.get("complete")
+            or not progress.get("component_inventory_complete")
+            or not progress.get("retain_workspace")
+        ):
+            raise BootstrapRefused(
+                "member admission cannot open before bootstrap completion or after recovery"
+            )
+
     def establish_components(self, specs):
         """Called by trusted issuer composition after observing the namespace UID."""
         journal = ComponentJournal(self, self.backend)
@@ -218,21 +239,21 @@ class SharedWorkspaceAuthority(TemporaryAuthority):
         # by closing this exact namespace UID, never by touching cluster nodes.
         with self.journal.fenced(recovery=recovery):
             _, progress = self.journal.read_locked()
-            if not closed and (
-                progress.get("phase") != "revoked"
-                or not progress.get("complete")
-                or not progress.get("component_inventory_complete")
-                or not progress.get("retain_workspace")
-            ):
-                raise BootstrapRefused(
-                    "member admission cannot open before bootstrap completion"
-                )
+            if not closed:
+                self._require_openable(progress)
             self.backend.verify_worker_binding(recovery=recovery)
             progress["member_gate_intent"] = "closed" if closed else "open"
             self.journal.write_locked(progress)
 
         with self.journal.fenced(recovery=recovery):
             _, progress = self.journal.read_locked()
+            # Recovery can win the committed-intent gap. The claim itself stays
+            # reserved during cleanup, so rechecking only its fingerprint or the
+            # external lease would let a delayed opener undo recovery's closure.
+            if not closed:
+                self._require_openable(progress)
+            if progress.get("member_gate_intent") != ("closed" if closed else "open"):
+                raise BootstrapRefused("member admission intent was superseded")
             self.backend.verify_worker_binding(recovery=recovery)
             self.backend.gate.set_closed(closed)
             progress["member_gate"] = "closed" if closed else "open"
@@ -250,6 +271,7 @@ class SharedWorkspaceAuthority(TemporaryAuthority):
     def record_components(self, reference):
         with self.journal.fenced():
             _, progress = self.journal.read_locked()
+            self._require_phase(progress, "active")
             components = progress.get("components", {})
             if not components or any(
                 item.get("phase") != "owned"
@@ -277,6 +299,20 @@ class SharedWorkspaceAuthority(TemporaryAuthority):
             self.journal.write_locked(progress)
 
     def recover_member(self):
+        # Commit the irreversible fence BEFORE closing admission, withdrawing
+        # projections or enumerating components. ComponentJournal._active and
+        # TemporaryAuthority.mutate consult _require_phase inside each I/O lock.
+        # A crash anywhere in cleanup retains this latch for the next recovery.
+        with self.journal.fenced(recovery=True):
+            _, progress = self.journal.read_locked()
+            self.backend.verify_worker_binding(recovery=True)
+            progress.update(
+                member_recovery_started=True,
+                member_recovery_complete=False,
+                phase="revoking",
+                complete=False,
+            )
+            self.journal.write_locked(progress)
         namespace_uid = self.bind_namespace(recovery=True)
         if namespace_uid is not None:
             self.gate(closed=True, recovery=True)
@@ -285,6 +321,10 @@ class SharedWorkspaceAuthority(TemporaryAuthority):
             self.backend.services.withdraw_credentials(self, namespace_uid)
             self.remove_owned_components()
         self.revoke()
+        with self.journal.fenced(recovery=True):
+            _, progress = self.journal.read_locked()
+            progress["member_recovery_complete"] = True
+            self.journal.write_locked(progress)
 
     def remove_owned_components(self):
         """Reconcile original component intents, then delete by UID and version.

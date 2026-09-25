@@ -6,6 +6,8 @@ actual TokenRequest/Secret transport has separate member_credentials tests.
 # ruff: noqa: F811
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from types import SimpleNamespace
 from uuid import uuid4
@@ -25,6 +27,7 @@ from superplane_bootstrap.namespace_admission import (
     policy_documents,
 )
 from superplane_bootstrap.registry import SqlRegistrationStore
+from superplane_bootstrap.registration import reserve_registration
 from superplane_bootstrap.shared_authority import (
     SharedBootstrapAuthorityFactory,
     SharedBootstrapServices,
@@ -522,3 +525,147 @@ def test_policy_uid_replacement_refuses_before_member_effect(shared_runtime):
     runtime.resources.objects[key]["metadata"]["uid"] = "replacement"
     result = runtime.run()
     assert result.refusal is not None and not runtime.resources.effects
+
+
+def _reserved_authorities(runtime, database):
+    reservation = reserve_registration(
+        store=runtime.store,
+        target=runtime.target,
+        namespace=runtime.membership.namespace,
+        membership=runtime.membership,
+    )
+    authority = runtime.factory.create(
+        binding=runtime.binding,
+        target=runtime.target,
+        reservation=reservation,
+        store=runtime.store,
+        state_store=runtime.state,
+    )
+    authority.acquire()
+    authority.bind_namespace()
+    recovery = runtime.factory.recover(
+        binding=runtime.binding,
+        target=runtime.target,
+        store=SqlRegistrationStore(database()),
+        state_store=runtime.state,
+        claim=authority.journal.claim,
+    )
+    return authority, recovery
+
+
+def _recover_after_commit(monkeypatch, authority, recovery, predicate):
+    """Schedule a second worker in the durable-intent/provider-I/O gap."""
+    original = authority.journal.fenced
+    fired = []
+
+    @contextmanager
+    def interleaved(**kwargs):
+        with original(**kwargs):
+            yield
+            _, progress = authority.journal.read_locked()
+            trigger = not fired and predicate(progress)
+        if trigger:
+            fired.append(True)
+            # Recovery uses an independent connection while the original claim
+            # remains reserved; no stale-claim rejection can hide the phase race.
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(recovery.recover_member).result(timeout=10)
+
+    monkeypatch.setattr(authority.journal, "fenced", interleaved)
+    return fired
+
+
+def test_recovery_commits_before_delayed_open_cannot_reopen(
+    shared_runtime,
+    database,
+    monkeypatch,
+):
+    runtime = shared_runtime
+    authority, recovery = _reserved_authorities(runtime, database)
+    reference = runtime.factory.services.prepare_credentials(
+        authority,
+        authority.backend.gate.namespace_uid,
+    )
+    authority.record_components(reference)
+    authority.revoke(retain_workspace=True)
+    fired = _recover_after_commit(
+        monkeypatch,
+        authority,
+        recovery,
+        lambda progress: progress.get("member_gate_intent") == "open",
+    )
+    with pytest.raises(BootstrapRefused, match="after recovery"):
+        authority.gate(closed=False)
+    assert fired and recovery.backend.gate.is_closed()
+    assert not any(key[0] == "ServiceAccount" for key in runtime.resources.objects)
+    _, progress = recovery.journal.read()
+    assert progress["member_recovery_complete"]
+    assert progress["member_gate"] == "closed"
+
+
+def test_recovery_commits_before_delayed_component_create_cannot_create(
+    shared_runtime,
+    database,
+    monkeypatch,
+):
+    runtime = shared_runtime
+    authority, recovery = _reserved_authorities(runtime, database)
+    fired = _recover_after_commit(
+        monkeypatch,
+        authority,
+        recovery,
+        lambda progress: any(
+            item["phase"] == "intended"
+            for item in progress.get("components", {}).values()
+        ),
+    )
+    with pytest.raises(BootstrapRefused, match="permanently withdrew"):
+        runtime.factory.services.prepare_credentials(
+            authority,
+            authority.backend.gate.namespace_uid,
+        )
+    assert fired and recovery.backend.gate.is_closed()
+    assert not any(
+        key[0] in {"ServiceAccount", "Role", "RoleBinding"}
+        for _, key in runtime.resources.effects
+    )
+    _, progress = recovery.journal.read()
+    assert progress["member_recovery_complete"]
+    assert set(progress["component_cleanup"].values()) == {"absent"}
+
+
+def test_interrupted_recovery_latch_survives_and_cleanup_resumes(
+    shared_runtime,
+    database,
+    monkeypatch,
+):
+    runtime = shared_runtime
+    authority, recovery = _reserved_authorities(runtime, database)
+    reference = runtime.factory.services.prepare_credentials(
+        authority,
+        authority.backend.gate.namespace_uid,
+    )
+    authority.record_components(reference)
+    original = recovery.remove_owned_components
+
+    def interrupted():
+        raise OSError("worker interrupted after credential withdrawal")
+
+    monkeypatch.setattr(recovery, "remove_owned_components", interrupted)
+    with pytest.raises(OSError, match="worker interrupted"):
+        recovery.recover_member()
+    _, progress = authority.journal.read()
+    assert progress["member_recovery_started"]
+    assert not progress["member_recovery_complete"]
+    assert progress["phase"] == "revoking"
+    with pytest.raises(BootstrapRefused, match="permanently withdrew"):
+        authority.record_components(reference)
+    with pytest.raises(BootstrapRefused, match="permanently withdrew"):
+        authority.mutate(lambda: pytest.fail("delayed provider mutation ran"))
+    monkeypatch.setattr(recovery, "remove_owned_components", original)
+    recovery.recover_member()
+    recovery.recover_member()
+    _, progress = recovery.journal.read()
+    assert progress["member_recovery_complete"] and progress["complete"]
+    assert recovery.backend.gate.is_closed()
+    assert not any(key[0] == "ServiceAccount" for key in runtime.resources.objects)
