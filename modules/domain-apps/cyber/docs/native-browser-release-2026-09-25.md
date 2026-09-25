@@ -135,12 +135,27 @@ three input URLs and no prior results.
 [Run 108008726679](https://github.com/aws-e/adp/runs/108008726679), correlation
 `22ed0c3e-34d6-433b-b0d0-4eea45f3f85a`, ran on
 `agent-scaledjob-q672x-dq46m` with the corrected digest. It successfully collected
-all three targets: two observations for Sophos, one for IANA and three for the
+all three targets: two observations for Sophos, one for IANA and four for the
 Webflow target, including screenshot capture and follow-up navigation within the
-same session. Sophos and IANA had completed clean assessments at this acceptance
-checkpoint; the third assessment and publication were still running. See the
-linked issue for the analyst reports. Common Crawl remained unavailable because
-the protected task-session policy denies Athena.
+same session. The completed case records contain these model assessments:
+
+| Target | Agent verdict | Agent confidence |
+|---|---|---|
+| Sophos | clean | high |
+| IANA | clean | high |
+| sso-auths-bitmart-sso.webflow.io | malicious | high |
+
+These are the agent’s judgments, not independently established detection accuracy.
+All three session IDs were independently verified `TERMINATED` through AWS:
+`01M3BWHA2QN183FKZX91N314P5`, `01M3BWMY6SH88XY3ZG9QG2A01K` and
+`01M3BWPVDMWFNFJXE6XYCVQE4D`.
+
+Common Crawl remained unavailable because the protected task-session policy
+denies Athena. The agent reported successful authenticated S3 upload/readback but
+HTTP 403 from standalone presigned links; artifact-link delivery was unresolved
+at this checkpoint. The operator did not fetch those URLs or read the evidence
+bucket. See the linked issue for the published reports and subsequent delivery
+status. No bucket policy was changed.
 Browser-canary success does not establish
 that archive access, artifact publication or the full analyst workflow succeeds
 under the separately migrated protected-worker permissions.

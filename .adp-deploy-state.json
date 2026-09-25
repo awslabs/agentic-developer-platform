@@ -667,7 +667,7 @@
     "worker_admission": "unpaused independently by platform rollout; not changed by this release",
     "broker_rollout": "complete; zero desired and running replicas",
     "deployment_status": "complete",
-    "demo_status": "browser collection verified in fresh GitHub worker",
+    "demo_status": "all three assessments complete; artifact-link delivery reported 403",
     "record": "modules/domain-apps/cyber/docs/native-browser-release-2026-09-25.md",
     "final_hosted_canary": {
       "job": "cyber-native-browser-identity-final-20260925",
@@ -683,7 +683,7 @@
     "github_demo": {
       "issue": "https://github.com/aws-e/adp/issues/6091",
       "trigger": "https://github.com/aws-e/adp/issues/6091#issuecomment-5829680949",
-      "status": "browser_collection_verified",
+      "status": "assessments_complete",
       "check": "https://github.com/aws-e/adp/runs/108008726679",
       "correlation_id": "22ed0c3e-34d6-433b-b0d0-4eea45f3f85a",
       "invocation_id": "b2578d57-1806-50d5-a66f-17740b0320f2",
@@ -691,7 +691,14 @@
       "all_three_targets_collected": true,
       "screenshot_and_followup_navigation_verified": true,
       "report_location": "https://github.com/aws-e/adp/issues/6091",
-      "common_crawl": "unavailable: protected task-session IAM denies Athena"
+      "common_crawl": "unavailable: protected task-session IAM denies Athena",
+      "results": {
+        "sophos": "clean",
+        "iana": "clean",
+        "sso-auths-bitmart-sso.webflow.io": "malicious"
+      },
+      "all_sessions_independently_verified_terminated": true,
+      "artifact_link_status": "agent reports authenticated S3 readback succeeded; standalone presigned requests return 403; operator did not fetch evidence"
     },
     "work_admission_repair": {
       "resource": "aws_iam_role_policy.lambda_work_claim_admission[0]",
