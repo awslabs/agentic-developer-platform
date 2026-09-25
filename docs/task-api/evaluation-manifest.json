@@ -625,8 +625,10 @@
       "t0_artifacts": [
         "fixtures/valid/process-start-frame.json"
       ],
-      "command": "not yet implemented; to be registered by T4 worker implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_entrypoint.py tests/task-api/test_model_message_seam.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T4-AC02": {
       "title": "Unknown/malformed/stale task assignments cannot invoke a legacy persona or use another run grant",
@@ -637,8 +639,10 @@
       "t0_artifacts": [
         "fixtures/valid/bootstrap-request.json"
       ],
-      "command": "not yet implemented; to be registered by T4 worker implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_dispatch.py modules/agent-factory/agent-worker-image/tests/test_task_run_client.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T4-AC03": {
       "title": "Progress is delivered before process exit; terminal evidence/results are persisted before successful completion acknowledgement",
@@ -651,8 +655,10 @@
         "fixtures/valid/process-progress-frame.json",
         "fixtures/valid/result-completed.json"
       ],
-      "command": "not yet implemented; to be registered by T4 worker implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py tests/task-api/test_model_message_seam.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T4-AC04": {
       "title": "The actual built image passes existing Claude/Codex execution/finalization fixtures",
@@ -661,8 +667,10 @@
       "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
       "fixture_responsibility": "T4 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T4 worker implementer",
-      "command_status": "not_implemented"
+      "command": "PYTHONPATH=/fixture/python:/app:/fixture python3 -m pytest -q -p no:cacheprovider /fixture/test_installed_legacy.py /fixture/tests/test_entrypoint.py::TestEntrypointMain /fixture/tests/test_codex_review_delivery.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T4-AC05": {
       "title": "Termination/reporting failure leaves an honest recoverable or terminal state and cleans only the owned assignment",
@@ -671,8 +679,10 @@
       "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
       "fixture_responsibility": "T4 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T4 worker implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T5-AC01": {
       "title": "The selected persona completes a useful tenant-owned task with GitHub credentials absent and GitHub access denied; zero GitHub requests are observed",
@@ -893,8 +903,10 @@
       "evidence_lane": "client example runs and rollout qualification output",
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T8 client and rollout implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T8-AC02": {
       "title": "Configuration and capability checks cannot enable task messages while incompatible workers may consume them",
@@ -903,8 +915,10 @@
       "evidence_lane": "client example runs and rollout qualification output",
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T8 client and rollout implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T8-AC03": {
       "title": "Rollback steps preserve accepted tasks, records/artifacts and existing paths, with no queue purge/table replacement/global legacy guard flip",
@@ -913,8 +927,10 @@
       "evidence_lane": "client example runs and rollout qualification output",
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T8 client and rollout implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T8-AC04": {
       "title": "Commands/fixtures identify environment, owned resources, traffic/spend bounds, cleanup and acceptance IDs; no live result is fabricated from mocks",
@@ -923,8 +939,10 @@
       "evidence_lane": "client example runs and rollout qualification output",
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T8 client and rollout implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "T8-AC05": {
       "title": "Task API/error/operations documentation and fixture versions match [T0](https://github.com/aws-e/adp/issues/5793) and the implemented public contract",
@@ -933,8 +951,10 @@
       "evidence_lane": "client example runs and rollout qualification output",
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T8 client and rollout implementer",
-      "command_status": "not_implemented"
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "implemented",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
     "V0-01": {
       "title": "O1\u2013O8 each have a concrete answer, rationale, evidence and downstream owner. Any departure from D01\u2013D18 has an explicit accepted decision; unresolved choices are BLOCKED",

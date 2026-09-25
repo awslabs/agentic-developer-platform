@@ -1,0 +1,27 @@
+{
+  "observed_at": "2026-09-25T04:48:56.296285+00:00",
+  "snapshot": {
+    "schema_version": "1.0",
+    "task_id": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0",
+    "invocation_id": "e5fc89e8-8c25-4123-b481-ec467e3f5bca",
+    "persona": "agent-task-investigator",
+    "status": "running",
+    "version": 10,
+    "created_at": "2026-09-25T04:46:01Z",
+    "updated_at": "2026-09-25T04:47:25Z",
+    "deadline_at": "2026-09-25T05:16:01Z",
+    "latest_event_cursor": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0:7",
+    "oldest_event_cursor": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0:1",
+    "generation": 1,
+    "runtime_attempt_id": "6b6bcbb8-b1fc-4496-92ef-f964eba21234",
+    "execution_health": "unknown",
+    "recovery_required": false,
+    "result": null,
+    "error": null,
+    "input_request": null,
+    "command_receipts": [],
+    "queue_ack_status": "pending",
+    "request_id": "b3d03e6e-7035-4782-b922-df3f6811c4f5",
+    "external_reference": "task-api-5792-20260925-clarify1"
+  }
+}
