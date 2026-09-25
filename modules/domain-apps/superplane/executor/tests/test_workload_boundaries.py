@@ -152,7 +152,10 @@ async def test_node_join_requires_each_exact_provider_identity(ids, ready):
                 "items": [
                     {
                         "spec": {"providerID": "aws:///zone/" + identity},
-                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"nvidia.com/gpu": "1"},
+                        },
                     }
                     for identity in ids
                 ]
@@ -164,6 +167,72 @@ async def test_node_join_requires_each_exact_provider_identity(ids, ready):
         await workspace.ready_nodes(None, {}, serving_plan(), {"i-one", "i-two"})
         is ready
     )
+
+
+@pytest.mark.parametrize(
+    "allocatable,ready",
+    [
+        ({"nvidia.com/gpu": "1"}, True),
+        ({"nvidia.com/gpu": "2"}, True),
+        ({}, False),
+        ({"nvidia.com/gpu": "0"}, False),
+        ({"nvidia.com/gpu": "not-a-number"}, False),
+    ],
+)
+async def test_node_join_requires_sufficient_allocatable_gpu(allocatable, ready):
+    """A Ready, correctly-identified node is not yet usable for a GPU workload
+    until the device plugin has actually published allocatable nvidia.com/gpu
+    capacity meeting what the workload requested (serving_plan asks for 1)."""
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    plan.data["node_count"] = 1
+
+    async def request(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "spec": {"providerID": "aws:///zone/i-one"},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": allocatable,
+                        },
+                    }
+                ]
+            },
+        )
+
+    workspace.request = request
+    assert await workspace.ready_nodes(None, {}, plan, {"i-one"}) is ready
+
+
+async def test_node_join_gpu_requirement_is_skipped_for_cpu_only_workload():
+    """A batch workload with gpu_count 0 must not be blocked on GPU capacity
+    that was never requested."""
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    plan.data["node_count"] = 1
+    plan.data["workload"]["gpu_count"] = 0
+
+    async def request(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "spec": {"providerID": "aws:///zone/i-one"},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {},
+                        },
+                    }
+                ]
+            },
+        )
+
+    workspace.request = request
+    assert await workspace.ready_nodes(None, {}, plan, {"i-one"}) is True
 
 
 @pytest.mark.parametrize("kind", ["Deployment", "Service"])

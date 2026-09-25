@@ -302,6 +302,13 @@ class Workspace:
             return False
         if len(provider_ids) != len(nodes):
             return False
+        # A joined, Ready node is not yet a usable GPU node: the device plugin
+        # publishes allocatable nvidia.com/gpu only once the driver/runtime/CNI
+        # stack on that node is actually working. Requiring it here, in the same
+        # check that gates workload admission, is what turns "the node registered"
+        # into "the node can run the requested GPU workload" -- a CPU-only batch
+        # workload (gpu_count 0) is unaffected.
+        required_gpus = plan.data["workload"]["gpu_count"] or 0
         return all(
             node.get("spec", {}).get("providerID", "").rsplit("/", 1)[-1]
             in instance_ids
@@ -309,8 +316,17 @@ class Workspace:
                 c.get("type") == "Ready" and c.get("status") == "True"
                 for c in node.get("status", {}).get("conditions", [])
             )
+            and self._allocatable_gpus(node) >= required_gpus
             for node in nodes
         )
+
+    @staticmethod
+    def _allocatable_gpus(node):
+        raw = node.get("status", {}).get("allocatable", {}).get("nvidia.com/gpu", "0")
+        try:
+            return int(str(raw))
+        except ValueError:
+            return 0
 
     async def workload_ready(
         self, operation, target, plan, *, known_references=None, authorize=None

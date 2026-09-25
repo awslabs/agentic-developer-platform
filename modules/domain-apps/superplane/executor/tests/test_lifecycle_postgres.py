@@ -171,7 +171,8 @@ class Kubernetes(Workspace):
                                 "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
                             },
                             "status": {
-                                "conditions": [{"type": "Ready", "status": "True"}]
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                                "allocatable": {"nvidia.com/gpu": "1"},
                             },
                         }
                     ]
