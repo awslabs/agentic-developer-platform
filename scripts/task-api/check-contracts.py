@@ -1375,23 +1375,27 @@ def check_manifest(results: Results) -> None:
         group="manifest",
     )
 
-    # Issue #5795 (T2): the runnable set grows as stories land, so this is an
-    # explicit roster rather than a prefix rule. Equality, not a subset check —
-    # a story that flips a criterion to "runnable" without registering it here
-    # would otherwise silently widen what the wave claims to prove, which is the
-    # same failure as leaving a criterion unregistered. Add a prefix here in the
-    # commit that makes its commands actually run.
+    # Later evaluations become runnable only with their versioned PASS record.
+    # A frozen-report verifier is explicitly distinct from live collection.
     runnable = sorted(
         cid for cid, entry in criteria.items() if entry["command_status"] == "runnable"
     )
     baseline_runnable = {cid for cid in criteria if cid.startswith(("V0-", "T0-"))}
-    invalid_runnable = [
-        cid
-        for cid in runnable
-        if cid.startswith("V") and cid not in baseline_runnable
-    ]
+    invalid_runnable = []
+    for cid in runnable:
+        if not cid.startswith("V") or cid in baseline_runnable:
+            continue
+        path = criteria[cid].get("qualification_report", "")
+        try:
+            report = json.loads((REPO_ROOT / path).read_text())
+            recorded = report["criteria"][cid]
+            passed = recorded.get("status", recorded.get("outcome")) == "PASS"
+        except (OSError, ValueError, KeyError, TypeError):
+            passed = False
+        if not passed:
+            invalid_runnable.append(cid)
     results.record(
-        "implementation commands may become runnable without claiming later evaluation evidence",
+        "runnable evaluations require versioned criterion PASS evidence",
         baseline_runnable.issubset(runnable) and not invalid_runnable,
         f"runnable: {runnable}; invalid evaluation commands: {invalid_runnable}",
         ["T0-AC03"],
@@ -1407,6 +1411,9 @@ def check_manifest(results: Results) -> None:
             continue
         for token in entry["command"].split():
             candidate = token.split("::", 1)[0]
+            # Shell environment assignments may themselves name a real path.
+            if "=" in candidate and candidate.split("=", 1)[0].isidentifier():
+                candidate = candidate.split("=", 1)[1]
             if "/" not in candidate or candidate.startswith("-"):
                 continue
             if not (REPO_ROOT / candidate).exists():

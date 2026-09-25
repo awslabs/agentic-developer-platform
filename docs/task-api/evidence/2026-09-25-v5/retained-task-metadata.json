@@ -1,0 +1,204 @@
+{
+  "at": "2026-09-25T05:34:25.607262+00:00",
+  "lane": "exact-owned-task-META-reads-no-scan",
+  "tasks": [
+    {
+      "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+      "found": true,
+      "retention": {
+        "updated_at": {
+          "S": "2026-09-25T05:29:43Z"
+        },
+        "queue_ack_status": {
+          "S": "confirmed"
+        },
+        "created_at": {
+          "S": "2026-09-25T05:12:43Z"
+        },
+        "task_id": {
+          "S": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999"
+        },
+        "terminal_at": {
+          "S": "2026-09-25T05:29:43Z"
+        },
+        "record_type": {
+          "S": "TASK"
+        },
+        "content_expires_at": {
+          "N": "1792906183"
+        },
+        "expires_at": {
+          "N": "1798090183"
+        },
+        "deadline_at": {
+          "S": "2026-09-25T05:42:42Z"
+        }
+      }
+    },
+    {
+      "task_id": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0",
+      "found": true,
+      "retention": {
+        "updated_at": {
+          "S": "2026-09-25T05:19:04Z"
+        },
+        "queue_ack_status": {
+          "S": "confirmed"
+        },
+        "deadline_at": {
+          "S": "2026-09-25T05:16:01Z"
+        },
+        "terminal_at": {
+          "S": "2026-09-25T04:57:41Z"
+        },
+        "content_expires_at": {
+          "N": "1792904261"
+        },
+        "record_type": {
+          "S": "TASK"
+        },
+        "created_at": {
+          "S": "2026-09-25T04:46:01Z"
+        },
+        "task_id": {
+          "S": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0"
+        },
+        "expires_at": {
+          "N": "1798088261"
+        }
+      }
+    },
+    {
+      "task_id": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742",
+      "found": true,
+      "retention": {
+        "updated_at": {
+          "S": "2026-09-25T04:50:20Z"
+        },
+        "queue_ack_status": {
+          "S": "confirmed"
+        },
+        "created_at": {
+          "S": "2026-09-25T04:49:40Z"
+        },
+        "terminal_at": {
+          "S": "2026-09-25T04:50:20Z"
+        },
+        "content_expires_at": {
+          "N": "1792903820"
+        },
+        "record_type": {
+          "S": "TASK"
+        },
+        "expires_at": {
+          "N": "1798087820"
+        },
+        "task_id": {
+          "S": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742"
+        },
+        "deadline_at": {
+          "S": "2026-09-25T05:19:40Z"
+        }
+      }
+    },
+    {
+      "task_id": "tsk_6cdc9a7b-183d-4386-9bd2-d5cb9e83ac15",
+      "found": true,
+      "retention": {
+        "created_at": {
+          "S": "2026-09-25T04:12:11Z"
+        },
+        "content_expires_at": {
+          "N": "1792903352"
+        },
+        "queue_ack_status": {
+          "S": "confirmed"
+        },
+        "terminal_at": {
+          "S": "2026-09-25T04:42:32Z"
+        },
+        "task_id": {
+          "S": "tsk_6cdc9a7b-183d-4386-9bd2-d5cb9e83ac15"
+        },
+        "expires_at": {
+          "N": "1798087352"
+        },
+        "updated_at": {
+          "S": "2026-09-25T04:42:32Z"
+        },
+        "record_type": {
+          "S": "TASK"
+        },
+        "deadline_at": {
+          "S": "2026-09-25T04:42:11Z"
+        }
+      }
+    },
+    {
+      "task_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33",
+      "found": true,
+      "retention": {
+        "queue_ack_status": {
+          "S": "confirmed"
+        },
+        "deadline_at": {
+          "S": "2026-09-25T05:39:30Z"
+        },
+        "terminal_at": {
+          "S": "2026-09-25T05:10:44Z"
+        },
+        "created_at": {
+          "S": "2026-09-25T05:09:30Z"
+        },
+        "expires_at": {
+          "N": "1798089044"
+        },
+        "updated_at": {
+          "S": "2026-09-25T05:19:04Z"
+        },
+        "content_expires_at": {
+          "N": "1792905044"
+        },
+        "task_id": {
+          "S": "tsk_866578d0-a044-420a-9d76-ff4869432f33"
+        },
+        "record_type": {
+          "S": "TASK"
+        }
+      }
+    },
+    {
+      "task_id": "tsk_9685c01a-e6e2-4b28-8cce-b929ec01dec1",
+      "found": true,
+      "retention": {
+        "content_expires_at": {
+          "N": "1792903073"
+        },
+        "deadline_at": {
+          "S": "2026-09-25T05:07:50Z"
+        },
+        "expires_at": {
+          "N": "1798087073"
+        },
+        "task_id": {
+          "S": "tsk_9685c01a-e6e2-4b28-8cce-b929ec01dec1"
+        },
+        "queue_ack_status": {
+          "S": "unknown"
+        },
+        "terminal_at": {
+          "S": "2026-09-25T04:37:53Z"
+        },
+        "created_at": {
+          "S": "2026-09-25T04:37:50Z"
+        },
+        "record_type": {
+          "S": "TASK"
+        },
+        "updated_at": {
+          "S": "2026-09-25T04:37:53Z"
+        }
+      }
+    }
+  ]
+}

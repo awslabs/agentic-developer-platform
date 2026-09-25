@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "Expiration": {
+        "Days": 30
+      },
+      "ID": "default-30-day-expiry",
+      "Filter": {
+        "Prefix": ""
+      },
+      "Status": "Enabled",
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 7
+      }
+    }
+  ]
+}
