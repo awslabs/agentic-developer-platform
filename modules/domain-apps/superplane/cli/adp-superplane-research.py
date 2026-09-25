@@ -308,7 +308,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         return common.report_error(
             common.CliError(
-                "Detached; no cancellation or approval was sent by interruption. Reconcile any submitted request.",
+                "Interrupted; a submitted mutation may have completed. Reconcile its request ID or reviewed proposal before retrying.",
                 "interrupted",
                 130,
             ),
