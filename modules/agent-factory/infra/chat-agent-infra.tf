@@ -368,6 +368,14 @@ resource "aws_iam_role_policy" "session_sweeper_dynamodb" {
         Resource = "${aws_dynamodb_table.chat_context.arn}/stream/*"
       },
       {
+        # TransactWriteItems authorizes its ConditionCheck separately. The
+        # sweeper checks only the context header before deleting expired rows.
+        Sid      = "CheckCurrentSessionHeader"
+        Effect   = "Allow"
+        Action   = ["dynamodb:ConditionCheckItem"]
+        Resource = aws_dynamodb_table.chat_context.arn
+      },
+      {
         Sid    = "CleanupTables"
         Effect = "Allow"
         Action = [
