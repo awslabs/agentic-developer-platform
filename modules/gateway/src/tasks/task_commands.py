@@ -257,6 +257,44 @@ class TaskCommands:
             "attempt_valid": True,
         }
 
+    def _release_execution_on_finalize(self, identity, transaction):
+        pk = task_authority_partition(identity.tenant)
+        sk = task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation)
+        grant = self.repo._get_authority(pk, sk)
+        if not grant or grant.get("execution_capacity_released", False):
+            return
+        for index, item in enumerate(transaction):
+            check = item.get("ConditionCheck")
+            if not check or check.get("Key") != _serialize({"pk": pk, "sk": sk}):
+                continue
+            update = dict(check)
+            update["UpdateExpression"] = "SET execution_capacity_released = :released"
+            update["ConditionExpression"] = (
+                "("
+                + check["ConditionExpression"]
+                + ") AND (attribute_not_exists(execution_capacity_released) OR execution_capacity_released = :not_released)"
+            )
+            update["ExpressionAttributeValues"] = {
+                **check.get("ExpressionAttributeValues", {}),
+                **_serialize({":released": True, ":not_released": False}),
+            }
+            transaction[index] = {"Update": update}
+            for key in grant.get("execution_capacity_keys", []):
+                transaction.append(
+                    {
+                        "Update": {
+                            "TableName": self.repo.authority_table_name,
+                            "Key": _serialize({"pk": key, "sk": "ACTIVE"}),
+                            "UpdateExpression": "REMOVE reservations.#task ADD active_count :minus",
+                            "ConditionExpression": "reservations.#task = :invocation AND active_count > :zero",
+                            "ExpressionAttributeNames": {"#task": identity.task_id},
+                            "ExpressionAttributeValues": _serialize({":invocation": identity.invocation_id, ":minus": -1, ":zero": 0}),
+                        }
+                    }
+                )
+            return
+        raise errors.state_conflict("Task execution grant fence is missing.")
+
     def finalize(self, identity: Any, body: dict, *, stop_only: bool = False, no_child: bool = False, expected_version: int | None = None) -> dict:
         from datetime import timedelta
 
@@ -419,6 +457,8 @@ class TaskCommands:
             )
         else:
             transaction.extend(self.repo._authority_condition_checks(snapshot=snapshot, runtime_attempt_id=identity.runtime_attempt_id))
+        if not no_child and body["child_exit"]["confirmed"]:
+            self._release_execution_on_finalize(identity, transaction)
         total_bytes = 0
         retained_artifacts = set(snapshot.get("artifact_ids", [])) | set(refs) | set(snapshot.get("result_artifact_ids", []))
         for artifact_id in retained_artifacts:
@@ -584,6 +624,9 @@ class TaskCommands:
                 stop_only=True,
             )
             snapshot = self._attempt(identity)
+            grant = self.repo._get_authority(pk, sk)
+            if not grant or grant.get("runtime_attempt_id") != identity.runtime_attempt_id:
+                raise errors.not_found()
         timestamp = _iso(self.repo._clock())
         # A receipt may advance unknown -> confirmed; confirmed acknowledgement
         # is monotonic and cannot be overwritten by an older retry.
