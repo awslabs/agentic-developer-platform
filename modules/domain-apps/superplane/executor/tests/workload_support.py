@@ -32,3 +32,11 @@ def completed_job_pod(job):
         ],
     }
     return pod
+
+
+async def declared_placement(pod):
+    """Explicit transport fixture for namespace-only workload validation suites.
+
+    Real provider/Node binding is exercised separately, including worker tests.
+    """
+    return (pod["metadata"]["uid"], pod["spec"]["nodeName"], "fixture-node-uid")

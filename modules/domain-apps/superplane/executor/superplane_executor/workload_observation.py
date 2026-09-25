@@ -48,12 +48,17 @@ def _resources_equal(actual, expected):
         return False
 
 
-async def completed_batch(workspace, operation, target, plan, job, authorize):
+async def completed_batch(
+    workspace, operation, target, plan, job, authorize, *, verify_placement=None
+):
     """A Job counter alone is not proof the approved ordinary Pod executed.
 
     This observes no cluster-wide resources and claims no DNS/Service traffic
-    proof. Exact node identity remains the separate allocation readiness gate.
+    proof. Exact node identity is rechecked through the dedicated provider verifier.
     """
+    workspace.require_dedicated_node_authority(target)
+    if not callable(verify_placement):
+        raise OperationRefused("governed batch requires trusted placement verification")
     uid = job["metadata"]["uid"]
     spec = plan.data["workload"]
     await authorize()
@@ -156,6 +161,9 @@ async def completed_batch(workspace, operation, target, plan, job, authorize):
             raise OperationRefused("completed Pod identity is ambiguous")
         return False
     pod = completed[0]
+    placement = await verify_placement(pod)
+    if not placement:
+        raise OperationRefused("completed Pod placement proof unavailable")
     for kind, name, original in (
         ("Pod", pod["metadata"]["name"], pod),
         ("Job", spec["name"], job),
@@ -165,5 +173,7 @@ async def completed_batch(workspace, operation, target, plan, job, authorize):
         )
         if current.status_code != 200 or current.json() != original:
             raise OperationRefused("completed workload changed during observation")
+    if await verify_placement(pod) != placement:
+        raise OperationRefused("completed Pod placement changed during observation")
     await authorize()
     return True

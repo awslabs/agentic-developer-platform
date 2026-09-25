@@ -88,6 +88,12 @@ Unsupported replicas, model option changes and unbound targets are refused
 before admission. [Batch profiles](BATCH-API.md) use the separate batch producer
 and share quota with serving workloads.
 
+Governed dedicated batch completion and result capture verify the actual Pod's
+Node UID and AWS provider identity against fresh running allocation instances.
+[The placement-proof design](POD-INSTANCE-DESIGN.md) defines the repeated checks
+and recovery behavior. Shared targets require a separate trusted Node observer;
+workspace credentials do not gain fleet access.
+
 `POST /workspaces/{workspace}/deployments/preview` returns the exact approval
 request and revision for a caller-supplied operation UUID/profile. The existing
 operation-approval service records the independent human decision. Deployment

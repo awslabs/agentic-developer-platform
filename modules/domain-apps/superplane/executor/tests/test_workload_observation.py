@@ -9,7 +9,7 @@ import pytest
 from harness_jobs.identity import OperationRefused
 from superplane_executor.workspace import Workspace
 from test_workload_boundaries import serving_plan
-from workload_support import completed_job_pod
+from workload_support import completed_job_pod, declared_placement
 
 
 @pytest.mark.parametrize(
@@ -35,6 +35,8 @@ from workload_support import completed_job_pod
         "truncated",
         "replaced",
         "revoked",
+        "missing-placement",
+        "changed-placement",
     ],
 )
 async def test_governed_batch_requires_original_ordinary_pod(change):
@@ -116,6 +118,15 @@ async def test_governed_batch_requires_original_ordinary_pod(change):
         return httpx.Response(200, json=job)
 
     workspace.request = request
+    placement_reads = 0
+
+    async def placement(pod):
+        nonlocal placement_reads
+        placement_reads += 1
+        original = await declared_placement(pod)
+        if change == "changed-placement" and placement_reads > 1:
+            return (*original, "replaced-node")
+        return original
 
     async def ready():
         return await workspace.workload_ready(
@@ -124,6 +135,7 @@ async def test_governed_batch_requires_original_ordinary_pod(change):
             plan,
             known_references={workspace.reference("Job", job)},
             authorize=authorize,
+            verify_placement=None if change == "missing-placement" else placement,
         )
 
     if change in {"none", "canonical_resources", "no_pods", "foreign_owner"}:

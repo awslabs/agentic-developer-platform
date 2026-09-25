@@ -234,6 +234,48 @@ class Provider:
             found.extend(await asyncio.to_thread(inspect, binding["region"]))
         return found
 
+    async def verify_pod_allocation(self, operation, target, plan, pod, authorize):
+        """Observe stable dedicated placement under current original operation authority."""
+        self.workspace.require_dedicated_node_authority(target)
+        await authorize()
+        instances = await self.instances(operation, plan)
+        await authorize()
+        nodes = await self.workspace.verified_nodes(operation, target, plan, instances)
+        await authorize()
+        try:
+            node_name = pod["spec"]["nodeName"]
+            pod_uid = pod["metadata"]["uid"]
+            if not isinstance(pod_uid, str) or not pod_uid or not nodes:
+                raise ValueError()
+            node_uid, provider_id, region, zone, instance_id = nodes[node_name]
+            selected = [
+                instance
+                for instance in instances
+                if instance["InstanceId"] == instance_id
+                and instance["SuperplaneRegion"] == region
+                and instance["Placement"]["AvailabilityZone"] == zone
+            ]
+            if (
+                len(selected) != 1
+                or selected[0].get("State", {}).get("Name") != "running"
+            ):
+                raise ValueError()
+            return (
+                target["cluster_arn"],
+                pod_uid,
+                node_name,
+                node_uid,
+                provider_id,
+                plan.data["provider_account_id"],
+                region,
+                zone,
+                instance_id,
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OperationRefused(
+                "original Pod does not resolve to a running allocated AWS instance"
+            ) from None
+
     async def remember(self, call, plan, request_id=None, region=None):
         # A separate domain journal supplements the shared, already committed
         # intent with the asynchronous handle BEFORE waiting for SkyPilot. A kill
@@ -496,6 +538,7 @@ class Provider:
                 async with asyncio.timeout(800):
                     while True:
                         await authorize()
+                        self.workspace.require_dedicated_node_authority(target)
                         instances = await self.instances(operation, plan)
                         if selected.step_id == "2":
                             # Native EKS provider IDs must resolve to this allocation's
@@ -527,12 +570,19 @@ class Provider:
                                 known_references = frozenset(
                                     row["provider_reference"] for row in rows
                                 )
+
+                            async def verify_placement(pod):
+                                return await self.verify_pod_allocation(
+                                    operation, target, plan, pod, authorize
+                                )
+
                             ready = await self.workspace.workload_ready(
                                 operation,
                                 target,
                                 plan,
                                 known_references=known_references,
                                 authorize=authorize,
+                                verify_placement=verify_placement,
                             )
                         if ready:
                             if (

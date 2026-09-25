@@ -284,7 +284,23 @@ class Workspace:
             (kind, metadata["namespace"], metadata["name"], metadata["uid"])
         )
 
+    @staticmethod
+    def require_dedicated_node_authority(target):
+        if (
+            target.get("membership_credential") is not None
+            or target.get("shared_membership")
+            or target.get("shared_cluster_id")
+            or target.get("cluster_placement") == "shared"
+        ):
+            raise OperationRefused(
+                "shared placement requires separate trusted Node observation authority"
+            )
+
     async def ready_nodes(self, operation, target, plan, instances):
+        return bool(await self.verified_nodes(operation, target, plan, instances))
+
+    async def verified_nodes(self, operation, target, plan, instances):
+        self.require_dedicated_node_authority(target)
         # Preserve provider-observed location, not merely the instance-ID suffix.
         # A label selector is a query hint, not evidence of node ownership.
         import re
@@ -304,27 +320,38 @@ class Workspace:
                         re.escape(region) + r"(?:[a-z]|-[a-z0-9-]+)", zone
                     )
                 ):
-                    return False
+                    return None
                 provider_id = f"aws:///{zone}/{instance_id}"
                 if provider_id in expected:
-                    return False
+                    return None
                 expected[provider_id] = (region, zone)
             if (
                 len(expected) != plan.data["node_count"]
                 or len({region for region, _ in expected.values()}) != 1
             ):
-                return False
+                return None
         except (KeyError, TypeError, AttributeError):
-            return False
+            return None
         selector = quote("superplane.ai/capacity=" + plan.cluster_name, safe="")
         response = await self.request(
-            operation, target, "GET", "/api/v1/nodes?labelSelector=" + selector
+            operation,
+            target,
+            "GET",
+            "/api/v1/nodes?labelSelector=" + selector + "&limit=17",
         )
         if response.status_code != 200:
-            return False
-        nodes = response.json().get("items", [])
+            return None
+        try:
+            listing = response.json()
+            if not isinstance(listing, dict) or listing.get("metadata", {}).get(
+                "continue"
+            ):
+                return None
+        except (ValueError, TypeError, AttributeError):
+            return None
+        nodes = listing.get("items", [])
         if not isinstance(nodes, list) or len(nodes) != plan.data["node_count"]:
-            return False
+            return None
         # A joined, Ready node is not yet a usable GPU node: the device plugin
         # publishes allocatable nvidia.com/gpu only once the driver/runtime/CNI
         # stack on that node is actually working. Requiring it here, in the same
@@ -332,14 +359,26 @@ class Workspace:
         # into "the node can run the requested GPU workload" -- a CPU-only batch
         # workload (gpu_count 0) is unaffected.
         required_gpus = plan.data["workload"]["gpu_count"] or 0
-        observed = set()
+        observed, names, uids = set(), {}, set()
         try:
             for node in nodes:
                 provider_id = node["spec"]["providerID"]
                 if provider_id not in expected or provider_id in observed:
-                    return False
+                    return None
                 region, zone = expected[provider_id]
-                labels = node["metadata"]["labels"]
+                metadata = node["metadata"]
+                name, uid = metadata.get("name"), metadata.get("uid")
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or not isinstance(uid, str)
+                    or not uid
+                    or name in names
+                    or uid in uids
+                    or metadata.get("deletionTimestamp") is not None
+                ):
+                    return None
+                labels = metadata["labels"]
                 if any(
                     labels.get(key) != value
                     for key, value in {
@@ -349,18 +388,26 @@ class Workspace:
                         "topology.kubernetes.io/zone": zone,
                     }.items()
                 ):
-                    return False
+                    return None
                 if not any(
                     c.get("type") == "Ready" and c.get("status") == "True"
                     for c in node.get("status", {}).get("conditions", [])
                 ) or (
                     required_gpus > 0 and self._allocatable_gpus(node) < required_gpus
                 ):
-                    return False
+                    return None
                 observed.add(provider_id)
-            return observed == set(expected)
+                uids.add(uid)
+                names[name] = (
+                    uid,
+                    provider_id,
+                    region,
+                    zone,
+                    provider_id.rsplit("/", 1)[1],
+                )
+            return names if observed == set(expected) else None
         except (KeyError, TypeError, AttributeError):
-            return False
+            return None
 
     @staticmethod
     def _allocatable_gpus(node):
@@ -414,7 +461,14 @@ class Workspace:
             return 0
 
     async def workload_ready(
-        self, operation, target, plan, *, known_references=None, authorize=None
+        self,
+        operation,
+        target,
+        plan,
+        *,
+        known_references=None,
+        authorize=None,
+        verify_placement=None,
     ):
         spec = plan.data["workload"]
         kind = "Job" if spec["kind"] == "batch" else "Deployment"
@@ -485,7 +539,13 @@ class Workspace:
                 from .workload_observation import completed_batch
 
                 return await completed_batch(
-                    self, operation, target, plan, obj, authorize
+                    self,
+                    operation,
+                    target,
+                    plan,
+                    obj,
+                    authorize,
+                    verify_placement=verify_placement,
                 )
             return True
         status = obj.get("status", {})

@@ -169,12 +169,14 @@ class Kubernetes(Workspace):
                     "items": [
                         {
                             "metadata": {
+                                "name": "allocated-node",
+                                "uid": "allocated-node-uid",
                                 "labels": {
                                     "superplane.ai/capacity": self.cloud.cluster_name,
                                     "superplane.ai/workspace": operation.grant.lease.workspace_id,
                                     "topology.kubernetes.io/region": "us-east-1",
                                     "topology.kubernetes.io/zone": "us-east-1a",
-                                }
+                                },
                             },
                             "spec": {
                                 "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
