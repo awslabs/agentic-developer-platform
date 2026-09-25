@@ -713,6 +713,27 @@ async def test_cluster_scopes_migrate_empty_and_enforce_tenant_foreign_keys(
                         "cluster": cluster,
                     },
                 )
+    refused = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "037_shared_cluster_membership"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert refused.returncode != 0
+    assert "cluster scope history" in refused.stderr
+    async with engine.begin() as conn:
+        assert (
+            await conn.execute(text("SELECT version_num FROM alembic_version"))
+        ).scalar_one() == "038_cluster_grant_scopes"
+        assert (
+            await conn.execute(
+                text("SELECT count(*) FROM organization_grant_cluster_scopes")
+            )
+        ).scalar_one() == 1
+        # Explicitly remove only this disposable fixture to exercise empty rollback.
+        await conn.execute(text("DELETE FROM organization_grant_cluster_scopes"))
     migrate("downgrade", "037_shared_cluster_membership")
     async with engine.connect() as conn:
         assert (

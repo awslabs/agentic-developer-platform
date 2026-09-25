@@ -46,6 +46,11 @@ def upgrade():
 
 
 def downgrade():
+    op.execute(
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM organization_grant_cluster_scopes) "
+        "THEN RAISE EXCEPTION 'cluster scope history must be explicitly preserved before rollback'; "
+        "END IF; END $$"
+    )
     op.drop_table("organization_grant_cluster_scopes")
     op.drop_constraint(
         "uq_organization_grants_org_identity", "organization_grants", type_="unique"
