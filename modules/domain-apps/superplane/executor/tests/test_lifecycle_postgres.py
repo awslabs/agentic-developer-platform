@@ -190,7 +190,23 @@ class Kubernetes(Workspace):
                 },
             )
         if "/pods?" in path:
-            return httpx.Response(200, json={"items": []})
+            from workload_support import completed_job_pod
+
+            pods = [
+                completed_job_pod(obj)
+                for obj in self.stored.values()
+                if obj.get("kind") == "Job"
+            ]
+            return httpx.Response(200, json={"items": pods})
+        if "/pods/" in path and method == "GET":
+            from workload_support import completed_job_pod
+
+            for obj in self.stored.values():
+                if obj.get("kind") == "Job":
+                    pod = completed_job_pod(obj)
+                    if path.endswith("/" + pod["metadata"]["name"]):
+                        return httpx.Response(200, json=pod)
+
         if method == "POST":
             obj = json.loads(json.dumps(body))
             obj["metadata"]["uid"] = str(uuid4())

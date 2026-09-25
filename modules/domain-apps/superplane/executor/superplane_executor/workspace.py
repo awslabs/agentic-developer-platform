@@ -479,7 +479,15 @@ class Workspace:
         ):
             return False
         if kind == "Job":
-            return obj.get("status", {}).get("succeeded", 0) == 1
+            if obj.get("status", {}).get("succeeded", 0) != 1:
+                return False
+            if governed:
+                from .workload_observation import completed_batch
+
+                return await completed_batch(
+                    self, operation, target, plan, obj, authorize
+                )
+            return True
         status = obj.get("status", {})
         if (
             status.get("observedGeneration", 0)

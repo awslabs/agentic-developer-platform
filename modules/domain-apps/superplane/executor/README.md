@@ -525,3 +525,22 @@ node placement, pod UID and fresh logs; the API-to-kubelet log read is a separat
 proof. EndpointSlice readiness and Route53 association alone are never traffic
 proof. Package the probe module in the approved immutable workload/bootstrap image
 and record its digest for #5930; no live support is established by fixture tests.
+
+Governed batch completion now requires the original Job's single completed Pod,
+its approved image/command/resources, allocation/workspace ownership, ordinary
+pod networking mode and a successful container exit. Namespace-only observations
+are reread before completion; a Job success counter without retained Pod evidence
+is insufficient. This check does not assert DNS or Service connectivity or replace
+the allocation's separate exact node-identity gate.
+
+Remaining #5927 acceptance contracts: an ordinary-pod traffic driver must bind an
+approved immutable probe image, invocation/nonce, destination Service DNS name,
+port and allowed private ranges to the existing workload admission, then collect
+the original Pod UID's packet receipt through `network_observation.pod_service`.
+Adding a new unapproved probe Pod to previously admitted workloads is not allowed.
+The existing helpers are not yet composed into that driver. Node-side traffic and
+same-machine bootstrap retry likewise still need the governed post-launch
+transport; SkyPilot setup `nodeadm init` is not evidence of a separate transport.
+Prepared AMI/runtime/CNI/device-plugin compatibility and shared-cluster Node
+observation authority remain installation/integration requirements. No live
+networking or end-to-end join acceptance is established by these source checks.

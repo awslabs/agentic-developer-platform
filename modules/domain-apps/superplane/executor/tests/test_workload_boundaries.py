@@ -512,6 +512,13 @@ async def test_readiness_uses_original_uid_and_approved_image(workload_kind, cha
 
     async def request(operation, target, method, path, **kwargs):
         assert method == "GET"
+        if workload_kind == "batch" and "/pods" in path:
+            from workload_support import completed_job_pod
+
+            pod = completed_job_pod(root)
+            return httpx.Response(
+                200, json={"items": [pod]} if "/pods?" in path else pod
+            )
         if path in objects:
             return httpx.Response(200, json=objects[path])
         if "/secrets/" in path:
