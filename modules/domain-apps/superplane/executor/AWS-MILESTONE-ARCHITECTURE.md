@@ -1,5 +1,9 @@
 # AWS capacity milestone: maintained architecture and implementation boundaries
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 Source review for #5925–#5930, 24 September 2026. Baseline: ADP
 `0d47dae09`; SkyPilot parser/backend source: `v0.12.0`. This is source evidence,
 not an installation or live capability assessment.
@@ -20,11 +24,72 @@ GitHub issue/tag
   → retained result, originating issue and resource/cost observations
 ```
 
-The management EKS hosts ADP and the Superplane control plane. Tenant GPU
-machines belong to the selected **workspace EKS**, never the management cluster.
-The AWS milestone requires machines in two regions on the **same** workspace
-EKS, not a new EKS per allocation. Transit Gateway is the AWS network path;
-WireGuard and Nebius are separate follow-up work.
+The management EKS hosts ADP and the Superplane control plane. GPU machines
+belong to the cluster selected for the workspace. The accepted 25 September
+requirement adds explicit shared placement: multiple workspaces may share a cluster
+only within the same ADP organization, using separate namespaces and scoped access.
+An eligible cluster may be a separate data-plane EKS or the management EKS when
+platform policy explicitly permits that placement. Dedicated placement remains the
+default. This is a required extension, not a claim of current runtime support; see
+[organization-scoped shared clusters](ORG-SHARED-CLUSTERS.md) for the creation,
+ownership, monitoring, migration and deletion contract.
+
+### Required regional topologies
+
+Both topologies are required under one ADP/Superplane management control plane:
+
+| Topology | Cluster and workspace binding | Delivery and evidence |
+| --- | --- | --- |
+| Multiple regional data planes | Distinct workspace EKS clusters in two or more approved AWS regions, each with its own Kubernetes control plane and workspace membership | #6054 covers concurrent operation, isolation, recovery and independent cleanup. |
+| Cross-region workers on one data plane | One selected EKS cluster with GPU allocations in two or more approved regions; its EKS control plane remains in its home region | #5925–#5930 retain their exact single-cluster/two-region acceptance criteria. |
+
+These must compose: a fleet of regional EKS clusters may contain clusters with
+cross-region GPU workers. The compute region never chooses or overrides the
+workspace's cluster identity. For example, a GPU in us-west-2 allocated to the
+us-east-1 EKS must join that EKS even when another managed EKS exists in us-west-2.
+There must be no process-global current data-plane target. Workspaces retain one
+active cluster membership; workload federation, automatic regional failover and
+transparent migration are outside this contract.
+
+### Workspace-owned GPU placement invariant
+
+The binding is `GPU allocation → workspace → one data-plane cluster`. Every GPU
+allocation belongs to one workspace; every provisioned workspace has exactly one
+active data-plane cluster membership. Multiple same-organization workspaces may
+share a cluster, but that does not merge their GPU ownership or reservations.
+
+Resolve and approve the workspace's cluster identity and membership generation
+before asking SkyPilot for capacity. Eligible compute regions must satisfy that
+cluster's approved network, image, identity and budget constraints. SkyPilot may
+choose among those eligible regions and machines; proximity or affinity to another
+in-region cluster never changes the destination. A GPU in us-west-2 allocated to
+workspace W bound to cluster A in us-east-1 joins A, not cluster B in us-west-2.
+
+Bind workspace, cluster, membership generation and allocation through admission,
+credential delivery, launch, networking, node join, scheduling, observation and
+cleanup. Revalidate the binding before mutation and on recovery. If capacity or
+connectivity to the bound cluster is unavailable, report failure or retain uncertain
+ownership; do not reassign the GPU or workspace to a nearer cluster. Workload
+scheduling must enforce the owning workspace's GPU allocation. Cluster migration
+or reassignment requires a separate explicit operation with drain and ownership
+checks; neither regional fallback nor retries may perform it implicitly.
+
+Acceptance must include a same-organization cluster B in the GPU's region and
+prove that W's GPU still joins A. Also reject a stale membership generation, a
+wrong-cluster join and use of W's GPU by another workspace sharing A. #6048 and
+#6054 must test these boundaries; #5926/#5927 must consume the binding, and #5928
+must preserve it during recovery and cleanup.
+
+#6048's explicit same-organization sharing applies to either topology. Each
+cluster keeps independent identity, credentials, namespace memberships, inventory,
+cost attribution and lifecycle. Losing or retiring one must not mutate another.
+#6051 extends the provider-local data-plane model to Azure, GCP and a supported
+neocloud while management stays on AWS; those provider paths are not implemented
+by the AWS regional stories.
+
+Transit Gateway is the AWS cross-region worker network path; native VPC connectivity
+is used where appropriate. A regional cluster fleet does not itself require an
+inter-cluster mesh. WireGuard and Nebius node-join parity are separate follow-up work.
 
 ADP owns identity, vault credentials, the existing agent runtime and ingress.
 Shared Harness Jobs owns admission, operation/attempt identity, effects,
@@ -71,6 +136,8 @@ must identify simulated SkyPilot/AWS responses and cannot establish live capacit
 1. **#5925:** regional admission, SkyPilot alternatives, pre-create enforcement,
    durable regional discovery and down/inventory. Exercise ambiguous replies,
    capacity exhaustion, fallback and unapproved selections.
+   Before #5926/#5927 are completed for shared placement, implement and validate
+   #6048, the [organization-scoped workspace cluster-sharing prerequisite](ORG-SHARED-CLUSTERS.md).
 2. **#5926:** private Transit Gateway connectivity, both route directions,
    DNS and shared-resource ownership. Test API, kubelet and ordinary pod/Service
    traffic separately.
@@ -88,6 +155,12 @@ must identify simulated SkyPilot/AWS responses and cannot establish live capacit
    Ready simultaneously, and one CUDA Job per node returning checksum 33,554,432.
    Replay/recovery, removal of one member without breaking the other, and full
    provider-verified cleanup are mandatory evidence.
+
+#6054 adds separate acceptance for multiple regional data-plane clusters and the
+composed topology above. Neither a two-cluster demonstration nor the existing
+single-cluster demonstration substitutes for the other. Shared-placement acceptance
+also requires #6048; do not mark the combined product requirement complete from
+#5930's original single-cluster scenario alone.
 
 Each successor story explicitly requires its predecessor's passing code checks
 and reviewed merge. The code-only validation path is remote Superplane Domain CI,
@@ -127,7 +200,8 @@ on the branch during long work; checkpoints do not satisfy story completion.
 ### Regional allocation contract — #5925
 
 Separate immutable workspace cluster identity (ARN, endpoint, CA, namespace and
-management-cluster exclusion) from eligible compute locations. The first milestone
+organization-scoped membership and explicit placement eligibility) from eligible
+compute locations. The first milestone
 uses one account and the existing exact credential binding. Each regional entry
 must bind region, compatible regional image, VPC/subnets, node identity/profile,
 security rules and network prerequisites; shared GPU/CPU/RAM, physical GPU,

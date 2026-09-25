@@ -1,5 +1,9 @@
 # Complete domain installation (U23 / #5327)
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 `modules/domain-apps/superplane/deploy.sh` plans, checks and executes an installation of the API, controller, platform monitor and pinned SkyPilot server on an **existing** ADP installation. It never calls a platform deployment script. Actual installation, database mutation, feature activation and workload operation remain subject to the accepted installation authorization.
 
 The explicit `control_plane_only: true` mode installs organization administration,

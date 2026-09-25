@@ -1,5 +1,9 @@
 # Trusted controller executor
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 This service runs beside the Go registration manager in a separate container/UID.
 Only this service has the execution/domain database connections, ADP run and
 workload credentials, and SkyPilot transport credential. The Go process receives

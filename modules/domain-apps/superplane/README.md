@@ -2,10 +2,15 @@
 
 ADP-side module for the Superplane domain app (EPIC #4910, unit U1 / issue #5037).
 
+Start with the **[authoritative Superplane design](DESIGN.md)** for logical,
+database, API, CLI and network design. It defines the accepted target architecture
+and distinguishes implemented source from pending requirements. Supporting
+contracts below elaborate implementation; they do not override that design.
+
 This directory contains the maintained Superplane API, controller, monitor,
 governed execution adapters, installer and domain UI. Source delivery and remote
 code validation remain separate from deployment and live workload acceptance.
-Start with the [installation contract](installation/README.md),
+For operational detail, use the [installation contract](installation/README.md),
 [execution contract](executor/README.md) and [onboarding/workload UI](ui/README.md).
 
 The governed executor currently supports AWS native EKS capacity only. Restoring

@@ -1,5 +1,9 @@
 # Workspace provisioning and retirement
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 Public retirement review reads completed bootstrap ownership and verifies the
 original source operation and historical artifact. It returns
 `admission_available: false` and no approval request until staged cleanup access

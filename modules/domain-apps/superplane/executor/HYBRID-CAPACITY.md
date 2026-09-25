@@ -1,5 +1,9 @@
 # Upstream Superplane scenario audit
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 Read-only source: `aws-innovate/AISuperPlane`, SHA `5d543c952493f0765133b92e93301b0b24d028ee`. Maintained implementation remains `aws-e/adp`. Issue titles/closure do not substitute for recorded outcomes. These are historical observations, not newly verified live state.
 
 ## Recovered evidence

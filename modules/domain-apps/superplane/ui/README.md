@@ -1,5 +1,9 @@
 # Superplane onboarding UI
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 The browser half of workspace and provider onboarding — what an operator sees on a freshly
 installed control plane with **zero workspaces**. Issue #5730, EPIC #4910.
 

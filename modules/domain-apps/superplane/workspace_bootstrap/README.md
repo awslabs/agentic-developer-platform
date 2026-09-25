@@ -1,5 +1,9 @@
 # Workspace bootstrap
 
+The [authoritative Superplane design](../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 The maintained entry point is `python -m workspace_bootstrap.superplane_bootstrap`
 from the Superplane domain directory. `plan` reads target identity; `bootstrap`
 executes the gated installation; `recover` restores an interrupted interlock;

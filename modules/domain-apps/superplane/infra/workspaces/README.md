@@ -1,5 +1,9 @@
 # Managed workspace infrastructure
 
+The [authoritative Superplane design](../../DESIGN.md) governs architecture and ownership.
+This document provides supporting implementation detail or historical evidence;
+its availability statements do not imply that pending design requirements are implemented.
+
 VPC, EKS and IAM for **one** Superplane tenant workspace.
 Issue [#5532](https://github.com/aws-e/adp/issues/5532) (w6-09), EPIC A #4910, requirements row A3.
 
