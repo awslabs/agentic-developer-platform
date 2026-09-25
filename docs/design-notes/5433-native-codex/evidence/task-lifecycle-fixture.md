@@ -83,3 +83,20 @@ CI now runs this combined fixture separately. Formatting fixes address the six
 files flagged by the gateway CI format gate. Investigator corpus tests explicitly
 exercise rejection of the new unsupported Codex process extensions; all 109
 investigator tests pass without changing its runtime behavior.
+
+## CI Python loader correction
+
+The combined fixture initially crashed at its first `asyncio.run()` under CI's
+Python 3.12.14. The exact `actions/python-versions` Linux 24.04 build reproduces
+the crash locally with a minimal `asyncio.sleep(0)` program when the isolation
+wrapper removes its loader path. Ubuntu's older libpython has the same SONAME.
+Selecting the distributed Python library makes the same program pass.
+
+The wrapper now derives only the running interpreter's own `base_prefix/lib`
+when it contains the matching libpython; it does not inherit arbitrary loader
+paths or preload settings. Configuration/token isolation remains intact. The
+real child-process isolation regression now executes asyncio as well as writing
+temporary login stores, and passes under both system and CI Python builds.
+
+All five combined scenarios also pass in a freshly installed fixture environment
+using that exact CI Python 3.12.14 distribution after the loader correction.

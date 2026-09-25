@@ -30,8 +30,12 @@ class IsolationTest(unittest.TestCase):
                 "ADP_DEPLOYMENT_URL": "https://live.invalid",
                 "ADP_TOKEN_FILE": str(token),
             }
+            runtime_lib = Path(sys.base_prefix) / "lib"
+            if (runtime_lib / f"libpython{sys.version_info.major}.{sys.version_info.minor}.so.1.0").is_file():
+                environment["LD_LIBRARY_PATH"] = str(runtime_lib)
             code = """
-import json, os
+import asyncio, json, os
+assert asyncio.run(asyncio.sleep(0, result="ok")) == "ok"
 from pathlib import Path
 assert not any(k in os.environ for k in ('GH_TOKEN', 'AWS_ACCESS_KEY_ID', 'ADP_DEPLOYMENT_URL'))
 paths = [os.environ[k] for k in ('HOME','BG_CONFIG_DIR','ADP_HOME','ADP_LEGACY_CONFIG_DIR',

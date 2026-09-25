@@ -18,6 +18,13 @@ import tempfile
 def isolated_environment(root: Path) -> dict[str, str]:
     # An allowlist avoids inheriting newly introduced credential/deployment flags.
     env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR") if key in os.environ}
+    # setup-python distributions need their matching libpython. Dropping its
+    # loader path can silently load Ubuntu's older ABI-compatible SONAME and
+    # crash in asyncio. Derive this from the running interpreter, never inherit
+    # arbitrary LD_LIBRARY_PATH/LD_PRELOAD entries from the caller.
+    runtime_lib = Path(sys.base_prefix) / "lib"
+    if (runtime_lib / f"libpython{sys.version_info.major}.{sys.version_info.minor}.so.1.0").is_file():
+        env["LD_LIBRARY_PATH"] = str(runtime_lib)
     directories = (
         "HOME",
         "TMPDIR",
