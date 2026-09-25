@@ -111,19 +111,45 @@ class Workspace:
 
     async def verify(self, operation, target):
         ns = quote(target["namespace"], safe="")
-        response = await self.request(
-            operation, target, "GET", "/api/v1/namespaces/" + ns
-        )
-        if (
-            response.status_code != 200
-            or response.json().get("status", {}).get("phase") != "Active"
-            or (
-                target.get("membership_credential") is not None
-                and response.json().get("metadata", {}).get("uid")
-                != target["membership_credential"]["namespace_uid"]
+        membership = target.get("membership_credential")
+        if membership is not None:
+            # Kubernetes validates the token and attests the actual SA UID. This
+            # is not a locally decoded JWT claim. The issuer's pinned namespace
+            # UID and this unique SA UID bind a recreated namespace to a different
+            # revision without granting a tenant credential cluster-wide reads.
+            response = await self.request(
+                operation,
+                target,
+                "POST",
+                "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+                body={
+                    "apiVersion": "authentication.k8s.io/v1",
+                    "kind": "SelfSubjectReview",
+                },
             )
-        ):
-            raise OperationRefused("workspace namespace unavailable")
+            account = (
+                f"sp-mutator-{membership['generation'][:24]}-{membership['revision']}"
+            )
+            identity = (
+                response.json().get("status", {}).get("userInfo", {})
+                if response.status_code in {200, 201}
+                else {}
+            )
+            if (
+                identity.get("uid") != membership["service_account_uid"]
+                or identity.get("username")
+                != f"system:serviceaccount:{target['namespace']}:{account}"
+            ):
+                raise OperationRefused("workspace credential identity unavailable")
+        else:
+            response = await self.request(
+                operation, target, "GET", "/api/v1/namespaces/" + ns
+            )
+            if (
+                response.status_code != 200
+                or response.json().get("status", {}).get("phase") != "Active"
+            ):
+                raise OperationRefused("workspace namespace unavailable")
         for resource, root in (
             ("nodepools", "/apis/superplane.ai/v1"),
             ("superplanenodes", f"/apis/superplane.ai/v1/namespaces/{ns}"),

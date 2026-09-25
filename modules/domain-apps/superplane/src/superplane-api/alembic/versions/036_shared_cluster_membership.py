@@ -135,6 +135,10 @@ def upgrade():
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("state", sa.String(16), nullable=False, server_default="reserved"),
         sa.Column("projection_uid", sa.String(255), nullable=True),
+        sa.Column("projection_namespace", sa.String(63), nullable=True),
+        sa.Column("projection_namespace_uid", sa.String(255), nullable=True),
+        sa.Column("projection_name", sa.String(253), nullable=True),
+        sa.Column("content_digest", sa.String(64), nullable=True),
         sa.Column("projection_version", sa.String(255), nullable=True),
         sa.Column("observed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
@@ -159,7 +163,7 @@ def upgrade():
             name="ck_membership_credentials_issued",
         ),
         sa.CheckConstraint(
-            "state NOT IN ('projected','active') OR (projection_uid IS NOT NULL AND projection_version IS NOT NULL)",
+            "state NOT IN ('projected','active') OR (projection_uid IS NOT NULL AND projection_version IS NOT NULL AND projection_namespace IS NOT NULL AND projection_namespace_uid IS NOT NULL AND projection_name IS NOT NULL AND content_digest IS NOT NULL)",
             name="ck_membership_credentials_projected",
         ),
         sa.CheckConstraint(

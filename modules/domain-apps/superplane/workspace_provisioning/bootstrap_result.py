@@ -129,6 +129,20 @@ async def read_bootstrap_anchor(
                     raise LifecycleRefused(
                         "bootstrap result lacks completed retained component ownership"
                     )
+                if membership is not None:
+                    plan = json.loads(row["plan_json"])
+                    if (
+                        progress.get("member_recovery_started")
+                        or progress.get("member_gate") != "open"
+                        or progress.get("member_gate_intent") is not None
+                        or progress.get("component_inventory_mode")
+                        != "shared-namespace"
+                        or plan.get("mode") != "shared-namespace"
+                        or plan.get("membership") != membership.encode()
+                    ):
+                        raise LifecycleRefused(
+                            "shared bootstrap activation was recovered or changed"
+                        )
                 current.append(anchor)
         if len(current) != 1:
             raise LifecycleRefused(

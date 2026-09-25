@@ -35,7 +35,7 @@ class MembershipCredential(Base):
             name="ck_membership_credentials_issued",
         ),
         CheckConstraint(
-            "state NOT IN ('projected','active') OR (projection_uid IS NOT NULL AND projection_version IS NOT NULL)",
+            "state NOT IN ('projected','active') OR (projection_uid IS NOT NULL AND projection_version IS NOT NULL AND projection_namespace IS NOT NULL AND projection_namespace_uid IS NOT NULL AND projection_name IS NOT NULL AND content_digest IS NOT NULL)",
             name="ck_membership_credentials_projected",
         ),
         CheckConstraint(
@@ -62,6 +62,10 @@ class MembershipCredential(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
     state = Column(String(16), nullable=False, server_default="reserved")
     projection_uid = Column(String(255), nullable=True)
+    projection_namespace = Column(String(63), nullable=True)
+    projection_namespace_uid = Column(String(255), nullable=True)
+    projection_name = Column(String(253), nullable=True)
+    content_digest = Column(String(64), nullable=True)
     projection_version = Column(String(255), nullable=True)
     observed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(

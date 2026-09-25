@@ -71,8 +71,21 @@ def test_credential_rotation_requires_exact_observed_projection_and_preserves_pe
                         service_account_uid=binding.service_account,
                         expires_at=datetime.now(UTC) + timedelta(minutes=15),
                     )
+                    await journal.projection_intent(
+                        c,
+                        binding,
+                        secret_uid="reader-secret",
+                        namespace="superplane",
+                        namespace_uid="management-ns",
+                        secret_name="reader",
+                        content_digest="a" * 64,
+                    )
                     await journal.projected(
-                        c, binding, secret_uid="reader-secret", resource_version="10"
+                        c,
+                        binding,
+                        secret_uid="reader-secret",
+                        resource_version="10",
+                        content_digest="a" * 64,
                     )
                     await journal.activate(
                         c,
@@ -98,8 +111,31 @@ def test_credential_rotation_requires_exact_observed_projection_and_preserves_pe
                     service_account_uid=second.service_account,
                     expires_at=datetime.now(UTC) + timedelta(minutes=15),
                 )
+                await journal.projection_intent(
+                    c,
+                    second,
+                    secret_uid="reader-secret",
+                    namespace="superplane",
+                    namespace_uid="management-ns",
+                    secret_name="reader",
+                    content_digest="b" * 64,
+                )
+                with pytest.raises(LifecycleRefused, match="original issuance"):
+                    await journal.projection_intent(
+                        c,
+                        second,
+                        secret_uid="reader-secret",
+                        namespace="superplane",
+                        namespace_uid="management-ns",
+                        secret_name="reader",
+                        content_digest="c" * 64,
+                    )
                 await journal.projected(
-                    c, second, secret_uid="reader-secret", resource_version="11"
+                    c,
+                    second,
+                    secret_uid="reader-secret",
+                    resource_version="11",
+                    content_digest="b" * 64,
                 )
                 with pytest.raises(LifecycleRefused, match="acknowledgement"):
                     await journal.activate(

@@ -61,7 +61,7 @@ async def reserve(connection, binding):
     )
     pending = await connection.fetchval(
         "SELECT EXISTS(SELECT 1 FROM membership_credentials WHERE membership_id=$1::text::uuid "
-        "AND scope=$2 AND state IN ('reserved','issued','projected'))",
+        "AND scope=$2 AND state IN ('reserved','issued','projected','revoking'))",
         member_id,
         binding.scope,
     )
@@ -128,7 +128,63 @@ async def issued(connection, binding, *, service_account_uid, expires_at):
     return dict(row)
 
 
-async def projected(connection, binding, *, secret_uid, resource_version):
+async def projection_intent(
+    connection,
+    binding,
+    *,
+    secret_uid,
+    namespace,
+    namespace_uid,
+    secret_name,
+    content_digest,
+):
+    """Commit the exact token-containing document digest before publishing it.
+
+    Its public metadata is reconstructible from this row and the immutable member.
+    A lost publish response can therefore be reconciled without recreating token
+    material or overwriting a newer revision's projection.
+    """
+    import re
+
+    from .member_credentials.binding import uid
+
+    member_id = await _membership(connection, binding)
+    uid(secret_uid)
+    uid(namespace_uid)
+    if (
+        not isinstance(namespace, str)
+        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", namespace)
+        or not isinstance(secret_name, str)
+        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", secret_name)
+        or not isinstance(content_digest, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", content_digest)
+    ):
+        raise LifecycleRefused("credential projection intent is invalid")
+    row = await connection.fetchrow(
+        "UPDATE membership_credentials SET projection_uid=$4,projection_namespace=$5,projection_namespace_uid=$6,projection_name=$7,content_digest=$8 "
+        "WHERE membership_id=$1::text::uuid AND revision=$2 AND scope=$3 AND namespace_uid=$9 AND state='issued' "
+        "AND (projection_uid IS NULL OR (projection_uid=$4 AND projection_namespace=$5 AND projection_namespace_uid=$6 AND projection_name=$7 AND content_digest=$8)) "
+        "AND expires_at>clock_timestamp() RETURNING *",
+        member_id,
+        binding.revision,
+        binding.scope,
+        secret_uid,
+        namespace,
+        namespace_uid,
+        secret_name,
+        content_digest,
+        binding.namespace_uid,
+    )
+    if row is None:
+        raise LifecycleRefused(
+            "credential projection intent differs from original issuance"
+        )
+    return dict(row)
+
+
+async def projected(
+    connection, binding, *, secret_uid, resource_version, content_digest
+):
     member_id = await _membership(connection, binding)
     if any(
         not isinstance(value, str) or not value or len(value) > 255
@@ -138,7 +194,8 @@ async def projected(connection, binding, *, secret_uid, resource_version):
     row = await connection.fetchrow(
         "UPDATE membership_credentials SET state='projected',projection_uid=$4,projection_version=$5 "
         "WHERE membership_id=$1::text::uuid AND revision=$2 AND scope=$3 AND namespace_uid=$6 "
-        "AND state IN ('issued','projected') AND (projection_uid IS NULL OR projection_uid=$4) "
+        "AND state IN ('issued','projected') AND projection_uid=$4 AND content_digest=$7 "
+        "AND (projection_version IS NULL OR projection_version=$5) "
         "AND expires_at>clock_timestamp() RETURNING *",
         member_id,
         binding.revision,
@@ -146,6 +203,7 @@ async def projected(connection, binding, *, secret_uid, resource_version):
         secret_uid,
         resource_version,
         binding.namespace_uid,
+        content_digest,
     )
     if row is None:
         raise LifecycleRefused("credential projection is expired or changed")
@@ -225,8 +283,28 @@ async def fence_revocation(connection, binding):
 
 async def revoked(connection, binding, *, service_account_uid):
     """Record confirmed SA absence, never infer revocation from projection removal."""
-    row = await fence_revocation(connection, binding)
-    if row["service_account_uid"] != service_account_uid or not service_account_uid:
+    from .member_credentials.binding import CredentialBinding
+
+    if not isinstance(binding, CredentialBinding) or not connection.is_in_transaction():
+        raise LifecycleRefused(
+            "credential revocation requires its binding and transaction"
+        )
+    member = binding.membership
+    row = await connection.fetchrow(
+        "SELECT k.* FROM membership_credentials k JOIN cluster_memberships m ON m.id=k.membership_id "
+        "WHERE m.org_id::text=$1 AND m.workspace_id::text=$2 AND m.cluster_id::text=$3 AND m.generation=$4 "
+        "AND k.namespace_uid=$5 AND k.revision=$6 AND k.scope=$7 FOR UPDATE OF m,k",
+        member.org_id,
+        member.workspace_id,
+        member.cluster_id,
+        member.generation,
+        binding.namespace_uid,
+        binding.revision,
+        binding.scope,
+    )
+    if row is None or row["state"] not in {"revoking", "revoked"}:
+        raise LifecycleRefused("credential revocation was not fenced")
+    if row["service_account_uid"] != service_account_uid:
         raise LifecycleRefused(
             "credential revocation acknowledgement changed ServiceAccount"
         )
