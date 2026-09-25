@@ -452,3 +452,56 @@ async def test_cleanup_schema_preserves_owner_on_duplicate_and_rollback(interrup
             dict(await connection.fetchrow("SELECT * FROM controller_cleanup_bindings"))
             == row
         )
+
+
+async def test_paid_cleanup_recovers_lost_domain_registration_without_second_admission(
+    interrupted, monkeypatch
+):
+    f = interrupted
+    body = await approve_cleanup(f.c, f.created)
+    original = controller_deployments.register_deployment_operation
+
+    async def lost_commit(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise OperationRefused("simulated lost cleanup registration commit")
+
+    monkeypatch.setattr(
+        controller_deployments, "register_deployment_operation", lost_commit
+    )
+    with pytest.raises(ProvisioningRefused, match="lost cleanup registration"):
+        await submit(f.c, f.created, body)
+    async with f.c.connections.connect() as connection:
+        paid_id = await connection.fetchval(
+            "SELECT operation_id FROM harness_operations WHERE action='teardown'"
+        )
+        assert paid_id
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM controller_deployment_operations WHERE action='teardown'"
+            )
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM controller_cleanup_bindings"
+            )
+            == 1
+        )
+    monkeypatch.setattr(
+        controller_deployments, "register_deployment_operation", original
+    )
+    recovered = await submit(f.c, f.created, body)
+    assert recovered.operation_id == paid_id
+    async with f.c.connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations"
+            )
+            == 2
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM controller_deployment_operations WHERE action='teardown'"
+            )
+            == 1
+        )
