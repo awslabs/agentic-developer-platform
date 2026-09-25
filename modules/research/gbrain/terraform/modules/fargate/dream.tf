@@ -1,3 +1,5 @@
+# Build both containers from configuration. Provider-added defaults in the
+# registered serve task must not change the dream task during apply.
 # Batch maintenance has its own command and lifecycle. It must not inherit the
 # server command override or HTTP health check, or be pinned to an old serve ARN.
 resource "aws_ecs_task_definition" "dream" {
@@ -17,14 +19,14 @@ resource "aws_ecs_task_definition" "dream" {
   execution_role_arn       = var.execution_role_arn
 
   container_definitions = jsonencode([merge(
-    { for key, value in jsondecode(aws_ecs_task_definition.serve.container_definitions)[0] : key => value
+    { for key, value in local.serve_container : key => value
       if !contains(["healthCheck", "portMappings", "command", "entryPoint", "secrets"], key)
     },
     {
       entryPoint = ["/bin/sh", "-c"]
       command    = [file("${path.module}/dream-command.sh")]
       # Maintenance needs database credentials, not the HTTP service token.
-      secrets = [for secret in jsondecode(aws_ecs_task_definition.serve.container_definitions)[0].secrets : secret
+      secrets = [for secret in local.serve_container.secrets : secret
         if secret.name != "GBRAIN_MCP_TOKEN"
       ]
     }
