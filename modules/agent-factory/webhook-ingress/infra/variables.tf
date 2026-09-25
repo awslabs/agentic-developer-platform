@@ -659,3 +659,9 @@ variable "agent_worker_memory_limit" {
     error_message = "agent_worker_memory_limit must be a positive Mi or Gi memory quantity."
   }
 }
+
+variable "internal_api_key_parameter_name" {
+  description = "Existing SSM SecureString containing the gateway internal API key; no key value is stored in source."
+  type        = string
+  default     = ""
+}
