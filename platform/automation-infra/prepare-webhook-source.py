@@ -12,19 +12,24 @@ import tempfile
 
 
 def prepare(repository, sha, parent):
-    assert re.fullmatch(r"[a-f0-9]{40}", sha)
-    assert (
+    if not (re.fullmatch(r"[a-f0-9]{40}", sha)):
+        raise AssertionError()
+    if not (
         subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=repository, text=True
         ).strip()
         == sha
-    )
+    ):
+        raise AssertionError()
     body = subprocess.check_output(["git", "archive", sha], cwd=repository)
     with tarfile.open(fileobj=io.BytesIO(body)) as source:
-        assert all(
-            not m.issym() and not m.islnk() and (m.isfile() or m.isdir())
-            for m in source
-        ), "Non-regular committed input refused"
+        if not (
+            all(
+                not m.issym() and not m.islnk() and (m.isfile() or m.isdir())
+                for m in source
+            )
+        ):
+            raise AssertionError("Non-regular committed input refused")
         root = Path(tempfile.mkdtemp(prefix="webhook-source.", dir=parent))
         source.extractall(root, filter="data")
     return root

@@ -184,25 +184,31 @@ SELF_ASSERTED: Final[str] = "self_asserted"
 MAGIC_LINK_CONFIRMED: Final[str] = "magic_link_confirmed"
 
 
-assert not (PROVEN_METHODS & UNPROVEN_METHODS), f"A method cannot be both proven and unproven; overlap: {sorted(PROVEN_METHODS & UNPROVEN_METHODS)}"
+if not (not (PROVEN_METHODS & UNPROVEN_METHODS)):
+    raise AssertionError(f"A method cannot be both proven and unproven; overlap: {sorted(PROVEN_METHODS & UNPROVEN_METHODS)}")
 
-assert PLACEMENT_VERIFICATION in PROVEN_METHODS, "org-placement links are written by the platform itself and must count as proven"
+if PLACEMENT_VERIFICATION not in PROVEN_METHODS:
+    raise AssertionError("org-placement links are written by the platform itself and must count as proven")
 
-assert SELF_ASSERTED in UNPROVEN_METHODS, "a self-asserted claim must never count as proof"
+if SELF_ASSERTED not in UNPROVEN_METHODS:
+    raise AssertionError("a self-asserted claim must never count as proof")
 
-assert MAGIC_LINK_CONFIRMED in PROVEN_METHODS, "an out-of-band-confirmed magic link is proof of control"
+if MAGIC_LINK_CONFIRMED not in PROVEN_METHODS:
+    raise AssertionError("an out-of-band-confirmed magic link is proof of control")
 
-assert CHANNEL_PLACEMENT in UNPROVEN_METHODS, "workspace-to-tenant placement is not proof that anyone controls a given account inside it"
+if CHANNEL_PLACEMENT not in UNPROVEN_METHODS:
+    raise AssertionError("workspace-to-tenant placement is not proof that anyone controls a given account inside it")
 
-assert CHANNEL_PLACEMENT not in PROVEN_METHODS, "channel placement must never mint protected authority"
+if not (CHANNEL_PLACEMENT not in PROVEN_METHODS):
+    raise AssertionError("channel placement must never mint protected authority")
 
 # The superset direction is the load-bearing one: IDENTIFYING must cover every
 # proven method, or a genuinely-proven row would stop resolving for routing.
-assert PROVEN_METHODS < IDENTIFYING_METHODS, "identifying methods must be a strict superset of proven methods"
+if not (PROVEN_METHODS < IDENTIFYING_METHODS):
+    raise AssertionError("identifying methods must be a strict superset of proven methods")
 
-assert not (OWNERSHIP_PROVING_DELIVERY & {DELIVERY_SHARED_CHANNEL, DELIVERY_UNKNOWN}), (
-    "a shared-channel or unknown delivery must never count as private delivery"
-)
+if not (not (OWNERSHIP_PROVING_DELIVERY & {DELIVERY_SHARED_CHANNEL, DELIVERY_UNKNOWN})):
+    raise AssertionError("a shared-channel or unknown delivery must never count as private delivery")
 
 
 def delivery_proves_ownership(delivery_method: str | None) -> bool:

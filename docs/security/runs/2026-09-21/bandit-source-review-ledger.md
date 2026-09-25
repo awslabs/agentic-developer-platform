@@ -58,3 +58,7 @@ loopback tests reproduce default redirect forwarding of a synthetic Bearer key;
 the fix refuses redirects, bounds request duration and redacts failure details.
 No real Slack message or response Lambda deployment was performed. Original
 identity/severity and #6108 ownership remain, with runtime acceptance open.
+
+## Optimization-safe validation follow-up
+
+203 retained B101 selectors now use explicit conditional failures that survive `python -O` and `python -OO`. These cover deployment target selection, archive identity, replay/journal state, workload inventory, recovery validation, pricing rollout and identity-policy invariants. The ten files retain the same guard expressions and AssertionError messages, verified by AST normalization. Six refusal regressions fail on baseline and pass on candidate; 243 component tests pass. No AWS deployment was performed. The eight gateway identity-module selectors retain runtime-open status pending the owning rollout. Evidence: `evidence/bandit-optimization-guards.json`. The full 1,470-selector inventory is preserved; 1,072 remain pending source review.
