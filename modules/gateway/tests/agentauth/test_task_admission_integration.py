@@ -89,10 +89,9 @@ def flow(client, store, monkeypatch):
     service = TaskAdmission(store, policies=policies, budget=budget, model_resolver=model, clock=lambda: storage_tests.NOW)
     monkeypatch.setattr(route, "get_admission", lambda: service)
 
-    async def transport(request):
-        assert request.headers["X-Caller-Identity"] == ROLE
-
-    monkeypatch.setattr(route, "require_agent_transport", transport)
+    from src.auth import caller_provenance
+    monkeypatch.setattr(caller_provenance, "get_settings", lambda: SimpleNamespace(
+        trust_apigw_headers=True, apigw_provenance_secret="task-test-edge-provenance"))
 
     def authenticate(request):
         assert request.headers["Authorization"] == "Bearer caller-access-token"
@@ -159,7 +158,8 @@ def flow(client, store, monkeypatch):
                     body = body.replace(b"inspect", b"changed")
                 headers = dict(request.header_items())
                 assert headers["Authorization"].startswith("AWS4-HMAC-SHA256")
-                headers["X-Caller-Identity"] = ROLE
+                headers["X-Caller-Identity"] = fault.get("edge_identity", ROLE)
+                headers["X-Adp-Edge-Provenance"] = fault.get("edge_provenance", "task-test-edge-provenance")
                 path = request.full_url.split("amazonaws.com/dev", 1)[1]
                 response = web.post(path, content=body, headers=headers)
                 if fault["lose_response"]:
@@ -288,3 +288,39 @@ def test_unready_model_refuses_without_accepting_or_fallback(flow):
         )
         is None
     )
+
+
+@pytest.mark.parametrize("edge", ["", "forged-provenance"])
+def test_missing_or_forged_edge_provenance_cannot_use_valid_body_proof(flow, edge):
+    flow.fault["edge_provenance"] = edge
+    response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
+    assert response["statusCode"] == 403
+    assert flow.model_calls == []
+
+
+def test_edge_and_sts_producer_roles_must_be_the_same(flow, monkeypatch):
+    other = "arn:aws:iam::111122223333:role/other-producer"
+    monkeypatch.setenv("ADP_TASK_ADMISSION_PRODUCER_ROLES", ROLE + "," + other)
+    flow.fault["edge_identity"] = other
+    response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
+    assert response["statusCode"] == 403
+    assert flow.model_calls == []
+
+
+def test_disabled_edge_header_trust_does_not_fallback_to_sts_only(flow, monkeypatch):
+    from src.auth import caller_provenance
+    monkeypatch.setattr(caller_provenance, "get_settings", lambda: SimpleNamespace(
+        trust_apigw_headers=False, apigw_provenance_secret="task-test-edge-provenance"))
+    response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
+    assert response["statusCode"] == 403
+    assert flow.model_calls == []
+
+
+def test_scoped_producer_needs_no_generic_internal_agent_grant(flow, monkeypatch):
+    from src.agentauth import routes
+    async def generic_forbidden(*args, **kwargs):
+        raise AssertionError("Task producer must not enter generic internal authorization")
+    monkeypatch.setattr(routes, "verify_internal_or_irsa", generic_forbidden)
+    response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
+    assert response["statusCode"] == 202
+    assert len(flow.model_calls) == 1
