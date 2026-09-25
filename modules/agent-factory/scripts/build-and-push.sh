@@ -1,68 +1,52 @@
-#!/bin/bash
-set -e
-
-# Configuration
-ECR_REGISTRY="${ECR_REGISTRY:-$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com}"
-IMAGE_NAME="mcp-agent-mail"
-REGION="us-east-1"
-DOCKERFILE_PATH="docker/agent-mail/Dockerfile"
-
-# Get version tag from git or use 'latest'
-if git rev-parse --git-dir > /dev/null 2>&1; then
-    IMAGE_TAG=$(git rev-parse --short HEAD)
-    # Also tag with latest
-    TAG_LATEST=true
+#!/usr/bin/env bash
+# Publish Agent Mail from an exact Git archive. Stdout contains only its digest URI.
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+REGION=${AWS_REGION:-us-east-1}
+REPOSITORY=mcp-agent-mail
+SOURCE_SHA=${ADP_SOURCE_SHA:-$(git -C "$ROOT" rev-parse HEAD)}
+DRY_RUN=false
+for arg in "$@"; do
+  case "$arg" in --dry-run) DRY_RUN=true;; *) echo "Unknown option: $arg" >&2; exit 1;; esac
+done
+[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Expected full ADP_SOURCE_SHA' >&2; exit 1; }
+[[ ${IMAGE_TAG:-$SOURCE_SHA} == "$SOURCE_SHA" && ${PUBLISH_LATEST:-false} == false ]] || {
+  echo 'Only the full source SHA tag is supported' >&2; exit 1;
+}
+git -C "$ROOT" cat-file -e "$SOURCE_SHA^{commit}"
+CONTEXT=modules/harness/mcp-hub/docker/agent-mail
+git -C "$ROOT" cat-file -e "$SOURCE_SHA:$CONTEXT/Dockerfile"
+if $DRY_RUN; then
+  echo "Would archive $SOURCE_SHA:$CONTEXT and publish $REPOSITORY:$SOURCE_SHA to an immutable ECR repository" >&2
+  exit 0
+fi
+: "${ECR_REGISTRY:?Set ECR_REGISTRY explicitly}"
+[[ "$ECR_REGISTRY" =~ ^([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com$ ]] || { echo 'Invalid ECR registry' >&2; exit 1; }
+ACCOUNT=${BASH_REMATCH[1]}
+[[ ${BASH_REMATCH[2]} == "$REGION" ]] || { echo 'ECR registry region mismatch' >&2; exit 1; }
+MUTABILITY=$(aws ecr describe-repositories --registry-id "$ACCOUNT" --region "$REGION" \
+  --repository-names "$REPOSITORY" --query 'repositories[0].imageTagMutability' --output text)
+[[ "$MUTABILITY" == IMMUTABLE ]] || { echo 'Provision an IMMUTABLE ECR repository before publication' >&2; exit 1; }
+STAGING=$(mktemp -d)
+trap 'rm -rf "$STAGING"' EXIT
+lookup() {
+  aws ecr describe-images --registry-id "$ACCOUNT" --region "$REGION" \
+    --repository-name "$REPOSITORY" --image-ids "imageTag=$SOURCE_SHA" \
+    --query 'imageDetails[0].imageDigest' --output text
+}
+if DIGEST=$(lookup 2>"$STAGING/lookup-error"); then
+  : # A published immutable source tag is reused; never overwrite it.
+elif grep -q 'ImageNotFoundException' "$STAGING/lookup-error"; then
+  git -C "$ROOT" archive "$SOURCE_SHA" "$CONTEXT" | tar -x -C "$STAGING"
+  IMAGE="$ECR_REGISTRY/$REPOSITORY:$SOURCE_SHA"
+  aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY" >&2
+  docker build --pull --no-cache --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+    -t "$IMAGE" -f "$STAGING/$CONTEXT/Dockerfile" "$STAGING/$CONTEXT" >&2
+  docker push "$IMAGE" >&2
+  DIGEST=$(lookup)
 else
-    IMAGE_TAG="latest"
-    TAG_LATEST=false
+  echo 'Cannot resolve ECR source tag; refusing publication' >&2
+  exit 1
 fi
-
-echo "Building MCP Agent Mail container..."
-echo "Registry: $ECR_REGISTRY"
-echo "Image: $IMAGE_NAME"
-echo "Tag: $IMAGE_TAG"
-echo "Dockerfile: $DOCKERFILE_PATH"
-
-# Build from repository root with the correct Dockerfile
-echo "Building Docker image..."
-docker build -t "$IMAGE_NAME:$IMAGE_TAG" -f "$DOCKERFILE_PATH" docker/agent-mail/
-
-if [ "$TAG_LATEST" = true ]; then
-    docker tag "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME:latest"
-fi
-
-# Tag for ECR
-docker tag "$IMAGE_NAME:$IMAGE_TAG" "$ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
-if [ "$TAG_LATEST" = true ]; then
-    docker tag "$IMAGE_NAME:$IMAGE_TAG" "$ECR_REGISTRY/$IMAGE_NAME:latest"
-fi
-
-echo "Authenticating with ECR..."
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-
-echo "Creating ECR repository if it doesn't exist..."
-aws ecr describe-repositories --repository-names $IMAGE_NAME --region $REGION >/dev/null 2>&1 || \
-    aws ecr create-repository \
-        --repository-name $IMAGE_NAME \
-        --region $REGION \
-        --image-scanning-configuration scanOnPush=true \
-        --encryption-configuration encryptionType=AES256
-
-echo "Pushing image to ECR..."
-docker push "$ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
-if [ "$TAG_LATEST" = true ]; then
-    docker push "$ECR_REGISTRY/$IMAGE_NAME:latest"
-fi
-
-echo "Build and push complete!"
-echo "Image: $ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
-
-# Export variables for subsequent scripts (e.g., envsubst for K8s manifests)
-export ECR_REGISTRY
-export IMAGE_TAG
-export IMAGE_NAME
-
-echo "Exported variables:"
-echo "  ECR_REGISTRY=$ECR_REGISTRY"
-echo "  IMAGE_TAG=$IMAGE_TAG"
-echo "  IMAGE_NAME=$IMAGE_NAME"
+[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'ECR returned no valid image digest' >&2; exit 1; }
+printf '%s/%s@%s\n' "$ECR_REGISTRY" "$REPOSITORY" "$DIGEST"
