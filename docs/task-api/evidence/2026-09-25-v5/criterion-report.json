@@ -1,8 +1,8 @@
 {
   "evaluation": "V5 #5806",
   "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
-  "evaluator": "runtime_contracts independentoperationsreview",
-  "at": "2026-09-25T05:51:24.081815+00:00",
+  "evaluator": "runtime_contracts independent operations review",
+  "at": "2026-09-25T06:11:02.880467+00:00",
   "criteria": {
     "V5-01": {
       "status": "PASS",
@@ -57,16 +57,16 @@
       "evidence": [
         "release-matrix.json"
       ],
-      "proof": "Await finalV3 transportfix/deployedvalidation and refreshedV4 bindings, then finalrelease acceptance. No claim of epicclosure from mergedcode or onehappy-path."
+      "proof": "Await final V3 shared Redis/global quota proof, refreshed V4 public transport evidence, and delegated release acceptance. Merged code and a single happy path do not establish epic closure."
     }
   },
   "overall": "NOT COMPLETE",
-  "source_note": "Final bindings captured on gateway5e3/source d8b8a7937, Lambda115/source200ed6349 and worker57d; each retained observation preserves its actual tested source and timestamp.",
+  "source_note": "Current bindings: gateway fddd951f / source a16a2a851, Lambda 115 / source 200ed6349, and worker 57d. Each retained observation preserves its actual tested source and timestamp; global quota and final public qualification remain pending.",
   "artifact_sha256": {
     "retained-task-metadata.json": "a9ae7e0db0fb1473afcae36e9973a0f16852a96cf214d951d7cafadf8800d46b",
-    "cleanup-retention-inventory.json": "9ee3eb47dfb44dbe1a769c190461637d6b1aa4084560aa6551562c2d33b3ecf4",
-    "final-bindings.json": "faee2e51eeffc0bc7450dfafd5d502c6549259d5ccb2b4aa0615cb3465c4ed29",
-    "README.md": "b727abcf88b78e8c25aa366a423a2bd3aa21a3e04e5d468a9592e3ac82f5a2c5",
+    "cleanup-retention-inventory.json": "9ec23665d7bc93983a1bd1878df9c7421deadcea5f0029908e4b21f026e85490",
+    "final-bindings.json": "787e82408a7761e2b1aa22465badfca5f40f7f850af0ce35bb5897629366bff2",
+    "README.md": "6a613b6a29e781250aad46ad416e4a843960af0842a80560dc42529c3710085b",
     "consumer-boundary.json": "a77aad87c23d885097a44ec9038b041758e7d295ba89a1f038b5c3aee26713a5",
     "admission-off-active.json": "59c72ef88a912e7fa57625bdcddc6f90319e5f411f562a482291f2b9c09816fc",
     "admission-changes.ndjson": "d01bba977e2be97da0748fa7b90e1f2acb6dbb2fc6541404164e7a2c56a44fd8",

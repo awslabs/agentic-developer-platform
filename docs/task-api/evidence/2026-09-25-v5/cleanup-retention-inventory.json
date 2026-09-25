@@ -3,7 +3,8 @@
   "deleted": [
     "Owned task/legacy image smoke pods and networkpolicies (existing T5/V2cleanup evidence).",
     "Owned installed transport proof pod and networkpolicy (V3 transport evidence).",
-    "Expired same-tenant fixture bearer-token file; revocation evidence retained."
+    "Expired same-tenant fixture bearer-token file; revocation evidence retained.",
+    "Owned fddd installed transport proof pod task-api-5792-stream-global-bound and its network policy; absence and all four installed source hashes verified."
   ],
   "retained_tasks": [
     {
@@ -61,5 +62,6 @@
     "DynamoDB TTL is asynchronous; expires_at is eligibility, not exact deletion time.",
     "S3 current-object expiration is30days from objectcreation; metadata content expiration is30days fromterminal. Exact simultaneous deletion or availability until an exactsecond is not promised.",
     "No shared queue purge, request-table replacement, or broad legacy cleanup was performed."
-  ]
+  ],
+  "updated_at": "2026-09-25T06:11:02.880467+00:00"
 }

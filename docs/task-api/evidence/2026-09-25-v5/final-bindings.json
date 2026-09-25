@@ -1,5 +1,5 @@
 {
-  "at": "2026-09-25T05:51:51.660735+00:00",
+  "at": "2026-09-25T06:10:28.767396+00:00",
   "account_id": "879318057152",
   "api_id": "59o2rakc50",
   "stage": "dev",
@@ -53,13 +53,13 @@
   },
   "gateway": {
     "images": [
-      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:5e3a8b9e8b7900cd144e9924baf7a7fb63baa2534bbfda1249c5f09514c194a8"
+      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
     ],
-    "desired": 8,
-    "ready": 8,
-    "updated": 8,
-    "generation": 1699,
-    "observed_generation": 1699,
+    "desired": 9,
+    "ready": 9,
+    "updated": 9,
+    "generation": 1703,
+    "observed_generation": 1703,
     "task_settings": {
       "ADP_TASK_ADMISSION_PRODUCER_ROLES": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role",
       "ADP_TASK_API_ADMISSION_ENABLED": "true",
@@ -72,6 +72,9 @@
       "ADP_TASK_RECOVERY_PRODUCER_ROLES": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role",
       "ADP_TASK_WORKER_IMAGE_DIGESTS": "sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3,sha256:146442e6acf6c00c46c42070fa40c61ccaf775eec7c9aee5be56ffac23ae9dda,sha256:a500a81d38e42f12ea12e5bba5a75847153c52f8ebf14ea8a0bec6059119e697,sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
       "ADP_TASK_WORKER_SERVICE_ACCOUNT": "agent-scaledjob-sa",
+      "BG_REDIS_CACHE_NAME": "bedrockgw-dev-redis-cluster",
+      "BG_REDIS_IAM_AUTH": "true",
+      "BG_REDIS_USERNAME": "bedrockgw-dev-iam-user",
       "TASK_ARTIFACT_BUCKET_NAME": "adp-dev-chat-artifacts-879318057152"
     }
   }
