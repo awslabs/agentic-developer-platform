@@ -132,6 +132,10 @@ async def test_recovery_provider_assumes_only_read_policy_and_refuses_kubernetes
             "SessionToken": "synthetic-session",
         }
     }
+    sts.get_caller_identity.return_value = {
+        "Account": "123456789012",
+        "Arn": "arn:aws:sts::123456789012:assumed-role/recovery-read/fixture",
+    }
     session = SimpleNamespace(client=lambda *args, **kwargs: sts)
     monkeypatch.setattr("boto3.Session", lambda **kwargs: session)
     current_claim = AsyncMock()
@@ -169,6 +173,7 @@ async def test_recovery_provider_assumes_only_read_policy_and_refuses_kubernetes
                     "ec2:GetTransitGatewayRouteTableAssociations",
                     "eks:DescribeCluster",
                     "sts:GetCallerIdentity",
+                    "ssm:GetCommandInvocation",
                 ],
                 "Resource": "*",
             }
@@ -182,3 +187,19 @@ async def test_recovery_provider_assumes_only_read_policy_and_refuses_kubernetes
             with pytest.raises(HTTPException) as refusal:
                 await provider.workspace.request(None, None, method, path)
             assert refusal.value.status_code == 403
+
+        for identity in (
+            {
+                "Account": "000000000000",
+                "Arn": "arn:aws:sts::123456789012:assumed-role/recovery-read/fixture",
+            },
+            {
+                "Account": "123456789012",
+                "Arn": "arn:aws:sts::123456789012:assumed-role/other-role/fixture",
+            },
+        ):
+            sts.get_caller_identity.return_value = identity
+            with pytest.raises(
+                HTTPException, match="recovery provider identity refused"
+            ):
+                await provider.session_for(None, plan)

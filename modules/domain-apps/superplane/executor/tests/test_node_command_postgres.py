@@ -51,7 +51,12 @@ async def native_command(pool, postgres_server):
         n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "upgrade"
     )
     async with domain.acquire() as c:
-        await c.execute(ast.literal_eval(upgrade.body[0].value.args[0]))
+        # Match SQLAlchemy/asyncpg's prepared-statement boundary: a raw
+        # Connection.execute without arguments silently accepts multiple SQL
+        # statements, unlike the production Alembic transport.
+        for statement in upgrade.body:
+            sql = ast.literal_eval(statement.value.args[0])
+            await (await c.prepare(sql)).fetch()
     actor = principal()
     request = OperationRequest(
         action="provision",

@@ -35,6 +35,8 @@ CREATE TABLE controller_node_commands (
  CHECK ((dispatched_at IS NULL) = (observation_deadline IS NULL)),
  CHECK (command_id IS NULL OR dispatched_at IS NOT NULL)
 );
+""")
+    op.execute("""
 CREATE INDEX ix_controller_node_commands_allocation
  ON controller_node_commands(org_id,workspace_id,allocation_id);
 """)
