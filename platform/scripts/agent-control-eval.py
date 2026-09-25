@@ -8395,10 +8395,13 @@ class Driver:
                 raise AssertionError(f"{adapter}: security matrix requires all four implemented capabilities")
         cases = {
             "auth_matrix": {"anonymous": 401, "nonowner": 404, "other_tenant": 404, "unknown": 404},
-            "token_expiry": {"expired": 401, "missing": 401, "wrong": 401},
+            # Worker 401 is intentionally mapped to gateway 502: it must not
+            # invalidate the human's still-valid browser session. Observe both
+            # layers rather than substituting a direct listener probe for a route.
+            "token_expiry": {"expired": 502, "missing": 502, "wrong": 502},
             "malformed_payloads": {"json": 400, "actor": 400, "target": 400, "token": 400, "oversized": 413},
             "terminal_generation": {"owner": 410, "nonowner": 404, "other_tenant": 404},
-            "stale_generation": {"stale": 401},
+            "stale_generation": {"stale": 502},
         }
         observed_ids: set[str] = set()
         refusal_bodies: dict[tuple[str, str], list[str]] = {}
@@ -8417,6 +8420,10 @@ class Driver:
                 seen.add(key)
                 if type(row.get("status")) is not int or row["status"] != statuses[key[2]]:
                     raise AssertionError(f"{group}/{key}: refusal status differs")
+                if group in {"token_expiry", "stale_generation"}:
+                    if (type(row.get("listener_status")) is not int or row["listener_status"] != 401 or
+                            row.get("authenticated_forward_reached") is not True):
+                        raise AssertionError(f"{group}/{key}: real authorized route and worker 401 observations are required")
                 command_id = row.get("command_id")
                 if not isinstance(command_id, str) or not command_id or command_id in observed_ids:
                     raise AssertionError(f"{group}/{key}: missing or reused command identity")

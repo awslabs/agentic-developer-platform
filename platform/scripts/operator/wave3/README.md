@@ -64,11 +64,27 @@ both API adapters. Each of pause/resume/steer/abort must be observed for every c
 
 - `auth_matrix`: anonymous 401; nonowner, other tenant and unknown run 404 with
   indistinguishable response bodies.
-- `token_expiry`: expired, missing and wrong listener tokens return 401.
+- `token_expiry`: expired, missing and wrong listener tokens return worker 401,
+  mapped to gateway 502. A worker credential failure must not log out the human.
 - `malformed_payloads`: malformed JSON and actor/target/token override attempts
   return 400; oversized bodies return 413.
 - `terminal_generation`: terminal owner 410; terminal nonowners and other tenants 404.
-- `stale_generation`: the previous generation returns 401.
+- `stale_generation`: the previous generation returns worker 401, mapped to gateway 502.
+
+The token/generation rows require both `listener_status: 401` and HTTP `status: 502`,
+plus `authenticated_forward_reached: true`. A direct listener request alone cannot
+establish either route's behavior. The gateway's existing status-mapping contract
+deliberately does not forward worker 401 to the browser.
+
+`probe_route_transport.py` runs both deployed FastAPI routers in a separate process
+inside the owned gateway. It retains real JWT, SQL identity, authority and signing;
+only the outbound target/credential is faulted after authorization for the named
+fixture run. It changes no registration rows or running gateway process. Its
+contained HTTP transport measures worker 401 and real local redirects, and refuses
+any forbidden destination before contact. With `interactive: true`, each request
+waits for its unique command ID on stdin so the operator can bracket it with actual
+runtime counter observations. Record this isolated ASGI scope accurately; it is
+not the external CloudFront/API Gateway path, covered separately by gateway capture.
 
 Every request record names adapter, verb, case, unique command ID, invocation ID,
 status, observation time and source. `side_effects` must contain observed before
@@ -229,3 +245,18 @@ revalidator is controlled by the experiment: these results do not establish
 gateway authorization or the W3-05 security matrix. Failed or absent observations
 remain failures. The private output contains session IDs and must be redacted
 before publishing an acceptance summary.
+
+## Live browser fixture
+
+Set `ADP_CONTROL_BROWSER_EVAL=true` together with the explanation flag on an
+owned registered fixture worker to keep separate Read tools running while the
+browser exercises pause, steer, resume and polling. The model acknowledges the
+steered approach in the actual explanation stream and continues separate reads
+until the operator aborts it. The browser verifies that authored response; the
+invocation summary is finalized only at exit and cannot establish a change while
+keeping the same run alive for the polling scenario. Collect and release both
+fixture workers through the normal authenticated handoff.
+The browser fixture holds each admitted Read hook for five seconds so the UI can
+observe pending pause before quiescence; this timing is fixture-only. The live
+scenario observes a fresh admission before clicking Pause, rather than assuming
+an idle pause must remain pending until the next poll.

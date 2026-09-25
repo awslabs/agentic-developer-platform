@@ -66,3 +66,6 @@ agent_worker_admission_paused          = false
 shared_run_reporting_enabled           = true
 shared_worker_continuation_enabled     = false
 agent_authority_worker_image_digests   = ["sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f"]
+
+# Authenticated Agent Activity explanation stream; independent of mutation controls.
+agent_explanations_enabled = true

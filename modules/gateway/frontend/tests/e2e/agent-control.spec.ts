@@ -520,6 +520,24 @@ test.describe('live run controls', () => {
     await expect(panel.getByTestId('control-phase')).toHaveText(/running/i, { timeout: 15_000 });
     recorder.recordPhase('running');
 
+    if (LIVE) {
+      // Start the pause just after an observed tool admission. A pause sent at
+      // an idle boundary can correctly become Paused before the first UI poll;
+      // that run cannot evidence the separate pending-pause wording assertion.
+      let idleObserved = false;
+      await expect.poll(async () => {
+        const state = await page.evaluate(async id => {
+          const response = await fetch(`/api/activity/invocations/${encodeURIComponent(id)}/agent/state`, {
+            headers: { Authorization: `Bearer ${sessionStorage.getItem('cognito_access_token')}` },
+          });
+          if (!response.ok) throw new Error(`Fixture state returned ${response.status}`);
+          return response.json();
+        }, runId);
+        if (state.active_tool_count === 0) idleObserved = true;
+        return idleObserved && state.active_tool_count === 1;
+      }, { timeout: 30_000, intervals: [200] }).toBe(true);
+    }
+
     // Sample from here on, so the transient phases between the click and the
     // settled state are observed rather than inferred.
     const stopWatching = recorder.watchPhases(page);
@@ -600,9 +618,17 @@ test.describe('live run controls', () => {
     // ---- the steered change ---------------------------------------------
     // Delivery evidence, then the observable consequence of the instruction.
     await expect(journal).toContainText(/handed to the agent/i, { timeout: 20_000 });
-    await expect(page.getByRole('dialog').locator('dt').filter({ hasText: /^Summary$/ }).locator('..').locator('dd')).toContainText(/steered approach/i, {
-      timeout: 20_000,
-    });
+    if (LIVE) {
+      // A live invocation's summary is finalized when it exits. Requiring that
+      // summary here would end the run used by the later polling scenario.
+      // Observe the agent's actual authored response through the live stream.
+      await expect(page.getByRole('region', { name: 'Implementation explanations' }))
+        .toContainText(/steered approach/i, { timeout: 20_000 });
+      recorder.measured.steered_explanation_observed = true;
+    } else {
+      await expect(page.getByRole('dialog').locator('dt').filter({ hasText: /^Summary$/ }).locator('..').locator('dd'))
+        .toContainText(/steered approach/i, { timeout: 20_000 });
+    }
 
     // ---- hygiene ---------------------------------------------------------
     expect(destinations.some((url) => url.includes(FORBIDDEN_HOST))).toBe(false);
@@ -706,7 +732,9 @@ test.describe('live run controls', () => {
       /queued|handed to the agent|applied/i,
     );
     await expect(panel.getByTestId('control-phase')).toHaveText(/finished/i, {
-      timeout: 20_000,
+      // A live listener can close before its durable terminal row is written.
+      // Allow the documented 30-second unavailable backoff plus finalization.
+      timeout: LIVE ? 60_000 : 20_000,
     });
     await expect(panel.getByRole('button', { name: /^abort$/i })).toHaveCount(0);
     await expect(page.getByRole('dialog').locator('dt').filter({ hasText: /^Status$/ }).locator('..').locator('dd').getByText('Aborted', { exact: true })).toBeVisible({ timeout: 20_000 });
