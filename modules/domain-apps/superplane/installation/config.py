@@ -173,6 +173,7 @@ def validate(
         "cluster_dns_ip",
         "execution",
         "controller_profiles",
+        "credential_controller",
     }
     require(
         set(env) <= allowed,
@@ -182,6 +183,9 @@ def validate(
     from .execution import validate_execution
 
     validate_execution(env, lock)
+    from .credential_controller import validate as validate_credential_controller
+
+    validate_credential_controller(env, lock)
     require(
         env.get("image_execution", "docker") in {"docker", "cluster"},
         "image_execution must be docker or cluster",
