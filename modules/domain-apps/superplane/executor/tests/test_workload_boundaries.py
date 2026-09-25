@@ -174,6 +174,11 @@ async def test_node_join_requires_each_exact_provider_identity(ids, ready):
     [
         ({"nvidia.com/gpu": "1"}, True),
         ({"nvidia.com/gpu": "2"}, True),
+        ({"nvidia.com/gpu": "1000m"}, True),
+        ({"nvidia.com/gpu": "1e0"}, True),
+        ({"nvidia.com/gpu": "500m"}, False),
+        ({"nvidia.com/gpu": "-1"}, False),
+        (None, False),
         ({}, False),
         ({"nvidia.com/gpu": "0"}, False),
         ({"nvidia.com/gpu": "not-a-number"}, False),
@@ -207,7 +212,8 @@ async def test_node_join_requires_sufficient_allocatable_gpu(allocatable, ready)
     assert await workspace.ready_nodes(None, {}, plan, {"i-one"}) is ready
 
 
-async def test_node_join_gpu_requirement_is_skipped_for_cpu_only_workload():
+@pytest.mark.parametrize("allocatable", [{}, None, {"nvidia.com/gpu": "-1"}])
+async def test_node_join_gpu_requirement_is_skipped_for_cpu_only_workload(allocatable):
     """A batch workload with gpu_count 0 must not be blocked on GPU capacity
     that was never requested."""
     workspace = Workspace("/unused", "https://management.example")
@@ -224,7 +230,7 @@ async def test_node_join_gpu_requirement_is_skipped_for_cpu_only_workload():
                         "spec": {"providerID": "aws:///zone/i-one"},
                         "status": {
                             "conditions": [{"type": "Ready", "status": "True"}],
-                            "allocatable": {},
+                            "allocatable": allocatable,
                         },
                     }
                 ]

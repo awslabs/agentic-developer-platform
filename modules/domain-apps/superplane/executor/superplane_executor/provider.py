@@ -157,15 +157,16 @@ class Provider:
                         raise OperationRefused(
                             "regional network/image prerequisites mismatch"
                         )
-                if region == cluster_region:
-                    access = eks.describe_access_entry(
-                        clusterName=cluster["name"],
-                        principalArn=profile["Roles"][0]["Arn"],
-                    )["accessEntry"]
-                    if access["type"] != "EC2_LINUX":
-                        raise OperationRefused(
-                            "approved AWS/EKS prerequisites do not match provider truth"
-                        )
+                # Every regional machine joins this one fixed EKS. A remote
+                # region is not an exception to its node authentication boundary.
+                access = eks.describe_access_entry(
+                    clusterName=cluster["name"],
+                    principalArn=profile["Roles"][0]["Arn"],
+                )["accessEntry"]
+                if access["type"] != "EC2_LINUX":
+                    raise OperationRefused(
+                        "approved AWS/EKS prerequisites do not match provider truth"
+                    )
 
         await asyncio.to_thread(inspect)
         sky_identity = await self.sky.identity()
@@ -437,7 +438,7 @@ class Provider:
                     await networking.establish(next(iter(regions_used)))
                 return (
                     CallOutcome.SUCCEEDED,
-                    "SkyPilot launch and approved network completed; join remains a separate step",
+                    "SkyPilot launch and approved network completed; native node bootstrap is subject to readiness verification",
                     plan.resource_reference(
                         "instance",
                         instances[0]["InstanceId"],

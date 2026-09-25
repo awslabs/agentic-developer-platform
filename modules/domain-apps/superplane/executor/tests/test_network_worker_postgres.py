@@ -24,10 +24,12 @@ from tests.conftest import requires_postgres
 pytestmark = requires_postgres
 
 
-@pytest.mark.parametrize("deny_network", [False, True])
+@pytest.mark.parametrize(
+    "deny_network,deny_node_role", [(False, False), (True, False), (False, True)]
+)
 @pytest.mark.parametrize("shared_membership", [False, True])
 async def test_registered_worker_networks_selected_region_before_launch_success(
-    system, deny_network, shared_membership
+    system, deny_network, deny_node_role, shared_membership
 ):
     pool, admit, server, cloud, _kube, _registry, _ = system
     await schema(pool)
@@ -148,6 +150,7 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
 
     aws.respond = respond
     original_client = cloud.client
+    access_checks = []
 
     def client(service, **kwargs):
         region = kwargs.get("region_name", HOME)
@@ -173,6 +176,16 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
                 return Paginator()
 
             def __getattr__(self, name):
+                if name == "describe_access_entry":
+
+                    def access(**arguments):
+                        access_checks.append((region, arguments))
+                        assert region == HOME
+                        if deny_node_role:
+                            return {"accessEntry": {"type": "STANDARD"}}
+                        return cloud.describe_access_entry(**arguments)
+
+                    return access
                 if name in {
                     "get_caller_identity",
                     "get_instance_profile",
@@ -292,7 +305,17 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
     operation, token = await admit(
         "provision", admitted_request=preview.request, prepare_registration=register
     )
-    if deny_network:
+    if deny_node_role:
+        with pytest.raises(OperationRefused, match="prerequisites do not match"):
+            await server.dispatch(
+                {
+                    "token": token,
+                    "method": "execute_step",
+                    "arguments": {"step_id": "1"},
+                }
+            )
+        assert access_checks and cloud.launches == 0
+    elif deny_network:
         with pytest.raises(
             OperationRefused, match="provider resource inventory is not established"
         ):

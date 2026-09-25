@@ -316,16 +316,59 @@ class Workspace:
                 c.get("type") == "Ready" and c.get("status") == "True"
                 for c in node.get("status", {}).get("conditions", [])
             )
-            and self._allocatable_gpus(node) >= required_gpus
+            and (required_gpus == 0 or self._allocatable_gpus(node) >= required_gpus)
             for node in nodes
         )
 
     @staticmethod
     def _allocatable_gpus(node):
-        raw = node.get("status", {}).get("allocatable", {}).get("nvidia.com/gpu", "0")
+        import re
+        from decimal import Decimal, DecimalException
+
+        status = node.get("status")
+        allocatable = status.get("allocatable") if isinstance(status, dict) else None
+        raw = (
+            allocatable.get("nvidia.com/gpu", "0")
+            if isinstance(allocatable, dict)
+            else "0"
+        )
+        if type(raw) not in {str, int} or len(str(raw)) > 64:
+            return 0
+        match = re.fullmatch(
+            r"([+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?",
+            str(raw),
+        )
+        if match is None:
+            return 0
         try:
-            return int(str(raw))
-        except ValueError:
+            number, unit = match.groups()
+            value = Decimal(number)
+            if unit:
+                if unit.endswith("i"):
+                    value *= Decimal(1024) ** ("KMGTPE".index(unit[0]) + 1)
+                elif unit[0] in "eE" and len(unit) > 1:
+                    value *= Decimal(10) ** int(unit[1:])
+                else:
+                    value *= (
+                        Decimal(10)
+                        ** {
+                            "n": -9,
+                            "u": -6,
+                            "m": -3,
+                            "k": 3,
+                            "M": 6,
+                            "G": 9,
+                            "T": 12,
+                            "P": 15,
+                            "E": 18,
+                        }[unit]
+                    )
+            return (
+                int(value)
+                if 0 <= value <= 2**63 - 1 and value == value.to_integral_value()
+                else 0
+            )
+        except (DecimalException, ValueError, OverflowError):
             return 0
 
     async def workload_ready(
