@@ -86,7 +86,7 @@ module "scheduler" {
 
   name_prefix = local.name_prefix
   cluster_arn = module.fargate.cluster_arn
-  task_def    = module.fargate.task_definition_arn
+  task_def    = module.fargate.dream_task_definition_arn
   subnet_ids  = var.private_subnet_ids
   sg_id       = aws_security_group.svc.id
   role_arn    = aws_iam_role.scheduler.arn
@@ -296,7 +296,7 @@ resource "aws_iam_role_policy" "scheduler_run_task" {
       {
         Effect   = "Allow"
         Action   = "ecs:RunTask"
-        Resource = module.fargate.task_definition_arn
+        Resource = module.fargate.dream_task_definition_arn
         Condition = {
           ArnLike = {
             "ecs:cluster" = module.fargate.cluster_arn

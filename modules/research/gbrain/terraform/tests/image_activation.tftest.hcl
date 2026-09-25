@@ -108,3 +108,34 @@ run "preserve_runtime_settings_during_image_delivery" {
     error_message = "Image updates must preserve explicit runtime settings and secret references."
   }
 }
+
+run "dream_is_a_separate_batch_task" {
+  command = plan
+  module { source = "./modules/fargate" }
+  variables {
+    name_prefix        = "gbrain-test"
+    vpc_id             = "vpc-0123456789abcdef0"
+    subnet_ids         = ["subnet-0123456789abcdef0"]
+    service_sg_id      = "sg-0123456789abcdef0"
+    container_image    = "111122223333.dkr.ecr.us-east-1.amazonaws.com/gbrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    db_endpoint        = "db.example.invalid:5432"
+    db_credentials_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:db-test"
+    mcp_token_arn      = "arn:aws:secretsmanager:us-east-1:111122223333:secret:mcp-test"
+    s3_bucket_name     = "gbrain-test"
+    log_group_name     = "/gbrain-test"
+    task_role_arn      = "arn:aws:iam::111122223333:role/task-test"
+    execution_role_arn = "arn:aws:iam::111122223333:role/exec-test"
+  }
+  assert {
+    condition = (
+      aws_ecs_task_definition.dream.family == "gbrain-test-dream" &&
+      jsondecode(aws_ecs_task_definition.dream.container_definitions)[0].image == var.container_image &&
+      !contains(keys(jsondecode(aws_ecs_task_definition.dream.container_definitions)[0]), "healthCheck") &&
+      !contains(keys(jsondecode(aws_ecs_task_definition.dream.container_definitions)[0]), "portMappings") &&
+      jsondecode(aws_ecs_task_definition.dream.container_definitions)[0].entryPoint[1] == "-c" &&
+      endswith(trimspace(jsondecode(aws_ecs_task_definition.dream.container_definitions)[0].command[0]), "exec gbrain dream") &&
+      length(jsondecode(aws_ecs_task_definition.dream.container_definitions)[0].secrets) == 2
+    )
+    error_message = "Dream must initialize and exit as a dedicated immutable batch task without HTTP health checks or MCP credentials."
+  }
+}
