@@ -116,7 +116,7 @@ class TaskRuntime:
                         "TableName": self.repository.authority_table_name,
                         "Key": key,
                         "UpdateExpression": (
-                            "SET workload_uid = :pod, workload_namespace = :namespace, credential_epoch = :epoch, "
+                            "SET workload_uid = :pod, workload_namespace = :namespace, workload_name = :pod_name, credential_epoch = :epoch, "
                             "execution_capacity_keys = :keys, execution_capacity_released = :false"
                         ),
                         "ConditionExpression": (
@@ -127,6 +127,7 @@ class TaskRuntime:
                         "ExpressionAttributeValues": {
                             ":pod": {"S": pod.uid},
                             ":namespace": {"S": pod.namespace},
+                            ":pod_name": {"S": getattr(pod, "name", "")},
                             ":epoch": {"N": "1"},
                             ":active": {"S": "active"},
                             ":task": {"S": task["task_id"]},

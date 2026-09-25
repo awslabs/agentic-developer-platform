@@ -156,3 +156,90 @@ def test_termination_requires_exact_existing_terminal_pod(alter):
         )
         is None
     )
+
+
+def test_retained_pod_is_released_after_durable_stop_even_when_provider_is_unknown(runtime, monkeypatch):
+    from src.tasks.records import task_authority_partition, task_run_grant_sort_key
+
+    service, pod, _ = _settlement_fixture(runtime)
+    repository = service.repository
+    identity = service.authenticate_settlement(pod=pod)
+    repository._client.update_item(
+        TableName=repository.authority_table_name,
+        Key=_serialize(
+            {
+                "pk": task_authority_partition(identity.tenant),
+                "sk": task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation),
+            }
+        ),
+        UpdateExpression="SET workload_name = :name",
+        ExpressionAttributeValues=_serialize({":name": "retained-worker"}),
+    )
+    operation = {"event_id": task_ops_partition(identity.task_id), "arrived_at": "MODEL#unknown", "operation_status": "unknown", "reserved_usd": "1"}
+    repository._client.put_item(TableName=repository.table_name, Item=_serialize(operation))
+    monkeypatch.setattr(recovery, "terminated_workload", lambda *args, **kwargs: "2026-09-24T12:00:00Z")
+
+    async def pending(*args):
+        return False
+
+    monkeypatch.setattr(recovery, "settle_task_admission", pending)
+    releases = []
+    platform = SimpleNamespace(workloads=SimpleNamespace(exit_retention=SimpleNamespace(release=lambda **kwargs: releases.append(kwargs))))
+    claim = next(item for item in repository.claim_due_work(shard=work_shard(identity.task_id), now=datetime.now(UTC)) if item["kind"] == "execution")
+    assert asyncio.run(recovery.recover_execution(repository, platform, work_id=claim["work_id"], lease_token=claim["lease_token"])) == (
+        "unknown",
+        "failed",
+    )
+    task = repository.read_task(identity.task_id)
+    assert task["error"]["provider_outcome"] == "unknown" and task["error"]["total_usd"] is None
+    assert task["child_exit"]["confirmed"] is False and task["server_workload_terminated"] is True
+    assert releases == [{"name": "retained-worker", "uid": pod.uid, "invocation_id": identity.invocation_id, "tenant_id": identity.tenant}]
+    assert repository._get(task_ops_partition(identity.task_id), "MODEL#unknown") == operation
+    assert repository.resolve_work(claim["work_id"]).get("task_due")
+
+
+@pytest.mark.parametrize("retention_fails", [False, True])
+def test_attempt_receipt_requires_native_exit_retention(monkeypatch, retention_fails):
+    import uuid
+
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from src.agentauth import task_runtime_routes as routes
+    from src.agentauth.exit_retention import ExitRetentionError
+
+    events = []
+    identity = SimpleNamespace(pod_uid=str(uuid.uuid4()), invocation_id=str(uuid.uuid4()), tenant="tenant")
+
+    async def authenticate(*args, **kwargs):
+        return identity
+
+    monkeypatch.setattr(routes, "_authenticate", authenticate)
+    monkeypatch.setattr(routes, "task_runtime", lambda runtime: SimpleNamespace(register_attempt=lambda **kwargs: events.append("bound")))
+    pod = SimpleNamespace(uid=identity.pod_uid, name="worker", namespace="adp-agents")
+
+    def retain(**kwargs):
+        assert kwargs == {"name": "worker", "uid": identity.pod_uid, "invocation_id": identity.invocation_id, "tenant_id": "tenant"}
+        events.append("retained")
+        if retention_fails:
+            raise ExitRetentionError("unavailable")
+
+    platform = SimpleNamespace(workloads=SimpleNamespace(verify=lambda token: pod, exit_retention=SimpleNamespace(retain=retain)))
+    body = routes.AttemptBody(
+        schema_version="1.0",
+        task_id="tsk_" + str(uuid.uuid4()),
+        invocation_id=identity.invocation_id,
+        generation=1,
+        runtime_attempt_id=str(uuid.uuid4()),
+        protocol_version=1,
+        capabilities=["input", "cancel"],
+        old_attempt_invalidated=True,
+    )
+    request = Request({"type": "http", "headers": []})
+    if retention_fails:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(routes.attempt(body, request, runtime=platform))
+        assert error.value.status_code == 503
+    else:
+        assert asyncio.run(routes.attempt(body, request, runtime=platform))["operation_status"] == "confirmed"
+    assert events == ["bound", "retained"]
