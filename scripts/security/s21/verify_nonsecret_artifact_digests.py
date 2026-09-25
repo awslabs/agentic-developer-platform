@@ -4,6 +4,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -172,18 +173,20 @@ def verify(source, scan_path, audit_path, receipt_path):
         assert record.get("context_evidence"), "Missing checksum context evidence"
     frozen = {}
 
-    def frozen_bytes(path):
-        if path not in frozen:
+    def frozen_bytes(path, source_revision=revision):
+        key = (source_revision, path)
+        if key not in frozen:
             # Read committed blobs, never mutable checkout files. Missing or
             # untracked evidence refuses verification rather than falling back.
-            frozen[path] = subprocess.check_output(
-                ["git", "show", f"{revision}:{path}"],
+            frozen[key] = subprocess.check_output(
+                ["git", "show", f"{source_revision}:{path}"],
                 cwd=source,
                 stderr=subprocess.DEVNULL,
             )
-        return frozen[path]
+        return frozen[key]
 
     digests = {}
+    checked_ancestors = set()
     for record in receipt["verified_records"]:
         # Join private full candidate hashes, not prefix/path heuristics.
         originals = [
@@ -201,12 +204,59 @@ def verify(source, scan_path, audit_path, receipt_path):
         assert candidate in lines[record["line"] - 1], (
             "Candidate missing at exact frozen line"
         )
-        for artifact in record["matching_artifacts"]:
-            if artifact not in digests:
-                digests[artifact] = hashlib.sha256(frozen_bytes(artifact)).hexdigest()
-            assert candidate == digests[artifact], (
-                "Candidate is not the artifact SHA256"
+        historical = record.get("historical_artifacts", [])
+        historical_by_path = {entry["historical_path"]: entry for entry in historical}
+        assert len(historical_by_path) == len(historical), (
+            "Duplicate historical artifact proof"
+        )
+        if historical:
+            assert set(historical_by_path) == set(record["matching_artifacts"]), (
+                "Incomplete historical provenance"
             )
+        for artifact in record["matching_artifacts"]:
+            source_revision = revision
+            if artifact in historical_by_path:
+                proof = historical_by_path[artifact]
+                source_revision = proof["source_revision"]
+                assert re.fullmatch(r"[0-9a-f]{40}", source_revision), (
+                    "Invalid historical revision"
+                )
+                assert re.fullmatch(r"[0-9a-f]{40}", proof["blob_oid"]), (
+                    "Invalid historical blob identity"
+                )
+                if source_revision not in checked_ancestors:
+                    result = subprocess.run(
+                        [
+                            "git",
+                            "merge-base",
+                            "--is-ancestor",
+                            source_revision,
+                            revision,
+                        ],
+                        cwd=source,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    assert result.returncode == 0, (
+                        "Historical revision is not an ancestor of frozen source"
+                    )
+                    checked_ancestors.add(source_revision)
+                blob_oid = subprocess.check_output(
+                    ["git", "rev-parse", f"{source_revision}:{artifact}"],
+                    cwd=source,
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+                assert blob_oid == proof["blob_oid"], (
+                    "Historical commit:path does not resolve to recorded blob"
+                )
+            key = (source_revision, artifact)
+            if key not in digests:
+                digests[key] = hashlib.sha256(
+                    frozen_bytes(artifact, source_revision)
+                ).hexdigest()
+            assert candidate == digests[key], "Candidate is not the artifact SHA256"
         verify_context(record, candidate, frozen_bytes(record["file"]))
     print(
         f"Verified {len(receipt['verified_records'])} original selectors; no candidate values emitted"

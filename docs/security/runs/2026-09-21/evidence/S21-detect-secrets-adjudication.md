@@ -16,8 +16,8 @@ with no raw candidate values or source-line content published.
 | Existing Git object identifiers, independently resolved | 209 |
 | Exact AWS published example identifier or secret-access-key example | 72 |
 | Complete public PEM delimiter literal, without key payload | 6 |
-| Artifact SHA256 with immutable bytes and verified checksum context | 443 |
-| Pending context review, retained by #6110 | 1129 |
+| Artifact SHA256 with immutable bytes and verified checksum context | 496 |
+| Pending context review, retained by #6110 | 1076 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -77,6 +77,19 @@ its contents and candidate values are not published in this receipt. Nine
 synthetic regression cases cover public-example substring mismatches, document
 tampering, dirty checkouts, delimiter payloads/adjacent strings and duplicates.
 
-Current verified nonsecret dispositions: **730/1859**. **1,129** original scan
-records remain pending. #6110 stays open; this review makes no credential-rotation
-or zero-secrets claim.
+The public-example review reached **730/1859** verified nonsecret dispositions
+and left **1,129** original scan records pending.
+
+A fourth batch verifies **53** historical artifact digests. These do not match
+the current frozen file contents because they identify earlier installed/source
+versions. Each receipt records an immutable Git blob OID and historical
+commit:path; the verifier proves that resolution, verifies the commit is an
+ancestor of the original frozen revision, and computes SHA256 of those exact
+blob bytes. The original candidate still requires its exact full original join,
+frozen source line and decisive checksum context. Nine additional byte-matched
+candidates without complete path/ancestry proof remain pending. See
+`S21-detect-secrets-historical-digest-review.json`.
+
+Current verified nonsecret dispositions: **783/1859**. **1,076** original scan
+records remain pending. #6110 remains open; no credential was exercised and no
+rotation or zero-secrets conclusion is claimed.
