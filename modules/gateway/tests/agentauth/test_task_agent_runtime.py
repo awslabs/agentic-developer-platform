@@ -1,4 +1,5 @@
 """Real Task runtime factory selects independent workload proof and rollout gate."""
+
 # ruff: noqa: F811
 import pytest
 from fastapi import HTTPException
@@ -27,8 +28,14 @@ def configured(monkeypatch, store, kubernetes):
     monkeypatch.setattr(factory.boto3, "client", lambda *args, **kwargs: store.client)
     monkeypatch.setattr(workload.ssl, "create_default_context", lambda **kwargs: object())
     monkeypatch.setattr(workload.httpx, "Client", lambda **kwargs: verifier._client)
-    state["spec"] = {"containers": [{"name": "agent-worker", "env": [
-        {"name": "ADP_TASK_API_WORKER_ENABLED", "value": "true"}, {"name": "ADP_AGENT_AUTHORITY_ENABLED", "value": "false"}]}]}
+    state["spec"] = {
+        "containers": [
+            {
+                "name": "agent-worker",
+                "env": [{"name": "ADP_TASK_API_WORKER_ENABLED", "value": "true"}, {"name": "ADP_AGENT_AUTHORITY_ENABLED", "value": "false"}],
+            }
+        ]
+    }
     runtime = factory.get_task_agent_runtime()
     runtime.workloads._gateway_token_path = token_path
     yield runtime, state

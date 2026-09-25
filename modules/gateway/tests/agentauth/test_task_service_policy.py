@@ -51,8 +51,11 @@ def test_policy_is_absent_by_default_and_services_cannot_inherit_authority(store
 def test_human_admin_write_is_version_fenced_and_audited_atomically(store):
     repository, client = store
     created = repository.put(
-        tenant_id=TENANT, canonical_principal_id=PRINCIPAL,
-        expected_version=0, policy=policy(), updated_by="human-admin-1",
+        tenant_id=TENANT,
+        canonical_principal_id=PRINCIPAL,
+        expected_version=0,
+        policy=policy(),
+        updated_by="human-admin-1",
     )
     assert created["version"] == 1
     assert repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL) == created
@@ -62,7 +65,8 @@ def test_human_admin_write_is_version_fenced_and_audited_atomically(store):
         Key={
             "pk": {"S": f"TENANT#{TENANT}"},
             "sk": {"S": f"TASK_POLICY_AUDIT#{PRINCIPAL}#VERSION#0000000001"},
-        }, ConsistentRead=True,
+        },
+        ConsistentRead=True,
     )["Item"]
     assert audit["updated_by"] == {"S": "human-admin-1"}
     assert len(audit["policy_digest"]["S"]) == 64
@@ -71,13 +75,19 @@ def test_human_admin_write_is_version_fenced_and_audited_atomically(store):
 def test_stale_expected_version_cannot_overwrite_current_policy(store):
     repository, _ = store
     repository.put(
-        tenant_id=TENANT, canonical_principal_id=PRINCIPAL,
-        expected_version=0, policy=policy(), updated_by="human-admin-1",
+        tenant_id=TENANT,
+        canonical_principal_id=PRINCIPAL,
+        expected_version=0,
+        policy=policy(),
+        updated_by="human-admin-1",
     )
     with pytest.raises(TaskServicePolicyError, match="version_conflict"):
         repository.put(
-            tenant_id=TENANT, canonical_principal_id=PRINCIPAL,
-            expected_version=0, policy=policy(status="disabled"), updated_by="human-admin-2",
+            tenant_id=TENANT,
+            canonical_principal_id=PRINCIPAL,
+            expected_version=0,
+            policy=policy(status="disabled"),
+            updated_by="human-admin-2",
         )
     assert repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)["status"] == "active"
 
@@ -87,34 +97,52 @@ def test_stale_expected_version_cannot_overwrite_current_policy(store):
     [
         policy(allowed_personas=[]),
         policy(task_scopes=["admin"]),
-        policy(limits={
-            "max_duration_minutes": 31, "max_turns": 8,
-            "max_output_tokens_per_turn": 4096, "max_usd_per_task": Decimal("1"),
-        }),
-        policy(limits={
-            "max_duration_minutes": 30, "max_turns": 9,
-            "max_output_tokens_per_turn": 4096, "max_usd_per_task": Decimal("1"),
-        }),
-        policy(limits={
-            "max_duration_minutes": 30, "max_turns": 8,
-            "max_output_tokens_per_turn": 4096, "max_usd_per_task": Decimal("1.01"),
-        }),
+        policy(
+            limits={
+                "max_duration_minutes": 31,
+                "max_turns": 8,
+                "max_output_tokens_per_turn": 4096,
+                "max_usd_per_task": Decimal("1"),
+            }
+        ),
+        policy(
+            limits={
+                "max_duration_minutes": 30,
+                "max_turns": 9,
+                "max_output_tokens_per_turn": 4096,
+                "max_usd_per_task": Decimal("1"),
+            }
+        ),
+        policy(
+            limits={
+                "max_duration_minutes": 30,
+                "max_turns": 8,
+                "max_output_tokens_per_turn": 4096,
+                "max_usd_per_task": Decimal("1.01"),
+            }
+        ),
     ],
 )
 def test_platform_ceilings_fail_closed(store, invalid):
     repository, _ = store
     with pytest.raises(TaskServicePolicyError, match="invalid_policy"):
         repository.put(
-            tenant_id=TENANT, canonical_principal_id=PRINCIPAL,
-            expected_version=0, policy=invalid, updated_by="human-admin-1",
+            tenant_id=TENANT,
+            canonical_principal_id=PRINCIPAL,
+            expected_version=0,
+            policy=invalid,
+            updated_by="human-admin-1",
         )
 
 
 def test_corrupt_policy_binding_fails_closed(store):
     repository, client = store
     repository.put(
-        tenant_id=TENANT, canonical_principal_id=PRINCIPAL,
-        expected_version=0, policy=policy(), updated_by="human-admin-1",
+        tenant_id=TENANT,
+        canonical_principal_id=PRINCIPAL,
+        expected_version=0,
+        policy=policy(),
+        updated_by="human-admin-1",
     )
     client.update_item(
         TableName="authority",

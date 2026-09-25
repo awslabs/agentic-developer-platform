@@ -1,4 +1,5 @@
 """Cross-story admission extensions: budget binding and atomic rate limit."""
+
 # ruff: noqa: F811
 import pytest
 
@@ -10,9 +11,11 @@ def test_budget_reservation_is_inside_protected_grant_digest(client, store):
     request = _request(budget_reservation={"reservation_id": "fixture-reservation", "status": "reserved", "amount_usd": "1"})
     store.accept(request)
     assert store.read_task(request.task_id)["budget_reservation"]["reservation_id"] == "fixture-reservation"
-    client.update_item(TableName=AUTHORITY_TABLE,
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
         Key={"pk": {"S": "TENANT#" + request.tenant}, "sk": {"S": request.grant_reference}},
-        UpdateExpression="REMOVE budget_reservation")
+        UpdateExpression="REMOVE budget_reservation",
+    )
     with pytest.raises(WorkBindingError):
         store.resolve_work(request.dispatch_id)
 
@@ -20,12 +23,10 @@ def test_budget_reservation_is_inside_protected_grant_digest(client, store):
 def test_admission_rate_count_is_atomic_and_idempotent(client, store):
     scope = "b" * 64
     for index in range(10):
-        request = _request(idempotency_key=f"rate-{index}", submit_rate_scope_hash=scope,
-                           submit_rate_window_end=int(NOW.timestamp()) + 120)
+        request = _request(idempotency_key=f"rate-{index}", submit_rate_scope_hash=scope, submit_rate_window_end=int(NOW.timestamp()) + 120)
         store.accept(request)
         assert store.accept(request).replayed
-    denied = _request(idempotency_key="eleventh", submit_rate_scope_hash=scope,
-                      submit_rate_window_end=int(NOW.timestamp()) + 120)
+    denied = _request(idempotency_key="eleventh", submit_rate_scope_hash=scope, submit_rate_window_end=int(NOW.timestamp()) + 120)
     with pytest.raises(TaskStoreError):
         store.accept(denied)
     assert store.read_task(denied.task_id) is None
@@ -47,14 +48,28 @@ async def test_real_admission_reserves_once_and_failed_loser_cannot_release(clie
 
     policies = TaskServicePolicyStore(table_name=AUTHORITY_TABLE, client=client, clock=lambda: NOW)
     client.delete_item(TableName=AUTHORITY_TABLE, Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}})
-    policies.put(tenant_id="tenant-a", canonical_principal_id="svc-principal-1", expected_version=0, updated_by="test",
-        policy={"status": "active", "allowed_personas": ["agent-task-investigator"], "task_scopes": ["submit"],
-            "model_policy_version": "1", "limits": {"max_duration_minutes": 30, "max_turns": 8,
-                "max_output_tokens_per_turn": 4096, "max_usd_per_task": 1}})
-    reservations = ReservationStore(redis_url=None, ttl_seconds=86400, clock=lambda: NOW.timestamp(),
-                                   client=fakeredis.aioredis.FakeRedis(decode_responses=True))
-    budget = TaskBudget(BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client), reservations=reservations,
-                        qualification_id="test-qualification", clock=lambda: NOW)
+    policies.put(
+        tenant_id="tenant-a",
+        canonical_principal_id="svc-principal-1",
+        expected_version=0,
+        updated_by="test",
+        policy={
+            "status": "active",
+            "allowed_personas": ["agent-task-investigator"],
+            "task_scopes": ["submit"],
+            "model_policy_version": "1",
+            "limits": {"max_duration_minutes": 30, "max_turns": 8, "max_output_tokens_per_turn": 4096, "max_usd_per_task": 1},
+        },
+    )
+    reservations = ReservationStore(
+        redis_url=None, ttl_seconds=86400, clock=lambda: NOW.timestamp(), client=fakeredis.aioredis.FakeRedis(decode_responses=True)
+    )
+    budget = TaskBudget(
+        BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client),
+        reservations=reservations,
+        qualification_id="test-qualification",
+        clock=lambda: NOW,
+    )
     calls = []
 
     async def model(*args, **kwargs):
@@ -88,10 +103,15 @@ async def test_task_budget_settlement_verifies_actual_redis_receipt(client):
     from src.agentauth.task_budget import TaskBudget, TaskBudgetError
     from src.budget.reservations import ReservationStore
 
-    reservations = ReservationStore(redis_url=None, ttl_seconds=86400, clock=lambda: NOW.timestamp(),
-        client=fakeredis.aioredis.FakeRedis(decode_responses=True))
-    budget = TaskBudget(BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client), reservations=reservations,
-        qualification_id="test-qualification", clock=lambda: NOW)
+    reservations = ReservationStore(
+        redis_url=None, ttl_seconds=86400, clock=lambda: NOW.timestamp(), client=fakeredis.aioredis.FakeRedis(decode_responses=True)
+    )
+    budget = TaskBudget(
+        BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client),
+        reservations=reservations,
+        qualification_id="test-qualification",
+        clock=lambda: NOW,
+    )
     target = await budget.reserve_model(task_id="task", operation_id="op", cap=1, amount="0.2")
     reconcile = reservations.reconcile
     reservations.reconcile = AsyncMock()  # Shared implementation may return after swallowing a backend failure.
@@ -117,25 +137,35 @@ async def test_expired_preacceptance_hold_cleanup_is_owner_fenced(client, commit
     from src.budget.reservations import ReservationStore
 
     now = [NOW]
-    reservations = ReservationStore(redis_url=None, ttl_seconds=86400, clock=lambda: now[0].timestamp(),
-        client=fakeredis.aioredis.FakeRedis(decode_responses=True))
-    budget = TaskBudget(BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client), reservations=reservations,
-        qualification_id="test-qualification", clock=lambda: now[0])
-    hold = await budget.reserve_admission(tenant="tenant", principal="principal", idempotency_key="abandoned", max_usd=1, request_digest="a"*64)
+    reservations = ReservationStore(
+        redis_url=None, ttl_seconds=86400, clock=lambda: now[0].timestamp(), client=fakeredis.aioredis.FakeRedis(decode_responses=True)
+    )
+    budget = TaskBudget(
+        BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client),
+        reservations=reservations,
+        qualification_id="test-qualification",
+        clock=lambda: now[0],
+    )
+    hold = await budget.reserve_admission(tenant="tenant", principal="principal", idempotency_key="abandoned", max_usd=1, request_digest="a" * 64)
     shard_number = int(hashlib.sha256(hold["reservation_id"].encode()).hexdigest()[:2], 16) % 16
     shard = f"v1#{shard_number:02d}"
     target = budget._target(scope="qualification:test-qualification", cap=25)
     await budget.reap_abandoned(shard=shard)
     assert (await reservations.snapshot(target)).total_usd == 1
     if committed:
-        client.update_item(TableName=AUTHORITY_TABLE, Key={"pk": {"S": hold["authority_pk"]}, "sk": {"S": "RESERVATION"}},
-            UpdateExpression="SET #state = :committed", ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues={":committed": {"S": "committed"}})
+        client.update_item(
+            TableName=AUTHORITY_TABLE,
+            Key={"pk": {"S": hold["authority_pk"]}, "sk": {"S": "RESERVATION"}},
+            UpdateExpression="SET #state = :committed",
+            ExpressionAttributeNames={"#state": "state"},
+            ExpressionAttributeValues={":committed": {"S": "committed"}},
+        )
     now[0] += timedelta(seconds=121)
     await budget.reap_abandoned(shard=shard)
     assert (await reservations.snapshot(target)).total_usd == (1 if committed else 0)
     raw = budget.authority._read(hold["authority_pk"], "RESERVATION")
     assert raw["state"] == {"S": "committed" if committed else "released"}
-    assert not client.query(TableName=AUTHORITY_TABLE, KeyConditionExpression="pk = :pk",
-        ExpressionAttributeValues={":pk": {"S": "TASK_ADMISSION_CLEANUP#"+shard}}).get("Items")
+    assert not client.query(
+        TableName=AUTHORITY_TABLE, KeyConditionExpression="pk = :pk", ExpressionAttributeValues={":pk": {"S": "TASK_ADMISSION_CLEANUP#" + shard}}
+    ).get("Items")
     await reservations.close()

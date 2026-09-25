@@ -1,4 +1,5 @@
 """Compose authenticated Task admission into the single T1 transaction."""
+
 from __future__ import annotations
 
 import hashlib
@@ -31,10 +32,18 @@ class TaskAdmission:
 
     @staticmethod
     def receipt(task, *, replayed):
-        return {"schema_version": "1.0", "task_id": task["task_id"], "invocation_id": task["invocation_id"],
-                "status": "accepted", "created_at": task["created_at"], "deadline_at": task["deadline_at"],
-                "status_url": "/v1/tasks/" + task["task_id"], "events_url": "/v1/tasks/" + task["task_id"] + "/events",
-                "request_id": task["dispatch_id"], "idempotent_replay": replayed}
+        return {
+            "schema_version": "1.0",
+            "task_id": task["task_id"],
+            "invocation_id": task["invocation_id"],
+            "status": "accepted",
+            "created_at": task["created_at"],
+            "deadline_at": task["deadline_at"],
+            "status_url": "/v1/tasks/" + task["task_id"],
+            "events_url": "/v1/tasks/" + task["task_id"] + "/events",
+            "request_id": task["dispatch_id"],
+            "idempotent_replay": replayed,
+        }
 
     async def admit(self, *, caller, submit, idempotency_key, db):
         caller.require("adp-tasks/submit")
@@ -55,14 +64,19 @@ class TaskAdmission:
             return self.receipt(task, replayed=True)
         now = self.clock()
         deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
-        binding = await self.model_resolver(db, tenant=caller.tenant_id, principal=caller.principal_id,
-            deadline=deadline, expected_policy_version=policy["model_policy_version"])
+        binding = await self.model_resolver(
+            db, tenant=caller.tenant_id, principal=caller.principal_id, deadline=deadline, expected_policy_version=policy["model_policy_version"]
+        )
         refs = []
         total_bytes = 0
         for artifact_id in submit.get("artifact_ids", []):
             artifact = await run_in_threadpool(self.repository._get, task_artifact_partition(artifact_id), "META")
-            if (artifact is None or artifact.get("scope") != {"tenant": caller.tenant_id, "canonical_principal": caller.principal_id}
-                    or artifact.get("binding_state") != "unclaimed" or int(artifact.get("expires_at", 0)) <= int(now.timestamp())):
+            if (
+                artifact is None
+                or artifact.get("scope") != {"tenant": caller.tenant_id, "canonical_principal": caller.principal_id}
+                or artifact.get("binding_state") != "unclaimed"
+                or int(artifact.get("expires_at", 0)) <= int(now.timestamp())
+            ):
                 raise TaskAdmissionError("not_found", 404)
             total_bytes += int(artifact["size_bytes"])
             refs.append({key: artifact[key] for key in ("artifact_id", "version", "content_sha256", "content_type")})
@@ -71,35 +85,76 @@ class TaskAdmission:
         task_id, invocation_id, dispatch_id = "tsk_" + str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
         input_ref = {"record_type": "TASK", "input_digest": digest, **({"artifact_refs": refs} if refs else {})}
         assignment = {"grant_pk": "TENANT#" + caller.tenant_id, "grant_sk": f"TASK_RUN#{invocation_id}#GEN#0000000001", "generation": 1}
-        envelope = {"schema_version": "1.0", "kind": "adp.task", "task_id": task_id, "invocation_id": invocation_id,
-                    "message_id": invocation_id, "dispatch_id": dispatch_id, "persona": submit["persona"],
-                    "request_digest": digest, "input_ref": input_ref, "assignment_ref": assignment}
+        envelope = {
+            "schema_version": "1.0",
+            "kind": "adp.task",
+            "task_id": task_id,
+            "invocation_id": invocation_id,
+            "message_id": invocation_id,
+            "dispatch_id": dispatch_id,
+            "persona": submit["persona"],
+            "request_digest": digest,
+            "input_ref": input_ref,
+            "assignment_ref": assignment,
+        }
         immutable_input = {key: submit[key] for key in ("instructions", "inputs", "acceptance_criteria") if key in submit}
         immutable_input.update(input_digest=digest)
         if refs:
             immutable_input["artifacts"] = refs
-        limits = {"max_turns": int(policy["limits"]["max_turns"]),
-                  "max_output_tokens_per_turn": int(policy["limits"]["max_output_tokens_per_turn"]),
-                  "max_usd": float(policy["limits"]["max_usd_per_task"]), "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        limits = {
+            "max_turns": int(policy["limits"]["max_turns"]),
+            "max_output_tokens_per_turn": int(policy["limits"]["max_output_tokens_per_turn"]),
+            "max_usd": float(policy["limits"]["max_usd_per_task"]),
+            "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
         scope = hashlib.sha256(("task-nonterminal:tenant:" + caller.tenant_id).encode()).hexdigest()
         try:
-            await run_in_threadpool(self.repository._client.put_item, TableName=self.repository.authority_table_name,
-                Item={"pk": {"S": "TASK_CAPACITY#" + scope}, "sk": {"S": "ACTIVE"}, "active_count": {"N": "0"},
-                      "capacity_limit": {"N": "20"}, "reservations": {"M": {}}}, ConditionExpression="attribute_not_exists(pk)")
+            await run_in_threadpool(
+                self.repository._client.put_item,
+                TableName=self.repository.authority_table_name,
+                Item={
+                    "pk": {"S": "TASK_CAPACITY#" + scope},
+                    "sk": {"S": "ACTIVE"},
+                    "active_count": {"N": "0"},
+                    "capacity_limit": {"N": "20"},
+                    "reservations": {"M": {}},
+                },
+                ConditionExpression="attribute_not_exists(pk)",
+            )
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
-        reservation = await self.budget.reserve_admission(tenant=caller.tenant_id, principal=caller.principal_id,
-            idempotency_key=idempotency_key, max_usd=limits["max_usd"], request_digest=digest)
+        reservation = await self.budget.reserve_admission(
+            tenant=caller.tenant_id, principal=caller.principal_id, idempotency_key=idempotency_key, max_usd=limits["max_usd"], request_digest=digest
+        )
         rate_scope = hashlib.sha256(
-            ("task-rate:" + caller.tenant_id + ":" + caller.principal_id + ":" + now.strftime("%Y%m%d%H%M")).encode()).hexdigest()
-        request = AcceptanceRequest(task_id=task_id, invocation_id=invocation_id, dispatch_id=dispatch_id,
-            tenant=caller.tenant_id, canonical_principal=caller.principal_id, idempotency_key=idempotency_key,
-            persona=submit["persona"], request_payload=submit, deadline_at=deadline, grant_reference=assignment["grant_sk"],
-            envelope=envelope, immutable_input=immutable_input, model_binding=binding, run_limits=limits,
-            policy_version=int(policy["version"]), capacity_scope_hash=scope, capacity_limit=20,
-            capacity_reservation_id=str(uuid.uuid4()), input_reference=input_ref, artifact_ids=tuple(submit.get("artifact_ids", [])),
-            budget_reservation=reservation, submit_rate_scope_hash=rate_scope, submit_rate_window_end=int(now.timestamp()) + 120)
+            ("task-rate:" + caller.tenant_id + ":" + caller.principal_id + ":" + now.strftime("%Y%m%d%H%M")).encode()
+        ).hexdigest()
+        request = AcceptanceRequest(
+            task_id=task_id,
+            invocation_id=invocation_id,
+            dispatch_id=dispatch_id,
+            tenant=caller.tenant_id,
+            canonical_principal=caller.principal_id,
+            idempotency_key=idempotency_key,
+            persona=submit["persona"],
+            request_payload=submit,
+            deadline_at=deadline,
+            grant_reference=assignment["grant_sk"],
+            envelope=envelope,
+            immutable_input=immutable_input,
+            model_binding=binding,
+            run_limits=limits,
+            policy_version=int(policy["version"]),
+            capacity_scope_hash=scope,
+            capacity_limit=20,
+            capacity_reservation_id=str(uuid.uuid4()),
+            input_reference=input_ref,
+            artifact_ids=tuple(submit.get("artifact_ids", [])),
+            budget_reservation=reservation,
+            submit_rate_scope_hash=rate_scope,
+            submit_rate_window_end=int(now.timestamp()) + 120,
+        )
         try:
             accepted = await run_in_threadpool(self.repository.accept, request)
         except AcceptanceConditionError as exc:

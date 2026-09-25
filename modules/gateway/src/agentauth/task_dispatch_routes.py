@@ -123,8 +123,10 @@ async def dispatch_claim(
     store: TaskWorkStore = Depends(work_store),
 ) -> JSONResponse:
     await _authenticate(
-        proof=body.producer_proof, identity=body.dispatch_id,
-        roles_env=DISPATCH_ROLES_ENV, runtime=runtime,
+        proof=body.producer_proof,
+        identity=body.dispatch_id,
+        roles_env=DISPATCH_ROLES_ENV,
+        runtime=runtime,
     )
     try:
         claimed = await run_in_threadpool(store.claim_publication, body.dispatch_id)
@@ -133,12 +135,15 @@ async def dispatch_claim(
         raise _refusal(exc) from None
     except TaskWorkUnavailableError:
         raise HTTPException(503, "task dispatch unavailable") from None
-    return JSONResponse({
-        "schema_version": SCHEMA_VERSION,
-        "envelope": claimed.envelope,
-        "lease_token": claimed.work["publication_lease_token"]["S"],
-        "lease_expires_at": claimed.work["publication_lease_expires_at"]["S"],
-    }, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "envelope": claimed.envelope,
+            "lease_token": claimed.work["publication_lease_token"]["S"],
+            "lease_expires_at": claimed.work["publication_lease_expires_at"]["S"],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/dispatch/settle")
@@ -148,8 +153,10 @@ async def dispatch_settle(
     store: TaskWorkStore = Depends(work_store),
 ) -> JSONResponse:
     await _authenticate(
-        proof=body.producer_proof, identity=body.dispatch_id,
-        roles_env=DISPATCH_ROLES_ENV, runtime=runtime,
+        proof=body.producer_proof,
+        identity=body.dispatch_id,
+        roles_env=DISPATCH_ROLES_ENV,
+        runtime=runtime,
     )
     try:
         settled = await run_in_threadpool(
@@ -165,12 +172,15 @@ async def dispatch_settle(
         raise _refusal(exc) from None
     except TaskWorkUnavailableError:
         raise HTTPException(503, "task dispatch unavailable") from None
-    return JSONResponse({
-        "schema_version": SCHEMA_VERSION,
-        "dispatch_id": body.dispatch_id,
-        "queue_ack_status": settled.work.get("queue_ack_status", {}).get("S", "pending"),
-        "task_status": task_status,
-    }, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "dispatch_id": body.dispatch_id,
+            "queue_ack_status": settled.work.get("queue_ack_status", {}).get("S", "pending"),
+            "task_status": task_status,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/recovery/claim")
@@ -183,32 +193,44 @@ async def recovery_claim(
     if not _flag(env, RECOVERY_FLAG):
         raise HTTPException(503, "task recovery unavailable")
     await _authenticate(
-        proof=body.producer_proof, identity=body.shard,
-        roles_env=RECOVERY_ROLES_ENV, runtime=runtime,
+        proof=body.producer_proof,
+        identity=body.shard,
+        roles_env=RECOVERY_ROLES_ENV,
+        runtime=runtime,
     )
     try:
         if not body.cursor and env.get("ADP_TASK_QUALIFICATION_ID"):
             from src.agentauth.task_budget import task_budget
+
             await task_budget(store.repository).reap_abandoned(shard=body.shard)
         claimed, next_cursor = await run_in_threadpool(
-            store.claim_recovery, shard=body.shard, cursor=body.cursor, limit=body.limit,
+            store.claim_recovery,
+            shard=body.shard,
+            cursor=body.cursor,
+            limit=body.limit,
         )
     except TaskWorkError as exc:
         raise _refusal(exc) from None
     except TaskWorkUnavailableError:
         raise HTTPException(503, "task recovery unavailable") from None
-    return JSONResponse({
-        "schema_version": SCHEMA_VERSION,
-        "work": [{
-            "work_id": item.work_id,
-            "task_id": item.task_id,
-            "kind": item.kind,
-            "due_at": item.work["due_at"]["S"],
-            "lease_token": item.work["recovery_lease_token"]["S"],
-            "lease_expires_at": item.work["recovery_lease_expires_at"]["S"],
-        } for item in claimed],
-        "next_cursor": next_cursor,
-    }, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "work": [
+                {
+                    "work_id": item.work_id,
+                    "task_id": item.task_id,
+                    "kind": item.kind,
+                    "due_at": item.work["due_at"]["S"],
+                    "lease_token": item.work["recovery_lease_token"]["S"],
+                    "lease_expires_at": item.work["recovery_lease_expires_at"]["S"],
+                }
+                for item in claimed
+            ],
+            "next_cursor": next_cursor,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/recovery/settle")
@@ -221,8 +243,10 @@ async def recovery_settle(
     if not _flag(env, RECOVERY_FLAG):
         raise HTTPException(503, "task recovery unavailable")
     await _authenticate(
-        proof=body.producer_proof, identity=body.work_id,
-        roles_env=RECOVERY_ROLES_ENV, runtime=runtime,
+        proof=body.producer_proof,
+        identity=body.work_id,
+        roles_env=RECOVERY_ROLES_ENV,
+        runtime=runtime,
     )
     try:
         operation_status, settled = await run_in_threadpool(
@@ -238,9 +262,12 @@ async def recovery_settle(
         raise _refusal(exc) from None
     except TaskWorkUnavailableError:
         raise HTTPException(503, "task recovery unavailable") from None
-    return JSONResponse({
-        "schema_version": SCHEMA_VERSION,
-        "work_id": body.work_id,
-        "operation_status": operation_status,
-        "task_status": task_status,
-    }, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "work_id": body.work_id,
+            "operation_status": operation_status,
+            "task_status": task_status,
+        },
+        headers={"Cache-Control": "no-store"},
+    )

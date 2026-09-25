@@ -61,7 +61,10 @@ class KubernetesWorkloadVerifier:
         self._namespace = namespace
         self._service_account = service_account
         if not _NAME.fullmatch(container_name) or authority_flag not in {
-                "ADP_AGENT_AUTHORITY_ENABLED", "ADP_CHAT_MODEL_POLICY_ENABLED", "ADP_TASK_API_WORKER_ENABLED"}:
+            "ADP_AGENT_AUTHORITY_ENABLED",
+            "ADP_CHAT_MODEL_POLICY_ENABLED",
+            "ADP_TASK_API_WORKER_ENABLED",
+        }:
             raise WorkloadRefusedError("invalid workload configuration")
         self._container_name = container_name
         self._authority_flag = authority_flag
@@ -94,18 +97,25 @@ class KubernetesWorkloadVerifier:
                 follow_redirects=False,
                 trust_env=False,
             ),
-            image_digests=frozenset(
-                filter(None, os.environ.get(digest_env, "").split(","))
+            image_digests=frozenset(filter(None, os.environ.get(digest_env, "").split(","))),
+            namespace=(
+                os.environ.get("ADP_TASK_WORKER_NAMESPACE", "adp-agents")
+                if task_api
+                else os.environ.get("ADP_CHAT_WORKER_NAMESPACE", "adp-gateway-agents")
+                if chat
+                else os.environ.get("AGENT_WORKER_NAMESPACE", "adp-agents")
             ),
-            namespace=(os.environ.get("ADP_TASK_WORKER_NAMESPACE", "adp-agents") if task_api else
-                os.environ.get("ADP_CHAT_WORKER_NAMESPACE", "adp-gateway-agents") if chat else
-                os.environ.get("AGENT_WORKER_NAMESPACE", "adp-agents")),
-            service_account=(os.environ.get("ADP_TASK_WORKER_SERVICE_ACCOUNT", "agent-scaledjob-sa") if task_api else
-                os.environ.get("ADP_CHAT_WORKER_SERVICE_ACCOUNT", "adp-agent") if chat else
-                os.environ.get("AGENT_WORKER_SERVICE_ACCOUNT", "agent-authority-worker-sa")),
+            service_account=(
+                os.environ.get("ADP_TASK_WORKER_SERVICE_ACCOUNT", "agent-scaledjob-sa")
+                if task_api
+                else os.environ.get("ADP_CHAT_WORKER_SERVICE_ACCOUNT", "adp-agent")
+                if chat
+                else os.environ.get("AGENT_WORKER_SERVICE_ACCOUNT", "agent-authority-worker-sa")
+            ),
             container_name="chat-agent" if chat else "agent-worker",
-            authority_flag=("ADP_TASK_API_WORKER_ENABLED" if task_api else
-                "ADP_CHAT_MODEL_POLICY_ENABLED" if chat else "ADP_AGENT_AUTHORITY_ENABLED"),
+            authority_flag=(
+                "ADP_TASK_API_WORKER_ENABLED" if task_api else "ADP_CHAT_MODEL_POLICY_ENABLED" if chat else "ADP_AGENT_AUTHORITY_ENABLED"
+            ),
         )
 
     def verify(self, token: str) -> VerifiedPod:

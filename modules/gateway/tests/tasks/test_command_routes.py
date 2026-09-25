@@ -8,17 +8,18 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from . import test_store as t1_fixtures
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from .test_store import NOW, _request
-from .test_task_commands import final_body, running
 
 from src.agentauth.routes import require_agent_transport
 from src.shared.database import get_db
 from src.tasks import authz
 from src.tasks import command_routes as routes
 from src.tasks.task_commands import TaskCommands
+
+from . import test_store as t1_fixtures
+from .test_store import NOW, _request
+from .test_task_commands import final_body, running
 
 client = t1_fixtures.client
 store = t1_fixtures.store

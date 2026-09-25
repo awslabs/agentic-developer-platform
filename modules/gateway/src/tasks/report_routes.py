@@ -157,6 +157,7 @@ class ReportRequest(BaseModel):
 async def verified_attempt(request: Request) -> VerifiedAttempt:
     if _AUTHENTICATOR is None:
         from src.agentauth.task_runtime_routes import authenticate_task_attempt
+
         return await authenticate_task_attempt(request)
     result = _AUTHENTICATOR(request)
     return await result if inspect.isawaitable(result) else result
@@ -259,6 +260,7 @@ async def report(request: Request):
     http.require_flag(http.FLAG_WORKER)
 
     from src.tasks.routes import get_store
+
     store = _STORE if _STORE is not None else get_store()
 
     # Attempt verification precedes reading the body. The transport guard has

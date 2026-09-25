@@ -46,8 +46,13 @@ class Store:
 
 def context(account_type="human", org_id="tenant-1"):
     return TokenContext(
-        user_id="user-1", org_id=org_id, team_id="", department_id="",
-        account_type=account_type, auth_source="jwt", is_admin=False,
+        user_id="user-1",
+        org_id=org_id,
+        team_id="",
+        department_id="",
+        account_type=account_type,
+        auth_source="jwt",
+        is_admin=False,
         expires_at=datetime(2099, 1, 1, tzinfo=UTC),
     )
 

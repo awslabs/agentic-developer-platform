@@ -755,27 +755,41 @@ class TaskStore:
         if request.submit_rate_scope_hash is not None:
             if request.submit_rate_window_end is None:
                 raise TaskStoreError("submit rate window is missing")
-            transaction.append({"Update": {
-                "TableName": self._authority_table_name,
-                "Key": _serialize_authority({"pk": task_capacity_partition(request.submit_rate_scope_hash), "sk": "ACTIVE"}),
-                "UpdateExpression": "SET expires_at = :expires ADD request_count :one",
-                "ConditionExpression": "attribute_not_exists(request_count) OR request_count < :max",
-                "ExpressionAttributeValues": _serialize_authority({":expires": request.submit_rate_window_end,
-                                                                  ":one": 1, ":max": 10}),
-            }})
+            transaction.append(
+                {
+                    "Update": {
+                        "TableName": self._authority_table_name,
+                        "Key": _serialize_authority({"pk": task_capacity_partition(request.submit_rate_scope_hash), "sk": "ACTIVE"}),
+                        "UpdateExpression": "SET expires_at = :expires ADD request_count :one",
+                        "ConditionExpression": "attribute_not_exists(request_count) OR request_count < :max",
+                        "ExpressionAttributeValues": _serialize_authority({":expires": request.submit_rate_window_end, ":one": 1, ":max": 10}),
+                    }
+                }
+            )
 
         transaction.extend(self._artifact_claim_items(request=request, now_iso=now_iso))
         if request.budget_reservation and request.budget_reservation.get("authority_pk"):
             reservation = request.budget_reservation
-            transaction.append({"Update": {
-                "TableName": self._authority_table_name,
-                "Key": _serialize_authority({"pk": reservation["authority_pk"], "sk": reservation["authority_sk"]}),
-                "UpdateExpression": "SET #state = :committed, task_id = :task",
-                "ConditionExpression": "#state = :preparing AND owner_token = :owner AND lease_expires_at >= :now",
-                "ExpressionAttributeNames": {"#state": "state"},
-                "ExpressionAttributeValues": _serialize_authority({":committed": "committed", ":preparing": "preparing",
-                    ":task": request.task_id, ":owner": reservation["owner_token"], ":now": int(self._clock().timestamp())}),
-            }})
+            transaction.append(
+                {
+                    "Update": {
+                        "TableName": self._authority_table_name,
+                        "Key": _serialize_authority({"pk": reservation["authority_pk"], "sk": reservation["authority_sk"]}),
+                        "UpdateExpression": "SET #state = :committed, task_id = :task",
+                        "ConditionExpression": "#state = :preparing AND owner_token = :owner AND lease_expires_at >= :now",
+                        "ExpressionAttributeNames": {"#state": "state"},
+                        "ExpressionAttributeValues": _serialize_authority(
+                            {
+                                ":committed": "committed",
+                                ":preparing": "preparing",
+                                ":task": request.task_id,
+                                ":owner": reservation["owner_token"],
+                                ":now": int(self._clock().timestamp()),
+                            }
+                        ),
+                    }
+                }
+            )
         return transaction
 
     def _artifact_claim_items(self, *, request: AcceptanceRequest, now_iso: str) -> list[dict[str, Any]]:

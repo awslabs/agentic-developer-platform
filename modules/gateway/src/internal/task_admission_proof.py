@@ -43,9 +43,7 @@ class TaskAdmissionProofError(ValueError):
     """The internal request and its producer proof do not agree."""
 
 
-def binding_digest(
-    *, method: str, route: str, caller_token: str, idempotency_key: str, body: bytes
-) -> str:
+def binding_digest(*, method: str, route: str, caller_token: str, idempotency_key: str, body: bytes) -> str:
     parts = [
         PROOF_BINDING_VERSION.encode(),
         method.encode(),
@@ -130,18 +128,11 @@ def _proof_binding(proof: str) -> str:
         headers = _json_object(base64.b64decode(proof, validate=True))
     except (binascii.Error, ValueError) as exc:
         raise TaskAdmissionProofError("invalid producer proof") from exc
-    if (
-        set(headers) - _ALLOWED_PROOF_HEADERS
-        or any(not isinstance(value, str) for value in headers.values())
-    ):
+    if set(headers) - _ALLOWED_PROOF_HEADERS or any(not isinstance(value, str) for value in headers.values()):
         raise TaskAdmissionProofError("invalid producer proof headers")
     authorization = headers.get("authorization", "")
     try:
-        signed_headers = (
-            authorization.split("SignedHeaders=", 1)[1]
-            .split(",", 1)[0]
-            .split(";")
-        )
+        signed_headers = authorization.split("SignedHeaders=", 1)[1].split(",", 1)[0].split(";")
     except IndexError as exc:
         raise TaskAdmissionProofError("invalid signed headers") from exc
     if PROOF_BINDING_HEADER not in signed_headers:
@@ -152,9 +143,7 @@ def _proof_binding(proof: str) -> str:
     return binding
 
 
-def verify_admission_binding(
-    raw_body: bytes, *, caller_token_header: str, producer_proof_header: str
-) -> tuple[dict, bytes]:
+def verify_admission_binding(raw_body: bytes, *, caller_token_header: str, producer_proof_header: str) -> tuple[dict, bytes]:
     """Verify internal wrapper/header agreement and return exact public bytes."""
     if not raw_body or len(raw_body) > _MAX_INTERNAL_BODY_BYTES:
         raise TaskAdmissionProofError("invalid internal body size")

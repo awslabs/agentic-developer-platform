@@ -90,8 +90,10 @@ def flow(client, store, monkeypatch):
     monkeypatch.setattr(route, "get_admission", lambda: service)
 
     from src.auth import caller_provenance
-    monkeypatch.setattr(caller_provenance, "get_settings", lambda: SimpleNamespace(
-        trust_apigw_headers=True, apigw_provenance_secret="task-test-edge-provenance"))
+
+    monkeypatch.setattr(
+        caller_provenance, "get_settings", lambda: SimpleNamespace(trust_apigw_headers=True, apigw_provenance_secret="task-test-edge-provenance")
+    )
 
     def authenticate(request):
         assert request.headers["Authorization"] == "Bearer caller-access-token"
@@ -281,11 +283,7 @@ def test_unready_model_refuses_without_accepting_or_fallback(flow):
     response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
     assert response["statusCode"] == 503, response
     assert (
-        flow.store._read_idempotency(
-            idempotency_partition(
-                tenant="tenant-a", canonical_principal="svc-principal-1", idempotency_key="http-task"
-            )
-        )
+        flow.store._read_idempotency(idempotency_partition(tenant="tenant-a", canonical_principal="svc-principal-1", idempotency_key="http-task"))
         is None
     )
 
@@ -309,8 +307,10 @@ def test_edge_and_sts_producer_roles_must_be_the_same(flow, monkeypatch):
 
 def test_disabled_edge_header_trust_does_not_fallback_to_sts_only(flow, monkeypatch):
     from src.auth import caller_provenance
-    monkeypatch.setattr(caller_provenance, "get_settings", lambda: SimpleNamespace(
-        trust_apigw_headers=False, apigw_provenance_secret="task-test-edge-provenance"))
+
+    monkeypatch.setattr(
+        caller_provenance, "get_settings", lambda: SimpleNamespace(trust_apigw_headers=False, apigw_provenance_secret="task-test-edge-provenance")
+    )
     response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
     assert response["statusCode"] == 403
     assert flow.model_calls == []
@@ -318,8 +318,10 @@ def test_disabled_edge_header_trust_does_not_fallback_to_sts_only(flow, monkeypa
 
 def test_scoped_producer_needs_no_generic_internal_agent_grant(flow, monkeypatch):
     from src.agentauth import routes
+
     async def generic_forbidden(*args, **kwargs):
         raise AssertionError("Task producer must not enter generic internal authorization")
+
     monkeypatch.setattr(routes, "verify_internal_or_irsa", generic_forbidden)
     response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
     assert response["statusCode"] == 202

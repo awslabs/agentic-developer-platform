@@ -4,6 +4,7 @@ T1 owns persistence, authority validation and fencing. Keeping those operations
 in one repository prevents acceptance and publication from inventing different
 representations of the same protected work record.
 """
+
 from __future__ import annotations
 
 import base64
@@ -64,7 +65,8 @@ class TaskWorkStore:
     def __init__(self, *, dynamodb_client, table_name=None, authority_table_name=None, clock=time.time):
         self.clock = clock
         self.repository = TaskStore(
-            dynamodb_client=dynamodb_client, table_name=table_name,
+            dynamodb_client=dynamodb_client,
+            table_name=table_name,
             authority_table_name=authority_table_name,
             clock=lambda: datetime.fromtimestamp(clock(), UTC),
         )
@@ -103,10 +105,13 @@ class TaskWorkStore:
         projected.setdefault("due_at", due_at)
         projected["queue_ack_status"] = task.get("queue_ack_status", "pending")
         return BoundWork(
-            work_id=record["work_id"], task_id=record["task_id"],
-            tenant_id=task["scope"]["tenant"], kind=record["work_kind"],
+            work_id=record["work_id"],
+            task_id=record["task_id"],
+            tenant_id=task["scope"]["tenant"],
+            kind=record["work_kind"],
             work={key: _SERIALIZER.serialize(value) for key, value in projected.items()},
-            task=task, envelope=record.get("envelope"),
+            task=task,
+            envelope=record.get("envelope"),
         )
 
     def resolve(self, work_id: str, *, expected_kind=None):
@@ -125,8 +130,13 @@ class TaskWorkStore:
             raise TaskWorkError("invalid_settlement")
         if (publication_outcome == "confirmed") != bool(sqs_message_id):
             raise TaskWorkError("invalid_settlement")
-        self._call(self.repository.settle_dispatch, dispatch_id=dispatch_id, lease_token=lease_token,
-                   publication_outcome=publication_outcome, sqs_message_id=sqs_message_id)
+        self._call(
+            self.repository.settle_dispatch,
+            dispatch_id=dispatch_id,
+            lease_token=lease_token,
+            publication_outcome=publication_outcome,
+            sqs_message_id=sqs_message_id,
+        )
         return self.resolve(dispatch_id, expected_kind="dispatch")
 
     def claim_recovery(self, *, shard, cursor=None, limit=MAX_WORK_RECORDS_PER_INVOCATION):
@@ -135,16 +145,23 @@ class TaskWorkStore:
         key = decode_cursor(cursor) if cursor else None
         if key and key["task_work_shard"] != shard:
             raise TaskWorkError("invalid_cursor")
-        page = self._call(self.repository.claim_due_work_page, shard=shard,
-                          now=datetime.fromtimestamp(self.clock(), UTC), limit=limit, exclusive_start_key=key)
+        page = self._call(
+            self.repository.claim_due_work_page, shard=shard, now=datetime.fromtimestamp(self.clock(), UTC), limit=limit, exclusive_start_key=key
+        )
         return [self.resolve(item["work_id"]) for item in page["work"]], encode_cursor(page["next_key"]) if page["next_key"] else None
 
     def settle_recovery(self, *, work_id, lease_token, evidence_kind, observed, observed_at):
         self.resolve(work_id)
         # A caller's observation is never authoritative evidence. The repository
         # validates both the persisted evidence and the current lease before writes.
-        self._call(self.repository.settle_recovery, work_id=work_id, lease_token=lease_token,
-                   evidence_kind=evidence_kind, observed=observed, observed_at=observed_at)
+        self._call(
+            self.repository.settle_recovery,
+            work_id=work_id,
+            lease_token=lease_token,
+            evidence_kind=evidence_kind,
+            observed=observed,
+            observed_at=observed_at,
+        )
         return "confirmed", self.resolve(work_id)
 
     def task_status(self, task_id):

@@ -780,13 +780,14 @@ async def put_task_policy(
     await _require_human_org_admin(db, current_user)
     try:
         await service.validate_target_service_principal(db, canonical_id=canonical_id, org_id=current_user.org_id)
-        admin_id = await service.validate_human_principal(
-            db, user_id=current_user.user_id, org_id=current_user.org_id
-        )
+        admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
         values = body.model_dump(exclude={"expected_version"}, mode="python")
         policy = policy_store.put(
-            tenant_id=current_user.org_id, canonical_principal_id=canonical_id,
-            expected_version=body.expected_version, policy=values, updated_by=admin_id,
+            tenant_id=current_user.org_id,
+            canonical_principal_id=canonical_id,
+            expected_version=body.expected_version,
+            policy=values,
+            updated_by=admin_id,
         )
     except service.PreferenceRejectedError as exc:
         raise _rejected(exc) from exc

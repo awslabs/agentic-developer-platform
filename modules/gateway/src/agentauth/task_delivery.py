@@ -85,8 +85,10 @@ class TaskDelivery:
         from src.tasks.records import dispatch_sort_key, task_work_partition
         from src.tasks.store import TaskStore
         from src.tasks.task_commands import TaskCommands
-        repository = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table,
-            clock=lambda: datetime.fromtimestamp(self.clock(), UTC))
+
+        repository = TaskStore(
+            dynamodb_client=self.store.client, authority_table_name=self.store.table, clock=lambda: datetime.fromtimestamp(self.clock(), UTC)
+        )
         task = repository.read_task(envelope.get("task_id", ""))
         if not task or task.get("dispatch_id") != envelope.get("dispatch_id"):
             return False
@@ -140,9 +142,13 @@ class TaskDelivery:
             envelope = json.loads(body)
             if not isinstance(envelope, dict):
                 raise TaskDeliveryError("invalid_task")
-            shared_legacy = (self.allow_shared_legacy and "kind" not in envelope and envelope.get("version") == "1.0"
+            shared_legacy = (
+                self.allow_shared_legacy
+                and "kind" not in envelope
+                and envelope.get("version") == "1.0"
                 and all(isinstance(envelope.get(name), str) and envelope[name] for name in ("channel", "tenant_id", "persona"))
-                and isinstance(envelope.get("source_ref"), dict))
+                and isinstance(envelope.get("source_ref"), dict)
+            )
             journal_id = envelope.get("message_id")
             if not isinstance(journal_id, str) or not journal_id:
                 if not shared_legacy or not isinstance(message.get("MessageId"), str):
@@ -156,9 +162,11 @@ class TaskDelivery:
 
                 if not self._cancelled_before_start(body):
                     try:
-                        work = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table,
-                            clock=lambda: datetime.fromtimestamp(self.clock(), UTC)).resolve_work(
-                                envelope.get("dispatch_id", ""), expected_kind="dispatch")
+                        work = TaskStore(
+                            dynamodb_client=self.store.client,
+                            authority_table_name=self.store.table,
+                            clock=lambda: datetime.fromtimestamp(self.clock(), UTC),
+                        ).resolve_work(envelope.get("dispatch_id", ""), expected_kind="dispatch")
                         if work.get("envelope") != envelope:
                             raise TaskDeliveryError("invalid_task")
                     except (TaskStoreError, WorkBindingError):
