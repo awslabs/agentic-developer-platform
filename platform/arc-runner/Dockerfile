@@ -42,27 +42,25 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Node.js 22.x (pinned — bump to fix CVE-2026-21636) ────────────────────────
-ENV NODE_VERSION=22.22.3
+# ── Node.js 22.x (pinned — security release 2026-09-23: OpenSSL 3.5.6, ────────
+#    zlib use-after-free, URL-parsing crash fix)
+ENV NODE_VERSION=22.23.3
 RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
         -o /tmp/node.tar.xz \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
     && rm /tmp/node.tar.xz \
     && node --version && npm --version
 
-# ── Fix GHSA-73rr-hfp2-rc4v: override npm's bundled diff with >=5.2.2 ────────
-# Pack the pinned dependency independently: installing inside npm's package
-# directory also resolves npm's unpublished development dependencies.
-RUN patch_dir=$(mktemp -d) \
-    && npm pack diff@5.2.2 --ignore-scripts --pack-destination "$patch_dir" \
-    && rm -rf /usr/local/lib/node_modules/npm/node_modules/diff \
-    && mkdir -p /usr/local/lib/node_modules/npm/node_modules/diff \
-    && tar -xzf "$patch_dir/diff-5.2.2.tgz" --strip-components=1 \
-        -C /usr/local/lib/node_modules/npm/node_modules/diff \
-    && rm -rf "$patch_dir" \
-    && node -e "const v = require('/usr/local/lib/node_modules/npm/node_modules/diff/package.json').version; \
-       if (v !== '5.2.2') { console.error('diff version mismatch: ' + v); process.exit(1); } \
-       console.log('diff=' + v);"
+# ── Guard GHSA-73rr-hfp2-rc4v: npm >=10.9.8 bundles diff >=5.2.2 natively.
+# The manual override was removed when Node 22.23.3 (npm 10.9.9) absorbed
+# the fix. This check fails the build if a future Node bump re-introduces
+# a vulnerable diff version.
+RUN node -e " \
+  const v = require('/usr/local/lib/node_modules/npm/node_modules/diff/package.json').version; \
+  const [ma,mi,pa] = v.split('.').map(Number); \
+  if (ma < 5 || (ma === 5 && mi < 2) || (ma === 5 && mi === 2 && pa < 2)) { \
+    console.error('GHSA-73rr-hfp2-rc4v: bundled diff ' + v + ' < 5.2.2'); process.exit(1); } \
+  console.log('diff=' + v + ' (>=5.2.2, GHSA-73rr-hfp2-rc4v clear)');"
 
 # ── Python 3.12 + pip (for CodeBuild log parsing, yaml checks, etc.) ────────
 RUN apt-get update \
@@ -78,7 +76,7 @@ RUN apt-get update \
 # /internal/v1/credential-assume-role on the platform API Gateway. Without this,
 # every cross-account deploy fails at Load deployment config with
 # "botocore is required for SigV4 auth. Install boto3."
-RUN pip3 install --no-cache-dir --break-system-packages boto3==1.35.99 \
+RUN pip3 install --no-cache-dir --break-system-packages boto3==1.43.102 \
     && python3 -c "import boto3, botocore.auth; print(f'boto3={boto3.__version__} botocore={botocore.__version__}')"
 
 # ── AWS CLI v2 ──────────────────────────────────────────────────────────────
@@ -89,7 +87,7 @@ RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tm
     && aws --version
 
 # ── Terraform (matches project version per session-context: 1.14.x) ─────────
-ENV TERRAFORM_VERSION=1.14.2
+ENV TERRAFORM_VERSION=1.14.9
 RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
         -o /tmp/terraform.zip \
     && unzip -q /tmp/terraform.zip -d /usr/local/bin \
@@ -97,7 +95,7 @@ RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/te
     && terraform version
 
 # ── kubectl (matches cluster: 1.35.x) ───────────────────────────────────────
-ENV KUBECTL_VERSION=1.35.0
+ENV KUBECTL_VERSION=1.35.9
 RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
         -o /usr/local/bin/kubectl \
     && chmod +x /usr/local/bin/kubectl \
@@ -105,7 +103,7 @@ RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/ku
 
 # ── Helm 3.17.x ─────────────────────────────────────────────────────────────
 RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
-    DESIRED_VERSION=v3.17.3 bash \
+    DESIRED_VERSION=v3.17.4 bash \
     && helm version
 
 # ── gh CLI (latest) ─────────────────────────────────────────────────────────
