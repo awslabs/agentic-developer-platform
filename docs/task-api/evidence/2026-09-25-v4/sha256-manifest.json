@@ -37,7 +37,7 @@
   "queue-held-task-correlation.json": "41cea90bd2996a8ab99423060ae9791a80983d54f58979dc48a60021a96a2931",
   "task-route-integrations.json": "23ad38036a7c7de81349ec58221b314eb798b2d484b4c736eb78c845005ddfcd",
   "terminal-capacities.json": "684ccb59b3f48a271c3d8ff4b589979cef7da99b63216fae08a8a69de6c42c29",
-  "v4-criterion-report.json": "e1ea5912737139ccc6e867a77968a921725cf9effd4cd7f7d48ab8efffaed39f",
+  "v4-criterion-report.json": "12a2abaec86d302b2eeb3a6783b928f90d79d7c0a5d547f8f3e4709fe039bfce",
   "v4-invalid-persona-proof.json": "ff50a1c89dc72be073456e73d3521dc632b8b3007451a182e4e9fb3925d77b5c",
   "v5-consumer-boundary.json": "a77aad87c23d885097a44ec9038b041758e7d295ba89a1f038b5c3aee26713a5"
 }
