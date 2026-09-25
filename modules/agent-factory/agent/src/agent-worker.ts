@@ -112,6 +112,7 @@ import { PauseGate } from './pause-gate';
 // this replaced an inline assembly of pause gate + adapter + store + queue +
 // listener that only `main()` could build.
 import { startControlRuntime } from './control-runtime-factory';
+import { isControlCancellation } from './control-runtime';
 import { SteerQueue, steerMarker } from './steer-queue';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
@@ -1885,7 +1886,9 @@ Now, complete the assigned task.`;
     return lastTurnText || fullResponse.slice(-3000) || 'Task completed but no response returned.';
   } catch (error) {
     const err = error as Error;
-    log('ERROR', 'Agent execution failed', { error: err.message });
+    log(isControlCancellation(error) ? 'INFO' : 'ERROR',
+      isControlCancellation(error) ? 'Agent execution stopped by operator' : 'Agent execution failed',
+      { error: err.message });
     // Issue #4187: a budget stop is a distinct outcome, not a generic failure.
     // The gateway already returns a non-retryable 402 with a `scope`
     // discriminator, and resilientQuery correctly refuses to retry it — but the
@@ -2233,6 +2236,7 @@ async function main(): Promise<void> {
   let memoryContext = '';
   let detectedComponent = 'general';
   let agentSucceeded = false;
+  let agentAborted = false;
   let agentResult = '';
 
   // Issue #3960: the in-pod control listener. Declared outside the try so the
@@ -2518,6 +2522,13 @@ Working on this task...`);
 
   } catch (error) {
     const err = error as Error;
+    if (isControlCancellation(error)) {
+      agentAborted = true;
+      log('INFO', 'Operator abort requested; supervisor will finalize the run');
+      await activeLiveComment?.finalizeAbortRequested().catch(finalizeErr =>
+        log('WARN', `Could not update stopping comment: ${finalizeErr.message}`));
+      throw error;
+    }
     log('ERROR', `Agent failed: ${err.message}`);
     if (activeLiveComment) {
       await activeLiveComment.finalizeFailure({
@@ -2560,7 +2571,7 @@ Please check the workflow logs for details.`);
     // Write agent memory context to adp branch (best-effort, never blocks)
     try {
       const issue = await getIssue().catch(() => null);
-      if (issue) {
+      if (issue && !agentAborted) {
         const component = detectedComponent || detectComponent(issue.labels, issue.body);
         const memStatus = agentSucceeded ? 'success' : 'failed';
         await writeComponentRecord(component, buildComponentRecord({

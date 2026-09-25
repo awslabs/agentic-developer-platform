@@ -49,9 +49,10 @@ not constitute deployed live acceptance or relax Option A.
 The listener serializes signed-command revalidation and executor handoff in journal acceptance order. It does not hold that queue while a pause waits for tool settlement, so a later resume can cancel the delivered pause promptly. Gate transitions settle delivered commands only; queued commands have not yet passed delivery authorization. A cancelled pause's late result cannot overwrite a newer pause or the journal's cancellation. The shared echo contract also rejects explicit zero, negative, and nonfinite budgets. The retained SDK fixture includes a loopback HTTP service whose request counter must stay zero during the hold and reach one after resume.
 
 Admission counts all live commands, including delivered pause waits and executors
-whose journal outcome has already settled. Ordinary work has ten slots by default;
-one separate resume slot remains available when those are full. Additional live
-resumes return 429, while same-id retries replay the accepted command. Entries
+whose journal outcome has already settled. Pause and steering each have ten slots
+by default. Resume and abort each retain one independent slot when those queues
+are full. Additional live resumes or aborts return 429, while same-id retries
+replay the accepted command. A pending pause does not consume steering capacity. Entries
 cannot be pruned while revalidation or execution is active. Resume wakes the old
 pause's quiescence waits immediately, clearing their timers without waiting for
 the admitted tool to finish. The signed-listener regression floods a cap of three

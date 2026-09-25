@@ -259,6 +259,19 @@ export class LiveStatusComment {
     await this.updateComment(lines.join('\n'));
   }
 
+  /** Stop progress reporting while the supervisor completes abort finalization. */
+  async finalizeAbortRequested(): Promise<void> {
+    this.finished = true;
+    this.cancelPendingUpdate();
+    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+    await Promise.allSettled([...this.inFlightUpdates]);
+    await this.updateComment([
+      '## Agent stopping', '',
+      'An operator requested an abort. Finalization is in progress; the final run status will confirm the outcome.',
+      ...this.explanationLines(),
+    ].join('\n'));
+  }
+
   /**
    * Mark the run as failed and replace the comment with a failure summary.
    */
