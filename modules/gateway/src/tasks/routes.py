@@ -36,16 +36,14 @@ from src.tasks import authz, errors, http, snapshot, streaming
 from src.tasks.events import CursorError, parse_cursor
 from src.tasks.read_store import TaskRecord, TaskStore
 from src.tasks.response import TaskStreamingResponse
-from src.tasks.streaming import StreamRegistry
+from src.tasks.stream_leases import configured_registry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/tasks", tags=["task-api"])
 
-#: Per-process stream accounting. Module-level because the caps bound what this
-#: replica will hold open concurrently, which is a property of the process rather
-#: than of any request. See ``StreamRegistry`` for the per-replica caveat.
-_STREAMS = StreamRegistry()
+#: Shared Redis leases enforce the frozen caps across every gateway replica.
+_STREAMS = None
 
 #: The storage backend, injected. ``None`` until T1's DynamoDB store lands, which
 #: is why the read surface answers 503 rather than raising: an unconfigured
@@ -215,7 +213,10 @@ async def read_events(task_id: str, request: Request, db: AsyncSession = Depends
 
     # Reserve before response headers so cap refusals retain their JSON body.
     # The response owns release even if its first send fails before iteration.
-    _STREAMS.acquire(task_id=task_id, principal_id=caller.principal_id)
+    global _STREAMS
+    if _STREAMS is None:
+        _STREAMS = configured_registry()
+    lease = await _STREAMS.acquire_lease(task_id=task_id, principal_id=caller.principal_id, tenant_id=caller.tenant_id)
     outcome = streaming.StreamOutcome(task_id=task_id)
 
     async def frames() -> AsyncIterator[bytes]:
@@ -227,8 +228,8 @@ async def read_events(task_id: str, request: Request, db: AsyncSession = Depends
         finally:
             await iterator.aclose()
 
-    def release_stream() -> None:
-        _STREAMS.release(task_id=task_id, principal_id=caller.principal_id)
+    async def release_stream() -> None:
+        await lease.release()
         logger.info(
             "Task API stream closed",
             extra={
@@ -243,6 +244,7 @@ async def read_events(task_id: str, request: Request, db: AsyncSession = Depends
         frames(),
         outcome=outcome,
         release=release_stream,
+        lease=lease,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )

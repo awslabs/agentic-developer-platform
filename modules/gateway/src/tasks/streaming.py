@@ -348,22 +348,7 @@ class BoundedFrameBuffer:
 
 
 class StreamRegistry:
-    """Concurrent-stream accounting for the three fixed SSE caps.
-
-    The caps exist because an SSE reader is the cheapest expensive thing a client
-    can ask for: one HTTP request holds a server task, a polling loop and a buffer
-    for up to ten minutes. Without a bound, a client that opens streams in a loop
-    costs the gateway far more than it costs the client.
-
-    In-process by design for v1, and that limitation is stated rather than hidden:
-    with more than one gateway replica these caps are per-replica, so the
-    environment-wide cap of 32 is enforced per pod rather than per environment. The
-    design fixes no cross-replica coordination mechanism for v1, and inventing a
-    shared counter here would be an architecture decision this story may not make.
-    The caps still do their real job — bounding what one pod will hold open — and
-    the gap is recorded for the evaluation lane that measures a deployed
-    environment rather than left for someone to discover.
-    """
+    """In-memory counter for isolated fixtures; production uses RedisStreamRegistry."""
 
     def __init__(self) -> None:
         self.per_task: dict[str, int] = {}
