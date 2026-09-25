@@ -21,7 +21,7 @@ from superplane_executor.plan import Plan
 @pytest.mark.parametrize(
     "kind,status,instances,expected",
     [
-        ("delete_cluster", "SUCCEEDED", [], ("succeeded", None)),
+        ("delete_cluster", "SUCCEEDED", [], ("unknown", None)),
         (
             "launch",
             "SUCCEEDED",

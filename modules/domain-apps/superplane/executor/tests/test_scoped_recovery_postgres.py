@@ -193,6 +193,9 @@ class ObservationBackend(Ledger):
             self.provider,
             operation,
             Plan.read(operation, dict(target)),
+            target=dict(target),
+            call={"idempotency_key": key},
+            authorize=lambda: self.resolve_recovery(claim),
             **dict(journal),
         )
         await self.resolve_recovery(claim)
