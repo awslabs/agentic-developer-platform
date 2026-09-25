@@ -12,7 +12,7 @@ The engine can remain paused while authorized operators qualify the Task API.
 Capture the actual account/region, queue ARN, gateway/backend source and image
 versions, ingress/recovery Lambda published versions and configuration hashes,
 worker resolved image digest, all four canonical Task API flags, canonical
-principal/persona policy and expiry. Capture commands and exit codes alongside
+principal/persona active versioned policy and token expiry. Capture commands and exit codes alongside
 outputs. Bind every file by SHA-256. Do not capture credentials or unredacted
 Lambda environment values. Read-only inventory commands include:
 
@@ -41,6 +41,11 @@ Copy `readiness-inventory.example.json` into an owned evidence directory and
 replace every unset value with observed facts and hashed capture paths. The
 checker requires complete consumer enumeration, compatible image identities,
 old-job disposition, projected token binding and immutable component versions.
+An older bound worker is excluded from new consumers only with hashed evidence
+of completed initial acquisition, a single acquisition code path, and disabled
+restart; terminal Jobs require terminal-state evidence. Enumerate empty Deployment
+consumer sets explicitly. Require every desired gateway replica ready on the
+verified image before operator review.
 It emits BLOCKED for missing evidence; a successful inventory check means only
 READY FOR OPERATOR REVIEW, never live qualification or automatic admission.
 
@@ -61,14 +66,16 @@ python3 scripts/task-api/check-readiness.py evidence/inventory.json --output evi
    workers without this prepared (or explicitly enabled) verifier prerequisite.
 3. Deploy gateway/ingress/recovery versions; verify their source/image identities,
    configuration and required access. Keep `ADP_RUN_TASKS_ENABLED=false`; Task API
-   uses `ADP_TASK_API_READ_ENABLED`, `ADP_TASK_API_SUBMIT_ENABLED`,
+   uses `ADP_TASK_API_READ_ENABLED`, `ADP_TASK_API_ADMISSION_ENABLED`,
    `ADP_TASK_API_WORKER_ENABLED`, `ADP_TASK_API_RECOVERY_ENABLED` independently.
 4. Verify capability with read-only inventory plus built-image/component evidence.
    Run legacy regression baseline using component-owned V1–V3 fixtures. Store
    source/fixture/image hashes and measured results. Admission stays off until
    all consumers and authority are ready and the operator authorizes bounded work.
 5. Enable reads, worker and recovery for qualified components, then submit last.
-   Use an expiring policy for the owned principal only. This example evidence
+   Use an active versioned policy for the owned principal, expiring OAuth tokens,
+   enforced per-task deadlines and the protected qualification budget. TaskServicePolicy
+   has no policy expiry field; do not invent one in readiness evidence. This example evidence
    slice caps traffic at three tasks and total spend atUSD3 (stricter than the
    accepted USD25 qualification ceiling). Stop on exhaustion or unknown provider
    outcomes; never increase limits to obtain PASS.
@@ -92,7 +99,7 @@ remains deliverable. Shared-queue legacy regression must remain healthy.
 After accepted work has terminal/stop evidence and no old task envelopes can be
 consumed, worker/recovery can be disabled or reverted deliberately. Record queue
 counts, owned task states, retained jobs and policy disposition. Revoke the
-expiring qualification principal policy and remove only explicitly owned temporary
+qualification principal policy and remove only explicitly owned temporary
 pods/policies; normal task30-day/tombstone90-day retention handles records.
 Unclaimed uploads expire24 hours. Preserve failure evidence and resource IDs.
 
