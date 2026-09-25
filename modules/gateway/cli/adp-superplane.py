@@ -189,6 +189,7 @@ class SessionApi:
     def __init__(self, api):
         self._api = api
         self._token = None
+        self._capabilities_checked = False
 
     def session_token(self):
         if self._token is None:
@@ -207,6 +208,9 @@ class SessionApi:
             if kwargs.get("token") not in (None, token):
                 raise CliError("A Superplane command cannot change its authenticated identity.", "authentication_required", 2)
             if method not in {"GET", "HEAD", "OPTIONS"}:
+                if not self._capabilities_checked:
+                    common.ensure_can_mutate("superplane.workspace.write", request=self.request, token=token)
+                    self._capabilities_checked = True
                 current_recovery_context(self)
             kwargs["token"] = token
         return self._api.request(method, path, body, **kwargs)

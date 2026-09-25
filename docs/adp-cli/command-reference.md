@@ -63,7 +63,7 @@ See [AWS workflows](aws-and-bedrock.md#connect-your-aws-account).
 |---|---|---|
 | `adp aws connect` | `--account ACCOUNT` for a new/imported connection, or `--resume DIRECTORY` | `--name NAME`, `--region REGION`, `--profile PROFILE`, `--role-arn ARN`, one ExternalId input, `--download DIRECTORY`, `--yes`, `--dry-run`, `--json` |
 | `adp aws list` | None | `--json` |
-| `adp aws verify CONNECTION` | Connection name or ID | `--json` |
+| `adp aws verify CONNECTION` | Connection name or ID | `--yes`, `--dry-run`, `--json` |
 | `adp aws disconnect CONNECTION` | Connection name or ID | `--yes`, `--dry-run`, `--json` |
 
 For an existing role, the ExternalId inputs are mutually exclusive:
@@ -99,7 +99,7 @@ See [routing and administrator handoff](aws-and-bedrock.md#configure-bedrock-rou
 | `adp bedrock status` | `--json` | Shows your effective account and winning routing level |
 | `adp admin bedrock connect` | See options below | Creates/reuses a destination, verifies it, then assigns a routing rule |
 | `adp admin bedrock list` | `--org ORG`, `--json` | Lists registered destinations |
-| `adp admin bedrock verify DESTINATION` | Destination ID; `--json` | Re-verifies a destination without changing a rule |
+| `adp admin bedrock verify DESTINATION` | Destination ID; `--yes`, `--dry-run`, `--json` | Re-verifies a destination without assigning a rule; the probe updates stored readiness evidence and can make existing routing unavailable |
 | `adp admin bedrock status` | `--user USER`, `--json` | Shows your route, or another user's when authorized |
 
 Connect options:
@@ -203,6 +203,44 @@ An older domain without the replay contract is refused before mutation.
 Superplane mutations support `--dry-run` and require interactive confirmation
 or `--yes`. A provider secret is read from a hidden prompt or stdin, never from a
 secret-valued command argument.
+
+## Capability discovery and diagnosis
+
+Both commands only read. Neither changes configuration, starts work, nor runs a
+paid model call. Full guide: [doctor.md](../../modules/gateway/cli/doctor.md).
+
+| Command | Options / arguments | What it does |
+|---|---|---|
+| `adp capabilities` | `--json`, `--refresh`, `--operation ID` | What this deployment offers you: available, switched off, not permitted, or a dependency not ready — reported as four separate facts |
+| `adp doctor` | `--json`, `--checks LIST`, `--request-id ID` | Diagnoses a failure from bounded reads. `--checks` selects from `auth,api,budget,models,agents` |
+
+`adp capabilities` reads `GET /me/cli-capabilities`, which is authenticated and
+scoped to your own tenant — there is no target argument at any position.
+Definitive evidence that a mutation cannot work makes the CLI refuse before
+sending; missing or stale evidence proceeds and lets the server decide, and never
+falls back to an older code path.
+
+`adp doctor --request-id` explains one request you are allowed to see. An ID
+belonging to another user produces output identical to one that does not exist.
+
+Error `code` values a script can branch on: `unsupported_operation`,
+`feature_disabled`, `permission_denied`, `stale_revision`, `budget_exhausted`,
+`dependency_pending`, `request_timeout`, `unknown_mutation_outcome`,
+`capability_unknown`, `schema_unsupported`. They use the existing exit categories;
+established authentication and tool-launch exit codes remain unchanged.
+
+### Shipped and proposed status
+
+| Group | Status | Leaf contract |
+|---|---|---|
+| `adp capabilities`, `adp doctor` | Shipped | Options and output are listed above and in [doctor.md](../../modules/gateway/cli/doctor.md). |
+| `adp flow start|create|list|show|watch|plans|decisions|cost` and `adp flow gate approve|reject` | Shipped | Exact flags and NDJSON watch behavior are documented in [flow.md](../../modules/gateway/cli/flow.md). |
+| `adp models catalog`, `adp models mappings list|set|reset`, `adp models explain`, `adp models service-principals list` | Shipped | Exact flags are published by `adp models --help` and the checked manifest. |
+| Additional capability or doctor verbs | Proposed only | None. A proposal must not be marked shipped until its parser, server operation, installer artifact and owning test all exist. |
+
+`modules/gateway/cli/command-manifest.json` is the checked machine-readable leaf
+inventory. It records exact flags, positional arguments, mutation class,
+capability, request/response contract and owning tests; it is not loaded at runtime.
 
 ## Installer options
 

@@ -40,7 +40,7 @@ case "$SHARED_REPO" in
   adp-gateway)
     bash modules/gateway/scripts/stage-contracts.sh
     cd modules/gateway
-    docker build "${SHARED_BUILD_OPTIONS[@]}" -t "$SHARED_IMAGE" .
+    docker build "${SHARED_BUILD_OPTIONS[@]}" --build-arg "GATEWAY_RELEASE=$ADP_SOURCE_SHA" -t "$SHARED_IMAGE" .
     docker run --rm --entrypoint python "$SHARED_IMAGE" -m pricing_policy.selfcheck
     docker run --rm --entrypoint python "$SHARED_IMAGE" -m src.orchestration.review_contract_selfcheck
     docker run --rm --entrypoint python "$SHARED_IMAGE" -m src.orchestration.evaluation_contract_selfcheck

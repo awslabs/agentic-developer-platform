@@ -152,6 +152,7 @@ def check_unauthenticated_discovery(cfg, record, *, discovery=UNFETCHED):
     # Not secret: the client_id ships to every browser as VITE_COGNITO_CLIENT_ID
     # and the app client is created with generate_secret = false.
     record["discovery_user_pool_id"] = discovery["user_pool_id"]
+    record["discovery_cli_client_id"] = discovery["cli_client_id"]
     record["discovery_region"] = discovery["region"]
     require(
         discovery["user_pool_id"] == cfg["cognito_user_pool_id"],
@@ -230,10 +231,20 @@ def check_served_cli_hashes(cfg, expected_hashes, record, *, fetch=None):
         payload = read(url)
         # A misrouted request returns the SPA's index.html with HTTP 200, which
         # would otherwise hash cleanly as "some file we served".
-        require(
-            isinstance(payload, bytes) and payload.startswith(b"#!"),
-            f"{url} did not return a script; the release route is misconfigured",
-        )
+        if name.endswith(".json"):
+            try:
+                parsed = json.loads(payload)
+            except (ValueError, TypeError):
+                parsed = None
+            require(
+                isinstance(parsed, dict),
+                f"{url} did not return a JSON release artifact",
+            )
+        else:
+            require(
+                isinstance(payload, bytes) and payload.startswith(b"#!"),
+                f"{url} did not return a script; the release route is misconfigured",
+            )
         served[name] = hashlib.sha256(payload).hexdigest()
 
     from . import release
@@ -440,6 +451,7 @@ def evaluate_fixtures(
     github_available=None,
     hosted_available=None,
     deployments_available=None,
+    capability_contrast_available=None,
     superplane_available=None,
 ):
     """Decide which fixture classes are genuinely usable for this run.
@@ -458,6 +470,7 @@ def evaluate_fixtures(
         ("github_available", github_available),
         ("hosted_available", hosted_available),
         ("deployments_available", deployments_available),
+        ("capability_contrast_available", capability_contrast_available),
         ("superplane_available", superplane_available),
     ):
         if callable(value):
@@ -479,6 +492,8 @@ def evaluate_fixtures(
     # E16/E17 rather than letting them fail inside the journey.
     if cases.THREE_DEPLOYMENTS in available and not deployments_available:
         available.discard(cases.THREE_DEPLOYMENTS)
+    if cases.CAPABILITY_CONTRAST in available and not capability_contrast_available:
+        available.discard(cases.CAPABILITY_CONTRAST)
     # No supplied boolean can manufacture the missing E18 recovery producer.
     # Remove this guard only alongside its implemented durable recovery path.
     available.discard(cases.SUPERPLANE_DOMAIN)
@@ -507,6 +522,16 @@ def missing_fixture_report(cfg, available):
             "implementation of hard Codex output limits (at most 256 tokens per "
             "request) and an aggregate 48-request ceiling before inference; "
             "E16/E17 model execution is disabled until these limits are enforced"
+        ),
+        cases.CAPABILITY_CONTRAST: (
+            "a deployment exhibiting the contrast E18 measures: at least one module "
+            "intentionally DISABLED alongside one enabled, plus an ordinary "
+            "non-admin sign-in fixture holding fewer permissions than the admin one "
+            "(config capability_contrast: disabled_feature, enabled_feature, the three "
+            "operation IDs, ordinary_fixture_name and a foreign request ID). The harness creates separate ordinary/admin identities. A fully-enabled platform with "
+            "only an admin identity cannot demonstrate 'switched off' or 'not "
+            "permitted', so every answer would be 'available' and the case would "
+            "pass with all four capability axes collapsed into one"
         ),
         cases.SUPERPLANE_DOMAIN: (
             cleanup.SUPERPLANE_RECOVERY_BLOCKER

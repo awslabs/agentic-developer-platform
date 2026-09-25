@@ -450,6 +450,9 @@ def run(args, client):
         return common.envelope("ok", _command_name(args), result)
 
     target = args.service_principal
+    if args.action in {"set", "reset"} and not getattr(args, "dry_run", False):
+        operation = "models.mapping.managed.write" if target else "models.mapping.self.write"
+        common.ensure_can_mutate(operation, request=client.request)
     if args.action == "list":
         result = _list(client, target)
         _tenant_id(result)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import calendar
+import hashlib
 import copy
 import json
 import os
@@ -438,7 +439,7 @@ def config_fixture(**overrides):
 
 
 def test_every_case_present_with_owners():
-    """#5199's fifteen, plus #5413's two.
+    """#5199's fifteen, #5413's two, and #5621's capability case.
 
     Derived from the registry's own numbering rather than a hardcoded range, so
     adding a case to a later story does not have to edit an arithmetic expression
@@ -467,6 +468,124 @@ def test_the_multi_deployment_cases_are_owned_by_5413_and_need_three_deployments
     assert {case.owner for case in multi} == {"#5413"}
     assert all(cases.THREE_DEPLOYMENTS in case.requires for case in multi)
     assert all(cases.EC2 in case.requires for case in multi)
+
+
+def test_the_capability_case_cannot_pass_without_a_contrasting_deployment():
+    """#5621's E19 is inside the matrix, and its fixture is never assumed.
+
+    The criterion is a CONTRAST — an available operation, a switched-off one and
+    an unpermitted one, told apart. A fully-enabled platform with only an admin
+    identity would answer "available" to all three, so the case would pass with
+    all four capability axes collapsed into one boolean: the exact defect it
+    exists to catch. Its own fixture class is therefore required, and while that
+    is absent E19 blocks and keeps `full` red.
+    """
+    case = cases.BY_ID["E19"]
+
+    assert case.owner == "#5621"
+    assert cases.CAPABILITY_CONTRAST in case.requires
+    assert cases.EC2 in case.requires, "the criterion is live, on a freshly served CLI"
+
+    # Granting every OTHER fixture class must not make it runnable.
+    everything_else = {
+        cases.PLATFORM,
+        cases.EC2,
+        cases.COGNITO,
+        cases.DESTINATION,
+        cases.SECOND_DESTINATION,
+        cases.GITHUB_APP,
+        cases.GITHUB_REPO,
+        cases.HOSTED,
+        cases.THREE_DEPLOYMENTS,
+        cases.MULTI_DEPLOYMENT_MODEL_LIMITS,
+    }
+    matrix = cases.new_matrix(FULL)
+    blocked = cases.block_missing_fixtures(matrix, everything_else)
+
+    assert blocked["E19"] == [cases.CAPABILITY_CONTRAST]
+    assert matrix["E19"]["status"] == cases.BLOCKED
+
+
+def capability_contrast_config():
+    return config.validate(
+        config_fixture(
+            capability_contrast={
+                "disabled_feature": "FEATURE_AGENT_MODELS_ENABLED",
+                "enabled_feature": "FEATURE_CONNECTIONS_ENABLED",
+                "disabled_operation": "models.catalog.read",
+                "enabled_operation": "connections.aws.read",
+                "denied_operation": "logs.request.read",
+                "foreign_request_id": "request-from-another-tenant",
+                "ordinary_fixture_name": "adp/cli-uplift-eval/ordinary-fixture",
+            }
+        )
+    )
+
+
+def test_capability_contrast_fixture_requires_live_preflight_proof():
+    configured = capability_contrast_config()
+
+    assert cases.CAPABILITY_CONTRAST in config.fixture_classes(configured)
+    assert cases.CAPABILITY_CONTRAST not in preflight.evaluate_fixtures(configured)
+    assert cases.CAPABILITY_CONTRAST in preflight.evaluate_fixtures(
+        configured, capability_contrast_available=True
+    )
+
+
+def test_e18_has_a_shipped_remote_driver_and_nightly_purpose():
+    assert stages.JOURNEY_DRIVERS["E19"] == "capability_contrast"
+    assert "capability_contrast" in bundle.purposes()
+    bundle.require_purpose("capability_contrast")
+
+
+E19_REVISION = "91ae8043125c990a349b9acf68b1c604cfdbf18e"
+
+
+def test_e18_accepts_only_the_expected_cli_version_and_gateway_revision(tmp_path):
+    module, _common = shipped_script(tmp_path, "capability_contrast")
+    expected = E19_REVISION
+    config_value = {"expected_revision": expected, "expected_cli_version": "1.0.0"}
+    capabilities = {"detail": {"gateway": {"state": "yes", "release": expected[:12]}}}
+
+    module._validate_release_evidence(config_value, "adp 1.0.0\n", capabilities)
+
+
+@pytest.mark.parametrize(
+    ("version", "gateway"),
+    [
+        ("adp 0.9.0", {"state": "yes", "release": E19_REVISION}),
+        ("adp 1.0.0", {"state": "unknown", "release": ""}),
+        ("adp 1.0.0", {"state": "yes", "release": "deadbee"}),
+        ("adp 1.0.0", {"state": "yes", "release": E19_REVISION[:6]}),
+    ],
+)
+def test_e18_rejects_cli_or_gateway_revision_mismatches(tmp_path, version, gateway):
+    module, common = shipped_script(tmp_path, "capability_contrast")
+    with pytest.raises(common.RemoteError):
+        module._validate_release_evidence(
+            {"expected_revision": E19_REVISION, "expected_cli_version": "1.0.0"},
+            version,
+            {"detail": {"gateway": gateway}},
+        )
+
+
+def test_a_blocked_capability_case_keeps_full_acceptance_red():
+    """BLOCKED is not PASSED — the rule that makes an honest hold possible.
+
+    Everything else green and E19 blocked must still fail, naming it. Otherwise
+    the story could be reported complete with its live criterion never run.
+    """
+    matrix = cases.new_matrix(FULL)
+    # Only E19's own fixture is withheld; every case it does not gate is free to pass.
+    cases.block_missing_fixtures(matrix, {cases.EC2, cases.PLATFORM})
+    for case_id, entry in matrix.items():
+        if entry["status"] == cases.NOT_RUN:
+            cases.record(matrix, case_id, cases.PASSED, {})
+
+    status, reasons = cases.accept(matrix, FULL)
+
+    assert status == cases.FAILED
+    assert any("E19" in reason for reason in reasons)
 
 
 def test_the_superplane_case_is_owned_by_5637_and_needs_a_deployed_domain():
@@ -885,6 +1004,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E16",
         "E17",
         "E18",
+        "E19",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
@@ -1810,6 +1930,39 @@ def test_misrouted_release_returning_the_spa_is_rejected(monkeypatch):
     with pytest.raises(preflight.PreflightError) as excinfo:
         preflight.check_served_cli_hashes(VALID, {"adp": "0" * 64}, {})
     assert "did not return a script" in str(excinfo.value)
+
+
+def test_release_manifest_accepts_the_checked_json_contract_as_a_data_artifact():
+    revision = "a" * 40
+    blobs = {
+        f"{release.CLI_DIR}/install.sh": b'#!/bin/sh\nCLI_FILES="adp command-manifest.json"\n',
+        f"{release.CLI_DIR}/adp": b'#!/bin/sh\nreadonly ADP_VERSION="1.2.3"\n',
+        f"{release.CLI_DIR}/command-manifest.json": b'{"schema_version":"test","commands":[]}',
+    }
+
+    def read(_revision, path, **_kwargs):
+        return blobs[path]
+
+    result = release.manifest(revision, read=read)
+
+    assert set(result) == {"adp", "command-manifest.json", "install.sh"}
+    assert release.cli_version(revision, read=read) == "1.2.3"
+
+
+def test_served_json_release_artifact_must_be_valid_json(monkeypatch):
+    payload = b"not-json"
+    monkeypatch.setattr(
+        preflight.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: FakeResponse(payload),
+    )
+
+    with pytest.raises(preflight.PreflightError, match="JSON release artifact"):
+        preflight.check_served_cli_hashes(
+            VALID,
+            {"command-manifest.json": hashlib.sha256(payload).hexdigest()},
+            {},
+        )
 
 
 def test_contaminated_config_dir_aborts_the_run():
@@ -8268,7 +8421,11 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E12",
         "E16",
         "E17",
+        # #5621: E19 needs a deployment exhibiting a disabled module and a
+        # non-admin identity. A checked-in example file describes no such
+        # environment, so it blocks here exactly as the GitHub cases do.
         "E18",
+        "E19",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.

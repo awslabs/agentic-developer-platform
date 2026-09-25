@@ -47,6 +47,7 @@ INSTALLED_FILES = [
     "adp-aws.py",
     "adp-github.py",
     "adp-github-admin.py",
+    "command-manifest.json",
 ]
 
 
@@ -463,7 +464,7 @@ class _CliDownloadHandler(BaseHTTPRequestHandler):
     """Serves the /api/cli/* download route so the curl path can be exercised.
 
     ``mode`` scripts what the gateway returns:
-      "scripts"  — a valid shebang script for every file (happy path)
+      "scripts"  — a valid artifact for every requested file (happy path)
       "html"     — a 200 SPA-fallback index.html for everything (the trap)
       "adp_only" — a valid `adp`, but 403 for the rest (mid-way failure)
     """
@@ -485,7 +486,10 @@ class _CliDownloadHandler(BaseHTTPRequestHandler):
             else:
                 self._send(403, b"Forbidden\n")
         else:
-            self._send(200, f"#!/usr/bin/env bash\necho fake {name}\n".encode())
+            if name == "command-manifest.json":
+                self._send(200, b'{"schema_version":"test","commands":[{"command":"adp version"}]}\n')
+            else:
+                self._send(200, f"#!/usr/bin/env bash\necho fake {name}\n".encode())
 
     def _send(self, status: int, body: bytes) -> None:
         self.send_response(status)
@@ -559,6 +563,37 @@ class TestDownloadPathIsAllOrNothing:
         # A bare gateway URL was normalized to hit /api/cli/... (not /cli/...).
         assert "/api/cli/adp" in _CliDownloadHandler.seen_paths
         assert "/cli/adp" not in _CliDownloadHandler.seen_paths
+
+    def test_installs_manifest_as_data_not_an_executable(self, run_download_install, prefix: Path) -> None:
+        with _cli_download_server("scripts") as url:
+            result = run_download_install(["--prefix", str(prefix), "--gateway-url", url])
+
+        assert result.returncode == 0, result.stderr
+        manifest = json.loads((prefix / "command-manifest.json").read_text())
+        assert manifest["schema_version"] == "test"
+        assert not os.access(prefix / "command-manifest.json", os.X_OK)
+
+    def test_malformed_manifest_is_rejected_without_partial_install(self, run_download_install, prefix: Path) -> None:
+        class InvalidManifestHandler(_CliDownloadHandler):
+            def do_GET(self) -> None:
+                name = self.path.rsplit("/", 1)[-1]
+                if name == "command-manifest.json":
+                    self._send(200, b'{"schema_version":"test","commands":[]}\n')
+                else:
+                    self._send(200, f"#!/usr/bin/env bash\necho fake {name}\n".encode())
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), InvalidManifestHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}"
+            result = run_download_install(["--prefix", str(prefix), "--gateway-url", url])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result.returncode != 0
+        assert "valid command manifest" in (result.stderr + result.stdout).lower()
+        assert _dir_contents(prefix) == []
 
     def test_html_fallback_body_is_rejected_and_nothing_is_installed(self, run_download_install, prefix: Path) -> None:
         """A misrouted request returning the SPA's index.html with a 200 must not

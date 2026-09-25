@@ -72,7 +72,7 @@
         "additionalProperties": false,
         "required": ["id", "owner", "suite", "summary", "status", "detail"],
         "properties": {
-          "id": { "type": "string", "pattern": "^(E(0[1-9]|1[0-8])|C01)$" },
+          "id": { "type": "string", "pattern": "^(E(0[1-9]|1[0-9])|C01)$" },
           "owner": { "type": "string", "description": "The story this case proves, e.g. #5185." },
           "suite": { "type": "string" },
           "summary": { "type": "string", "description": "The expected result, so a reader need not open the code." },

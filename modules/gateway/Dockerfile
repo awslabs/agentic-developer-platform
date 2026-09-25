@@ -33,6 +33,8 @@ RUN pip install --no-cache-dir awslambdaric==3.1.1
 # Runtime stage
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
+ARG GATEWAY_RELEASE=""
+ENV GATEWAY_RELEASE=${GATEWAY_RELEASE}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade \
     && apt-get install -y --no-install-recommends curl ca-certificates \

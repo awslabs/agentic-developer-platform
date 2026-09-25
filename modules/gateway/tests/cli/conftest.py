@@ -24,6 +24,32 @@ from typing import Any
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolate_operator_configuration(tmp_path, monkeypatch):
+    """Never inherit an operator's pinned login, configuration or token stores."""
+    for key in list(os.environ):
+        if key.startswith("ADP_") or key in {
+            "BG_CONFIG_DIR",
+            "BG_AWS_PROFILE",
+            "BG_AWS_RETIRED_PROFILES",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "KIMI_HOME",
+        }:
+            monkeypatch.delenv(key, raising=False)
+    import sys
+
+    for module in list(sys.modules.values()):
+        observations = vars(module).get("_capability_preflight") if module is not None else None
+        if isinstance(observations, dict):
+            observations.clear()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
+        directory = tmp_path / key.lower()
+        directory.mkdir(mode=0o700)
+        monkeypatch.setenv(key, str(directory))
+
+
 @pytest.fixture
 def cli_dir() -> Path:
     """Return the path to the cli directory."""
@@ -207,6 +233,8 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
         # delegates to, so an installed prefix without it has no onboarding verbs.
         "adp-superplane-onboarding.py",
         "adp-models.py",
+        # Issue #5621: capability discovery and diagnosis.
+        "adp-doctor.py",
     ):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())

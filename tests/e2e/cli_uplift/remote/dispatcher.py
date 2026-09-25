@@ -50,6 +50,8 @@ PURPOSES = {
     # switch, a refresh and one logout leave the other two correctly routed.
     "multi_deployment_concurrency": ("multi_deployment", {"mode": "overlap"}),
     "multi_deployment_lifecycle": ("multi_deployment", {"mode": "lifecycle"}),
+    # E18 — served capability contrast and read-only diagnostics.
+    "capability_contrast": ("capability_contrast", {}),
     # E18 (#5637) — real Superplane workspace, deployment and two-store
     # credential lifecycle through the served CLI.
     "superplane_domain": ("superplane_domain", {}),

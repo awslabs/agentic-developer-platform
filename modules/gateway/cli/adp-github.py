@@ -377,6 +377,8 @@ def parser():
 
 
 def run(args, api):
+    if args.command == "connect" and not args.dry_run:
+        common.ensure_can_mutate("github.connection.write", request=api.request)
     return connect(args, api) if args.command == "connect" else status(args, api)
 
 

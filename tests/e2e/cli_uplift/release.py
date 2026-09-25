@@ -22,6 +22,7 @@ anyone remembering to update a list in the test harness. That is what closes the
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 
@@ -29,7 +30,10 @@ CLI_DIR = "modules/gateway/cli"
 
 # `CLI_FILES="a b c"` in install.sh. Anchored so a similarly-named variable
 # elsewhere in the script cannot match.
-CLI_FILES_LINE = re.compile(r'^CLI_FILES="([^"]+)"', re.M)
+CLI_FILES_LINE = re.compile(r'^CLI_FILES="([^"]+)"', re.MULTILINE)
+CLI_VERSION_LINE = re.compile(
+    rb'^readonly ADP_VERSION="([0-9]+\.[0-9]+\.[0-9]+)"', re.MULTILINE
+)
 
 # The installer itself is not in CLI_FILES (it does not install itself) but it is
 # served, it is what `curl | sh` executes, and `adp update` re-pulls it. A stale
@@ -54,11 +58,12 @@ def git_blob(revision, path, *, repo_root=None):
     considers to be the release.
     """
     try:
-        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        result = subprocess.run(
             ["git", "cat-file", "blob", f"{revision}:{path}"],
             cwd=repo_root,
             capture_output=True,
             timeout=60,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ReleaseError(f"git could not be run: {type(exc).__name__}") from None
@@ -110,12 +115,30 @@ def manifest(revision, *, repo_root=None, read=git_blob):
     hashes = {}
     for name in helper_names(revision, repo_root=repo_root, read=read):
         payload = read(revision, f"{CLI_DIR}/{name}", repo_root=repo_root)
-        require(
-            payload.startswith(b"#!"),
-            f"{name} at the revision under test is not a script; the release is malformed",
-        )
+        if name.endswith(".json"):
+            try:
+                document = json.loads(payload)
+            except (ValueError, TypeError):
+                document = None
+            require(
+                isinstance(document, dict),
+                f"{name} at the revision under test is not a JSON document",
+            )
+        else:
+            require(
+                payload.startswith(b"#!"),
+                f"{name} at the revision under test is not a script; the release is malformed",
+            )
         hashes[name] = hashlib.sha256(payload).hexdigest()
     return hashes
+
+
+def cli_version(revision, *, repo_root=None, read=git_blob):
+    """Return the CLI version declared by the immutable `adp` blob."""
+    payload = read(revision, f"{CLI_DIR}/adp", repo_root=repo_root)
+    found = CLI_VERSION_LINE.search(payload)
+    require(found, "adp at the revision under test has no exact semantic ADP_VERSION")
+    return found.group(1).decode()
 
 
 def compare(served, expected):
@@ -147,6 +170,7 @@ def compare(served, expected):
 __all__ = [
     "CLI_DIR",
     "ReleaseError",
+    "cli_version",
     "compare",
     "git_blob",
     "helper_names",
