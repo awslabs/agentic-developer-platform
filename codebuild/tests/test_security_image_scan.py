@@ -1,5 +1,6 @@
 """Verify selected image coverage and the real Superplane staging contract."""
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -41,7 +42,54 @@ def source(tmp_path, monkeypatch):
     shutil.copytree(ROOT / "modules/harness/jobs", tmp_path / "modules/harness/jobs")
     shutil.copytree(ROOT / SUPERPLANE / "src/superplane-api/scripts",
                     module / "src/superplane-api/scripts")
+    (tmp_path / "codebuild").mkdir()
+    shutil.copyfile(ROOT / "codebuild/filter-sarif-ignores.py", tmp_path / "codebuild/filter-sarif-ignores.py")
+    # Exercise raw acquisition and the real scoped filter end to end. These
+    # synthetic advisory/package names cannot accidentally match the baseline.
+    (tmp_path / ".grype.yaml").write_text(yaml.safe_dump({
+        "ignore": [{"vulnerability": "CVE-2099-12345", "package": {"name": "scoped-package", "type": "deb"}}],
+        "only-fixed": True,
+        "only-notfixed": True,
+        "ignore-wontfix": "not-fixed",
+    }))
     return tmp_path
+
+
+def grype_document():
+    return {"runs": [{
+        "tool": {"driver": {"rules": [
+            {"id": "CVE-2099-12345-scoped-package", "help": {"text": "Package: scoped-package\nType: deb"}},
+            {"id": "CVE-2099-12345-other-package", "help": {"text": "Package: other-package\nType: deb"}},
+        ]}},
+        "results": [{"ruleId": "CVE-2099-12345-scoped-package"}, {"ruleId": "CVE-2099-12345-other-package"}],
+    }]}
+
+
+def write_descriptor(args):
+    path = Path(next(arg[5:] for arg in args if arg.startswith("json=")))
+    db = path.with_suffix(".db")
+    db.write_bytes(b"synthetic vulnerability database")
+    descriptor = {"name": "grype", "version": "0.119.0", "timestamp": "2026-09-25T15:00:00Z",
+                  "configuration": {"match": {"java": {"using-cpes": False}},
+                                    "ignore": [{"package": {"name": "kernel-headers"}, "reason": "secret"}],
+                                    "registry": {"password": "synthetic-secret"},
+                                    "exclude": ["https://user:password@private.example/path?secret=query#token"]},
+                  "db": {"status": {"schemaVersion": "v6.1.9", "built": "2026-09-25T06:00:00Z",
+                                    "path": str(db), "valid": True},
+                         "providers": {"nvd": {"captured": "2026-09-25T00:00:00Z", "input": "xxh64:1234"}}}}
+    path.write_text(json.dumps({"descriptor": descriptor}))
+    return path
+
+
+def assert_raw_scan_configuration(args, kwargs):
+    config = yaml.safe_load(Path(args[args.index("--config") + 1]).read_text())
+    assert config["ignore"] == []
+    assert config["only-fixed"] is False
+    assert config["only-notfixed"] is False
+    assert config["ignore-wontfix"] == ""
+    assert not any(key.startswith("GRYPE_IGNORE") for key in kwargs["env"])
+    assert "GRYPE_ONLY_FIXED" not in kwargs["env"]
+    assert "GRYPE_ONLY_NOTFIXED" not in kwargs["env"]
 
 
 def test_inventory_covers_all_source_components_and_pinned_runtime(source):
@@ -137,8 +185,10 @@ def test_external_image_cannot_fall_back_to_a_tag(source):
 
 
 @pytest.mark.parametrize("tool", ["grype", "syft"])
-@pytest.mark.parametrize("failure", [None, "build", "invalid_output", "executor_base"])
+@pytest.mark.parametrize("failure", [None, "build", "invalid_output", "executor_base", "missing_metadata"])
 def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source, monkeypatch, tool, failure):
+    if failure == "missing_metadata" and tool == "syft":
+        pytest.skip("Grype metadata contract")
     monkeypatch.chdir(source)
     monkeypatch.setenv("SECURITY_IMAGE_SCOPE", "superplane")
     monkeypatch.setenv("SECURITY_SCAN_DATE", "2026/09/20")
@@ -148,7 +198,11 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
     monkeypatch.setattr(sys, "argv", ["scan_security_images.py", tool])
     if failure == "executor_base":
         monkeypatch.delenv("SECURITY_EXECUTOR_PYTHON_IMAGE")
+    monkeypatch.setenv("GRYPE_ONLY_FIXED", "true")
+    monkeypatch.setenv("GRYPE_ONLY_NOTFIXED", "true")
+    monkeypatch.setenv("GRYPE_IGNORE_WONTFIX", "not-fixed")
     calls, reports = [], []
+    uploaded = {}
     real_run = subprocess.run
 
     def execute(args, **kwargs):
@@ -159,6 +213,9 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
             assert kwargs["input"] == "synthetic-login-token"
         if args[0] == "bash":
             return real_run(args, check=True, **kwargs)
+        if args[0] == "python3" and args[1].endswith("filter-sarif-ignores.py"):
+            # Run the real filter with this test interpreter and its dependencies.
+            return real_run([sys.executable, *args[1:]], check=True, **kwargs)
         if args[:2] == ["docker", "build"]:
             context = Path(args[-1])
             if args[args.index("-f") + 1] == str(SUPERPLANE / "executor/Dockerfile"):
@@ -188,11 +245,16 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
         if args[:3] == ["docker", "image", "inspect"]:
             return SimpleNamespace(stdout="sha256:" + "d" * 64 + "\n")
         if args[0] == "grype":
-            kwargs["stdout"].write(json.dumps({} if failure == "invalid_output" else {"runs": [{"results": []}]}))
+            assert_raw_scan_configuration(args, kwargs)
+            if failure != "missing_metadata":
+                write_descriptor(args)
+            kwargs["stdout"].write(json.dumps({} if failure == "invalid_output" else grype_document()))
         if args[0] == "syft":
             Path(args[-1].split("=", 1)[1]).write_text(json.dumps({} if failure == "invalid_output" else {"bomFormat": "CycloneDX"}))
-        if args[:3] == ["aws", "s3", "cp"] and args[3].endswith("coverage.json"):
-            reports.append(json.loads(Path(args[3]).read_text()))
+        if args[:3] == ["aws", "s3", "cp"]:
+            uploaded[args[4]] = Path(args[3]).read_bytes()
+            if args[3].endswith("coverage.json"):
+                reports.append(json.loads(uploaded[args[4]]))
 
     monkeypatch.setattr(runner, "command", execute)
     # Only docker cleanup bypasses the checked command wrapper.
@@ -200,10 +262,10 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
     assert runner.main() == (0 if failure is None else 1)
     report = reports[0]
     assert report["expected"] == 5
-    assert report["succeeded"] == {None: 5, "build": 4, "invalid_output": 0, "executor_base": 4}[failure]
+    assert report["succeeded"] == {None: 5, "build": 4, "invalid_output": 0, "executor_base": 4, "missing_metadata": 0}[failure]
     assert any(call[:3] == ["docker", "pull", "--platform"] for call in calls)
     uploads = [call for call in calls if call[:3] == ["aws", "s3", "cp"]]
-    assert len(uploads) == report["succeeded"] * 3 + 1
+    assert len(uploads) == report["succeeded"] * (6 if tool == "grype" else 3) + 1
     assert all("/2026/09/20/test-id/" in call[4] for call in uploads)
     missing = [item["name"] for item in report["targets"] if item["status"] != "succeeded"]
     assert bool(missing) is (failure is not None)
@@ -212,6 +274,27 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
     assert all(item.get("error") for item in report["targets"] if item["status"] != "succeeded")
     assert all(item.get("digest") == "sha256:" + "d" * 64 for item in report["targets"] if item["status"] == "succeeded")
     assert all(item.get("artifact_sha256") for item in report["targets"] if item["status"] == "succeeded")
+    for item in report["targets"]:
+        if item["status"] != "succeeded" or tool != "grype":
+            continue
+        metadata_bytes = uploaded[item["scanner_metadata"]]
+        assert item["scanner_metadata_sha256"] == hashlib.sha256(metadata_bytes).hexdigest()
+        assert b"synthetic-secret" not in metadata_bytes
+        assert b"secret=query" not in metadata_bytes
+        assert b"kernel-headers" in metadata_bytes
+        raw_bytes = uploaded[item["raw_artifact"]]
+        summary_bytes = uploaded[item["suppression_summary"]]
+        assert item["raw_artifact_sha256"] == hashlib.sha256(raw_bytes).hexdigest()
+        assert item["suppression_summary_sha256"] == hashlib.sha256(summary_bytes).hexdigest()
+        assert len(json.loads(raw_bytes)["runs"][0]["results"]) == 2
+        assert json.loads(summary_bytes)["total_suppressed"] == 1
+        filtered_bytes = uploaded[item["artifact"]]
+        assert item["artifact_sha256"] == hashlib.sha256(filtered_bytes).hexdigest()
+        provenance = json.loads(uploaded[item["provenance"]])
+        for key in ("artifact_sha256", "raw_artifact_sha256", "suppression_summary_sha256", "scanner_metadata_sha256"):
+            assert provenance[key] == item[key]
+        assert [r["ruleId"] for r in json.loads(filtered_bytes)["runs"][0]["results"]] == ["CVE-2099-12345-other-package"]
+
 
 
 def test_any_missing_target_fails_even_above_the_old_half_coverage_threshold(source, monkeypatch):
@@ -238,13 +321,18 @@ def test_any_missing_target_fails_even_above_the_old_half_coverage_threshold(sou
             assert kwargs["input"] == "synthetic-login-token"
         if args[0] == "bash":
             return real_run(args, check=True, **kwargs)
+        if args[0] == "python3" and args[1].endswith("filter-sarif-ignores.py"):
+            # Run the real filter with this test interpreter and its dependencies.
+            return real_run([sys.executable, *args[1:]], check=True, **kwargs)
         # The externally pulled, digest-pinned runtime is the one that fails.
         if args[:2] == ["docker", "pull"]:
             raise subprocess.CalledProcessError(1, args)
         if args[:3] == ["docker", "image", "inspect"]:
             return SimpleNamespace(stdout="sha256:" + "e" * 64 + "\n")
         if args[0] == "grype":
-            kwargs["stdout"].write(json.dumps({"runs": [{"results": []}]}))
+            assert_raw_scan_configuration(args, kwargs)
+            write_descriptor(args)
+            kwargs["stdout"].write(json.dumps(grype_document()))
         if args[:3] == ["aws", "s3", "cp"] and args[3].endswith("coverage.json"):
             reports.append(json.loads(Path(args[3]).read_text()))
 
@@ -432,3 +520,27 @@ def test_private_build_auth_failure_retains_base_provenance(monkeypatch, tmp_pat
     with pytest.raises(subprocess.CalledProcessError):
         runner.scan(target, "grype", tmp_path / "result.sarif", tmp_path)
     assert target["build_args"] == {"RUNNER_IMAGE": base}
+
+
+def test_metadata_is_sanitized_and_hashes_database(tmp_path):
+    path = write_descriptor(["json=" + str(tmp_path / "descriptor.json")])
+    output = tmp_path / "metadata.json"
+    result = runner.scanner_metadata(path, output)
+    text = output.read_text()
+    assert "password" not in text and "secret" not in text and str(tmp_path) not in text
+    assert "https://private.example/path" in text
+    assert result["database"]["sha256"] == hashlib.sha256(b"synthetic vulnerability database").hexdigest()
+    assert result["effective_matching_configuration"]["ignore"][0]["package"]["name"] == "kernel-headers"
+
+
+@pytest.mark.parametrize("missing", ["descriptor", "version", "timestamp", "db", "configuration"])
+def test_metadata_missing_required_provenance_fails(tmp_path, missing):
+    path = write_descriptor(["json=" + str(tmp_path / "descriptor.json")])
+    document = json.loads(path.read_text())
+    if missing == "descriptor":
+        document = {}
+    else:
+        del document["descriptor"][missing]
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="descriptor"):
+        runner.scanner_metadata(path, tmp_path / "metadata.json")
