@@ -138,6 +138,12 @@ variable "runner_transport_secret_arns" {
   description = "Exact existing GitHub engine transport secret ARNs retained during the separately authorized cutover; validated by runner IAM."
 }
 
+variable "runner_transport_secret_kms_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact KMS key ARNs encrypting transport secrets; required for decryption under the bounded ceiling. Validated by runner IAM."
+}
+
 variable "runner_gateway_execution_arns" {
   type        = list(string)
   default     = null

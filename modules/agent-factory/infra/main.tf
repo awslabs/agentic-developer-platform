@@ -113,9 +113,10 @@ provider "helm" {
 # =============================================================================
 
 module "runner_iam" {
-  gateway_execution_arns = local.runner_gateway_execution_arns
-  transport_secret_arns  = var.runner_transport_secret_arns
-  source                 = "./modules/runner-iam"
+  gateway_execution_arns    = local.runner_gateway_execution_arns
+  transport_secret_arns     = var.runner_transport_secret_arns
+  transport_secret_kms_arns = var.runner_transport_secret_kms_arns
+  source                    = "./modules/runner-iam"
 
   environment       = var.environment
   name_prefix       = local.name_prefix

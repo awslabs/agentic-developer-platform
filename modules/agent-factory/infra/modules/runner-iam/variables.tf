@@ -63,6 +63,12 @@ variable "transport_secret_arns" {
   default     = []
 }
 
+variable "transport_secret_kms_arns" {
+  description = "Exact KMS key ARNs encrypting the transport secrets; required for decryption under the bounded ceiling. Validated by runner-runtime-policy."
+  type        = list(string)
+  default     = []
+}
+
 variable "gateway_execution_arns" {
   type        = list(string)
   default     = []

@@ -93,6 +93,98 @@ run "shared_gateway_project_requires_the_nonpublishing_role" {
   }
 }
 
+run "transport_secret_decryption_is_bound_to_service_and_context" {
+  command = plan
+  variables {
+    transport_secret_arns     = ["arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-key-Ab12Cd", "arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-id-Ef34Gh"]
+    transport_secret_kms_arns = ["arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555"]
+  }
+  # kms:Decrypt must be in the ceiling once KMS ARNs are supplied.
+  assert {
+    condition     = contains(one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "RuntimeApiCeiling"]).Action, "kms:Decrypt")
+    error_message = "The ceiling must include kms:Decrypt when transport KMS ARNs are configured."
+  }
+  # The grant must require Secrets Manager ViaService and the exact secret context.
+  assert {
+    condition = one([for s in jsondecode(aws_iam_policy.runner_services.policy).Statement : s if s.Sid == "SecretDecryption"]).Condition.StringEquals == {
+      "kms:ViaService"                  = "secretsmanager.eu-west-1.amazonaws.com"
+      "kms:EncryptionContext:SecretARN" = ["arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-key-Ab12Cd", "arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-id-Ef34Gh"]
+    }
+    error_message = "Decrypt must require Secrets Manager and the exact transport secret encryption context."
+  }
+  # Boundary denies prevent another attached policy from bypassing these conditions.
+  assert {
+    condition = length([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s
+    if contains(["DenyDirectKeyDecryption", "DenyOtherSecretDecryption"], s.Sid)]) == 2
+    error_message = "The boundary must deny missing/wrong ViaService and encryption context."
+  }
+  assert {
+    condition = one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "DenyDirectKeyDecryption"]).Condition == {
+      StringNotEquals = { "kms:ViaService" = "secretsmanager.eu-west-1.amazonaws.com" }
+    }
+    error_message = "DenyDirectKeyDecryption must refuse any decrypt not via Secrets Manager."
+  }
+  assert {
+    condition = one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "DenyOtherSecretDecryption"]).Condition == {
+      StringNotEquals = { "kms:EncryptionContext:SecretARN" = ["arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-key-Ab12Cd", "arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-id-Ef34Gh"] }
+    }
+    error_message = "DenyOtherSecretDecryption must refuse decrypt for any non-transport secret."
+  }
+  # All policies must still fit IAM's managed-policy limit with the KMS additions.
+  # Compare complete deny statements: Sid presence alone permits an Allow,
+  # wrong action/resource or reversed condition to silently weaken the ceiling.
+  assert {
+    condition = alltrue([for sid, conditions in {
+      DenyDirectKeyDecryption   = { StringNotEquals = { "kms:ViaService" = "secretsmanager.eu-west-1.amazonaws.com" } }
+      DenyOtherSecretDecryption = { StringNotEquals = { "kms:EncryptionContext:SecretARN" = ["arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-key-Ab12Cd", "arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-id-Ef34Gh"] } }
+      } : jsonencode(one([for statement in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : statement if statement.Sid == sid])) == jsonencode({
+        Sid = sid, Effect = "Deny", Action = ["kms:Decrypt"], Resource = "*", Condition = conditions
+    })])
+    error_message = "KMS boundary statements must deny decrypt globally with the exact negative service/context conditions."
+  }
+  assert {
+    condition = jsonencode(one([for statement in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : statement if statement.Sid == "DenyOtherSecretDecryptionResources"])) == jsonencode({
+      Sid         = "DenyOtherSecretDecryptionResources", Effect = "Deny", Action = ["kms:Decrypt"],
+      NotResource = ["arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555"]
+    })
+    error_message = "Other attached/resource policies must not grant decrypt on any unregistered key."
+  }
+  assert {
+    condition = jsonencode(one([for statement in jsondecode(aws_iam_policy.runner_services.policy).Statement : statement if statement.Sid == "SecretDecryption"])) == jsonencode({
+      Sid      = "SecretDecryption", Effect = "Allow", Action = ["kms:Decrypt"],
+      Resource = ["arn:aws:kms:eu-west-1:123456789012:key/11111111-2222-3333-4444-555555555555"],
+      Condition = { StringEquals = {
+        "kms:ViaService"                  = "secretsmanager.eu-west-1.amazonaws.com",
+        "kms:EncryptionContext:SecretARN" = ["arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-key-Ab12Cd", "arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-id-Ef34Gh"]
+      } }
+    })
+    error_message = "Decrypt allow must include only the exact key, API, Secrets Manager service and approved secret context."
+  }
+  assert {
+    condition = alltrue([for policy in [
+      aws_iam_policy.runner_base.policy,
+      aws_iam_policy.runner_services.policy,
+      aws_iam_policy.runner_boundary.policy,
+    ] : length(policy) <= 6144])
+    error_message = "A policy with KMS grants exceeds IAM's 6144-character managed-policy quota."
+  }
+}
+
+run "no_kms_grant_without_kms_arns" {
+  command = plan
+  variables {
+    transport_secret_arns = ["arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/aws-e/gh-app-dev-key-Ab12Cd"]
+  }
+  assert {
+    condition     = !contains(one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "RuntimeApiCeiling"]).Action, "kms:Decrypt")
+    error_message = "Transport secrets without KMS ARNs must not add kms:Decrypt to the ceiling."
+  }
+  assert {
+    condition     = length([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if try(s.Sid == "DenyDirectKeyDecryption", false)]) == 0
+    error_message = "KMS boundary denies must not appear when KMS ARNs are not configured."
+  }
+}
+
 run "active_runner_uses_environment_resources_and_exact_gateway_routes" {
   command = plan
   variables {

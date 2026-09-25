@@ -31,6 +31,18 @@ variable "transport_secret_arns" {
     error_message = "Transport exceptions must be exact existing GitHub runner/app secret ARNs; broader secret inputs are forbidden."
   }
 }
+variable "transport_secret_kms_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact KMS key ARNs that encrypt the transport secrets. Required for decryption once the default-deny boundary is applied. The operator obtains these from each secret's KmsKeyId (or alias/aws/secretsmanager's resolved key ARN)."
+  validation {
+    condition = alltrue([for arn in var.transport_secret_kms_arns :
+      can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$", arn)) &&
+      !can(regex("[*?]", arn))
+    ])
+    error_message = "KMS key ARNs must be exact resolved key ARNs (not aliases); broader inputs are forbidden."
+  }
+}
 
 locals {
   resource_prefix = "adp-${var.environment}"
@@ -93,16 +105,42 @@ locals {
       resources = var.transport_secret_arns
     }
   }
+  # The default-deny boundary blocks all APIs outside the enumerated ceiling,
+  # including kms:Decrypt. Secrets encrypted with any key (including the
+  # AWS-managed alias/aws/secretsmanager) fail retrieval without this grant.
+  # Conditions pin decryption to Secrets Manager and to the exact transport
+  # secret encryption contexts; boundary denies below make these unoverridable.
+  kms_service = "secretsmanager.${var.aws_region}.amazonaws.com"
+  secret_decrypt = length(var.transport_secret_kms_arns) == 0 ? {} : {
+    SecretDecryption = {
+      actions   = ["kms:Decrypt"]
+      resources = var.transport_secret_kms_arns
+      condition = { StringEquals = {
+        "kms:ViaService"                  = local.kms_service
+        "kms:EncryptionContext:SecretARN" = var.transport_secret_arns
+      } }
+    }
+  }
   gateway = length(var.gateway_execution_arns) == 0 ? {} : {
     GatewayTransport = {
       actions   = ["execute-api:Invoke"]
       resources = var.gateway_execution_arns
     }
   }
-  allowed = merge(local.capabilities, local.transport, local.gateway)
+  allowed = merge(local.capabilities, local.transport, local.gateway, local.secret_decrypt)
   grants = [for name, capability in local.allowed : merge({
     Sid = name, Effect = "Allow", Action = capability.actions, Resource = capability.resources
   }, try({ Condition = capability.condition }, {}))]
+  # When KMS decrypt is in the ceiling, pin it to Secrets Manager and the exact
+  # transport encryption contexts. Without these, another attached or resource
+  # policy could grant direct decryption or use the key for unrelated secrets.
+  kms_boundary_denies = [for entry in [
+    { sid = "DenyDirectKeyDecryption", key = "kms:ViaService", values = local.kms_service },
+    { sid = "DenyOtherSecretDecryption", key = "kms:EncryptionContext:SecretARN", values = var.transport_secret_arns },
+    ] : {
+    Sid       = entry.sid, Effect = "Deny", Action = ["kms:Decrypt"], Resource = "*",
+    Condition = { StringNotEquals = { (entry.key) = entry.values } }
+  } if length(var.transport_secret_kms_arns) > 0]
   # Explicit denies also cover resource policies granting directly to a session.
   # The ceiling allows only the enumerated APIs. Resource and condition denies
   # below retain every scope without duplicating all the grants in this limited
@@ -129,7 +167,7 @@ locals {
     ], [for name, capability in local.allowed : {
       Sid    = "DenyOther${name}Resources", Effect = "Deny",
       Action = capability.actions, NotResource = capability.resources
-  } if capability.resources != ["*"]])
+  } if capability.resources != ["*"]], local.kms_boundary_denies)
 }
 
 output "grants" { value = local.grants }

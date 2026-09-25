@@ -206,11 +206,12 @@ resource "aws_iam_role_policy_attachment" "runner_services" {
   policy_arn = aws_iam_policy.runner_services.arn
 }
 module "runtime_policy" {
-  environment            = var.environment
-  gateway_execution_arns = var.gateway_execution_arns
-  source                 = "../../infra/modules/runner-runtime-policy"
-  account_id             = data.aws_caller_identity.current.account_id
-  aws_region             = var.aws_region
-  name_prefix            = "adp-${var.environment}"
-  transport_secret_arns  = var.transport_secret_arns
+  environment               = var.environment
+  gateway_execution_arns    = var.gateway_execution_arns
+  source                    = "../../infra/modules/runner-runtime-policy"
+  account_id                = data.aws_caller_identity.current.account_id
+  aws_region                = var.aws_region
+  name_prefix               = "adp-${var.environment}"
+  transport_secret_arns     = var.transport_secret_arns
+  transport_secret_kms_arns = var.transport_secret_kms_arns
 }

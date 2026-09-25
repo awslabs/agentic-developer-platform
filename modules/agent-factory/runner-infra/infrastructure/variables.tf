@@ -89,6 +89,12 @@ variable "transport_secret_arns" {
   description = "Exact legacy engine transport secret ARNs; validated by the shared runtime policy."
 }
 
+variable "transport_secret_kms_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact KMS key ARNs encrypting the transport secrets; validated by the shared runtime policy."
+}
+
 variable "gateway_execution_arns" {
   type        = list(string)
   default     = []
