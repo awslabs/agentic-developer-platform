@@ -240,3 +240,8 @@ class MemberIssuer:
             },
         )
         self._verify(binding, "revoke")
+        if self.grants._get(spec) is not None:
+            raise BootstrapRefused(
+                "credential service account deletion is not yet observed"
+            )
+        self._verify(binding, "revoke")
