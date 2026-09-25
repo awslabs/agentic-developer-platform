@@ -23,6 +23,9 @@ to stdout and the existing batch termination-result document. The executor binds
 that receipt to the original completed ordinary Pod, reads its logs through the
 existing namespace credential, and requires the log receipt to equal the retained
 termination result. Service and Pod identities are reread before success.
+Probe evidence requires `ClusterFirst` DNS, no host aliases and no custom DNS
+configuration; injected hosts or resolvers cannot stand in for cluster DNS.
+The Pod specification must also remain unchanged across the receipt read.
 
 This proves this Pod's Service DNS/HTTP path and API-to-kubelet log access. It does
 not prove node-side EKS traffic, CUDA execution, every cluster route, or a new

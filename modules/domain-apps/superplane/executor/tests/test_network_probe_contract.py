@@ -25,6 +25,9 @@ from superplane_executor.workspace import Workspace
         "old_nonce",
         "wrong_dns_address",
         "host_network",
+        "host_aliases",
+        "custom_dns",
+        "default_dns_policy",
         "pod_replaced",
         "log_denied",
         "result_mismatch",
@@ -86,6 +89,14 @@ async def test_probe_result_requires_original_service_and_matching_pod_log(chang
         value["responses"][0]["address"] = "172.20.9.9"
     elif change == "host_network":
         pod["spec"]["hostNetwork"] = True
+    elif change == "host_aliases":
+        pod["spec"]["hostAliases"] = [
+            {"ip": "172.20.1.4", "hostnames": ["acceptance.tenant.svc.cluster.local"]}
+        ]
+    elif change == "custom_dns":
+        pod["spec"]["dnsConfig"] = {"nameservers": ["172.20.0.53"]}
+    elif change == "default_dns_policy":
+        pod["spec"]["dnsPolicy"] = "Default"
     content = json.dumps(value)
     if change == "result_mismatch":
         content = json.dumps({**value, "nonce": "different"})

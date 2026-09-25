@@ -96,6 +96,11 @@ async def pod_service(
         != allocation_label
         or pod.get("spec", {}).get("nodeName") != node_name
         or pod.get("spec", {}).get("hostNetwork", False)
+        # A matching Service address from /etc/hosts or a custom resolver does
+        # not prove cluster DNS. These checks apply only to the probe workload.
+        or pod.get("spec", {}).get("dnsPolicy", "ClusterFirst") != "ClusterFirst"
+        or pod.get("spec", {}).get("hostAliases", []) != []
+        or pod.get("spec", {}).get("dnsConfig", {}) != {}
         or pod.get("status", {}).get("phase") != "Succeeded"
     ):
         raise OperationRefused(
@@ -114,6 +119,7 @@ async def pod_service(
     if (
         current.status_code != 200
         or current.json().get("metadata", {}).get("uid") != pod_uid
+        or current.json().get("spec") != pod.get("spec")
     ):
         raise OperationRefused("network probe pod replaced during observation")
     return {
