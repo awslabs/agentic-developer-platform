@@ -17,7 +17,8 @@ with no raw candidate values or source-line content published.
 | Exact AWS published example identifier or secret-access-key example | 72 |
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 496 |
-| Pending context review, retained by #6110 | 1076 |
+| Derived checksums recomputed from immutable source inputs | 22 |
+| Pending context review, retained by #6110 | 1054 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -90,6 +91,19 @@ frozen source line and decisive checksum context. Nine additional byte-matched
 candidates without complete path/ancestry proof remain pending. See
 `S21-detect-secrets-historical-digest-review.json`.
 
-Current verified nonsecret dispositions: **783/1859**. **1,076** original scan
+The historical-artifact review reached **783/1859** verified nonsecret
+dispositions and left **1,076** original scan records pending.
+
+A fifth batch verifies **22** derived digests: 16 security ownership record-key
+projections, four canonical pricing-source manifest digests, and two embedded
+contract-artifact text digests. Each is recomputed from exact immutable Git
+inputs and requires the full original candidate join, frozen source line and
+checksum-role context. Projection selection/count/unique keys, both pricing
+source hashes, and embedded artifact path-to-text declarations are checked. The
+receipt `S21-detect-secrets-derived-digest-review.json` links source algorithms
+and per-record input paths. No fixture is accepted merely because of its path.
+Seven focused tests reject incorrect projection populations and changed inputs.
+
+Current verified nonsecret dispositions: **805/1859**. **1,054** original scan
 records remain pending. #6110 remains open; no credential was exercised and no
 rotation or zero-secrets conclusion is claimed.
