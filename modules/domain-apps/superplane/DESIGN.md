@@ -801,6 +801,15 @@ administration or fleet-wide NodePool access. Until recurring renewal, consumer
 acknowledgement and scoped retirement are composed, shared creation stays
 unavailable even when its individual adapters pass source tests.
 
+The installed shared-bootstrap dependency contract is versioned separately from
+renewal authority: v1 authorities remain valid for renewal, while shared bootstrap
+requires a v2 authority with explicit CRD, management controller and supported
+private-network identities. The read-only proof contract and remaining delivery /
+recovery requirements are specified in
+[shared-runtime-wiring.md](workspace_provisioning/shared-runtime-wiring.md#version-2-pinned-dependency-descriptor).
+Runtime must refuse missing or incompatible pins; it must not substitute a callback
+that asserts readiness or hash current provider state to manufacture an expectation.
+
 ## 8. Delivery and acceptance
 
 | Story | Required outcome |

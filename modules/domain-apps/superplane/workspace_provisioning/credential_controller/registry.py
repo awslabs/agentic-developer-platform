@@ -38,9 +38,10 @@ class Authority:
             doc = json.loads(raw)
             fields(
                 doc,
-                "version org_id cluster_id controller_role_arn controller_role_id target issuer management_target projector projection audience",
+                "version org_id cluster_id controller_role_arn controller_role_id target issuer management_target projector projection audience"
+                + (" shared_dependencies" if doc.get("version") == 2 else ""),
             )
-            if doc["version"] != 1 or type(doc["version"]) is not int:
+            if doc["version"] not in {1, 2} or type(doc["version"]) is not int:
                 raise ValueError()
             for key in ("org_id", "cluster_id"):
                 if str(UUID(doc[key])) != doc[key]:
@@ -115,6 +116,10 @@ class Authority:
                     raise ValueError()
             if not doc["issuer"]["policy_uid"] or not doc["issuer"]["binding_uid"]:
                 raise ValueError()
+            if doc["version"] == 2:
+                from ..shared_dependencies import validate_descriptor
+
+                validate_descriptor(doc["shared_dependencies"], doc)
             return cls(authority_id, canonical(doc))
         except (ValueError, TypeError, KeyError, AttributeError):
             raise BootstrapRefused(

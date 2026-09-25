@@ -30,39 +30,57 @@ existing bounded namespace probes, namespace SA/RoleBinding and cluster binding
 inventory, and SubjectAccessReview. Missing permission refuses; bootstrap never
 adds it.
 
-## Missing pinned dependency descriptor
+## Version-2 pinned dependency descriptor
 
-The current `credential_controller.registry.Authority` version-1 document pins
-cluster TLS identity, issuer/projector principals and access entries, admission
-policy/binding UIDs and Secret projection identities. It has no CRD schema digest,
-controller release identity or networking policy inventory. Its closed schema
-correctly refuses extra fields, so a callback must not silently invent those facts.
+The installed authority remains version 1 for renewal-only deployments. Version 2
+retains every existing field and adds exactly `shared_dependencies`; shared
+bootstrap refuses version 1. This immutable source contract follows
+[DESIGN.md section 7.1](../DESIGN.md#71-shared-membership-credential-composition).
+The authorized installer supplies the descriptor before registration; runtime
+never derives expected digests or UIDs from the live objects it is checking.
 
-The smallest honest next contract is an immutable, installation-owned dependency
-descriptor, linked by ID/digest to the registered authority, containing:
+`shared_dependencies` contains exactly:
 
-- Each required CRD's name, original UID, served/storage versions and expected
-  schema digest from the maintained release.
-- The sole management controller's cluster/namespace/Deployment UID and pinned
-  image digest, plus the supported management observation protocol/release.
-- Approved management/worker-to-target API connectivity facts: exact relevant
-  security groups, rule IDs and network topology/ownership, and the required
-  platform-eligibility policy for this shared cluster.
+- `version: 1`, `observation_protocol: "shared-member-v1"`, and
+  `platform_eligible` as an explicit boolean matching canonical cluster policy
+  (must be true when the target is management EKS).
+- `crds`: one entry for every maintained workspace CRD, each with `name`, original
+  `uid`, and `spec_sha256`. The hash covers canonical JSON of the maintained CRD
+  spec, including names/scope and every version's served/storage/schema fields.
+- `controller`: `namespace`, `namespace_uid`, `deployment`, `deployment_uid`,
+  `container`, `image` (digest-pinned), and `template_sha256` (canonical JSON of the
+  explicitly installed Pod template). It must use the maintained controller image
+  marker and the same management namespace as the credential projections.
+- `network`: `topology: "same-vpc-private"`, `owner_workspace_id`,
+  `endpoint_rule_id`, `sts_rule_id`, `sts_endpoint_id`, and `expected`, whose closed fields are the
+  canonical `ExpectedPrerequisites` dataclass. `retained_sts_rule_id` must equal
+  `sts_rule_id`; protocol/port are TCP/443. The owner must be the canonical shared
+  cluster's original workspace, not the member being bootstrapped.
 
-A production verifier must read those exact objects/provider facts and compare
-against the descriptor before namespace effects and again at readiness. Existing
-`shared_dependency_checks` reads CRD Established conditions and system workload
-health, and `ManagementObservation` proves the original member/claim reaches the
-manager. Neither establishes schema/release compatibility. Existing
-`verify_network_prerequisites` can check supported network facts, but requires its
-explicit `ExpectedPrerequisites`; those are not in the installed registry.
-`establish_network` is a mutating dedicated-bootstrap recipe and must not run as a
-substitute for shared dependency verification.
+The first implementation deliberately supports only private target and management
+EKS endpoints in the same account/region/VPC, with node/management/API/STS groups
+and exact existing rules in that VPC. Other topologies refuse until a separately
+reviewed routing/DNS/peering proof is available. This restriction is a bounded
+supported contract, not an assertion that SG rules prove arbitrary connectivity.
 
-Until that descriptor and read-only verifier exist, the remaining
-`SharedRuntimeHooks.verify_cluster_dependencies` is an explicit uncomposed
-requirement. It must not be replaced with a no-op, a request-provided callback,
-`Established` alone or an arbitrary current-object digest.
+Before namespace effects and again at readiness, the read-only verifier checks
+current installed authority, canonical owner/eligibility, exact cluster VPC/private
+endpoint settings, group VPC/owners, the original available private-DNS STS
+interface endpoint, canonical network rule checks and pinned rule IDs; then verifies CRD identity/Established/spec and supported maintained release.
+It checks compatible stored CRD versions and the exact healthy management
+Deployment, its namespace UID, template and image, and refuses competing controller
+deployments on management/target clusters.
+System workload and original-claim management observation remain the existing
+engine's live readiness checks. No verified network/CRD/controller object enters
+member cleanup inventory. This descriptor replaces the dependency callback seam;
+it does not deliver the still-missing management source session or recovery grant.
+
+Version-2 installation must explicitly grant the worker read-only EKS/EC2 network
+inventory and the issuer/projector the corresponding CRD/Deployment inventory
+reads, including complete controller listing across namespaces. Those reads add no
+namespace, controller or network mutation permission. A renewal-only v1 projector
+that can read/write only its projection Secrets may lack the v2 observation
+permissions; bootstrap refuses that installation rather than expanding its roles.
 
 ## Missing private management session delivery
 
@@ -111,10 +129,10 @@ at the runtime dispatch before enabling execution.
 
 ## Enablement order
 
-Implement and validate the dependency descriptor/verifier, private management
-session broker delivery and partial-bootstrap recovery dispatch. Compose the
-remaining two hook fields in the installed worker only after their real contracts
-are available. Then add shared discovery/execution routing before the dedicated
+The version-2 dependency verifier and direct tenant inventory are implemented.
+Implement private management session broker delivery and partial-bootstrap
+recovery dispatch before composing the remaining management-session hook in the
+installed worker. Then add shared discovery/execution routing before the dedicated
 network path and test it through real journals with provider transports. Change
 preview/capability advertising last. None of those enablement changes is made by
 this tenant-inventory repair. Local validation remains static; remote CI and an

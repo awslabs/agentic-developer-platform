@@ -19,14 +19,11 @@ from .runtime_config import LifecycleRefused
 @dataclass(frozen=True)
 class SharedRuntimeHooks:
     management_source_session: object
-    verify_cluster_dependencies: object
 
     def __post_init__(self):
-        if self.management_source_session is None or not callable(
-            self.verify_cluster_dependencies
-        ):
+        if self.management_source_session is None:
             raise LifecycleRefused(
-                "shared runtime requires installed management transport and cluster proofs"
+                "shared runtime requires installed management transport"
             )
 
 
@@ -66,6 +63,7 @@ def bootstrap(
     from .credential_controller.transports import compose_transports
     from .credentials import assume_session, canonical_role_identity
     from .shared_bootstrap_credentials import SharedCredentialServices
+    from .shared_dependencies import SharedDependencyVerifier
     from .shared_tenant_inventory import installed_tenant_principals
 
     if not isinstance(hooks, SharedRuntimeHooks) or row is None:
@@ -98,6 +96,10 @@ def bootstrap(
 
     verify()
     installation = bridge.wait(installed())
+    if installation.document.get("version") != 2:
+        raise LifecycleRefused(
+            "shared bootstrap requires installed version-2 dependency pins"
+        )
     target = installation.target(lease.workspace_id)
     expected = {
         "account_id": target.account_id,
@@ -169,6 +171,9 @@ def bootstrap(
             manifests={},
             imds_probe_image=config["imds_probe_image"],
         )
+        dependencies = SharedDependencyVerifier(
+            installation, issuer, management, bridge, process, config, current
+        )
         services = SharedCredentialServices(
             installation,
             issuer,
@@ -176,7 +181,7 @@ def bootstrap(
             bridge,
             directory,
             current,
-            hooks.verify_cluster_dependencies,
+            dependencies,
             installed_tenant_principals,
         )
 

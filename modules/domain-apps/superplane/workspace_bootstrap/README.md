@@ -217,8 +217,9 @@ request field or static configuration enables this route. The lifecycle worker's
 shared capability remains disabled until deployment wires the hooks and renewal.
 
 `SharedRuntimeHooks` must provide an explicitly delivered management source
-session and a fresh cluster dependency verifier (including registered controller
-compatibility, connectivity, policy/schema versions and platform eligibility). The runtime directly composes the complete
+session. The runtime requires an installed version-2 authority dependency descriptor
+and directly verifies pinned CRD/controller identities, platform policy and the
+supported private same-VPC network. It also directly composes the complete
 EKS tenant inventory through `shared_tenant_inventory.installed_tenant_principals`;
 only the exact installed issuer entry with no attached access policies is exempt.
 Other identities remain subject to the canonical namespace RBAC proof. The
