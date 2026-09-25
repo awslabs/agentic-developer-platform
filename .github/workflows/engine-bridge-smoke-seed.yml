@@ -153,7 +153,7 @@ jobs:
             echo "::error::plan_issue_ref must be a positive integer"
             exit 1
           fi
-          ISSUE_REF='${ADP_INPUT_45206566FE}'
+          ISSUE_REF="${ADP_INPUT_45206566FE}"
           psql -v ON_ERROR_STOP=1 <<SQL
           INSERT INTO orchestration_flows (id, org_id, slug, title, intent_ref, state, created_at)
           VALUES ('${SEED_FLOW_ID}', '${ORG_ID}', 'bridge-smoke-4527',

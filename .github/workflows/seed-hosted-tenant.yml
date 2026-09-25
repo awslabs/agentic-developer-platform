@@ -92,38 +92,32 @@ jobs:
           ADP_INPUT_34D45E6745: ${{ inputs.installation_id }}
         run: |
           set -euo pipefail
-          TENANT_ID='${ADP_INPUT_A199BE1663}'
-          ORG_NAME='${ADP_INPUT_7C89F1E8DC}'
-          INSTALLATION_ID='${ADP_INPUT_34D45E6745}'
-          DEPT_ID="${TENANT_ID}-dept-default"
-          TEAM_ID="${TENANT_ID}-team-default"
-
-          cat > /tmp/seed.sql <<SQL
+          cat > /tmp/seed.sql <<'SQL'
           INSERT INTO organizations (id, name, aws_accounts, role_mappings, settings, created_at)
-          VALUES ('$TENANT_ID', '$ORG_NAME', '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, now())
+          VALUES (:'tenant_id', :'org_name', '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, now())
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
 
           INSERT INTO departments (id, name, org_id)
-          VALUES ('$DEPT_ID', 'Default', '$TENANT_ID')
+          VALUES (:'dept_id', 'Default', :'tenant_id')
           ON CONFLICT (id) DO NOTHING;
 
           INSERT INTO teams (id, name, department_id, org_id)
-          VALUES ('$TEAM_ID', 'Default', '$DEPT_ID', '$TENANT_ID')
+          VALUES (:'team_id', 'Default', :'dept_id', :'tenant_id')
           ON CONFLICT (id) DO NOTHING;
 
           INSERT INTO channel_tenant_map (id, provider, provider_scope_id, org_id, created_at)
-          VALUES (gen_random_uuid()::text, 'github', '$INSTALLATION_ID', '$TENANT_ID', now())
+          VALUES (gen_random_uuid()::text, 'github', :'installation_id', :'tenant_id', now())
           ON CONFLICT (provider, provider_scope_id) DO NOTHING;
 
           \echo '--- Verify ---'
-          SELECT 'organizations' AS "table", COUNT(*) AS rows FROM organizations WHERE id = '$TENANT_ID'
+          SELECT 'organizations' AS "table", COUNT(*) AS rows FROM organizations WHERE id = :'tenant_id'
           UNION ALL
-          SELECT 'departments',   COUNT(*) FROM departments   WHERE org_id = '$TENANT_ID'
+          SELECT 'departments',   COUNT(*) FROM departments   WHERE org_id = :'tenant_id'
           UNION ALL
-          SELECT 'teams',         COUNT(*) FROM teams         WHERE org_id = '$TENANT_ID'
+          SELECT 'teams',         COUNT(*) FROM teams         WHERE org_id = :'tenant_id'
           UNION ALL
           SELECT 'channel_tenant_map', COUNT(*) FROM channel_tenant_map
-                WHERE provider = 'github' AND provider_scope_id = '$INSTALLATION_ID';
+                WHERE provider = 'github' AND provider_scope_id = :'installation_id';
           SQL
 
           echo "=== Planned SQL ==="
@@ -171,9 +165,21 @@ jobs:
 
       - name: Execute seed
         if: inputs.dry_run == false
+        env:
+          SEED_TENANT_ID: ${{ inputs.tenant_id }}
+          SEED_ORG_NAME: ${{ inputs.org_name }}
+          SEED_INSTALLATION_ID: ${{ inputs.installation_id }}
         run: |
           set -euo pipefail
-          psql -v ON_ERROR_STOP=1 -f /tmp/seed.sql
+          # psql's quoted variable syntax escapes SQL literals. Values are
+          # separate arguments and are never inserted into shell or SQL code.
+          psql -v ON_ERROR_STOP=1 \
+            -v "tenant_id=$SEED_TENANT_ID" \
+            -v "org_name=$SEED_ORG_NAME" \
+            -v "installation_id=$SEED_INSTALLATION_ID" \
+            -v "dept_id=$SEED_TENANT_ID-dept-default" \
+            -v "team_id=$SEED_TENANT_ID-team-default" \
+            -f /tmp/seed.sql
 
       # A dry run that only printed SQL could not distinguish "would work" from
       # "cannot authenticate at all". Prove the IAM-token connection is live

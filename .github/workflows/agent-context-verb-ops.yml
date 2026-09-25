@@ -280,10 +280,11 @@ jobs:
           ADP_INPUT_C27AA2207B: ${{ inputs.backfill }}
           ADP_INPUT_5360141334: ${{ inputs.backfill_repo }}
         run: |
-          ARGS=""
-          if [ "${ADP_INPUT_C27AA2207B}" = "apply" ]; then ARGS="--apply"; fi
-          if [ -n "${ADP_INPUT_5360141334}" ]; then ARGS="$ARGS --repo ${ADP_INPUT_5360141334}"; fi
-          echo "Running backfill with args: $ARGS"
+          ARGS=()
+          if [ "${ADP_INPUT_C27AA2207B}" = "apply" ]; then ARGS=(--apply); fi
+          if [ -n "${ADP_INPUT_5360141334}" ]; then ARGS+=("--repo=${ADP_INPUT_5360141334}"); fi
+          printf 'Running backfill with args: %q ' "${ARGS[@]}"
+          echo
           kubectl run backfill-2493-wf-$(date +%s) \
             --image="$INGESTION_IMAGE" --restart=Never --rm -i \
             --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
@@ -292,7 +293,7 @@ jobs:
             --env="NEPTUNE_ENDPOINT=$NEPTUNE_ENDPOINT" \
             --env="NEPTUNE_PORT=8182" \
             --env="AWS_REGION=us-east-1" \
-            -n "$NS" --command -- python3 - $ARGS \
+            -n "$NS" --command -- python3 - "${ARGS[@]}" \
             < modules/agent-context/scripts/backfill_neptune_from_s3.py
       # -----------------------------------------------------------------
       # Corrupt-row cleanup (#2864)
@@ -302,10 +303,11 @@ jobs:
         env:
           ADP_INPUT_50DCB3B191: ${{ inputs.cleanup }}
         run: |
-          ARGS=""
-          if [ "${ADP_INPUT_50DCB3B191}" = "apply" ]; then ARGS="--apply"; fi
-          if [ "${ADP_INPUT_50DCB3B191}" = "verify" ]; then ARGS="--verify"; fi
-          echo "Running cleanup with args: $ARGS"
+          ARGS=()
+          if [ "${ADP_INPUT_50DCB3B191}" = "apply" ]; then ARGS=(--apply); fi
+          if [ "${ADP_INPUT_50DCB3B191}" = "verify" ]; then ARGS=(--verify); fi
+          printf 'Running cleanup with args: %q ' "${ARGS[@]}"
+          echo
           kubectl run cleanup-2864-$(date +%s) \
             --image="$INGESTION_IMAGE" --restart=Never --rm -i \
             --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
@@ -316,7 +318,7 @@ jobs:
             --env="DB_USER=agent_context_svc" \
             --env="DB_USE_IAM_AUTH=true" \
             --env="AWS_REGION=us-east-1" \
-            -n "$NS" --command -- python3 - $ARGS \
+            -n "$NS" --command -- python3 - "${ARGS[@]}" \
             < modules/agent-context/scripts/cleanup_corrupt_repo_ids.py
       # -----------------------------------------------------------------
       # QA verb eval (#2487)
