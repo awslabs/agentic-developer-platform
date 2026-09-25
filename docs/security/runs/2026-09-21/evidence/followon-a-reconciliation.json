@@ -1,0 +1,138 @@
+{
+  "issue": 6115,
+  "parent_epic": 5599,
+  "source_dispositions": "docs/security/runs/2026-09-21/triage/s20-dispositions.json",
+  "source_dispositions_sha256": "42838f1a59611094a2ec6f60c4c8c87de629da170059761b2783abc4771e62e9",
+  "base_source_sha": "79b1b5cb60dc67748dbf8dc90d7758883f655406",
+  "reconciliation_date": "2026-09-25",
+  "selectors": [
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=1724",
+      "rule": "tmp.yaml.github-actions.security.gha-curl-pipe-shell.gha-curl-pipe-shell",
+      "original_file": "modules/agent-factory/actions/setup-beads/action.yml",
+      "original_line": 46,
+      "disposition": "fixed",
+      "current_state": "Beads installer pinned to upstream commit 3c30a28d07cb3ad923a4bb7450176855abbb40fe and SHA-256 ab1a75ffeb5f7d453a453cc8a96a613074e3667a53e34f1dec134f72fbd05ded; fails before execution on mismatch. Dolt 2.3.5 archive verified with a committed SHA-256.",
+      "change_evidence": "This PR: locally pinned SHA-256 verified before shell execution; Beads and Helm URLs also use immutable upstream commits.",
+      "test_evidence": "platform/scripts/tests/test_installer_execution_boundary.py: executes production gates with accepted content, syntactically valid tampered content, empty payload, and failed network; rejected payloads never execute and temporary files are removed.",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=6829",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "modules/gateway/cli/install.sh",
+      "original_line": 13,
+      "disposition": "non-applicable",
+      "current_state": "Line 13 is a shell comment describing the documented install invocation pattern: '# curl -fsSL https://<gateway>/api/cli/install.sh | sh -s -- ...'. This is documentation, not executable code.",
+      "rationale": "The scanner pattern-matched the string 'curl ... | sh' in a comment. The install.sh script itself downloads files via curl -fsSL -o (download to file, not pipe to shell) in stage_file() at line 282, with validate_staged() checking for valid shebang before commit.",
+      "change_evidence": "no code change needed \u2014 false positive on comment text",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=6830",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "modules/gateway/cli/install.sh",
+      "original_line": 27,
+      "disposition": "non-applicable",
+      "current_state": "Line 27 is a shell comment showing the shorter form of the install command: '#   curl -fsSL <gw>/api/cli/install.sh | sh -s -- --gateway-url <gw>'. This is a usage example in comments, not executable code.",
+      "rationale": "Same as ri=6829. Scanner matched curl|sh pattern in a documentation comment. The actual download logic in stage_file() uses download-to-file with validation.",
+      "change_evidence": "no code change needed \u2014 false positive on comment text",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=6831",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "modules/gateway/cli/install.sh",
+      "original_line": 54,
+      "disposition": "non-applicable",
+      "current_state": "Line 54 is a code comment: '# standalone `curl | sh` install has no pin and keeps the original default.' This describes the concept of a curl|sh install for context, not an executable statement.",
+      "rationale": "Scanner matched curl|sh pattern in inline documentation. Not executable code.",
+      "change_evidence": "no code change needed \u2014 false positive on comment text",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=6832",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "modules/gateway/cli/install.sh",
+      "original_line": 95,
+      "disposition": "non-applicable",
+      "current_state": "Line 95 is inside a heredoc usage() example: '  curl -fsSL https://gw.example.com/api/cli/install.sh | sh -s -- \\'. This is printed user documentation rendered by --help, not executed.",
+      "rationale": "Scanner matched curl|sh inside a here-document string literal that is printed to the user as help text. The script's actual downloads use curl -fsSL -o with validation.",
+      "change_evidence": "no code change needed \u2014 false positive on heredoc help text",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=6833",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "modules/gateway/cli/install.sh",
+      "original_line": 139,
+      "disposition": "non-applicable",
+      "current_state": "Line 139 is a code comment: '# is the `curl | sh` case, where the script arrives on stdin and the files must'. This describes how the script detects it was invoked via pipe, not a curl|sh invocation.",
+      "rationale": "Scanner matched curl|sh in a comment explaining the script_dir() detection logic. Not executable code.",
+      "change_evidence": "no code change needed \u2014 false positive on comment text",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=6834",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "modules/gateway/cli/install.sh",
+      "original_line": 181,
+      "disposition": "non-applicable",
+      "current_state": "Line 181 is a printf statement that prints an example command for the user to copy: 'printf ... curl -fsSL https://<gateway>/api/cli/install.sh | sh -s -- ...'. This outputs user instructions, it does not execute a download.",
+      "rationale": "Scanner matched the curl|sh string inside a printf argument. The string is rendered to stderr as guidance for the user; the script does not execute it. The actual file downloads go through stage_file() \u2192 curl -fsSL -o \u2192 validate_staged().",
+      "change_evidence": "no code change needed \u2014 false positive on printf-rendered user instructions",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=11033",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "modules/source-control/gitlab/infra/user_data.sh",
+      "original_line": 22,
+      "disposition": "fixed",
+      "current_state": "GitLab repository setup script content pinned by SHA-256 3f6a403e8564c5c2d6d02d6deb3ba8af7a47ab0df986f86e1c4c327162e8d30b; fails before execution on mismatch.",
+      "change_evidence": "This PR: locally pinned SHA-256 verified before shell execution; Beads and Helm URLs also use immutable upstream commits.",
+      "test_evidence": "platform/scripts/tests/test_installer_execution_boundary.py: executes production gates with accepted content, syntactically valid tampered content, empty payload, and failed network; rejected payloads never execute and temporary files are removed.",
+      "remaining_owner": "none",
+      "note": "The URL is dynamic. A changed upstream script intentionally stops provisioning until its content is reviewed and the committed digest updated. Digest computed from the official HTTPS endpoint on 2026-09-25; this pins the reviewed snapshot, not a vendor signature."
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=11199",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "platform/scripts/deploy-all.sh",
+      "original_line": 1616,
+      "disposition": "non-applicable",
+      "current_state": "The current line with this pattern is at line 1706 (line numbers shifted from the original scan). It is an echo statement that prints CLI installation instructions for the operator: 'echo \"  curl -fsSL https://${CF_DOMAIN}/api/cli/install.sh | sh -s -- ...\"'. This is printed text, not an executed download.",
+      "rationale": "Scanner matched the curl|sh string inside an echo argument rendered as post-deploy instructions. The script does not execute this command. The install.sh that the operator would run already uses download-to-file with validation.",
+      "change_evidence": "no code change needed \u2014 false positive on echo-rendered user instructions",
+      "remaining_owner": "none"
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=11232",
+      "rule": "tmp.ai.ai-best-practices.hooks-wget-pipe-bash.hooks-wget-pipe-bash.hooks-wget-pipe-bash-generic",
+      "original_file": "platform/scripts/install-prereqs.sh",
+      "original_line": 192,
+      "disposition": "fixed",
+      "current_state": "Helm installer pinned to upstream commit d31cd6992fc7858922de6ebe5984a06fd6aa0b80 and SHA-256 08edc9569a7115a22fdc4ec164a653d072440ad14a8dbe51ca9b321c903c59a9; fails before execution on mismatch. VERIFY_CHECKSUM=true explicitly retains downstream Helm binary verification.",
+      "change_evidence": "This PR: locally pinned SHA-256 verified before shell execution; Beads and Helm URLs also use immutable upstream commits.",
+      "test_evidence": "platform/scripts/tests/test_installer_execution_boundary.py: executes production gates with accepted content, syntactically valid tampered content, empty payload, and failed network; rejected payloads never execute and temporary files are removed.",
+      "remaining_owner": "none"
+    }
+  ],
+  "summary": {
+    "total_selectors": 10,
+    "fixed": 3,
+    "non_applicable": 7,
+    "unresolved": 0,
+    "files_modified": [
+      "modules/agent-factory/actions/setup-beads/action.yml",
+      "modules/source-control/gitlab/infra/user_data.sh",
+      "platform/scripts/install-prereqs.sh"
+    ],
+    "files_no_change_needed": [
+      "modules/gateway/cli/install.sh",
+      "platform/scripts/deploy-all.sh"
+    ],
+    "non_applicable_rationale": "All 7 non-applicable selectors are in modules/gateway/cli/install.sh (6) and platform/scripts/deploy-all.sh (1). Every match is in comments, heredoc help text, printf user guidance, or echo post-deploy instructions. None is executable download-pipe-shell code. The install.sh script's actual download logic (stage_file at line 282) already uses curl -fsSL -o with validate_staged() checking for valid shebang before committing."
+  },
+  "review_revision": "Supervisor review replaced script-header validation with actual content integrity gates. Script checksums were computed from official upstream HTTPS responses on 2026-09-25. This addresses the assigned remote-shell script boundaries; it is not a claim that every transitive package is immutable."
+}
