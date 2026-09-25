@@ -50,6 +50,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Resolve prerequisites before any AWS/Kubernetes mutation, but only for modes
+# that actually initialize this module's Terraform state.
+if [ "$SKIP_TERRAFORM" = false ] && [ -d "${SCRIPT_DIR}/terraform" ] && \
+   { [ "$PERSONAL_CONTEXT_ONLY" != true ] || [ "${GRAPHRAG_ENABLED:-false}" = true ]; }; then
+  ENVIRONMENT="${ENVIRONMENT:-dev}"
+  AC_BACKEND_CONFIG="${SCRIPT_DIR}/../../environments/${ENVIRONMENT}/modules/agent-context-backend.tfvars"
+  if [ ! -f "$AC_BACKEND_CONFIG" ]; then
+    echo "ERROR: Backend config not found: $AC_BACKEND_CONFIG" >&2
+    echo "State locking requires the environment backend config before deployment." >&2
+    exit 1
+  fi
+fi
+
 echo "============================================"
 echo "Agent Context Intelligence Platform Deploy"
 echo "============================================"
@@ -283,13 +296,14 @@ fi
 # Deploy Terraform infrastructure (SQS + DynamoDB + optional GraphRAG)
 # In personal-context-only mode, only deploy GraphRAG (Neptune) if its flag is on;
 # skip SQS and ingestion-related infra.
+
 if [ "${PERSONAL_CONTEXT_ONLY}" = "true" ]; then
   if [ "${GRAPHRAG_ENABLED:-false}" = "true" ] && [ -d "${SCRIPT_DIR}/terraform" ]; then
     echo ""
     echo "Deploying Terraform infrastructure (Neptune only, personal-context-only mode)..."
     cd "${SCRIPT_DIR}/terraform"
     if [ "$SKIP_TERRAFORM" = false ]; then
-    terraform init -upgrade
+    terraform init -upgrade -backend-config="$AC_BACKEND_CONFIG" -input=false
     TF_VARS="-var=graphrag_enabled=true"
     terraform apply -auto-approve ${TF_VARS} || {
       echo "WARNING: Terraform deployment failed."
@@ -309,7 +323,7 @@ else
   if [ -d "${SCRIPT_DIR}/terraform" ]; then
     cd "${SCRIPT_DIR}/terraform"
     if [ "$SKIP_TERRAFORM" = false ]; then
-    terraform init -upgrade
+    terraform init -upgrade -backend-config="$AC_BACKEND_CONFIG" -input=false
 
     TF_VARS="-var=graphrag_enabled=${GRAPHRAG_ENABLED:-false}"
     terraform apply -auto-approve ${TF_VARS} || {
