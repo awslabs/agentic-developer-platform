@@ -1,6 +1,6 @@
 # CLI command inventory
 
-Parser inventory for the reviewed CLI integration on 25 September 2026. Task commands are merged in #6074; capabilities/doctor and their manifest are awaiting #5716 merge. This source inventory does not assert publication or live acceptance. See [master coverage](master-coverage.md) for Epic targets and API boundaries.
+Parser inventory for the reviewed CLI integration on 25 September 2026. Task commands are merged in #6074; capabilities/doctor and their manifest are merged in #5716. This source inventory does not assert publication or live acceptance. See [master coverage](master-coverage.md) for Epic targets and API boundaries.
 
 Options are parser options, excluding `--help`; shell launchers pass tool arguments through. `adp --deployment NAME` applies before the command.
 
