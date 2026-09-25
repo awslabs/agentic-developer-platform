@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Add lambda root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -620,3 +622,34 @@ class TestSavedPersonaMapping:
         assert not result.success
         assert result.block_reason == "persona_model_selection_unavailable"
         publish.assert_not_called()
+
+
+@pytest.mark.parametrize("resolved", [None, "approved-explicit-model"])
+def test_saved_model_selection_preserves_raw_alias(monkeypatch, resolved):
+    monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+    selected = []
+
+    def select(envelope, *, user_id):
+        assert user_id == "user-alice"
+        assert envelope["model_requested"] == resolved
+        selected.append(envelope)
+        return {**envelope, "model_resolved": resolved or "approved-default"}
+
+    with (
+        patch("common.persona_model_client.select_persona_model", side_effect=select),
+        patch(
+            "common.sqs_publisher.publish_envelope", return_value="msg-model"
+        ) as publish,
+        patch("common.spawn_persona._capture_invocation_event"),
+        patch("common.spawn_persona._write_pointer_and_provenance"),
+        patch("common.spawn_persona._emit_metric"),
+    ):
+        result = spawn_persona(
+            **_spawn_kwargs(model_requested="raw-alias", model_resolved=resolved)
+        )
+    assert result.success
+    assert len(selected) == 1
+    queued = publish.call_args.args[0]
+    assert queued["model_requested"] == "raw-alias"
+    assert queued["model_resolved"] == (resolved or "approved-default")
