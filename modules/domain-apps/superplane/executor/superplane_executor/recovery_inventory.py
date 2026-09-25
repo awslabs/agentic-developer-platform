@@ -133,7 +133,9 @@ class _ClaimFinalizer(Finalizer):
             return
         if not assessment.inventory or not assessment.inventory.complete:
             raise OperationRefused("complete recovery inventory unavailable")
-        self.payload = self.accounting(operation, calls, assessment)
+        self.payload = await self.accounting_with_costs(
+            operation, target, calls, assessment
+        )
         # The same finalizer retires capacity only after fresh authoritative absence.
         # The immutable receipt is subsequently committed with shared settlement;
         # the domain projection itself can never authorize ledger delivery.

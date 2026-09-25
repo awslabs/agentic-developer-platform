@@ -3,7 +3,17 @@
 from harness_jobs.identity import OperationRefused
 
 
-async def observe_request(provider, operation, plan, *, operation_kind, request_id):
+async def observe_request(
+    provider,
+    operation,
+    plan,
+    *,
+    operation_kind,
+    request_id,
+    target=None,
+    call=None,
+    authorize=None,
+):
     """Resolve a journalled request to the same resource identity as execution.
 
     SkyPilot's request ID names an asynchronous transport request, not a billable
@@ -14,12 +24,22 @@ async def observe_request(provider, operation, plan, *, operation_kind, request_
     """
     from .node_command_plan import KINDS
 
+    if operation_kind in {"deploy", "status"}:
+        from .recovery_workload import observe
+
+        if target is None or call is None or not callable(authorize):
+            raise OperationRefused("original workload recovery context unavailable")
+        return await observe(provider, operation, target, plan, call, authorize)
     if operation_kind in KINDS and plan.node_bootstrap is not None:
         from .node_command_inventory import recover
 
         return await recover(provider, operation, plan, operation_kind, request_id)
-    if operation_kind not in {"launch", "delete_cluster"} or not request_id:
+    if operation_kind not in {"launch", "delete_cluster"}:
         raise OperationRefused("journalled controller request unavailable")
+    if not request_id:
+        # Captured capacity remains inventory exposure, never proof of request
+        # terminality after a lost launch/down handle. Do not replay the POST.
+        return "unknown", None
     if await provider.sky.status(request_id) != "SUCCEEDED":
         return "unknown", None
     if plan.network is not None:
