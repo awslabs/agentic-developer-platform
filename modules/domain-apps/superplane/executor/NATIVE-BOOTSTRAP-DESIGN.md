@@ -21,7 +21,7 @@ The implementation must include production composition, not just protocol defini
 
 # Native AWS bootstrap implementation for #5927
 
-This is the consolidated implementation design following the approval above. It supersedes the earlier DNS-only proposal. The authoritative Superplane architecture continues to own tenant, workspace and cluster placement. This increment executes against the workspace's already selected dedicated native AWS EKS cluster; it does not choose another cluster or introduce shared-cluster observation authority.
+This is the consolidated implementation design following the approval above. It supersedes the earlier DNS-only proposal. The authoritative [Superplane architecture](../DESIGN.md) continues to own tenant, workspace and cluster placement. This increment executes against the workspace's already selected dedicated native AWS EKS cluster; it does not choose another cluster or introduce shared-cluster observation authority.
 
 ## Approval and execution
 
@@ -41,7 +41,7 @@ The runtime manifest pins native nodeadm commit `ffc658f85bb8732e130898850802b10
 
 Trusted Plan generates the only permitted public NodeConfig: original cluster endpoint/CA/ServiceCIDR, workspace/allocation labels and allocation NoSchedule taint. No storage/runtime/environment/feature/extra-config or alternate config-source fields are permitted. It travels in the fixed SSM contract, outside SkyPilot task history. Native role authentication supplies node identity. Wrappers suppress native output and emit only bounded identity/digest/state receipts.
 
-Read-only wrapper preflight permits at most three attempts before a persistent fsynced init-start latch. Pinned nodeadm executes once with sanitized environment and bounded AWS SDK retry attempts. A missing/failed completion after the latch never authorizes another init; uncertain partial effects retain the allocation for cleanup. An existing successful matching wrapper receipt may be returned without rerunning init. Full interrupted-init re-entry is outside this approval.
+Read-only wrapper preflight permits at most three attempts before a persistent fsynced init-start latch. Pinned nodeadm executes once with sanitized environment and bounded AWS SDK retry attempts. A missing/failed completion after the latch never authorizes another init; uncertain partial effects retain the allocation for cleanup. The executor may reuse the original stored command receipt while reobserving its exact SSM invocation; re-invoking the wrapper does not bypass the init-start latch. Full interrupted-init re-entry is outside this approval.
 
 ## Database and accounting
 
