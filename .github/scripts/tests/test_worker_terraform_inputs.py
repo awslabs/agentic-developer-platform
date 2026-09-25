@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -128,7 +129,13 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
         shutil.copyfile(overlay, target)
     # Evaluate the actual input files through the wrapper with provider-free
     # Terraform. Every declared variable remains production-owned.
-    shutil.copyfile(SCRIPTS.parent / "infra/variables.tf", infra / "variables.tf")
+    # Variables are also declared alongside their owning resources. Copy every
+    # production declaration into the provider-free fixture, so an environment
+    # overlay is checked against the real input surface regardless of file layout.
+    declarations = []
+    for source in sorted((SCRIPTS.parent / "infra").glob("*.tf")):
+        declarations.extend(re.findall(r'^variable "[^\"]+" \{.*?^\}', source.read_text(), re.MULTILINE | re.DOTALL))
+    (infra / "variables.tf").write_text("\n\n".join(declarations) + "\n")
     real_terraform = shutil.which("terraform")
     assert real_terraform
     (root / "bin/terraform").write_text(

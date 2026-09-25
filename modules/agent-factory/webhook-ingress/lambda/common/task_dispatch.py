@@ -181,6 +181,8 @@ def _valid_claim(claimed: dict, dispatch_id: str) -> bool:
     }:
         return False
     envelope = claimed.get("envelope")
+    if not isinstance(envelope, dict):
+        return False
     if (
         claimed.get("schema_version") != "1.0"
         or not claimed.get("lease_token")
@@ -228,12 +230,15 @@ def publish_dispatch(dispatch_id: str) -> dict:
 
 
 def _settle_recovery(work: dict, *, observed: bool) -> bool:
+    kind = work.get("kind")
+    if not isinstance(kind, str):
+        return False
     evidence_kind = {
         "dispatch": "publication",
         "execution": "workload_termination",
         "queue_ack": "queue_ack",
         "cleanup": "retention",
-    }.get(work.get("kind"))
+    }.get(kind)
     if evidence_kind is None:
         return False
     result = _call_gateway(
@@ -281,12 +286,10 @@ def sweep(context, *, env=None, clock=time.monotonic) -> dict:
     require_recovery_invocation(context)
     if not recovery_enabled(env):
         return {"status": "disabled", "processed": 0}
-    deadline, processed, outcomes, truncated = (
-        clock() + MAX_INVOCATION_SECONDS,
-        0,
-        {},
-        False,
-    )
+    deadline = clock() + MAX_INVOCATION_SECONDS
+    processed = 0
+    outcomes: dict[str, int] = {}
+    truncated = False
     for shard in shards():
         cursor = None
         while True:
