@@ -188,7 +188,11 @@ async def require_runtime_database_role(connection):
         "WHERE has_column_privilege(current_user,'cluster_credential_authorities',col,'UPDATE')) "
         "OR EXISTS(SELECT 1 FROM unnest(ARRAY['clusters','workspaces','cluster_memberships']) AS tab "
         "WHERE has_table_privilege(current_user,tab,'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER') "
-        "OR has_any_column_privilege(current_user,tab,'INSERT,UPDATE'))"
+        "OR has_any_column_privilege(current_user,tab,'INSERT') "
+        "OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=tab::regclass "
+        "AND a.attnum>0 AND NOT a.attisdropped "
+        "AND NOT (tab='cluster_memberships' AND a.attname='updated_at') "
+        "AND has_column_privilege(current_user,tab,a.attname,'UPDATE')))"
     )
     if broad:
         raise BootstrapRefused(

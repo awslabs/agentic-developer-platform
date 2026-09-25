@@ -53,6 +53,11 @@ def test_runtime_role_checks_effective_column_and_table_writes(
                     "GRANT UPDATE (holder,fence_token,lease_expires_at) "
                     f'ON cluster_credential_authorities TO "{role}"'
                 )
+                # PostgreSQL row locking needs UPDATE on at least one column;
+                # this timestamp confers no placement or lifecycle authority.
+                await connection.execute(
+                    f'GRANT UPDATE (updated_at) ON cluster_memberships TO "{role}"'
+                )
                 if extra:
                     await connection.execute(f'GRANT {extra} TO "{role}"')
                 await connection.execute(f'SET LOCAL ROLE "{role}"')
