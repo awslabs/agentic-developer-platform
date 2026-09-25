@@ -1834,10 +1834,12 @@ class TaskStore:
             )
         current_sequence = int(snapshot.get("event_sequence", 0))
         maximum = MAX_TASK_EVENTS if kind in _TERMINAL_REPORT_EVENT_TYPES else MAX_TASK_EVENTS - FINAL_EVENT_RESERVE
-        if current_sequence >= maximum:
+        starts_run = current_state in {TaskState.ACCEPTED, TaskState.QUEUED}
+        allocated = 2 if starts_run else 1
+        if current_sequence + allocated > maximum:
             raise TaskStoreError("task event budget is exhausted")
 
-        sequence = current_sequence + 1
+        sequence = current_sequence + allocated
         now_iso = _iso(self._clock())
         scope = dict(snapshot["scope"])
         report = base_item(
@@ -1869,6 +1871,21 @@ class TaskStore:
             runtime_attempt_id=runtime_attempt_id,
             producer_timestamp=producer_iso,
         )
+        meta_expression = "SET event_sequence = :next, updated_at = :now"
+        meta_names = {"#state": "state", "#version": "version"}
+        meta_values = {
+            ":next": sequence,
+            ":current": current_sequence,
+            ":now": now_iso,
+            ":state": current_state.value,
+            ":invocation": invocation_id,
+            ":generation": generation,
+            ":attempt": runtime_attempt_id,
+            ":version": int(snapshot["version"]),
+        }
+        if starts_run:
+            meta_expression += ", #state = :running, #version = :next_version"
+            meta_values.update({":running": "running", ":next_version": int(snapshot["version"]) + 1})
         transaction = [
             {
                 "Put": {
@@ -1881,23 +1898,13 @@ class TaskStore:
                 "Update": {
                     "TableName": self._table_name,
                     "Key": _serialize_authority({"event_id": task_partition(task_id), "arrived_at": META_SORT_KEY}),
-                    "UpdateExpression": "SET event_sequence = :next, updated_at = :now",
+                    "UpdateExpression": meta_expression,
                     "ConditionExpression": (
                         "event_sequence = :current AND #state = :state AND invocation_id = :invocation AND "
-                        "generation = :generation AND runtime_attempt_id = :attempt"
+                        "generation = :generation AND runtime_attempt_id = :attempt AND #version = :version"
                     ),
-                    "ExpressionAttributeNames": {"#state": "state"},
-                    "ExpressionAttributeValues": _serialize_authority(
-                        {
-                            ":next": sequence,
-                            ":current": current_sequence,
-                            ":now": now_iso,
-                            ":state": current_state.value,
-                            ":invocation": invocation_id,
-                            ":generation": generation,
-                            ":attempt": runtime_attempt_id,
-                        }
-                    ),
+                    "ExpressionAttributeNames": meta_names,
+                    "ExpressionAttributeValues": _serialize_authority(meta_values),
                 }
             },
             *self._authority_condition_checks(snapshot=snapshot, runtime_attempt_id=runtime_attempt_id),
@@ -1909,6 +1916,23 @@ class TaskStore:
                 }
             },
         ]
+        if starts_run:
+            # A current-attempt authored report proves the runtime started. The
+            # gateway derives lifecycle state; the producer cannot supply it.
+            started = self._event_item(
+                task_id=task_id,
+                scope=scope,
+                sequence=current_sequence + 1,
+                kind="run.started",
+                invocation_id=invocation_id,
+                generation=generation,
+                runtime_attempt_id=runtime_attempt_id,
+                timestamp=now_iso,
+                data={"status": "running", "version": int(snapshot["version"]) + 1},
+            )
+            transaction.append(
+                {"Put": {"TableName": self._table_name, "Item": _serialize(started), "ConditionExpression": "attribute_not_exists(event_id)"}}
+            )
         try:
             self._client.transact_write_items(TransactItems=transaction)
         except ClientError as exc:
