@@ -125,7 +125,7 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
             assert len(matching) == 1, name
             assert "github.ref == 'refs/heads/main'" in job["if"], name
             expected_runner = (
-                {"group": "Default", "labels": "arc-runner-org"}
+                "arc-runner-org"
                 if name in GATEWAY_EXISTING_RUNNER_WORKFLOWS
                 else {"group": "adp-deployment", "labels": "arc-runner-deployment"}
             )
