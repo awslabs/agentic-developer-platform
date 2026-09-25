@@ -773,6 +773,7 @@ JOURNEY_DRIVERS = {
     "E22": "story_activity",
     "E24": "story_vault",
     "E30": "story_gitlab",
+    "E26": "story_budget",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

@@ -38,7 +38,7 @@ credentials.
 
 The daily EC2 invocation selects **`nightly`**: E01 install, C01 native login and
 refresh, E20 capabilities/doctor (#5621), E21 own usage views and bounded export
-(#5628), E22 Activity pagination and missing-run errors (#5629), and E24 vault metadata and mutation previews (#5631). All product
+(#5628), E22 Activity pagination and missing-run errors (#5629), E24 vault metadata and mutation previews (#5631), and E26 own budget daily/weekly/monthly reads (#5589). All product
 commands run from the hash-verified served CLI on the disposable EC2 instance.
 These three new scenarios add no inference or platform mutations. Missing CLI
 helpers, endpoint errors, malformed JSON, or inconsistent exit codes fail the run.

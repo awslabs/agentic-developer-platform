@@ -158,3 +158,14 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
 
 GitLab (#5635) adds `gitlab status|connect|disconnect` and `admin gitlab status|configure|revalidate`. The [GitLab human API contract](gitlab.md) records approved-host discovery, vault references, exact project/root admission, preserved external hooks, recovery and live acceptance holds. These are source command forms; deployment and real hosted delivery require separate evidence.
+
+Budget additions ([contract and examples](budgets.md)); source implemented, live enforcement acceptance pending:
+
+| Command | Purpose |
+|---|---|
+| `adp budget me` | Existing own-budget envelope for one explicit period |
+| `adp admin budget list` | Bounded managed cap pages |
+| `adp admin budget show` | Exact tenant/target/ledger/period configuration and revision |
+| `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
+| `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
+| `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
