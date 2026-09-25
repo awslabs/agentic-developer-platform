@@ -53,11 +53,21 @@ spec:
       labels:
         app.kubernetes.io/name: superplane-integration-test-postgres
     spec:
+      # Pod-level security context (#6105 — pod security reconciliation).
+      # Cannot set runAsNonRoot at pod level: postgres:16-alpine starts as
+      # root to initialise PGDATA then drops to uid 999. The container-level
+      # controls below apply once the entrypoint drops privileges.
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: superplane-integration-test-postgres
           image: public.ecr.aws/docker/library/postgres:16-alpine
           securityContext:
             allowPrivilegeEscalation: false
+            privileged: false
           env:
             - name: POSTGRES_USER
               value: superplane
@@ -212,11 +222,23 @@ spec:
     spec:
       restartPolicy: OnFailure
       serviceAccountName: superplane-integration-test-secret-init
+      # Pod-level security context (#6105).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: generate
           image: public.ecr.aws/bitnami/kubectl:latest
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           command:
             - sh
             - -c
@@ -271,17 +293,43 @@ spec:
         app.kubernetes.io/part-of: superplane-integration-test
     spec:
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      # Pod-level security context (#6105).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         - name: wait-for-db
           image: public.ecr.aws/docker/library/postgres:16-alpine
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
           command: ['sh', '-c', 'until pg_isready -h superplane-integration-test-postgres.superplane-integration-test.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
       containers:
         - name: migrate
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           command: ['python', '-m', 'alembic', 'upgrade', 'head']
           env:
             - name: DATABASE_URL
@@ -340,11 +388,32 @@ spec:
         app.kubernetes.io/part-of: superplane-integration-test
     spec:
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      # Pod-level security context (#6105).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         - name: wait-for-schema
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
           command: ['sh', '-c', 'until python -m alembic check; do echo "Waiting for migrations..."; sleep 2; done']
           env:
             - name: DATABASE_URL
@@ -361,7 +430,12 @@ spec:
         - name: seed
           image: public.ecr.aws/docker/library/postgres:16-alpine
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -462,17 +536,49 @@ spec:
     spec:
       serviceAccountName: superplane-integration-test-api
       terminationGracePeriodSeconds: 30
+      # Pod-level security context (#6105).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       # Wait for postgres to be ready
       initContainers:
         - name: wait-for-db
           image: public.ecr.aws/docker/library/postgres:16-alpine
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
           command: ['sh', '-c', 'until pg_isready -h superplane-integration-test-postgres.superplane-integration-test.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
         - name: wait-for-schema
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
           command: ['sh', '-c', 'until python -m alembic check; do echo "Waiting for migrations..."; sleep 2; done']
           env:
             - name: DATABASE_URL
@@ -543,8 +649,11 @@ spec:
               memory: 512Mi
           securityContext:
             allowPrivilegeEscalation: false
+            privileged: false
             readOnlyRootFilesystem: false
             runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: tmp
               mountPath: /tmp

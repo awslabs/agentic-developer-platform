@@ -28,7 +28,7 @@ spec:
       # TODO: bake deps into a custom image so this can be fully hardened.
       # apt-get install at startup is incompatible with readOnlyRootFilesystem,
       # runAsNonRoot, and drop ALL capabilities. See architect I2 in #634.
-      automountServiceAccountToken: true
+      automountServiceAccountToken: false
       serviceAccountName: agent-context-sa
       securityContext:
         seccompProfile:
@@ -38,6 +38,10 @@ spec:
         image: python:3.12.4-slim
         securityContext:
           allowPrivilegeEscalation: false
+          privileged: false
+          # Cannot drop ALL or set readOnlyRootFilesystem: apt-get and pip
+          # install need root writes. Resolves when deps are baked into a
+          # custom image (see TODO above, architect I2 in #634).
         command: ["/bin/bash", "-c"]
         args:
         - |
@@ -48,6 +52,13 @@ spec:
           cp /usr/local/bin/cgc /install/bin/cgc 2>/dev/null || true
           cp /usr/local/bin/codegraphcontext /install/bin/codegraphcontext 2>/dev/null || true
           echo "CGC installation complete"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
         volumeMounts:
         - name: install
           mountPath: /install
@@ -56,6 +67,10 @@ spec:
         image: python:3.12.4-slim
         securityContext:
           allowPrivilegeEscalation: false
+          privileged: false
+          # Cannot set runAsNonRoot, readOnlyRootFilesystem or drop ALL
+          # capabilities: runtime apt-get install and cp to system paths
+          # require root. Resolves with a pre-built image (#634).
         command: ["/bin/bash", "-c"]
         args:
         - |

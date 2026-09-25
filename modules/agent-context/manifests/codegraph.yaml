@@ -21,12 +21,22 @@ spec:
         app.kubernetes.io/name: codegraph
         app.kubernetes.io/part-of: agent-context-platform
     spec:
+      # API token is unnecessary; IRSA uses its separate projected web-identity token.
+      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
+      # Pod-level security context (#6105 — pod security reconciliation).
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: codegraph
         image: ${CODEGRAPH_IMAGE}
         securityContext:
           allowPrivilegeEscalation: false
+          privileged: false
+          # Cannot set runAsNonRoot, readOnlyRootFilesystem or drop ALL
+          # capabilities: runtime apt-get install requires root writes.
+          # Resolves when codegraph deps are baked into a custom image.
         command: ["/bin/bash", "-c"]
         args:
           - |

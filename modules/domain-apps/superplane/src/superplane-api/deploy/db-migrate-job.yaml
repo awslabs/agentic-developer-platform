@@ -13,17 +13,43 @@ spec:
   template:
     spec:
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      # Pod-level security context (#6105 — pod security reconciliation).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
         - name: wait-for-db
           image: public.ecr.aws/docker/library/postgres:16-alpine
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
           command: ['sh', '-c', 'until pg_isready -h postgres.superplane.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
       containers:
         - name: migrate
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           command: ['python', '-m', 'alembic', 'upgrade', 'head']
           env:
             # Resolved at runtime from a Secret, never written here (issue #5683, A04).
@@ -58,6 +84,9 @@ spec:
                   name: superplane-api-db
                   key: ca-pem
                   optional: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 100m
@@ -65,3 +94,7 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

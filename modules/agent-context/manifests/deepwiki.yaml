@@ -21,12 +21,24 @@ spec:
         app.kubernetes.io/name: deepwiki
         app.kubernetes.io/part-of: agent-context-platform
     spec:
+      # API token is unnecessary; IRSA uses its separate projected web-identity token.
+      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
+      # Pod-level security context (#6105 — pod security reconciliation).
+      # Cannot set runAsNonRoot: upstream DeepWiki image runs as root and
+      # writes to /root/.adalflow. Resolves when image family (#6122)
+      # confirms non-root compatibility.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: deepwiki
         image: ${DEEPWIKI_IMAGE}
         securityContext:
           allowPrivilegeEscalation: false
+          privileged: false
+          capabilities:
+            drop: ["ALL"]
         ports:
         - containerPort: ${DEEPWIKI_PORT}
           name: api
