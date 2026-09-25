@@ -94,10 +94,17 @@ async def creating_keys(provider, operation, plan):
         raise OperationRefused("original Node creating operation unavailable")
     record = _record(row)
     request = record.admitted_request()
-    if request.action != "provision" or (
-        request.parameters["allocation_id"]
-        != operation.request.parameters["allocation_id"]
-        or json.loads(request.parameters["controller_plan"]) != plan.data
+    # Plan.read expands the admitted CA and regional bindings. Compare the
+    # immutable request inputs, not raw source JSON against that expanded plan.
+    bindings = (
+        "allocation_id",
+        "controller_plan",
+        "controller_certificate_authority",
+        "controller_regions",
+    )
+    if request.action != "provision" or any(
+        request.parameters.get(key) != operation.request.parameters.get(key)
+        for key in bindings
     ):
         raise OperationRefused("original Node creating plan differs")
     approved = {step_key(record, step): step for step in admitted_steps(record)}

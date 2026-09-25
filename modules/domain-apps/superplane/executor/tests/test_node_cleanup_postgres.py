@@ -1,6 +1,7 @@
 """Real fenced Node membership and cleanup with simulated EC2/Kubernetes I/O."""
 
 from copy import deepcopy
+import hashlib
 import json
 from types import SimpleNamespace
 from uuid import uuid4
@@ -38,10 +39,15 @@ async def nodes(pool):
         "provider_account_id": "123456789012",
     }
     plan = Plan(data, "original", ())
+    # Admitted V4 JSON retains a digest; the validated Plan expands regions.
+    raw_data = deepcopy(data)
+    regions = json.dumps(raw_data.pop("regions"))
+    raw_data["regions_sha256"] = hashlib.sha256(regions.encode()).hexdigest()
     parameters = {
         "allocation_id": "original",
         "controller_deployment_id": str(uuid4()),
-        "controller_plan": json.dumps(data),
+        "controller_plan": json.dumps(raw_data),
+        "controller_regions": regions,
     }
 
     async def admit(action, source=None):
