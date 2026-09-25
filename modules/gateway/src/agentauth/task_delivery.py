@@ -47,6 +47,7 @@ class TaskDelivery:
         self.store, self.sqs, self.queue_url, self.clock = store, sqs, queue_url, clock
         self.allow_task_api, self.allow_legacy = allow_task_api, allow_legacy
         self.allow_shared_legacy = allow_shared_legacy
+        self.cancelled_tasks = {}
 
     def read(self, pod_uid: str) -> dict | None:
         raw = self.store._read(f"PODTASK#{pod_uid}", "DELIVERY")
@@ -92,7 +93,10 @@ class TaskDelivery:
         work = repository._get(task_work_partition(task["task_id"]), dispatch_sort_key(task["dispatch_id"]))
         if not work or work.get("envelope") != envelope:
             return False
-        return TaskCommands(repository).cancel_unstarted(task["task_id"])
+        cancelled = TaskCommands(repository).cancel_unstarted(task["task_id"])
+        if cancelled:
+            self.cancelled_tasks[task["task_id"]] = task
+        return cancelled
 
     def acquire(self, pod_uid: str) -> str | None:
         now = int(self.clock())
