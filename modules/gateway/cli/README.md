@@ -26,6 +26,7 @@ or Codex.
 | `adp-github-admin.py` | GitHub App registration and status for administrators — `adp admin github` ([guide](github-admin.md)) |
 | `adp-superplane.py` | Workspaces, GPU deployments, cloud accounts and provider credentials — `adp superplane` ([guide](../../../docs/adp-cli/superplane.md)) |
 | `adp-superplane-onboarding.py` | Workspace and provider onboarding — `adp superplane onboarding`: capability and readiness reporting, plan review, credential-reference binding, durable operation receipts |
+| `adp-task.py`, `adp_task_client.py` | Submit, monitor and abort work as a registered Task principal — `adp task` ([guide](../../../docs/adp-cli/tasks.md)) |
 | `adp-flow.py` | Follow and control AI-DLC delivery flows — `adp flow` ([guide](flow.md)) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |

@@ -37,6 +37,7 @@ prerequisites, headless login and administrator login.
 | Set a Bedrock route for an organization, team or user | [AWS accounts and Bedrock](aws-and-bedrock.md#configure-bedrock-routing) |
 | Configure the platform's GitHub App or connect my repository | [GitHub](github.md) |
 | Use Superplane workspaces, deployments and provider credentials | [Superplane](superplane.md) |
+| Submit, monitor or abort work through Task APIs | [Task API commands](tasks.md) |
 | Automate commands or diagnose errors | [Scripting and troubleshooting](scripting-and-troubleshooting.md) |
 
 ## Command structure
@@ -52,6 +53,7 @@ adp admin login / setup
 adp admin bedrock <command>
 adp admin github <command>
 adp superplane <area> <command>
+adp task submit / status / monitor / abort
 ```
 
 `adp codex` and `adp claude` remain short, everyday commands. Administration
@@ -76,3 +78,6 @@ API on your deployment; see [its availability notes](superplane.md#availability)
 There is currently no `adp issue` or `adp agent` command for submitting work to a
 cloud agent. GitHub connection commands configure access; they do not start an
 agent run.
+
+Task submission is available through `adp task` in the CLI build described in the
+[Task guide](tasks.md), using a separately registered Task service identity.
