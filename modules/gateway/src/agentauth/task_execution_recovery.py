@@ -4,25 +4,29 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.task_budget_settlement import settle_task_admission
-from src.agentauth.task_runtime import TaskRuntime
+from src.agentauth.task_runtime import TaskRuntime, VerifiedTaskAttempt
 from src.tasks.records import task_ops_partition
 from src.tasks.store import TaskStoreError, _serialize
 from src.tasks.task_commands import TaskCommands
 
 
-def terminated_workload(verifier, *, uid, namespace):
+def terminated_workload(verifier, *, uid, namespace, name=None):
     """Missing/deleted pods are unknown; only the exact live API object proves stop."""
     retention = verifier.exit_retention
     if namespace != retention.namespace:
         return None
-    response = retention.client.get(f"/api/v1/namespaces/{namespace}/pods", headers=retention._headers(), params={"limit": "100"})
-    response.raise_for_status()
-    for pod in response.json().get("items", []):
+    if name:
+        _, pod, _ = retention._read(name, uid)
+        pods = [pod]
+    else:
+        response = retention.client.get(f"/api/v1/namespaces/{namespace}/pods", headers=retention._headers(), params={"limit": "100"})
+        response.raise_for_status()
+        pods = response.json().get("items", [])
+    for pod in pods:
         if pod.get("metadata", {}).get("uid") != uid:
             continue
         if pod.get("spec", {}).get("serviceAccountName") != retention.service_account or pod.get("spec", {}).get("restartPolicy") != "Never":
@@ -93,20 +97,37 @@ async def recover_execution(repository, runtime, *, work_id, lease_token):
     uid, namespace = grant.get("workload_uid"), grant.get("workload_namespace")
     if not uid or not namespace:
         return "unknown", task["state"]
-    observed = await run_in_threadpool(terminated_workload, runtime.workloads, uid=uid, namespace=namespace)
-    if not observed:
+    attempt = task.get("runtime_attempt_id")
+    if not attempt or grant.get("runtime_attempt_id") != attempt:
         return "unknown", task["state"]
-    identity = await run_in_threadpool(service.authenticate_settlement, pod=SimpleNamespace(uid=uid, namespace=namespace))
+    identity = VerifiedTaskAttempt(
+        task["task_id"], task["invocation_id"], int(task["generation"]), attempt, task["scope"]["tenant"], task["scope"]["canonical_principal"], uid
+    )
     if (identity.task_id, identity.invocation_id, identity.generation) != (work["task_id"], work["invocation_id"], int(work["generation"])):
         raise TaskStoreError("execution recovery identity changed")
-    if not await run_in_threadpool(finalize_no_send, repository, identity, observed_at=observed):
-        return "unknown", task["state"]
-    await run_in_threadpool(
-        TaskCommands(repository).settlement,
-        identity,
-        {"stop_evidence": {"child_exit_confirmed": False, "workload_terminated": True, "observed_at": observed}, "queue_ack_status": "pending"},
-        verified_workload=True,
+    stopped = task.get("child_exit", {}).get("confirmed") or (
+        task.get("server_workload_terminated") and task.get("stop_evidence", {}).get("workload_terminated")
     )
+    name = grant.get("workload_name")
+    if not stopped:
+        observed = await run_in_threadpool(terminated_workload, runtime.workloads, uid=uid, namespace=namespace, name=name)
+        if not observed:
+            return "unknown", task["state"]
+        # No-send work gets a proven zero-cost failure; model claims remain
+        # untouched and native settlement records provider uncertainty instead.
+        await run_in_threadpool(finalize_no_send, repository, identity, observed_at=observed)
+        await run_in_threadpool(
+            TaskCommands(repository).settlement,
+            identity,
+            {"stop_evidence": {"child_exit_confirmed": False, "workload_terminated": True, "observed_at": observed}, "queue_ack_status": "pending"},
+            verified_workload=True,
+        )
+    # Durable process/observed workload evidence survives pod garbage collection.
+    # Financial uncertainty must never hold a Kubernetes finalizer indefinitely.
+    if name:
+        await run_in_threadpool(
+            release_retention, runtime.workloads, name=name, uid=uid, invocation_id=identity.invocation_id, tenant_id=identity.tenant
+        )
     if not await settle_task_admission(repository, identity):
         return "unknown", (await run_in_threadpool(repository.read_task, identity.task_id))["state"]
     if (await run_in_threadpool(repository.read_task, identity.task_id)).get("queue_ack_status") != "confirmed":
@@ -121,3 +142,17 @@ async def recover_execution(repository, runtime, *, work_id, lease_token):
         ExpressionAttributeValues=_serialize({":settled": "settled", ":id": work_id, ":token": lease_token}),
     )
     return "confirmed", (await run_in_threadpool(repository.read_task, identity.task_id))["state"]
+
+
+def release_retention(verifier, *, name, uid, invocation_id, tenant_id):
+    import httpx
+
+    from src.agentauth.exit_retention import ExitRetentionError
+
+    try:
+        verifier.exit_retention.release(name=name, uid=uid, invocation_id=invocation_id, tenant_id=tenant_id)
+    except ExitRetentionError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code == 404:
+            return  # The task already retains stop proof; this is cleanup only.
+        raise

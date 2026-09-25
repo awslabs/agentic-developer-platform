@@ -117,9 +117,23 @@ async def bootstrap(body: BootstrapBody, request: Request, runtime=Depends(get_a
 
 @router.post("/attempt")
 async def attempt(body: AttemptBody, request: Request, runtime=Depends(get_agent_runtime)):
+    from src.agentauth.exit_retention import ExitRetentionError
+
     identity = await _authenticate(request, require_attempt=False)
     try:
         await run_in_threadpool(task_runtime(runtime).register_attempt, identity=identity, body=body.model_dump())
+        pod = await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, ""))
+        if pod.uid != identity.pod_uid:
+            raise WorkloadRefusedError("task workload changed")
+        await run_in_threadpool(
+            runtime.workloads.exit_retention.retain,
+            name=pod.name,
+            uid=pod.uid,
+            invocation_id=identity.invocation_id,
+            tenant_id=identity.tenant,
+        )
+    except (ExitRetentionError, WorkloadRefusedError):
+        raise HTTPException(503, "task exit evidence retention unavailable") from None
     except (BootstrapRefusedError, TaskStoreError, WorkBindingError, StaleAttemptError, StaleGenerationError):
         raise HTTPException(409, "task attempt refused") from None
     return {"schema_version": "1.0", "operation_status": "confirmed", "request_id": body.runtime_attempt_id}
