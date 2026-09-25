@@ -171,11 +171,16 @@ class BootstrapOutcome:
     registration: WorkspaceRegistration | None = None
     cleanup: CleanupPlan | None = None
     refusal: BootstrapRefused | None = None
+    namespace_gate_open: bool = False
+    namespace_gate_restored: bool = False
+    namespace_gate_restore_failed: bool = False
 
     @property
     def ready(self) -> bool:
         """True only when the interlock was cleared AND the workspace registered."""
-        return self.taint_cleared and self.registration is not None
+        return (
+            self.taint_cleared or self.namespace_gate_open
+        ) and self.registration is not None
 
     @property
     def registered(self) -> bool:
@@ -193,6 +198,15 @@ class BootstrapOutcome:
         three other fields.
         """
         return self.taint_cleared and not self.registered and not self.taint_restored
+
+    @property
+    def namespace_left_schedulable(self) -> bool:
+        """Shared admission may be open after failed publication/restoration."""
+        return (
+            self.namespace_gate_open
+            and not self.registered
+            and not self.namespace_gate_restored
+        )
 
     def raise_for_failure(self) -> None:
         """Re-raise the refusal that stopped this attempt, if there was one."""
@@ -305,6 +319,19 @@ def recover_interrupted_bootstrap(
     state = load_state(state_store, workspace_id=workspace_id, cluster_arn=cluster_arn)
     if not state.recovery_pending:
         return BootstrapOutcome()
+    from .shared_authority import SharedBootstrapAuthorityFactory
+
+    if isinstance(authority_factory, SharedBootstrapAuthorityFactory):
+        from .shared_workspace import recover_shared_bootstrap
+
+        return recover_shared_bootstrap(
+            factory=authority_factory,
+            binding=binding,
+            target=target,
+            store=store,
+            state_store=state_store,
+            state=state,
+        )
     from .adapters import KubectlClusterAccess
 
     if authority_factory is None and isinstance(access, KubectlClusterAccess):
@@ -480,6 +507,7 @@ def bootstrap_workspace(
     declared_proofs: Sequence[str] | None = None,
     taint_key: str = BOOTSTRAP_TAINT_KEY,
     authority_factory=None,
+    membership=None,
 ) -> BootstrapOutcome:
     """Run the full gate sequence. Returns an outcome; never partially registers.
 
@@ -495,6 +523,41 @@ def bootstrap_workspace(
     authorizes revocation, so accepting one from the caller would let the caller
     authorize its own cleanup.
     """
+    from .shared_authority import SharedBootstrapAuthorityFactory
+
+    if (
+        isinstance(authority_factory, SharedBootstrapAuthorityFactory)
+        and membership is None
+    ):
+        return BootstrapOutcome(
+            refusal=BootstrapRefused(
+                "shared authority requires its approved membership"
+            )
+        )
+    if membership is not None:
+        from .shared_workspace import bootstrap_shared_workspace
+
+        return bootstrap_shared_workspace(
+            binding=binding,
+            provider=provider,
+            observed_cluster=observed_cluster,
+            expected_account_id=expected_account_id,
+            expected_region=expected_region,
+            expected_cluster_name=expected_cluster_name,
+            expected_cluster_arn=expected_cluster_arn,
+            expected_certificate_authority_data=expected_certificate_authority_data,
+            cluster_ownership=cluster_ownership,
+            namespace=namespace,
+            enforce_version=enforce_version,
+            store=store,
+            state_store=state_store,
+            authority_factory=authority_factory,
+            membership=membership,
+            expected_cni_role_arn=expected_cni_role_arn,
+            contract_version=contract_version,
+            screen=screen,
+            declared_proofs=declared_proofs,
+        )
     target: VerifiedTarget | None = None
     inventory: PrerequisiteInventory | None = None
     reservation: RegistrationReservation | None = None

@@ -188,12 +188,20 @@ class Installer:
 
     def write_manifests(self):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        credential_jobs = []
+        if self.env.get("credential_controller"):
+            from .credential_controller import registration_job
+
+            credential_jobs.append(
+                registration_job(self.network_environment, self.lock, self.run_id)
+            )
         (self.directory / "manifests.yaml").write_text(
             yaml.safe_dump_all(
                 [
                     *self.docs,
                     migration_job(self.network_environment, self.lock, self.run_id),
                     bootstrap_job(self.network_environment, self.lock, self.run_id),
+                    *credential_jobs,
                 ],
                 sort_keys=False,
             )
@@ -311,7 +319,7 @@ class Installer:
     def image_components(self):
         return (
             (*COMPONENTS[:-1], "superplane-executor", COMPONENTS[-1])
-            if self.env.get("execution")
+            if self.env.get("execution") or self.env.get("credential_controller")
             else COMPONENTS
         )
 
@@ -1707,6 +1715,21 @@ class Installer:
         }
 
     def rollout(self):
+        if self.env.get("credential_controller"):
+            from .credential_controller import registration_job
+
+            job = registration_job(self.env, self.lock, self.run_id)
+            if self.existing(job) is None:
+                self.apply([job])
+            self.wait_job(job)
+            self.receipt["credential_authority_registration"] = {
+                "job": job["metadata"]["name"],
+                "authority_ids": [
+                    item["authority_id"]
+                    for item in self.env["credential_controller"]["authorities"]
+                ],
+                "live_workspace_execution_verified": False,
+            }
         self.apply([d for d in self.docs if d["kind"] == "Deployment"])
         for doc in self.docs:
             if doc["kind"] != "Deployment":

@@ -109,8 +109,8 @@ jobs:
       contents: read
       id-token: write
     runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+      group: Default
+      labels: arc-runner-org
     steps:
       - name: Guard engine delivery revisions
         env:

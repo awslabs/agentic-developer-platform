@@ -15,6 +15,8 @@ from superplane_contracts import Submitter
 
 from app.database import get_session
 from app.models.cluster import Cluster
+from app.models.cluster_membership import ClusterMembership
+from app.models.membership_credential import MembershipCredential
 from app.models.controller_execution import (
     ControllerExecution,
     ControllerExecutionAccounting,
@@ -110,7 +112,9 @@ async def reconcile(
                     ControllerExecutionAccounting.org_id == str(body.org_id),
                 )
                 .order_by(
-                    ControllerExecutionAccounting.observation["checked_at"].as_string().desc(),
+                    ControllerExecutionAccounting.observation["checked_at"]
+                    .as_string()
+                    .desc(),
                     ControllerExecutionAccounting.operation_id,
                 )
                 .limit(256)
@@ -120,6 +124,12 @@ async def reconcile(
         .all()
     )
     for target in targets:
+        shared_cluster_id = target.pop("shared_cluster_id", None)
+        if shared_cluster_id is not None:
+            target["shared_membership"] = True
+            binding = await reader_membership(db, org.id, target["workspace_id"])
+            if binding is not None:
+                target.update(binding)
         target["execution_reports"] = [
             entry.observation
             for entry in accounting
@@ -166,6 +176,7 @@ def registered_targets_query(org_id: uuid.UUID):
             Cluster.id.label("cluster_id"),
             Workspace.namespace_name.label("namespace"),
             Workspace.status.label("workspace_status"),
+            Workspace.shared_cluster_id.label("shared_cluster_id"),
             Cluster.status.label("cluster_status"),
             Cluster.eks_cluster_arn.label("cluster_arn"),
             Cluster.endpoint.label("endpoint"),
@@ -176,3 +187,86 @@ def registered_targets_query(org_id: uuid.UUID):
         .where(Workspace.org_id == org_id)
         .order_by(Workspace.id)
     )
+
+
+async def reader_membership(db, org_id, workspace_id, *, provisional_identity=None):
+    """Current public reader identity, never credential material or authority.
+
+    Projected revisions are visible only to the original live bootstrap claim caller
+    in bootstrap_observation; ordinary reconciliation receives only active revisions.
+    """
+    provisional = provisional_identity is not None
+    query = (
+        select(ClusterMembership, MembershipCredential, Cluster)
+        .join(
+            MembershipCredential,
+            MembershipCredential.membership_id == ClusterMembership.id,
+        )
+        .join(
+            Cluster,
+            (Cluster.id == ClusterMembership.cluster_id)
+            & (Cluster.org_id == ClusterMembership.org_id),
+        )
+        .join(
+            Workspace,
+            (Workspace.id == ClusterMembership.workspace_id)
+            & (Workspace.org_id == ClusterMembership.org_id),
+        )
+        .where(
+            ClusterMembership.org_id == org_id,
+            ClusterMembership.workspace_id == uuid.UUID(str(workspace_id)),
+            Workspace.cluster_id == ClusterMembership.cluster_id,
+            Workspace.shared_cluster_id == ClusterMembership.cluster_id,
+            Workspace.namespace_name == ClusterMembership.namespace,
+            Cluster.sharing_enabled.is_(True),
+            Cluster.status.in_(["Ready", "Active"]),
+            ClusterMembership.state.in_(
+                ["reserved", "active"] if provisional else ["active"]
+            ),
+            MembershipCredential.scope == "reader",
+            MembershipCredential.state == ("projected" if provisional else "active"),
+            MembershipCredential.expires_at > datetime.now(UTC),
+        )
+        .execution_options(populate_existing=True)
+    )
+    rows = (await db.execute(query)).all()
+    if len(rows) != 1:
+        return None
+    member, credential, cluster = rows[0]
+    if provisional:
+        if (
+            provisional_identity.get("membership_generation") != member.generation
+            or provisional_identity.get("membership_request_id")
+            != str(member.operation_id)
+            or provisional_identity.get("membership_cluster_id")
+            != str(member.cluster_id)
+            or provisional_identity.get("namespace_uid")
+            not in {None, "", credential.namespace_uid}
+            or provisional_identity.get("cluster_arn") != cluster.eks_cluster_arn
+            or provisional_identity.get("namespace") != member.namespace
+            or member.namespace_uid not in {None, credential.namespace_uid}
+        ):
+            return None
+    elif member.namespace_uid != credential.namespace_uid:
+        return None
+    from app.services.leases import _as_utc
+
+    if not credential.service_account_uid or not credential.namespace_uid:
+        return None
+    return {
+        "shared_membership": True,
+        "platform_eligible": cluster.platform_eligible is True,
+        "membership_credential": {
+            "org_id": str(member.org_id),
+            "workspace_id": str(member.workspace_id),
+            "cluster_id": str(member.cluster_id),
+            "cluster_arn": cluster.eks_cluster_arn,
+            "generation": member.generation,
+            "namespace": member.namespace,
+            "namespace_uid": credential.namespace_uid,
+            "service_account_uid": credential.service_account_uid,
+            "revision": credential.revision,
+            "expires_at": _as_utc(credential.expires_at).isoformat(),
+            "scope": "reader",
+        },
+    }

@@ -64,3 +64,9 @@ controller_ownership: null          # Set to 'single-workspace-controller' after
 # controller_ownership, and workspace_access are not required.
 # Workspace activation follows in a separate, explicit step.
 control_plane_only: false
+
+# Optional separate privileged member credential reconciler. See
+# ../workspace_provisioning/credential_controller/README.md for installed authority
+# document fields, required pre-existing cloud identities and DB role separation.
+# Omit/null unless those exact prerequisites are reviewed and available.
+credential_controller: null

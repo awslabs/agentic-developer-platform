@@ -70,14 +70,28 @@ func (m *Manager) inspectTarget(ctx context.Context, target Target) string {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	ns, err := client.CoreV1().Namespaces().Get(ctx, target.Namespace, metav1.GetOptions{})
-	if err != nil || ns.Status.Phase != "Active" {
-		return "namespace_unavailable"
+	if target.SharedMembership {
+		if !sharedServiceAccount(ctx, client, target) {
+			return "namespace_identity_unavailable"
+		}
+		// Actual namespaced API reads are required; membership metadata alone
+		// cannot establish an observable, usable workspace.
+		if _, err := client.CoreV1().Pods(target.Namespace).List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
+			return "namespace_unavailable"
+		}
+		if _, err := client.BatchV1().Jobs(target.Namespace).List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
+			return "workspace_api_unavailable"
+		}
+	} else {
+		ns, err := client.CoreV1().Namespaces().Get(ctx, target.Namespace, metav1.GetOptions{})
+		if err != nil || ns.Status.Phase != "Active" {
+			return "namespace_unavailable"
+		}
 	}
 	rules, err := client.AuthorizationV1().SelfSubjectRulesReviews().Create(ctx, &authorizationv1.SelfSubjectRulesReview{
 		Spec: authorizationv1.SelfSubjectRulesReviewSpec{Namespace: target.Namespace},
 	}, metav1.CreateOptions{})
-	if err != nil || !readOnlyWorkspaceRules(rules.Status) {
+	if err != nil || !scopedReaderRules(rules.Status, target.SharedMembership) {
 		return "credential_not_read_only"
 	}
 	resources, err := dynamic.NewForConfig(config)
@@ -85,6 +99,11 @@ func (m *Manager) inspectTarget(ctx context.Context, target Target) string {
 		return "credential_refused"
 	}
 	for _, resource := range []struct{ name, namespace string }{{"nodepools", ""}, {"superplanenodes", target.Namespace}} {
+		if target.SharedMembership && resource.namespace == "" {
+			// Fleet CRDs/runtime are verified by cluster-owned bootstrap
+			// authority. This member credential observes only its namespace.
+			continue
+		}
 		client := resources.Resource(schema.GroupVersionResource{Group: "superplane.ai", Version: "v1", Resource: resource.name})
 		var err error
 		if resource.namespace == "" {
@@ -120,7 +139,7 @@ func (m *Manager) inspectTarget(ctx context.Context, target Target) string {
 			return "observation_unavailable"
 		}
 		heartbeat := &controllers.HeartbeatSender{
-			NativeNodes: true,
+			NativeNodes: !target.SharedMembership,
 			SkyChecker:  observedSkyHealth(target.ProviderObservations),
 			Client:      scopedClient, Namespace: target.Namespace, WorkspaceID: target.WorkspaceID,
 			ClusterID: target.ClusterID, Credential: strings.TrimSpace(string(credential)),
@@ -206,6 +225,9 @@ func (m *Manager) workspaceClient(target Target) (*kubernetes.Clientset, *rest.C
 	if err != nil || len(kubeconfig.Clusters) != 1 || len(kubeconfig.AuthInfos) != 1 || len(kubeconfig.Contexts) != 1 {
 		return nil, nil, "credential_refused"
 	}
+	if !m.membershipMatches(target, kubeconfig) {
+		return nil, nil, "credential_refused"
+	}
 	current := kubeconfig.Contexts[kubeconfig.CurrentContext]
 	if current == nil || current.Namespace != target.Namespace || kubeconfig.CurrentContext != target.ClusterARN {
 		return nil, nil, "credential_refused"
@@ -216,7 +238,8 @@ func (m *Manager) workspaceClient(target Target) (*kubernetes.Clientset, *rest.C
 		return nil, nil, "credential_refused"
 	}
 	u, err := url.Parse(cluster.Server)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || cluster.Server != target.Endpoint || strings.TrimRight(cluster.Server, "/") == strings.TrimRight(m.config.ManagementAPIServer, "/") {
+	managementAllowed := target.SharedMembership && target.MembershipCredential != nil && target.PlatformEligible
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || cluster.Server != target.Endpoint || (strings.TrimRight(cluster.Server, "/") == strings.TrimRight(m.config.ManagementAPIServer, "/") && !managementAllowed) {
 		return nil, nil, "credential_refused"
 	}
 	if cluster.InsecureSkipTLSVerify || cluster.ProxyURL != "" || cluster.TLSServerName != "" || cluster.CertificateAuthority != "" || len(cluster.CertificateAuthorityData) == 0 || auth.Exec != nil || auth.AuthProvider != nil || auth.TokenFile != "" || auth.ClientCertificate != "" || auth.ClientKey != "" || len(auth.ClientCertificateData) != 0 || len(auth.ClientKeyData) != 0 || auth.Username != "" || auth.Password != "" || auth.Impersonate != "" || len(auth.ImpersonateGroups) != 0 || len(auth.ImpersonateUserExtra) != 0 || auth.ImpersonateUID != "" || auth.Token == "" {

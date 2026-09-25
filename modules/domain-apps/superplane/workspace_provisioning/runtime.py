@@ -104,6 +104,24 @@ async def validate_phase(operation, context, *, require_fresh=True):
 
 async def run_lifecycle(operation, context):
     """Complete one admitted phase; proposals never claim workspace readiness."""
+    from .shared_membership import approved_membership, verify
+
+    membership = approved_membership(
+        operation.request.parameters,
+        org_id=operation.grant.lease.org_id,
+        workspace_id=operation.grant.lease.workspace_id,
+    )
+    if membership is not None:
+        async with context.domain_connect() as connection:
+            await verify(connection, membership, states={"reserved", "active"})
+        # Admission may survive an API/worker version skew. Never run the
+        # dedicated network, EKS actor or all-node bootstrap recipes for a
+        # shared request, even when its membership was correctly reserved.
+        raise LifecycleRefused(
+            "shared bootstrap requires namespace admission, isolated bootstrap "
+            "delegation and renewable workspace credential delivery; the "
+            "dedicated lifecycle runtime cannot execute this placement"
+        )
     phase_state = await validate_phase(operation, context)
     _, request, _, _, _ = phase_state
     if request.mode.value == "new-account-managed":

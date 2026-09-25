@@ -259,3 +259,14 @@ boundary attachment. Policies attached outside the admitted bounded roles, or
 used as any identity's boundary, are rejected. New mutable policies may be
 created only at their exact admitted ARNs and attached only to admitted roles.
 Re-run admission after operator changes to these attachments.
+
+### Gateway deployment on the existing ARC pool
+
+Gateway deploy, migrations, smoke-test deployment helpers, pricing finalization,
+and gateway infra apply select `arc-runner-org` in the `Default` group. This
+uses the existing runner with its reduced ambient role. These jobs retain their
+protected environments, reviewed main-source checks, and explicit trusted OIDC
+credential exchange with no ambient credential fallback. No runner IAM policy is
+expanded by this routing change. This pool does not provide the dedicated node
+and tokenless service-account isolation described for `arc-runner-deployment`.
+Other deployment workflows retain their dedicated runner selection.

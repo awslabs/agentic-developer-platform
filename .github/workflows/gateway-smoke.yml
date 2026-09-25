@@ -337,8 +337,8 @@ jobs:
   stage1_diagnostics:
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.stage1_readback || inputs.stage1_authority_plan)
     runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+      group: Default
+      labels: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       contents: read
