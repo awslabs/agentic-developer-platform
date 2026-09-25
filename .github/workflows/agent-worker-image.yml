@@ -18,17 +18,21 @@ on:
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/codex-reviewer/**'
       - 'modules/agent-factory/task-agents/investigator/**'
+      - 'tests/task-api/test_model_message_seam.py'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/**'
       - 'modules/domain-apps/*/agent/**'
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'
+      - 'modules/gateway/src/agentauth/task_runtime_routes.py'
+      - 'modules/gateway/src/agentauth/task_model.py'
   push:
     paths:
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/codex-reviewer/**'
       - 'modules/agent-factory/task-agents/investigator/**'
+      - 'tests/task-api/test_model_message_seam.py'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/**'
       - 'modules/domain-apps/*/agent/**'
@@ -99,6 +103,15 @@ jobs:
       - name: Build and test the investigator task agent
         working-directory: modules/agent-factory/task-agents/investigator
         run: npm ci --include=dev && npm test
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: modules/gateway/pyproject.toml
+      - name: Install actual gateway and host seam dependencies
+        run: pip install -e './modules/gateway[dev]' requests
+      - name: Verify actual child to gateway model HTTP contract
+        run: pytest -q tests/task-api/test_model_message_seam.py
 
   build:
     name: Build Agent Runtime Image

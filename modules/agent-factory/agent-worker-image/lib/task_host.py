@@ -198,6 +198,11 @@ class TaskHost:
     def _report(self, assignment, attempt: dict, frame: dict) -> dict:
         payload = self._report_payload(attempt, frame)
         report_id = payload["report_id"]
+        logger.info(
+            "Task report emission task_id=%s report_id=%s event_type=%s emitted_at=%s",
+            assignment.task_id, report_id, payload["event_type"],
+            datetime.now(UTC).isoformat(timespec="milliseconds"),
+        )
         response = self.client.report(payload)
         if (
             set(response) != {"schema_version", "report_id", "sequence", "event_id"}
@@ -308,24 +313,39 @@ class TaskHost:
     def _model_request(self, assignment, attempt: dict, frame: dict, max_tokens: int) -> dict:
         if self._pending_turn_id is not None and frame["turn_id"] != self._pending_turn_id:
             raise TaskProtocolError("child model request skipped its assigned input turn")
+        messages = frame["messages"]
+        if not isinstance(messages, list) or not 1 <= len(messages) <= 32:
+            raise TaskProtocolError("child model messages exceed gateway bounds")
+        normalized = []
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content or message.get("role") not in {"user", "assistant"}:
+                raise TaskProtocolError("child model message must contain text")
+            blocks = [{"type": "text", "text": content[offset:offset + 32000]}
+                      for offset in range(0, len(content), 32000)]
+            if len(blocks) > 16:
+                raise TaskProtocolError("child model message exceeds text block limit")
+            normalized.append({"role": message["role"], "content": blocks})
+        request = {"messages": normalized, "max_tokens": frame.get("max_tokens", max_tokens)}
+        if "system" in frame:
+            request["system"] = frame["system"]
+        prepared = {
+            "schema_version": SCHEMA_VERSION,
+            "attempt": attempt,
+            "turn_id": frame["turn_id"],
+            "request_digest": _canonical_digest(request),
+            **request,
+        }
+        # Match both the transport bytes and the gateway's invocation-size check.
+        # The child reserves wrapper headroom while selecting labelled excerpts.
+        if (len(json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES
+                or len(json.dumps(request, ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES):
+            raise TaskProtocolError("wrapped model request exceeds 65536-byte bound")
         turn = self._turn(assignment, attempt, frame["turn_id"])
         if turn is None:
             raise TaskProtocolError("child requested a model without a committed turn")
         self._pending_turn_id = None
-        request = {
-            "messages": frame["messages"],
-            "max_tokens": frame.get("max_tokens", max_tokens),
-        }
-        if "system" in frame:
-            request["system"] = frame["system"]
-        request_digest = _canonical_digest(request)
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "attempt": attempt,
-            "turn_id": frame["turn_id"],
-            "request_digest": request_digest,
-            **request,
-        }
+        return prepared
 
     def _model(self, assignment, attempt: dict, frame: dict, max_tokens: int, *, prepared: dict | None = None) -> dict:
         prepared = prepared if prepared is not None else self._model_request(assignment, attempt, frame, max_tokens)
