@@ -119,18 +119,18 @@ def deployment_identity(org_id, workspace_id, request_id):
     return deployment_id, allocation_id
 
 
-def execution_steps(org_id, workspace_id, allocation_id, action):
+def execution_steps(
+    org_id, workspace_id, allocation_id, action, *, node_bootstrap=False
+):
     name = (
         "sp-"
         + hashlib.sha256(
             json.dumps([org_id, workspace_id, allocation_id]).encode()
         ).hexdigest()[:32]
     )
-    actions = (
-        ["launch", "status", "deploy", "status"]
-        if action == "provision"
-        else ["delete_cluster"]
-    )
+    from .node_command_plan import actions as node_actions
+
+    actions = node_actions(action, node_bootstrap)
     return compact(
         [
             {
@@ -184,7 +184,7 @@ def build_deployment_preview(
     try:
         request_id = str(uuid.UUID(str(request_id)))
         profile = json.loads(compact(profile))
-        profile_fields = set(profile) - {"network_probe"}
+        profile_fields = set(profile) - {"network_probe", "node_bootstrap"}
         if profile_fields not in (
             PROFILE_FIELDS,
             GPU_PROFILE_FIELDS,
@@ -335,10 +335,18 @@ def build_deployment_preview(
             "max_runtime_seconds": str(profile["max_runtime_seconds"]),
             "max_cost_micros": str(profile["max_cost_micros"]),
             "execution_steps": execution_steps(
-                org_id, workspace_id, allocation_id, "provision"
+                org_id,
+                workspace_id,
+                allocation_id,
+                "provision",
+                node_bootstrap="node_bootstrap" in profile,
             ),
             **reference,
         }
+        if "node_bootstrap" in profile:
+            from .node_command_plan import PARAMETER, validate
+
+            parameters[PARAMETER] = compact(validate(profile["node_bootstrap"]))
         if is_regional:
             parameters["controller_regions"] = compact(profile["regions"])
         if "network" in profile:
@@ -371,6 +379,10 @@ def validate_request(request, target, *, org_id, workspace_id):
 
     if PARAMETERS & set(request.parameters):
         fields = fields | PARAMETERS
+    from .node_command_plan import PARAMETER
+
+    if PARAMETER in request.parameters:
+        fields = fields | {PARAMETER}
     if set(request.parameters) != fields:
         raise OperationRefused(
             "controller deployment request has unsupported parameters"

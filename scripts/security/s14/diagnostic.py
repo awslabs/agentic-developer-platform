@@ -31,20 +31,22 @@ APPROVED_CONFIG_SHA256 = (
 
 def verified_ecr_manifest(batch, account, repository, digest):
     """Accept duplicate tag records only when every requested manifest is exact."""
-    assert batch.get("images") and not batch.get("failures"), "ECR query failed"
+    if not (batch.get("images") and not batch.get("failures")):
+        raise AssertionError("ECR query failed")
     manifests = set()
     for image in batch["images"]:
-        assert image.get("registryId") == account, "Unexpected ECR registry"
-        assert image.get("repositoryName") == repository, "Unexpected ECR repository"
-        assert image.get("imageId", {}).get("imageDigest") == digest, (
-            "Unexpected ECR digest"
-        )
+        if not (image.get("registryId") == account):
+            raise AssertionError("Unexpected ECR registry")
+        if not (image.get("repositoryName") == repository):
+            raise AssertionError("Unexpected ECR repository")
+        if not (image.get("imageId", {}).get("imageDigest") == digest):
+            raise AssertionError("Unexpected ECR digest")
         raw = image["imageManifest"]
-        assert "sha256:" + hashlib.sha256(raw.encode()).hexdigest() == digest, (
-            "ECR manifest hash mismatch"
-        )
+        if not ("sha256:" + hashlib.sha256(raw.encode()).hexdigest() == digest):
+            raise AssertionError("ECR manifest hash mismatch")
         manifests.add(raw)
-    assert len(manifests) == 1, "Conflicting ECR manifests"
+    if not (len(manifests) == 1):
+        raise AssertionError("Conflicting ECR manifests")
     return json.loads(next(iter(manifests)))
 
 
@@ -60,15 +62,15 @@ def main():
     ap.add_argument("--source-sha")
     args = ap.parse_args()
     config_bytes = pathlib.Path(args.config).read_bytes()
-    assert hashlib.sha256(config_bytes).hexdigest() == APPROVED_CONFIG_SHA256, (
-        "Unreviewed configuration"
-    )
+    if not (hashlib.sha256(config_bytes).hexdigest() == APPROVED_CONFIG_SHA256):
+        raise AssertionError("Unreviewed configuration")
     cfg = json.loads(config_bytes)
     receipt = pathlib.Path(args.receipt)
-    assert (
+    if not (
         cfg["account"] == "879318057152"
         and cfg["role_name"] == "adp-dev-agent-runner-role"
-    )
+    ):
+        raise AssertionError()
     if not args.execute:
         print(json.dumps({"validated": True, "executed": False, "stage": args.stage}))
         return
@@ -77,24 +79,29 @@ def main():
     fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     config = Config(connect_timeout=10, read_timeout=30, retries={"max_attempts": 2})
     session = boto3.Session(region_name=cfg["region"])
-    assert session.get_credentials().method == "assume-role-with-web-identity", (
-        "Actual IRSA credential provider required"
-    )
+    if not (session.get_credentials().method == "assume-role-with-web-identity"):
+        raise AssertionError("Actual IRSA credential provider required")
 
     def client(service):
         return session.client(service, config=config)
 
     identity = client("sts").get_caller_identity()
-    assert identity["Account"] == cfg["account"] and identity["Arn"].startswith(
-        "arn:aws:sts::" + cfg["account"] + ":assumed-role/" + cfg["role_name"] + "/"
-    ), "WRONG_RUNTIME_IDENTITY"
+    if not (
+        identity["Account"] == cfg["account"]
+        and identity["Arn"].startswith(
+            "arn:aws:sts::" + cfg["account"] + ":assumed-role/" + cfg["role_name"] + "/"
+        )
+    ):
+        raise AssertionError("WRONG_RUNTIME_IDENTITY")
     workflow_run_id = os.environ["GITHUB_RUN_ID"]
     workflow_sha = os.environ["GITHUB_SHA"]
     if receipt.exists():
         checkpoint = json.loads(receipt.read_text())
         if "continuation" in checkpoint:
-            assert os.environ["GITHUB_REF"] == "refs/heads/main"
-            assert os.environ["GITHUB_RUN_ATTEMPT"] == "1"
+            if not (os.environ["GITHUB_REF"] == "refs/heads/main"):
+                raise AssertionError()
+            if not (os.environ["GITHUB_RUN_ATTEMPT"] == "1"):
+                raise AssertionError()
             validate_continuation(checkpoint, workflow_run_id, workflow_sha)
             # Original evidence remains top-level; the new context is appended.
             workflow_run_id, workflow_sha = ORIGIN_RUN, ORIGIN_WORKFLOW_SHA
@@ -135,7 +142,8 @@ def main():
                 url = client("ssm").get_parameter(
                     Name=cfg["ssm_parameter"], WithDecryption=False
                 )["Parameter"]["Value"]
-                assert cfg["gateway_url"].startswith(url.rstrip("/") + "/internal/")
+                if not (cfg["gateway_url"].startswith(url.rstrip("/") + "/internal/")):
+                    raise AssertionError()
                 result["checks"]["ssm"] = True
                 save()
             if not result["checks"].get("secret_kms"):
@@ -143,7 +151,8 @@ def main():
                 secret_client = client("secretsmanager")
                 for arn in cfg["secrets"]:
                     value = secret_client.get_secret_value(SecretId=arn)
-                    assert value.get("SecretString") or value.get("SecretBinary")
+                    if not (value.get("SecretString") or value.get("SecretBinary")):
+                        raise AssertionError()
                     del value
                 result["checks"]["secret_kms"] = {
                     "passed": True,
@@ -185,9 +194,12 @@ def main():
                 current = "ecr"
                 ecr = client("ecr")
                 authorization = ecr.get_authorization_token()["authorizationData"][0]
-                assert base64.b64decode(authorization["authorizationToken"]).startswith(
-                    b"AWS:"
-                )
+                if not (
+                    base64.b64decode(authorization["authorizationToken"]).startswith(
+                        b"AWS:"
+                    )
+                ):
+                    raise AssertionError()
                 del authorization
                 digest = cfg["ecr_image_digest"]
                 image = None
@@ -207,7 +219,8 @@ def main():
                         if x.get("platform", {}).get("architecture") == "amd64"
                         and x.get("platform", {}).get("os") == "linux"
                     ]
-                    assert len(candidates) == 1
+                    if not (len(candidates) == 1):
+                        raise AssertionError()
                     digest = candidates[0]["digest"]
                 layer = image["layers"][0]["digest"]
                 download = ecr.get_download_url_for_layer(
@@ -217,7 +230,8 @@ def main():
                     urllib.request.Request(download, headers={"Range": "bytes=0-1023"}),
                     timeout=20,
                 ) as response:
-                    assert response.read(1024)
+                    if not (response.read(1024)):
+                        raise AssertionError()
                 del download
                 result["checks"]["ecr_pull"] = True
                 save()
@@ -242,9 +256,10 @@ def main():
                     )
                 except logs.exceptions.ResourceAlreadyExistsException:
                     pass
-                assert not result.get("log_event_started"), (
-                    "Prior log write ambiguous; reconcile before retry"
-                )
+                if not (not result.get("log_event_started")):
+                    raise AssertionError(
+                        "Prior log write ambiguous; reconcile before retry"
+                    )
                 result["log_event_started"] = True
                 save()
                 logs.put_log_events(
@@ -274,25 +289,31 @@ def main():
                     ),
                     timeout=30,
                 ) as response:
-                    assert response.status == cfg["gateway_expected_status"]
+                    if not (response.status == cfg["gateway_expected_status"]):
+                        raise AssertionError()
                     body = json.loads(response.read(4096))
-                    assert body.get("tenant") == cfg["gateway_tenant"]
-                    assert all(
-                        (
-                            isinstance(body.get(k), bool)
-                            for k in [
-                                "enable_user_credentials",
-                                "enforce_credential_binding",
-                            ]
+                    if not (body.get("tenant") == cfg["gateway_tenant"]):
+                        raise AssertionError()
+                    if not (
+                        all(
+                            (
+                                isinstance(body.get(k), bool)
+                                for k in [
+                                    "enable_user_credentials",
+                                    "enforce_credential_binding",
+                                ]
+                            )
                         )
-                    )
+                    ):
+                        raise AssertionError()
                 result["checks"]["gateway_route"] = True
                 save()
             if not result["checks"].get("bedrock"):
                 current = "bedrock"
-                assert not result.get("model_invocation_started"), (
-                    "Prior model response ambiguous; reconcile before retry"
-                )
+                if not (not result.get("model_invocation_started")):
+                    raise AssertionError(
+                        "Prior model response ambiguous; reconcile before retry"
+                    )
                 result["model_invocation_started"] = True
                 save()
                 body = {
@@ -315,7 +336,8 @@ def main():
                     body=json.dumps(body),
                 )
                 answer = json.loads(response["body"].read())
-                assert answer.get("type") == "message"
+                if not (answer.get("type") == "message"):
+                    raise AssertionError()
                 result["checks"]["bedrock"] = True
                 save()
             result["runtime_complete"] = all(
@@ -334,29 +356,35 @@ def main():
             )
             save()
         elif args.stage == "start-build":
-            assert result.get("runtime_complete"), (
-                "Runtime acceptance must finish first"
-            )
-            assert not result.get("build_invocation_started"), (
-                "Prior StartBuild intent requires operator reconciliation; no automatic replay"
-            )
-            assert not result.get("build_id"), "Existing build handle: use poll-build"
+            if not (result.get("runtime_complete")):
+                raise AssertionError("Runtime acceptance must finish first")
+            if not (not result.get("build_invocation_started")):
+                raise AssertionError(
+                    "Prior StartBuild intent requires operator reconciliation; no automatic replay"
+                )
+            if not (not result.get("build_id")):
+                raise AssertionError("Existing build handle: use poll-build")
             if not result.get("build_request"):
-                assert (
+                if not (
                     args.source_root
                     and args.source_sha == cfg["reviewed_source_sha"]
                     and re.fullmatch("[a-f0-9]{40}", args.source_sha)
-                )
+                ):
+                    raise AssertionError()
                 root = pathlib.Path(args.source_root).resolve()
                 actual = subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=root, text=True
                 ).strip()
-                assert actual == args.source_sha, "Source SHA mismatch"
-                assert not subprocess.check_output(
-                    ["git", "status", "--porcelain", "--untracked-files=no"],
-                    cwd=root,
-                    text=True,
-                ).strip(), "Tracked source dirty"
+                if not (actual == args.source_sha):
+                    raise AssertionError("Source SHA mismatch")
+                if not (
+                    not subprocess.check_output(
+                        ["git", "status", "--porcelain", "--untracked-files=no"],
+                        cwd=root,
+                        text=True,
+                    ).strip()
+                ):
+                    raise AssertionError("Tracked source dirty")
                 current = "package_source"
                 if not result.get("source_upload"):
                     archive = receipt.parent / (
@@ -391,11 +419,13 @@ def main():
                     }
                     save()
                 upload = result["source_upload"]
-                assert upload["source_sha"] == actual
+                if not (upload["source_sha"] == actual):
+                    raise AssertionError()
                 archive = pathlib.Path(upload["archive_path"])
-                assert (
+                if not (
                     hashlib.sha256(archive.read_bytes()).hexdigest() == upload["sha256"]
-                )
+                ):
+                    raise AssertionError()
                 source_key = upload["key"]
                 if not upload["uploaded"]:
                     uploaded = client("s3").put_object(
@@ -407,9 +437,10 @@ def main():
                             "archive-sha256": upload["sha256"],
                         },
                     )
-                    assert uploaded.get("VersionId") not in (None, "", "null"), (
-                        "Source bucket must provide an immutable object version"
-                    )
+                    if not (uploaded.get("VersionId") not in (None, "", "null")):
+                        raise AssertionError(
+                            "Source bucket must provide an immutable object version"
+                        )
                     upload["version_id"] = uploaded["VersionId"]
                     upload["uploaded"] = True
                     save()
@@ -438,9 +469,10 @@ def main():
                 }
                 result["build_request_saved_at"] = time.time()
                 save()
-            assert time.time() - result["build_request_saved_at"] < 240, (
-                "StartBuild response ambiguity exceeded conservative idempotency window; supervisor reconciliation required, no retry"
-            )
+            if not (time.time() - result["build_request_saved_at"] < 240):
+                raise AssertionError(
+                    "StartBuild response ambiguity exceeded conservative idempotency window; supervisor reconciliation required, no retry"
+                )
             current = "start_build"
             result["build_invocation_started"] = True
             save()
@@ -456,7 +488,8 @@ def main():
             result["build_status"] = response["build"]["buildStatus"]
             save()
         else:
-            assert result.get("build_id"), "No existing build handle"
+            if not (result.get("build_id")):
+                raise AssertionError("No existing build handle")
             current = "poll_build"
             result["checks"]["codebuild_pr"] = False
             build = client("codebuild").batch_get_builds(ids=[result["build_id"]])[
@@ -464,35 +497,44 @@ def main():
             ][0]
             result["build_status"] = build["buildStatus"]
             request = result["build_request"]
-            assert build["id"] == result["build_id"]
-            assert (
+            if not (build["id"] == result["build_id"]):
+                raise AssertionError()
+            if not (
                 build["serviceRole"]
                 == request["serviceRoleOverride"]
                 == cfg["codebuild_pr_role"]
-            )
-            assert (
+            ):
+                raise AssertionError()
+            if not (
                 build["projectName"]
                 == request["projectName"]
                 == cfg["codebuild_project"]
-            )
-            assert build["source"]["type"] == "S3"
-            assert build["source"]["location"] == request["sourceLocationOverride"]
-            assert (
+            ):
+                raise AssertionError()
+            if not (build["source"]["type"] == "S3"):
+                raise AssertionError()
+            if not (build["source"]["location"] == request["sourceLocationOverride"]):
+                raise AssertionError()
+            if not (
                 build["source"]["buildspec"]
                 == request["buildspecOverride"]
                 == cfg["buildspec"]
-            )
-            assert (
+            ):
+                raise AssertionError()
+            if not (
                 build["sourceVersion"]
                 == request["sourceVersion"]
                 == result["source_upload"]["version_id"]
-            )
+            ):
+                raise AssertionError()
             environment = {
                 v["name"]: v for v in build["environment"]["environmentVariables"]
             }
             for expected in request["environmentVariablesOverride"]:
-                assert environment.get(expected["name"]) == expected
-            assert result["source_sha"] == cfg["reviewed_source_sha"]
+                if not (environment.get(expected["name"]) == expected):
+                    raise AssertionError()
+            if not (result["source_sha"] == cfg["reviewed_source_sha"]):
+                raise AssertionError()
             result["build_contract_verified"] = True
             result["checks"]["codebuild_pr"] = build["buildStatus"] == "SUCCEEDED"
             if build["buildStatus"] in ("FAILED", "FAULT", "STOPPED", "TIMED_OUT"):

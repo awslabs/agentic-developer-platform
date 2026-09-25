@@ -288,6 +288,13 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
+        "E24",
+        "#5631",
+        "story-reads",
+        "Credential/identity metadata and mutation previews use the served CLI without reading secrets or writing provider claims",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
         "E25",
         "#5639",
         "story-reads",

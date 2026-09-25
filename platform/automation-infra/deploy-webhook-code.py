@@ -27,7 +27,8 @@ class Receipt:
         self.data = {}
 
     def save(self):
-        assert not self.poisoned, "Uncertain journal write; reconcile without replay"
+        if not (not self.poisoned):
+            raise AssertionError("Uncertain journal write; reconcile without replay")
         body = encode(self.data)
         self.local.parent.mkdir(parents=True, exist_ok=True)
         with self.local.open("wb") as stream:
@@ -42,10 +43,10 @@ class Receipt:
             ContentType="application/json",
             **({"IfMatch": self.etag} if self.etag else {"IfNoneMatch": "*"}),
         )
-        assert result.get("VersionId") not in (None, "", "null"), (
-            "Versioned journal required"
-        )
-        assert result.get("ETag"), "Journal commit acknowledgement required"
+        if not (result.get("VersionId") not in (None, "", "null")):
+            raise AssertionError("Versioned journal required")
+        if not (result.get("ETag")):
+            raise AssertionError("Journal commit acknowledgement required")
         self.etag = result["ETag"]
         self.poisoned = False
         with self.local.open("wb") as stream:
@@ -65,38 +66,54 @@ class Receipt:
 
 def validate_manifest(manifest):
     account = manifest["account_id"]
-    assert re.fullmatch(r"[0-9]{12}", account)
-    assert re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]+", manifest["region"])
+    if not (re.fullmatch(r"[0-9]{12}", account)):
+        raise AssertionError()
+    if not (re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]+", manifest["region"])):
+        raise AssertionError()
     prefix = manifest["archive_prefix"]
-    assert re.fullmatch(r"lambda-artifacts/[a-z0-9/_-]+", prefix)
+    if not (re.fullmatch(r"lambda-artifacts/[a-z0-9/_-]+", prefix)):
+        raise AssertionError()
     targets = manifest["targets"]
-    assert 0 < len(targets) <= 20, "Unbound profile or excessive targets"
-    assert len({t["function_arn"] for t in targets}) == len(targets)
-    assert len({t["artifact"] for t in targets}) == len(targets)
+    if not (0 < len(targets) <= 20):
+        raise AssertionError("Unbound profile or excessive targets")
+    if not (len({t["function_arn"] for t in targets}) == len(targets)):
+        raise AssertionError()
+    if not (len({t["artifact"] for t in targets}) == len(targets)):
+        raise AssertionError()
     for target in targets:
-        assert re.fullmatch(r"[a-z0-9_-]+\.zip", target["artifact"])
-        assert re.fullmatch(
-            rf"arn:aws:lambda:{re.escape(manifest['region'])}:{account}:function:[A-Za-z0-9_-]+",
-            target["function_arn"],
-        )
-        assert re.fullmatch(
-            rf"arn:aws:iam::{account}:role/(adp-|bedrockgw-)[A-Za-z0-9_-]+",
-            target["execution_role"],
-        )
-        assert not re.search(r"trusted-|operator", target["execution_role"])
+        if not (re.fullmatch(r"[a-z0-9_-]+\.zip", target["artifact"])):
+            raise AssertionError()
+        if not (
+            re.fullmatch(
+                rf"arn:aws:lambda:{re.escape(manifest['region'])}:{account}:function:[A-Za-z0-9_-]+",
+                target["function_arn"],
+            )
+        ):
+            raise AssertionError()
+        if not (
+            re.fullmatch(
+                rf"arn:aws:iam::{account}:role/(adp-|bedrockgw-)[A-Za-z0-9_-]+",
+                target["execution_role"],
+            )
+        ):
+            raise AssertionError()
+        if not (not re.search(r"trusted-|operator", target["execution_role"])):
+            raise AssertionError()
 
 
 def archive(path):
-    assert not path.is_symlink() and path.is_file()
-    assert 0 < path.stat().st_size <= 250 * 1024 * 1024
+    if not (not path.is_symlink() and path.is_file()):
+        raise AssertionError()
+    if not (0 < path.stat().st_size <= 250 * 1024 * 1024):
+        raise AssertionError()
     body = path.read_bytes()
     with zipfile.ZipFile(path) as package:
         for entry in package.infolist():
             parts = Path(entry.filename).parts
-            assert not entry.filename.startswith("/") and ".." not in parts
-            assert (entry.external_attr >> 16) & 0o170000 != 0o120000, (
-                "Archive symlink refused"
-            )
+            if not (not entry.filename.startswith("/") and ".." not in parts):
+                raise AssertionError()
+            if not ((entry.external_attr >> 16) & 0o170000 != 0o120000):
+                raise AssertionError("Archive symlink refused")
     return body, base64.b64encode(hashlib.sha256(body).digest()).decode()
 
 
@@ -104,8 +121,10 @@ def deploy(
     manifest, artifacts, source_sha, run_id, s3, lambdas, receipt_path, sleep=time.sleep
 ):
     validate_manifest(manifest)
-    assert re.fullmatch(r"[a-f0-9]{40}", source_sha)
-    assert re.fullmatch(r"[0-9]+", run_id)
+    if not (re.fullmatch(r"[a-f0-9]{40}", source_sha)):
+        raise AssertionError()
+    if not (re.fullmatch(r"[0-9]+", run_id)):
+        raise AssertionError()
     bucket = "adp-terraform-state-" + manifest["account_id"]
     prefix = manifest["archive_prefix"]
     # A source commit has one deployment journal; a new workflow run cannot replay it.
@@ -135,19 +154,20 @@ def deploy(
             Metadata={"commit": source_sha},
         )
         version = upload.get("VersionId")
-        assert version not in (None, "", "null"), "Versioned code archive required"
+        if not (version not in (None, "", "null")):
+            raise AssertionError("Versioned code archive required")
         operation["source"] = {"bucket": bucket, "key": key, "version": version}
         journal.save()
         current = lambdas.get_function_configuration(
             FunctionName=target["function_arn"]
         )
-        assert current["Role"] == target["execution_role"], (
-            "Execution role drift before update"
-        )
-        assert (
+        if not (current["Role"] == target["execution_role"]):
+            raise AssertionError("Execution role drift before update")
+        if not (
             current.get("RevisionId")
             and current.get("LastUpdateStatus") == "Successful"
-        )
+        ):
+            raise AssertionError()
         operation["before"] = {
             k: current[k] for k in ("Role", "RevisionId", "CodeSha256")
         }
@@ -162,11 +182,13 @@ def deploy(
             RevisionId=current["RevisionId"],
             Publish=False,
         )
-        assert (
+        if not (
             updated["Role"] == target["execution_role"]
             and updated["CodeSha256"] == digest
-        )
-        assert updated.get("RevisionId"), "Missing update revision"
+        ):
+            raise AssertionError()
+        if not (updated.get("RevisionId")):
+            raise AssertionError("Missing update revision")
         operation["update_response"] = {
             k: updated[k] for k in ("Role", "RevisionId", "CodeSha256")
         }
@@ -175,16 +197,15 @@ def deploy(
             final = lambdas.get_function_configuration(
                 FunctionName=target["function_arn"]
             )
-            assert (
+            if not (
                 final["Role"] == target["execution_role"]
                 and final["CodeSha256"] == digest
-            ), "Code or role drift"
-            assert final["RevisionId"] == updated["RevisionId"], (
-                "Concurrent revision change"
-            )
-            assert final["LastUpdateStatus"] in ("InProgress", "Successful"), (
-                "Lambda update failed"
-            )
+            ):
+                raise AssertionError("Code or role drift")
+            if not (final["RevisionId"] == updated["RevisionId"]):
+                raise AssertionError("Concurrent revision change")
+            if not (final["LastUpdateStatus"] in ("InProgress", "Successful")):
+                raise AssertionError("Lambda update failed")
             if final["LastUpdateStatus"] == "Successful":
                 break
             sleep(5)
@@ -208,11 +229,13 @@ def main():
     parser.add_argument("--artifacts", required=True)
     parser.add_argument("--receipt", required=True)
     args = parser.parse_args()
-    assert (
+    if not (
         os.environ["GITHUB_REF"] == "refs/heads/main"
         and os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
-    )
-    assert os.environ["GITHUB_RUN_ATTEMPT"] == "1", "No workflow replay"
+    ):
+        raise AssertionError()
+    if not (os.environ["GITHUB_RUN_ATTEMPT"] == "1"):
+        raise AssertionError("No workflow replay")
     manifest = json.loads(Path(args.manifest).read_text())
     validate_manifest(manifest)
     session = boto3.Session(region_name=manifest["region"])
@@ -220,11 +243,15 @@ def main():
         connect_timeout=10, read_timeout=30, retries={"total_max_attempts": 1}
     )
     identity = session.client("sts", config=config).get_caller_identity()
-    assert identity["Account"] == manifest["account_id"]
-    assert re.fullmatch(
-        rf"arn:aws:sts::{manifest['account_id']}:assumed-role/adp-[a-z0-9-]+-trusted-webhook-code/webhook-code-[0-9]+-1",
-        identity["Arn"],
-    )
+    if not (identity["Account"] == manifest["account_id"]):
+        raise AssertionError()
+    if not (
+        re.fullmatch(
+            rf"arn:aws:sts::{manifest['account_id']}:assumed-role/adp-[a-z0-9-]+-trusted-webhook-code/webhook-code-[0-9]+-1",
+            identity["Arn"],
+        )
+    ):
+        raise AssertionError()
     deploy(
         manifest,
         args.artifacts,

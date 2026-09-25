@@ -444,13 +444,13 @@ def test_every_case_present_with_owners():
     Derived from the registry's own numbering rather than a hardcoded range, so
     adding a case to a later story does not have to edit an arithmetic expression
     whose only job was to spell out "consecutive". What the assertion still
-    enforces is the property that mattered: the ids are E01..En with no gap and no
-    duplicate, so a case cannot be added under an id another already uses.
+    enforces stable, unique, numerically ordered IDs. Gaps are allowed because
+    parallel stories reserve their IDs before merging; no case may reuse one.
     """
     identifiers = [case.id for case in cases.CASES]
-    assert identifiers == [f"E{n:02d}" for n in range(1, 23)] + [
-        "E25"
-    ]  # E23/E24 reserved by concurrent tenant/vault stories
+    assert len(identifiers) == len(set(identifiers))
+    assert identifiers == sorted(identifiers, key=lambda value: int(value[1:]))
+    assert all(re.fullmatch(r"E[0-9]{2}", value) for value in identifiers)
     assert all(case.owner for case in cases.CASES)
     assert all(case.suite in cases.SUITES for case in cases.CASES)
 
@@ -3441,8 +3441,7 @@ class FakeSsm:
         self.session_reads += 1
         if self.instance_terminated:
             raise ports.PortError(
-                "the session vault was read after the instance was terminated; "
-                "there is no instance left to read it from"
+                "the session vault was read after the instance was terminated; there is no instance left to read it from"
             )
         return {
             "Status": "Success",
@@ -3501,8 +3500,7 @@ class FakeSsm:
         found = self._find_purpose(joined)
         assert found, f"no dispatcher invocation in the {purpose!r} command"
         assert self.installed, (
-            f"{found!r} was invoked before the bundle was installed; on a real "
-            "instance this runs a file that does not exist"
+            f"{found!r} was invoked before the bundle was installed; on a real instance this runs a file that does not exist"
         )
         assert found in bundle.purposes(), f"{found!r} is not a shipped purpose"
         self.purposes_run.append(found)
@@ -3785,8 +3783,7 @@ def live_doubles(
             "cognito-idp.admin_set_user_password": {},
             "secretsmanager.create_secret": lambda **kwargs: {
                 "ARN": (
-                    f"arn:aws:secretsmanager:us-east-1:{cfg['platform_account']}"
-                    f":secret:{kwargs['Name']}-AbCdEf"
+                    f"arn:aws:secretsmanager:us-east-1:{cfg['platform_account']}:secret:{kwargs['Name']}-AbCdEf"
                 )
             },
             "secretsmanager.put_resource_policy": {},
@@ -5193,17 +5190,23 @@ def shipped_script(tmp_path, name):
 
     remote = extracted_bundle(tmp_path) / "remote"
     module = {}
-    for target in ("common", name):
-        spec = importlib.util.spec_from_file_location(
-            f"shipped_{target}", remote / f"{target}.py"
-        )
-        loaded = importlib.util.module_from_spec(spec)
-        # The scripts do `import common`, and the dispatcher puts its own directory
-        # first on the path, which is what makes that work on the instance.
-        # Mirrored here rather than worked around.
-        sys.modules["common" if target == "common" else f"shipped_{target}"] = loaded
-        spec.loader.exec_module(loaded)
-        module[target] = loaded
+    sys.path.insert(0, str(remote))
+    try:
+        for target in ("common", name):
+            spec = importlib.util.spec_from_file_location(
+                f"shipped_{target}", remote / f"{target}.py"
+            )
+            loaded = importlib.util.module_from_spec(spec)
+            # The scripts do `import common`, and the dispatcher puts its own directory
+            # first on the path, which is what makes that work on the instance.
+            # Mirrored here rather than worked around.
+            sys.modules["common" if target == "common" else f"shipped_{target}"] = (
+                loaded
+            )
+            spec.loader.exec_module(loaded)
+            module[target] = loaded
+    finally:
+        sys.path.remove(str(remote))
     return module[name], module["common"]
 
 
@@ -5797,8 +5800,7 @@ def test_the_exported_session_document_carries_no_token_at_all(tmp_path):
         assert key not in session
 
     assert common.redact(session) == session, (
-        "the exported session reference is itself redacted, so the handoff would "
-        "carry a placeholder exactly as the tokens did"
+        "the exported session reference is itself redacted, so the handoff would carry a placeholder exactly as the tokens did"
     )
 
 
@@ -6626,8 +6628,7 @@ def test_the_account_is_registered_before_setup_and_every_later_journey(tmp_path
     assert onboard != -1, "execute() never registers the run's ADP account at all"
     assert setup != -1, "execute() no longer runs setup; this test needs rewriting"
     assert onboard < setup, (
-        "the ADP account is registered after setup, so setup still runs as an "
-        "identity the gateway cannot resolve"
+        "the ADP account is registered after setup, so setup still runs as an identity the gateway cannot resolve"
     )
 
 
@@ -6738,16 +6739,14 @@ def test_the_session_token_is_read_before_the_sweep_terminates_the_instance(tmp_
     ssm.terminated = True
     token = live._vault_token(ssm, "i-0eval", ctx["document"]["session"])
     assert token == "", (
-        "the double must model a terminated instance as unreadable, or this test "
-        "cannot distinguish an eager read from a lucky one"
+        "the double must model a terminated instance as unreadable, or this test cannot distinguish an eager read from a lucky one"
     )
     # The ADP-account deleter is the kind that always needs it. It must not be
     # refusing to act for want of a token at this point.
     with pytest.raises(ports.PortError) as raised:
         deleters["adp_user"]("not-an-org-slash-id-shape")
     assert "No authenticated session" not in str(raised.value), (
-        "the deleter had no token after the instance was terminated, which is the "
-        "live failure this guards"
+        "the deleter had no token after the instance was terminated, which is the live failure this guards"
     )
 
 
@@ -7891,8 +7890,7 @@ def test_recovery_sweep_converts_launch_time_in_the_library_not_inline():
         line for line in body.splitlines() if not line.strip().startswith("#")
     )
     assert "mktime" not in code, (
-        "time.mktime reads EC2's UTC LaunchTime as local time; ages skew by the "
-        "runner's offset and negative ages never expire"
+        "time.mktime reads EC2's UTC LaunchTime as local time; ages skew by the runner's offset and negative ages never expire"
     )
 
 
@@ -7943,8 +7941,7 @@ def test_recovery_sweep_does_not_abort_before_verifying_a_refused_terminate():
     terminate_call = sweep[sweep.index("terminate-instances") :]
     guard = terminate_call[: terminate_call.index("describe-instances")]
     assert "check=True" not in guard, (
-        "check=True aborts the sweep before the state re-read; a refused "
-        "termination must still be observed and reported"
+        "check=True aborts the sweep before the state re-read; a refused termination must still be observed and reported"
     )
 
 
@@ -8435,7 +8432,18 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     # take down the cases that do not depend on it.
     assert {
         case_id for case_id, entry in matrix.items() if entry["status"] == cases.NOT_RUN
-    } == {"E01", "E02", "E03", "E13", "E14", "E15", "E20", "E21", "E22"}
+    } == {
+        "E01",
+        "E02",
+        "E03",
+        "E13",
+        "E14",
+        "E15",
+        "E20",
+        "E21",
+        "E22",
+        "E24",
+    }
 
 
 # --------------------------------------------------------------------------
@@ -10218,7 +10226,7 @@ def test_observer_artifacts_grant_only_two_named_reads():
 
 def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
     selected = cases.resolve_suites(("nightly",))
-    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22", "E25"}
+    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22", "E24", "E25"}
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
         "#5628",
@@ -10330,3 +10338,20 @@ def test_story_read_success_requires_no_inference_or_control_write(tmp_path, mod
             "submit",
             "chat",
         }
+
+
+def test_vault_nightly_rejects_secret_bearing_metadata(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {"items": [{"id": "owned", "value": "synthetic-secret"}]},
+    }
+    with pytest.raises(common.RemoteError, match="secret fields"):
+        module.vault(cli, {})
+
+
+def test_vault_nightly_is_selected_and_shipped():
+    assert cases.BY_ID["E24"].owner == "#5631"
+    assert "E24" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()

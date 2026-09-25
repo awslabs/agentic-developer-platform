@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-superplane-research.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-usage.py adp-agent.py adp-task.py adp_task_client.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-superplane-research.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-vault.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -1811,6 +1811,14 @@ Check what works here, and why something failed:
     logs list             List redacted inference request metadata
     logs show             Lookup --request-id in an explicit window
     logs export           Bounded JSON/NDJSON/CSV with continuation metadata
+    credential list       List visible credential metadata (never secret values)
+    credential show       Inspect credential ID and update revision
+    credential add        Register using a stable --operation-id and protected secret input
+    credential update     Change metadata with --expected-revision; rotation unsupported
+    credential delete     Delete exact credential after --dry-run / --yes
+    identity list         List linked identities and verification state
+    identity link         Record an unverified claim; --resume reads verification
+    identity unlink       Remove exact identity link after --dry-run / --yes
     agent list            Discover own runs (bounded pagination; --admin for admin reads)
     agent chain           Read chain lineage by CHAIN_ID
     agent detail          Inspect an existing run with --run RUN_ID
@@ -1974,6 +1982,8 @@ main() {
         # above, so it inherits the one credential path: the session `adp login`
         # already established. This dispatcher is also the foundation the later
         # amendment subcommands (#5329) attach to.
+        credential) exec_python_helper "adp-vault.py" credential "$@" ;;
+        identity) exec_python_helper "adp-vault.py" identity "$@" ;;
         usage)   exec_python_helper "adp-usage.py" usage "$@" ;;
         logs)    exec_python_helper "adp-usage.py" logs "$@" ;;
         agent)   exec_python_helper "adp-agent.py" "$@" ;;

@@ -159,3 +159,15 @@ Research #5639 adds 11 forms: findings list/show, sources, stats, proposal list/
 | `adp superplane research sources` |  | `--json` |
 | `adp superplane research stats` |  | `--json` |
 | `adp superplane research scan` |  | `--dry-run`, `--json`, `--request-file`, `--request-id`, `--yes` |
+Credential and identity additions ([usage](vault.md)); source implemented, live acceptance pending:
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp credential list` |  | `--json`, `--scope` |
+| `adp credential show` | `id` | `--json` |
+| `adp credential add` |  | `--domain-app-id`, `--dry-run`, `--expires-at`, `--json`, `--label`, `--operation-id`, `--scope`, `--service`, `--strict`, `--type`, `--value-file`, `--value-stdin`, `--yes` |
+| `adp credential update` | `id` | `--dry-run`, `--expected-revision`, `--expires-at`, `--json`, `--label`, `--strict`, `--yes` |
+| `adp credential delete` | `id` | `--dry-run`, `--json`, `--yes` |
+| `adp identity list` |  | `--json`, `--provider` |
+| `adp identity link` |  | `--dry-run`, `--json`, `--provider`, `--provider-user-id`, `--resume`, `--yes` |
+| `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |

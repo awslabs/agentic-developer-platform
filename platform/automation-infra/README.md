@@ -264,7 +264,9 @@ Re-run admission after operator changes to these attachments.
 
 Gateway deploy, migrations, smoke-test deployment helpers, pricing finalization,
 and gateway infra apply select `arc-runner-org` in the `Default` group. This
-uses the existing runner with its reduced ambient role. These jobs retain their
+uses the existing runner with its reduced ambient role. Use the ARC scale-set
+label directly (`runs-on: arc-runner-org`), matching working CI jobs; an explicit
+`group: Default` selector left release jobs queued even while this pool was idle. These jobs retain their
 protected environments, reviewed main-source checks, and explicit trusted OIDC
 credential exchange with no ambient credential fallback. No runner IAM policy is
 expanded by this routing change. This pool does not provide the dedicated node

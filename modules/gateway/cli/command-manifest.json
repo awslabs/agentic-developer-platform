@@ -4413,6 +4413,322 @@
         "tests/cli/test_adp_research.py"
       ],
       "required_capabilities": []
+    },
+    {
+      "command": "adp credential list",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--scope"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp credential show",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp credential add",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.credentials.register",
+      "flags": [
+        "--domain-app-id",
+        "--dry-run",
+        "--expires-at",
+        "--json",
+        "--label",
+        "--operation-id",
+        "--scope",
+        "--service",
+        "--strict",
+        "--type",
+        "--value-file",
+        "--value-stdin",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.credentials.register"
+      ]
+    },
+    {
+      "command": "adp credential update",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.credentials.metadata",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--expires-at",
+        "--json",
+        "--label",
+        "--strict",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.credentials.metadata"
+      ]
+    },
+    {
+      "command": "adp credential delete",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.credentials.delete",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.credentials.delete"
+      ]
+    },
+    {
+      "command": "adp identity list",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--provider"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/identities/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp identity link",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.identities.claim",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--provider",
+        "--provider-user-id",
+        "--resume",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/identities/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.identities.claim"
+      ]
+    },
+    {
+      "command": "adp identity unlink",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.identities.unlink",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--provider",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/identities/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.identities.unlink"
+      ]
     }
   ]
 }

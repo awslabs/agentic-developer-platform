@@ -10,13 +10,17 @@ def manifest(module: Path, name: str) -> dict[str, Path]:
     shared = sorted((module / "lambda/shared").glob("*.py"))
     policy = module / "pricing_policy"
     policy_files = sorted(policy.rglob("*.py")) + sorted((policy / "snapshots").glob("*.json"))
-    assert shared and (policy / "__init__.py").is_file()
-    assert list((policy / "snapshots").glob("*.json")), "Missing pricing snapshots"
-    assert (module / "lambda" / name / "handler.py").is_file(), "Missing Lambda handler"
+    if not (shared and (policy / "__init__.py").is_file()):
+        raise AssertionError()
+    if not (list((policy / "snapshots").glob("*.json"))):
+        raise AssertionError("Missing pricing snapshots")
+    if not ((module / "lambda" / name / "handler.py").is_file()):
+        raise AssertionError("Missing Lambda handler")
     entries = [(path, path.name) for path in sorted((module / "lambda" / name).glob("*.py"))]
     entries.extend((path, path.name) for path in shared)
     entries.extend((path, f"pricing_policy/{path.relative_to(policy)}") for path in policy_files)
-    assert len({entry for _, entry in entries}) == len(entries), "Duplicate archive entries"
+    if not (len({entry for _, entry in entries}) == len(entries)):
+        raise AssertionError("Duplicate archive entries")
     return {entry: path for path, entry in entries}
 
 
