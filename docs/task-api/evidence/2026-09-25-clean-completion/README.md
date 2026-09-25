@@ -9,7 +9,7 @@ The client downloaded the 2,762-byte result artifact and verified that it exactl
 - [Completion report](completion-report.json): source/image versions, bounded command, checks and limitations.
 - [Public snapshot](public-snapshot.json) and [downloaded artifact](result-artifact.json): final result, input receipt and queue acknowledgement.
 - [Public events](public-events.ndjson): uninterrupted persisted sequence 1–14, including live progress before completion.
-- [Progress timings](progress-latency.json) and [worker log](worker-progress.log): report UUIDs correlate actual host emission with persisted event sequences and public receipt.
+- [Progress timings](progress-latency.json) and [worker log](worker-progress.txt): report UUIDs correlate actual host emission with persisted event sequences and public receipt.
 - [Exact qualification harness](qualification-runner.py): source retained for this run; credentials are supplied separately and are not included.
 
 Five substantive progress events arrived 0.468–1.405 seconds after their host emission timestamps. These observed timings have no independently measured clock-skew correction. Native usage/budget audit, held-input coexistence, revocation, and the remaining V4/V5 criteria are reported by their respective qualification owners; this functional completion does not claim those separate criteria passed.
