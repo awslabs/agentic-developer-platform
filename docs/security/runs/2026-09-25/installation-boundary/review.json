@@ -1,0 +1,137 @@
+{
+  "issue": 6119,
+  "review_scope": "GitHub installation resolver only",
+  "original_selector_manifest": {
+    "sha256": "5ab9a96159d74181e1f424777bfe820334e4350f692a4c969884b7827b5d86dc",
+    "count": 13139,
+    "operator_run": "s21-final-20260925-b1d0894c17",
+    "source_revision": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+    "modified": false
+  },
+  "reviewed_occurrences": 2,
+  "outside_this_bounded_review": 13137,
+  "original_occurrences": [
+    {
+      "artifact": "/workspaces/projects/s21-operator-scans/b1d0894c17/results/semgrep/semgrep-results.sarif",
+      "run_index": 0,
+      "result_index": 2998,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "files": [
+        "modules/agent-factory/agent/src/utils/installation.ts"
+      ],
+      "suppressed": false,
+      "image": null,
+      "reported_issue_severity": null,
+      "sarif_level": null,
+      "rule_security_severity": "CRITICAL",
+      "selector": "semgrep|semgrep-results.sarif|run=0|ri=2998",
+      "disposition": "pending_scoped_source_review",
+      "residual_owner_issues": [
+        5599
+      ],
+      "review_scope": "semgrep:modules/agent-factory/agent/src/utils/installation.ts",
+      "original_disposition_candidates": []
+    },
+    {
+      "artifact": "/workspaces/projects/s21-operator-scans/b1d0894c17/results/semgrep/semgrep-results.sarif",
+      "run_index": 0,
+      "result_index": 2999,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "files": [
+        "modules/agent-factory/agent/src/utils/installation.ts"
+      ],
+      "suppressed": false,
+      "image": null,
+      "reported_issue_severity": null,
+      "sarif_level": null,
+      "rule_security_severity": "CRITICAL",
+      "selector": "semgrep|semgrep-results.sarif|run=0|ri=2999",
+      "disposition": "pending_scoped_source_review",
+      "residual_owner_issues": [
+        5599
+      ],
+      "review_scope": "semgrep:modules/agent-factory/agent/src/utils/installation.ts",
+      "original_disposition_candidates": []
+    }
+  ],
+  "scans": {
+    "before": {
+      "source_commit": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+      "source_file": "modules/agent-factory/agent/src/utils/installation.ts",
+      "source_sha256": "3e678a38171f17693e4d5aed22fbaa0f0a5c46e3771d7f902ff621692108766c",
+      "semgrep_version": "1.80.0",
+      "findings_count": 2,
+      "error_count": 0,
+      "result_artifact_sha256": "969c8151ef379b27ac8950931148c29bbc824e72cf8861833158f5e71a340735",
+      "observations": [
+        {
+          "rule": "gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+          "line": 114,
+          "end_line": 114
+        },
+        {
+          "rule": "gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+          "line": 127,
+          "end_line": 127
+        }
+      ]
+    },
+    "after": {
+      "source_commit": "f5e0791615495f12191fe18a5497741ac4aabc32",
+      "source_file": "modules/agent-factory/agent/src/utils/installation.ts",
+      "source_sha256": "58373428392e02b24494738f5851ffd88ffccb19be62bc034cc212c25ef5d089",
+      "semgrep_version": "1.80.0",
+      "findings_count": 1,
+      "error_count": 0,
+      "result_artifact_sha256": "e48c8ca3010c74d689983aa14bf2708b48a957a07daf6a0e6cd73e77767ea02d",
+      "observations": [
+        {
+          "rule": "gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+          "line": 53,
+          "end_line": 53
+        }
+      ]
+    }
+  },
+  "rule_config": {
+    "source": "semgrep-rules-all.yaml from original frozen scan",
+    "original_bundle_sha256": "c5458a4b2f564c6312c17a7539573c8567a980eb2a60c1e3bb8daafbec304516",
+    "selected_rule_config_sha256": "b490c0863d8ac0ba03710952abfb75d65f6e38cca48913b380e90464f76d0fbc",
+    "id": "gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+    "original_sarif_id_prefix": "tmp.",
+    "scan_rule_id_rewriting": false
+  },
+  "relationships": [
+    {
+      "original_selector": "semgrep|semgrep-results.sarif|run=0|ri=2998",
+      "frozen_line": 114,
+      "current_line": 53,
+      "decision": "Concrete redirect boundary repaired; residual rule observation remains",
+      "evidence": "Caller owner is constrained to one path segment under a fixed origin; native fetch redirect:error refuses before transit; exact response URL and numeric ID required. No suppression added."
+    },
+    {
+      "original_selector": "semgrep|semgrep-results.sarif|run=0|ri=2999",
+      "frozen_line": 127,
+      "current_line": null,
+      "decision": "App-wide discovery removed; concrete cross-tenant fallback repaired",
+      "evidence": "Missing, malformed or unresolvable target returns null. Both production consumers skip token minting; neither can pick an arbitrary first installation."
+    }
+  ],
+  "validation": {
+    "focused_jest_suites": 4,
+    "tests_passed_after": 62,
+    "tests_failed_before": 37,
+    "tests_passed_before": 25,
+    "native_redirect_statuses": [
+      301,
+      302,
+      303,
+      307,
+      308
+    ],
+    "redirect_target_requests_before_each_status": 3,
+    "redirect_target_requests_after_each_status": 0,
+    "network_scope": "synthetic loopback servers only; no GitHub/provider authentication or workload probes"
+  },
+  "story_closed": false
+}

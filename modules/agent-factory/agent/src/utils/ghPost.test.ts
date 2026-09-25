@@ -20,7 +20,10 @@ jest.mock('jsonwebtoken', () => ({ __esModule: true, default: { sign: mockSign }
 import { refreshGitHubToken } from './ghPost';
 
 const mockFetch = jest.fn();
-global.fetch = mockFetch as any;
+global.fetch = (async (...args: any[]) => {
+  const response = await mockFetch(...args);
+  return response.url === undefined ? { ...response, url: String(args[0]) } : response;
+}) as any;
 
 // Two installations, deliberately ordered so that installations[0] is the
 // FOREIGN tenant — this is what GitHub returns (newest-first).
@@ -162,6 +165,16 @@ describe('refreshGitHubToken — installation binding (issue #4071 #13)', () => 
     );
   });
 
+  it.each([undefined, '../..', 'uninstalled-owner'])('does not mint for a foreign tenant when owner %j is unresolved', async (owner) => {
+    if (owner) process.env.REPO_OWNER = owner;
+    process.env.GH_TOKEN = 'synthetic-existing-token';
+    installGitHubApiMock(); // App-wide listing would return the foreign tenant first.
+    await refreshGitHubToken();
+    expect(mintedUrls()).toEqual([]);
+    expect(process.env.GH_TOKEN).toBe('synthetic-existing-token');
+    expect(mockFetch.mock.calls.map(([url]) => String(url))).not.toContain('https://api.github.com/app/installations');
+  });
+
   it('does not overwrite a healthy token when the owner has no installation at all', async () => {
     // No REPO_OWNER, no GH_APP_INSTALLATION_ID and no installations => nothing
     // resolvable, so the pre-existing token must survive untouched.
@@ -228,6 +241,7 @@ describe('refreshGitHubToken — failures are reported, not swallowed (issue #40
   });
 
   it('warns when the GitHub API call throws instead of failing silently', async () => {
+    process.env.GH_APP_INSTALLATION_ID = String(OWN_INSTALLATION_ID);
     mockFetch.mockRejectedValue(new Error('getaddrinfo ENOTFOUND api.github.com'));
 
     await refreshGitHubToken();

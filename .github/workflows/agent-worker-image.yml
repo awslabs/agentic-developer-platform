@@ -69,6 +69,28 @@ env:
   CODEBUILD_PROJECT: adp-dev-agent-runtime
 
 jobs:
+  installation-boundary-tests:
+    name: GitHub Installation Boundary Tests
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+      - name: Test installation resolution and token refresh boundaries
+        working-directory: modules/agent-factory/agent
+        run: |
+          npm ci --include=dev --ignore-scripts
+          npx jest --runInBand --runTestsByPath \
+            src/utils/installation.test.ts \
+            src/utils/installation-redirect.test.ts \
+            src/utils/ghPost.test.ts \
+            src/agent-worker-installation-resolution.test.ts
+
   codex-tests:
     name: Codex Adapter Unit Tests
     runs-on: arc-runner-org
