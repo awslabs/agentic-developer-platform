@@ -1,0 +1,32 @@
+name: Shared Codex Harness Tests
+
+on:
+  pull_request:
+    paths:
+      - 'modules/agent-factory/codex-harness/**'
+      - '.github/workflows/codex-harness-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'modules/agent-factory/codex-harness/**'
+      - '.github/workflows/codex-harness-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: modules/agent-factory/codex-harness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/codex-harness/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test

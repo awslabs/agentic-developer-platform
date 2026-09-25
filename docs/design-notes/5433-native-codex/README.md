@@ -248,3 +248,22 @@ bounded sandbox-repository writing, review/repair/merge, and operations recovery
 Bind evidence to source/image, definition, SDK/runtime, model, environment and
 policy. Disable new dispatch and drain/cancel affected runs on rollback; never
 reroute to Claude. Implementation/PR creation is not production enablement.
+
+## 11. Native child stories
+
+- [HARNESS — #6195](https://github.com/aws-e/adp/issues/6195)
+- [DEVELOPER — #6196](https://github.com/aws-e/adp/issues/6196)
+- [ARCHITECT — #6197](https://github.com/aws-e/adp/issues/6197)
+- [REVIEWER — #6198](https://github.com/aws-e/adp/issues/6198)
+- [OPERATIONS — #6199](https://github.com/aws-e/adp/issues/6199)
+- [AIDLC — #6200](https://github.com/aws-e/adp/issues/6200)
+- [PM — #6201](https://github.com/aws-e/adp/issues/6201)
+- [PRODUCT — #6202](https://github.com/aws-e/adp/issues/6202)
+- [INTENT — #6203](https://github.com/aws-e/adp/issues/6203)
+- [MALWARE — #6204](https://github.com/aws-e/adp/issues/6204)
+- [SUPERPOWER — #6205](https://github.com/aws-e/adp/issues/6205)
+- [SUPERPLANE-OPS — #6206](https://github.com/aws-e/adp/issues/6206)
+- [SUPERPLANE-RESEARCH — #6207](https://github.com/aws-e/adp/issues/6207)
+
+All persona stories have a native blocked-by relationship to #6195. No ADP agent
+assignment or trigger was issued. Specialist qualification does not imply enablement.

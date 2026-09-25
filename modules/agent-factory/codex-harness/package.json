@@ -1,0 +1,24 @@
+{
+  "name": "@adp/codex-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared Codex SDK harness contracts and declarative persona admission",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "0.155.1",
+    "@opentelemetry/api": "1.9.0",
+    "zod": "4.0.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/sdk-trace-base": "2.0.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
