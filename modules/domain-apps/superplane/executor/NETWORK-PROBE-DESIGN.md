@@ -6,8 +6,9 @@ An opt-in installed `network_probe` profile extension approves a single ordinary
 batch workload, not an extra effect attached to existing workloads. The extension
 names an existing ClusterIP Service's namespace, name, immutable UID, port and
 bounded service-address CIDRs. No Service, secret or additional Pod is created.
-The existing immutable workload image must contain the supplied probe module;
-without an explicitly installed digest the profile cannot be admitted. This source
+Use the existing executor image, which packages the supplied probe module and
+participates in the maintained image inventory and security scans. Without an
+explicitly installed, reviewed digest the profile cannot be admitted. This source
 change supplies no published image digest and authorizes no image publication.
 
 Preview derives a stable nonce from the fresh request UUID, organization and
@@ -69,11 +70,15 @@ same caller request. Registration checks this reserved command's full generated
 contract against the existing organization/workspace/allocation binding. Teardown
 retains the original nonce and contract while using its own approved operation ID.
 
-The profile's `workload.image` must be a reviewed registry digest containing the
-probe source. Build source is `images/network-probe/Dockerfile` with executor as
-build context and an explicitly reviewed `PYTHON_IMAGE` digest. No base/workload
-image is selected, built, pushed or released by this change. Until the installed
-workload digest exists and is retrievable, execution is unavailable.
+The profile's `workload.image` must be the reviewed executor registry digest
+containing the probe source. The existing `executor/Dockerfile` builds from the
+repository root with an explicitly reviewed `PYTHON_IMAGE` digest; its installed
+`superplane-executor` package includes the probe module. The approved Kubernetes
+command overrides the worker entrypoint and executes only the probe module.
+The ordinary Pod has token automount disabled and no credential or configuration
+volumes. Reusing this scanned component requires no additional image-inventory
+entry or build context. No image is selected, built, pushed or released by this
+change. Until the installed digest exists and is retrievable, execution is unavailable.
 
 Required additional permissions are namespace-only `get` on the approved Service
 and `get` on the original Pod's `pods/log` subresource. No Secrets, Service writes,
