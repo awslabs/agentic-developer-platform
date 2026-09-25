@@ -223,3 +223,38 @@ inference when the host validator is missing. TypeScript builds successfully.
 This is a shared verifier and session gate, not a complete developer/reviewer
 implementation. Concrete durable evidence readers, repository tools, isolated
 validation workspaces and live story qualification remain outstanding.
+
+
+## Actual isolated validation execution
+
+The new host-owned `DockerValidationExecutor` runs an admitted check against a
+verified source archive or an expected clean Git commit. The local qualification
+backend uses an immutable image ID, non-root UID, no network, a read-only root,
+dropped capabilities, no-new-privileges, bounded memory/CPU/PIDs, and temporary
+in-memory work/output directories. Only the verified source archive is mounted;
+ADP/AWS/GitHub configuration and the Docker socket are absent from the container.
+The Docker client also receives an isolated configuration environment. No mutable
+image tags or implicit pulls are accepted by the executor.
+
+Checks return commit/archive/check-specification/runtime-environment bindings,
+confirmed process exit, bounded output and elapsed duration. Dirty or moved host
+checkouts cannot produce a passing final-commit receipt. A named container is
+removed even on failed creation/attach/timeout paths, and unconfirmed cleanup
+raises an error. Actual excessive-output testing exposed a Docker attach
+backpressure issue; stopping the attach reader before killing the container fixes
+the teardown. UTF-8 replacement cannot expand output beyond its byte budget.
+
+Seven actual local Docker tests pass with BusyBox image
+`sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662`:
+source/credential/network/capability isolation, nonzero exit, timeout, output flood,
+invalid-UTF-8 output, changed-source/mutable-image refusal, and a real Git commit
+with dirty-checkout refusal. Tests verify no retained validation containers and
+unchanged source archives. Focused lint passes and live auth fingerprints are
+unchanged. Run explicitly using `ADP_CODEX_VALIDATION_IMAGE` with the isolated test
+wrapper; without a provisioned image the Docker integration tests skip.
+
+This is real command execution, not a simulated validation result. The commands
+are test fixtures, not generated application stories. The backend is not yet
+registered as a Task tool or a source of durable completion records. Kubernetes
+workers need a trusted executor service; mounting the Docker socket into the SDK
+child is not part of this design. Existing legacy validation behavior is unchanged.
