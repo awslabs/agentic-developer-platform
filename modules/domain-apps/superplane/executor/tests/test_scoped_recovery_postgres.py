@@ -189,6 +189,10 @@ class ObservationBackend(Ledger):
                 claim.workspace_id,
                 claim.org_id,
             )
+        if journal["operation_kind"] == "delete_cluster":
+            # Aggregate removal now performs an inventory snapshot before it can
+            # report success, including when a leak defers final settlement.
+            self.inventory_reads += 1
         outcome, reference = await observe_request(
             self.provider,
             operation,
