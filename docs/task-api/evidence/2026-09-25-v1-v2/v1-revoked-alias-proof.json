@@ -1,0 +1,25 @@
+{
+  "revoked_alias": "ubiilo9gb2r6kfr8hbvk60qjk",
+  "revoked_at": "2026-09-25T04:48:32.252619+00:00",
+  "primary_and_isolated_unchanged": true,
+  "checks": [
+    {
+      "route_suffix": "",
+      "status": 403,
+      "body": "{\"schema_version\":\"1.0\",\"code\":\"disallowed_scope\",\"message\":\"This credential is not a registered, active Task API principal.\",\"request_id\":\"9fba7be7-0ac3-4c2f-9625-ce46f77c03b1\",\"http_status\":403}",
+      "at": "2026-09-25T04:48:39.619248+00:00"
+    },
+    {
+      "route_suffix": "/events",
+      "status": 403,
+      "body": "{\"schema_version\":\"1.0\",\"code\":\"disallowed_scope\",\"message\":\"This credential is not a registered, active Task API principal.\",\"request_id\":\"db265872-3dfe-4752-9588-a31379140dac\",\"http_status\":403}",
+      "at": "2026-09-25T04:48:39.851394+00:00"
+    },
+    {
+      "route_suffix": "/artifacts/art_3990339d-a466-466a-a2d1-d83e70612050",
+      "status": 403,
+      "body": "{\"schema_version\":\"1.0\",\"code\":\"disallowed_scope\",\"message\":\"This credential is not a registered, active Task API principal.\",\"request_id\":\"8d292388-c95c-4047-9487-2b636996590f\",\"http_status\":403}",
+      "at": "2026-09-25T04:48:39.965916+00:00"
+    }
+  ]
+}
