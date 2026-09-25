@@ -1,5 +1,7 @@
 """Serving authentication, node identity and cancellation at multi-write boundaries."""
 
+from workload_support import declared_placement
+
 import base64
 from types import SimpleNamespace
 
@@ -178,7 +180,11 @@ async def test_node_join_requires_each_exact_provider_identity(ids, ready):
             json={
                 "items": [
                     {
-                        "metadata": {"labels": node_labels()},
+                        "metadata": {
+                            "name": identity,
+                            "uid": "uid-" + identity,
+                            "labels": node_labels(),
+                        },
                         "spec": {"providerID": "aws:///us-east-1a/" + identity},
                         "status": {
                             "conditions": [{"type": "Ready", "status": "True"}],
@@ -231,7 +237,11 @@ async def test_node_join_requires_sufficient_allocatable_gpu(allocatable, ready)
             json={
                 "items": [
                     {
-                        "metadata": {"labels": node_labels()},
+                        "metadata": {
+                            "name": "allocated-node",
+                            "uid": "node-uid",
+                            "labels": node_labels(),
+                        },
                         "spec": {"providerID": "aws:///us-east-1a/i-11111111111111111"},
                         "status": {
                             "conditions": [{"type": "Ready", "status": "True"}],
@@ -266,7 +276,11 @@ async def test_node_join_gpu_requirement_is_skipped_for_cpu_only_workload(alloca
             json={
                 "items": [
                     {
-                        "metadata": {"labels": node_labels()},
+                        "metadata": {
+                            "name": "allocated-node",
+                            "uid": "node-uid",
+                            "labels": node_labels(),
+                        },
                         "spec": {"providerID": "aws:///us-east-1a/i-11111111111111111"},
                         "status": {
                             "conditions": [{"type": "Ready", "status": "True"}],
@@ -312,7 +326,11 @@ async def test_node_readiness_rejects_foreign_or_incomplete_location(change):
     plan.data["node_count"] = 1
     instances = observed_instances("i-11111111111111111")
     node = {
-        "metadata": {"labels": node_labels()},
+        "metadata": {
+            "name": "allocated-node",
+            "uid": "node-uid",
+            "labels": node_labels(),
+        },
         "spec": {"providerID": "aws:///us-east-1a/i-11111111111111111"},
         "status": {
             "conditions": [{"type": "Ready", "status": "True"}],
@@ -392,7 +410,11 @@ async def test_remote_ready_node_uses_observed_region_without_retargeting_cluste
             json={
                 "items": [
                     {
-                        "metadata": {"labels": labels},
+                        "metadata": {
+                            "name": "allocated-node",
+                            "uid": "node-uid",
+                            "labels": labels,
+                        },
                         "spec": {"providerID": "aws:///us-west-2b/i-11111111111111111"},
                         "status": {
                             "conditions": [{"type": "Ready", "status": "True"}],
@@ -532,13 +554,23 @@ async def test_readiness_uses_original_uid_and_approved_image(workload_kind, cha
     workspace.request = request
     if change == "none":
         assert await workspace.workload_ready(
-            operation, target, plan, known_references=known, authorize=authorize
+            operation,
+            target,
+            plan,
+            known_references=known,
+            authorize=authorize,
+            verify_placement=declared_placement,
         )
         assert len(probes) == (2 if workload_kind == "serving" else 0)
     else:
         with pytest.raises(OperationRefused):
             await workspace.workload_ready(
-                operation, target, plan, known_references=known, authorize=authorize
+                operation,
+                target,
+                plan,
+                known_references=known,
+                authorize=authorize,
+                verify_placement=declared_placement,
             )
         assert not probes
 
@@ -603,6 +635,11 @@ async def test_serving_readiness_rechecks_identity_and_authority_before_token_pr
     workspace.request = request
     with pytest.raises(OperationRefused):
         await workspace.workload_ready(
-            operation, target, plan, known_references=known, authorize=authorize
+            operation,
+            target,
+            plan,
+            known_references=known,
+            authorize=authorize,
+            verify_placement=declared_placement,
         )
     assert not authenticated

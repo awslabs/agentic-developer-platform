@@ -62,6 +62,7 @@ async def capture(provider, operation, target, plan, known_references, authorize
     Neither a UI GET nor cleanup invents a result that the executor never captured.
     """
     workspace = provider.workspace
+    workspace.require_dedicated_node_authority(target)
     spec = plan.data["workload"]
     from .network_probe_contract import for_operation, verify_result
 
@@ -158,6 +159,9 @@ async def capture(provider, operation, target, plan, known_references, authorize
         return  # No retained output is claimed, including after external Pod GC.
     pod = completed[0]
     metadata = pod["metadata"]
+    placement = await provider.verify_pod_allocation(
+        operation, target, plan, pod, authorize
+    )
     message = pod["status"]["containerStatuses"][0]["state"]["terminated"].get(
         "message", ""
     )
@@ -175,6 +179,11 @@ async def capture(provider, operation, target, plan, known_references, authorize
     # Exact read documents, not just names, bind the output to one completed Pod.
     if fresh_pod != pod or fresh_job != job:
         raise OperationRefused("batch result source changed while reading")
+    if (
+        await provider.verify_pod_allocation(operation, target, plan, pod, authorize)
+        != placement
+    ):
+        raise OperationRefused("batch result placement changed during observation")
     await authorize()
     text, redacted = content
     digest = hashlib.sha256(text.encode()).hexdigest()

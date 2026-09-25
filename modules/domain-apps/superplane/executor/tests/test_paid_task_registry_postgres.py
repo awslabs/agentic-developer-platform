@@ -13,9 +13,11 @@ from superplane_executor.task_worker import write_private
 from test_lifecycle_postgres import system as system
 
 
+@pytest.mark.parametrize("shared", [False, True])
 async def test_task_assignment_preserves_actual_run_and_registration_owner(
     system,
     tmp_path,
+    shared,
 ):
     pool, admit, server, cloud, _, registry, _ = system
     operation, _ = await admit("provision")
@@ -41,6 +43,30 @@ async def test_task_assignment_preserves_actual_run_and_registration_owner(
         validate_plan=registry.validate_plan,
         handoffs=registry.handoffs,
     )
+    if shared:
+        # Change canonical placement after original admission: the paid task
+        # override must read it itself instead of relying on manager projection.
+        async with pool.acquire() as c:
+            await c.execute("UPDATE workspaces SET shared_cluster_id=cluster_id")
+        with pytest.raises(
+            OperationRefused,
+            match="^shared placement requires separate trusted Node observation authority$",
+        ):
+            await task.publish(operation.grant.lease.operation_id)
+        assert not task.tokens
+        assert not (directory / "assignment.json").exists()
+        assert not (directory / "tokens").exists()
+        assert cloud.launches == 0 and not cloud.exists
+        async with pool.acquire() as c:
+            assert (
+                await c.fetchrow("SELECT holder,expires_at FROM observation_leases")
+                == original_owner
+            )
+            assert (
+                await c.fetchval("SELECT count(*) FROM controller_executions")
+                == original_assignments
+            )
+        return
     name = await task.publish(operation.grant.lease.operation_id)
     data = json.loads((directory / "assignment.json").read_text())
     assert data["holder"] == operation.grant.lease.holder

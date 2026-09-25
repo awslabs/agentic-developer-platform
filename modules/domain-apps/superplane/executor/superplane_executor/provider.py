@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 
 import boto3
@@ -37,12 +38,33 @@ class Provider:
         # session is not region-pinned -- every call below passes its own
         # explicit region_name, since a multi-region plan has more than one.
         role = await self.registry.authority.delivery_role(operation)
+        account = plan.data["provider_account_id"]
+        role_arn = role.get("role_arn")
+        if not isinstance(role_arn, str) or not re.fullmatch(
+            r"arn:aws:iam::" + re.escape(account) + r":role/[A-Za-z0-9+=,.@_/-]+",
+            role_arn,
+        ):
+            raise OperationRefused("delivered AWS role does not match approved account")
+        expected = (
+            rf"arn:aws:sts::{re.escape(account)}:assumed-role/"
+            + re.escape(role_arn.rsplit("/", 1)[-1])
+            + r"/[A-Za-z0-9+=,.@_-]+"
+        )
+
+        def matches(identity):
+            return re.fullmatch(expected, identity.get("Arn", "")) is not None
+
+        def verify(identity):
+            if identity.get("Account") != account or not matches(identity):
+                raise OperationRefused(
+                    "AWS session identity does not match approved role"
+                )
 
         def resolve():
             sts = self.session.client("sts", region_name=plan.cluster_region)
             identity = sts.get_caller_identity()
-            expected = f"arn:aws:sts::{plan.data['provider_account_id']}:assumed-role/{role['role_arn'].rsplit('/', 1)[-1]}/"
-            if identity.get("Arn", "").startswith(expected):
+            if matches(identity):
+                verify(identity)
                 return self.session
             arguments = {
                 "RoleArn": role["role_arn"],
@@ -55,12 +77,20 @@ class Provider:
             if role.get("external_id"):
                 arguments["ExternalId"] = role["external_id"]
             credentials = sts.assume_role(**arguments)["Credentials"]
-            return boto3.Session(
+            session = boto3.Session(
                 aws_access_key_id=credentials["AccessKeyId"],
                 aws_secret_access_key=credentials["SecretAccessKey"],
                 aws_session_token=credentials["SessionToken"],
                 region_name=plan.cluster_region,
             )
+            # Verify the exact credential session returned to inventory/effects,
+            # not the ambient caller or just the requested AssumeRole ARN.
+            verify(
+                session.client(
+                    "sts", region_name=plan.cluster_region
+                ).get_caller_identity()
+            )
+            return session
 
         return await asyncio.to_thread(resolve), role["role_arn"]
 
@@ -233,6 +263,48 @@ class Provider:
         for binding in plan.region_bindings:
             found.extend(await asyncio.to_thread(inspect, binding["region"]))
         return found
+
+    async def verify_pod_allocation(self, operation, target, plan, pod, authorize):
+        """Observe stable dedicated placement under current original operation authority."""
+        self.workspace.require_dedicated_node_authority(target)
+        await authorize()
+        instances = await self.instances(operation, plan)
+        await authorize()
+        nodes = await self.workspace.verified_nodes(operation, target, plan, instances)
+        await authorize()
+        try:
+            node_name = pod["spec"]["nodeName"]
+            pod_uid = pod["metadata"]["uid"]
+            if not isinstance(pod_uid, str) or not pod_uid or not nodes:
+                raise ValueError()
+            node_uid, provider_id, region, zone, instance_id = nodes[node_name]
+            selected = [
+                instance
+                for instance in instances
+                if instance["InstanceId"] == instance_id
+                and instance["SuperplaneRegion"] == region
+                and instance["Placement"]["AvailabilityZone"] == zone
+            ]
+            if (
+                len(selected) != 1
+                or selected[0].get("State", {}).get("Name") != "running"
+            ):
+                raise ValueError()
+            return (
+                target["cluster_arn"],
+                pod_uid,
+                node_name,
+                node_uid,
+                provider_id,
+                plan.data["provider_account_id"],
+                region,
+                zone,
+                instance_id,
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OperationRefused(
+                "original Pod does not resolve to a running allocated AWS instance"
+            ) from None
 
     async def remember(self, call, plan, request_id=None, region=None):
         # A separate domain journal supplements the shared, already committed
@@ -496,6 +568,7 @@ class Provider:
                 async with asyncio.timeout(800):
                     while True:
                         await authorize()
+                        self.workspace.require_dedicated_node_authority(target)
                         instances = await self.instances(operation, plan)
                         if selected.step_id == "2":
                             # Native EKS provider IDs must resolve to this allocation's
@@ -527,12 +600,19 @@ class Provider:
                                 known_references = frozenset(
                                     row["provider_reference"] for row in rows
                                 )
+
+                            async def verify_placement(pod):
+                                return await self.verify_pod_allocation(
+                                    operation, target, plan, pod, authorize
+                                )
+
                             ready = await self.workspace.workload_ready(
                                 operation,
                                 target,
                                 plan,
                                 known_references=known_references,
                                 authorize=authorize,
+                                verify_placement=verify_placement,
                             )
                         if ready:
                             if (
