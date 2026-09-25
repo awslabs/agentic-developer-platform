@@ -1,12 +1,63 @@
 """Explicit privileged credential-controller installation, separate from consumers."""
 
 from copy import deepcopy
+import importlib
 import json
+from pathlib import Path
 import re
+import sys
 
-from .config import LABEL, Refusal, digest, identity, image, require
+from .config import LABEL, MODULE, Refusal, digest, identity, image, require
 
 NAME = "superplane-credential-controller"
+
+
+def _read_authority(authority_id, document):
+    """Use the runtime schema from this installer checkout, not an ambient wheel.
+
+    The source installer is invoked with only the app root on Python's path.
+    Bootstrap and contracts are sibling packages, also shipped in the executor
+    image. Keep their dependency composition here rather than copying validation
+    rules or relying on pytest/CLI environment path side effects.
+    """
+    packages = {
+        "workspace_provisioning": MODULE / "workspace_provisioning",
+        "superplane_bootstrap": MODULE / "workspace_bootstrap/superplane_bootstrap",
+        "superplane_contracts": MODULE / "contracts/superplane_contracts",
+    }
+    for name, module in tuple(sys.modules.items()):
+        for package, directory in packages.items():
+            if name == package or name.startswith(package + "."):
+                location = getattr(module, "__file__", None)
+                require(
+                    location
+                    and Path(location).resolve().is_relative_to(directory.resolve()),
+                    "credential validation cannot mix source checkouts or installed package versions",
+                )
+    paths = list(sys.path)
+    try:
+        sys.path[:0] = [
+            str(MODULE),
+            str(MODULE / "workspace_bootstrap"),
+            str(MODULE / "contracts"),
+        ]
+        try:
+            registry = importlib.import_module(
+                "workspace_provisioning.credential_controller.registry"
+            )
+            errors = importlib.import_module("superplane_bootstrap.errors")
+        except ImportError:
+            raise Refusal(
+                "same-checkout credential validation dependencies are unavailable"
+            ) from None
+        try:
+            return registry.Authority.read(authority_id, json.dumps(document))
+        except (errors.BootstrapRefused, TypeError, ValueError):
+            raise Refusal(
+                "installed credential authority document is invalid"
+            ) from None
+    finally:
+        sys.path[:] = paths
 
 
 def validate(env, lock):
@@ -39,23 +90,13 @@ def validate(env, lock):
         and 1 <= len(config["authorities"]) <= 64,
         "credential controller requires bounded explicit installed authorities",
     )
-    from workspace_provisioning.credential_controller.registry import Authority
-    from superplane_bootstrap.errors import BootstrapRefused
-
     seen = set()
     for entry in config["authorities"]:
         require(
             isinstance(entry, dict) and set(entry) == {"authority_id", "document"},
             "credential authority registration fields differ",
         )
-        try:
-            authority = Authority.read(
-                entry["authority_id"], json.dumps(entry["document"])
-            )
-        except (BootstrapRefused, TypeError, ValueError):
-            raise Refusal(
-                "installed credential authority document is invalid"
-            ) from None
+        authority = _read_authority(entry["authority_id"], entry["document"])
         doc = authority.document
         require(
             authority.authority_id not in seen and doc["org_id"] == env["org_id"],
