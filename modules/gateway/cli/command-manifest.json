@@ -1557,6 +1557,58 @@
       ]
     },
     {
+      "command": "adp hermes",
+      "helper": "adp",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [],
+      "arguments": [
+        "tool_args"
+      ],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "local CLI contract"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope or documented local output"
+      },
+      "tests": [
+        "tests/cli/test_adp_launch.py",
+        "tests/cli/test_adp_hermes.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp hermes setup",
+      "helper": "adp",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "local CLI contract"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope or documented local output"
+      },
+      "tests": [
+        "tests/cli/test_adp_launch.py",
+        "tests/cli/test_adp_hermes.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
       "command": "adp import",
       "helper": "bg-cognito-auth.sh",
       "status": "shipped",

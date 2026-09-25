@@ -1,5 +1,5 @@
 /**
- * SetupInstructions — how to point Claude Code or Codex at this gateway.
+ * SetupInstructions — connect Claude Code, Codex, Hermes or Kimi to this gateway.
  *
  * Issue #4146 rewrote the content end-to-end (the previous AWS-SSO +
  * `bg-auth.sh` flow no longer worked). Issue #4159 made it tabbed. Issue #4852
@@ -194,14 +194,15 @@ function AdpPrereqItems() {
   return (
     <>
       <li>
-        <code className={CODE}>curl</code> and <code className={CODE}>jq</code> on your PATH
+        <code className={CODE}>curl</code>, <code className={CODE}>jq</code> and{' '}
+        <code className={CODE}>python3</code> on your PATH
       </li>
       <li>Signed in to this dashboard — you already are, or you could not see this page</li>
     </>
   );
 }
 
-/** Step 2, identical in both tabs: the one-line install. */
+/** Step 2, shared by all tabs: the one-line install. */
 function InstallAdpStep({ baseUrl }: { baseUrl: string }) {
   return (
     <>
@@ -231,7 +232,7 @@ sh install.sh --gateway-url ${baseUrl}`}</CodeSnippet>
 }
 
 /**
- * Step 3, identical in both tabs (rendered from this one component so the tabs
+ * Step 3, shared by all tabs (rendered from this one component so the tabs
  * cannot drift). One browser approval, shared by every tool.
  */
 function SignInStep() {
@@ -523,6 +524,151 @@ ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)" codex`}
     },
   ];
 
+  const hermesSteps: SetupStep[] = [
+    {
+      title: 'Prerequisites',
+      body: (
+        <ul className="list-disc space-y-1">
+          <li>
+            Hermes Agent installed — follow the{' '}
+            <a
+              href="https://github.com/NousResearch/hermes-agent"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary-600 dark:text-primary-400 underline"
+            >
+              Hermes installation guide
+            </a>
+          </li>
+          <li>
+            <code className={CODE}>git</code> on your PATH. On Amazon Linux 2023, also install{' '}
+            <code className={CODE}>libatomic</code> for Hermes' bundled Node.js runtime.
+          </li>
+          <AdpPrereqItems />
+        </ul>
+      ),
+    },
+    {
+      title: 'Install the adp CLI',
+      body: <InstallAdpStep baseUrl={baseUrl} />,
+    },
+    {
+      title: 'Sign in',
+      body: <SignInStep />,
+    },
+    {
+      title: 'Connect Hermes',
+      body: (
+        <>
+          <CodeSnippet>{'adp hermes setup'}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Run this once to configure Hermes for ADP. It preserves your other Hermes settings
+            and selects <code className={CODE}>sonnet45</code> as the default model.
+          </p>
+        </>
+      ),
+    },
+    {
+      title: 'Run Hermes',
+      body: (
+        <>
+          <CodeSnippet>{'adp hermes'}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Start an interactive session using your ADP login. The launcher starts or reuses the
+            local proxy for your selected deployment, including one already running for Codex.
+            Your ADP model access and budgets apply to requests through the gateway.
+          </p>
+          <p>For a single prompt:</p>
+          <CodeSnippet>{'adp hermes --oneshot "Explain this repository"'}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Always launch with <code className={CODE}>adp hermes</code> so it uses the current
+            ADP connection.
+          </p>
+          <details className="mt-1">
+            <summary className={SUMMARY}>Choose a deployment or model</summary>
+            <div className="mt-2 space-y-2">
+              <p>
+                If you have registered a deployment named <code className={CODE}>dev</code>,
+                select it for this session:
+              </p>
+              <CodeSnippet>{'adp --deployment dev hermes'}</CodeSnippet>
+              <p>
+                Switching deployments requires no setup changes. Use{' '}
+                <code className={CODE}>--model</code> to choose another model available to your
+                selected deployment.
+              </p>
+            </div>
+          </details>
+        </>
+      ),
+    },
+  ];
+
+  const kimiSteps: SetupStep[] = [
+    {
+      title: 'Prerequisites',
+      body: (
+        <ul className="list-disc space-y-1">
+          <li>
+            Kimi Code and the ADP Kimi adapter installed and configured on your machine. Ask your
+            platform administrator to provision the adapter if it is not already available.
+          </li>
+          <li>Your ADP deployment must provide access to the Kimi model configured in the adapter.</li>
+          <AdpPrereqItems />
+        </ul>
+      ),
+    },
+    {
+      title: 'Install the adp CLI',
+      body: <InstallAdpStep baseUrl={baseUrl} />,
+    },
+    {
+      title: 'Sign in',
+      body: <SignInStep />,
+    },
+    {
+      title: 'Check the Kimi connection',
+      body: (
+        <>
+          <CodeSnippet>{'adp kimi --version\nadp kimi doctor'}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Confirm that Kimi starts and review its diagnostics. The adapter is configured
+            separately from the ADP CLI and uses your existing ADP login.
+          </p>
+        </>
+      ),
+    },
+    {
+      title: 'Run Kimi',
+      body: (
+        <>
+          <CodeSnippet>{'adp kimi'}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Start an interactive Kimi Code session through the configured ADP adapter. Your
+            selected deployment supplies the gateway connection and authentication.
+          </p>
+          <p>For a single prompt:</p>
+          <CodeSnippet>{'adp kimi --prompt "Explain this repository"'}</CodeSnippet>
+          <p className="text-gray-500 dark:text-gray-400">
+            Launch with <code className={CODE}>adp kimi</code> to use your ADP connection.
+            For Kimi's available options, run <code className={CODE}>adp kimi --help</code>.
+          </p>
+          <details className="mt-1">
+            <summary className={SUMMARY}>Choose a deployment</summary>
+            <div className="mt-2 space-y-2">
+              <p>
+                If you have registered a deployment named <code className={CODE}>dev</code>,
+                select it for this session:
+              </p>
+              <CodeSnippet>{'adp --deployment dev kimi'}</CodeSnippet>
+              <p>The selected deployment must allow the model configured in your Kimi adapter.</p>
+            </div>
+          </details>
+        </>
+      ),
+    },
+  ];
+
   const renderToolSteps = (steps: SetupStep[]) => (
     <div className="space-y-6 text-gray-700 dark:text-gray-300">
       {steps.map((step, index) => (
@@ -541,12 +687,16 @@ ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)" codex`}
         </SectionHeading>
         <Card>
           <Tabs defaultValue="claude-code">
-            <TabsList>
+            <TabsList className="flex-wrap">
               <Tab value="claude-code">Claude Code</Tab>
               <Tab value="codex">Codex</Tab>
+              <Tab value="hermes">Hermes</Tab>
+              <Tab value="kimi">Kimi Code</Tab>
             </TabsList>
             <TabPanel value="claude-code">{renderToolSteps(claudeCodeSteps)}</TabPanel>
             <TabPanel value="codex">{renderToolSteps(codexSteps)}</TabPanel>
+            <TabPanel value="hermes">{renderToolSteps(hermesSteps)}</TabPanel>
+            <TabPanel value="kimi">{renderToolSteps(kimiSteps)}</TabPanel>
           </Tabs>
         </Card>
       </section>
@@ -558,7 +708,7 @@ ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)" codex`}
         <Card>
           <CardTitle>Verify it works</CardTitle>
           <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
-            Ask Claude Code or Codex anything, then open the <strong>Log Viewer</strong> in this
+            Ask your CLI assistant anything, then open the <strong>Log Viewer</strong> in this
             dashboard. Your request should appear there within a few seconds — that confirms traffic
             is flowing through the gateway and being metered against your account. If it does not,
             see Troubleshooting below.

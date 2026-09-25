@@ -19,8 +19,10 @@ a Python command's options. Codex and Claude arguments belong to those tools.
 | `adp token` | None | Prints a valid access token for a tool's auth helper; keep stdout private |
 | `adp codex setup` | None | Writes ADP's Codex configuration |
 | `adp claude setup` | None | Writes ADP's Claude Code configuration |
+| `adp hermes setup` | None | Writes ADP's Hermes configuration |
 | `adp codex` | Any Codex arguments | Starts the auth proxy if needed, then launches Codex |
 | `adp claude` | Any Claude Code arguments | Checks the ADP session, then launches Claude Code |
+| `adp hermes` | Hermes arguments except provider/profile/config bypass options | Pins Hermes to the selected deployment's verified auth proxy |
 | `adp serve` | `--port PORT`, `--foreground` | Runs the local auth proxy in the foreground; legacy default port is 9191 |
 | `adp daemon install` | None; macOS only | Installs an always-running launchd proxy |
 | `adp daemon uninstall` | None; macOS only | Removes that daemon |
@@ -32,10 +34,16 @@ a Python command's options. Codex and Claude arguments belong to those tools.
 checks the version served by the gateway; it does not fetch arbitrary past
 releases. `--rollback --to VERSION` checks the saved local rollback version.
 
-`setup` is reserved immediately after a tool name. `adp codex -- setup` and
-`adp claude -- setup` forward that word to the underlying tool instead.
-There is no `adp serve --stop`; use Ctrl-C for a foreground proxy or uninstall
-the daemon that owns it.
+`setup` is reserved immediately after a tool name. `adp codex -- setup`,
+`adp claude -- setup` and `adp hermes -- setup` forward that word to the
+underlying tool instead. There is no `adp serve --stop`; use Ctrl-C for a
+foreground proxy or uninstall the daemon that owns it.
+
+Hermes setup uses its native `config set`/`config get --json --raw` commands.
+Launch through `adp hermes` so the endpoint and credential references are filled
+for that invocation. `--provider`, `--profile`/`-p`, `--ignore-user-config` and
+`--vanilla` are refused; use `HERMES_HOME` consistently for setup and launch to
+select a separate Hermes configuration and session store.
 
 ## Environment selection — PR #5449
 

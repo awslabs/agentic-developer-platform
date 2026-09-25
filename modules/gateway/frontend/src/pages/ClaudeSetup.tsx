@@ -5,7 +5,7 @@
  * actually covering two tools, and the reading order was convoluted: Codex was
  * buried inside the Claude Code numbered flow and the download buttons sat below
  * the step that told users to go find them. It is now a common "connect your
- * machine" section, a Claude Code | Codex tab switcher, and a shared verify step
+ * machine" section, tool tabs, and a shared verify step
  * — all owned by `SetupInstructions`, which also hosts the download cards and
  * the Connect CLI panel so nothing forward-references a later section.
  */
@@ -25,7 +25,7 @@ export default function ClaudeSetup() {
           CLI Setup
         </h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Use Claude Code or Codex on your machine with the platform gateway as the backend.
+          Use Claude Code, Codex, Hermes or Kimi Code on your machine with the platform gateway as the backend.
         </p>
       </div>
 
@@ -64,8 +64,37 @@ export default function ClaudeSetup() {
               <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
                 adp login
               </code>{' '}
-              and approve in the browser — one click, no token to copy. This applies to both Claude
-              Code and Codex — the same helper mints the token for each.
+              and approve in the browser — one click, no token to copy. This applies to Claude
+              Code, Codex, Hermes and Kimi Code — they share the same ADP login.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              Hermes asks you to run setup
+            </h4>
+            <p className="mt-1">
+              Run{' '}
+              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
+                adp hermes setup
+              </code>{' '}
+              to refresh the ADP configuration, then launch with{' '}
+              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
+                adp hermes
+              </code>
+              . If Hermes does not recognize the configuration commands, update Hermes first.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              Kimi ADP adapter is not installed
+            </h4>
+            <p className="mt-1">
+              Ask your platform administrator to install and configure the Kimi ADP adapter on
+              this machine, then run{' '}
+              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
+                adp kimi --version
+              </code>{' '}
+              to verify it. The adapter is a separate prerequisite for the ADP Kimi launcher.
             </p>
           </div>
           <div>

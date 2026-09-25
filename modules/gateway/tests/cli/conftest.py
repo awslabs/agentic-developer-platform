@@ -15,6 +15,7 @@ import os
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -28,7 +29,7 @@ import pytest
 def isolate_operator_configuration(tmp_path, monkeypatch):
     """Never inherit an operator's pinned login, configuration or token stores."""
     for key in list(os.environ):
-        if key.startswith("ADP_") or key in {
+        if key.startswith(("ADP_", "HERMES_")) or key in {
             "BG_CONFIG_DIR",
             "BG_AWS_PROFILE",
             "BG_AWS_RETIRED_PROFILES",
@@ -37,12 +38,13 @@ def isolate_operator_configuration(tmp_path, monkeypatch):
             "KIMI_HOME",
         }:
             monkeypatch.delenv(key, raising=False)
-    import sys
-
     for module in list(sys.modules.values()):
         observations = vars(module).get("_capability_preflight") if module is not None else None
         if isinstance(observations, dict):
             observations.clear()
+        # In-process helpers must resolve a fresh deployment for each test.
+        if Path(getattr(module, "__file__", "") or "").name == "adp_common.py":
+            monkeypatch.setattr(module, "_deployment", module._UNRESOLVED)
     monkeypatch.setenv("HOME", str(tmp_path))
     for key in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
         directory = tmp_path / key.lower()

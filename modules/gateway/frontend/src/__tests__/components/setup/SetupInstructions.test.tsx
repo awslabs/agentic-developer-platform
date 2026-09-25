@@ -304,9 +304,9 @@ describe('SetupInstructions', () => {
 
   it('keeps each tab self-contained — no cross-tool prerequisites', async () => {
     render(<SetupInstructions />);
-    // Claude Code tab: no proxy machinery, no python3 requirement.
+    // Python is an ADP installer prerequisite shared by every tool.
     expect(document.body.textContent ?? '').not.toContain('bg-gateway-proxy.py');
-    expect(document.body.textContent ?? '').not.toContain('python3');
+    expect(document.body.textContent ?? '').toContain('python3');
 
     await openCodexTab();
     // Codex tab: no Claude Code install instruction.
@@ -367,14 +367,19 @@ describe('SetupInstructions', () => {
   it.each([
     ['claude-code', 'adp claude setup'],
     ['codex', 'adp codex setup'],
-  ])('presents the %s tab as install → login → status → setup', async (tab, setupVerb) => {
+    ['hermes', 'adp hermes setup'],
+    ['kimi', 'adp kimi doctor'],
+  ])('presents the %s tab as install → login → status → connect', async (tab, connectionCommand) => {
     render(<SetupInstructions />);
     if (tab === 'codex') await openCodexTab();
+    if (tab === 'hermes') await userEvent.click(screen.getByRole('tab', { name: 'Hermes' }));
+    if (tab === 'kimi') await userEvent.click(screen.getByRole('tab', { name: 'Kimi Code' }));
     const text = document.body.textContent ?? '';
 
+    expect(text).toContain(`curl -fsSL ${STUB_ORIGIN}/api/cli/install.sh | sh -s -- --gateway-url ${STUB_ORIGIN}/api`);
     expect(text).toContain('adp login');
     expect(text).toContain('adp status');
-    expect(text).toContain(setupVerb);
+    expect(text).toContain(connectionCommand);
   });
 
   it('tells the user one login covers every tool', async () => {
@@ -503,6 +508,49 @@ describe('SetupInstructions', () => {
     expect(screen.getByText('1')).toBeInTheDocument();
     expect(screen.getByText('5')).toBeInTheDocument();
     expect(screen.queryByText('6')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Hermes' }));
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(screen.queryByText('6')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Kimi Code' }));
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(screen.queryByText('6')).not.toBeInTheDocument();
+  });
+
+  it('opens Hermes instructions with ADP launch commands and deployment selection', async () => {
+    render(<SetupInstructions />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Hermes' }));
+
+    expect(screen.getByRole('tab', { name: 'Hermes' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('adp hermes', { selector: 'pre' })).toBeInTheDocument();
+    expect(screen.getByText('adp hermes --oneshot "Explain this repository"', { selector: 'pre' })).toBeInTheDocument();
+    expect(screen.getByText('adp --deployment dev hermes', { selector: 'pre' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Hermes installation guide' })).toHaveAttribute(
+      'href', 'https://github.com/NousResearch/hermes-agent'
+    );
+    expect(document.body.textContent ?? '').toContain('One login covers every tool');
+    expect(document.body.textContent ?? '').not.toContain('~/.codex/config.toml');
+    expect(document.body.textContent ?? '').not.toContain('ADP_GATEWAY_DUMMY');
+  });
+
+  it('opens Kimi instructions for the existing adapter without inventing a setup command', async () => {
+    render(<SetupInstructions />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Kimi Code' }));
+
+    expect(screen.getByRole('tab', { name: 'Kimi Code' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('adp kimi', { selector: 'pre' })).toBeInTheDocument();
+    expect(screen.getByText('adp kimi --prompt "Explain this repository"', { selector: 'pre' })).toBeInTheDocument();
+    expect(screen.getByText('adp --deployment dev kimi', { selector: 'pre' })).toBeInTheDocument();
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('Kimi Code and the ADP Kimi adapter installed and configured');
+    expect(text).toContain('adp kimi --version');
+    expect(text).toContain('adp kimi doctor');
+    expect(text).toContain('One login covers every tool');
+    expect(text).not.toContain('adp kimi setup');
+    expect(text).not.toContain('adp hermes setup');
   });
 });
 

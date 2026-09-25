@@ -793,6 +793,69 @@ cmd_codex_launch() {
     exec codex ${pinned[@]+"${pinned[@]}"} "$@"
 }
 
+# --- hermes (launch) --------------------------------------------------------
+# Hermes expands environment references in config.yaml. Keep the endpoint as
+# a reference too: a literal port belongs to whichever deployment ran setup
+# last, which need not be the deployment selected for this invocation.
+check_hermes_config() {
+    # Ask Hermes to parse its own configuration using its own dependencies.
+    # Sentinels verify that both references survive config saves; never print
+    # the raw configuration, which may contain user credentials.
+    if ! ADP_HERMES_BASE_URL="http://127.0.0.1:1/v1" \
+         ADP_GATEWAY_DUMMY="adp-hermes-config-check" \
+         hermes config get model --json --raw | python3 -c '
+import json, sys
+try:
+    model = json.load(sys.stdin)
+    valid = (
+        isinstance(model, dict)
+        and model.get("provider") == "custom"
+        and model.get("base_url") == "http://127.0.0.1:1/v1"
+        and model.get("api_key") == "adp-hermes-config-check"
+        and model.get("key_env") == "ADP_GATEWAY_DUMMY"
+        and model.get("api_mode") == "chat_completions"
+    )
+except (ValueError, TypeError):
+    valid = False
+sys.exit(0 if valid else 1)
+'; then
+        print_error "Hermes is not configured for the selected ADP transport."
+        print_warning "Run: adp hermes setup (requires Hermes config get/set support)."
+        return 1
+    fi
+}
+
+cmd_hermes_launch() {
+    require_tool hermes
+    local arg
+    for arg in "$@"; do
+        case "${arg}" in
+            --provider|--provider=*|--profile|--profile=*|-p|-p?*|--ignore-user-config|--ignore-user-config=*|--vanilla)
+                print_error "ADP manages the Hermes provider and configuration. Remove ${arg%%=*}."
+                print_warning "To select a Hermes home, set HERMES_HOME for both setup and launch."
+                exit 1
+                ;;
+        esac
+    done
+    require_live_session "Hermes"
+    check_hermes_config
+    ensure_proxy
+
+    # Same capability contract as Codex: Hermes sends this as its bearer to the
+    # proxy, which validates it and swaps in the real Cognito token. See
+    # cmd_codex_launch for why this is a loopback guard, not a secret.
+    local capability
+    capability="$(published_proxy_capability)"
+    if [ -z "${capability}" ]; then
+        print_error "The auth proxy did not publish a usable local capability."
+        exit 1
+    fi
+    export ADP_GATEWAY_DUMMY="${capability}"
+    export ADP_HERMES_BASE_URL="http://127.0.0.1:${ADP_ACTIVE_PROXY_PORT}/v1"
+
+    exec hermes "$@"
+}
+
 # --- kimi (launch) ----------------------------------------------------------
 # The isolated Kimi adapter owns its proxy and consumes the selected deployment
 # through BG_CONFIG_DIR. Never fall back to an unconfigured native Kimi binary.
@@ -1112,6 +1175,31 @@ EOF
     echo "into Codex. To make the bare 'codex' command work too, run:"
     echo ""
     echo "  adp daemon install"
+    echo ""
+}
+
+# --- hermes setup -----------------------------------------------------------
+# Use Hermes' native writer so YAML parsing stays in its installed environment,
+# not ADP's otherwise standard-library-only Python. Dotted keys preserve the
+# rest of the user's configuration and Hermes owns atomic writes/backups.
+cmd_hermes_setup() {
+    require_session
+    require_tool hermes
+
+    hermes config set model.provider custom
+    hermes config set model.base_url '${ADP_HERMES_BASE_URL}'
+    hermes config set model.api_key '${ADP_GATEWAY_DUMMY}'
+    hermes config set model.key_env ADP_GATEWAY_DUMMY
+    hermes config set model.api_mode chat_completions
+    # Stock Hermes model names do not match ADP's allowed model identifiers.
+    hermes config set model.default sonnet45
+    check_hermes_config
+
+    print_success "Wired Hermes to the ADP gateway."
+    echo ""
+    echo "Run: adp hermes"
+    echo "The launcher supplies the selected deployment's endpoint and local credential."
+    echo "Use HERMES_HOME for both setup and launch to select a different Hermes home."
     echo ""
 }
 
@@ -1632,10 +1720,12 @@ Connect your own AWS account:
 Wire up a tool (config only — sign in once, then set up as many as you like):
     codex setup           Point Codex at the local auth proxy
     claude setup          Set Claude Code's apiKeyHelper (merges settings.json)
+    hermes setup          Configure Hermes for the selected ADP auth proxy
 
 Run a tool:
     codex [args...]       Launch Codex: starts the auth proxy if needed, then execs
     claude [args...]      Launch Claude Code (optional — bare 'claude' also works)
+    hermes [args...]      Launch Hermes: reuses/starts the auth proxy, then execs
     kimi [args...]        Launch the configured isolated Kimi Code CLI through ADP
     serve                 Run the localhost auth proxy in the FOREGROUND
 
@@ -1760,12 +1850,14 @@ Three deployments, three terminals, one machine:
     export ADP_DEPLOYMENT=dev      # or integration
     adp login && adp codex         # sessions stay independent
 
-Why the two launchers differ:
-    Codex has no hook for refreshing a credential, so it needs the local proxy
-    running and a placeholder in ADP_GATEWAY_DUMMY — 'adp codex' does both for
-    you. Claude Code calls 'adp token' itself on every request, so bare 'claude'
-    already works; 'adp claude' just fails fast with a login hint instead of
-    erroring mid-session. Args after either verb go straight to the tool.
+Why the launchers differ:
+    Codex and Hermes have no hook for refreshing a credential, so they need the
+    local proxy running and a placeholder in ADP_GATEWAY_DUMMY — 'adp codex' /
+    'adp hermes' do both for you, and share one already-running proxy rather
+    than starting a second. Claude Code calls 'adp token' itself on every
+    request, so bare 'claude' already works; 'adp claude' just fails fast with a
+    login hint instead of erroring mid-session. Args after a verb go straight to
+    the tool.
 EOF
 }
 
@@ -1855,7 +1947,7 @@ main() {
     # a `--deployment` among its arguments is a misplaced global option rather than
     # the tool's own flag, and is refused instead of silently ignored.
     case "${command}" in
-        codex|claude|kimi|help|--help|-h|version|--version|-v|"") ;;
+        codex|claude|hermes|kimi|help|--help|-h|version|--version|-v|"") ;;
         *) ADP_CURRENT_VERB="${command}" reject_post_verb_deployment "$@" ;;
     esac
 
@@ -1918,6 +2010,13 @@ main() {
                 setup) shift; cmd_claude_setup "$@" ;;
                 --)    shift; cmd_claude_launch "$@" ;;
                 *)     cmd_claude_launch "$@" ;;
+            esac
+            ;;
+        hermes)
+            case "${1:-}" in
+                setup) shift; cmd_hermes_setup "$@" ;;
+                --)    shift; cmd_hermes_launch "$@" ;;
+                *)     cmd_hermes_launch "$@" ;;
             esac
             ;;
         daemon)
