@@ -409,6 +409,17 @@ def _jwt(claims):
     return f"header.{encoded}.signature"
 
 
+def test_recovery_context_uses_selected_tenant_from_envelope(monkeypatch):
+    monkeypatch.setattr(common, "deployment_stamp", lambda: {"deployment_id": "deployment-1"})
+    monkeypatch.setattr(common, "gateway_url", lambda: "https://gateway.example.test/api")
+    original = _jwt({"sub": "user-1", "org_id": "home", "custom:org_id": "home"})
+    lease = _jwt({"tenant": "selected"})
+    monkeypatch.setattr(common, "access_token", lambda: "adpctx1~" + lease + "~" + original)
+    result = CURRENT_RECOVERY_CONTEXT()
+    assert result["principal"] == "user-1"
+    assert result["tenant"] == "selected"
+
+
 def test_orgless_password_session_cannot_create_workspaces_or_deployments(
     monkeypatch,
 ) -> None:

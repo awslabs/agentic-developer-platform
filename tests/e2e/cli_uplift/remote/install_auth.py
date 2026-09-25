@@ -450,6 +450,7 @@ def _session_document(config, evidence, prefix, home, work_dir):
     evidence["session"] = common.save_session(
         {
             "cli_path": str(binary),
+            "cli_config": json.loads((home / ".bedrock-gateway" / "config.json").read_text()),
             "access_token": tokens["access_token"],
             "id_token": tokens.get("id_token", ""),
             "refresh_token": tokens.get("refresh_token", ""),

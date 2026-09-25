@@ -29,7 +29,6 @@ listing on the machine. Request bodies are never traced for the same reason.
 from __future__ import annotations
 
 import argparse
-import base64
 import binascii
 import fcntl
 import getpass
@@ -465,8 +464,7 @@ def current_recovery_context(api=None):
     gateway = api.session_gateway() if isinstance(api, SessionApi) else common.gateway_url()
     try:
         token = api.session_token() if isinstance(api, SessionApi) else common.access_token()
-        payload = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        claims = common._jwt_claims(token)
     except (
         IndexError,
         ValueError,

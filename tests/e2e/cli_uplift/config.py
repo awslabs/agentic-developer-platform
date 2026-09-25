@@ -409,6 +409,18 @@ def validate(config):
             "capability_contrast.ordinary_fixture_name must be a Secrets Manager name",
         )
     result["capability_contrast"] = contrast
+    tenant_fixture = result.get("tenant_isolation") or {}
+    require(isinstance(tenant_fixture, dict), "tenant_isolation must be an object")
+    if tenant_fixture:
+        tenant_ids = tenant_fixture.get("tenant_ids")
+        require(
+            isinstance(tenant_ids, list)
+            and len(tenant_ids) == 2
+            and all(isinstance(t, str) and 0 < len(t) <= 255 for t in tenant_ids)
+            and len(set(tenant_ids)) == 2,
+            "tenant_isolation.tenant_ids must name two distinct existing memberships",
+        )
+    result["tenant_isolation"] = tenant_fixture
 
     # #5413: the three deployment bindings E16/E17 run against. Absent means those
     # two cases BLOCK (see `fixture_classes`), which is the honest state until a

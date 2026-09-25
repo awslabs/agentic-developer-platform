@@ -143,3 +143,11 @@ Usage and metadata commands added by #5628 (source implementation; live acceptan
 | `adp admin usage users` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
 | `adp admin usage departments` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
 | `adp admin usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--org`, `--page-size`, `--request-id`, `--run`, `--start` |
+
+Tenant selection (#5622 source implementation; live acceptance held). Global `--tenant TENANT_ID` precedes the command; `ADP_TENANT` selects per terminal.
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp tenant list` |  | `--json` |
+| `adp tenant current` |  | `--json` |
+| `adp tenant use` | `tenant` | `--dry-run`, `--json` |

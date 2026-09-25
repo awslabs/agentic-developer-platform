@@ -771,6 +771,8 @@ JOURNEY_DRIVERS = {
     "E20": "story_capabilities",
     "E21": "story_usage",
     "E22": "story_activity",
+    "E23": "tenant_smoke",
+    "E27": "tenant_isolation",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports
