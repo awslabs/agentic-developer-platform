@@ -103,3 +103,48 @@ async def test_dependency_and_proxy_validate_same_original_cognito_and_lease(db_
     assert (await dependencies.get_current_user(request, "Bearer " + bearer)).org_id == "other"
     assert (await middleware.validate_cognito_jwt("Bearer " + bearer)).org_id == "other"
     assert seen == ["cognito-original", "cognito-original"]
+
+
+async def test_replaced_membership_does_not_reuse_lease(db_session, seeded):
+    lease = await tenant.issue_context(db_session, context(), "other")
+    await db_session.execute(delete(TenantMembership).where(TenantMembership.id == "other-member"))
+    db_session.add(TenantMembership(id="replacement", user_id="user", tenant_id="other", role="member", is_active=False))
+    await db_session.commit()
+    with pytest.raises(HTTPException) as error:
+        await tenant.apply_context(context(), lease["context_token"], db_session)
+    assert error.value.status_code == 403
+
+
+async def test_lease_cannot_cross_pool_or_outlive_expiry(db_session, seeded, monkeypatch):
+    import jwt
+
+    lease = await tenant.issue_context(db_session, context(), "other")
+    key = tenant.get_settings().token_secret_key
+    claims = jwt.decode(lease["context_token"], key, algorithms=["HS256"], audience=tenant.AUDIENCE)
+    for changed in ({"pool": "foreign-pool"}, {"exp": datetime.now(UTC) - timedelta(seconds=1)}):
+        invalid = jwt.encode({**claims, **changed}, key, algorithm="HS256")
+        with pytest.raises(HTTPException) as error:
+            await tenant.apply_context(context(), invalid, db_session)
+        assert error.value.status_code == 401
+
+
+async def test_service_identity_cannot_borrow_human_lease(db_session, seeded):
+    lease = await tenant.issue_context(db_session, context(), "other")
+    service = context().model_copy(update={"account_type": "service"})
+    with pytest.raises(HTTPException) as error:
+        await tenant.apply_context(service, lease["context_token"], db_session)
+    assert error.value.status_code == 403
+
+
+async def test_tenant_role_is_resolved_in_selected_membership(db_session, seeded):
+    from src.admin.access_control import AccessControl
+    from src.admin.config import AdminRole
+
+    row = await db_session.get(TenantMembership, "home-member")
+    row.role = "org_admin"
+    await db_session.commit()
+    lease = await tenant.issue_context(db_session, context(), "other")
+    scoped = await tenant.apply_context(context(), lease["context_token"], db_session)
+    role, org = await AccessControl(db_session)._resolve_membership_role(scoped)
+    assert role == AdminRole.MEMBER
+    assert org == "other"
