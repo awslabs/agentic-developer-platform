@@ -591,6 +591,8 @@ export class CheckRunStreamer {
 
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — base host is hardcoded https://api.github.com; only repo/checkRunId are interpolated (validated at config time)
     const resp = await fetch(url, {
+      // Keep credentials and request bodies on the configured destination (S21).
+      redirect: 'error',
       method: 'PATCH',
       headers: {
         Authorization: `Bearer ${this.cfg.tokenProvider()}`,
