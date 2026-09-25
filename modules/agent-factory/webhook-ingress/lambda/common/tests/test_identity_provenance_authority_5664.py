@@ -96,7 +96,7 @@ class TestProvenanceTravelsWithTheResolution:
         assert _identity().identity_proven is False
 
     @pytest.mark.parametrize(
-        "method", ["oauth", "org_placement", "admin_manual", "magic_link_confirmed"]
+        "method", ["oauth", "org_placement", "admin_attested", "magic_link_confirmed"]
     )
     def test_proven_methods_are_proven(self, method):
         """Legitimate linking must keep working — the preserve-behaviour half."""
@@ -107,6 +107,7 @@ class TestProvenanceTravelsWithTheResolution:
     @pytest.mark.parametrize(
         "method",
         [
+            "admin_manual",  # historical automatic and manual writers are ambiguous
             "self_asserted",  # the squatting path: user asserted it, nobody checked
             "magic_link",  # legacy/ambiguous: could be either, so it is not proof
             "",  # DDB row (attribute not projected) / old gateway
@@ -129,7 +130,7 @@ class TestProvenanceTravelsWithTheResolution:
         assert identity_resolver.PROVEN_VERIFICATION_METHODS == {
             "oauth",
             "org_placement",
-            "admin_manual",
+            "admin_attested",
             "magic_link_confirmed",
         }
 
@@ -176,7 +177,7 @@ class TestAuthorityRequiresProvenIdentity:
         )
 
     @pytest.mark.parametrize(
-        "method", ["oauth", "org_placement", "admin_manual", "magic_link_confirmed"]
+        "method", ["oauth", "org_placement", "admin_attested", "magic_link_confirmed"]
     )
     def test_proven_identity_mints_authority(self, method):
         """The legitimate path. Every method the policy calls proof must still mint
@@ -190,6 +191,7 @@ class TestAuthorityRequiresProvenIdentity:
     @pytest.mark.parametrize(
         "method",
         [
+            "admin_manual",  # historical automatic and manual writers are ambiguous
             "self_asserted",  # the squatting path: user asserted it, nobody checked
             "magic_link",  # legacy/ambiguous: could be either, so it is not proof
             "",  # un-backfilled DDB row / gateway predating the response field
@@ -335,9 +337,7 @@ class TestProvenanceMustBelongToThisResolution:
         )
 
     def test_matching_tenant_is_allowed(self):
-        event = self._mint(
-            _identity(verification_method="oauth"), tenant_id="org-acme"
-        )
+        event = self._mint(_identity(verification_method="oauth"), tenant_id="org-acme")
         assert event.tenant_id == "org-acme"
 
     def test_resolved_tenant_mismatch_is_refused(self):

@@ -14,7 +14,7 @@ arc_context = arc_context_fixture
 store = store_fixture
 
 
-@pytest.mark.parametrize("method", ["self_asserted", "magic_link", "", "unknown_method"])
+@pytest.mark.parametrize("method", ["self_asserted", "admin_manual", "magic_link", "", "unknown_method"])
 async def test_unproven_arc_identity_cannot_create_protected_authority(arc_context, db_session, store, method):
     await db_session.execute(update(UserIdentity).values(verification_method=method, verified_at=datetime.now(UTC)))
     await db_session.commit()
@@ -26,7 +26,7 @@ async def test_unproven_arc_identity_cannot_create_protected_authority(arc_conte
     assert store.client.scan(TableName=store.table)["Items"] == before
 
 
-@pytest.mark.parametrize("method", ["oauth", "admin_manual", "magic_link_confirmed"])
+@pytest.mark.parametrize("method", ["oauth", "admin_attested", "magic_link_confirmed"])
 async def test_proven_arc_identity_keeps_its_human_authority(arc_context, db_session, store, method):
     await db_session.execute(update(UserIdentity).values(verification_method=method, verified_at=datetime.now(UTC)))
     await db_session.commit()

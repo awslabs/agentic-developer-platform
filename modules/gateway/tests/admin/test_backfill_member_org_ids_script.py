@@ -205,7 +205,7 @@ class TestRebuildQuery:
 
         assert await script.get_users_with_memberships(db_url) == [{"provider_user_id": "123", "provider": "github", "member_org_ids": []}]
 
-    @pytest.mark.parametrize("method", ["channel_placement", "self_asserted", "magic_link", "oauth", "admin_manual"])
+    @pytest.mark.parametrize("method", ["channel_placement", "self_asserted", "magic_link", "oauth", "admin_manual", "admin_attested"])
     async def test_unproven_target_keeps_proven_siblings_without_adding_its_membership(self, script, db_url, method):
         await _seed(
             db_url,
@@ -217,7 +217,7 @@ class TestRebuildQuery:
             ],
         )
 
-        expected = ["org-a", "org-b"] if method in {"oauth", "admin_manual"} else ["org-a"]
+        expected = ["org-a", "org-b"] if method in {"oauth", "admin_attested"} else ["org-a"]
         # An unproven row still selects the account to repair, not its authority.
         assert await script.get_users_with_memberships(db_url, user_id="u2") == [
             {"provider_user_id": "123", "provider": "github", "member_org_ids": expected}

@@ -148,7 +148,7 @@ async def untouched(db, setup, state):
 
 
 @pytest.mark.parametrize("same_id", [False, True])
-@pytest.mark.parametrize("method", ["oauth", "admin_manual", "self_asserted", "magic_link", None])
+@pytest.mark.parametrize("method", ["oauth", "admin_attested", "admin_manual", "self_asserted", "magic_link", None])
 async def test_real_route_personal_install_requires_bound_proven_identity(db, setup, same_id, method):
     if same_id:
         setup["user"].cognito_sub = setup["user"].id
@@ -162,7 +162,7 @@ async def test_real_route_personal_install_requires_bound_proven_identity(db, se
     nonce = await db.get(MagicLinkNonce, state)
     assert nonce.target_user_id == setup["user"].id
     response = await callback(setup, state)
-    if method in {"oauth", "admin_manual"}:
+    if method in {"oauth", "admin_attested"}:
         assert "success=1" in response.headers["location"]
         mapping = (await db.scalars(select(ChannelTenantMap))).one()
         assert mapping.org_id == "org-acme" and mapping.installed_by_user_id == setup["user"].id
@@ -179,7 +179,7 @@ async def test_personal_proof_cannot_cross_provider_account_or_tenant(db, setup,
     await untouched(db, setup, state)
 
 
-@pytest.mark.parametrize("method", ["oauth", "admin_manual"])
+@pytest.mark.parametrize("method", ["oauth", "admin_attested"])
 async def test_org_control_accepts_existing_proof_plus_fresh_provider_admin_membership(db, setup, method):
     setup["metadata"]["account"] = {"id": 4242, "login": "inert-org", "type": "Organization"}
     await prove(db, setup, method=method)

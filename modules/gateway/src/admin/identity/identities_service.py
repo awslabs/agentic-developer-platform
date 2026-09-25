@@ -11,6 +11,8 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.identity.verification import ADMIN_ATTESTED
+from src.shared.models.base import utcnow
 from src.shared.models.organization import User
 from src.shared.models.vault import UserIdentity
 
@@ -66,7 +68,8 @@ class IdentitiesService:
             provider=req.provider,
             provider_user_id=req.provider_user_id,
             provider_username=req.provider_username,
-            verification_method="admin_manual",
+            verification_method=ADMIN_ATTESTED,
+            verified_at=utcnow(),
         )
         self._db.add(identity)
         await self._db.commit()

@@ -24,7 +24,7 @@ So the two questions are split instead:
 This module pins both halves, because each is a distinct way to get it wrong:
 dropping the routing half is an availability bug (magic-link loop), and dropping
 the authority half is the finding itself. It also pins the positive paths — a
-genuine ``oauth`` link and a genuine ``admin_manual`` one must still resolve AND
+genuine ``oauth`` link and a new ``admin_attested`` one must still resolve AND
 still mint authority — since a fix that over-refuses would be a platform-wide
 dispatch outage rather than a security improvement.
 
@@ -202,14 +202,14 @@ class TestPolicyVocabulary:
         """
         assert not is_proven(CHANNEL_PLACEMENT), "an unclaimable auto-provisioned row is a lockout, not a security property"
 
-    def test_channel_placement_is_the_only_identifying_non_proof(self):
+    def test_only_placement_and_legacy_manual_identify_without_proof(self):
         """Pins the size of the gap between the two sets.
 
         A future value added to IDENTIFYING_METHODS is a new way to resolve to a
         platform user without proving control, which is exactly the class of change
         that needs a deliberate decision rather than an incidental one.
         """
-        assert IDENTIFYING_METHODS - PROVEN_METHODS == {CHANNEL_PLACEMENT}
+        assert IDENTIFYING_METHODS - PROVEN_METHODS == {CHANNEL_PLACEMENT, "admin_manual"}
         assert CHANNEL_PLACEMENT in UNPROVEN_METHODS
 
 
@@ -345,6 +345,25 @@ class TestLookupFilter:
 
         assert resp.status_code == 404
         assert "magic_link_url" in resp.json()["detail"]
+
+    def test_legacy_manual_identity_routes_without_authority_or_relabel(self, mock_settings, _url, _secret, client, db):
+        from datetime import UTC, datetime
+
+        self._settings(mock_settings)
+        user = _user("u-legacy", "org-a")
+        user.is_shadow = False
+        identity = _identity("u-legacy", "org-a", "admin_manual")
+        identity.verified_at = datetime.now(UTC)
+        _seed(db, user, identity)
+
+        first = _resolve(client, provider="github", provider_user_id="555")
+        second = _resolve(client, provider="github", provider_user_id="555")
+        assert first.status_code == second.status_code == 200
+        assert first.json()["user_id"] == second.json()["user_id"] == "u-legacy"
+        assert first.json()["verification_method"] == "admin_manual"
+        assert identifies(first.json()["verification_method"])
+        assert not is_proven(first.json()["verification_method"])
+        assert identity.verification_method == "admin_manual"
 
     def test_ambiguous_cross_tenant_identity_is_refused_not_guessed(self, mock_settings, _url, _secret, client, db):
         """The 409 branch, which previously had no test anywhere in the repo.

@@ -51,7 +51,7 @@ async def issue_install_nonce(db, user, *, jti):
             user.id,
             IdentityCreateRequest(provider="github", provider_user_id=PROVEN_GITHUB_USER_ID, provider_username="proven-installer"),
         )
-        assert response.verification_method == "admin_manual"
+        assert response.verification_method == "admin_attested"
     # Only entropy is deterministic. The production issuer resolves the human,
     # checks the selected workspace, serializes its context and commits the nonce.
     with patch.object(service.uuid, "uuid4", return_value=jti):

@@ -410,6 +410,14 @@ def test_exported_absent_ownership_claim_is_null_and_not_proof(inv, snapshot):
     assert entry(inv, snapshot)["classification"] == "review_required"
 
 
+def test_inventory_trust_vocabulary_matches_runtime(inv):
+    from src.shared.identity.verification import PROVEN_METHODS
+
+    assert inv.PROVEN_LABELS == PROVEN_METHODS
+    assert "admin_manual" in inv.UNPROVEN_LABELS
+    assert "admin_attested" in inv.PROVEN_LABELS
+
+
 def test_empty_optional_team_preserves_state_without_granting_proof(inv, snapshot):
     absent = inv.compute_row_fingerprint(snapshot["user_identities"][0])
     snapshot["user_identities"][0]["team_id"] = ""

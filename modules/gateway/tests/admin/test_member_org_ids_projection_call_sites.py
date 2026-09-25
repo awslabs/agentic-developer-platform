@@ -395,7 +395,7 @@ async def test_role_change_projects_the_membership(db_session: AsyncSession):
     assert kwargs["member_org_ids"] == ["role-org"]
 
 
-@pytest.mark.parametrize("method", ["channel_placement", "self_asserted", "admin_manual", "oauth"])
+@pytest.mark.parametrize("method", ["channel_placement", "self_asserted", "admin_manual", "admin_attested", "oauth"])
 async def test_role_change_only_projects_membership_through_proven_identity(db_session: AsyncSession, method):
     from src.admin.service import AdminService
     from src.shared.models.vault import UserIdentity
@@ -416,7 +416,7 @@ async def test_role_change_only_projects_membership_through_proven_identity(db_s
     assert membership.role == "org_admin"
     assert identity.verification_method == method
     writer.update_user_membership_orgs.assert_awaited_once_with(
-        provider_user_id="60003", member_org_ids=["proof-role-org"] if method in {"oauth", "admin_manual"} else [], provider="github"
+        provider_user_id="60003", member_org_ids=["proof-role-org"] if method in {"oauth", "admin_attested"} else [], provider="github"
     )
 
 

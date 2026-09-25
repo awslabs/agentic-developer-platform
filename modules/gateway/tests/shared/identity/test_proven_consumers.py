@@ -1,11 +1,13 @@
 """Unproven external claims cannot grant workspace, approval or budget authority."""
 
+from datetime import UTC, datetime
+
 import pytest
 
 from src.budget.person_ledger import resolve_person_identity
 from src.orchestration.adapters.github_comments import _resolve_platform_identity
 from src.shared.identity.resolver import UnresolvableUserEntityError, _resolve_via_github_identity
-from src.shared.identity.verification import is_proven
+from src.shared.identity.verification import identifies, is_proven
 from src.shared.identity.workspaces import linked_user_ids
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
@@ -15,7 +17,18 @@ from src.shared.models.vault import UserIdentity
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "method",
-    ["self_asserted", "magic_link", "manual", "unknown", "channel_placement", "oauth", "admin_manual", "org_placement", "magic_link_confirmed"],
+    [
+        "self_asserted",
+        "magic_link",
+        "manual",
+        "unknown",
+        "channel_placement",
+        "oauth",
+        "admin_manual",
+        "admin_attested",
+        "org_placement",
+        "magic_link_confirmed",
+    ],
 )
 async def test_only_proven_claims_link_authority_across_consumers(db_session, method):
     db = db_session
@@ -27,19 +40,34 @@ async def test_only_proven_claims_link_authority_across_consumers(db_session, me
     await db.flush()
     db.add_all(
         [
-            UserIdentity(user_id=login.id, org_id=login.org_id, team_id="", provider="github", provider_user_id="932", verification_method=method),
-            UserIdentity(user_id=target.id, org_id=target.org_id, team_id="", provider="github", provider_user_id="932", verification_method=method),
+            UserIdentity(
+                user_id=login.id,
+                org_id=login.org_id,
+                team_id="",
+                provider="github",
+                provider_user_id="932",
+                verification_method=method,
+                verified_at=datetime.now(UTC),
+            ),
+            UserIdentity(
+                user_id=target.id,
+                org_id=target.org_id,
+                team_id="",
+                provider="github",
+                provider_user_id="932",
+                verification_method=method,
+                verified_at=datetime.now(UTC),
+            ),
             TenantMembership(user_id=target.id, tenant_id=target.org_id, role="org_admin"),
         ]
     )
     await db.commit()
-    # Derived from the policy module, not a hard-coded pair (#5664, A10). The
-    # literal set predated `org_placement` and `magic_link_confirmed` and so
-    # asserted nothing about them, and it would have silently kept passing when
-    # `channel_placement` — the auto-provisioned value this test most needs to
-    # cover — was moved out of PROVEN_METHODS. Asking the module means a method
-    # that changes sides is re-checked against every consumer below automatically.
-    trusted = is_proven(method)
+    # An explicit expected policy pins the direction, including the ambiguous
+    # historical label. Deriving this solely from is_proven would bless a drift.
+    trusted = method in {"oauth", "admin_attested", "org_placement", "magic_link_confirmed"}
+    assert is_proven(method) is trusted
+    if method == "admin_manual":
+        assert identifies(method), "legacy routing survives without new authority"
     linked = await linked_user_ids(db, login, username="GitHub_932")
     assert (target.id in linked) is trusted
     context = await _resolve_platform_identity(db, org_id=target.org_id, github_user_id="932")

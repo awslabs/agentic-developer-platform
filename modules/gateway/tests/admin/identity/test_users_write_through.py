@@ -77,15 +77,15 @@ class TestUsersWriteThrough:
 
         # #5664 (A10): each projected identity carries the provenance the Postgres
         # row was written with. An administrator provisioning a user is genuine,
-        # accountable proof (`admin_manual`), and it must reach the DDB projection —
+        # accountable proof (`admin_attested`), and it must reach the DDB projection —
         # the webhook authority gate decides from that attribute, so dropping it here
         # would make the gate refuse an administrator-established link.
         mock_identity_writer.sync_user_identities.assert_awaited_once_with(
             user_id=result.id,
             org_id="wt-org",
             identities=[
-                {"provider": "github", "provider_user_id": "gh-123", "provider_username": "alice-gh", "verification_method": "admin_manual"},
-                {"provider": "slack", "provider_user_id": "sl-456", "provider_username": "alice-sl", "verification_method": "admin_manual"},
+                {"provider": "github", "provider_user_id": "gh-123", "provider_username": "alice-gh", "verification_method": "admin_attested"},
+                {"provider": "slack", "provider_user_id": "sl-456", "provider_username": "alice-sl", "verification_method": "admin_attested"},
             ],
         )
 

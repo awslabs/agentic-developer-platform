@@ -81,6 +81,10 @@ async def test_writes_ddb_identity_index_with_bot_fields(db_session, monkeypatch
     assert call_kwargs["provider_username"] == "my-app[bot]"
     assert call_kwargs["user_kind"] == "bot"
     assert call_kwargs["bot_kind"] == "my-app"
+    from src.shared.models.vault import UserIdentity
+
+    row = (await db_session.scalars(select(UserIdentity))).one()
+    assert row.verification_method == call_kwargs["verification_method"] == "admin_attested"
 
 
 @pytest.mark.asyncio
@@ -155,6 +159,9 @@ async def test_preserves_existing_bot_identity(db_session, identity_writer, exis
     assert call["org_id"] == "original-org"
     assert call["bot_kind"] == bot_kind
     assert call["member_org_ids"] == ["new-org", "original-org"]
+    rows = (await db_session.scalars(select(UserIdentity))).all()
+    assert rows and {row.verification_method for row in rows} == {"admin_attested"}
+    assert call["verification_method"] == "admin_attested"
     memberships = (await db_session.scalars(select(TenantMembership))).all()
     assert {m.role for m in memberships} == {"member"}
 

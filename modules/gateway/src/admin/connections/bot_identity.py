@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.admin.identity.identity_index_writer import IdentityIndexWriter
 from src.admin.memberships import upsert_tenant_membership
 from src.shared.identity import format_person_anchor
-from src.shared.models.base import new_uuid
+from src.shared.identity.verification import ADMIN_ATTESTED, is_proven
+from src.shared.models.base import new_uuid, utcnow
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import UserIdentity
@@ -73,6 +74,16 @@ async def seed_bot_identity(
                 await _lock_bot(seed_db, bot_id)
                 user = await seed_db.get(User, user_id, populate_existing=True)
                 member_org_ids = sorted((await seed_db.scalars(select(TenantMembership.tenant_id).where(TenantMembership.user_id == user_id))).all())
+                verification_method = await seed_db.scalar(
+                    select(UserIdentity.verification_method).where(
+                        UserIdentity.user_id == user_id,
+                        UserIdentity.org_id == user.org_id,
+                        UserIdentity.provider == "github",
+                        UserIdentity.provider_user_id == str(bot_id),
+                    )
+                )
+                if not is_proven(verification_method):
+                    raise ValueError("Bot identity lacks current authoritative proof")
                 success = await IdentityIndexWriter().put_user_identity(
                     provider_user_id=str(bot_id),
                     user_id=user.id,
@@ -84,7 +95,7 @@ async def seed_bot_identity(
                     # #5664 (A10): matches the UserIdentity row _ensure_bot_user
                     # writes. This is the platform's own GitHub App bot, seeded by
                     # the install callback rather than claimed by a user.
-                    verification_method="admin_manual",
+                    verification_method=verification_method,
                 )
                 if not success:
                     logger.warning("bot-identity seed: identity-index write failed for %s org=%s; retry the install callback", bot_login, org_id)
@@ -172,8 +183,17 @@ async def _ensure_bot_user(db: AsyncSession, *, org_id: str, app_slug: str, bot_
                 provider="github",
                 provider_user_id=str(bot_id),
                 provider_username=bot_login,
-                verification_method="admin_manual",
+                verification_method=ADMIN_ATTESTED,
+                verified_at=utcnow(),
             )
         )
+        await db.flush()
+    else:
+        # Re-attestation follows the fresh authenticated App lookup above and
+        # the exact canonical bot checks. This is not a historical label backfill.
+        for identity in identities:
+            if identity.verification_method == "admin_manual":
+                identity.verification_method = ADMIN_ATTESTED
+                identity.verified_at = utcnow()
         await db.flush()
     return user

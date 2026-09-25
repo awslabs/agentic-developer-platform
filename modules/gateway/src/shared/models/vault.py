@@ -25,7 +25,8 @@ __all__ = ["IdentityProvider"]
 class VerificationMethod(StrEnum):
     oauth = "oauth"
     magic_link = "magic_link"
-    admin_manual = "admin_manual"
+    admin_manual = "admin_manual"  # Legacy ambiguous provenance; routing only.
+    admin_attested = "admin_attested"
 
 
 class CredentialType(StrEnum):

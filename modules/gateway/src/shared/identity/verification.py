@@ -29,8 +29,13 @@ The split
   out of the resulting token, not out of the request body.
 * ``org_placement`` — written by the platform's own org-placement path
   (``identity/workspaces.py``), never by a user-facing route.
-* ``admin_manual`` — an authenticated administrator asserted it, which is an
-  accountable act attributable to a named principal.
+* ``admin_attested`` — a current authenticated administrator or verified App
+  installation established the link through the reviewed server writer.
+
+Legacy ``admin_manual`` is ambiguous: older automatic channel placement also
+wrote it. It remains useful for routing, but does not establish authority.
+Existing rows are never automatically relabeled; use the existing provider-proof
+or authenticated admin re-attestation flow to establish a fresh link.
 
 ``UNPROVEN_METHODS`` — the subject of the claim was never contacted:
 
@@ -56,12 +61,16 @@ from __future__ import annotations
 
 from typing import Final
 
+# Emitted only by current reviewed server writers; distinct from the legacy
+# admin_manual value also emitted by automatic channel placement.
+ADMIN_ATTESTED: Final[str] = "admin_attested"
+
 # Established by the provider, or by an accountable administrator.
 PROVEN_METHODS: Final[frozenset[str]] = frozenset(
     {
         "oauth",
         "org_placement",
-        "admin_manual",
+        ADMIN_ATTESTED,
         # A magic link that was delivered OUT-OF-BAND to the claimed account and
         # confirmed from there. Distinct from the legacy bare "magic_link".
         "magic_link_confirmed",
@@ -78,12 +87,13 @@ CHANNEL_PLACEMENT: Final[str] = "channel_placement"
 UNPROVEN_METHODS: Final[frozenset[str]] = frozenset(
     {
         "self_asserted",
+        "admin_manual",
         # Pre-#5664 rows. Could be either case; treated as unproven because the
         # platform cannot tell which, and guessing in the permissive direction is
         # what this issue is fixing.
         "magic_link",
         # Auto-provisioned by POST /internal/v1/resolve-user on a channel_tenant_map
-        # hit. Previously written as ``admin_manual``, which put it in PROVEN_METHODS
+        # hit. Previously written as ``admin_manual``, which historically put it in PROVEN_METHODS
         # and is the second half of the A10 finding: an administrator mapping a
         # workspace to a tenant is an accountable act, but it asserts a fact about
         # the WORKSPACE, not about who controls a particular account inside it. The
@@ -118,7 +128,7 @@ PLACEMENT_VERIFICATION: Final[str] = "org_placement"
 # So the fix is not to hide the row; it is to stop the ROUTING answer from carrying
 # an unearned authority claim. Resolution looks up IDENTIFYING_METHODS (a superset
 # of PROVEN_METHODS); anything that mints authority keeps asking `is_proven`.
-IDENTIFYING_METHODS: Final[frozenset[str]] = PROVEN_METHODS | {CHANNEL_PLACEMENT}
+IDENTIFYING_METHODS: Final[frozenset[str]] = PROVEN_METHODS | {CHANNEL_PLACEMENT, "admin_manual"}
 
 # ---------------------------------------------------------------------------
 # HOW a magic link reached the account it claims — #5664 (A10), second pass

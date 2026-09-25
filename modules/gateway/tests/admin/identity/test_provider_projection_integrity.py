@@ -115,12 +115,13 @@ async def test_admin_identity_proof_only_authorizes_its_provider(seeded_db, proj
     writer, client = projection
     response = await IdentitiesService(seeded_db, writer).add_identity("user-local", IdentityCreateRequest(provider=provider, provider_user_id="999"))
     row = await seeded_db.scalar(select(UserIdentity).where(UserIdentity.id == response.id))
-    assert (row.provider, row.verification_method) == (provider, "admin_manual")
+    assert (row.provider, row.verification_method) == (provider, "admin_attested")
+    assert row.verified_at is not None
 
     event = _human_event(webhook)
     if provider == "github":
         assert event.human_id == "user-local"
-        assert _legacy(client)["verification_method"] == {"S": "admin_manual"}
+        assert _legacy(client)["verification_method"] == {"S": "admin_attested"}
     else:
         assert event is None, f"{provider} proof granted GitHub authority to {event.human_id}"
         assert _legacy(client) is None
@@ -150,7 +151,8 @@ async def test_create_user_sync_preserves_provider_and_proof(seeded_db, projecti
         ),
     )
     row = await seeded_db.scalar(select(UserIdentity).where(UserIdentity.user_id == user.id, UserIdentity.provider == provider))
-    assert (row.provider, row.verification_method) == (provider, "admin_manual")
+    assert (row.provider, row.verification_method) == (provider, "admin_attested")
+    assert row.verified_at is not None
     event = _human_event(webhook)
     if provider == "github":
         assert event.human_id == user.id

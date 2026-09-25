@@ -81,7 +81,7 @@ PROVEN_VERIFICATION_METHODS = frozenset(
     {
         "oauth",
         "org_placement",
-        "admin_manual",
+        "admin_attested",
         "magic_link_confirmed",
     }
 )

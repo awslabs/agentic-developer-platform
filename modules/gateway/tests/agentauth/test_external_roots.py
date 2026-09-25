@@ -42,7 +42,7 @@ async def root_client(store, sts, db_session, monkeypatch):
             team_id="team",
             provider="gitlab",
             provider_user_id="https://gitlab.example#42",
-            verification_method="admin_manual",
+            verification_method="admin_attested",
             verified_at=datetime.now(UTC),
         )
     )

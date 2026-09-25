@@ -15,7 +15,9 @@ from src.admin.cognito_service import UserAlreadyExistsError
 from src.admin.config import membership_role_to_admin_role
 from src.admin.memberships import project_member_org_ids, upsert_tenant_membership
 from src.shared.exceptions import BedrockGatewayError, ConflictError, NotFoundError
+from src.shared.identity.verification import ADMIN_ATTESTED
 from src.shared.identity.workspaces import link_login_to_workspace, login_subject_for_user
+from src.shared.models.base import utcnow
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, Team, User
 from src.shared.models.vault import UserIdentity
@@ -101,7 +103,8 @@ class UsersService:
                     provider=identity.provider,
                     provider_user_id=identity.provider_user_id,
                     provider_username=identity.provider_username,
-                    verification_method="admin_manual",
+                    verification_method=ADMIN_ATTESTED,
+                    verified_at=utcnow(),
                 )
             )
             if identity.provider == "github" and identity.provider_username:
@@ -130,7 +133,7 @@ class UsersService:
                             # #5664 (A10): must match the verification_method the
                             # UserIdentity rows above were created with, so the
                             # projected row carries the same provenance Postgres has.
-                            "verification_method": "admin_manual",
+                            "verification_method": ADMIN_ATTESTED,
                         }
                         for ident in req.identities
                     ],

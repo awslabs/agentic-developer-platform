@@ -153,7 +153,7 @@ async def db(engine) -> AsyncSession:
                     provider=IdentityProvider.directory.value,
                     provider_user_id=BOTH_DIRECTORY_ID,
                     provider_username="both@corp.example",
-                    verification_method="admin_manual",
+                    verification_method="admin_attested",
                 ),
                 UserIdentity(
                     id="id-dir-directory",
@@ -163,7 +163,7 @@ async def db(engine) -> AsyncSession:
                     provider=IdentityProvider.directory.value,
                     provider_user_id=DIR_DIRECTORY_ID,
                     provider_username="dir@corp.example",
-                    verification_method="admin_manual",
+                    verification_method="admin_attested",
                 ),
             ]
         )
@@ -441,3 +441,19 @@ class TestSingleComposer:
         offending.write_text('anchor_id = "1"\nanchor = f"github:{anchor_id}"\n')
 
         assert self._anchor_composing_fstrings(offending)
+
+
+async def test_legacy_manual_directory_link_does_not_supply_budget_anchor(db):
+    from datetime import UTC, datetime
+
+    from sqlalchemy import update
+
+    await db.execute(
+        update(UserIdentity).where(UserIdentity.user_id == DIR_USER_ID).values(verification_method="admin_manual", verified_at=datetime.now(UTC))
+    )
+    await db.commit()
+    anchor, canonical_id = await resolve_caller_person_anchor(db, DIR_SUB)
+    assert canonical_id == DIR_USER_ID
+    assert anchor == format_person_anchor(DIR_USER_ID, PERSON_ANCHOR_INTERNAL_NAMESPACE)
+    with pytest.raises(UnresolvablePersonAnchorError):
+        await resolve_person_anchor(db, format_person_anchor(DIR_DIRECTORY_ID, IdentityProvider.directory.value))
