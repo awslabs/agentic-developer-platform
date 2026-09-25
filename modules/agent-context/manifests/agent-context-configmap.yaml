@@ -91,6 +91,7 @@ data:
   # 004/005 — the deploy runs `alembic upgrade head` before the rollout, so the
   # columns exist before these flags take effect. Flip to "false" to revert to
   # the legacy principal-only (non-isolating) query.
+  DOOR_SECURITY_PROFILE: "production"
   TENANT_SCOPE_ENABLED: "true"
   PROJECT_FILTER_ENABLED: "true"
 

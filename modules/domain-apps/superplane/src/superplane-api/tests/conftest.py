@@ -29,6 +29,11 @@ os.environ["DATABASE_URL"] = APPLICATION_TEST_DATABASE_URL
 # per-test to exercise the fail-closed path, and must stay able to do so.
 os.environ.setdefault("SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS", "true")
 
+# Existing legacy-token tests opt into an isolated development profile. Strict
+# policy and safe-default tests construct their own settings explicitly.
+os.environ.setdefault("SUPERPLANE_SECURITY_PROFILE", "development")
+os.environ.setdefault("DOMAIN_AUTH_ENFORCED", "false")
+
 from app.database import Base, get_session  # noqa: E402
 from app.main import app  # noqa: E402
 

@@ -386,7 +386,7 @@ class PostgresACLStore:
     manage connection lifecycle.
     """
 
-    def __init__(self, db_pool: Any, *, tenant_scope_enabled: bool = False):
+    def __init__(self, db_pool: Any, *, tenant_scope_enabled: bool = True):
         """Initialize with a database connection pool and optional tenant scoping.
 
         Parameters

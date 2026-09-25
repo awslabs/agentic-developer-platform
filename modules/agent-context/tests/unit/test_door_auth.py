@@ -256,9 +256,7 @@ class TestMisconfigurationFailsClosed:
         )
 
     @pytest.mark.parametrize("value", ["ture", "True ", "", "yes-please", "enabled"])
-    async def test_unrecognized_kill_switch_value_keeps_auth_enabled(
-        self, monkeypatch, value
-    ):
+    async def test_unrecognized_kill_switch_value_keeps_auth_enabled(self, monkeypatch, value):
         """A typo or stray value must NOT disable authentication.
 
         The other enable-flags in ServerConfig default to "false" and parse with
@@ -278,7 +276,8 @@ class TestMisconfigurationFailsClosed:
 
     @pytest.mark.parametrize("value", ["false", "0", "no", "FALSE", " false "])
     async def test_explicit_false_disables_auth(self, monkeypatch, value):
-        """The switch still works when set deliberately."""
+        """The switch works only with an explicit isolated development profile."""
+        monkeypatch.setenv("DOOR_SECURITY_PROFILE", "development")
         monkeypatch.setenv("DOOR_AUTH_ENABLED", value)
         from door.config import ServerConfig
 
@@ -370,7 +369,11 @@ class TestMiddlewareOrdering:
         """
         from door.server import app
 
-        names = [m.kwargs.get("dispatch").__name__ for m in app.user_middleware if m.kwargs.get("dispatch")]
+        names = [
+            m.kwargs.get("dispatch").__name__
+            for m in app.user_middleware
+            if m.kwargs.get("dispatch")
+        ]
         assert "authenticate_request" in names, "authenticate_request middleware is not installed"
         assert "enrich_span_with_identity" in names
         assert names.index("authenticate_request") < names.index("enrich_span_with_identity"), (

@@ -5,6 +5,7 @@ This module provides configuration settings for the rate limiting system.
 """
 
 import os
+from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
@@ -29,6 +30,7 @@ class RateLimitConfig(BaseSettings):
 
     # Backend configuration
     backend_type: str = Field(default="redis", description="Backend type: memory requires explicit local/test mode")
+    security_profile: Literal["production", "development"] = "production"
     allow_memory_backend: bool = Field(default=False, description="Local development only; permits process-local counters")
     redis_url: str | None = Field(default=None, validation_alias=AliasChoices("RATELIMIT_REDIS_URL", "BG_REDIS_URL", "redis_url"))
     redis_key_prefix: str = Field(default="bedrockgw:ratelimit", description="Redis key prefix")
@@ -56,7 +58,11 @@ def get_ratelimit_config() -> RateLimitConfig:
     """Get the global rate limit configuration."""
     global _config
     if _config is None:
-        _config = RateLimitConfig(backend_type="memory", allow_memory_backend=True) if os.environ.get("TESTING") == "1" else RateLimitConfig()
+        _config = (
+            RateLimitConfig(backend_type="memory", allow_memory_backend=True, security_profile="development")
+            if os.environ.get("TESTING") == "1"
+            else RateLimitConfig()
+        )
     return _config
 
 

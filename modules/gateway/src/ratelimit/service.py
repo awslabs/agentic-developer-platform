@@ -67,7 +67,9 @@ class RateLimitService(IRateLimitService):
                 key_prefix=self._config.redis_key_prefix,
                 default_ttl=self._config.redis_key_ttl,
             )
-        if self._config.backend_type != "memory" or not (self._config.allow_memory_backend or os.environ.get("TESTING") == "1"):
+        if self._config.backend_type != "memory" or not (
+            (self._config.allow_memory_backend and self._config.security_profile == "development") or os.environ.get("TESTING") == "1"
+        ):
             raise RuntimeError("Shared rate limiting requires RATELIMIT_BACKEND_TYPE=redis and BG_REDIS_URL (or RATELIMIT_REDIS_URL)")
         return InMemoryBackend(
             cleanup_interval=self._config.cleanup_interval_seconds,

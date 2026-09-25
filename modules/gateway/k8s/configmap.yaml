@@ -46,6 +46,7 @@ data:
   # The URL is host/port/TLS only — IAM auth means there is no password to embed.
   # The username + short-lived token are supplied per connection by
   # src/shared/redis_client.py (Issue #4342).
+  RATELIMIT_SECURITY_PROFILE: "production"
   RATELIMIT_BACKEND_TYPE: "redis"
   RATELIMIT_ALLOW_MEMORY_BACKEND: "false"
   BG_REDIS_URL: "rediss://__REDIS_HOST__:__REDIS_PORT__/0"

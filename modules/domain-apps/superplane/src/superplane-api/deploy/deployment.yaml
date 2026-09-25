@@ -71,6 +71,28 @@ spec:
                 name: superplane-api-config
                 optional: true
           env:
+            - name: SUPERPLANE_SECURITY_PROFILE
+              value: "production"
+            - name: DOMAIN_AUTH_ENFORCED
+              value: "true"
+            - name: COGNITO_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-api-config
+                  key: COGNITO_ISSUER
+                  optional: false
+            - name: COGNITO_JWKS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-api-config
+                  key: COGNITO_JWKS_URL
+                  optional: false
+            - name: DOMAIN_AUTH_ALLOWED_CLIENT_IDS
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-api-config
+                  key: DOMAIN_AUTH_ALLOWED_CLIENT_IDS
+                  optional: false
             # `optional: false` on both (issue #5683, A04). These were `true`, which
             # is a fail-OPEN reference: a missing or misnamed Secret let the pod start
             # with the variable simply unset. For the database that surfaces as a

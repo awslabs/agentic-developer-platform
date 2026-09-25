@@ -40,7 +40,7 @@ def test_no_silent_memory_fallback(monkeypatch):
         RateLimitService(config=RateLimitConfig(_env_file=None))
     with pytest.raises(RuntimeError, match="Shared rate limiting"):
         RateLimitService(config=RateLimitConfig(backend_type="memory", _env_file=None))
-    local = RateLimitService(config=RateLimitConfig(backend_type="memory", allow_memory_backend=True, _env_file=None))
+    local = RateLimitService(config=RateLimitConfig(backend_type="memory", allow_memory_backend=True, security_profile="development", _env_file=None))
     assert isinstance(local._backend, InMemoryBackend)
     monkeypatch.setenv("BG_REDIS_URL", "rediss://shared-cache:6379/0")
     assert isinstance(RateLimitService(config=RateLimitConfig(_env_file=None))._backend, RedisBackend)

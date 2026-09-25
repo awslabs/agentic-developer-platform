@@ -1,6 +1,8 @@
 """Application settings loaded from environment variables."""
 
-from pydantic import field_validator
+from typing import Literal
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -41,21 +43,22 @@ class Settings(BaseSettings):
     cognito_app_client_id: str = ""
     cognito_app_client_secret: str = ""
 
-    # Domain auth enforcement (issue #5055, U14 — R5/R6).
-    #
-    # `domain_auth_enforced` is the switch, and it is OFF by default here on
-    # purpose. Retiring the legacy self-signed JWT path is U21's conditional
-    # story, so this story adds the strict path beside it rather than deleting
-    # the old one. What the flag does NOT do is soften the strict path: when it
-    # is on there is no fallback to the legacy validator, because a permissive
-    # alternate validator that answers the same question is a bypass.
-    #
-    # There is deliberately no default issuer or client allowlist. An empty
-    # allowlist is indistinguishable from having no policy at all, so
-    # `build_domain_policy()` refuses to start with enforcement on and either
-    # value unset (see app/auth.py) instead of quietly admitting every client
-    # in the user pool.
-    domain_auth_enforced: bool = False
+    # Production is strict by default. Legacy authentication is available only
+    # through an explicit development profile and explicit enforcement opt-out.
+    superplane_security_profile: Literal["production", "development"] = "production"
+    domain_auth_enforced: bool = True
+
+    @model_validator(mode="after")
+    def require_production_auth(self):
+        if (
+            not self.domain_auth_enforced
+            and self.superplane_security_profile != "development"
+        ):
+            raise ValueError(
+                "DOMAIN_AUTH_ENFORCED=false requires SUPERPLANE_SECURITY_PROFILE=development"
+            )
+        return self
+
     cognito_issuer: str = ""
     cognito_jwks_url: str = ""
     domain_auth_allowed_client_ids: list[str] = []

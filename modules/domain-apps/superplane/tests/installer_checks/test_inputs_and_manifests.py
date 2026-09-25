@@ -570,3 +570,25 @@ def test_prepare_database_cli_writes_sql_and_returns_zero(
     # No AWS calls should be in the output.
     assert "sts" not in result.stdout
     assert "aws" not in result.stderr
+
+
+def test_installer_pins_production_auth_and_reviewed_origin(environment, release):
+    docs = render(environment, release)
+    api = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "superplane-api"
+    )
+    variables = {
+        item["name"]: item
+        for item in api["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert variables["SUPERPLANE_SECURITY_PROFILE"]["value"] == "production"
+    assert variables["DOMAIN_AUTH_ENFORCED"]["value"] == "true"
+    assert variables["COGNITO_ISSUER"]["value"] == environment["auth"]["issuer"]
+    assert (
+        json.loads(variables["DOMAIN_AUTH_ALLOWED_CLIENT_IDS"]["value"])
+        == environment["auth"]["client_ids"]
+    )
+    assert json.loads(variables["CORS_ORIGINS"]["value"]) == [environment["origin"]]
+    assert "secretKeyRef" in variables["JWT_SECRET_KEY"]["valueFrom"]

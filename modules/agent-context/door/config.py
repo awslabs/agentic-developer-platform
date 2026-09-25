@@ -61,10 +61,10 @@ class ServerConfig:
             "yes",
         )
 
-        # Tenant scoping (E8 multi-tenancy — kill switch)
+        # Tenant scoping defaults on; only an explicit development profile may disable it.
         self.tenant_scope_enabled: bool = os.environ.get(
-            "TENANT_SCOPE_ENABLED", "false"
-        ).lower() in ("true", "1", "yes")
+            "TENANT_SCOPE_ENABLED", "true"
+        ).strip().lower() not in ("false", "0", "no")
 
         # Project scoping (E9 — kill switch)
         self.project_filter_enabled: bool = os.environ.get(
@@ -104,6 +104,18 @@ class ServerConfig:
         self.door_auth_enabled: bool = os.environ.get(
             "DOOR_AUTH_ENABLED", "true"
         ).strip().lower() not in ("false", "0", "no")
+
+        self.security_profile = (
+            os.environ.get("DOOR_SECURITY_PROFILE", "production").strip().lower()
+        )
+        if self.security_profile not in ("production", "development"):
+            raise ValueError("DOOR_SECURITY_PROFILE must be production or development")
+        if self.security_profile != "development" and not (
+            self.tenant_scope_enabled and self.door_auth_enabled
+        ):
+            raise ValueError(
+                "Disabling Door authentication or tenant scoping requires DOOR_SECURITY_PROFILE=development"
+            )
 
     @property
     def db_configured(self) -> bool:

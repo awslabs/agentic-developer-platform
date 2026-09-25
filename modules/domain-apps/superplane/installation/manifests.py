@@ -205,6 +205,7 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         return pod
 
     api_env = [
+        variable("SUPERPLANE_SECURITY_PROFILE", "production"),
         variable("DOMAIN_AUTH_ENFORCED", "true"),
         variable("COGNITO_ENABLED", "true"),
         variable("COGNITO_ISSUER", env["auth"]["issuer"]),
@@ -218,7 +219,7 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         # value as the code default, because the two say different things: the code default
         # is what an unconfigured process does, and this line is the deployment's recorded
         # decision. The A17 finding is a case of a deployment silently disagreeing with a
-        # code default (`DOMAIN_AUTH_ENFORCED` is true here and false in `app/config.py`,
+        # former code default (`DOMAIN_AUTH_ENFORCED` previously differed in `app/config.py`,
         # which is why the audit path recorded nothing), so leaving this one to be inherited
         # would repeat the shape of the defect being fixed.
         #
