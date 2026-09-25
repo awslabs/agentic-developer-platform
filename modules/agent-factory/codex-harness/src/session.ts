@@ -145,7 +145,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     try { await proxy?.close(); }
     finally {
       try { await tools?.close(); }
-      finally { await rm(root, { recursive: true, force: true }); }
+      finally { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
     }
   }
 }

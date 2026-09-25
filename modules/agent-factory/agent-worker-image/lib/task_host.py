@@ -794,6 +794,13 @@ class TaskHost:
                 tempfile.mkdtemp(prefix=f"task-{assignment.invocation_id[:8]}-", dir=self.work_root)
             )
             workspace.chmod(0o700)
+            if responses:
+                from lib.codex_workspace_tools import WORKSPACE_TOOLS
+                admitted = {tool["permission"] for tool in bootstrap["harness"].get("tools", [])}
+                if admitted & WORKSPACE_TOOLS:
+                    from lib.codex_source import provision_workspace
+                    repository = provision_workspace(self.client, attempt=attempt, root=workspace / "repository")
+                    self.client.bind_workspace(attempt=attempt, workspace=repository, tools=admitted)
             stderr: list[str] = []
             process = subprocess.Popen(
                 command if sdk or responses else _network_wrapped_command(command),

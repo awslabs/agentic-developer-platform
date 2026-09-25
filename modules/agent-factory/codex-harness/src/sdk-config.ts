@@ -11,5 +11,8 @@ export function restrictedSdkConfig(): NonNullable<CodexOptions["config"]> {
     multi_agent: false, goals: false, shell_tool: false, unified_exec: false,
     shell_snapshot: false, apps: false, remote_plugin: false, hooks: false,
     skill_mcp_dependency_install: false,
+    // The pinned SDK starts marketplace clones independently of remote_plugin.
+    // ADP supplies digest-pinned skills in the admitted instruction snapshot.
+    plugins: false, recommended_plugins: false, skip_host_skill_discovery: true,
   } };
 }

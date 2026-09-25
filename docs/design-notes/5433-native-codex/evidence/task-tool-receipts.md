@@ -418,3 +418,43 @@ transfer test. Automatic TaskHost workspace lifecycle and file tools are still t
 be wired; source object retention/cleanup needs deployment qualification alongside
 provider publication, persona execution, OTLP operation and live story acceptance.
 This increment does not mark any persona story complete.
+
+
+## Automatic workspace startup and local repository tools
+
+TaskHost now provisions the authorized source before starting SDK inference when
+the frozen harness admits workspace permissions. The host binds read/list/write/
+commit/state implementations to the current attempt; cleanup clears that binding
+and the local-handler cache, and removes the temporary workspace. Tasks without
+workspace tools do not fetch repositories. Source unavailability takes the existing
+stop-only/retryable path before any child starts.
+
+Workspace operations use the existing Codex model-call claim/settlement journal
+and publish bounded canonical results through a shared Task artifact helper.
+Validation now uses the same artifact helper. Every operation checks current Task
+and repository authority before execution and before publishing/returning evidence.
+Known file/stale-edit refusals produce a durable rejected result the model can
+correct. Unknown OS/mutation failures still propagate to unknown-outcome handling;
+no local commit is described as a provider publication or requirement completion.
+
+The focused worker suite passes 96 tests, including real read/edit/commit receipts,
+stale edit refusal, revocation, foreign attempts, startup ordering and cleanup.
+Shared TypeScript contracts pass 75 tests after rebuilding the SDK bundle.
+
+Broader SDK integration exposed an intermittent cleanup failure: the pinned SDK
+started a background marketplace clone even with `remote_plugin=false`, and
+recursive session removal failed with `ENOTEMPTY`. The pinned 0.155.1 configuration
+schema explicitly includes `plugins`, `recommended_plugins` and
+`skip_host_skill_discovery`. The shared restricted SDK config now disables the
+first two and enables the third; ADP supplies admitted digest-pinned skills through
+its snapshot. Session removal also has bounded retries for transient directory
+races. Temporary raw-error diagnostics used only in the fixture build were removed.
+After the configuration and cleanup fix, all eight combined gateway/worker/official
+SDK scenarios pass with actual Docker validation enabled. Live authentication
+fingerprints remain unchanged from the latest checkpoint.
+Reference: https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/config.schema.json
+
+The startup tests use a fixture child boundary. Official SDK workspace-tool story
+qualification, concrete developer/reviewer completion callbacks, provider publish/
+merge, validation-check binding to the new workspace, the remaining personas,
+source retention operations and live OTLP evidence remain outstanding.

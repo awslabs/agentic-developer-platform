@@ -360,9 +360,13 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 self._renew_for(action, body)
             # Substitute HTTP/IAM delivery only. Actual client bootstrap/renewal,
             # credential validation, gateway models and durable services run.
-            return getattr(self, "gateway_" + action.replace("-", "_"))(
-                json.loads(json.dumps(body))
-            )
+            try:
+                return getattr(self, "gateway_" + action.replace("-", "_"))(
+                    json.loads(json.dumps(body))
+                )
+            except Exception as error:
+                events.append(f"fixture-gateway-error:{action}:{type(error).__name__}:{error}")
+                raise
 
         def identity(self, require_attempt=True):
             return runtime.authenticate(

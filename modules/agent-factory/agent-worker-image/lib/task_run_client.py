@@ -108,6 +108,7 @@ class TaskRunClient:
             raise TaskRunClientError("task service endpoint unavailable")
         self._cyber_endpoint = os.environ.get(CYBER_TOOLS_ENDPOINT_ENV, "")
         self._local_tools = {}
+        self._workspace_tools = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
         self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
         self._base = base
@@ -296,7 +297,15 @@ class TaskRunClient:
         # Trusted host only. Owner tokens must not be included in child frames.
         return self._post("tool-operation", body, run_bound=True)
 
+    def bind_workspace(self, *, attempt, workspace, tools):
+        from lib.codex_workspace_tools import WorkspaceTools
+        if self._workspace_tools is not None:
+            raise TaskRunClientError("Task workspace is already bound")
+        self._workspace_tools = WorkspaceTools(self, attempt=attempt, workspace=workspace, tools=tools)
+
     def tool(self, name: str, body: dict) -> dict:
+        if self._workspace_tools is not None and name in self._workspace_tools.tools:
+            return self._workspace_tools.invoke(name, body)
         # Exact host-configured registry. The child supplies a name, never a URL.
         endpoint = self._tool_routes.get(name)
         if isinstance(endpoint, str) and endpoint.startswith("local:"):
@@ -374,3 +383,5 @@ class TaskRunClient:
             self._bootstrap_body = None
             self._binding = None
             self._stopping = True
+            self._workspace_tools = None
+            self._local_tools.clear()
