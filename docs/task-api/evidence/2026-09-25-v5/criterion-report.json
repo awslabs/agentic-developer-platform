@@ -1,0 +1,82 @@
+{
+  "evaluation": "V5 #5806",
+  "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "evaluator": "runtime_contracts independentoperationsreview",
+  "at": "2026-09-25T05:51:24.081815+00:00",
+  "criteria": {
+    "V5-01": {
+      "status": "PASS",
+      "evidence": [
+        "admission-off-active.json",
+        "admission-off-completed.json",
+        "admission-changes.ndjson",
+        "../2026-09-25-coexistence-metrics/baseline-legacy.json"
+      ],
+      "proof": "Admission-off returns503 with existing reads200; ten valid signed legacy no-intent requests succeed. Only publicTask admission flag changed; legacy authority flags preserved."
+    },
+    "V5-02": {
+      "status": "PASS",
+      "evidence": [
+        "initial-ordering.json",
+        "consumer-boundary.json",
+        "final-bindings.json"
+      ],
+      "proof": "Task-capable image deployed while admissionoff before first acceptance. Old consumer jobs were terminal/restartdisabled or one-acquisitionbound. Current sharedqueue template and actualworkerpods use57d; older securityfixtures explicitlyuse a differentqueue. Mixed incompatible new queue consumption excluded."
+    },
+    "V5-03": {
+      "status": "PASS",
+      "evidence": [
+        "admission-off-active.json",
+        "prior-active-drain.json",
+        "admission-off-completed.json",
+        "completed-artifact-off.json"
+      ],
+      "proof": "At04:48:52 admission503 and clarify1 stillrunning/readable200; later boundedfailedterminal outcome and queueackconfirmed retained. Current clarify3completed result/artifact readable whileoff. Near-simultaneous05:29:43 completion/off is NOT used as active-drain timing proof. Capableconsumers/recovery/reads stayedenabled."
+    },
+    "V5-04": {
+      "status": "PASS",
+      "evidence": [
+        "../2026-09-25-v1-v2/v2-ingress-isolation-tests.xml",
+        "../2026-09-25-coexistence-metrics/summary.json",
+        "../2026-09-25-t1-storage/additive-index-cloudtrail.json"
+      ],
+      "proof": "Admissionrollback preserveslegacyhandlers, usefullegacyexecutionfixtures and sharedstorage. Existingrequesttable retained and taskindexadditive. No sharedqueuepurge or consumerrollback before safe taskhandling. EarlierTask failures recorded honestly and fixed under boundedqualification."
+    },
+    "V5-05": {
+      "status": "PASS",
+      "evidence": [
+        "cleanup-retention-inventory.json",
+        "retained-task-metadata.json",
+        "artifact-lifecycle.json",
+        "credential-retention.json"
+      ],
+      "proof": "Owned temporary executionresources removed; expired localfixturetoken removed. Ownedterminal Task content/metadata retention and intentionallyretained configuration/audit records are explicitly inventoried with expiry semantics. No early destruction of active qualification read credentials."
+    },
+    "V5-06": {
+      "status": "BLOCKED",
+      "evidence": [
+        "release-matrix.json"
+      ],
+      "proof": "Await finalV3 transportfix/deployedvalidation and refreshedV4 bindings, then finalrelease acceptance. No claim of epicclosure from mergedcode or onehappy-path."
+    }
+  },
+  "overall": "NOT COMPLETE",
+  "source_note": "Final bindings captured on gateway5e3/source d8b8a7937, Lambda115/source200ed6349 and worker57d; each retained observation preserves its actual tested source and timestamp.",
+  "artifact_sha256": {
+    "retained-task-metadata.json": "a9ae7e0db0fb1473afcae36e9973a0f16852a96cf214d951d7cafadf8800d46b",
+    "cleanup-retention-inventory.json": "9ee3eb47dfb44dbe1a769c190461637d6b1aa4084560aa6551562c2d33b3ecf4",
+    "final-bindings.json": "faee2e51eeffc0bc7450dfafd5d502c6549259d5ccb2b4aa0615cb3465c4ed29",
+    "README.md": "b727abcf88b78e8c25aa366a423a2bd3aa21a3e04e5d468a9592e3ac82f5a2c5",
+    "consumer-boundary.json": "a77aad87c23d885097a44ec9038b041758e7d295ba89a1f038b5c3aee26713a5",
+    "admission-off-active.json": "59c72ef88a912e7fa57625bdcddc6f90319e5f411f562a482291f2b9c09816fc",
+    "admission-changes.ndjson": "d01bba977e2be97da0748fa7b90e1f2acb6dbb2fc6541404164e7a2c56a44fd8",
+    "completed-artifact-off.json": "330668dbcea6bd52205d53232b17a1f3fbb35af024208229acde6b336d8c17d8",
+    "engine-paused.json": "55b6659f957eb3a23e831c4a8a0cd61896d89b759b6875823448233511ead511",
+    "artifact-lifecycle.json": "3fb97668d38529f0142af1c40c2d84f7080f593a6cd02df3e855fce872b14907",
+    "initial-ordering.json": "402e033cc315c0fd240f7c54bc277c0eaa079563497da56201e88dc3f04b338d",
+    "release-matrix.json": "7bc05f0ebd04ea711c163b55212380c5b3391cefe101bb476d4c3e9502ea6c53",
+    "credential-retention.json": "2072c74eef2021917f4436e9c4c2f9f733ead89b102bfca06af25fee82fd3cfb",
+    "admission-off-completed.json": "8fee8ee496ff76a65debf6f089083b04a8e93d662c8c4940384df1a83e63d1bb",
+    "prior-active-drain.json": "8617492d75f2c9526e1e79380a99ab4c7792d64de5ed236244408a18675e1289"
+  }
+}

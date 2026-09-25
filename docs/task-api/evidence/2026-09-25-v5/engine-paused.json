@@ -1,0 +1,7 @@
+{
+  "flow_id": "1275a30d-a84d-4f98-9ddb-f461c5aeb2d1",
+  "org_id": "aws-e",
+  "execution_paused": true,
+  "verified_at": "2026-09-25T05:48:43.395333+00:00",
+  "method": "Scoped authoritative SQL read through deployed gateway"
+}

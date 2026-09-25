@@ -1,0 +1,65 @@
+{
+  "captured_at": "2026-09-25T05:34:25.607262+00:00",
+  "deleted": [
+    "Owned task/legacy image smoke pods and networkpolicies (existing T5/V2cleanup evidence).",
+    "Owned installed transport proof pod and networkpolicy (V3 transport evidence).",
+    "Expired same-tenant fixture bearer-token file; revocation evidence retained."
+  ],
+  "retained_tasks": [
+    {
+      "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+      "terminal_at": "2026-09-25T05:29:43Z",
+      "content_expires_at": "2026-10-25T05:29:43+00:00",
+      "expires_at": "2026-12-24T05:29:43+00:00"
+    },
+    {
+      "task_id": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0",
+      "terminal_at": "2026-09-25T04:57:41Z",
+      "content_expires_at": "2026-10-25T04:57:41+00:00",
+      "expires_at": "2026-12-24T04:57:41+00:00"
+    },
+    {
+      "task_id": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742",
+      "terminal_at": "2026-09-25T04:50:20Z",
+      "content_expires_at": "2026-10-25T04:50:20+00:00",
+      "expires_at": "2026-12-24T04:50:20+00:00"
+    },
+    {
+      "task_id": "tsk_6cdc9a7b-183d-4386-9bd2-d5cb9e83ac15",
+      "terminal_at": "2026-09-25T04:42:32Z",
+      "content_expires_at": "2026-10-25T04:42:32+00:00",
+      "expires_at": "2026-12-24T04:42:32+00:00"
+    },
+    {
+      "task_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33",
+      "terminal_at": "2026-09-25T05:10:44Z",
+      "content_expires_at": "2026-10-25T05:10:44+00:00",
+      "expires_at": "2026-12-24T05:10:44+00:00"
+    },
+    {
+      "task_id": "tsk_9685c01a-e6e2-4b28-8cce-b929ec01dec1",
+      "terminal_at": "2026-09-25T04:37:53Z",
+      "content_expires_at": "2026-10-25T04:37:53+00:00",
+      "expires_at": "2026-12-24T04:37:53+00:00"
+    }
+  ],
+  "retained_configuration": [
+    {
+      "resource": "Primary delivered API identity, Lambda115, gateway, IAM and current57d consumer configuration",
+      "expiry": "No automatic expiry; delivered service configuration retained until authorized teardown."
+    },
+    {
+      "resource": "Temporary isolated/same-tenant Cognito clients and SQL audit principals",
+      "expiry": "No automatic client TTL; isolated credential currently required for final read qualification, bearer expiration recorded separately. Retain audit identities and revoke remaining temporary alias after final qualification if no longer needed."
+    },
+    {
+      "resource": "Committed sanitized acceptance evidence and failed-fixture history",
+      "expiry": "No automatic expiry; retained in version-controlled audit history."
+    }
+  ],
+  "limits": [
+    "DynamoDB TTL is asynchronous; expires_at is eligibility, not exact deletion time.",
+    "S3 current-object expiration is30days from objectcreation; metadata content expiration is30days fromterminal. Exact simultaneous deletion or availability until an exactsecond is not promised.",
+    "No shared queue purge, request-table replacement, or broad legacy cleanup was performed."
+  ]
+}

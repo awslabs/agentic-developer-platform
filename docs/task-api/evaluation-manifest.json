@@ -41,7 +41,14 @@
     "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/tasks/test_task_commands.py",
     "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_cancel_before_start.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/tasks/test_command_routes.py",
     "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
-    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py"
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py",
+    "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+    "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_entrypoint.py tests/task-api/test_model_message_seam.py",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_dispatch.py modules/agent-factory/agent-worker-image/tests/test_task_run_client.py",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py tests/task-api/test_model_message_seam.py",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py",
+    "python3 -m pytest -q tests/task-api/test_external_client.py"
   ],
   "fixed_thresholds": {
     "legacy_observation_minimum": {
@@ -626,7 +633,7 @@
         "fixtures/valid/process-start-frame.json"
       ],
       "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_entrypoint.py tests/task-api/test_model_message_seam.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -640,7 +647,7 @@
         "fixtures/valid/bootstrap-request.json"
       ],
       "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_dispatch.py modules/agent-factory/agent-worker-image/tests/test_task_run_client.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -656,7 +663,7 @@
         "fixtures/valid/result-completed.json"
       ],
       "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py tests/task-api/test_model_message_seam.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -667,10 +674,12 @@
       "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
       "fixture_responsibility": "T4 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "PYTHONPATH=/fixture/python:/app:/fixture python3 -m pytest -q -p no:cacheprovider /fixture/test_installed_legacy.py /fixture/tests/test_entrypoint.py::TestEntrypointMain /fixture/tests/test_codex_review_delivery.py",
-      "command_status": "implemented",
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
-      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture.",
+      "collection_command": "PYTHONPATH=/fixture/python:/app:/fixture python3 -m pytest -q -p no:cacheprovider /fixture/test_installed_legacy.py /fixture/tests/test_entrypoint.py::TestEntrypointMain /fixture/tests/test_codex_review_delivery.py",
+      "command_scope": "Frozen qualified-image evidence verification; collection command requires the recorded image/fixture mount."
     },
     "T4-AC05": {
       "title": "Termination/reporting failure leaves an honest recoverable or terminal state and cleans only the owned assignment",
@@ -680,7 +689,7 @@
       "fixture_responsibility": "T4 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
       "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -904,7 +913,7 @@
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
       "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -916,7 +925,7 @@
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
       "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -928,7 +937,7 @@
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
       "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -940,7 +949,7 @@
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
       "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -952,7 +961,7 @@
       "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
       "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
-      "command_status": "implemented",
+      "command_status": "runnable",
       "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
       "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
     },
@@ -1169,8 +1178,10 @@
       "t0_artifacts": [
         "traces/submit-to-result.json"
       ],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-02": {
       "title": "Body/header-supplied tenant, service identity, owner, command target or lineage cannot replace authenticated scope. Cross-tenant and same-tenant nonowner task/event/artifact access is refused",
@@ -1182,8 +1193,10 @@
         "fixtures/invalid/submit-request-caller-supplied-tenant.json",
         "fixtures/valid/bootstrap-request.json"
       ],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-03": {
       "title": "Only explicitly registered and permitted agent-task- implementations are accepted. Unknown task prefixes, executable/path injection and existing GitHub personas are rejected without a queue publication",
@@ -1192,8 +1205,10 @@
       "evidence_lane": "live deployed-environment evaluation evidence",
       "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-04": {
       "title": "Concurrent same-key/same-body submissions return one stable task/dispatch. Different-body reuse conflicts. Retry after a lost acceptance response does not create fresh work. Scope keys by tenant and principal",
@@ -1207,8 +1222,10 @@
         "fixtures/valid/error-rate-limited.json",
         "fixtures/valid/submit-response-idempotent-replay.json"
       ],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-05": {
       "title": "Acceptance-storage or authority failure cannot return a false 202 or launch an unbound run. Exercise partial transactions/prepared states and compare actual records/publications",
@@ -1217,8 +1234,10 @@
       "evidence_lane": "live deployed-environment evaluation evidence",
       "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-06": {
       "title": "New metadata, command, idempotency and progress records do not appear as extra runs in legacy tenant/user/correlation/engine-command queries. Invocation detail never resolves to a progress record",
@@ -1230,8 +1249,10 @@
         "fixtures/invalid/task-snapshot-completed-without-result.json",
         "fixtures/invalid/task-snapshot-queued-with-result.json"
       ],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-07": {
       "title": "Legacy and task workers cannot overwrite protected task scope/inputs, fabricate progress/completion or redirect artifacts. Prove the actual IAM/key/integrity boundary; a mocked writer refusal alone is insufficient",
@@ -1240,8 +1261,10 @@
       "evidence_lane": "live deployed-environment evaluation evidence",
       "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-08": {
       "title": "Rate/persona/model/budget/credential restrictions remain enforced under registered service identity. No fake GitHub installation, service-name impersonation, forged human root or disabled global guard is used",
@@ -1250,8 +1273,10 @@
       "evidence_lane": "live deployed-environment evaluation evidence",
       "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V1-09": {
       "title": "Payload bounds, S3 references, retention and cleanup preserve active tasks and deny unowned artifacts. Test expired idempotency/replay records and asynchronous TTL behavior without promising exact deletion time",
@@ -1270,8 +1295,10 @@
         "fixtures/valid/artifact-upload-response.json",
         "fixtures/valid/error-payload-too-large.json"
       ],
-      "command": "not yet implemented; to be registered by V1 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-01": {
       "title": "One image contains the unchanged existing runtime packages and the separate task package. Existing dependency versions and entry commands are preserved; the task package is not imported by legacy executions",
@@ -1280,8 +1307,10 @@
       "evidence_lane": "live security and isolation evaluation evidence",
       "fixture_responsibility": "V2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-02": {
       "title": "A task envelope with no installation/repo/issue reaches the task branch before GitHub validation, poison-message handling, token minting, checkout and comments/checks. Unknown task personas do not fall through to Claude",
@@ -1295,8 +1324,10 @@
         "fixtures/invalid/control-response-carries-authority.json",
         "fixtures/invalid/envelope-carries-credential.json"
       ],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-03": {
       "title": "Execute a useful fixture with GitHub credentials absent and GitHub network access denied/observed. Assert zero GitHub requests and no fabricated issue/installation. Packaged GitHub tools in the shared image are not evidence of integration",
@@ -1310,8 +1341,10 @@
         "fixtures/invalid/submit-request-caller-supplied-tenant.json",
         "fixtures/valid/process-start-frame.json"
       ],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-04": {
       "title": "Existing GitHub, agent-trigger and EventBridge Lambda fixtures preserve routing, authentication, outputs and queue envelopes with task admission both off and on. Task-only import/initialization failure does not break those handlers",
@@ -1320,8 +1353,10 @@
       "evidence_lane": "live security and isolation evaluation evidence",
       "fixture_responsibility": "V2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-05": {
       "title": "Existing Claude persona and agent-codex-reviewer execution/finish fixtures preserve their behavior. Include Codex stdin/result handling and its dedicated finalization",
@@ -1335,8 +1370,10 @@
         "fixtures/invalid/submit-request-caller-supplied-limits.json",
         "fixtures/invalid/submit-request-caller-supplied-model.json"
       ],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-06": {
       "title": "Task input, workspace, model access and run-bound credentials are prepared without entering the GitHub host flow. Stale/wrong-run credentials and forged task references fail before execution or reporting",
@@ -1348,8 +1385,10 @@
         "fixtures/invalid/process-start-frame-carries-credentials.json",
         "fixtures/valid/process-model-request-frame.json"
       ],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-07": {
       "title": "The new runtime reports substantive progress before exit, produces validated final output and stores result references before acknowledging completion. Buffered final stdout alone cannot pass",
@@ -1360,8 +1399,10 @@
       "t0_artifacts": [
         "fixtures/invalid/submit-response-presigned-download-url.json"
       ],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V2-08": {
       "title": "Worker termination, reporting failure and cleanup leave explicit recoverable/terminal state. Tokens, subscriptions, heartbeats and temporary files are released without deleting another assignment",
@@ -1370,8 +1411,10 @@
       "evidence_lane": "live security and isolation evaluation evidence",
       "fixture_responsibility": "V2 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by V2 evaluator",
-      "command_status": "not_implemented"
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
     },
     "V3-01": {
       "title": "Interrupt admission before/after record commit, queue send and send acknowledgement. Automatic recovery advances accepted work without a caller retry and does not dispatch a second active owner",
