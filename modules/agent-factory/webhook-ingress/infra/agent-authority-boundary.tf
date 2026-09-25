@@ -18,14 +18,20 @@ locals {
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/GET/internal/v1/user-credentials",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/provenance*",
   ]
-  # Protected task delivery and archives cross the run-authenticated gateway.
-  # No shared queue receipt or S3 bucket authority belongs in a worker role.
+  # Fixed queue-consumer permissions are scoped to this deployment input queue.
+  # Run authorization and archives continue to use the authenticated gateway.
   agent_authority_boundary_allow = concat([
     for statement in local.agent_worker_scoped_policy.Statement : statement
     if contains([
       "CloudWatchLogGroups", "BootstrapLogging", "ProvenanceMetrics"
     ], statement.Sid)
     ], [
+    {
+      Sid      = "InputQueueConsumer"
+      Effect   = "Allow"
+      Action   = ["sqs:ReceiveMessage", "sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+      Resource = aws_sqs_queue.agent_submit.arn
+    },
     {
       Sid      = "CorrelationUpdates"
       Effect   = "Allow"
@@ -95,10 +101,10 @@ locals {
         Resource = "*"
       },
       {
-        Sid      = "DenyDirectQueues"
-        Effect   = "Deny"
-        Action   = ["sqs:*"]
-        Resource = "*"
+        Sid         = "DenyOtherQueues"
+        Effect      = "Deny"
+        Action      = ["sqs:*"]
+        NotResource = aws_sqs_queue.agent_submit.arn
       },
       {
         Sid         = "DenyOtherEncryptionKeys"

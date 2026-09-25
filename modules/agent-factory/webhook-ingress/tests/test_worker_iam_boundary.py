@@ -90,18 +90,29 @@ def test_key_and_authority_data_denials_cover_resource_policy_grants(statements)
     }
 
 
-def test_task_and_artifact_access_is_explicitly_denied_even_on_own_resources(statements):
+def test_artifact_access_remains_explicitly_denied(statements):
     by_id = {s["Sid"]: s for s in statements}
-    for sid, service in [("DenyDirectArtifacts", "s3"), ("DenyDirectQueues", "sqs")]:
-        assert by_id[sid] == {
-            "Sid": sid,
-            "Effect": "Deny",
-            "Action": [f"{service}:*"],
-            "Resource": "*",
-        }
-    assert not any(
-        action.startswith(("s3:", "sqs:"))
-        for s in statements
-        if s["Effect"] == "Allow"
-        for action in s["Action"]
-    )
+    assert by_id["DenyDirectArtifacts"] == {
+        "Sid": "DenyDirectArtifacts", "Effect": "Deny", "Action": ["s3:*"], "Resource": "*",
+    }
+    assert not any(action.startswith("s3:") for s in statements
+                   if s["Effect"] == "Allow" for action in s["Action"])
+
+
+def test_worker_consumes_only_its_input_queue_without_send_or_management(statements):
+    by_id = {s["Sid"]: s for s in statements}
+    queue = "arn:aws:sqs:us-east-1:879318057152:adp-dev-agent-submit.fifo"
+    actions = {"sqs:ReceiveMessage", "sqs:ChangeMessageVisibility",
+               "sqs:DeleteMessage", "sqs:GetQueueAttributes"}
+    consumer = by_id["InputQueueConsumer"]
+    assert consumer["Effect"] == "Allow"
+    assert consumer["Resource"] == queue
+    assert set(consumer["Action"]) == actions
+    assert by_id["DenyOtherQueues"] == {
+        "Sid": "DenyOtherQueues", "Effect": "Deny", "Action": ["sqs:*"], "NotResource": queue,
+    }
+    permitted_sqs = {a for s in statements if s["Effect"] == "Allow"
+                     for a in s["Action"] if a.startswith("sqs:")}
+    assert permitted_sqs == actions
+    assert {a for a in by_id["DenyUnlistedActions"]["NotAction"]
+            if a.startswith("sqs:")} == actions

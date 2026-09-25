@@ -80,8 +80,14 @@ or live preservation evidence.
 
 ## Run services (#5195 / #5513)
 
-Protected workers have an explicit deny for **all direct S3 and SQS operations**,
-including their own environment's queue and archive bucket. The gateway receives
+Protected workers can receive messages, change visibility, delete messages and
+read attributes on their environment's agent input queue. These are fixed IAM
+permissions shared by workers using the role, not permissions changed per task.
+Other queues and queue sending/administration remain denied. This grants access
+to the shared input queue; IAM does not restrict a consumer to an assigned message.
+The protected runtime still uses gateway task delivery for its run binding and
+durable acknowledgement records; these IAM grants do not change that protocol.
+All direct S3 operations, including access to the run archive bucket, remain denied. The gateway receives
 receive/change-visibility/delete on the task queue and PutObject on the archive
 bucket's `runs/*` prefix. It selects the run/attempt path after authentication.
 KEDA uses its own operator identity to poll queue depth. Shared Beads/Dolt S3
