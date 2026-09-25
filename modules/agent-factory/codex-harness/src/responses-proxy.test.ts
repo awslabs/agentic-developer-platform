@@ -1,0 +1,108 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { normalizeTextRequest, startTextResponsesProxy, textResponseEvents, type TextResponsesPolicy, type TextResponsesResult } from "./responses-proxy.js";
+
+const policy: TextResponsesPolicy = { model: "fixture-model", effort: "medium", maxOutputTokens: 100, maxRequestBytes: 65536, maxResponseBytes: 65536, maxOperations: 2, timeoutMs: 5000 };
+const request = () => ({ model: policy.model, input: [{ role: "user", content: [{ type: "input_text", text: "fixture" }] }], stream: true, store: false, reasoning: { effort: "medium" } });
+const result = (): TextResponsesResult => ({ id: "response_fixture", status: "completed", output: [{ id: "message_fixture", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "fixture", annotations: [] }] }], usage: { input_tokens: 20, output_tokens: 10 } });
+
+test("text contract strips ambient SDK metadata and projects no native tools", () => {
+  const normalized = normalizeTextRequest({ ...request(), tools: [{ type: "function", name: "view_image" }, { type: "function", name: "request_user_input" }], prompt_cache_key: "untrusted", client_metadata: { secret: "discard" }, max_output_tokens: 9999 }, policy);
+  assert.equal(normalized.max_output_tokens, 100);
+  assert.equal("tools" in normalized, false);
+  assert.equal("model" in normalized, false);
+  assert.equal("prompt_cache_key" in normalized, false);
+  assert.equal(JSON.stringify(normalized).includes("discard"), false);
+});
+
+test("text contract rejects authority overrides, server state, tools and unsupported history", () => {
+  for (const override of [
+    { model: "different" }, { reasoning: { effort: "high" } }, { previous_response_id: "foreign" },
+    { tools: [{ type: "function", name: "exec_command" }] }, { tools: [{ type: "web_search" }] },
+    { input: [{ type: "function_call", call_id: "foreign", name: "tool", arguments: "{}" }] },
+    { input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.invalid" }] }] },
+    { store: true }, { endpoint: "https://example.invalid" },
+  ]) assert.throws(() => normalizeTextRequest({ ...request(), ...override }, policy));
+  assert.throws(() => normalizeTextRequest(request(), { ...policy, maxRequestBytes: 1 }));
+});
+
+test("response codec requires complete bounded text and internally consistent usage", () => {
+  assert.match(textResponseEvents(result(), policy), /response.completed/);
+  for (const bad of [
+    { ...result(), status: "incomplete" }, { ...result(), usage: { input_tokens: 20, output_tokens: 101 } },
+    { ...result(), usage: { input_tokens: 20, output_tokens: 10, input_tokens_details: { cached_tokens: 21 } } },
+    { ...result(), usage: { input_tokens: 20, output_tokens: 10, output_tokens_details: { reasoning_tokens: 11 } } },
+    { ...result(), output: [{ type: "function_call", name: "view_image", arguments: "{}" }] },
+  ]) assert.throws(() => textResponseEvents(bad, policy));
+  assert.throws(() => textResponseEvents(result(), { ...policy, maxResponseBytes: 1 }));
+});
+
+async function post(proxy: Awaited<ReturnType<typeof startTextResponsesProxy>>, value: unknown = request(), token = proxy.token) {
+  return fetch(`${proxy.baseUrl}/responses`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(value) });
+}
+
+test("loopback requires its own token and enforces the operation cap", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; return { operationStatus: "confirmed", response: result() }; }, { ...policy, maxOperations: 1 });
+  try {
+    assert.equal((await post(proxy, request(), "invalid")).status, 401);
+    assert.equal(calls, 0);
+    const response = await post(proxy);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /response.completed/);
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+  } finally { await proxy.close(); }
+});
+
+test("uncertain host outcome cannot be retried and host errors are redacted", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; throw new Error("private-token-fixture"); }, policy);
+  try {
+    const response = await post(proxy);
+    assert.equal(response.status, 502);
+    assert.equal((await response.text()).includes("private-token-fixture"), false);
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+  } finally { await proxy.close(); }
+});
+
+test("malformed SDK input never reaches host and closes further admission", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; return { operationStatus: "confirmed", response: result() }; }, policy);
+  try {
+    assert.equal((await post(proxy, { ...request(), previous_response_id: "foreign" })).status, 400);
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 0);
+  } finally { await proxy.close(); }
+});
+
+test("concurrent SDK requests do not cause concurrent host dispatch", async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; started(); await waiting; return { operationStatus: "confirmed", response: result() }; }, policy);
+  try {
+    const first = post(proxy);
+    await entered;
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+    release();
+    assert.equal((await first).status, 200);
+  } finally { release(); await proxy.close(); }
+});
+
+test("deadline aborts an unresponsive host and forbids a second handoff", async () => {
+  let calls = 0;
+  let observed: AbortSignal | undefined;
+  const proxy = await startTextResponsesProxy(async (_request, signal) => { calls++; observed = signal; return new Promise(() => {}); }, { ...policy, timeoutMs: 100 });
+  try {
+    // The socket may close before the error body is delivered on deadline.
+    await post(proxy).catch(() => undefined);
+    assert.equal(observed?.aborted, true);
+    assert.equal((await post(proxy)).status, 409);
+    assert.equal(calls, 1);
+  } finally { await proxy.close(); }
+});

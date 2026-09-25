@@ -49,3 +49,24 @@ python3 test/run-isolated.py -- node test/sdk-request-shape.mjs
 The restricted probe fails if shell, native collaboration or goal tools reappear.
 CI executes that probe against the exact pinned SDK. Live model/security/performance
 qualification remains separate and is not established by these fixture receipts.
+
+## Successful local transport qualification
+
+`test/sdk-turn.mjs` additionally exercises the actual pinned SDK through the shared
+turn consumer with local successful SSE responses: usage/progress, disk resume,
+output overflow and active cancellation. This exposed an abort-after-cleanup
+crash in the original consumer; cancellation now occurs while SDK listeners are
+active and is detached when the stream finishes.
+
+`test/sdk-proxy.mjs` runs two turns through the new text Responses bridge with a
+fixture host. The SDK attaches `internal_chat_message_metadata_passthrough` to
+message input; the bridge removes that metadata before host handoff. The SSE
+completion must contain `total_tokens` for the pinned runtime to accept usage.
+WebSocket negotiation receives 426 and falls back to streaming HTTP.
+
+Eight HTTP/contract tests cover token authentication, unsupported input with no
+host effect, operation bounds, output/usage validation, redacted uncertain
+outcomes, concurrent requests and a nonresponsive-host deadline. These are local
+transport tests, not live inference, Task API integration or persona acceptance.
+The bridge currently supports text messages only; tool/reasoning history remains
+an explicit future contract. No story is completed by this qualification alone.

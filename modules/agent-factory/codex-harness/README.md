@@ -67,3 +67,17 @@ through `runSdkTurn`, checks usage/progress, and resumes from its temporary
 session store with previous input/output present. It also exercises HTTP fallback
 after WebSocket refusal. This is protocol evidence, not Task API integration,
 authority-safe resume, or a live quality/latency/cost result.
+
+A credential-free text Responses bridge now provides loopback token authentication,
+strict SDK request normalization, model/effort checks, output/operation/deadline
+limits, validated SSE completion and refusal of further requests after uncertain
+host outcomes. It discards SDK cache IDs and metadata and removes the two residual
+native tool declarations from the host request. The host callback must supply a
+confirmed durable model receipt. This callback is not wired to Task API yet.
+
+The current bridge intentionally accepts only complete text-message history.
+Function calls, reasoning items, hosted tools, external history, media and
+unknown fields are refused before host dispatch. It does not claim full persona
+or tool compatibility. `test/sdk-proxy.mjs` exercises the actual SDK through this
+bridge with a deterministic fixture host, including resumed text history; no live
+model, gateway, Task API, credential grant or billed reservation is exercised.
