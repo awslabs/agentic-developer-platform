@@ -42,6 +42,9 @@ FROM public.ecr.aws/docker/library/node:22-alpine AS production
 RUN addgroup -g 10001 agent && \
     adduser -u 10001 -G agent -s /bin/sh -D agent
 
+# Upgrade all system packages to pick up security patches in the base layer.
+RUN apk upgrade --no-cache
+
 # Install dumb-init for signal handling, and bash for the Claude Agent SDK's
 # Bash tool. The SDK invokes /bin/bash directly — alpine ships only BusyBox
 # ash, which the tool rejects with "shell environment isn't configured here"

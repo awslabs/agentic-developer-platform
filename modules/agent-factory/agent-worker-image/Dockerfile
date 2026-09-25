@@ -129,7 +129,7 @@ RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-reco
 
 # Install yq (YAML processor). Pinned to avoid inheriting Go stdlib CVEs
 # from an unpredictable "latest" binary (Go 1.25+ clears all 6 C3 CVEs).
-ARG YQ_VERSION=4.53.2
+ARG YQ_VERSION=4.53.6
 RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
     -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
 
@@ -138,7 +138,7 @@ RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}
 # CVE-2023-24531, CVE-2023-24540, CVE-2023-29402, CVE-2023-29404,
 # CVE-2023-29405, CVE-2024-24790). The apt package is built with
 # golang-1.19; the official release is compiled with Go 1.23+.
-ARG FZF_VERSION=0.57.0
+ARG FZF_VERSION=0.74.4
 RUN curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz" \
       -o /tmp/fzf.tar.gz && \
     tar xzf /tmp/fzf.tar.gz -C /usr/local/bin fzf && \
@@ -161,13 +161,13 @@ RUN corepack enable && \
 # Install the OpenAI Codex CLI (issue #2704, EPIC #2702). Pinned so the image
 # is reproducible and doesn't inherit a surprise "latest". Invoked headlessly
 # as `codex exec` against Bedrock (openai.gpt-5.5); config baked in below.
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.157.0
 RUN npm install -g "@openai/codex@${CODEX_VERSION}" && \
     codex --version
 
 # Install GitHub CLI from official tarball (not apt) to avoid inheriting
-# Debian's Go 1.19 toolchain CVEs (7 critical Go stdlib CVEs cleared).
-ARG GH_VERSION=2.92.0
+# Debian's Go 1.19 toolchain CVEs. Pinned to latest stable release.
+ARG GH_VERSION=2.101.0
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
       -o /tmp/gh.tar.gz && \
     tar xzf /tmp/gh.tar.gz -C /tmp && \
@@ -188,10 +188,10 @@ RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release
 
 # Install Terraform — required by deploy-test agents running platform/infra,
 # gateway/infra, agent-factory/infra, webhook-ingress/infra apply steps.
-# Pinned to 1.15.3 (latest stable as of 2026-05-13) which satisfies the
+# Pinned to 1.15.7 (latest 1.15.x stable) which satisfies the
 # strictest module constraint (gateway/infra requires >= 1.14.0).
-ARG TERRAFORM_VERSION=1.15.3
-ARG TERRAFORM_SHA256=c3d4b579064745a5f7e918125db23b12ba52a8a7287adb9f32c49d637e02e3bf
+ARG TERRAFORM_VERSION=1.15.7
+ARG TERRAFORM_SHA256=73bbb8f5188ad75d4fb853fd100ae4d7e146ef7af7db18776109642fdb7759d2
 RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
       -o /tmp/terraform.zip && \
     echo "${TERRAFORM_SHA256}  /tmp/terraform.zip" | sha256sum -c - && \
@@ -203,7 +203,7 @@ RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/te
 # Install bun runtime — required by AIDLC v2 hooks and engine tools which are
 # bun TypeScript. Pinned static binary from GitHub releases (same pattern as
 # yq/fzf/gh/terraform above).
-ARG BUN_VERSION=1.2.15
+ARG BUN_VERSION=1.4.2
 RUN curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
       -o /tmp/bun.zip && \
     unzip -q /tmp/bun.zip -d /tmp && \
@@ -223,12 +223,12 @@ RUN pip3 install --no-cache-dir --break-system-packages uv poetry ruff
 #   cryptography      — Ed25519 verification of gateway model-policy decisions
 #   pydantic          — shared contract models
 RUN pip3 install --no-cache-dir --break-system-packages \
-    'boto3>=1.34' \
+    'boto3>=1.36' \
     'rfc8785==0.1.4' \
-    'PyJWT[crypto]>=2.9' \
-    'requests>=2.31' \
-    'cryptography>=42.0' \
-    'pydantic>=2.0'
+    'PyJWT[crypto]>=2.10' \
+    'requests>=2.32' \
+    'cryptography>=44.0' \
+    'pydantic>=2.13'
 
 # Install optional app requirements from the same domain staging contract.
 COPY --from=stager /stage/requirements/ /tmp/domain-requirements/
