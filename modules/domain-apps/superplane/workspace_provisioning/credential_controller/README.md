@@ -52,7 +52,9 @@ cluster-wide authority removal remain separately authorized lifecycle work.
 
 The installer has optional `credential_controller` configuration with `role_arn`,
 `database_secret`, `registration_database_secret`, and `authorities` (each an
-`authority_id` plus the version-1 document validated by `registry.Authority`).
+`authority_id` plus the document validated by `registry.Authority`). Version 1
+supports renewal; version 2 adds the pinned shared-bootstrap dependencies described
+in [shared-runtime-wiring.md](../shared-runtime-wiring.md).
 See `installation/credential_controller.py` for the closed schema. The two Secret
 projections must contain `domain-dsn` and `ca-pem`; they must be distinct.
 
