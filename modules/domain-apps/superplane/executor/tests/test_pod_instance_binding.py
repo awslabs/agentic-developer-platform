@@ -237,10 +237,14 @@ async def test_one_unavailable_approved_region_never_becomes_empty_success(bindi
 async def test_shared_target_refuses_before_dedicated_provider_or_node_read(
     binding, marker
 ):
+    from superplane_executor.results import capture
+
     f = binding
     f.target[marker] = "shared"
     with pytest.raises(OperationRefused, match="separate trusted Node"):
         await proof(f)
     with pytest.raises(OperationRefused, match="separate trusted Node"):
         await f.workspace.ready_nodes(f.operation, f.target, f.plan, [])
+    with pytest.raises(OperationRefused, match="separate trusted Node"):
+        await capture(f.provider, f.operation, f.target, f.plan, (), f.authorize)
     assert not f.aws.reads and f.state.node_reads == 0 and f.state.checks == 0

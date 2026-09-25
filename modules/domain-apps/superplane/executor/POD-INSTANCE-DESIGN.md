@@ -29,7 +29,7 @@ on fresh Pod-to-Node-to-EC2 identity. It adds no resources, spend, workload API,
 database table or Kubernetes permission. It does not complete shared execution,
 CUDA acceptance, node-side EKS packet probes, image release or the live AWS demo.
 
-## Existing authority and current shared behavior
+## Baseline authority and shared behavior
 
 Existing dedicated provider composition supplies:
 
@@ -47,13 +47,13 @@ Existing dedicated provider composition supplies:
   original Job/Pod validation, bounded result parsing, exact final rereads and a
   lease-locked immutable result insert.
 
-There is currently **no explicit shared-missing-observer guard** in the
-readiness/result methods. The shared branch disables public shared onboarding;
+Before this successor there was **no explicit shared-missing-observer guard** in
+the readiness/result methods. The shared branch disables public shared onboarding;
 its normal member credentials omit Node access. A Node listing through those
 credentials should fail RBAC and readiness, but the method still attempts that
 listing. Standalone completion/result validation does not itself require any
 Node observer. Do not describe those paths as already possessing a typed shared
-observer refusal. The successor must add that refusal before Node/provider
+observer refusal. This successor adds that refusal before Node/provider
 placement reads and must not rely only on incidental Kubernetes RBAC failure.
 
 Shared target detection must use trusted target metadata, including the existing
