@@ -119,3 +119,48 @@ async def test_no_child_terminal_proof_releases_real_admission_hold(store):
     assert await settle_task_admission(store, identity, budget=budget)
     assert (await ledger.snapshot(target)).total_usd == 0
     await ledger.close()
+
+
+from tests.tasks.conftest import contract  # noqa: E402,F401
+
+
+def test_public_no_attempt_cancel_snapshot_matches_contract_and_unknown_exit_stays_invalid(store, contract):
+    import copy
+    from pathlib import Path
+
+    from src.tasks.dynamo_read_store import DynamoTaskReadStore
+    from src.tasks.snapshot import render
+    req = _request()
+    store.accept(req)
+    assert cancel(store, req).cancel_unstarted(req.task_id)
+    record = DynamoTaskReadStore(store, s3_client=None, artifact_bucket="unused").load_task(task_id=req.task_id)
+    body = render(record, request_id=str(uuid.uuid4()))
+    assert body["error"]["runtime_not_started"] is True
+    assert body["runtime_attempt_id"] is None
+    assert not contract(body, "public-api.schema.json#/$defs/task_snapshot")
+    for field, value in [("provider_outcome", "unknown"), ("total_usd", None), ("child_exit_confirmed", True)]:
+        bad = copy.deepcopy(body)
+        bad["error"][field] = value
+        assert contract(bad, "public-api.schema.json#/$defs/task_snapshot")
+    bad = copy.deepcopy(body)
+    bad["runtime_attempt_id"] = str(uuid.uuid4())
+    assert contract(bad, "public-api.schema.json#/$defs/task_snapshot")
+    path = Path(__file__).resolve().parents[4] / "docs/task-api/contracts/v1/fixtures/invalid/result-cancelled-unconfirmed-not-recovery-required.json"
+    unknown = json.loads(path.read_text())
+    unknown.pop("$fixture")
+    assert contract(unknown, "results.schema.json#/$defs/task_error")
+
+
+def test_worker_cannot_supply_gateway_no_attempt_proof(store):
+    from types import SimpleNamespace
+
+    from pydantic import ValidationError
+
+    from src.tasks import errors
+    from src.tasks.command_routes import Failure
+    body = {"error": {"runtime_not_started": True}}
+    with pytest.raises(errors.TaskApiError):
+        TaskCommands(store).finalize(SimpleNamespace(), body)
+    with pytest.raises(ValidationError):
+        Failure.model_validate({"schema_version":"1.0", "outcome":"cancelled", "code":"cancelled_by_client", "message":"forged",
+            "committed_at":"2026-09-25T00:00:00Z", "runtime_not_started":True})

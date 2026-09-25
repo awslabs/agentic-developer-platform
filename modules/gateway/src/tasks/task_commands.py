@@ -205,7 +205,7 @@ class TaskCommands:
                 "child_exit": {"confirmed": False, "exit_code": None, "signal": None, "stopped_at": None},
                 "result": None, "committed_result_refs": [], "error": {"schema_version": "1.0", "outcome": "cancelled",
                     "code": "cancelled_by_client", "message": "Task cancelled before any runtime attempt started.",
-                    "committed_at": now, "child_exit_confirmed": False, "recovery_required": False,
+                    "committed_at": now, "runtime_not_started": True, "child_exit_confirmed": False, "recovery_required": False,
                     "provider_outcome": "not_started", "total_usd": 0}}
             try:
                 self.finalize(identity, body, no_child=True)
@@ -243,6 +243,8 @@ class TaskCommands:
         from src.tasks.records import task_artifact_partition, task_capacity_partition, task_ops_partition, task_turns_partition
         from src.tasks.store import _deserialize
 
+        if not no_child and isinstance(body.get("error"), dict) and "runtime_not_started" in body["error"]:
+            raise errors.invalid_request("Runtime-not-started proof is gateway-owned.")
         snapshot = self._attempt(identity)
         final_digest = payload_digest(body)
         if snapshot["state"] in TERMINAL:
@@ -320,6 +322,7 @@ class TaskCommands:
             if snapshot.get("runtime_attempt_id") is not None or outcome != "cancelled":
                 raise errors.state_conflict("Task runtime already started.")
             updates["runtime_not_started"] = True
+            updates["recovery_required"] = False
         transaction = [self._meta(snapshot, updates, attempt=identity.runtime_attempt_id)]
         if no_child:
             grant = self.repo._get_authority(task_authority_partition(identity.tenant),

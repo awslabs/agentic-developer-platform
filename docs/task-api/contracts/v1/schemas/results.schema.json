@@ -95,6 +95,7 @@
         "code": { "$ref": "results.schema.json#/$defs/failure_code" },
         "message": { "$ref": "common.schema.json#/$defs/safe_message" },
         "committed_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "runtime_not_started": { "const": true, "description": "Gateway-owned proof that no runtime attempt ever started; workers cannot assert this field." },
         "child_exit_confirmed": {
           "type": "boolean",
           "description": "Whether the task process was observed to stop. A disconnected host cannot claim this."
@@ -113,11 +114,16 @@
       },
       "allOf": [
         {
+          "if": { "required": ["runtime_not_started"] },
+          "then": { "$ref": "results.schema.json#/$defs/runtime_not_started_cancellation" }
+        },
+        {
           "description": "LC-14 and design section 8: a cancelled outcome must state whether the child exit was confirmed, and an unconfirmed stop must remain recovery-required rather than a clean cancellation.",
           "if": { "properties": { "outcome": { "const": "cancelled" } }, "required": ["outcome"] },
           "then": {
             "required": ["child_exit_confirmed", "recovery_required"],
             "anyOf": [
+              { "$ref": "results.schema.json#/$defs/runtime_not_started_cancellation" },
               {
                 "properties": {
                   "child_exit_confirmed": { "const": true },
@@ -148,6 +154,39 @@
           }
         }
       ]
+    },
+
+    "runtime_not_started_cancellation": {
+      "required": [
+        "runtime_not_started",
+        "child_exit_confirmed",
+        "recovery_required",
+        "provider_outcome",
+        "total_usd"
+      ],
+      "properties": {
+        "runtime_not_started": {
+          "const": true
+        },
+        "outcome": {
+          "const": "cancelled"
+        },
+        "code": {
+          "const": "cancelled_by_client"
+        },
+        "child_exit_confirmed": {
+          "const": false
+        },
+        "recovery_required": {
+          "const": false
+        },
+        "provider_outcome": {
+          "const": "not_started"
+        },
+        "total_usd": {
+          "const": 0
+        }
+      }
     },
 
     "failure_code": {
