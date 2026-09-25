@@ -1,5 +1,7 @@
 # ADP Task API: agreed architecture and implementation design
 
+**Client integration:** [API Gateway integration guide](integration-guide.md) — authentication, submission, progress, input, cancellation and artifacts.
+
 **Decision date:** 2026-09-23
 
 **Status:** Architecture and implementation contract accepted by the project owner on 2026-09-24. Plan refresh authorized; engine execution has not been approved.
