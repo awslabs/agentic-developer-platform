@@ -360,3 +360,26 @@ def test_removed_membership_cannot_be_resurrected_by_publication(database):  # n
     ):
         publish(store, identity)
     assert store.fetch("SELECT * FROM cluster_memberships") == before
+
+
+@pytest.mark.parametrize("action", ["read", "reserve", "finalize"])
+@pytest.mark.parametrize("change", ["removed", "credential", "cluster"])
+def test_registered_replay_rechecks_current_shared_membership(database, action, change):  # noqa: F811
+    store = database()
+    _seed_shared_cluster(store)
+    identity = _register_shared_member(store)
+    registry = SqlRegistrationStore(store=store)
+    assert registry.read(WORKSPACE_ID) is not None
+    if change == "removed":
+        store.fetch("UPDATE cluster_memberships SET state='removed'")
+    elif change == "credential":
+        store.fetch("UPDATE cluster_memberships SET credential_reference_id='changed'")
+    else:
+        store.fetch("UPDATE clusters SET sharing_enabled=false")
+    with pytest.raises(BootstrapRefused, match="active membership"):
+        if action == "read":
+            registry.read(WORKSPACE_ID)
+        elif action == "reserve":
+            registry.reserve(WORKSPACE_ID, identity)
+        else:
+            registry.finalize(_SharedTarget(), "expired-original-attempt")

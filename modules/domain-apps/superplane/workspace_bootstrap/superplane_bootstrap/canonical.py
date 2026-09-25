@@ -58,6 +58,37 @@ def _membership_generation(identity: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def require_active_shared_membership(store, identity):
+    """A retained registration is evidence, not authority to revive a removed member."""
+    if identity.get("cluster_placement") != _SHARED:
+        return
+    rows = store.execute(
+        "SELECT m.generation,m.namespace,m.namespace_uid,m.credential_reference_id, "
+        "c.eks_cluster_arn,c.endpoint,w.namespace_name "
+        "FROM cluster_memberships m JOIN workspaces w ON w.id=m.workspace_id "
+        "AND w.org_id=m.org_id AND w.cluster_id=m.cluster_id "
+        "JOIN clusters c ON c.id=m.cluster_id AND c.org_id=m.org_id "
+        "JOIN organizations o ON o.id=m.org_id "
+        "WHERE m.workspace_id=CAST(:workspace_id AS uuid) AND m.state='active' "
+        "AND (o.adp_org_id=:org OR CAST(o.id AS text)=:org) "
+        "AND c.sharing_enabled AND c.status IN ('Ready','Active')",
+        {"workspace_id": identity["workspace_id"], "org": identity["org_id"]},
+    )
+    expected = {
+        "generation": _membership_generation(identity),
+        "namespace": identity["namespace"],
+        "namespace_name": identity["namespace"],
+        "namespace_uid": identity["namespace_uid"],
+        "credential_reference_id": identity["credential_reference_id"],
+        "eks_cluster_arn": identity["cluster_arn"],
+        "endpoint": identity["endpoint"],
+    }
+    if len(rows) != 1 or any(rows[0][key] != value for key, value in expected.items()):
+        raise BootstrapRefused(
+            "shared registration no longer has its active membership"
+        )
+
+
 def publish(store, identity):
     workspace_id = str(UUID(identity["workspace_id"]))
     org_binding = identity["org_id"]

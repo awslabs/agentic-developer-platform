@@ -50,6 +50,10 @@ def test_shared_reservation_replays_without_rebinding_and_preserves_peers(
                 arn,
                 endpoint,
             )
+            with pytest.raises(
+                LifecycleRefused, match="requires the workspace transaction"
+            ):
+                await reserve(c, first)
             for value in (first, second):
                 await c.execute(
                     "INSERT INTO workspaces(id,org_id,name,isolation_mode,status,is_default) VALUES($1,$2,$3,'namespace','Provisioning',false)",
@@ -73,5 +77,17 @@ def test_shared_reservation_replays_without_rebinding_and_preserves_peers(
                 async with c.transaction():
                     await reserve(c, first)
             await verify(c, second, states={"reserved"})
+            await c.execute(
+                "UPDATE clusters SET sharing_enabled=false WHERE id=$1",
+                UUID(cluster_id),
+            )
+            with pytest.raises(LifecycleRefused, match="withdrawn"):
+                await verify(c, second, states={"reserved"})
+            await c.execute(
+                "UPDATE clusters SET sharing_enabled=true,status='Deleting' WHERE id=$1",
+                UUID(cluster_id),
+            )
+            with pytest.raises(LifecycleRefused, match="withdrawn"):
+                await verify(c, second, states={"reserved"})
 
     harness.run(run())

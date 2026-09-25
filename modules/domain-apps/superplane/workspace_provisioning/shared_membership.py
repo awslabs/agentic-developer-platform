@@ -11,6 +11,10 @@ MEMBERSHIP_NAMESPACE = UUID("e5daf236-4cde-4b64-bd8f-0d5fdc8f020b")
 
 async def reserve(connection, binding: SharedMembership):
     """Caller owns the workspace-insertion transaction; no provider effect runs here."""
+    if not connection.is_in_transaction():
+        raise LifecycleRefused(
+            "membership reservation requires the workspace transaction"
+        )
     cluster = await connection.fetchrow(
         "SELECT id,org_id,eks_cluster_arn,endpoint,sharing_enabled,status FROM clusters "
         "WHERE id::text=$1 AND org_id::text=$2 FOR UPDATE",
@@ -62,7 +66,7 @@ async def reserve(connection, binding: SharedMembership):
 
 async def verify(connection, binding: SharedMembership, *, states):
     row = await connection.fetchrow(
-        "SELECT m.generation,m.namespace,m.state,m.operation_id::text,c.eks_cluster_arn,c.endpoint,w.namespace_name "
+        "SELECT m.generation,m.namespace,m.state,m.operation_id::text,c.eks_cluster_arn,c.endpoint,c.status,c.sharing_enabled,w.namespace_name "
         "FROM cluster_memberships m JOIN clusters c ON c.id=m.cluster_id AND c.org_id=m.org_id "
         "JOIN workspaces w ON w.id=m.workspace_id AND w.org_id=m.org_id AND w.cluster_id=m.cluster_id "
         "WHERE m.workspace_id::text=$1 AND m.org_id::text=$2 AND m.cluster_id::text=$3 AND m.generation=$4",
@@ -74,6 +78,8 @@ async def verify(connection, binding: SharedMembership, *, states):
     if (
         row is None
         or row["state"] not in states
+        or not row["sharing_enabled"]
+        or row["status"] not in {"Ready", "Active"}
         or any(
             row[key] != value
             for key, value in {

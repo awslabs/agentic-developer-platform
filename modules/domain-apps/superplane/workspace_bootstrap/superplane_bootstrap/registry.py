@@ -384,6 +384,9 @@ class SqlRegistrationStore:
                 # action there is and stays idempotent — and it is safe precisely because
                 # a registered row is not a live attempt: no token is issued, and neither
                 # `finalize` nor `release` can act on it.
+                from .canonical import require_active_shared_membership
+
+                require_active_shared_membership(self.store, recorded)
                 return {"reserved": True, "replayed": True}
 
             # A matching `reserved` row: another attempt holds this workspace. Refused
@@ -448,6 +451,15 @@ class SqlRegistrationStore:
                 # `finalize_registration` compares the records and decides. Checked before
                 # the token, because a completed registration is the idempotent case and
                 # must not become a token error — the token that published it is long gone.
+                existing_identity = self._decode_identity(rows[0], workspace_id)
+                if existing_identity.get("cluster_placement") == "shared":
+                    from .canonical import require_active_shared_membership
+
+                    require_active_shared_membership(self.store, existing_identity)
+                    if dict(_target_mapping(target)) != dict(existing_identity):
+                        raise BootstrapRefused(
+                            "shared registration replay identity differs"
+                        )
                 return
             # `compare_digest` rather than `!=`: the comparison is against secret material
             # over a path a caller can retry, so it is kept constant-time on principle
@@ -632,6 +644,9 @@ class SqlRegistrationStore:
         if not rows:
             return None
         recorded = self._decode_identity(rows[0], workspace_id)
+        from .canonical import require_active_shared_membership
+
+        require_active_shared_membership(self.store, recorded)
         return _RecordedRegistration(recorded)
 
     @staticmethod
