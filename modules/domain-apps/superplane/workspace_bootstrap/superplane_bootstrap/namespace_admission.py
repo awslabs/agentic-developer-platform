@@ -68,7 +68,11 @@ def policy_documents(issuer_group):
                             {
                                 "key": BOOTSTRAP_OWNER_LABEL,
                                 "operator": "Exists",
-                            }
+                            },
+                            {
+                                "key": GATE_LABEL,
+                                "operator": "Exists",
+                            },
                         ]
                     },
                 },
@@ -179,6 +183,11 @@ class NamespaceAdmission:
             != self.grants.target.workspace_id
         ):
             raise BootstrapRefused("member namespace ownership changed")
+        if value["metadata"].get("labels", {}).get(GATE_LABEL) not in {
+            "closed",
+            "open",
+        }:
+            raise BootstrapRefused("member namespace admission label changed")
         return value
 
     def is_closed(self):

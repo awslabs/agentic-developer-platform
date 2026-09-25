@@ -714,3 +714,40 @@ def test_delayed_finalizer_cannot_publish_after_recovery(
     assert rows[0]["state"] == "reserved"
     assert rows[0]["namespace_uid"] is None
     assert rows[0]["credential_reference_id"] is None
+
+
+@pytest.mark.parametrize("gate", [None, "closed", "open"])
+def test_admission_binding_preserves_dedicated_peer_and_selects_shared_members(gate):
+    from superplane_bootstrap.components import BOOTSTRAP_OWNER_LABEL
+
+    policy, binding = policy_documents("superplane:cluster-issuer")
+    labels = {BOOTSTRAP_OWNER_LABEL: "existing-dedicated-peer"}
+    if gate is not None:
+        labels[GATE_LABEL] = gate
+    selector = binding["spec"]["matchResources"]["namespaceSelector"]
+    # Kubernetes ANDs all Exists expressions. An owner label by itself, as used
+    # by already-running dedicated namespaces, must never select this policy.
+    assert not selector.get("matchLabels")
+    assert all(item["operator"] == "Exists" for item in selector["matchExpressions"])
+    selected = all(item["key"] in labels for item in selector["matchExpressions"])
+    assert selected is (gate is not None)
+    assert policy["spec"]["failurePolicy"] == "Fail"
+    assert binding["spec"]["validationActions"] == ["Deny"]
+    assert policy["spec"]["validations"][0]["expression"] == (
+        'namespaceObject.metadata.labels["superplane.aws-e/member-admission"] '
+        "== 'open' || \"superplane:cluster-issuer\" in request.userInfo.groups"
+    )
+
+
+def test_removed_shared_gate_label_refuses_instead_of_silently_bypassing_policy(
+    shared_runtime,
+    database,
+):
+    runtime = shared_runtime
+    authority, _ = _reserved_authorities(runtime, database)
+    namespace = runtime.resources.objects[
+        ("Namespace", None, runtime.membership.namespace)
+    ]
+    del namespace["metadata"]["labels"][GATE_LABEL]
+    with pytest.raises(BootstrapRefused, match="admission label changed"):
+        authority.backend.gate.is_closed()
