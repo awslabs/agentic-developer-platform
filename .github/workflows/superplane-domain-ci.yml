@@ -139,7 +139,7 @@ jobs:
         working-directory: modules/gateway
         # The registration suites import the gateway's feature module, so they need its
         # dependency set. The domain module has none of its own yet.
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev]" "setuptools>=75.0" wheel
 
       - name: Verify CLI evaluation guards without network access
         # The CLI dependency changes E18's acceptance and cleanup logic. Exercise
