@@ -129,8 +129,22 @@ run "node_credentials_are_isolated_before_tenant_scheduling" {
     error_message = "Only ECR authentication needs an unscoped resource."
   }
   assert {
+    # vpc-cni v1.22.4-eksbuild.3 runs this sidecar even when network-policy
+    # enforcement is disabled. Its live image pull failed with ECR 403 when
+    # this repository was absent, leaving both initial workers NotReady.
+    condition = contains(
+      jsondecode(aws_iam_role_policy.node_image_pull.policy).Statement[1].Resource,
+      "arn:aws:ecr:us-east-1:602401143452:repository/amazon/aws-network-policy-agent"
+    )
+    error_message = "The pinned VPC CNI network-policy agent must be pullable by workspace nodes."
+  }
+  assert {
     condition     = aws_eks_addon.vpc_cni.addon_version == "v1.22.4-eksbuild.3"
     error_message = "The VPC CNI version must remain pinned to reviewed region/version compatibility."
+  }
+  assert {
+    condition     = try(jsondecode(aws_eks_addon.vpc_cni.configuration_values).enableNetworkPolicy == "true", false)
+    error_message = "Workspace bootstrap needs VPC CNI NetworkPolicy enforcement enabled before its live traffic-isolation checks."
   }
 }
 
