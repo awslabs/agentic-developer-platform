@@ -481,8 +481,13 @@ class SqlRegistrationStore:
                 raise BootstrapRefused(
                     "finalization identity differs from the reserved target"
                 )
-            from .canonical import publish
+            from .canonical import publish, require_shared_bootstrap_complete
+            from .state import claim_fingerprint
 
+            if identity.get("cluster_placement") == "shared":
+                require_shared_bootstrap_complete(
+                    self.store, identity, claim_fingerprint(token)
+                )
             publish(self.store, identity)
             self.store.execute(
                 _MARK_REGISTERED,

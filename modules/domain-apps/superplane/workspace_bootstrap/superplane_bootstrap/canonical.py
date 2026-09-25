@@ -102,6 +102,49 @@ def require_active_shared_membership(store, identity):
         )
 
 
+def require_shared_bootstrap_complete(store, identity, claim):
+    """Check activation under the reservation lock also used to start recovery."""
+    approved = registration_membership(identity)
+    if approved is None:
+        return  # Historical registrations predate admitted membership bootstrap.
+    rows = store.execute(
+        "SELECT generation,operation_id,org_id,cluster_arn,plan_json,progress_json,revoked "
+        "FROM workspace_bootstrap_authority WHERE workspace_id=:workspace_id "
+        "AND claim=:claim FOR UPDATE",
+        {"workspace_id": identity["workspace_id"], "claim": claim},
+    )
+    if len(rows) != 1:
+        raise BootstrapRefused("shared publication has no unique original authority")
+    row = rows[0]
+    plan, progress = json.loads(row["plan_json"]), json.loads(row["progress_json"])
+    generation = hashlib.sha256(
+        (row["operation_id"] + ":" + claim).encode()
+    ).hexdigest()
+    if (
+        row["generation"] != generation
+        or row["org_id"] != identity["org_id"]
+        or row["cluster_arn"] != identity["cluster_arn"]
+        or row["revoked"] is not True
+        or plan.get("mode") != "shared-namespace"
+        or plan.get("membership") != approved.encode()
+        or progress.get("member_recovery_started")
+        or progress.get("phase") != "revoked"
+        or progress.get("complete") is not True
+        or progress.get("retain_workspace") is not True
+        or progress.get("component_inventory_complete") is not True
+        or progress.get("component_inventory_mode") != "shared-namespace"
+        or progress.get("member_gate") != "open"
+        or progress.get("member_gate_intent") is not None
+        or progress.get("workspace-namespace", {}).get("identity", {}).get("uid")
+        != identity["namespace_uid"]
+        or progress.get("member_credential_reference")
+        != identity["credential_reference_id"]
+    ):
+        raise BootstrapRefused(
+            "shared publication authority is incomplete or recovered"
+        )
+
+
 def publish(store, identity):
     workspace_id = str(UUID(identity["workspace_id"]))
     org_binding = identity["org_id"]

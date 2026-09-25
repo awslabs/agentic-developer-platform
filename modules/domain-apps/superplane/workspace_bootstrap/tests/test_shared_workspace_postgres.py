@@ -555,12 +555,17 @@ def _reserved_authorities(runtime, database):
 
 def _recover_after_commit(monkeypatch, authority, recovery, predicate):
     """Schedule a second worker in the durable-intent/provider-I/O gap."""
-    original = authority.journal.fenced
+    journal_type = type(authority.journal)
+    original = journal_type.fenced
     fired = []
 
     @contextmanager
-    def interleaved(**kwargs):
-        with original(**kwargs):
+    def interleaved(selected, **kwargs):
+        if selected is not authority.journal:
+            with original(selected, **kwargs):
+                yield
+            return
+        with original(selected, **kwargs):
             yield
             _, progress = authority.journal.read_locked()
             trigger = not fired and predicate(progress)
@@ -571,7 +576,7 @@ def _recover_after_commit(monkeypatch, authority, recovery, predicate):
             with ThreadPoolExecutor(max_workers=1) as pool:
                 pool.submit(recovery.recover_member).result(timeout=10)
 
-    monkeypatch.setattr(authority.journal, "fenced", interleaved)
+    monkeypatch.setattr(journal_type, "fenced", interleaved)
     return fired
 
 
@@ -669,3 +674,43 @@ def test_interrupted_recovery_latch_survives_and_cleanup_resumes(
     assert progress["member_recovery_complete"] and progress["complete"]
     assert recovery.backend.gate.is_closed()
     assert not any(key[0] == "ServiceAccount" for key in runtime.resources.objects)
+
+
+def test_delayed_finalizer_cannot_publish_after_recovery(
+    shared_runtime,
+    database,
+    monkeypatch,
+):
+    from superplane_bootstrap.state import claim_fingerprint
+
+    runtime = shared_runtime
+    original = runtime.store.finalize
+    recovered = []
+
+    def delayed_finalize(target, attempt_token=""):
+        recovery = runtime.factory.recover(
+            binding=runtime.binding,
+            target=runtime.target,
+            store=SqlRegistrationStore(database()),
+            state_store=runtime.state,
+            claim=claim_fingerprint(attempt_token),
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(recovery.recover_member).result(timeout=10)
+        recovered.append(recovery)
+        original(target, attempt_token)
+
+    monkeypatch.setattr(runtime.store, "finalize", delayed_finalize)
+    result = runtime.run()
+    assert recovered and not result.ready
+    assert "publication authority" in str(result.refusal)
+    assert runtime.store.read(runtime.membership.workspace_id) is None
+    assert recovered[0].backend.gate.is_closed()
+    rows = runtime.store.store.execute(
+        "SELECT state,namespace_uid,credential_reference_id FROM cluster_memberships "
+        "WHERE generation=:generation",
+        {"generation": runtime.membership.generation},
+    )
+    assert rows[0]["state"] == "reserved"
+    assert rows[0]["namespace_uid"] is None
+    assert rows[0]["credential_reference_id"] is None
