@@ -217,13 +217,12 @@ request field or static configuration enables this route. The lifecycle worker's
 shared capability remains disabled until deployment wires the hooks and renewal.
 
 `SharedRuntimeHooks` must provide an explicitly delivered management source
-session, a fresh cluster dependency verifier (including registered controller
-compatibility, connectivity, policy/schema versions and platform eligibility),
-and a trusted complete tenant-principal inventory. The inventory must distinguish
-installed cluster administration from member identities using registered authority;
-it must never exempt arbitrary request-selected principals or return an empty
-inventory merely to pass isolation. The installed issuer needs the read/probe
-permissions exercised by `KubectlClusterAccess`, including the bounded namespace
+session and a fresh cluster dependency verifier (including registered controller
+compatibility, connectivity, policy/schema versions and platform eligibility). The runtime directly composes the complete
+EKS tenant inventory through `shared_tenant_inventory.installed_tenant_principals`;
+only the exact installed issuer entry with no attached access policies is exempt.
+Other identities remain subject to the canonical namespace RBAC proof. The
+installed issuer needs the read/probe permissions exercised by `KubectlClusterAccess`, including the bounded namespace
 probes and authorization reviews. These remain installation-owned prerequisites.
 
 `SharedCredentialServices` implements the credential callbacks using the existing
@@ -242,3 +241,6 @@ absence. An unacknowledged projection intent's public receipt is reconstructed
 from committed metadata/digest; actual Secret resourceVersion is read again for
 CAS cleanup. Bootstrap claims do not authorize renewal after publication: the
 installed credential controller's independent lease owns later revisions.
+
+The exact uncomposed dependency, management-delivery and partial-recovery contracts
+are documented in [shared-runtime-wiring.md](../workspace_provisioning/shared-runtime-wiring.md).

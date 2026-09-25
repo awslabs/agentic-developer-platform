@@ -20,12 +20,10 @@ from .runtime_config import LifecycleRefused
 class SharedRuntimeHooks:
     management_source_session: object
     verify_cluster_dependencies: object
-    tenant_principals: object
 
     def __post_init__(self):
-        if self.management_source_session is None or not all(
-            callable(value)
-            for value in (self.verify_cluster_dependencies, self.tenant_principals)
+        if self.management_source_session is None or not callable(
+            self.verify_cluster_dependencies
         ):
             raise LifecycleRefused(
                 "shared runtime requires installed management transport and cluster proofs"
@@ -68,6 +66,7 @@ def bootstrap(
     from .credential_controller.transports import compose_transports
     from .credentials import assume_session, canonical_role_identity
     from .shared_bootstrap_credentials import SharedCredentialServices
+    from .shared_tenant_inventory import installed_tenant_principals
 
     if not isinstance(hooks, SharedRuntimeHooks) or row is None:
         raise LifecycleRefused("shared bootstrap has no installed runtime composition")
@@ -178,7 +177,7 @@ def bootstrap(
             directory,
             current,
             hooks.verify_cluster_dependencies,
-            hooks.tenant_principals,
+            installed_tenant_principals,
         )
 
         def resolve_binding(operation_id, *, recovery=False):
