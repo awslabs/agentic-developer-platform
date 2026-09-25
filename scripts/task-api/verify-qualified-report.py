@@ -14,6 +14,7 @@ report = json.loads(args.report.read_text())
 assert report["criteria"] and all(
     row["status"] == "PASS" for row in report["criteria"].values()
 ), "Qualification is incomplete"
+assert report.get("artifact_sha256"), "Qualification must bind nonempty evidence artifacts"
 root = args.report.parent.resolve()
 for name, expected in report["artifact_sha256"].items():
     path = (root / name).resolve()
