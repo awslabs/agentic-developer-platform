@@ -53,7 +53,7 @@ class TaskDelivery:
         raw = self.store._read(f"PODTASK#{pod_uid}", "DELIVERY")
         return {k: _DESERIALIZER.deserialize(v) for k, v in raw.items()} if raw else None
 
-    def save(self, pod_uid: str, values: dict, previous: dict | None) -> dict:
+    def save(self, pod_uid: str, values: dict, previous: dict | None, *, extra_items=()) -> dict:
         item = {**values, "pk": f"PODTASK#{pod_uid}", "sk": "DELIVERY", "version": uuid.uuid4().hex}
         args = {
             "TableName": self.store.table,
@@ -63,7 +63,10 @@ class TaskDelivery:
         if previous is not None:
             args.update(ExpressionAttributeNames={"#version": "version"}, ExpressionAttributeValues={":version": {"S": previous["version"]}})
         try:
-            self.store.client.put_item(**args)
+            if extra_items:
+                self.store.client.transact_write_items(TransactItems=[{"Put": args}, *extra_items])
+            else:
+                self.store.client.put_item(**args)
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 raise TaskDeliveryError("busy") from None
@@ -95,6 +98,8 @@ class TaskDelivery:
         work = repository._get(task_work_partition(task["task_id"]), dispatch_sort_key(task["dispatch_id"]))
         if not work or work.get("envelope") != envelope:
             return False
+        if task.get("state") in {"completed", "failed", "cancelled"} and task.get("server_workload_terminated") is True:
+            return True  # Exact committed envelope; drain redelivery of stopped work.
         cancelled = TaskCommands(repository).cancel_unstarted(task["task_id"])
         if cancelled:
             self.cancelled_tasks[task["task_id"]] = task
@@ -259,23 +264,24 @@ class TaskDelivery:
                 # Retain a tombstone without task body or receipt. No second task
                 # may be received by the same workload after acknowledgement.
                 metadata = response.get("ResponseMetadata", {})
-                self.save(
-                    pod_uid,
-                    {
-                        "state": "acknowledged",
-                        "invocation_id": previous["invocation_id"],
-                        "sqs_message_id": previous.get("sqs_message_id"),
-                        "receipt_handle_sha256": hashlib.sha256(previous["receipt"].encode()).hexdigest(),
-                        # Reservations count conservatively: a crash before the SDK
-                        # call can increase this count without a transport attempt.
-                        "ack_attempts": reservation["ack_attempts"],
-                        "acknowledged_at": int(self.clock()),
-                        "sqs_request_id": metadata.get("RequestId"),
-                        "sqs_http_status": metadata.get("HTTPStatusCode"),
-                        "sqs_retry_attempts": metadata.get("RetryAttempts"),
-                    },
-                    reservation,
-                )
+                envelope = json.loads(previous["body"])
+                tombstone = {
+                    "state": "acknowledged",
+                    "invocation_id": previous["invocation_id"],
+                    "sqs_message_id": previous.get("sqs_message_id"),
+                    "receipt_handle_sha256": hashlib.sha256(previous["receipt"].encode()).hexdigest(),
+                    # Reservations count conservatively: a crash before the SDK
+                    # call can increase this count without a transport attempt.
+                    "ack_attempts": reservation["ack_attempts"],
+                    "acknowledged_at": int(self.clock()),
+                    "sqs_request_id": metadata.get("RequestId"),
+                    "sqs_http_status": metadata.get("HTTPStatusCode"),
+                    "sqs_retry_attempts": metadata.get("RetryAttempts"),
+                    "task_id": envelope.get("task_id") if envelope.get("kind") == "adp.task" else None,
+                    "envelope_digest": previous.get("envelope_digest"),
+                }
+                ack_item = self._stopped_task_ack_item(tombstone)
+                self.save(pod_uid, tombstone, reservation, extra_items=[ack_item] if ack_item else [])
             else:
                 self.sqs.change_message_visibility(
                     QueueUrl=previous["queue_url"], ReceiptHandle=previous["receipt"], VisibilityTimeout=VISIBILITY_SECONDS
@@ -283,3 +289,39 @@ class TaskDelivery:
                 self.save(pod_uid, {**previous, "state": "assigned", "lease_until": now + VISIBILITY_SECONDS}, reservation)
         except (ClientError, BotoCoreError):
             raise TaskDeliveryError("unavailable") from None
+
+    def _stopped_task_ack_item(self, receipt):
+        if not receipt.get("task_id") or receipt.get("sqs_http_status") != 200 or not receipt.get("sqs_request_id"):
+            return
+        from src.tasks.records import task_partition
+        from src.tasks.store import TaskStore, _serialize
+
+        repository = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table)
+        task = repository.read_task(receipt["task_id"])
+        if not task or task.get("state") not in {"failed", "cancelled", "completed"} or not task.get("server_workload_terminated"):
+            return
+        work = repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
+        if work.get("envelope_digest") != receipt["envelope_digest"] or task["invocation_id"] != receipt["invocation_id"]:
+            raise TaskDeliveryError("wrong_assignment")
+        return {
+            "Update": {
+                "TableName": repository.table_name,
+                "Key": _serialize({"event_id": task_partition(task["task_id"]), "arrived_at": "META"}),
+                "UpdateExpression": "SET queue_ack_status = :confirmed, queue_ack_request_id = :request, #version = :next",
+                "ConditionExpression": (
+                    "invocation_id = :invocation AND runtime_attempt_id = :attempt AND server_workload_terminated = :true AND #version = :version"
+                ),
+                "ExpressionAttributeNames": {"#version": "version"},
+                "ExpressionAttributeValues": _serialize(
+                    {
+                        ":confirmed": "confirmed",
+                        ":request": receipt["sqs_request_id"],
+                        ":invocation": task["invocation_id"],
+                        ":attempt": task["runtime_attempt_id"],
+                        ":true": True,
+                        ":version": int(task["version"]),
+                        ":next": int(task["version"]) + 1,
+                    }
+                ),
+            }
+        }
