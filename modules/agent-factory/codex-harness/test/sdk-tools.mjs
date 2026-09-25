@@ -1,5 +1,7 @@
 /** Pinned SDK MCP tool-loop qualification. Local fixture only; no credentials,
  * provider operations, live inference or production tool enablement. */
+import { z } from 'zod';
+import { startToolServer } from '../dist/tool-server.js';
 import { Codex } from '@openai/codex-sdk';
 import { restrictedSdkConfig } from '../dist/sdk-config.js';
 import { runSdkTurn } from '../dist/turn.js';
@@ -17,6 +19,22 @@ await mkdir(join(home, '.codex'), { recursive: true, mode: 0o700 });
 await mkdir(workspace, { mode: 0o700 });
 const token = randomBytes(32).toString('hex');
 const requests = [], calls = [], failures = [];
+let currentChecks = 0;
+const mcp = await startToolServer([{
+  name: 'read_evidence', description: 'Read a fixture evidence record.',
+  capability: 'repository.read', readOnly: true,
+  input: z.object({ key: z.string() }),
+}], {
+  async assertCurrent() { currentChecks++; },
+  async execute(name, args) {
+    assert.equal(name, 'read_evidence');
+    assert.deepEqual(args, { key: 'story-acceptance' });
+    calls.push({ name, args });
+    assert.equal(calls.length, 1, 'Tool was replayed');
+    return { status: 'confirmed', content: 'evidence-receipt-471: requirement verified' };
+  },
+}, { capabilities: ['repository.read'], maxCalls: 2, maxRequestBytes: 65536,
+  maxResultBytes: 8192, timeoutMs: 5000, signal: AbortSignal.timeout(20000) });
 const server = http.createServer(async (request, response) => {
   try {
     if (request.method === 'GET') {
@@ -30,28 +48,6 @@ const server = http.createServer(async (request, response) => {
       assert.ok(size <= 65536); chunks.push(chunk);
     }
     const body = JSON.parse(Buffer.concat(chunks).toString());
-    if (request.url === '/mcp') {
-      if (body.id === undefined) { response.writeHead(202).end(); return; }
-      let result;
-      if (body.method === 'initialize') result = {
-        protocolVersion: body.params.protocolVersion,
-        capabilities: { tools: {} }, serverInfo: { name: 'adp-fixture', version: '1' },
-      };
-      else if (body.method === 'tools/list') result = { tools: [{
-        name: 'read_evidence', description: 'Read a fixture evidence record.',
-        inputSchema: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'], additionalProperties: false },
-        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-      }] };
-      else if (body.method === 'tools/call') {
-        assert.equal(body.params.name, 'read_evidence');
-        assert.deepEqual(body.params.arguments, { key: 'story-acceptance' });
-        calls.push(body.params);
-        assert.equal(calls.length, 1, 'Tool was replayed');
-        result = { content: [{ type: 'text', text: 'evidence-receipt-471: requirement verified' }], isError: false };
-      } else if (body.method === 'ping') result = {};
-      else { response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32601, message: 'Unsupported fixture method' } })); return; }
-      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); return;
-    }
     assert.equal(request.url, '/v1/responses');
     requests.push(body);
     assert.ok(requests.length <= 2, 'Unexpected model replay');
@@ -92,11 +88,11 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 try {
   const origin = `http://127.0.0.1:${server.address().port}`;
   const codex = new Codex({ config: { ...restrictedSdkConfig(), mcp_servers: { adp: {
-    url: `${origin}/mcp`, bearer_token_env_var: 'ADP_FIXTURE_MCP_TOKEN',
+    url: mcp.url, bearer_token_env_var: 'ADP_FIXTURE_MCP_TOKEN',
     required: true, enabled_tools: ['read_evidence'], startup_timeout_sec: 5, tool_timeout_sec: 5,
   } } }, baseUrl: `${origin}/v1`, apiKey: token,
     env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: join(home, '.codex'),
-      ADP_FIXTURE_MCP_TOKEN: token, XDG_CONFIG_HOME: join(home, '.config'),
+      ADP_FIXTURE_MCP_TOKEN: mcp.token, XDG_CONFIG_HOME: join(home, '.config'),
       XDG_CACHE_HOME: join(home, '.cache'), TMPDIR: root,
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
   const options = { workingDirectory: workspace, skipGitRepoCheck: true, model: 'gpt-5-codex',
@@ -110,9 +106,11 @@ try {
   assert.deepEqual(failures, []);
   assert.equal(requests.length, 2);
   assert.equal(calls.length, 1);
+  assert.ok(currentChecks >= 4, 'Missing current authority checks');
   assert.equal(result.response, 'Fixture evidence verified.');
   console.log('Pinned SDK: authenticated host MCP discovery, single tool execution and correlated model continuation passed (fixture inference).');
 } finally {
+  await mcp.close();
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
   await rm(root, { recursive: true, force: true });

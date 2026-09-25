@@ -36,3 +36,21 @@ python3 test/run-isolated.py -- node test/sdk-tools.mjs
 The SDK environment contains only temporary configuration paths and a randomly
 generated fixture token. All HTTP requests stay on loopback; servers and SDK
 storage are cleaned up in `finally`. CI runs this compatibility fixture.
+
+## Shared MCP transport
+
+The SDK fixture now uses `src/tool-server.ts`, the shared authenticated MCP
+transport. Reviewed host code supplies tools and Zod schemas; the transport
+requires each capability in the admitted set, forces strict argument parsing,
+and checks current authority before calls and before disclosing receipts.
+Personas cannot supply handlers, endpoints or schema extensions. Only confirmed
+host receipts are returned. Unknown, oversized or revoked results close further
+session admission. Duplicate MCP IDs are refused; they are not treated as durable
+mutation keys. Gateway authorization and journaling remain required per operation.
+
+Seven focused transport tests cover capability denial, invalid token/tool/arguments,
+duplicate delivery, pre/post-execution revocation, unknown and oversized outcomes,
+confirmed errors, call limits, overlap, request bounds, resource-method refusal and cancellation/deadline of an uncooperative host.
+The real SDK fixture discovers and executes this shared transport successfully.
+The report-only session/Task Responses path still refuses executable bindings;
+this transport is not evidence of gateway tool integration or persona completion.
