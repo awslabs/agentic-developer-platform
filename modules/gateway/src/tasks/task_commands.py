@@ -257,7 +257,7 @@ class TaskCommands:
             "attempt_valid": True,
         }
 
-    def finalize(self, identity: Any, body: dict, *, stop_only: bool = False, no_child: bool = False) -> dict:
+    def finalize(self, identity: Any, body: dict, *, stop_only: bool = False, no_child: bool = False, expected_version: int | None = None) -> dict:
         from datetime import timedelta
 
         from src.tasks.records import task_artifact_partition, task_capacity_partition, task_ops_partition, task_turns_partition
@@ -266,6 +266,8 @@ class TaskCommands:
         if not no_child and isinstance(body.get("error"), dict) and "runtime_not_started" in body["error"]:
             raise errors.invalid_request("Runtime-not-started proof is gateway-owned.")
         snapshot = self._attempt(identity)
+        if expected_version is not None and int(snapshot["version"]) != expected_version:
+            raise errors.state_conflict("Task changed while observing termination.")
         final_digest = payload_digest(body)
         if snapshot["state"] in TERMINAL:
             if snapshot.get("finalize_digest") != final_digest:
@@ -533,7 +535,7 @@ class TaskCommands:
             "terminal_event_id": updates["terminal_event_id"],
         }
 
-    def settlement(self, identity: Any, body: dict) -> dict:
+    def settlement(self, identity: Any, body: dict, *, verified_workload: bool = False) -> dict:
         """Stop-only receipt; never upgrades process evidence into provider success."""
         snapshot = self._attempt(identity)
         pk = task_authority_partition(identity.tenant)
@@ -556,8 +558,8 @@ class TaskCommands:
                 "code": "cancelled_by_client" if outcome == "cancelled" else "process_failed",
                 "message": "The current task process stopped without a successful final result.",
                 "committed_at": _iso(self.repo._clock()),
-                "child_exit_confirmed": True,
-                "recovery_required": False,
+                "child_exit_confirmed": evidence["child_exit_confirmed"],
+                "recovery_required": not evidence["child_exit_confirmed"],
                 "provider_outcome": "unknown",
                 "total_usd": None,
             }
@@ -569,7 +571,12 @@ class TaskCommands:
                     "schema_version": "1.0",
                     "outcome": outcome,
                     "final_report_id": str(uuid.uuid4()),
-                    "child_exit": {"confirmed": True, "exit_code": None, "signal": None, "stopped_at": evidence["observed_at"]},
+                    "child_exit": {
+                        "confirmed": evidence["child_exit_confirmed"],
+                        "exit_code": None,
+                        "signal": None,
+                        "stopped_at": evidence["observed_at"],
+                    },
                     "result": None,
                     "error": error,
                     "committed_result_refs": [],
@@ -584,6 +591,8 @@ class TaskCommands:
         if ack != "confirmed":
             ack = body["queue_ack_status"]
         updates = {"version": int(snapshot["version"]) + 1, "updated_at": timestamp, "stop_evidence": evidence, "queue_ack_status": ack}
+        if verified_workload and evidence["workload_terminated"]:
+            updates["server_workload_terminated"] = True
         transaction = [self._meta(snapshot, updates, attempt=identity.runtime_attempt_id)]
         values = {":attempt": identity.runtime_attempt_id}
         condition = "runtime_attempt_id = :attempt"

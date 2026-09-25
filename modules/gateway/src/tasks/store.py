@@ -1319,6 +1319,7 @@ class TaskStore:
                     },
                     task_binding_check,
                     policy_check,
+                    *self._execution_recovery_items(snapshot),
                 ]
             )
         except ClientError as exc:
@@ -1337,6 +1338,41 @@ class TaskStore:
             "runtime_attempt_id": runtime_attempt_id,
             "version": expected_version + 1,
         }
+
+    def _execution_recovery_items(self, snapshot):
+        if self._get(task_work_partition(snapshot["task_id"]), "RECONCILE") is not None:
+            return []
+        now = self._clock()
+        due = now + timedelta(seconds=60)
+        work_id = str(uuid.uuid4())
+        work = base_item(
+            partition=task_work_partition(snapshot["task_id"]), sort_key="RECONCILE", record_type="TASK_WORK", scope=snapshot["scope"]
+        ) | {
+            "task_id": snapshot["task_id"],
+            "invocation_id": snapshot["invocation_id"],
+            "generation": int(snapshot["generation"]),
+            "grant_digest": snapshot["grant_digest"],
+            "work_id": work_id,
+            "work_kind": "execution",
+            "work_version": 1,
+            "recovery_state": "pending",
+            "created_at": _iso(now),
+            "updated_at": _iso(now),
+            WORK_SHARD_ATTRIBUTE: work_shard(snapshot["task_id"]),
+            WORK_DUE_ATTRIBUTE: work_due_key(due_at=due, work_id=work_id),
+            "due_at": _iso(due),
+        }
+        locator = self._locator_for_work(work=work, tenant=snapshot["scope"]["tenant"], now_iso=_iso(now))
+        return [
+            {"Put": {"TableName": self._table_name, "Item": _serialize(work), "ConditionExpression": "attribute_not_exists(event_id)"}},
+            {
+                "Put": {
+                    "TableName": self._authority_table_name,
+                    "Item": _serialize_authority(locator),
+                    "ConditionExpression": "attribute_not_exists(pk)",
+                }
+            },
+        ]
 
     # -- state transitions --------------------------------------------------
 

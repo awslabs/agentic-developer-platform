@@ -249,6 +249,13 @@ async def recovery_settle(
         runtime=runtime,
     )
     try:
+        if body.evidence.kind == "workload_termination":
+            from src.agentauth.task_execution_recovery import recover_execution
+
+            operation_status, task_status = await recover_execution(store.repository, runtime, work_id=body.work_id, lease_token=body.lease_token)
+            return JSONResponse(
+                {"schema_version": SCHEMA_VERSION, "work_id": body.work_id, "operation_status": operation_status, "task_status": task_status}
+            )
         operation_status, settled = await run_in_threadpool(
             store.settle_recovery,
             work_id=body.work_id,

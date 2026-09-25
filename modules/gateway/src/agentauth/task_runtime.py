@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError
 
@@ -228,6 +228,7 @@ class TaskRuntime:
             raise BootstrapRefusedError("task attempt mismatch")
         task = self._current(identity.task_id)
         if task.get("runtime_attempt_id") == body["runtime_attempt_id"]:
+            self.ensure_execution_recovery(task["task_id"])
             return  # Response-loss retry of the same committed binding.
         self.repository.bind_runtime_attempt(
             task_id=identity.task_id,
@@ -236,4 +237,15 @@ class TaskRuntime:
             runtime_attempt_id=body["runtime_attempt_id"],
             expected_version=int(task["version"]),
             expected_runtime_attempt_id=identity.runtime_attempt_id,
+        )
+        self.ensure_execution_recovery(task["task_id"])
+
+    def ensure_execution_recovery(self, task_id):
+        from src.tasks.records import task_work_partition
+
+        if self.repository._get(task_work_partition(task_id), "RECONCILE") is not None:
+            return
+        snapshot = self.repository.read_task(task_id)
+        self.repository.create_recovery_work(
+            task_id=task_id, kind="execution", due_at=self.clock() + timedelta(seconds=60), expected_task_version=int(snapshot["version"])
         )
