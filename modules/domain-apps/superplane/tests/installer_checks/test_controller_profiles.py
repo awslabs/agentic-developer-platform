@@ -298,3 +298,40 @@ def test_changed_or_unvalidated_image_report_cannot_verify_installed_policy(
     ):
         with pytest.raises(Refusal):
             verify_result({**result, **change}, environment)
+
+
+@pytest.mark.parametrize("invalid", [None, "namespace", "cidr", "image", "command"])
+def test_network_probe_profile_requires_reviewed_service_and_image(
+    environment, invalid
+):
+    profile = selected_profiles(environment)["approved-model"]
+    profile["model_options"] = {}
+    profile["serving_auth_contract"] = None
+    profile["workload"].update(
+        kind="batch",
+        port=None,
+        auth_secret=None,
+        command=["python3", "-m", "superplane_executor.network_workload_probe"],
+        args=[],
+    )
+    profile["network_probe"] = {
+        "version": 1,
+        "namespace": profile["namespace"],
+        "service_name": "acceptance",
+        "service_uid": "approved-service",
+        "port": 8080,
+        "cidrs": [profile["service_cidr"]],
+    }
+    if invalid == "namespace":
+        profile["network_probe"]["namespace"] = "other-tenant"
+    elif invalid == "cidr":
+        profile["network_probe"]["cidrs"] = ["0.0.0.0/0"]
+    elif invalid == "image":
+        profile["workload"]["image"] = "probe:latest"
+    elif invalid == "command":
+        profile["workload"]["command"] = ["sh"]
+    if invalid:
+        with pytest.raises(Refusal):
+            policy(environment)
+    else:
+        assert json.loads(policy(environment)) == environment["controller_profiles"]

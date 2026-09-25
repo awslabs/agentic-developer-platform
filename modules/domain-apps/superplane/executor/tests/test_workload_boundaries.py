@@ -12,6 +12,7 @@ from superplane_executor.workspace import Workspace
 def serving_plan():
     return SimpleNamespace(
         cluster_name="sp-" + "a" * 32,
+        region_bindings=[{"region": "us-east-1"}],
         data={
             "node_count": 2,
             "workload": {
@@ -28,6 +29,32 @@ def serving_plan():
             },
         },
     )
+
+
+def node_operation():
+    return SimpleNamespace(
+        grant=SimpleNamespace(lease=SimpleNamespace(workspace_id="workspace-a"))
+    )
+
+
+def observed_instances(*ids):
+    return [
+        {
+            "InstanceId": identity,
+            "SuperplaneRegion": "us-east-1",
+            "Placement": {"AvailabilityZone": "us-east-1a"},
+        }
+        for identity in ids
+    ]
+
+
+def node_labels():
+    return {
+        "superplane.ai/capacity": serving_plan().cluster_name,
+        "superplane.ai/workspace": "workspace-a",
+        "topology.kubernetes.io/region": "us-east-1",
+        "topology.kubernetes.io/zone": "us-east-1a",
+    }
 
 
 @pytest.mark.parametrize(
@@ -137,9 +164,9 @@ async def test_revocation_between_serving_writes_stops_before_service_creation()
 @pytest.mark.parametrize(
     "ids,ready",
     [
-        (["i-one", "i-two"], True),
-        (["i-one", "i-one"], False),
-        (["i-one", "i-foreign"], False),
+        (["i-11111111111111111", "i-22222222222222222"], True),
+        (["i-11111111111111111", "i-11111111111111111"], False),
+        (["i-11111111111111111", "i-33333333333333333"], False),
     ],
 )
 async def test_node_join_requires_each_exact_provider_identity(ids, ready):
@@ -151,8 +178,12 @@ async def test_node_join_requires_each_exact_provider_identity(ids, ready):
             json={
                 "items": [
                     {
-                        "spec": {"providerID": "aws:///zone/" + identity},
-                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+                        "metadata": {"labels": node_labels()},
+                        "spec": {"providerID": "aws:///us-east-1a/" + identity},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"nvidia.com/gpu": "1"},
+                        },
                     }
                     for identity in ids
                 ]
@@ -161,8 +192,220 @@ async def test_node_join_requires_each_exact_provider_identity(ids, ready):
 
     workspace.request = request
     assert (
-        await workspace.ready_nodes(None, {}, serving_plan(), {"i-one", "i-two"})
+        await workspace.ready_nodes(
+            node_operation(),
+            {},
+            serving_plan(),
+            observed_instances("i-11111111111111111", "i-22222222222222222"),
+        )
         is ready
+    )
+
+
+@pytest.mark.parametrize(
+    "allocatable,ready",
+    [
+        ({"nvidia.com/gpu": "1"}, True),
+        ({"nvidia.com/gpu": "2"}, True),
+        ({"nvidia.com/gpu": "1000m"}, True),
+        ({"nvidia.com/gpu": "1e0"}, True),
+        ({"nvidia.com/gpu": "500m"}, False),
+        ({"nvidia.com/gpu": "-1"}, False),
+        (None, False),
+        ({}, False),
+        ({"nvidia.com/gpu": "0"}, False),
+        ({"nvidia.com/gpu": "not-a-number"}, False),
+    ],
+)
+async def test_node_join_requires_sufficient_allocatable_gpu(allocatable, ready):
+    """A Ready, correctly-identified node is not yet usable for a GPU workload
+    until the device plugin has actually published allocatable nvidia.com/gpu
+    capacity meeting what the workload requested (serving_plan asks for 1)."""
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    plan.data["node_count"] = 1
+
+    async def request(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {"labels": node_labels()},
+                        "spec": {"providerID": "aws:///us-east-1a/i-11111111111111111"},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": allocatable,
+                        },
+                    }
+                ]
+            },
+        )
+
+    workspace.request = request
+    assert (
+        await workspace.ready_nodes(
+            node_operation(), {}, plan, observed_instances("i-11111111111111111")
+        )
+        is ready
+    )
+
+
+@pytest.mark.parametrize("allocatable", [{}, None, {"nvidia.com/gpu": "-1"}])
+async def test_node_join_gpu_requirement_is_skipped_for_cpu_only_workload(allocatable):
+    """A batch workload with gpu_count 0 must not be blocked on GPU capacity
+    that was never requested."""
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    plan.data["node_count"] = 1
+    plan.data["workload"]["gpu_count"] = 0
+
+    async def request(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {"labels": node_labels()},
+                        "spec": {"providerID": "aws:///us-east-1a/i-11111111111111111"},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": allocatable,
+                        },
+                    }
+                ]
+            },
+        )
+
+    workspace.request = request
+    assert (
+        await workspace.ready_nodes(
+            node_operation(), {}, plan, observed_instances("i-11111111111111111")
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "provider_scheme",
+        "provider_zone",
+        "provider_instance",
+        "provider_path",
+        "workspace",
+        "capacity",
+        "zone_label",
+        "region_label",
+        "missing_labels",
+        "unapproved_region",
+        "provider_zone_region",
+        "missing_placement",
+        "not_ready",
+        "null_spec",
+        "null_status",
+    ],
+)
+async def test_node_readiness_rejects_foreign_or_incomplete_location(change):
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    plan.data["node_count"] = 1
+    instances = observed_instances("i-11111111111111111")
+    node = {
+        "metadata": {"labels": node_labels()},
+        "spec": {"providerID": "aws:///us-east-1a/i-11111111111111111"},
+        "status": {
+            "conditions": [{"type": "Ready", "status": "True"}],
+            "allocatable": {"nvidia.com/gpu": "1"},
+        },
+    }
+    if change.startswith("provider_") and change != "provider_zone_region":
+        node["spec"]["providerID"] = {
+            "provider_scheme": "gce:///us-east-1a/i-11111111111111111",
+            "provider_zone": "aws:///us-west-2a/i-11111111111111111",
+            "provider_instance": "aws:///us-east-1a/i-22222222222222222",
+            "provider_path": "aws://us-east-1a/i-11111111111111111",
+        }[change]
+    elif change in {"workspace", "capacity", "zone_label", "region_label"}:
+        key = {
+            "workspace": "superplane.ai/workspace",
+            "capacity": "superplane.ai/capacity",
+            "zone_label": "topology.kubernetes.io/zone",
+            "region_label": "topology.kubernetes.io/region",
+        }[change]
+        node["metadata"]["labels"][key] = "foreign"
+    elif change == "missing_labels":
+        node["metadata"] = {}
+    elif change == "unapproved_region":
+        instances[0]["SuperplaneRegion"] = "us-west-2"
+        instances[0]["Placement"]["AvailabilityZone"] = "us-west-2a"
+        node["spec"]["providerID"] = "aws:///us-west-2a/i-11111111111111111"
+        node["metadata"]["labels"].update(
+            {
+                "topology.kubernetes.io/region": "us-west-2",
+                "topology.kubernetes.io/zone": "us-west-2a",
+            }
+        )
+    elif change == "provider_zone_region":
+        instances[0]["Placement"]["AvailabilityZone"] = "us-west-2a"
+        node["spec"]["providerID"] = "aws:///us-west-2a/i-11111111111111111"
+        node["metadata"]["labels"]["topology.kubernetes.io/zone"] = "us-west-2a"
+    elif change == "missing_placement":
+        instances[0].pop("Placement")
+    elif change == "not_ready":
+        node["status"]["conditions"][0]["status"] = "False"
+    elif change == "null_spec":
+        node["spec"] = None
+    elif change == "null_status":
+        node["status"] = None
+
+    async def request(*args, **kwargs):
+        return httpx.Response(200, json={"items": [node]})
+
+    workspace.request = request
+    assert await workspace.ready_nodes(node_operation(), {}, plan, instances) is False
+
+
+async def test_remote_ready_node_uses_observed_region_without_retargeting_cluster():
+    workspace = Workspace("/unused", "https://management.example")
+    plan = serving_plan()
+    plan.data["node_count"] = 1
+    plan.region_bindings = [{"region": "us-east-1"}, {"region": "us-west-2"}]
+    target = {"endpoint": "https://bound-east-cluster.example"}
+    instances = [
+        {
+            "InstanceId": "i-11111111111111111",
+            "SuperplaneRegion": "us-west-2",
+            "Placement": {"AvailabilityZone": "us-west-2b"},
+        }
+    ]
+    labels = {
+        **node_labels(),
+        "topology.kubernetes.io/region": "us-west-2",
+        "topology.kubernetes.io/zone": "us-west-2b",
+    }
+
+    async def request(operation, actual_target, method, path):
+        assert actual_target == target
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {"labels": labels},
+                        "spec": {"providerID": "aws:///us-west-2b/i-11111111111111111"},
+                        "status": {
+                            "conditions": [{"type": "Ready", "status": "True"}],
+                            "allocatable": {"nvidia.com/gpu": "1"},
+                        },
+                    }
+                ]
+            },
+        )
+
+    workspace.request = request
+    assert (
+        await workspace.ready_nodes(node_operation(), target, plan, instances) is True
     )
 
 
@@ -269,6 +512,13 @@ async def test_readiness_uses_original_uid_and_approved_image(workload_kind, cha
 
     async def request(operation, target, method, path, **kwargs):
         assert method == "GET"
+        if workload_kind == "batch" and "/pods" in path:
+            from workload_support import completed_job_pod
+
+            pod = completed_job_pod(root)
+            return httpx.Response(
+                200, json={"items": [pod]} if "/pods?" in path else pod
+            )
         if path in objects:
             return httpx.Response(200, json=objects[path])
         if "/secrets/" in path:

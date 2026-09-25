@@ -597,3 +597,124 @@ def test_network_profile_is_carried_unchanged_through_preview_and_teardown():
         stopped.parameters["controller_network_regions"]
         == preview.request.parameters["controller_network_regions"]
     )
+
+
+def probe_profile():
+    from superplane_executor.network_probe_contract import COMMAND
+
+    profile = profile_fixture(uuid4())
+    profile["model_options"] = {}
+    profile["serving_auth_contract"] = None
+    profile["workload"].update(
+        kind="batch", command=COMMAND, args=[], port=None, auth_secret=None
+    )
+    profile["network_probe"] = {
+        "version": 1,
+        "namespace": profile["namespace"],
+        "service_name": "acceptance",
+        "service_uid": "approved-service-uid",
+        "port": 8080,
+        "cidrs": ["172.20.1.4/32"],
+    }
+    return profile
+
+
+def test_network_probe_preview_binds_fresh_nonce_and_retains_original_replay():
+    from superplane_executor.network_probe_contract import read
+
+    profile = probe_profile()
+    preview, values = build(
+        profile,
+        workload_kind="batch",
+        model_options={},
+        batch_options={key: profile["workload"][key] for key in BATCH_FIELDS},
+    )
+    again = build_deployment_preview(**values)
+    assert again.request == preview.request
+    data = json.loads(preview.request.parameters["controller_plan"])
+    contract = read(
+        data,
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+        request_id=values["request_id"],
+        allocation_id=preview.request.parameters["allocation_id"],
+    )
+    assert contract["service_uid"] == "approved-service-uid"
+    assert contract["namespace"] == values["target"]["namespace"]
+    assert contract["cluster_arn"] == values["target"]["cluster_arn"]
+    assert (
+        preview.deployment_request["args"] == []
+    )  # Original caller request replays unchanged.
+    changed = build_deployment_preview(**{**values, "request_id": str(uuid4())})
+    new_contract = json.loads(
+        json.loads(changed.request.parameters["controller_plan"])["workload"]["args"][0]
+    )
+    assert new_contract["nonce"] != contract["nonce"]
+    retirement = teardown_request(
+        preview.request,
+        source_operation_id="original-operation",
+        request_id=str(uuid4()),
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    validate_request(
+        retirement,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["namespace", "cidr", "image", "command", "port", "args"]
+)
+def test_network_probe_profile_refuses_unapproved_surface(change):
+    profile = probe_profile()
+    if change == "namespace":
+        profile["network_probe"]["namespace"] = "another-tenant"
+    elif change == "cidr":
+        profile["network_probe"]["cidrs"] = ["0.0.0.0/0"]
+    elif change == "image":
+        profile["workload"]["image"] = "probe:latest"
+    elif change == "command":
+        profile["workload"]["command"] = ["sh"]
+    elif change == "port":
+        profile["network_probe"]["port"] = True
+    elif change == "args":
+        profile["workload"]["args"] = ["caller-controlled-nonce"]
+    with pytest.raises(OperationRefused):
+        build(
+            profile,
+            workload_kind="batch",
+            model_options={},
+            batch_options={key: profile["workload"][key] for key in BATCH_FIELDS},
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ["org_id", "workspace_id", "allocation_id", "nonce", "request_id"]
+)
+def test_network_probe_contract_rejects_cross_admission_substitution(field):
+    profile = probe_profile()
+    preview, values = build(
+        profile,
+        workload_kind="batch",
+        model_options={},
+        batch_options={key: profile["workload"][key] for key in BATCH_FIELDS},
+    )
+    parameters = dict(preview.request.parameters)
+    data = json.loads(parameters["controller_plan"])
+    contract = json.loads(data["workload"]["args"][0])
+    contract[field] = str(uuid4())
+    data["workload"]["args"] = [json.dumps(contract, separators=(",", ":"))]
+    parameters["controller_plan"] = json.dumps(data, separators=(",", ":"))
+    forged = OperationRequest(
+        action="provision", idempotency_key=values["request_id"], parameters=parameters
+    )
+    with pytest.raises(OperationRefused):
+        validate_request(
+            forged,
+            values["target"],
+            org_id=values["org_id"],
+            workspace_id=values["workspace_id"],
+        )

@@ -12,6 +12,8 @@ from .deployment_plan import (
     validate_request,
 )
 
+from .network_probe_contract import COMMAND as PROBE_COMMAND
+
 REGISTRY_TABLE = "controller_deployment_operations"
 
 
@@ -111,7 +113,15 @@ async def registration_values(
         elif (
             set(document) != BATCH_FIELDS | {"name", "profile_id", "kind"}
             or document["kind"] != "batch"
-            or any(document[key] != workload[key] for key in BATCH_FIELDS)
+            or any(
+                document[key]
+                != (
+                    []
+                    if key == "args" and workload["command"] == PROBE_COMMAND
+                    else workload[key]
+                )
+                for key in BATCH_FIELDS
+            )
             or intent["desired_replicas"] != 1
             or intent["gpu_per_replica"] != workload["gpu_count"]
             or any(intent[key] is not None for key in model_fields)
