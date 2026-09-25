@@ -75,3 +75,9 @@ variable "container_image_digest" {
     error_message = "container_image_digest must be an OCI sha256 digest."
   }
 }
+
+variable "endpoint_security_group_ids" {
+  description = "Existing private AWS endpoint security groups that admit Gbrain task HTTPS"
+  type        = set(string)
+  default     = []
+}
