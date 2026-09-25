@@ -123,6 +123,90 @@ class TestListWorkspaces:
         assert response.status_code in (401, 403)
 
 
+class TestListEligibleClusters:
+    """Test GET /workspaces/eligible-clusters — issue #6048."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, client):
+        response = await client.get("/workspaces/eligible-clusters")
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_route_is_not_shadowed_by_the_dynamic_workspace_id_route(self):
+        """`/eligible-clusters` must not be swallowed by `/{workspace_id}`.
+
+        Registered before `/{workspace_id}` in the router precisely to avoid
+        this; asserted directly against the workspaces router's own route
+        list (rather than the wrapped `app.routes`, whose FastAPI-internal
+        `_IncludedRouter` entries do not expose `.path`) so a reordering
+        during a future edit fails a test rather than 404ing silently in
+        production only for callers whose `workspace_id` happens to route
+        differently.
+        """
+        from app.routers.workspaces import router
+
+        paths = [route.path for route in router.routes]
+        assert paths.count("/workspaces/eligible-clusters") == 1
+        assert paths.index("/workspaces/eligible-clusters") < paths.index(
+            "/workspaces/{workspace_id}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_lists_only_this_organizations_explicitly_shared_clusters(
+        self, client
+    ):
+        from app.models.cluster import Cluster
+        from app.models.organization import Organization
+
+        org_id = uuid.uuid4()
+        other_org_id = uuid.uuid4()
+        shared_cluster_id = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add_all(
+                [
+                    Organization(id=org_id, name="org-eligible"),
+                    Organization(id=other_org_id, name="org-other-eligible"),
+                ]
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    Cluster(
+                        id=shared_cluster_id,
+                        org_id=org_id,
+                        name="shared-eligible",
+                        status="Ready",
+                        sharing_enabled=True,
+                        eks_cluster_arn="arn:aws:eks:us-east-1:000000000000:cluster/shared-eligible",
+                    ),
+                    Cluster(
+                        id=uuid.uuid4(),
+                        org_id=org_id,
+                        name="dedicated-not-eligible",
+                        status="Ready",
+                        sharing_enabled=False,
+                    ),
+                    Cluster(
+                        id=uuid.uuid4(),
+                        org_id=other_org_id,
+                        name="other-org-shared",
+                        status="Ready",
+                        sharing_enabled=True,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        response = await client.get(
+            "/workspaces/eligible-clusters", headers=_auth_header(org_id)
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert [c["id"] for c in body["clusters"]] == [str(shared_cluster_id)]
+        assert body["clusters"][0]["name"] == "shared-eligible"
+        assert body["clusters"][0]["member_count"] == 0
+
+
 class TestGetWorkspace:
     """Test GET /workspaces/{id}."""
 

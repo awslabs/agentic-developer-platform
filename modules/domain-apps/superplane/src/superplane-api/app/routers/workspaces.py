@@ -17,6 +17,8 @@ from app.models.cluster import Cluster
 from app.models.workspace import STATUS_ACTIVE, Workspace
 from app.schemas.workspace import (
     CreateWorkspaceRequest,
+    EligibleClusterListResponse,
+    EligibleClusterResponse,
     KubeconfigResponse,
     WorkspaceDeleteResponse,
     WorkspaceListResponse,
@@ -416,6 +418,38 @@ async def list_workspaces(
     return WorkspaceListResponse(
         workspaces=[_workspace_to_response(ws) for ws in workspaces],
         total=len(workspaces),
+    )
+
+
+@router.get("/eligible-clusters", response_model=EligibleClusterListResponse)
+async def list_eligible_clusters(
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+) -> EligibleClusterListResponse:
+    """List clusters the caller's organization may select for shared placement.
+
+    Issue #6048. Registered BEFORE ``/{workspace_id}`` so this literal path
+    segment is not swallowed by that route's dynamic parameter. Returns only
+    clusters explicitly ``sharing_enabled`` under the caller's own
+    authenticated organization — never another organization's, even one in
+    the same AWS account. See ``app/services/cluster_sharing.py``.
+    """
+    from app.services.cluster_sharing import (
+        list_eligible_clusters as resolve_eligible_clusters,
+    )
+
+    eligible = await resolve_eligible_clusters(db, org_id)
+    return EligibleClusterListResponse(
+        clusters=[
+            EligibleClusterResponse(
+                id=cluster.id,
+                name=cluster.name,
+                cluster_arn=cluster.cluster_arn,
+                platform_eligible=cluster.platform_eligible,
+                member_count=cluster.member_count,
+            )
+            for cluster in eligible
+        ]
     )
 
 

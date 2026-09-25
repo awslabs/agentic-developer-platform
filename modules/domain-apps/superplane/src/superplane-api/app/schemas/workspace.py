@@ -119,6 +119,30 @@ class WorkspaceListResponse(BaseModel):
     total: int
 
 
+class EligibleClusterResponse(BaseModel):
+    """One cluster the caller's organization may select for shared placement."""
+
+    id: uuid.UUID
+    name: str
+    cluster_arn: str | None = None
+    platform_eligible: bool = Field(
+        description="Whether this is ADP's management cluster, explicitly authorized"
+        " for tenant placement"
+    )
+    member_count: int = Field(description="Current live (non-removed) member count")
+
+
+class EligibleClusterListResponse(BaseModel):
+    """GET /workspaces/eligible-clusters — response.
+
+    Issue #6048. Shared placement selection at workspace creation lists only
+    what this endpoint returns: clusters explicitly `sharing_enabled` under the
+    caller's own authenticated organization. See `app/services/cluster_sharing.py`.
+    """
+
+    clusters: list[EligibleClusterResponse]
+
+
 class KubeconfigResponse(BaseModel):
     """POST /workspaces/{id}/kubeconfig — scoped kubeconfig."""
 
