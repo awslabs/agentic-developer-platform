@@ -53,3 +53,10 @@ ACCOUNT_PROVISIONING_DIR = (
 )
 if str(ACCOUNT_PROVISIONING_DIR) not in sys.path:
     sys.path.insert(0, str(ACCOUNT_PROVISIONING_DIR))
+
+# Credential and recovery tests must collect independently of the sibling
+# bootstrap suite; that suite's earlier imports are not a dependency contract.
+for package in ("workspace_bootstrap", "contracts"):
+    directory = Path(__file__).resolve().parents[2] / package
+    if str(directory) not in sys.path:
+        sys.path.insert(0, str(directory))
