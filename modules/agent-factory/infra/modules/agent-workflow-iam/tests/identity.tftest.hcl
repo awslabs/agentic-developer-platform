@@ -89,13 +89,25 @@ run "decryption_is_bound_to_secret_and_service" {
   command = plan
   assert {
     condition = one([for s in local.grants : s if s.Sid == "DeveloperSecretDecryption"]).Condition.StringEquals == {
-      "kms:ViaService" = "secretsmanager.us-east-1.amazonaws.com"
+      "kms:ViaService"                  = "secretsmanager.us-east-1.amazonaws.com"
       "kms:EncryptionContext:SecretARN" = local.secret_resources
     }
     error_message = "Decrypt must require Secrets Manager and only the two exact App secret contexts."
   }
   assert {
-    condition = length([for s in local.boundary : s if contains(["DenyDirectKeyDecryption", "DenyOtherSecretDecryption"], s.Sid)]) == 2
+    condition     = length([for s in local.boundary : s if contains(["DenyDirectKeyDecryption", "DenyOtherSecretDecryption"], s.Sid)]) == 2
     error_message = "The boundary must deny missing/wrong service and encryption context even if another policy allows decryption."
+  }
+  assert {
+    condition = one([for s in local.boundary : s if s.Sid == "DenyDirectKeyDecryption"]).Condition == {
+      StringNotEquals = { "kms:ViaService" = "secretsmanager.us-east-1.amazonaws.com" }
+    }
+    error_message = "Direct KMS decryption outside Secrets Manager must be denied."
+  }
+  assert {
+    condition = one([for s in local.boundary : s if s.Sid == "DenyOtherSecretDecryption"]).Condition == {
+      StringNotEquals = { "kms:EncryptionContext:SecretARN" = local.secret_resources }
+    }
+    error_message = "KMS decryption for non-App secrets must be denied."
   }
 }
