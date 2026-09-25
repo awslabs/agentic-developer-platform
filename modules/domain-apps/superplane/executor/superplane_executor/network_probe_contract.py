@@ -182,11 +182,79 @@ async def service(workspace, operation, target, contract):
         ) from None
 
 
+def closed_execution(pod, expected):
+    """An image digest does not pin code/resolvers hidden by injected mounts.
+
+    The generated batch template already disables API-token automount. This
+    probe has no volume, environment, sidecar or hook contract; none may be
+    introduced by admission and then used as evidence of the approved code.
+    Kubernetes defaults unrelated to execution (e.g. scheduling metadata and
+    imagePullSecrets) do not need an exception to these checks.
+    """
+    try:
+        actual = pod["spec"]
+        containers = actual["containers"]
+        if (
+            actual.get("automountServiceAccountToken") is not False
+            or any(
+                actual.get(key, []) != []
+                for key in ("volumes", "initContainers", "ephemeralContainers")
+            )
+            or any(
+                actual.get(key, False) is not False
+                for key in (
+                    "hostNetwork",
+                    "hostPID",
+                    "hostIPC",
+                    "shareProcessNamespace",
+                )
+            )
+            or actual.get("runtimeClassName") is not None
+            or actual.get("securityContext") != expected["securityContext"]
+            or actual.get("restartPolicy") != "Never"
+            or len(containers) != 1
+        ):
+            raise ValueError("probe Pod execution surface changed")
+        container, original = containers[0], expected["containers"][0]
+        if (
+            any(
+                container.get(key, [] if key == "args" else None) != original[key]
+                for key in ("name", "image", "command", "args", "securityContext")
+            )
+            or any(
+                container.get(key, []) != []
+                for key in ("env", "envFrom", "volumeMounts", "volumeDevices")
+            )
+            or any(
+                container.get(key) is not None
+                for key in (
+                    "workingDir",
+                    "lifecycle",
+                    "livenessProbe",
+                    "readinessProbe",
+                    "startupProbe",
+                )
+            )
+            or any(
+                container.get(key, False) is not False
+                for key in ("stdin", "stdinOnce", "tty")
+            )
+            or container.get("terminationMessagePath", "/dev/termination-log")
+            != "/dev/termination-log"
+            or container.get("terminationMessagePolicy", "File") != "File"
+        ):
+            raise ValueError("probe container execution surface changed")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise OperationRefused("approved probe execution surface changed") from None
+
+
 async def verify_result(
     workspace, operation, target, plan, contract, pod, content, authorize
 ):
     from .network_observation import pod_service
 
+    expected = workspace.objects(operation, target, plan)[0]["spec"]["template"]["spec"]
+    closed_execution(pod, expected)
     await authorize()
     original = await service(workspace, operation, target, contract)
     observation = await pod_service(
@@ -200,6 +268,7 @@ async def verify_result(
         endpoint=endpoint(contract),
         cidrs=contract["cidrs"],
         allocation_label=plan.cluster_name,
+        validate_pod=lambda current: closed_execution(current, expected),
     )
     try:
         retained = json.loads(content)

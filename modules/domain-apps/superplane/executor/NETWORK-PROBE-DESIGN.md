@@ -26,6 +26,14 @@ termination result. Service and Pod identities are reread before success.
 Probe evidence requires `ClusterFirst` DNS, no host aliases and no custom DNS
 configuration; injected hosts or resolvers cannot stand in for cluster DNS.
 The Pod specification must also remain unchanged across the receipt read.
+The actual probe Pod must retain the generated container image, invocation and
+security settings. It cannot add volumes/mounts, environment overrides, working
+directory overrides, lifecycle/probe hooks, init/ephemeral containers or alternate
+termination channels. Such changes could replace the probe code or resolver while
+leaving its image digest unchanged. The generated template already sets
+`automountServiceAccountToken: false`; the probe needs no API token or projected
+volume exemption. Normal Kubernetes scheduling metadata and image-pull references
+remain permitted. These restrictions apply only to the explicit probe profile.
 
 This proves this Pod's Service DNS/HTTP path and API-to-kubelet log access. It does
 not prove node-side EKS traffic, CUDA execution, every cluster route, or a new

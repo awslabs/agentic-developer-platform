@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -16,6 +17,7 @@ from superplane_executor.workspace import Workspace
     "change",
     [
         None,
+        "normal_defaults",
         "service_uid",
         "service_namespace",
         "service_ip",
@@ -25,6 +27,18 @@ from superplane_executor.workspace import Workspace
         "old_nonce",
         "wrong_dns_address",
         "host_network",
+        "hosts_mount",
+        "fetched_mount",
+        "module_mount",
+        "env",
+        "envFrom",
+        "workingDir",
+        "init",
+        "ephemeral",
+        "hook",
+        "automount",
+        "privileged",
+        "termination_path",
         "host_aliases",
         "custom_dns",
         "default_dns_policy",
@@ -63,6 +77,51 @@ async def test_probe_result_requires_original_service_and_matching_pod_log(chang
         "spec": {"nodeName": "allocated-node", "hostNetwork": False},
         "status": {"phase": "Succeeded"},
     }
+    from superplane_executor.network_probe_contract import COMMAND
+
+    operation = SimpleNamespace(
+        request=SimpleNamespace(
+            parameters={"controller_deployment_id": "probe-deployment"}
+        ),
+        grant=SimpleNamespace(
+            lease=SimpleNamespace(
+                workspace_id="workspace-a",
+                runtime_deadline=datetime.now(UTC) + timedelta(seconds=60),
+            )
+        ),
+        max_runtime_seconds=60,
+        plan_digest="a" * 64,
+    )
+    plan = SimpleNamespace(
+        cluster_name="allocation",
+        data={
+            "workload": {
+                "kind": "batch",
+                "name": "probe",
+                "image": "registry.example/probe@sha256:" + "a" * 64,
+                "command": COMMAND,
+                "args": [json.dumps(contract)],
+                "gpu_count": 1,
+                "cpu": "1",
+                "memory": "1Gi",
+            }
+        },
+    )
+    pod["spec"] = workspace.objects(operation, {"namespace": "tenant"}, plan)[0][
+        "spec"
+    ]["template"]["spec"]
+    pod["spec"]["nodeName"] = "allocated-node"
+    if change == "normal_defaults":
+        pod["spec"].update(
+            serviceAccountName="default",
+            schedulerName="default-scheduler",
+            imagePullSecrets=[{"name": "approved-pull-secret"}],
+        )
+        pod["spec"]["containers"][0].update(
+            imagePullPolicy="IfNotPresent",
+            terminationMessagePath="/dev/termination-log",
+            terminationMessagePolicy="File",
+        )
     value = {
         "version": 1,
         "nonce": "fresh",
@@ -87,6 +146,42 @@ async def test_probe_result_requires_original_service_and_matching_pod_log(chang
     elif change == "wrong_dns_address":
         value["addresses"] = ["172.20.9.9"]
         value["responses"][0]["address"] = "172.20.9.9"
+    elif change in {"hosts_mount", "module_mount"}:
+        pod["spec"]["volumes"] = [
+            {"name": "injected", "configMap": {"name": "replacement"}}
+        ]
+        pod["spec"]["containers"][0]["volumeMounts"] = [
+            {
+                "name": "injected",
+                "mountPath": "/etc/hosts"
+                if change == "hosts_mount"
+                else "/opt/probe/superplane_executor",
+            }
+        ]
+    elif change == "env":
+        pod["spec"]["containers"][0]["env"] = [
+            {"name": "PYTHONPATH", "value": "/injected"}
+        ]
+    elif change == "envFrom":
+        pod["spec"]["containers"][0]["envFrom"] = [
+            {"configMapRef": {"name": "injected"}}
+        ]
+    elif change == "workingDir":
+        pod["spec"]["containers"][0]["workingDir"] = "/tmp"
+    elif change in {"init", "ephemeral"}:
+        pod["spec"]["initContainers" if change == "init" else "ephemeralContainers"] = [
+            {"name": "injected", "image": "unapproved:latest"}
+        ]
+    elif change == "hook":
+        pod["spec"]["containers"][0]["lifecycle"] = {
+            "postStart": {"exec": {"command": ["sh", "-c", "overwrite-probe"]}}
+        }
+    elif change == "automount":
+        pod["spec"]["automountServiceAccountToken"] = True
+    elif change == "privileged":
+        pod["spec"]["containers"][0]["securityContext"]["privileged"] = True
+    elif change == "termination_path":
+        pod["spec"]["containers"][0]["terminationMessagePath"] = "/injected-result"
     elif change == "host_network":
         pod["spec"]["hostNetwork"] = True
     elif change == "host_aliases":
@@ -119,6 +214,10 @@ async def test_probe_result_requires_original_service_and_matching_pod_log(chang
             )
         pod_reads += 1
         current = deepcopy(pod)
+        if change == "fetched_mount":
+            current["spec"]["containers"][0]["volumeMounts"] = [
+                {"name": "injected", "mountPath": "/etc/hosts"}
+            ]
         if change == "pod_replaced" and pod_reads > 1:
             current["metadata"]["uid"] = "replacement"
         return httpx.Response(200, json=current)
@@ -132,15 +231,15 @@ async def test_probe_result_requires_original_service_and_matching_pod_log(chang
     workspace.request = request
     call = verify_result(
         workspace,
-        None,
+        operation,
         {"namespace": "tenant"},
-        SimpleNamespace(cluster_name="allocation"),
+        plan,
         contract,
         pod,
         content,
         authorize,
     )
-    if change is None:
+    if change in {None, "normal_defaults"}:
         await call
         assert service_reads == 2 and pod_reads == 2 and authority_checks == 2
     else:
