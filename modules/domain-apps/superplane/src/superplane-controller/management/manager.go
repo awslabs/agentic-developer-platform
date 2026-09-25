@@ -25,6 +25,9 @@ import (
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Target struct {
+	SharedMembership     bool                  `json:"shared_membership,omitempty"`
+	PlatformEligible     bool                  `json:"platform_eligible,omitempty"`
+	MembershipCredential *MembershipCredential `json:"membership_credential,omitempty"`
 	Provisional          bool                  `json:"provisional,omitempty"`
 	BootstrapOperationID string                `json:"bootstrap_operation_id,omitempty"`
 	RegistrationClaim    string                `json:"registration_claim,omitempty"`
@@ -51,10 +54,11 @@ type registry struct {
 }
 
 type BootstrapObservation struct {
-	BootstrapOperationID string `json:"bootstrap_operation_id"`
-	RegistrationClaim    string `json:"registration_claim"`
-	ClusterARN           string `json:"cluster_arn"`
-	Namespace            string `json:"namespace"`
+	MembershipCredential *MembershipCredential `json:"membership_credential,omitempty"`
+	BootstrapOperationID string                `json:"bootstrap_operation_id"`
+	RegistrationClaim    string                `json:"registration_claim"`
+	ClusterARN           string                `json:"cluster_arn"`
+	Namespace            string                `json:"namespace"`
 }
 
 type Snapshot struct {
@@ -236,7 +240,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	for _, target := range result.Targets {
 		snapshot.Targets[target.WorkspaceID] = m.inspect(probeCtx, target)
 		if snapshot.Targets[target.WorkspaceID] == "observed_execution_unavailable" && target.Provisional {
-			snapshot.BootstrapObservations[target.WorkspaceID] = BootstrapObservation{BootstrapOperationID: target.BootstrapOperationID, RegistrationClaim: target.RegistrationClaim, ClusterARN: target.ClusterARN, Namespace: target.Namespace}
+			snapshot.BootstrapObservations[target.WorkspaceID] = BootstrapObservation{BootstrapOperationID: target.BootstrapOperationID, RegistrationClaim: target.RegistrationClaim, ClusterARN: target.ClusterARN, Namespace: target.Namespace, MembershipCredential: target.MembershipCredential}
 		}
 		if snapshot.Targets[target.WorkspaceID] == "observed_execution_unavailable" && !target.Provisional && snapshot.GovernedProvisioning {
 			snapshot.Targets[target.WorkspaceID] = "workspace_verified"

@@ -114,7 +114,7 @@ func (m *Manager) workloadObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rules, err := client.AuthorizationV1().SelfSubjectRulesReviews().Create(ctx, &authorizationv1.SelfSubjectRulesReview{Spec: authorizationv1.SelfSubjectRulesReviewSpec{Namespace: target.Namespace}}, metav1.CreateOptions{})
-	if err != nil || !readOnlyWorkspaceRules(rules.Status) {
+	if err != nil || !scopedReaderRules(rules.Status, target.SharedMembership) || (target.SharedMembership && !sharedServiceAccount(ctx, client, target)) {
 		http.Error(w, "workload read authority refused", 503)
 		return
 	}
