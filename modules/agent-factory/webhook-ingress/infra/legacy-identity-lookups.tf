@@ -48,7 +48,5 @@ resource "aws_dynamodb_table_item" "webhook_identity_lookup" {
     scope       = { S = "internal" }
     status      = { S = "active" }
     description = { S = "Webhook ingress canonical installation and user identity lookups; no model or credential grants." }
-    created_at  = { S = "2026-09-25T00:00:00Z" }
-    updated_at  = { S = "2026-09-25T00:00:00Z" }
   })
 }
