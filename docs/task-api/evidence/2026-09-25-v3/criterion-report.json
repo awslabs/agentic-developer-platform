@@ -111,5 +111,40 @@
   "resolved_defects": [
     "PR6029 immutable attempt history, native19check rerun and exact installedmodule parity verified",
     "Production HTTP response timeout fixed and actual installed-image TCP bounded-write/replay fixture passed"
+  ],
+  "execution_records": [
+    {
+      "lane": "native AWS, independent root evaluator",
+      "command": "cd modules/gateway && PYTHONPATH=. WEBHOOK_EVENTS_TABLE=adp-dev-webhook-events AGENT_AUTHORITY_TABLE=adp-dev-agent-authority AWS_REGION=us-east-1 python ../../docs/task-api/evidence/2026-09-25-v3/native_fault_fixture.py --apply",
+      "source_sha": "d8b8a793774f9390c0f28da2499dc9d541b6e369",
+      "exit_code": 0,
+      "checks": 19,
+      "skipped": 0,
+      "artifact": "native-fault-actual-final.jsonl"
+    },
+    {
+      "lane": "installed image actual TCP, runtime_contracts evaluator",
+      "command": "python fixture.py inside isolated Pod; exact image, Pod specification and NetworkPolicy retained in stream-installed/",
+      "exit_code": 0,
+      "bounded_events": 2049,
+      "artifact": "stream-installed/result.json"
+    },
+    {
+      "lane": "deterministic canonical storage/runtime, patch author",
+      "command": "cd modules/gateway && PYTHONPATH=. python -m pytest tests/tasks/test_store.py tests/agentauth/test_task_runtime.py -q",
+      "source_sha": "60282c835",
+      "exit_code": 0,
+      "tests": 145,
+      "failures": 0,
+      "skipped": 0,
+      "seconds": 20.25
+    },
+    {
+      "lane": "deterministic integrated final source, independent root evaluator",
+      "tests": 221,
+      "exit_code": 0,
+      "source_sha": "d8b8a793774f9390c0f28da2499dc9d541b6e369",
+      "evidence_owner": "root final integrated build verification"
+    }
   ]
 }
