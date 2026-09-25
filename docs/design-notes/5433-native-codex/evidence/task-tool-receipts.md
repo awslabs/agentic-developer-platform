@@ -197,3 +197,29 @@ No real repository story, live model qualification, deployment or persona rollou
 is certified by these fixtures. Concrete repository/validation/AWS/delegation
 brokers, completion policies, OTLP operational observability and live quality,
 cost and latency acceptance remain outstanding.
+
+
+## Executable persona completion gate
+
+Shared sessions now require a host completion validator for every non-report
+persona and require its explicit successful result before returning completion.
+The validator receives no model-authored final answer. This prevents a configured
+developer/reviewer persona from inheriting the generic report-only finish path.
+The current Task entrypoint does not provide that validator, so those personas
+remain unavailable there until their concrete completion adapter is wired.
+
+`verifyRepositoryCompletion` implements shared developer/reviewer checks over
+host-read durable evidence: the admitted repository/source, assigned PR/MR,
+clean final commit, every immutable acceptance criterion, and every required
+check with its specification/environment digests. Developer completion requires
+an open, ready change. Reviewer completion additionally requires an approval and
+zero unresolved findings for the final head, satisfied protections and a confirmed
+merge of that reviewed head. Authority is checked before and after reading the
+evidence. Models cannot supply these records through their final prose.
+
+All 84 shared harness/IPC tests pass, including 23 completion tests covering stale,
+missing, conflicting and foreign evidence, authority revocation and refusal before
+inference when the host validator is missing. TypeScript builds successfully.
+This is a shared verifier and session gate, not a complete developer/reviewer
+implementation. Concrete durable evidence readers, repository tools, isolated
+validation workspaces and live story qualification remain outstanding.

@@ -16,6 +16,9 @@ export interface SessionHost {
   assertCurrent(signal: AbortSignal): Promise<void>;
   model: TextResponsesHost;
   progress(event: Progress): Promise<void>;
+  /** Trusted invocation adapter checks durable persona completion evidence.
+   * No model response is passed here. Required for every non-report persona. */
+  verifyCompletion?(signal: AbortSignal): Promise<true>;
   /** Reviewed invocation adapter; execute must use gateway authorization,
    * durable mutation receipts and host-isolated workspaces. */
   toolBroker?: {
@@ -53,6 +56,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
   const snapshot = verifySnapshot(input.snapshot);
   const policy = structuredClone(input.policy);
   const source = structuredClone(input.source);
+  const verifyCompletion = host.verifyCompletion?.bind(host);
   const suppliedBroker = host.toolBroker;
   const broker = suppliedBroker ? {
     definitions: Object.freeze(suppliedBroker.definitions.map(tool => Object.freeze({ ...tool, ...(tool.parameters ? { parameters: structuredClone(tool.parameters) } : {}), input: tool.input.strict() }))),
@@ -61,7 +65,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
   } : undefined;
   const repository = input.repository ? structuredClone(input.repository) : undefined;
   const plan = planVerifiedRun(snapshot, policy, source, repository, broker?.repositoryCapabilities ?? [], Date.now());
-  if ((!broker && plan.persona.completionPolicy !== "report")
+  if ((plan.persona.completionPolicy !== "report" && (!broker || !verifyCompletion))
     || plan.capabilities.some(value => value !== "artifacts.publish" && !broker?.definitions.some(tool => tool.capability === value))) {
     throw new Error("Session requires the executable capability broker");
   }
@@ -133,6 +137,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       timeoutMs: plan.limits.maxDurationMs, maxInputBytes: plan.limits.maxContextBytes,
       maxOutputBytes: maxResponseBytes, signal,
     }, event => host.progress(event));
+    if (plan.persona.completionPolicy !== "report" && await verifyCompletion!(signal) !== true) throw new Error("Persona completion evidence was not verified");
     await host.assertCurrent(signal);
     signal.throwIfAborted();
     return evidence;
