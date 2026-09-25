@@ -244,6 +244,49 @@ class TaskModel:
                 return existing, False
             raise TaskStoreError("model operation claim refused") from None
 
+    def _command_handoff_items(self, operation, updated, task):
+        if updated.get("handoff") == operation.get("handoff"):
+            return []
+        from src.tasks.task_commands import TaskCommands
+
+        commands = TaskCommands(self.repository)
+        linked = [
+            row for row in commands.commands(operation["task_id"]) if row.get("turn_id") == operation["turn_id"] and row.get("status") == "consumed"
+        ]
+        sequence = int(task["event_sequence"])
+        if sequence + len(linked) > 10000:
+            raise TaskStoreError("task event budget exhausted")
+        now = self.clock().strftime("%Y-%m-%dT%H:%M:%SZ")
+        items = []
+        for offset, row in enumerate(linked, 1):
+            changed = {**row, "handoff": updated["handoff"], "updated_at": now}
+            put = commands._put(changed)
+            put["Put"].update(
+                ConditionExpression="turn_id = :turn AND #status = :consumed AND handoff = :previous",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues=_serialize({":turn": operation["turn_id"], ":consumed": "consumed", ":previous": row["handoff"]}),
+            )
+            items.append(put)
+            event = self.repository._event_item(
+                task_id=operation["task_id"],
+                scope=task["scope"],
+                sequence=sequence + offset,
+                kind="command.updated",
+                invocation_id=operation["invocation_id"],
+                generation=int(operation["generation"]),
+                runtime_attempt_id=operation["runtime_attempt_id"],
+                timestamp=now,
+                data={
+                    "command_id": row["command_id"],
+                    "command_status": "consumed",
+                    "handoff": updated["handoff"],
+                    "turn_id": operation["turn_id"],
+                    "turn_number": row["turn_number"],
+                },
+            )
+            items.append(commands._put(event))
+        return items
+
     def _save(self, operation, *, authorize_identity=None, **updates):
         updated = {**operation, **updates}
         # Provider evidence belongs to the claimed operation even if cancellation
@@ -256,6 +299,7 @@ class TaskModel:
                 if authorize_identity
                 else []
             )
+            command_items = self._command_handoff_items(operation, updated, task)
             try:
                 self.repository._client.transact_write_items(
                     TransactItems=[
@@ -277,13 +321,21 @@ class TaskModel:
                             "Update": {
                                 "TableName": self.repository.table_name,
                                 "Key": _serialize({"event_id": task_partition(operation["task_id"]), "arrived_at": "META"}),
-                                "UpdateExpression": "SET #version = :next",
-                                "ConditionExpression": "#version = :version",
+                                "UpdateExpression": "SET #version = :next, event_sequence = :events",
+                                "ConditionExpression": "#version = :version AND event_sequence = :old_events",
                                 "ExpressionAttributeNames": {"#version": "version"},
-                                "ExpressionAttributeValues": _serialize({":version": int(task["version"]), ":next": int(task["version"]) + 1}),
+                                "ExpressionAttributeValues": _serialize(
+                                    {
+                                        ":version": int(task["version"]),
+                                        ":next": int(task["version"]) + 1,
+                                        ":events": int(task["event_sequence"]) + len(command_items) // 2,
+                                        ":old_events": int(task["event_sequence"]),
+                                    }
+                                ),
                             }
                         },
                     ]
+                    + command_items
                     + authority_checks
                 )
                 return updated
