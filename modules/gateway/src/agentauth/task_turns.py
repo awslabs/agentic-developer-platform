@@ -42,7 +42,7 @@ class TaskTurnStore:
             "pending_input_count": pending,
         }
 
-    def commit(self, *, identity, request_id, expected_transcript_version):
+    def commit(self, *, identity, request_id, expected_transcript_version, allow_autonomous=False):
         task = self.repository.read_task(identity.task_id)
         if task is None or (task["invocation_id"], int(task["generation"]), task.get("runtime_attempt_id")) != (
             identity.invocation_id,
@@ -50,6 +50,8 @@ class TaskTurnStore:
             identity.runtime_attempt_id,
         ):
             raise TaskStoreError("task attempt changed")
+        if type(allow_autonomous) is not bool or (allow_autonomous and task["persona"] != "agent-task-cyber"):
+            raise TaskStoreError("autonomous turn requires cyber persona")
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         existing = next((turn for turn in self.list_turns(identity.task_id) if turn["turn_id"] == request_id), None)
         if existing:
@@ -74,12 +76,14 @@ class TaskTurnStore:
             key=lambda row: int(row["command_sequence"]),
         )
         pending = len(commands)
-        if not count:
-            commands = []  # Initial immutable input is its own turn.
+        if not count or allow_autonomous:
+            # A model continuation is already composed; deliver caller input through
+            # the normal input turn before allowing the child to consume it.
+            commands = []
         if pending > 10:
             raise TaskStoreError("pending input bound exceeded")
-        if not commands and count:
-            return {"schema_version": "1.0", "operation_status": "waiting", "turn": None, "messages": [], "pending_input_count": 0}
+        if not commands and count and (not allow_autonomous or task["state"] == "waiting_for_input"):
+            return {"schema_version": "1.0", "operation_status": "waiting", "turn": None, "messages": [], "pending_input_count": pending}
         if any(row.get("authority_expires_at", "") <= now for row in commands):
             raise TaskStoreError("input authority expired")
         messages = [

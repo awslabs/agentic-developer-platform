@@ -88,7 +88,7 @@ def main(kind="serving"):
                     ) as response:
                         assert response.status == 200
                     break
-                except URLError:
+                except (URLError, ConnectionResetError):
                     if time.monotonic() > deadline:
                         raise RuntimeError(
                             "fixture frontend did not become available"

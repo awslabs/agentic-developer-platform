@@ -325,7 +325,10 @@ See [Cyber Task setup and input formats](task-cyber-sdk.md).
 
 ## 10. Limits and error handling
 
-Pilot limits below are maxima; the administrator may apply stricter policy.
+Limits below are maxima; the administrator may apply stricter policy. Existing
+principal policies keep their configured duration until explicitly updated.
+A new task gets a deadline of acceptance time plus that duration. Changing policy
+does not extend an already accepted task.
 
 | Input or resource | Limit |
 | --- | --- |
@@ -334,7 +337,7 @@ Pilot limits below are maxima; the administrator may apply stricter policy.
 | Input artifacts | 4 files, each at most 256 KiB; 1 MiB total |
 | Follow-up text | 4,000 characters |
 | Cancellation reason | 1,000 characters |
-| Task lifetime | Up to 30 minutes, including queue/input waits |
+| Task lifetime | Up to 6 hours, configured per principal and including queue/input waits |
 | Model turns | Up to 8 |
 | Concurrent executions | Up to 2 per principal |
 | SSE connections | Up to 2 per task, 10 per principal |

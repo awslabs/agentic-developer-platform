@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime, timedelta
 import json
 import sys
 from pathlib import Path
@@ -59,7 +60,10 @@ def transport(monkeypatch):
     )
     calls = []
     responses = [
-        {"run_credential": "run-secret"},
+        {"schema_version":"1.0", "task_id":"task-test", "invocation_id":"invocation-test", "generation":1,
+         "persona":"agent-task-cyber", "run_credential":"run-secret",
+         "run_credential_expires_at":(datetime.now(UTC)+timedelta(seconds=900)).isoformat(),
+         "deadline_at":(datetime.now(UTC)+timedelta(hours=6)).isoformat()},
         {"operation_status": "confirmed"},
         {"operation_status": "confirmed"},
     ]
@@ -97,7 +101,7 @@ def transport(monkeypatch):
 def test_bootstrap_has_only_workload_proof_run_calls_add_opaque_credential(transport):
     calls, proof = transport
     run = client.TaskRunClient()
-    assert run.bootstrap({"schema_version": "1.0"}) == {"run_credential": "run-secret"}
+    assert run.bootstrap({"schema_version": "1.0", "task_id":"task-test", "invocation_id":"invocation-test"})["run_credential"] == "run-secret"
     run.attempt({"schema_version": "1.0"})
     run.settlement({"schema_version": "1.0"})
     bootstrap, attempt, settlement = calls
@@ -143,3 +147,119 @@ def test_model_wire_preserves_utf8_instead_of_expanding_unicode(transport):
     assert b"\\u20ac" not in wire
     assert len(wire) < 32000
     assert json.loads(wire) == body
+
+
+def test_cyber_uses_configured_iam_service_with_host_credentials(transport, monkeypatch):
+    calls, proof = transport
+    endpoint = 'https://cyber.execute-api.us-east-1.amazonaws.com/dev/tools/cyber'
+    monkeypatch.setenv(client.CYBER_TOOLS_ENDPOINT_ENV, endpoint)
+    run = client.TaskRunClient()
+    run._run_credential = 'opaque-run-credential'
+    body = {'operation': 'triage', 'payload': {'url': 'https://attacker.example/tools/cyber'}}
+    run.cyber(body)
+    url, request, trust_env = calls[-1]
+    assert url == endpoint
+    assert json.loads(request['data']) == body
+    assert request['headers'][client.RUN_CREDENTIAL_HEADER] == 'opaque-run-credential'
+    assert request['headers'][client.WORKLOAD_HEADER] == proof
+    authorization = request['headers']['Authorization']
+    assert authorization.startswith('AWS4-HMAC-SHA256 ')
+    assert '/us-east-1/execute-api/aws4_request' in authorization
+    assert 'x-adp-run-credential' in authorization and 'x-adp-workload-token' in authorization
+    assert trust_env is False and request['allow_redirects'] is False
+    run.model({'messages': []})
+    assert calls[-1][0].endswith('/task/model')
+
+
+@pytest.mark.parametrize('endpoint', [
+    '', 'http://cyber.example/tools/cyber', 'https://cyber.example/task/cyber',
+    'https://cyber.example/tools/cyber/', 'https://cyber.example/tools/cyber?redirect=x',
+    'https://user:secret@cyber.example/tools/cyber', 'https://cyber.example/tools/cyber#fragment',
+    'https://cyber.example/../tools/cyber', 'https://cyber.example/%2e%2e/tools/cyber',
+    'https://cyber.example:8443/tools/cyber', 'https://cyber.example/tools/cyber?',
+    'https://cyber.example/\ntools/cyber', 'https://cyber.example:bad/tools/cyber',
+])
+def test_invalid_or_missing_cyber_endpoint_never_falls_back(transport, monkeypatch, endpoint):
+    calls, _ = transport
+    monkeypatch.setenv(client.CYBER_TOOLS_ENDPOINT_ENV, endpoint)
+    run = client.TaskRunClient()
+    run._run_credential = 'opaque-run-credential'
+    with pytest.raises(client.TaskRunClientError, match='cyber tools endpoint unavailable'):
+        run.cyber({'operation': 'cancel_jobs', 'payload': {}})
+    assert calls == []
+
+
+def test_cyber_requires_run_binding_and_freezes_host_endpoint(transport, monkeypatch):
+    calls, _ = transport
+    endpoint = 'https://cyber.example/tools/cyber'
+    monkeypatch.setenv(client.CYBER_TOOLS_ENDPOINT_ENV, endpoint)
+    run = client.TaskRunClient()
+    monkeypatch.setenv(client.CYBER_TOOLS_ENDPOINT_ENV, 'https://changed.example/tools/cyber')
+    with pytest.raises(client.TaskRunClientError, match='run credential unavailable'):
+        run.cyber({})
+    assert not calls
+    run._run_credential = 'opaque-run-credential'
+    run.cyber({})
+    assert calls[-1][0] == endpoint
+
+
+def test_cyber_service_configuration_is_not_in_sdk_environment(monkeypatch, tmp_path):
+    from lib.task_host import _child_environment
+
+    monkeypatch.setenv(client.CYBER_TOOLS_ENDPOINT_ENV, 'https://cyber.example/tools/cyber')
+    monkeypatch.setenv('X_ADP_RUN_CREDENTIAL', 'opaque-run-credential')
+    monkeypatch.setenv('AWS_SECRET_ACCESS_KEY', 'host-secret')
+    environment = _child_environment(tmp_path, sdk=True)
+    assert client.CYBER_TOOLS_ENDPOINT_ENV not in environment
+    assert 'X_ADP_RUN_CREDENTIAL' not in environment
+    assert 'AWS_SECRET_ACCESS_KEY' not in environment
+    assert environment['ADP_TASK_NETWORK'] == 'host-mediated-sdk'
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_control_transient_failure_retries_identical_read_then_preserves_cancel(transport, monkeypatch, cancel):
+    run = client.TaskRunClient()
+    run._run_credential = 'host-only-credential'
+    requests, delays = [], []
+    def post(action, body, **kwargs):
+        requests.append((action, dict(body), kwargs))
+        if len(requests) < 3:
+            raise client.TaskRunClientUnavailable('edge 502')
+        return {'cancel_requested': cancel, 'attempt_valid': True}
+    monkeypatch.setattr(run, '_post', post)
+    monkeypatch.setattr(client.time, 'sleep', delays.append)
+    body = {'attempt': {'runtime_attempt_id': 'bound'}, 'last_receipt_cursor': 'cursor'}
+    result = run.control(body)
+    assert result['cancel_requested'] is cancel and run._stopping is cancel
+    assert len(requests) == 3 and all(request == requests[0] for request in requests)
+    assert requests[0] == ('control', body, {'run_bound': True})
+    assert delays == [0.1, 0.2] and sum(delays) < 1
+
+
+@pytest.mark.parametrize('error_type,expected_attempts', [(client.TaskRunClientUnavailable, 3), (client.TaskRunClientError, 1)])
+def test_control_exhaustion_and_refusal_remain_fail_closed(transport, monkeypatch, error_type, expected_attempts):
+    run = client.TaskRunClient()
+    calls, delays = [], []
+    def post(action, body, **kwargs):
+        calls.append(action)
+        raise error_type('refused or unavailable')
+    monkeypatch.setattr(run, '_post', post)
+    monkeypatch.setattr(client.time, 'sleep', delays.append)
+    with pytest.raises(error_type):
+        run.control({})
+    assert calls == ['control'] * expected_attempts
+    assert len(delays) == expected_attempts - 1
+    assert not run._stopping
+
+
+def test_control_retry_does_not_extend_to_model_or_cyber_operations(transport, monkeypatch):
+    run = client.TaskRunClient()
+    calls = []
+    def post(action, body, **kwargs):
+        calls.append(action)
+        raise client.TaskRunClientUnavailable('unknown effect')
+    monkeypatch.setattr(run, '_post', post)
+    for operation in (run.model, run.cyber):
+        with pytest.raises(client.TaskRunClientUnavailable):
+            operation({'request_id':'same-operation'})
+    assert calls == ['model', 'cyber']

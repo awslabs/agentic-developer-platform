@@ -25,9 +25,9 @@ gateway_authority_managed_policies = true
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
 
-# Protected worker image source e0ba2fad854861c7967aa8843720c9511ac5bc14; includes Task API and remote-control fixes.
+# Protected worker image source f1c9c66d92031409da8fe75f2e1019275b5d3a22; includes exact citation feedback and bounded control retries.
 # Browser broker keeps its independently reviewed image below.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f"
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:e25a54c3037f9bde26a3aa400e3af9bf367288e7a6977cece2d508f5f259fe27"
 
 # The matching broker and worker support session-owner capabilities.
 domain_app_images = {
@@ -38,6 +38,10 @@ domain_app_settings = {
   cyber = {
     common_crawl_partitions = "CC-MAIN-2026-39,CC-MAIN-2026-34,CC-MAIN-2026-30,CC-MAIN-2026-25,CC-MAIN-2026-21,CC-MAIN-2026-17"
     session_owner_routing   = "true"
+    # Retain the observed native-browser rollout and drained legacy broker.
+    browser_mode           = "native"
+    browser_broker_enabled = "false"
+    tools_endpoint         = "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/tools/cyber"
   }
 }
 
@@ -65,7 +69,20 @@ agent_legacy_worker_admin_retired      = true
 agent_worker_admission_paused          = false
 shared_run_reporting_enabled           = true
 shared_worker_continuation_enabled     = false
-agent_authority_worker_image_digests   = ["sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f"]
+agent_authority_worker_image_digests   = ["sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f", "sha256:2923326ff83e0335cbf9e17a0c0f80b6c2ab0b01c70c76fac9fd059851b6eb94", "sha256:3d19d3fba77538bba11d57c9ef05026e54b70bf465515bca42746f3534cf96e4", "sha256:6beab1ad04b9249aa72b2f25bf6b8bbfc3f8ecfc82eac250ac2eb8e083819d67", "sha256:e25a54c3037f9bde26a3aa400e3af9bf367288e7a6977cece2d508f5f259fe27", "sha256:f14998af44cc77df24365371675ffe7fef54878d7a254c83e65a9dcbcbfdbabe", "sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d"]
+
+# Six-hour Task deadline plus startup/cleanup headroom for the owning pod.
+agent_pod_deadline_seconds = 22200
+
+# Only the qualified stage workers are enabled; CAPE/browser/VT remain gated.
+task_persona_tools = {
+  agent-task-cyber = ["cyber.triage", "cyber.static", "cyber.result"]
+}
+
+# Independent tool service; protected workers receive only this exact route.
+task_tool_invoke_resources = [
+  "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/tools/cyber"
+]
 
 # Authenticated Agent Activity explanation stream; independent of mutation controls.
 agent_explanations_enabled = true

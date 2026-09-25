@@ -16,10 +16,15 @@ _SERIALIZER = TypeSerializer()
 _DESERIALIZER = TypeDeserializer()
 AUTHORITY_TABLE_ENV = "AGENT_AUTHORITY_TABLE"
 TASK_SCOPES = {"submit", "read", "input", "cancel", "artifacts"}
-MAX_DURATION_MINUTES = 30
+MAX_DURATION_MINUTES = 360
 MAX_TURNS = 8
 MAX_OUTPUT_TOKENS = 4096
 MAX_USD = 1
+
+
+def _valid_duration(value):
+    integer = type(value) is int or isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value()
+    return integer and 0 < value <= MAX_DURATION_MINUTES
 
 
 class TaskServicePolicyError(Exception):
@@ -64,6 +69,9 @@ class TaskServicePolicyStore:
             name: _DESERIALIZER.deserialize(value) for name, value in item.items() if name not in {"pk", "sk", "scope", "record_type", "personas"}
         }
         document["tenant_id"] = tenant_id
+        limits = document.get("limits")
+        if not isinstance(limits, dict) or not _valid_duration(limits.get("max_duration_minutes")):
+            raise TaskServicePolicyError("corrupt_policy")
         return document
 
     def put(
@@ -147,6 +155,10 @@ class TaskServicePolicyStore:
 def _validate_policy(policy: dict) -> None:
     if policy.get("status") not in {"active", "disabled"}:
         raise TaskServicePolicyError("invalid_policy")
+    from src.agentauth.task_tool_policy import valid_tools
+
+    if not valid_tools(policy.get("allowed_tools", [])):
+        raise TaskServicePolicyError("invalid_policy")
     personas = policy.get("allowed_personas")
     scopes = policy.get("task_scopes")
     if not isinstance(personas, list) or not personas or len(personas) > 16 or len(set(personas)) != len(personas):
@@ -159,6 +171,8 @@ def _validate_policy(policy: dict) -> None:
         raise TaskServicePolicyError("invalid_policy")
     limits = policy.get("limits")
     if not isinstance(limits, dict) or set(limits) != {"max_duration_minutes", "max_turns", "max_output_tokens_per_turn", "max_usd_per_task"}:
+        raise TaskServicePolicyError("invalid_policy")
+    if not _valid_duration(limits["max_duration_minutes"]):
         raise TaskServicePolicyError("invalid_policy")
     ceilings = {
         "max_duration_minutes": MAX_DURATION_MINUTES,

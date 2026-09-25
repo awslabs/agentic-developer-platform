@@ -68,7 +68,9 @@ export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../
         if (job && receipt.result?.status === 'pending') unfinishedJobs.add(job);
         if (operation === 'result' && receipt.operation_status === 'confirmed' &&
             ['completed', 'failed', 'cancelled'].includes(receipt.result?.status)) unfinishedJobs.delete(payload.job_id);
-        return { ...reply(receipt), isError: receipt.operation_status !== 'confirmed' };
+        const citation = bridge.evidence.get(receipt.artifact?.artifact_id);
+        const evidence_refs = receipt.operation_status === 'confirmed' && citation ? [citation] : [];
+        return { ...reply({ ...receipt, evidence_refs }), isError: receipt.operation_status !== 'confirmed' };
       })();
       if (operation !== 'result') mutations.set(key, operationResult);
       return operationResult;
@@ -81,7 +83,15 @@ export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../
     }),
     tool('progress', 'Publish a concise authored observation or completed analysis step. Do not publish reasoning, percentages or invented findings.', { message: z.string().min(1).max(2000) }, async ({ message }) => { bridge.progress(message); return reply({ recorded: true }); }),
     tool('request_input', 'Ask the Task caller for required missing evidence; wait for a host-authorized input turn. Caller may be a service principal, not a human.', { prompt: z.string().min(1).max(2000) }, async ({ prompt }) => reply({ input: await bridge.ask(prompt), evidence_refs: [...bridge.evidence.values()].filter(record => record.source === 'follow_up_input') })),
-    tool('submit_report', 'Finish with a structured grounded report. Cite only exact evidence references returned by the host or initial inputs; unavailable stages are uncertainties.', REPORT_SCHEMA, async report => { if (unfinishedJobs.size) return { ...reply({ error: 'Poll outstanding jobs to a terminal result before submitting the report.', job_ids: [...unfinishedJobs] }), isError: true }; bridge.report = groundedReport(report, bridge.evidence); return reply({ accepted: true }); }),
+    tool('submit_report', 'Finish with a structured grounded report. Copy exact evidence_refs objects returned by tools; findings cite their exact ref strings without prefixes or aliases. Unavailable stages are uncertainties.', REPORT_SCHEMA, async report => {
+      if (unfinishedJobs.size) return { ...reply({ error: 'Poll outstanding jobs to a terminal result before submitting the report.', job_ids: [...unfinishedJobs] }), isError: true };
+      const grounded = groundedReport(report, bridge.evidence);
+      if (grounded.evidence_refs.length !== report.evidence_refs.length || grounded.findings.length !== report.findings.length) {
+        return { ...reply({ error: 'Citation mismatch. Copy the exact evidence_refs objects below into the report and use their exact ref strings in findings. Do not invent aliases or prefixes. Unsupported claims belong in uncertainties.', evidence_refs: [...bridge.evidence.values()] }), isError: true };
+      }
+      bridge.report = grounded;
+      return reply({ accepted: true });
+    }),
   ];
 }
 

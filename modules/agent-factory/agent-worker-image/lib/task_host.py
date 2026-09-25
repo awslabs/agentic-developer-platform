@@ -214,7 +214,7 @@ class TaskHost:
             raise TaskRunClientError("task report receipt is invalid")
         return response
 
-    def _turn(self, assignment, attempt: dict, request_id: str) -> dict | None:
+    def _turn(self, assignment, attempt: dict, request_id: str, *, allow_autonomous: bool = False) -> dict | None:
         if request_id in self._turns:
             return self._turns[request_id]
         response = self.client.turn(
@@ -223,6 +223,7 @@ class TaskHost:
                 "attempt": attempt,
                 "request_id": request_id,
                 "expected_transcript_version": self._turn_number + 1,
+                **({"allow_autonomous": True} if allow_autonomous else {}),
             }
         )
         if (
@@ -348,7 +349,7 @@ class TaskHost:
         if (len(json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES
                 or len(json.dumps(request, ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES):
             raise TaskProtocolError("wrapped model request exceeds 65536-byte bound")
-        turn = self._turn(assignment, attempt, frame["turn_id"])
+        turn = self._turn(assignment, attempt, frame["turn_id"], allow_autonomous="sdk_request" in frame)
         if turn is None:
             raise TaskProtocolError("child requested a model without a committed turn")
         self._pending_turn_id = None

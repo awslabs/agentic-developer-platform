@@ -353,6 +353,7 @@ class AcceptanceRequest:
     capacity_limit: int
     capacity_reservation_id: str
     generation: int = 1
+    tool_grants: tuple[str, ...] = field(default_factory=tuple)
     input_reference: dict[str, Any] | None = None
     artifact_ids: tuple[str, ...] = field(default_factory=tuple)
     budget_reservation: dict[str, Any] | None = None
@@ -496,6 +497,7 @@ class TaskStore:
             "version": 1,
             "generation": request.generation,
             "persona": request.persona,
+            "tool_grants": list(request.tool_grants),
             "policy_version": request.policy_version,
             "request_digest": digest,
             "input_payload": request.request_payload,
@@ -644,6 +646,7 @@ class TaskStore:
             "model_binding": request.model_binding,
             "limits": request.run_limits,
             "capabilities": ["input", "cancel"],
+            "tool_grants": list(request.tool_grants),
             "runtime_attempt_id": None,
             "created_at": now_iso,
         }
@@ -1170,6 +1173,10 @@ class TaskStore:
             "#limits": "limits",
             "#capabilities": "capabilities",
         }
+        if "tool_grants" in grant:
+            grant_condition += " AND #tool_grants = :grant_tool_grants"
+            grant_values[":grant_tool_grants"] = grant["tool_grants"]
+            grant_names["#tool_grants"] = "tool_grants"
         if required_turn_number is not None:
             limits = grant.get("limits")
             maximum_turns = limits.get("max_turns") if isinstance(limits, dict) else None
@@ -3530,10 +3537,16 @@ def _protected_grant_digest(grant: dict[str, Any]) -> str:
         raise WorkBindingError("protected run grant is incomplete")
     if "budget_reservation" in grant:
         fields += ("budget_reservation",)
+    if "tool_grants" in grant:
+        fields += ("tool_grants",)
     return payload_digest({field_name: grant[field_name] for field_name in fields})
 
 
 def _validate_run_bindings(request: AcceptanceRequest) -> None:
+    from src.agentauth.task_tool_policy import valid_tools
+
+    if not isinstance(request.tool_grants, tuple) or not valid_tools(list(request.tool_grants)):
+        raise TaskStoreError("invalid frozen tool grants")
     immutable_input = request.immutable_input
     allowed_input = {"instructions", "inputs", "acceptance_criteria", "artifacts", "input_digest"}
     if not isinstance(immutable_input, dict) or not {"instructions", "input_digest"}.issubset(immutable_input):

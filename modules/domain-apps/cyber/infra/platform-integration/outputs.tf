@@ -16,6 +16,8 @@ output "worker_environment" {
     CYBER_CC_WORKGROUP = aws_athena_workgroup.common_crawl[0].name
     CYBER_CC_CRAWLS    = join(",", var.common_crawl_partitions)
     CYBER_CC_REGION    = var.aws_region
+    } : {}, var.tools_endpoint != "" ? {
+    ADP_CYBER_TOOLS_ENDPOINT = var.tools_endpoint
   } : {})
 }
 

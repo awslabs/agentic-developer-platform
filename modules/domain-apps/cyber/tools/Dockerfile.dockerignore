@@ -1,0 +1,13 @@
+**
+!modules/
+!modules/tools/
+!modules/tools/adp_tools/
+!modules/tools/adp_tools/**
+!modules/domain-apps/
+!modules/domain-apps/cyber/
+!modules/domain-apps/cyber/tools/
+!modules/domain-apps/cyber/tools/cyber_tools/
+!modules/domain-apps/cyber/tools/cyber_tools/**
+**/__pycache__
+**/*.pyc
+**/.env*

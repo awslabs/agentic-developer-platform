@@ -75,3 +75,19 @@ test('input replay does not lose command provenance or mint another turn',async(
 test('secondary SDK abort preserves original unknown model failure',()=>{
  const bridge=new HostBridge(start(),()=>{});const original=new Error('model_outcome_unknown');bridge.fail(original);bridge.fail(new Error('cancelled'));assert.equal(bridge.failure,original);
 });
+
+test('tool citations let an aliased report correct exact references before acceptance',async()=>{
+ const writes=[];const bridge=new HostBridge(start(),value=>writes.push(value));
+ const tools=cyberTools(bridge);const tool=name=>tools.find(value=>value.name===name);
+ const pending=tool('result').handler({job_id:'job1'});
+ while (!writes.some(value=>value.type==='cyber.request')) await tick();
+ const citation={ref:'art_evidence',source:'artifact',artifact_id:'art_evidence'};
+ bridge.receive({...writes.find(value=>value.type==='cyber.request'),type:'cyber.result',operation_status:'confirmed',result:{job_id:'job1',status:'completed'},artifact:{artifact_id:'art_evidence'}});
+ const receipt=JSON.parse((await pending).content[0].text);assert.deepEqual(receipt.evidence_refs,[citation]);
+ const value={...report(),evidence_refs:[{...citation,ref:'triage_result'}],findings:[{statement:'Observed file type',evidence_refs:['triage_artifact_art_evidence']}]};
+ const rejected=await tool('submit_report').handler(value);assert.equal(rejected.isError,true);assert.equal(bridge.report,null);
+ const feedback=JSON.parse(rejected.content[0].text);assert.ok(feedback.evidence_refs.some(ref=>JSON.stringify(ref)===JSON.stringify(citation)));
+ value.evidence_refs=[citation];value.findings[0].evidence_refs=['art_evidence'];
+ assert.deepEqual(JSON.parse((await tool('submit_report').handler(value)).content[0].text),{accepted:true});
+ assert.deepEqual(bridge.report,value);
+});

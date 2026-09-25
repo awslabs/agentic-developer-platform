@@ -99,7 +99,7 @@ def test_stale_expected_version_cannot_overwrite_current_policy(store):
         policy(task_scopes=["admin"]),
         policy(
             limits={
-                "max_duration_minutes": 31,
+                "max_duration_minutes": 361,
                 "max_turns": 8,
                 "max_output_tokens_per_turn": 4096,
                 "max_usd_per_task": Decimal("1"),
@@ -149,6 +149,47 @@ def test_corrupt_policy_binding_fails_closed(store):
         Key=repository.key(TENANT, PRINCIPAL),
         UpdateExpression="SET canonical_principal_id = :other",
         ExpressionAttributeValues={":other": {"S": "other-principal"}},
+    )
+    with pytest.raises(TaskServicePolicyError, match="corrupt_policy"):
+        repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)
+
+
+@pytest.mark.parametrize("duration", [360, Decimal("360")])
+def test_six_hour_duration_policy_roundtrips(store, duration):
+    from src.admin.persona_models.schemas import TaskPolicyLimits
+
+    repository, _ = store
+    document = policy()
+    document["limits"]["max_duration_minutes"] = duration
+    repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=document, updated_by="admin")
+    stored = repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)
+    assert stored["limits"]["max_duration_minutes"] == 360
+    assert TaskPolicyLimits.model_validate(stored["limits"]).max_duration_minutes == 360
+
+
+@pytest.mark.parametrize("duration", [361, True, False, 30.5, Decimal("30.5"), "360", float("nan")])
+def test_duration_is_bounded_integer_in_service_and_admin_schema(store, duration):
+    from pydantic import ValidationError
+
+    from src.admin.persona_models.schemas import TaskPolicyLimits
+
+    repository, _ = store
+    document = policy()
+    document["limits"]["max_duration_minutes"] = duration
+    with pytest.raises(TaskServicePolicyError):
+        repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=document, updated_by="admin")
+    with pytest.raises(ValidationError):
+        TaskPolicyLimits.model_validate(document["limits"])
+
+
+def test_fractional_persisted_duration_cannot_be_truncated_by_admission(store):
+    repository, client = store
+    repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=policy(), updated_by="admin")
+    client.update_item(
+        TableName="authority",
+        Key=repository.key(TENANT, PRINCIPAL),
+        UpdateExpression="SET limits.max_duration_minutes = :value",
+        ExpressionAttributeValues={":value": {"N": "30.5"}},
     )
     with pytest.raises(TaskServicePolicyError, match="corrupt_policy"):
         repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)

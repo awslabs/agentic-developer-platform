@@ -116,3 +116,37 @@ def test_worker_consumes_only_its_input_queue_without_send_or_management(stateme
     assert permitted_sqs == actions
     assert {a for a in by_id["DenyUnlistedActions"]["NotAction"]
             if a.startswith("sqs:")} == actions
+
+
+
+def test_tool_exception_is_exact_and_preserves_existing_boundaries(statements):
+    route = "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/tools/cyber"
+    updated = json.loads(subprocess.check_output(
+        [sys.executable, str(Path(__file__).with_name("render_worker_boundary.py")), json.dumps([route])], text=True
+    ))["Statement"]
+    before = {s["Sid"]: s for s in statements}
+    after = {s["Sid"]: s for s in updated}
+    for sid in before:
+        if sid in {"AuthenticatedGateway", "DenyOtherGatewayRoutes"}:
+            key = "Resource" if sid == "AuthenticatedGateway" else "NotResource"
+            assert after[sid][key] == before[sid][key] + [route]
+            assert {k: v for k, v in after[sid].items() if k != key} == {k: v for k, v in before[sid].items() if k != key}
+        else:
+            assert after[sid] == before[sid]
+
+
+@pytest.mark.parametrize("resource", [
+    "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/*/POST/tools/cyber",
+    "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/internal/v1/anything",
+    "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/GET/tools/cyber",
+    "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/tools/*",
+])
+def test_tool_exception_validation_refuses_broad_or_internal_routes(tmp_path, resource):
+    if shutil.which("terraform") is None:
+        pytest.skip("Terraform required")
+    source = Path(__file__).resolve().parents[1] / "infra/task-tool-authority.tf"
+    (tmp_path / "main.tf").write_text(source.read_text())
+    result = subprocess.run(["terraform", "plan", "-input=false", "-lock=false", "-no-color", "-var", "task_tool_invoke_resources=" + json.dumps([resource])],
+        input="var.task_tool_invoke_resources\n", cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Tool exceptions require" in result.stderr

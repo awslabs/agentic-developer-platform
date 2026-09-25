@@ -158,6 +158,7 @@ class TurnBody(BaseModel):
     attempt: TaskAttemptBody
     request_id: str = Field(pattern=UUID4)
     expected_transcript_version: int = Field(ge=1, strict=True)
+    allow_autonomous: bool = Field(default=False, strict=True)
 
 
 def require_body_attempt(identity, attempt):
@@ -182,6 +183,7 @@ async def turn(body: TurnBody, request: Request, runtime=Depends(get_agent_runti
             identity=identity,
             request_id=body.request_id,
             expected_transcript_version=body.expected_transcript_version,
+            allow_autonomous=body.allow_autonomous,
         )
     except (TaskStoreError, WorkBindingError):
         raise HTTPException(409, "task turn refused") from None

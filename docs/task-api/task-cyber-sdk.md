@@ -3,7 +3,14 @@
 `agent-task-cyber` is a separate Task persona using Claude Agent SDK 0.3.220.
 It adapts the existing malware-analysis stages and URL-analysis skill text to
 Task invocation. Model requests go through the Python Task host and ADP gateway;
-the SDK never receives provider, AWS, GitHub or gateway credentials.
+the SDK never receives provider, AWS, GitHub or gateway credentials. Cyber domain
+execution lives in `modules/domain-apps/cyber/tools`, exposed as an AWS_IAM
+`POST /tools/cyber` service through shared `modules/tools` infrastructure. The
+trusted host calls that service using `ADP_CYBER_TOOLS_ENDPOINT`; it signs the
+request with SigV4 and carries the workload proof and opaque run credential.
+The endpoint is deployment configuration, never a model-selected URL. Generic
+Task authorization, model turns and artifact APIs remain gateway responsibilities.
+The former `/internal/v1/agent/task/cyber` gateway route is removed.
 
 The implementation is feature-gated off by default. It has scripted SDK and
 cross-layer integration coverage, but has not been deployed or qualified against
@@ -77,12 +84,22 @@ than false completion or queue acknowledgement.
 
 ## Enablement requirements
 
-1. Build and deploy compatible gateway and worker images. The worker Dockerfile
+1. Deploy the cyber domain tools service and its AWS_IAM `/tools/cyber` route
+   through the shared tools infrastructure. Grant the approved worker role only
+   the required execute-api invocation permission on this service, and give the
+   service the narrowly scoped domain backend permissions listed below. Configure
+   the worker host's `ADP_CYBER_TOOLS_ENDPOINT` to the exact HTTPS route URL
+   (including any stage prefix, without query, fragment or trailing slash).
+   Missing/invalid configuration fails closed; cleanup also needs this service.
+   Build and deploy compatible gateway and worker images. The worker Dockerfile
    includes the pinned SDK package and the eight packaged cyber skills. Qualify
    the new worker digest under existing Task workload identity controls before
    adding it to `ADP_TASK_WORKER_IMAGE_DIGESTS`.
 2. Give the service principal an explicit `agent-task-cyber` model preference and
-   enrollment in Task policy `allowed_personas`. Existing Task scope, budget,
+   enrollment in Task policy `allowed_personas`. Set its exact `allowed_tools`
+   names (for example `cyber.triage`, `cyber.result`) and configure the persona's
+   tools in gateway `ADP_TASK_PERSONA_TOOLS`. Admission freezes their intersection;
+   every tool authorization also checks live policy. Existing Task scope, budget,
    duration and turn limits still apply.
 3. Obtain fresh successful model evidence for the separate cyber Messages/tool
    contract in `task_model_binding.py`: persona `agent-task-cyber`, transport
@@ -91,15 +108,18 @@ than false completion or queue acknowledgement.
    account/region/model and validate the requested tool-use response. A CLI probe
    or investigator text-only probe cannot certify this transport. This change
    defines and enforces that contract; it does not add an operator probe command.
-4. Configure the required backends and narrowly scoped gateway IAM access below.
+4. Configure the required backends and narrowly scoped cyber tools service IAM access below.
    Verify actual endpoints and worker manifest/result compatibility. Do not assume
    that the legacy browser broker is deployed merely because AgentCore Browser is
    available in the GitHub-bound malware agent.
-5. Enable `ADP_TASK_CYBER_ENABLED=true` on the gateway only after qualification.
-   Normal admission and cyber operations are gated; stop-only cleanup remains
-   available when this flag is disabled.
+5. Enable `ADP_TASK_CYBER_ENABLED=true` on the cyber service only after
+   qualification. Generic Task admission continues to use platform Task policy;
+   it has no cyber-specific feature gate. Stop-only cleanup remains available
+   while cyber execution is disabled, including after permissions are revoked.
+   Keep the service endpoint and IAM invocation permission available while
+   accepted jobs need cleanup.
 
-| Gateway configuration | Required access/use |
+| Cyber tools service configuration | Required access/use |
 | --- | --- |
 | `CYBER_SAMPLE_BUCKET` | Read versioned samples in reserved principal prefixes |
 | `CYBER_TRIAGE_QUEUE`, `CYBER_STATIC_QUEUE` | Send manifests to configured FIFO queues |
@@ -108,24 +128,35 @@ than false completion or queue acknowledgement.
 | `TASK_CYBER_BROWSER_ENDPOINT` | Reach guarded internal `/v1/analyze` service |
 | `CYBER_VT_TOKEN_SECRET` | Read token for fixed VirusTotal hash lookup |
 
-The gateway also uses the existing Task authority table and artifact store.
+The cyber tools service obtains Task permission and publishes evidence through
+existing generic Task authority/artifact interfaces. Cyber-specific backend IAM
+and execution logic belong to that service; the gateway retains generic Task
+policy, model and artifact responsibilities. Service artifact publication must
+preserve the existing upload schema, run binding and immutable content digest.
 Missing backend configuration produces an explicit partial result. If a request
 may have been sent, the broker records an unknown outcome instead.
 
 The SDK is a trusted orchestration process with loopback networking, a fresh
 HOME/cwd, no settings/session persistence and an exact MCP allowlist. It does not
 inherit the investigator's OS-enforced no-network boundary. Credentials remain
-in the trusted host/gateway; samples execute only in the configured backend.
+in the trusted host/services; samples execute only in the configured backend.
 
 ## Verification evidence
 
 Tests cover actual SDK subprocess/MCP execution against a scripted model, full
-Python host-to-SDK report/artifact delivery, unknown-model no-replay, admission
+Python host-to-SDK report/artifact delivery, exact service endpoint selection and
+SigV4 credential binding, unknown-model no-replay, admission
 and model contracts, DynamoDB operation races, sample pinning, backend adapters,
 cleanup fences and workload authentication. They do not substitute for live
-provider, container, browser or CAPE qualification.
+live provider, browser or CAPE qualification. The standalone service image has
+also passed a local build and isolated import/refusal smoke test.
 
 On 2026-09-25, the development gateway configuration was inspected read-only in
 AWS account `879318057152`. Neither the cyber enablement flag nor the new backend
 configuration keys were present in its environment/config maps. No production
 readiness or deployed cyber persona is claimed.
+
+The tool service refactor adds independent Lambda packaging and a domain-owned
+operation store; it has not been deployed. See
+[cyber tools service](../../modules/domain-apps/cyber/tools/README.md) and
+[shared authorization model](../../modules/tools/README.md).

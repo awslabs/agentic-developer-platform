@@ -47,16 +47,17 @@ class TaskAdmission:
 
     async def admit(self, *, caller, submit, idempotency_key, db):
         caller.require("adp-tasks/submit")
-        if submit["persona"] == "agent-task-cyber":
-            import os
-
-            if os.environ.get("ADP_TASK_CYBER_ENABLED", "false").lower() != "true":
-                raise TaskAdmissionError("prerequisite_unavailable", 503)
         policy = await run_in_threadpool(self.policies.get, tenant_id=caller.tenant_id, canonical_principal_id=caller.principal_id)
         if not policy or policy["status"] != "active" or "submit" not in policy["task_scopes"]:
             raise TaskAdmissionError("disallowed_scope", 403)
         if submit["persona"] not in policy["allowed_personas"]:
             raise TaskAdmissionError("disallowed_persona", 403)
+        from src.agentauth.task_tool_policy import TaskToolPolicyError, freeze_tools
+
+        try:
+            tool_grants = freeze_tools(submit["persona"], policy)
+        except TaskToolPolicyError:
+            raise TaskAdmissionError("prerequisite_unavailable", 503) from None
         digest = payload_digest(submit)
         idem_key = idempotency_partition(tenant=caller.tenant_id, canonical_principal=caller.principal_id, idempotency_key=idempotency_key)
         existing = await run_in_threadpool(self.repository._read_idempotency, idem_key)
@@ -149,6 +150,7 @@ class TaskAdmission:
             canonical_principal=caller.principal_id,
             idempotency_key=idempotency_key,
             persona=submit["persona"],
+            tool_grants=tool_grants,
             request_payload=submit,
             deadline_at=deadline,
             grant_reference=assignment["grant_sk"],

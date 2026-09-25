@@ -9,13 +9,77 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from fastapi import FastAPI, HTTPException
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
-from src.agentauth import task_cyber as module
-from src.tasks.store import _serialize
-from tests.agentauth.test_task_runtime import _attempt_identity, runtime  # noqa: F401
-from tests.tasks.test_store import NOW, client, store  # noqa: F401
+from cyber_tools import operations as module
+from adp_tools.storage import serialize as _serialize
+from datetime import datetime, UTC, timedelta
+from dataclasses import dataclass
+import boto3
+from moto import mock_aws
+from adp_tools.storage import OperationRepository
+
+NOW = datetime(2026, 9, 25, tzinfo=UTC)
+
+
+@dataclass(frozen=True)
+class Identity:
+    task_id: str
+    invocation_id: str
+    generation: int
+    runtime_attempt_id: str
+    tenant: str = "tenant-a"
+    canonical_principal: str = "principal-a"
+
+
+class TestRepository(OperationRepository):
+    __test__ = False
+
+    def read_task(self, task_id):
+        return self._get("TASK#" + task_id, "META")
+
+
+@pytest.fixture
+def runtime():
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="cyber-operations",
+            KeySchema=[
+                {"AttributeName": "event_id", "KeyType": "HASH"},
+                {"AttributeName": "arrived_at", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "event_id", "AttributeType": "S"},
+                {"AttributeName": "arrived_at", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        identity = Identity(
+            "tsk_" + str(uuid.uuid4()), str(uuid.uuid4()), 1, str(uuid.uuid4())
+        )
+        repo = TestRepository(client, "cyber-operations", None)
+        task = {
+            "event_id": "TASK#" + identity.task_id,
+            "arrived_at": "META",
+            "task_id": identity.task_id,
+            "invocation_id": identity.invocation_id,
+            "runtime_attempt_id": identity.runtime_attempt_id,
+            "generation": 1,
+            "version": 1,
+            "scope": {
+                "tenant": identity.tenant,
+                "canonical_principal": identity.canonical_principal,
+            },
+            "state": "running",
+            "deadline_at": (NOW + timedelta(minutes=30)).isoformat(),
+        }
+        client.put_item(TableName=repo.table_name, Item=_serialize(task))
+        yield (SimpleNamespace(repository=repo), identity)
+
+
+def _attempt_identity(runtime):
+    return runtime[1]
 
 
 def update(repo, identity, **fields):
@@ -32,11 +96,25 @@ def cyber(runtime, monkeypatch):
     sample = b"non-executable fixture bytes"
     digest = hashlib.sha256(sample).hexdigest()
     update(
-        repo, identity, persona="agent-task-cyber", input_payload={"inputs": {"sample_s3_uri": uri, "sha256": digest, "url": "https://example.com"}}
+        repo,
+        identity,
+        persona="agent-task-cyber",
+        input_payload={
+            "inputs": {
+                "sample_s3_uri": uri,
+                "sha256": digest,
+                "url": "https://example.com",
+            }
+        },
     )
     monkeypatch.setattr(module.time, "time", lambda: NOW.timestamp())
     s3 = SimpleNamespace(
-        head_object=Mock(return_value={"VersionId": "immutable-version", "ContentLength": len(sample)}),
+        head_object=Mock(
+            return_value={
+                "VersionId": "immutable-version",
+                "ContentLength": len(sample),
+            }
+        ),
         get_object=Mock(side_effect=lambda **kw: {"Body": io.BytesIO(sample)}),
     )
     backend = SimpleNamespace(
@@ -45,10 +123,21 @@ def cyber(runtime, monkeypatch):
             side_effect=lambda kind, job_id, sample, options, deadline: {
                 "status": "queued",
                 "job_id": job_id,
-                "_job": {"job_id": job_id, "kind": kind, "sample": sample, "deadline_epoch": deadline},
+                "_job": {
+                    "job_id": job_id,
+                    "kind": kind,
+                    "sample": sample,
+                    "deadline_epoch": deadline,
+                },
             }
         ),
-        result=Mock(side_effect=lambda job: {"status": "completed", "job_id": job["job_id"], "findings": {"supported": True}}),
+        result=Mock(
+            side_effect=lambda job: {
+                "status": "completed",
+                "job_id": job["job_id"],
+                "findings": {"supported": True},
+            }
+        ),
         cancel=Mock(return_value={"status": "unknown"}),
         enrich=Mock(return_value={"status": "completed", "findings": {}}),
         url_analysis=Mock(return_value={"status": "completed", "findings": {}}),
@@ -57,18 +146,35 @@ def cyber(runtime, monkeypatch):
 
     def put(**kwargs):
         artifacts.append(kwargs)
-        return SimpleNamespace(artifact_id="art_" + str(uuid.uuid4()), content_type=kwargs["content_type"], content_sha256=kwargs["digest"])
+        return SimpleNamespace(
+            artifact_id="art_" + str(uuid.uuid4()),
+            content_type=kwargs["content_type"],
+            content_sha256=kwargs["digest"],
+        )
 
     evidence = SimpleNamespace(put_run_artifact=Mock(side_effect=put))
-    service = module.CyberOperations(repo, evidence, backend, {"CYBER_SAMPLE_BUCKET": "samples"})
+    service = module.CyberOperations(
+        repo, evidence, backend, {"CYBER_SAMPLE_BUCKET": "samples"}
+    )
     return SimpleNamespace(
-        service=service, identity=identity, repo=repo, uri=uri, digest=digest, s3=s3, backend=backend, artifacts=artifacts, evidence=evidence
+        service=service,
+        identity=identity,
+        repo=repo,
+        uri=uri,
+        digest=digest,
+        s3=s3,
+        backend=backend,
+        artifacts=artifacts,
+        evidence=evidence,
     )
 
 
 def execute(cyber, operation="triage", payload=None, operation_id=None):
     return cyber.service.execute(
-        cyber.identity, operation_id or str(uuid.uuid4()), operation, {"sample_s3_uri": cyber.uri} if payload is None else payload
+        cyber.identity,
+        operation_id or str(uuid.uuid4()),
+        operation,
+        {"sample_s3_uri": cyber.uri} if payload is None else payload,
     )
 
 
@@ -79,15 +185,34 @@ def test_bound_sample_version_artifact_and_replay(cyber):
     assert first["operation_status"] == second["operation_status"] == "confirmed"
     assert first["artifact"] == second["artifact"]
     cyber.backend.submit.assert_called_once()
-    cyber.s3.get_object.assert_called_once_with(Bucket="samples", Key=cyber.uri.removeprefix("s3://samples/"), VersionId="immutable-version")
+    cyber.s3.get_object.assert_called_once_with(
+        Bucket="samples",
+        Key=cyber.uri.removeprefix("s3://samples/"),
+        VersionId="immutable-version",
+    )
     artifact = cyber.artifacts[0]
-    assert hashlib.sha256(artifact["content"]).hexdigest() == first["artifact"]["content_sha256"]
+    assert (
+        hashlib.sha256(artifact["content"]).hexdigest()
+        == first["artifact"]["content_sha256"]
+    )
     assert artifact["attempt"] == cyber.identity
     rows = cyber.service.rows(cyber.identity, "CYBER_")
     assert rows and all(row["record_type"] == "TASK_OPS" for row in rows)
     for row in rows:
-        assert not {"tenant_id", "user_id", "correlation_id", "root_human_id", "engine_command_status"} & row.keys()
-        assert row["scope"] == {"tenant": cyber.identity.tenant, "canonical_principal": cyber.identity.canonical_principal}
+        assert (
+            not {
+                "tenant_id",
+                "user_id",
+                "correlation_id",
+                "root_human_id",
+                "engine_command_status",
+            }
+            & row.keys()
+        )
+        assert row["scope"] == {
+            "tenant": cyber.identity.tenant,
+            "canonical_principal": cyber.identity.canonical_principal,
+        }
 
 
 @pytest.mark.parametrize(
@@ -111,14 +236,20 @@ def test_foreign_identity_cannot_read_task_or_jobs(cyber):
     first = execute(cyber)
     other = dataclasses.replace(cyber.identity, canonical_principal="foreign")
     with pytest.raises(HTTPException):
-        cyber.service.execute(other, str(uuid.uuid4()), "result", {"job_id": first["result"]["job_id"]})
+        cyber.service.execute(
+            other, str(uuid.uuid4()), "result", {"job_id": first["result"]["job_id"]}
+        )
 
 
 @pytest.mark.parametrize("fault", ["hash", "unversioned", "uri", "namespace"])
 def test_sample_refusal_before_any_submission(cyber, fault):
     payload = {"sample_s3_uri": cyber.uri}
     if fault == "hash":
-        update(cyber.repo, cyber.identity, input_payload={"inputs": {"sample_s3_uri": cyber.uri, "sha256": "0" * 64}})
+        update(
+            cyber.repo,
+            cyber.identity,
+            input_payload={"inputs": {"sample_s3_uri": cyber.uri, "sha256": "0" * 64}},
+        )
     elif fault == "unversioned":
         cyber.s3.head_object.return_value["VersionId"] = "null"
     elif fault == "uri":
@@ -195,7 +326,15 @@ def test_cancel_during_atomic_claim_never_submits(cyber):
     cyber.backend.submit.assert_not_called()
 
 
-@pytest.mark.parametrize("status, expected", [("completed", "confirmed"), ("pending", "pending"), ("partial", "pending"), ("unknown", "pending")])
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        ("completed", "confirmed"),
+        ("pending", "pending"),
+        ("partial", "pending"),
+        ("unknown", "pending"),
+    ],
+)
 def test_cleanup_never_equates_unknown_jobs_with_stopped(cyber, status, expected):
     execute(cyber)
     cyber.backend.result.side_effect = lambda job: {"status": status}
@@ -203,30 +342,6 @@ def test_cleanup_never_equates_unknown_jobs_with_stopped(cyber, status, expected
     receipt = execute(cyber, operation="cancel_jobs", payload={})
     assert receipt["operation_status"] == expected
     assert bool(receipt["result"]["pending_jobs"]) == (expected == "pending")
-
-
-def test_route_transport_and_feature_gate_precede_backend(cyber, monkeypatch):
-    app = FastAPI()
-    app.include_router(module.router)
-    with TestClient(app) as client:
-        response = client.post("/internal/v1/agent/task/cyber", json={})
-        assert response.status_code in {401, 403, 503}
-    app.dependency_overrides[module.require_agent_transport] = lambda: None
-    monkeypatch.delenv("ADP_TASK_CYBER_ENABLED", raising=False)
-    identity = cyber.identity
-    body = {
-        "schema_version": "1.0",
-        "operation_id": str(uuid.uuid4()),
-        "operation": "enrich",
-        "payload": {"sha256": cyber.digest},
-        "attempt": {
-            "run": {"task_id": identity.task_id, "invocation_id": identity.invocation_id, "generation": identity.generation},
-            "runtime_attempt_id": identity.runtime_attempt_id,
-        },
-    }
-    with TestClient(app) as client:
-        assert client.post("/internal/v1/agent/task/cyber", json=body).status_code == 503
-    cyber.backend.enrich.assert_not_called()
 
 
 def test_stages_share_first_pinned_sample_even_if_bucket_head_changes(cyber):
@@ -267,41 +382,6 @@ def test_simultaneous_duplicate_cannot_send_twice(cyber):
     cyber.backend.submit.assert_called_once()
 
 
-def test_http_cleanup_survives_disabled_start_gate_but_rejects_wrong_attempt(cyber, monkeypatch):
-    from unittest.mock import AsyncMock
-
-    app = FastAPI()
-    app.include_router(module.router)
-    app.dependency_overrides[module.require_agent_transport] = lambda: None
-    monkeypatch.delenv("ADP_TASK_CYBER_ENABLED", raising=False)
-    authenticate = AsyncMock(return_value=cyber.identity)
-    monkeypatch.setattr(module, "authenticate_task_settlement", authenticate)
-    monkeypatch.setattr(module, "authenticate_task_attempt", AsyncMock(side_effect=AssertionError("cleanup must use stop authority")))
-    monkeypatch.setattr(module, "get_task_agent_runtime", lambda: None)
-    monkeypatch.setattr(module, "task_runtime", lambda runtime, stop_only=False: SimpleNamespace(repository=cyber.repo) if stop_only else None)
-    monkeypatch.setattr(module, "get_store", lambda: cyber.evidence)
-    monkeypatch.setattr(module, "CyberOperations", lambda *args, **kwargs: cyber.service)
-    identity = cyber.identity
-    body = {
-        "schema_version": "1.0",
-        "operation_id": str(uuid.uuid4()),
-        "operation": "cancel_jobs",
-        "payload": {},
-        "attempt": {
-            "run": {"task_id": identity.task_id, "invocation_id": identity.invocation_id, "generation": identity.generation},
-            "runtime_attempt_id": identity.runtime_attempt_id,
-        },
-    }
-    with TestClient(app) as client:
-        response = client.post("/internal/v1/agent/task/cyber", json=body)
-        assert response.status_code == 200, response.text
-        assert response.json()["operation_status"] == "confirmed"
-        body["attempt"]["runtime_attempt_id"] = str(uuid.uuid4())
-        assert client.post("/internal/v1/agent/task/cyber", json=body).status_code == 404
-    assert authenticate.await_count == 3
-    cyber.backend.submit.assert_not_called()
-
-
 def test_cap_denial_rolls_back_new_operation_and_identity(cyber):
     update(cyber.repo, cyber.identity, cyber_operation_count=128)
     with pytest.raises(HTTPException) as error:
@@ -333,15 +413,27 @@ def test_replay_aliases_consume_bounded_capacity_atomically(cyber):
 def test_cleanup_closes_attempt_even_when_jobs_are_pending(cyber):
     first = execute(cyber)
     cyber.backend.result.side_effect = lambda job: {"status": "pending"}
-    assert execute(cyber, operation="cancel_jobs", payload={})["operation_status"] == "pending"
-    assert cyber.repo.read_task(cyber.identity.task_id)["cyber_closed_attempt"] == cyber.identity.runtime_attempt_id
-    for operation, payload in [("static", {"sample_s3_uri": cyber.uri}), ("result", {"job_id": first["result"]["job_id"]})]:
+    assert (
+        execute(cyber, operation="cancel_jobs", payload={})["operation_status"]
+        == "pending"
+    )
+    assert (
+        cyber.repo.read_task(cyber.identity.task_id)["cyber_closed_attempt"]
+        == cyber.identity.runtime_attempt_id
+    )
+    for operation, payload in [
+        ("static", {"sample_s3_uri": cyber.uri}),
+        ("result", {"job_id": first["result"]["job_id"]}),
+    ]:
         with pytest.raises(HTTPException) as error:
             execute(cyber, operation=operation, payload=payload)
         assert error.value.status_code == 409
     cyber.backend.submit.assert_called_once()
     cyber.backend.result.side_effect = lambda job: {"status": "completed"}
-    assert execute(cyber, operation="cancel_jobs", payload={})["operation_status"] == "confirmed"
+    assert (
+        execute(cyber, operation="cancel_jobs", payload={})["operation_status"]
+        == "confirmed"
+    )
 
 
 def test_cleanup_fence_wins_before_new_claim_transaction(cyber):
@@ -366,21 +458,38 @@ def test_lost_submit_receipt_can_settle_only_with_positive_job_stop_evidence(cyb
     with pytest.raises(TimeoutError):
         execute(cyber)
     cyber.backend.result.side_effect = lambda job: {"status": "partial"}
-    assert execute(cyber, operation="cancel_jobs", payload={})["operation_status"] == "pending"
-    cyber.backend.result.side_effect = lambda job: {"status": "partial", "execution_status": "completed"}
-    assert execute(cyber, operation="cancel_jobs", payload={})["operation_status"] == "confirmed"
+    assert (
+        execute(cyber, operation="cancel_jobs", payload={})["operation_status"]
+        == "pending"
+    )
+    cyber.backend.result.side_effect = lambda job: {
+        "status": "partial",
+        "execution_status": "completed",
+    }
+    assert (
+        execute(cyber, operation="cancel_jobs", payload={})["operation_status"]
+        == "confirmed"
+    )
 
 
 def test_cached_sample_pin_passes_real_backend_manifest_serialization(cyber):
     import json
 
-    from src.agentauth.task_cyber_backends import CyberBackends
+    from cyber_tools.backends import CyberBackends
 
     execute(cyber)
-    cyber.s3.head_object.side_effect = AssertionError("cached stage must not read mutable head")
-    cyber.s3.get_object.side_effect = AssertionError("cached stage must reuse verified pin")
-    cyber.s3.generate_presigned_url = Mock(return_value="https://sample.invalid/version-pinned")
-    sqs = SimpleNamespace(send_message=Mock(return_value={"MessageId": "fixture-message"}))
+    cyber.s3.head_object.side_effect = AssertionError(
+        "cached stage must not read mutable head"
+    )
+    cyber.s3.get_object.side_effect = AssertionError(
+        "cached stage must reuse verified pin"
+    )
+    cyber.s3.generate_presigned_url = Mock(
+        return_value="https://sample.invalid/version-pinned"
+    )
+    sqs = SimpleNamespace(
+        send_message=Mock(return_value={"MessageId": "fixture-message"})
+    )
     cyber.service.backend = CyberBackends(
         env={"CYBER_STATIC_QUEUE": "https://queue.invalid/static.fifo"},
         clients={"s3": cyber.s3, "sqs": sqs},
@@ -393,8 +502,33 @@ def test_cached_sample_pin_passes_real_backend_manifest_serialization(cyber):
     arguments = sqs.send_message.call_args.kwargs
     manifest = json.loads(arguments["MessageBody"])
     sample = manifest["sample_download"]
-    assert type(sample["size"]) is int and sample["size"] == len(b"non-executable fixture bytes")
+    assert type(sample["size"]) is int and sample["size"] == len(
+        b"non-executable fixture bytes"
+    )
     assert sample["sha256"] == cyber.digest
     assert sample["version"] == "immutable-version"
-    assert arguments["MessageGroupId"] == arguments["MessageDeduplicationId"] == receipt["result"]["job_id"]
-    assert cyber.s3.generate_presigned_url.call_args.kwargs["Params"]["VersionId"] == "immutable-version"
+    assert (
+        arguments["MessageGroupId"]
+        == arguments["MessageDeduplicationId"]
+        == receipt["result"]["job_id"]
+    )
+    assert (
+        cyber.s3.generate_presigned_url.call_args.kwargs["Params"]["VersionId"]
+        == "immutable-version"
+    )
+
+
+def test_cleanup_retains_terminal_progress_and_bounds_work_per_invocation(cyber):
+    first = execute(cyber)
+    second = execute(cyber, operation="static")
+    remaining = iter([20000, 1000])
+    cyber.service.remaining_ms = lambda: next(remaining)
+    receipt = execute(cyber, operation="cancel_jobs", payload={})
+    assert receipt["operation_status"] == "pending"
+    assert cyber.backend.result.call_count == 1
+    cyber.service.remaining_ms = lambda: 20000
+    receipt = execute(cyber, operation="cancel_jobs", payload={})
+    assert receipt["operation_status"] == "confirmed"
+    assert cyber.backend.result.call_count == 2
+    polled = {call.args[0]["job_id"] for call in cyber.backend.result.call_args_list}
+    assert polled == {first["result"]["job_id"], second["result"]["job_id"]}
