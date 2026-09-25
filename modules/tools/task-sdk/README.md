@@ -13,3 +13,11 @@ Services validate their own input schemas and current client/Task permissions.
 The cyber package supplies its schemas, reporting rules and skills. Its build
 copies this shared runtime into the persona distribution; its lockfile pins the
 Claude Agent SDK dependency. Existing legacy personas are not migrated by this change.
+
+The trusted Python host can publish additional report artifacts with
+`ADP_TASK_REPORT_RENDERERS`, a JSON mapping from persona to a fixed
+`package.module:function`. The callable receives the validated report and a
+bounded record of tool receipts, and returns `content` bytes and `content_type`.
+It is configured by the operator, never by Task inputs or model output. Domain
+renderers live with their app; generic output storage and authorization remain
+in the Task framework.

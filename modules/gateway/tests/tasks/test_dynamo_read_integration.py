@@ -251,3 +251,15 @@ async def test_internal_artifact_http_upload_and_input_read(adapter, store, monk
         assert response.json()["expires_at"] is None
         response = await client.post("/internal/v1/agent/task/artifact", json={**body, "artifact_id": response.json()["artifact_id"]})
         assert response.status_code == 404
+
+
+def test_generated_html_result_preserves_binding_digest_and_replay(adapter, store):
+    attempt = _attempt(store)
+    content = b"<!doctype html><html><body>Evidence report</body></html>"
+    digest = hashlib.sha256(content).hexdigest()
+    record = adapter.put_run_artifact(attempt=attempt, content=content, content_type="text/html", digest=digest)
+    assert record.content_type == "text/html"
+    assert record.task_id == attempt.task_id
+    assert adapter.read_artifact(record=record) == content
+    assert adapter.put_run_artifact(attempt=attempt, content=content, content_type="text/html", digest=digest) == record
+    assert int(store.read_task(attempt.task_id)["result_artifact_bytes"]) == len(content)

@@ -94,7 +94,7 @@ async def artifact(request: Request):
             raise errors.payload_too_large("Result artifact exceeds its fixed byte limit.")
         if (
             not isinstance(body["content_type"], str)
-            or body["content_type"] not in {"text/plain", "application/json"}
+            or body["content_type"] not in {"text/plain", "application/json", "text/html"}
             or body["content_sha256"] != hashlib.sha256(content).hexdigest()
         ):
             raise errors.invalid_request("Artifact type or digest does not match its content.")

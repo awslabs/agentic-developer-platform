@@ -25,7 +25,8 @@ output "worker_environment" {
         { for op in ["browser_start", "browser_step", "browser_close", "browser_inspect", "browser_cleanup"] : "cyber.${op}" => "local:cyber_tools.task_browser.TaskBrowser" }
       ) : {}
     ))
-    ADP_TASK_TOOL_CLEANUP = jsonencode(var.task_url_tools_enabled ? ["cyber.browser_cleanup"] : [])
+    ADP_TASK_REPORT_RENDERERS = jsonencode({ "agent-task-cyber" = "cyber_tools.task_report:render_report" })
+    ADP_TASK_TOOL_CLEANUP     = jsonencode(var.task_url_tools_enabled ? ["cyber.browser_cleanup"] : [])
   } : {})
 }
 

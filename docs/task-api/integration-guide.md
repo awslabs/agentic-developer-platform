@@ -309,6 +309,26 @@ Verify the bytes against the `X-Adp-Content-Sha256` response header. Downloads
 remain authenticated and scoped to task ownership; there is no permanent public
 download URL.
 
+### Downloadable HTML investigation reports
+
+With the cyber report renderer enabled, a completed `agent-task-cyber` task
+returns its structured JSON report and a self-contained HTML report in
+`result.artifact_ids`. Download these IDs using the authenticated artifact route
+above. The HTML response has `Content-Type: text/html` and an attachment filename
+ending in `.html`; save it as `report.html`. Do not assume every result artifact
+is JSON. Verify its SHA-256 header just like other artifacts.
+
+The HTML contains separate Common Crawl and live-browsing findings, an
+assessment with evidence-based rationale, a recorded tool-action timeline,
+embedded screenshot previews, coverage limits, recommendations, and an evidence
+index. It opens offline without scripts or external assets. Original evidence
+stays in the authenticated Task artifact store; the HTML embeds bounded previews.
+
+You can share the downloaded file through email or your existing file-sharing
+system. ADP checks access when it is downloaded; access to copies is controlled
+by the sharing system you choose. No public S3 URL or browser-sharing token is
+created. Caller input uploads remain text/JSON only; HTML is an output format.
+
 ## 9. Malware-analysis persona
 
 `agent-task-cyber` has been merged, but merge alone does not enable it in an

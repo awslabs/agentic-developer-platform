@@ -704,3 +704,16 @@ async def test_the_round_trip_preserves_bytes_exactly(client, store) -> None:
 
     assert response.content == awkward
     assert response.headers["x-adp-content-sha256"] == hashlib.sha256(awkward).hexdigest()
+
+
+async def test_generated_html_is_an_authenticated_download_with_inert_headers(client, store):
+    content = b"<!doctype html><html><body>Report</body></html>"
+    bind(store, content=content, content_type="text/html")
+    response = await client.get(f"/v1/tasks/{TASK}/artifacts/{ARTIFACT}")
+    assert response.status_code == 200
+    assert response.content == content
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["content-disposition"] == f'attachment; filename="{ARTIFACT}.html"'
+    assert "sandbox" in response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
