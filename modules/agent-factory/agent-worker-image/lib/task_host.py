@@ -819,7 +819,9 @@ class TaskHost:
                     "invocation_id": assignment.invocation_id,
                     "generation": assignment.generation,
                     "runtime_attempt_id": runtime_attempt_id,
-                    **({"model_binding": bootstrap["model_binding"], "persona": bootstrap["persona"]} if responses else {}),
+                    **({"model_binding": bootstrap["model_binding"], "persona": bootstrap["persona"],
+                        "deadline_at": bootstrap["deadline_at"],
+                        **({"harness": bootstrap["harness"]} if "harness" in bootstrap else {})} if responses else {}),
                     "instructions": task_input["instructions"],
                     "inputs": task_input.get("inputs", {}),
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),
@@ -881,11 +883,11 @@ class TaskHost:
                     "inflight": False, "started": time.monotonic(), "next_poll": 0.0}
                 launch_model_call(model_job)
 
-            def finish_model(model_result: dict) -> None:
+            def finish_model(model_result: dict, *, control: dict | None = None) -> None:
                 nonlocal cancel_started, cancel_command_id
                 # Input arriving during the provider call must reach the
                 # child before it can finish from the returned answer.
-                control = self._control(assignment, attempt, cursor)
+                control = self._control(assignment, attempt, cursor) if control is None else control
                 if control["cancel_requested"] and cancel_started is None:
                     cancel_command_id = control["cancel_command_id"]
                     if not isinstance(cancel_command_id, str):
@@ -1091,6 +1093,15 @@ class TaskHost:
                                     next_report_retry = now + _REPORT_RETRY_SECONDS
                                 else:
                                     acknowledge_report(frame, receipt)
+                        elif frame["type"] == "control.request":
+                            if not responses:
+                                raise TaskProtocolError("child control receipt requires Responses runtime")
+                            current = self._control(assignment, attempt, cursor)
+                            finish_model({
+                                "protocol_version": PROTOCOL_VERSION, "type": "control.result",
+                                "task_id": assignment.task_id, "request_id": frame["request_id"],
+                                "current": current["attempt_valid"] and not current["cancel_requested"],
+                            }, control=current)
                         elif frame["type"] == "model.request":
                             if report_outage_started is not None:
                                 if deferred_model is not None:

@@ -21,7 +21,7 @@ export function decode(line) {
   if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new ProtocolError('process frame exceeds limit');
   const value = JSON.parse(line);
   if (!value || value.protocol_version !== 1 || !UUID.test(value.request_id) || !TASK.test(value.task_id)) throw new ProtocolError('invalid host frame');
-  if (!['start', 'turn', 'cancel', 'model.result', 'cyber.result', 'tool.result', 'report.ack', 'artifact.chunk'].includes(value.type)) throw new ProtocolError('unknown host frame');
+  if (!['start', 'turn', 'cancel', 'control.result', 'model.result', 'cyber.result', 'tool.result', 'report.ack', 'artifact.chunk'].includes(value.type)) throw new ProtocolError('unknown host frame');
   for (const forbidden of ['run_credential', 'gateway_token', 'aws_access_key_id', 'github_token', 'api_key']) {
     if (forbidden in value) throw new ProtocolError('host frame contains authority');
   }
@@ -29,7 +29,9 @@ export function decode(line) {
 }
 
 export class HostBridge {
-  constructor(start, write) {
+  constructor(start, write, { allowSteering = false } = {}) {
+    this.allowSteering = allowSteering;
+    this.steering = [];
     this.start = start;
     this.write = write;
     this.controller = new AbortController();
@@ -67,6 +69,14 @@ export class HostBridge {
     this.input?.reject(error);
     this.input = null;
   }
+  current() {
+    return this.exclusive(async () => {
+      const request_id = randomUUID();
+      const response = await this.request('control.request', request_id, { request_id });
+      if (response.current !== true) throw new ProtocolError('task authority is no longer current');
+    });
+  }
+  takeSteering() { return this.steering.splice(0); }
   model(sdk_request, max_tokens) { return this.exclusive(() => this._model(sdk_request, max_tokens)); }
   responses(responses_request) {
     return this.exclusive(async () => {
@@ -129,16 +139,25 @@ export class HostBridge {
         if (this.seenTurns.get(value.turn_id) !== body) throw new ProtocolError('changed replayed input');
         return;
       }
-      if (!this.input) throw new ProtocolError('unsolicited Task turn');
-      this.seenTurns.set(value.turn_id, body);
-      this.nextTurn = value.turn_id;
+      if (!this.input && !this.allowSteering) throw new ProtocolError('unsolicited Task turn');
+      if (this.nextTurn !== null) throw new ProtocolError('previous Task turn has not been consumed');
+      const citations = [];
       const text = value.messages.map(message => {
         if (!UUID.test(message.command_id) || typeof message.text !== 'string') throw new ProtocolError('invalid input message');
         const ref = 'follow_up_input.' + message.command_id;
-        this.evidence.set(ref, { ref, source: 'follow_up_input' });
+        citations.push({ ref, source: 'follow_up_input' });
         return message.text;
       }).join('\n');
-      const input = this.input; this.input = null; input.resolve(text);
+      this.seenTurns.set(value.turn_id, body);
+      this.nextTurn = value.turn_id;
+      for (const citation of citations) this.evidence.set(citation.ref, citation);
+      if (this.input) {
+        const input = this.input; this.input = null; input.resolve(text);
+      } else this.steering.push({ turn_id: value.turn_id, text });
+    } else if (value.type === 'control.result') {
+      const pending = this.pending.get(value.request_id);
+      if (!pending || pending.kind !== 'control.request' || typeof value.current !== 'boolean') throw new ProtocolError('uncorrelated task control');
+      this.pending.delete(value.request_id); pending.resolve(value);
     } else if (value.type === 'model.result' || value.type === 'cyber.result' || value.type === 'tool.result') {
       const id = value.type === 'model.result' ? value.turn_id : value.request_id;
       const pending = this.pending.get(id);

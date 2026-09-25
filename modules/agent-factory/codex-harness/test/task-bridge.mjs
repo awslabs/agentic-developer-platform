@@ -39,3 +39,50 @@ test('Task Responses IPC: cancellation rejects pending model without replay', as
   await assert.rejects(bridge.responses({ input: 'fixture' }));
   assert.equal(sent.length, 1);
 });
+
+for (const current of [true, false]) {
+  test(`Task current-authority receipt: ${current}`, async () => {
+    const task_id = `tsk_${randomUUID()}`;
+    let sent;
+    const bridge = new HostBridge({ task_id }, frame => { sent = frame; });
+    const pending = bridge.current();
+    const checked = current ? pending : assert.rejects(pending, /no longer current/);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(sent.type, 'control.request');
+    assert.throws(() => bridge.receive({ task_id, type: 'control.result', request_id: randomUUID(), current }), /uncorrelated/);
+    bridge.receive({ task_id, type: 'control.result', request_id: sent.request_id, current });
+    await checked;
+    assert.equal(bridge.pending.size, 0);
+  });
+}
+
+test('Task steering is explicit, deduplicated and bound to the next model turn', async () => {
+  const task_id = `tsk_${randomUUID()}`;
+  const turn = { task_id, type: 'turn', turn_id: randomUUID(), messages: [{ command_id: randomUUID(), text: 'Amended requirement' }] };
+  assert.throws(() => new HostBridge({ task_id }, () => {}).receive(turn), /unsolicited/);
+  let sent;
+  const bridge = new HostBridge({ task_id }, frame => { sent = frame; }, { allowSteering: true });
+  bridge.receive(turn); bridge.receive(turn);
+  assert.deepEqual(bridge.takeSteering(), [{ turn_id: turn.turn_id, text: 'Amended requirement' }]);
+  assert.equal(bridge.takeSteering().length, 0);
+  assert.ok(bridge.evidence.has('follow_up_input.' + turn.messages[0].command_id));
+  assert.throws(() => bridge.receive({ ...turn, messages: [] }), /changed replayed/);
+  const pending = assert.rejects(bridge.responses({ input: 'fixture' }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.turn_id, turn.turn_id);
+  bridge.receive({ task_id, type: 'cancel', command_id: randomUUID(), intentional: true });
+  await pending;
+});
+
+test('Malformed and overlapping steering cannot mutate admitted turn or evidence', () => {
+  const task_id = `tsk_${randomUUID()}`;
+  const bridge = new HostBridge({ task_id }, () => {}, { allowSteering: true });
+  const turn_id = randomUUID();
+  assert.throws(() => bridge.receive({ task_id, type: 'turn', turn_id, messages: [{ command_id: randomUUID(), text: 'valid' }, { command_id: 'invalid', text: 'invalid' }] }), /invalid input/);
+  assert.equal(bridge.nextTurn, null);
+  assert.equal(bridge.evidence.size, 1);
+  assert.equal(bridge.seenTurns.size, 0);
+  bridge.receive({ task_id, type: 'turn', turn_id, messages: [{ command_id: randomUUID(), text: 'valid' }] });
+  assert.throws(() => bridge.receive({ task_id, type: 'turn', turn_id: randomUUID(), messages: [] }), /not been consumed/);
+  assert.equal(bridge.nextTurn, turn_id);
+});

@@ -56,6 +56,17 @@ COPY modules/agent-factory/task-agents/investigator/tsconfig.json ./
 COPY modules/agent-factory/task-agents/investigator/src/ ./src/
 RUN npx tsc --project tsconfig.json && npm prune --omit=dev
 
+# Shared native Codex SDK harness. Packaged only; persona admission is separate.
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS codex-harness-builder
+WORKDIR /build
+COPY modules/agent-factory/codex-harness/package.json modules/agent-factory/codex-harness/package-lock.json ./
+RUN npm ci --include=dev --ignore-scripts
+COPY modules/agent-factory/codex-harness/tsconfig.json modules/agent-factory/codex-harness/build.mjs ./
+COPY modules/agent-factory/codex-harness/src/ ./src/
+COPY --from=task-investigator-builder /build/dist/ /task-contracts/
+COPY modules/tools/task-sdk/ /task-sdk/
+RUN ADP_TASK_CONTRACTS_SOURCE=/task-contracts ADP_TASK_SDK_SOURCE=/task-sdk npm run build && npm prune --omit=dev --ignore-scripts
+
 # Trusted SDK Task cyber driver has its own pinned dependency tree.
 FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS task-cyber-builder
 WORKDIR /build
@@ -273,6 +284,9 @@ COPY --chown=agent:agent modules/agent-factory/codex-reviewer/prompts/ /app/code
 # The host command that runs it (registered in entrypoint.py's allowlist by T4,
 # issue #5797) is:
 #     node /app/task-agents/investigator/dist/index.js --embedded
+COPY --from=codex-harness-builder --chown=agent:agent /build/dist/ /app/codex-harness/dist/
+COPY --from=codex-harness-builder --chown=agent:agent /build/package.json /app/codex-harness/package.json
+COPY --from=codex-harness-builder --chown=agent:agent /build/node_modules/ /app/codex-harness/node_modules/
 COPY --from=task-investigator-builder --chown=agent:agent /build/dist/ /app/task-agents/investigator/dist/
 COPY --from=task-investigator-builder --chown=agent:agent /build/package.json /app/task-agents/investigator/package.json
 COPY --from=task-cyber-builder --chown=agent:agent /build/dist/ /app/task-agents/cyber/dist/

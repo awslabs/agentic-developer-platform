@@ -293,5 +293,23 @@ readiness. The
 current pilot task spend/turn limits must also be reconciled with the evidenced
 Responses reservation ceiling through explicit policy and contract changes;
 limits must not be silently bypassed to make a canary pass. Deployment, persona
-registration, full runtime lifecycle, OTLP export and live story acceptance remain
+registration, executable persona lifecycle, OTLP export and live story acceptance remain
 open work under #6195 and the persona stories.
+
+### Embedded Task lifecycle milestone
+
+The packaged Codex Task process now runs through the real worker host, official
+SDK and loopback bridge. Trusted bootstrap metadata binds the immutable persona
+snapshot to model, Task alias, limits and deadline. Correlated control receipts
+check current authority and deliver committed amendments before final output.
+Reports reuse the Task schema and reject unsupported or undeclared citations;
+a bounded correction turn can repair malformed output. The host owns artifact
+publication, durable finalization and acknowledgement after process validation.
+
+Relocated-package tests exercise seven fixture scenarios: success, repair,
+repeated invalid output, cancellation during inference, an amendment requiring
+a second canonical turn, unknown model outcome without replay, and tampered
+instructions rejected before inference. These are runtime integration results,
+not semantic quality or live provider qualification. The gateway does not yet
+freeze/provide the harness snapshot; no new Task persona or command is enabled.
+See [the lifecycle evidence](evidence/task-lifecycle-fixture.md).

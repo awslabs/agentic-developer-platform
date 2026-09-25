@@ -58,7 +58,7 @@ def validate_bootstrap(value: object, assignment) -> dict:
             "model_binding",
             "limits",
         },
-        {"deadline_at", "capabilities"},
+        {"deadline_at", "capabilities", "harness"},
     )
     if (
         body["schema_version"] != SCHEMA_VERSION
@@ -122,6 +122,10 @@ def validate_bootstrap(value: object, assignment) -> dict:
         or model["invocability_verified"] is not True
     ):
         raise TaskProtocolError("task model binding is not invocable")
+    if "harness" in body:
+        if model["transport"] != "openai_responses":
+            raise TaskProtocolError("harness metadata requires Responses transport")
+        _exact(body["harness"], {"snapshot", "policy"})
     limits = _exact(
         body["limits"],
         {"max_turns", "max_output_tokens_per_turn", "max_usd", "deadline_at"},
@@ -177,6 +181,8 @@ def validate_child_frame(value: object, task_id: str) -> dict:
             or any(key in body for key in ("reasoning", "thinking", "percentage"))
         ):
             raise TaskProtocolError("task progress frame is invalid")
+    elif frame_type == "control.request":
+        _exact(value, common)
     elif frame_type == "model.request":
         if "responses_request" in value:
             body = _exact(value, common | {"turn_id", "responses_request"})

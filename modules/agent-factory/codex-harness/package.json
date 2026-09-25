@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Shared Codex SDK harness contracts and declarative persona admission",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node build.mjs",
     "test": "npm run build && node --test dist/*.test.js"
   },
   "dependencies": {

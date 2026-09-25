@@ -57,8 +57,8 @@ labels; prompts, tool text, provider errors and model reasoning are not exported
 
 The Task API now has an additive bounded text Responses transport alongside
 Messages, including durable model-operation and host IPC handling. GPT persona
-registration, complete SDK history/tool support and a runtime entrypoint remain
-required before it can run a GPT Task.
+registration and complete SDK history/tool support remain required for live GPT Tasks.
+The packaged embedded entrypoint now connects the report-only lifecycle.
 The local SDK probe is not a live model, cost or latency evaluation. Run it after
 build with `python3 test/run-isolated.py -- node test/sdk-request-shape.mjs`.
 The `--baseline` variant compares the pinned SDK's default tool advertisement.
@@ -77,7 +77,8 @@ host outcomes. It discards SDK cache IDs and metadata and removes the two residu
 native tool declarations from the host request. The host callback must supply a
 confirmed durable model receipt. `HostBridge.responses` provides the IPC method;
 TaskHost and the gateway understand the corresponding request/receipt. The
-Codex runtime entrypoint must connect these components before registration.
+packaged Codex Task entrypoint connects these components; gateway-bound snapshot
+admission is still required before registration.
 
 The current bridge accepts complete message history and inline encrypted
 reasoning, preserving assistant phase. Function calls, hosted tools, external history, media and
@@ -92,7 +93,7 @@ configuration, and connects it to the credential-free Responses bridge. The host
 checks current grant/generation before model dispatch and before output is
 returned. Session files are removed on exit. This stage refuses executable
 capabilities and repository bindings; it does not implement filesystem isolation,
-completion acceptance or the embedded Task process entrypoint.
+semantic completion acceptance or executable persona tooling.
 
 `test/sdk-session.mjs` runs the actual SDK through this shared runtime with a
 fixture host and verifies instructions, encrypted reasoning output, progress,
@@ -100,3 +101,22 @@ revocation refusal and cleanup. `test/sdk-proxy.mjs` additionally verifies resum
 encrypted reasoning and assistant phase without server item IDs. The gateway's
 inline Responses contract is now `task-codex-sdk-inline-responses-v2`; it needs new
 invocability evidence. No live provider compatibility is established by fixtures.
+
+The embedded entrypoint `dist/task-entry.mjs --embedded` accepts only trusted
+Task bootstrap metadata and the host-mediated lane. It validates pinned persona,
+model and deadline bindings, checks current authority through correlated control
+receipts, and sends model requests through the durable host bridge. Reports use
+the shared Task schema and must cite host-known evidence identities. One schema
+repair is permitted per amendment cycle within the same global operation budget.
+Amendments restart the SDK with the original task plus committed follow-up input;
+unknown model outcomes terminate without child replay. Finalization and artifact
+publication remain worker-owned. Structural citations do not prove semantic truth.
+
+Build the investigator package first, then `npm run build` here. `build.mjs`
+copies the shared Task protocol/artifact validator and IPC module into `dist`;
+the worker Dockerfile packages this dependency tree without registering a persona.
+The isolated CI job runs `integration/test_task_codex_host.py` against a relocated
+package with the real Python TaskHost and official SDK, using fixture gateway
+receipts and inference. It covers successful completion, correction, invalid
+output, cancellation, committed amendments, unknown outcomes and snapshot
+tampering. No live story acceptance or image deployment is implied.
