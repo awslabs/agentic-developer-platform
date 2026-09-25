@@ -91,3 +91,109 @@ def test_shared_reservation_replays_without_rebinding_and_preserves_peers(
                 await verify(c, second, states={"reserved"})
 
     harness.run(run())
+
+
+@pytest.mark.parametrize("drift", [None, "generation", "operation_id", "missing"])
+def test_canonical_publication_retains_the_pre_namespace_reservation(
+    bootstrap_harness, drift
+):
+    import asyncio
+
+    from superplane_bootstrap.errors import BootstrapRefused
+    from superplane_bootstrap.membership import registration_fields
+    from superplane_bootstrap.registration import WorkspaceTarget
+    from superplane_bootstrap.registry import SqlRegistrationStore, _target_mapping
+    from workspace_provisioning.process import AsyncBridgeStore
+
+    harness = bootstrap_harness
+    binding = SharedMembership.create(
+        org_id=identities.ORG_ID,
+        workspace_id=str(uuid4()),
+        cluster_id=str(uuid4()),
+        request_id=str(uuid4()),
+        cluster_arn="arn:aws:eks:us-east-1:123456789012:cluster/shared",
+        endpoint="https://shared.example",
+    )
+    target = WorkspaceTarget(
+        workspace_id=binding.workspace_id,
+        org_id=binding.org_id,
+        account_id="123456789012",
+        region="us-east-1",
+        cluster_name="shared",
+        cluster_arn=binding.cluster_arn,
+        endpoint=binding.endpoint,
+        namespace=binding.namespace,
+        namespace_uid="discovered-namespace-uid",
+        cluster_ownership="adopted",
+        credential_reference_id="scoped-workspace-reference",
+        contract_version="v1",
+        **registration_fields(binding),
+    )
+
+    async def run():
+        async with harness.connect() as connection:
+            await connection.execute(
+                "INSERT INTO clusters(id,org_id,name,status,eks_cluster_arn,endpoint,sharing_enabled) "
+                "VALUES($1,$2,'shared','Ready',$3,$4,true)",
+                UUID(binding.cluster_id),
+                UUID(binding.org_id),
+                binding.cluster_arn,
+                binding.endpoint,
+            )
+            await connection.execute(
+                "INSERT INTO workspaces(id,org_id,name,isolation_mode,status,is_default) "
+                "VALUES($1,$2,'member','namespace','Provisioning',false)",
+                UUID(binding.workspace_id),
+                UUID(binding.org_id),
+            )
+            async with connection.transaction():
+                await reserve(connection, binding)
+            assert (
+                await connection.fetchval(
+                    "SELECT namespace_uid FROM cluster_memberships"
+                )
+                is None
+            )
+            if drift == "generation":
+                await connection.execute(
+                    "UPDATE cluster_memberships SET generation=$1", "b" * 64
+                )
+            elif drift == "operation_id":
+                await connection.execute(
+                    "UPDATE cluster_memberships SET operation_id=$1", uuid4()
+                )
+            elif drift == "missing":
+                await connection.execute("DELETE FROM cluster_memberships")
+
+        registry = SqlRegistrationStore(
+            AsyncBridgeStore(harness.connect, asyncio.get_running_loop())
+        )
+        claim = await asyncio.to_thread(
+            registry.reserve, binding.workspace_id, _target_mapping(target)
+        )
+        if drift:
+            with pytest.raises(
+                BootstrapRefused, match="reservation is missing or changed"
+            ):
+                await asyncio.to_thread(
+                    registry.finalize, target, claim["attempt_token"]
+                )
+            assert await asyncio.to_thread(registry.read, binding.workspace_id) is None
+            return
+        await asyncio.to_thread(registry.finalize, target, claim["attempt_token"])
+        registered = await asyncio.to_thread(registry.read, binding.workspace_id)
+        assert registered.membership_generation == binding.generation
+        async with harness.connect() as connection:
+            await verify(connection, binding, states={"active"})
+            member = await connection.fetchrow(
+                "SELECT generation,namespace_uid,operation_id FROM cluster_memberships"
+            )
+            assert member["generation"] == binding.generation
+            assert member["namespace_uid"] == target.namespace_uid
+            assert str(member["operation_id"]) == binding.request_id
+        replay = await asyncio.to_thread(
+            registry.reserve, binding.workspace_id, _target_mapping(target)
+        )
+        assert replay["replayed"] is True
+
+    harness.run(run())

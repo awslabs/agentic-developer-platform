@@ -30,10 +30,15 @@ class SharedMembership:
     def create(
         cls, *, org_id, workspace_id, cluster_id, cluster_arn, endpoint, request_id
     ):
-        identity = [
-            str(UUID(str(value)))
-            for value in (org_id, workspace_id, cluster_id, request_id)
-        ]
+        try:
+            identity = [
+                str(UUID(str(value)))
+                for value in (org_id, workspace_id, cluster_id, request_id)
+            ]
+        except (TypeError, ValueError, AttributeError):
+            raise BootstrapRefused(
+                "shared membership identifiers must be UUIDs"
+            ) from None
         org_id, workspace_id, cluster_id, request_id = identity
         generation = hashlib.sha256(
             ("superplane-membership:v1:" + canonical(identity)).encode()
@@ -103,3 +108,43 @@ class SharedMembership:
 
     def encode(self):
         return canonical(asdict(self))
+
+
+REGISTRATION_FIELDS = (
+    "membership_cluster_id",
+    "membership_request_id",
+    "membership_generation",
+)
+
+
+def registration_membership(identity):
+    """Recover the approved reservation identity, preserving legacy records."""
+    values = [identity.get(name) or "" for name in REGISTRATION_FIELDS]
+    if not any(values):
+        return None
+    if not all(values) or identity.get("cluster_placement") != "shared":
+        raise BootstrapRefused("registration has incomplete shared membership identity")
+    binding = SharedMembership.create(
+        org_id=identity["org_id"],
+        workspace_id=identity["workspace_id"],
+        cluster_id=values[0],
+        request_id=values[1],
+        cluster_arn=identity["cluster_arn"],
+        endpoint=identity["endpoint"],
+    )
+    if (binding.cluster_id, binding.request_id, binding.generation) != tuple(
+        values
+    ) or binding.namespace != identity["namespace"]:
+        raise BootstrapRefused("registration differs from approved shared membership")
+    return binding
+
+
+def registration_fields(binding):
+    if binding is None:
+        return {}
+    return {
+        "cluster_placement": "shared",
+        "membership_cluster_id": binding.cluster_id,
+        "membership_request_id": binding.request_id,
+        "membership_generation": binding.generation,
+    }

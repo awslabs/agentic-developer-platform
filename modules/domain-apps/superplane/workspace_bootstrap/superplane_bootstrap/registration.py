@@ -96,6 +96,12 @@ from .access import RegistrationStore
 from .admission import IsolationEvidence
 from .components import ComponentInstallation
 from .errors import BootstrapRefused
+from .membership import (
+    REGISTRATION_FIELDS,
+    SharedMembership,
+    registration_membership,
+    registration_fields,
+)
 from .target import VerifiedTarget
 
 # The fields that identify WHICH cluster and tenant a workspace is bound to. A
@@ -112,6 +118,7 @@ _IMMUTABLE_FIELDS: tuple[str, ...] = (
     "namespace",
     "namespace_uid",
     "cluster_placement",
+    *REGISTRATION_FIELDS,
 )
 
 # The subset of the immutable identity that is known BEFORE the cluster is mutated,
@@ -156,7 +163,9 @@ class SecretScreen(Protocol):
 class WorkspaceTarget:
     """The immutable, non-empty record of a usable workspace target.
 
-    Every field is required and non-blank. "Non-empty" is in the design item
+    Core target fields are required and non-blank. Optional membership fields
+    are omitted for historical records and otherwise form one complete binding.
+    "Non-empty" is in the design item
     because the partial-registration failure mode is a record that exists with
     blank identity fields — downstream reads it as present and cannot tell it apart
     from a complete one.
@@ -180,16 +189,27 @@ class WorkspaceTarget:
     # Historical registrations omitted dedicated placement. Shared placement is
     # immutable; changing it requires its own separately authorized lifecycle.
     cluster_placement: str = "dedicated"
+    # Omitted from historical dedicated records. Shared lifecycle reservations
+    # carry these before the namespace UID exists and retain them at publication.
+    membership_cluster_id: str = ""
+    membership_request_id: str = ""
+    membership_generation: str = ""
 
     def __post_init__(self) -> None:
         for spec in fields(self):
             value = getattr(self, spec.name)
+            if spec.name in REGISTRATION_FIELDS and value == "":
+                continue
             if not isinstance(value, str) or not value.strip():
                 raise BootstrapRefused(
                     f"WorkspaceTarget.{spec.name} is required and must be non-blank; "
                     "a registration with a blank identity field is indistinguishable "
                     "downstream from a complete one"
                 )
+
+        registration_membership(
+            {spec.name: getattr(self, spec.name) for spec in fields(self)}
+        )
 
     @property
     def immutable_identity(self) -> tuple[tuple[str, str], ...]:
@@ -266,6 +286,8 @@ def _refuse_conflict(existing: object, proposed: WorkspaceTarget) -> None:
         )
         if name == "cluster_placement" and observed in (None, ""):
             observed = "dedicated"
+        if name in REGISTRATION_FIELDS and observed is None:
+            observed = ""
         if observed != value:
             divergent.append(name)
     if divergent:
@@ -337,7 +359,7 @@ class RegistrationReservation:
 
 
 def _reservation_identity(
-    target: VerifiedTarget, namespace: str
+    target: VerifiedTarget, namespace: str, membership=None
 ) -> tuple[tuple[str, str], ...]:
     """The pre-mutation identity, read from the verified target and nothing else.
 
@@ -360,7 +382,28 @@ def _reservation_identity(
             "cannot reserve a registration with blank identity field(s): "
             + ", ".join(sorted(missing))
         )
-    return tuple((name, values[name]) for name in _RESERVATION_FIELDS)
+    if membership is not None:
+        if not isinstance(membership, SharedMembership):
+            raise BootstrapRefused(
+                "shared bootstrap requires its approved membership document"
+            )
+        membership = SharedMembership.read(membership.encode())
+        if (
+            membership.workspace_id,
+            membership.org_id,
+            membership.cluster_arn,
+            membership.endpoint,
+            membership.namespace,
+        ) != (
+            target.workspace_id,
+            target.org_id,
+            target.cluster_arn,
+            target.endpoint,
+            namespace,
+        ):
+            raise BootstrapRefused("approved membership names another bootstrap target")
+        values.update(registration_fields(membership))
+    return tuple(values.items())
 
 
 def reserve_registration(
@@ -368,6 +411,7 @@ def reserve_registration(
     store: RegistrationStore,
     target: VerifiedTarget,
     namespace: str,
+    membership=None,
 ) -> RegistrationReservation:
     """Claim this workspace BEFORE any cluster mutation. Refuses a rebinding here.
 
@@ -386,7 +430,7 @@ def reserve_registration(
     and this function refuses a `reserved: True` that carries none — an unfenced claim is
     one a concurrent attempt can finalize or release out from under this one.
     """
-    identity = _reservation_identity(target, namespace)
+    identity = _reservation_identity(target, namespace, membership)
     outcome = store.reserve(target.workspace_id, dict(identity))
 
     if not isinstance(outcome, Mapping) or "reserved" not in outcome:
@@ -440,6 +484,7 @@ def finalize_registration(
     credential_reference_id: str,
     contract_version: str,
     screen: SecretScreen,
+    membership=None,
 ) -> WorkspaceRegistration:
     """Complete the reserved registration, or refuse, or recognise a replay.
 
@@ -461,10 +506,12 @@ def finalize_registration(
             "workspace's claim with another's identity"
         )
     reserved = dict(reservation.identity)
-    proposed_identity = dict(_reservation_identity(target, installation.namespace))
+    proposed_identity = dict(
+        _reservation_identity(target, installation.namespace, membership)
+    )
     divergent_claim = sorted(
         name
-        for name in _RESERVATION_FIELDS
+        for name in set(reserved) | set(proposed_identity)
         if reserved.get(name) != proposed_identity.get(name)
     )
     if divergent_claim:
@@ -527,6 +574,7 @@ def finalize_registration(
         cluster_ownership=target.cluster_ownership,
         credential_reference_id=credential_reference_id,
         contract_version=contract_version,
+        **registration_fields(membership),
     )
     _screen_record(proposed, screen)
 

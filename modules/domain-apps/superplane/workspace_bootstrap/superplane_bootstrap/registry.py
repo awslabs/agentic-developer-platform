@@ -725,4 +725,10 @@ def _target_mapping(target: object) -> Mapping[str, str]:
     placement = getattr(target, "cluster_placement", "dedicated") or "dedicated"
     if placement != "dedicated":
         identity["cluster_placement"] = placement
+    from .membership import REGISTRATION_FIELDS
+
+    for name in REGISTRATION_FIELDS:
+        value = getattr(target, name, None)
+        if value:
+            identity[name] = str(value)
     return identity

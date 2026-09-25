@@ -40,13 +40,14 @@ import json
 from uuid import UUID, uuid4
 
 from .errors import BootstrapRefused
+from .membership import registration_membership
 
 _DEDICATED = "dedicated"
 _SHARED = "shared"
 
 
 def _membership_generation(identity: dict) -> str:
-    """A deterministic 64-hex fingerprint of this exact identity.
+    """Retain the approved generation; fingerprint historical unreserved records.
 
     Distinct from the execution-authority `generation`
     `authority_journal.generation_for` derives from a live attempt token: that one
@@ -54,6 +55,9 @@ def _membership_generation(identity: dict) -> str:
     the SAME publish call needs to reproduce unchanged. This one only changes
     when the registered identity itself changes.
     """
+    approved = registration_membership(identity)
+    if approved is not None:
+        return approved.generation
     canonical = json.dumps(dict(identity), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -64,7 +68,7 @@ def require_active_shared_membership(store, identity):
         return
     rows = store.execute(
         "SELECT m.generation,m.namespace,m.namespace_uid,m.credential_reference_id, "
-        "c.eks_cluster_arn,c.endpoint,w.namespace_name "
+        "c.id AS cluster_id,c.eks_cluster_arn,c.endpoint,w.namespace_name,m.operation_id "
         "FROM cluster_memberships m JOIN workspaces w ON w.id=m.workspace_id "
         "AND w.org_id=m.org_id AND w.cluster_id=m.cluster_id "
         "JOIN clusters c ON c.id=m.cluster_id AND c.org_id=m.org_id "
@@ -83,6 +87,15 @@ def require_active_shared_membership(store, identity):
         "eks_cluster_arn": identity["cluster_arn"],
         "endpoint": identity["endpoint"],
     }
+    approved = registration_membership(identity)
+    if approved is not None:
+        if len(rows) != 1 or (
+            str(rows[0]["cluster_id"]),
+            str(rows[0]["operation_id"]),
+        ) != (approved.cluster_id, approved.request_id):
+            raise BootstrapRefused(
+                "shared registration no longer has its approved membership"
+            )
     if len(rows) != 1 or any(rows[0][key] != value for key, value in expected.items()):
         raise BootstrapRefused(
             "shared registration no longer has its active membership"
@@ -146,10 +159,19 @@ def publish(store, identity):
     cluster = clusters[0] if clusters else None
 
     if cluster_placement == _SHARED:
+        approved = registration_membership(identity)
         if cluster is None:
             raise BootstrapRefused(
                 "shared cluster placement requires an already-registered cluster; "
                 "a first member cannot bootstrap a cluster as shared"
+            )
+        if approved is not None and (
+            approved.org_id,
+            approved.workspace_id,
+            approved.cluster_id,
+        ) != (org_id, workspace_id, str(cluster["id"])):
+            raise BootstrapRefused(
+                "approved membership names another canonical cluster"
             )
         if str(cluster["org_id"]) != org_id:
             raise BootstrapRefused(
@@ -192,7 +214,7 @@ def publish(store, identity):
         if removed:
             raise BootstrapRefused("removed membership cannot be reactivated by replay")
         existing_memberships = store.execute(
-            "SELECT id, cluster_id, workspace_id, namespace, namespace_uid, generation, credential_reference_id, state FROM cluster_memberships "
+            "SELECT id, cluster_id, workspace_id, namespace, namespace_uid, generation, credential_reference_id, state, operation_id FROM cluster_memberships "
             "WHERE org_id = CAST(:org_id AS uuid) "
             "AND (workspace_id = CAST(:workspace_id AS uuid) "
             "OR (cluster_id = CAST(:cluster_id AS uuid) AND namespace = :namespace)) "
@@ -224,6 +246,19 @@ def publish(store, identity):
                 raise BootstrapRefused(
                     "canonical bootstrap credential or namespace binding differs"
                 )
+        if approved is not None:
+            if own_membership is None or (
+                own_membership["generation"],
+                own_membership["namespace"],
+                str(own_membership["operation_id"]),
+            ) != (approved.generation, approved.namespace, approved.request_id):
+                raise BootstrapRefused(
+                    "approved shared membership reservation is missing or changed"
+                )
+        elif own_membership and own_membership["state"] == "reserved":
+            raise BootstrapRefused(
+                "reserved shared membership requires its approved identity"
+            )
         if own_membership and own_membership["state"] == "active":
             expected = {
                 "namespace": identity["namespace"],
