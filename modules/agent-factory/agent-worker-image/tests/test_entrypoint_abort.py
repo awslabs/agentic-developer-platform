@@ -927,6 +927,30 @@ class TestTheAbortReachesTheEndOfTheRun:
             "monkeypatch": monkeypatch,
         }
 
+    @pytest.mark.parametrize("outcome", ["complete", "failed", "aborted"])
+    def test_transcript_is_archived_and_linked_before_terminal_authority_ends(self, run, outcome):
+        if outcome != "aborted":
+            run["registered"]["value"] = None
+            run["agent_exit"]["code"] = 0 if outcome == "complete" else 1
+
+        def upload(*args, **kwargs):
+            # A protected gateway refuses uploads once any terminal write lands.
+            assert not any(status in {"complete", "failed", "aborted"}
+                           for status, _ in run["statuses"])
+            run["events"].append(("archive", "uploaded"))
+            return "runs/own/transcript/digest.md"
+
+        run["monkeypatch"].setattr(entrypoint, "_upload_transcript_to_s3", upload)
+        entrypoint.main()
+        linked = [(index, status, fields) for index, (status, fields) in enumerate(run["statuses"])
+                  if fields.get("transcript_key")]
+        assert len(linked) == 1
+        index, status, fields = linked[0]
+        assert status == "in_progress"
+        assert fields["transcript_key"] == "runs/own/transcript/digest.md"
+        assert all(status == outcome for status, _ in run["statuses"][index + 1:])
+        assert run["statuses"][-1][0] == outcome
+
     def test_an_aborted_run_reports_aborted_and_not_its_exit_code(self, run):
         # The headline behaviour. The agent exited 1 because it was cancelled, and
         # the run must still be reported as the deliberate stop it was.
