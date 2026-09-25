@@ -151,6 +151,9 @@ async def test_revocation_between_serving_writes_stops_before_service_creation()
     async def record_created(reference):
         recorded.append(reference)
 
+    async def record_submission(obj):
+        assert obj["metadata"]["name"] == "service"
+
     with pytest.raises(OperationRefused):
         await workspace.apply(
             operation,
@@ -158,6 +161,7 @@ async def test_revocation_between_serving_writes_stops_before_service_creation()
             plan,
             authorize,
             record_created=record_created,
+            record_submission=record_submission,
         )
     assert recorded == ["kubernetes:Deployment:tenant:service:original"]
     assert len(writes) == 1

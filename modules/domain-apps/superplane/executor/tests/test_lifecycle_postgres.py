@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from harness_jobs import OperationStore
 from harness_jobs.execution_rpc import ExecutionGrant
 from harness_jobs.execution_plan import confirmed_plan_progress, PlanProgress
@@ -129,6 +130,10 @@ class Cloud:
         }
 
     def describe_volumes(self, **kwargs):
+        if "VolumeIds" in kwargs and not (self.exists or self.leaked_volume):
+            raise ClientError(
+                {"Error": {"Code": "InvalidVolume.NotFound"}}, "DescribeVolumes"
+            )
         return {
             "Volumes": [{"VolumeId": "vol-0123456789abcdef0", "State": "in-use"}]
             if self.exists or self.leaked_volume
@@ -136,6 +141,11 @@ class Cloud:
         }
 
     def describe_network_interfaces(self, **kwargs):
+        if "NetworkInterfaceIds" in kwargs and not self.exists:
+            raise ClientError(
+                {"Error": {"Code": "InvalidNetworkInterfaceID.NotFound"}},
+                "DescribeNetworkInterfaces",
+            )
         return {
             "NetworkInterfaces": [
                 {"NetworkInterfaceId": "eni-0123456789abcdef0", "Status": "in-use"}
@@ -145,6 +155,10 @@ class Cloud:
         }
 
     def describe_addresses(self, **kwargs):
+        if "AllocationIds" in kwargs:
+            raise ClientError(
+                {"Error": {"Code": "InvalidAllocationID.NotFound"}}, "DescribeAddresses"
+            )
         return {"Addresses": []}
 
 
