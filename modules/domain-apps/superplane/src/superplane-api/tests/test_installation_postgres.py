@@ -646,8 +646,8 @@ async def test_cluster_scopes_migrate_empty_and_enforce_tenant_foreign_keys(
     async with engine.begin() as conn:
         for org in (org_a, org_b):
             await conn.execute(
-                text("INSERT INTO organizations(id,name) VALUES (:id,'scope-org')"),
-                {"id": org},
+                text("INSERT INTO organizations(id,name) VALUES (:id,:name)"),
+                {"id": org, "name": "scope-org-" + org.hex},
             )
         await conn.execute(
             text(
