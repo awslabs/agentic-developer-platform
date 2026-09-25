@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from harness_jobs.execution import ProviderCallRefused
 from superplane_executor import results
 
 from tests.test_batch_results_postgres import (
@@ -76,7 +77,16 @@ async def test_worker_cannot_publish_result_for_changed_actual_placement(
 
     monkeypatch.setattr(runtime.kube, "request", transport)
     monkeypatch.setattr(results, "capture", capture)
-    await runtime.execute(await runtime.publish(SimpleNamespace(**output.created)))
+    worker = await runtime.publish(SimpleNamespace(**output.created))
+    if change == "revoked-at-capture":
+        # The provider retains an uncertain outcome, but the harness must reject
+        # recording it under the now-stale lease fence.
+        with pytest.raises(
+            ProviderCallRefused, match="Executor lease is no longer live"
+        ):
+            await runtime.execute(worker)
+    else:
+        await runtime.execute(worker)
     result = await read(output)
     async with output.c.connections.connect() as connection:
         stored = await connection.fetchval(
