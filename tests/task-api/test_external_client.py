@@ -296,3 +296,30 @@ def test_sse_idless_frame_does_not_discard_initial_snapshot_or_reset_cursor(
     assert frames[0]["event"] == "snapshot"
     assert opener.requests[1].get_header("Last-event-id") == "t:1"
     assert frames[-1]["data"]["type"] == "task.completed"
+
+
+def test_sse_waits_for_heartbeat_with_transport_delay_without_reconnecting(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(client.time, "monotonic", lambda: now[0])
+
+    class DelayedHeartbeat(Opener):
+        def open(self, request, timeout):
+            self.requests.append(request)
+            assert len(self.requests) == 1, "Healthy heartbeat must not trigger reconnect"
+
+            class Socket(Response):
+                def readline(self, size=-1):
+                    # Actual public heartbeat was observed at 15.146 seconds.
+                    # Model its transport delay without sleeping in the test.
+                    if self.tell() == 0:
+                        now[0] += min(timeout, 15.146)
+                        if timeout <= 15.146:
+                            raise TimeoutError("heartbeat has not arrived yet")
+                    return super().readline(size)
+
+            return Socket(b': heartbeat\n\nid: t:9\nevent: event\ndata: {"type":"task.completed"}\n\n')
+
+    opener = DelayedHeartbeat([])
+    events = list(client.Client("https://example.test", "secret", opener=opener).events("task", seconds=60))
+    assert [event["id"] for event in events] == ["t:9"]
+    assert len(opener.requests) == 1
