@@ -17,9 +17,9 @@ with no raw candidate values or source-line content published.
 | Exact AWS published example identifier or secret-access-key example | 72 |
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 496 |
-| Derived checksums recomputed from immutable source inputs | 22 |
+| Derived checksums recomputed from immutable source inputs | 26 |
 | Resource references with explicit field/consumer binding | 33 |
-| Pending context review, retained by #6110 | 1021 |
+| Pending context review, retained by #6110 | 1017 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -127,3 +127,15 @@ unsupported/incomplete identifier shapes.
 Current verified nonsecret dispositions: **838/1859**. **1,021** original scan
 records remain pending. #6110 remains open; no credential was exercised and no
 rotation or zero-secrets conclusion is claimed.
+
+A further **four** original candidates match independently recomputed canonical
+JSON checksums: one evaluation specification, two pricing decisions with the
+checksum field omitted, and one frozen pricing-rate population. Specific output
+fields and exact source/input paths are enforced; a checksum-looking value or
+fixture pathname alone is insufficient. The receipt is
+`S21-detect-secrets-canonical-json-review.json`. The existing derived-digest
+verifier checks the complete original scan/audit joins and immutable Git blobs;
+22 synthetic tests cover valid recipes and altered inputs, outputs, paths and
+context. This reaches **842 / 1,859** verified nonsecret records, with **1,017**
+pending. All original selectors, overlapping audit links and supplemental
+proposals remain intact. No candidate credential was exercised.

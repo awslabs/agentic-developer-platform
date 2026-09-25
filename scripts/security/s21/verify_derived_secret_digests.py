@@ -19,6 +19,33 @@ def derive(record, load_document):
     source = load_document(record["file"])
     inputs = load_document(record["input_file"])
     kind = record["kind"]
+    if kind in {"evaluation_specification", "pricing_decision", "pricing_rates"}:
+        if kind == "evaluation_specification":
+            assert record["input_file"] == record["file"]
+            assert record["input_path"] == ["specification"]
+            assert record["output_path"] == ["receipt", "specification_hash"]
+            payload = inputs["specification"]
+            assert isinstance(payload, dict) and payload
+        elif kind == "pricing_decision":
+            assert record["input_file"] == record["file"]
+            assert record["input_path"] in ([], ["decision"])
+            assert record["output_path"] == record["input_path"] + ["content_sha256"]
+            decision = at(inputs, record["input_path"])
+            assert isinstance(decision, dict) and "content_sha256" in decision
+            payload = {k: v for k, v in decision.items() if k != "content_sha256"}
+            assert payload
+        else:
+            assert record["input_path"] == ["rates"]
+            assert record["output_path"] == ["generation_hash"]
+            assert record["input_file"].endswith("/snapshots/2026-09-12.1.json")
+            payload = inputs["rates"]
+            assert isinstance(payload, list) and payload
+        assert record["context_evidence"] == [{"json_path": record["output_path"]}]
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        assert at(source, record["output_path"]) == digest, "Canonical digest mismatch"
+        return digest
     if kind == "record_key_projection":
         path = record["summary_path"]
         summary = at(source, path)
@@ -126,9 +153,10 @@ def verify(source, scan_path, audit_path, receipt_path):
         assert candidate == derive(record, document), (
             "Candidate does not equal recomputed checksum"
         )
-        verify_context(
-            dict(record, matching_artifacts=[]), candidate, blob(record["file"])
-        )
+        if record["kind"] not in {"evaluation_specification", "pricing_decision", "pricing_rates"}:
+            verify_context(
+                dict(record, matching_artifacts=[]), candidate, blob(record["file"])
+            )
     print(
         f"Verified {len(records)} derived-digest original selectors; no values emitted"
     )

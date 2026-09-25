@@ -108,3 +108,50 @@ def test_pricing_manifest_detects_changed_document_digest():
     sources["token_map"]["sha256"] = "c" * 64
     with pytest.raises(AssertionError):
         verifier.derive(record, lambda _: document)
+
+
+@pytest.mark.parametrize("kind", ["evaluation_specification", "pricing_decision", "pricing_rates"])
+@pytest.mark.parametrize("mutation", [None, "input", "output", "context", "path"])
+def test_canonical_json_requires_exact_input_and_output_binding(kind, mutation):
+    payload = {"synthetic": "public data"}
+    source = {}
+    record = {"kind": kind, "file": "fixture.json", "input_file": "fixture.json"}
+    if kind == "evaluation_specification":
+        source = {"specification": payload, "receipt": {}}
+        record.update(input_path=["specification"], output_path=["receipt", "specification_hash"])
+        output = source["receipt"]
+        output_key = "specification_hash"
+        inputs = source
+    elif kind == "pricing_decision":
+        source = {"decision": dict(payload)}
+        record.update(input_path=["decision"], output_path=["decision", "content_sha256"])
+        output = source["decision"]
+        output_key = "content_sha256"
+        inputs = source
+    else:
+        payload = [payload]
+        inputs = {"rates": payload}
+        record.update(input_file="policy/snapshots/2026-09-12.1.json", input_path=["rates"], output_path=["generation_hash"])
+        output = source
+        output_key = "generation_hash"
+    expected = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    output[output_key] = expected
+    record["context_evidence"] = [{"json_path": record["output_path"]}]
+    if mutation == "input":
+        target = verifier.at(inputs, record["input_path"])
+        if isinstance(target, list):
+            target.append({"changed": True})
+        else:
+            target["changed"] = True
+    elif mutation == "output":
+        output[output_key] = "0" * 64
+    elif mutation == "context":
+        record["context_evidence"] = []
+    elif mutation == "path":
+        record["output_path"] = ["unrelated_field"]
+    documents = {record["file"]: source, record["input_file"]: inputs}
+    if mutation:
+        with pytest.raises(AssertionError):
+            verifier.derive(record, documents.__getitem__)
+    else:
+        assert verifier.derive(record, documents.__getitem__) == expected
