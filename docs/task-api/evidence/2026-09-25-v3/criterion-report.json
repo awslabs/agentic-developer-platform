@@ -1,0 +1,102 @@
+{
+  "issue": 5804,
+  "epic": 5792,
+  "evaluator": "t3_integration, author of storage fixes; root independently reviews and executes native AWS lane",
+  "date_utc": "2026-09-25",
+  "status": "BLOCKED",
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "native_lane": "EC2 instance profile, exact deployed modules against existing real DynamoDB tables and isolated private FIFO; no public identity/workload IAM inference",
+  "native_source_sha": "fe9396e67264029277a12499890a583c1d4a22e6",
+  "native_image": "sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
+  "criteria": {
+    "V3-01": {
+      "status": "PASS",
+      "evidence": [
+        "native-fault-actual-before-history.jsonl",
+        "../2026-09-25-t3-t6-t7/publisher-tests.xml",
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml"
+      ],
+      "assessment": "Native precommit refusal leaves no task; lost committed response resolves same durable task. Accepted outbox is published through independent canonical leases and native FIFO with deliberately discarded send response. Actual publisher/recovery fault seams are deterministic. Live completed clarification demonstrates deployed acceptance-to-worker without caller resubmission. Native fixture uses isolated discovery shard and direct recovery operation, so does not independently prove the production schedule firing during injected outage."
+    },
+    "V3-02": {
+      "status": "PASS",
+      "evidence": [
+        "native-fault-actual-before-history.jsonl",
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml"
+      ],
+      "assessment": "Real DynamoDB competing claims refused, concurrent idempotency resolves same task, expired publication token cannot settle after takeover. Native private FIFO duplicates yield one delivery, unacknowledged message redelivers. Provider-effect unknown/retry fences are covered by canonical model tests; no exactly-once provider claim."
+    },
+    "V3-03": {
+      "status": "BLOCKED",
+      "evidence": [
+        "native-fault-actual-before-history.jsonl"
+      ],
+      "assessment": "Native prior attempt cannot report, complete, or acknowledge. Investigation found RUN overwrote prior attempt: PR6029 adds atomic immutable history. Requires patched native rerun and deployed image qualification before PASS."
+    },
+    "V3-04": {
+      "status": "PASS",
+      "evidence": [
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml",
+        "../2026-09-25-t3-t6-t7/clarify3-final-events.ndjson",
+        "../2026-09-25-natural-window/result.json"
+      ],
+      "assessment": "Canonical stream tests cover initial/midrun/terminal subscription, duplicate/expired cursor, snapshot handoff and repository/backend replacement. Live streams observed full ordered task histories through gateway rollout and disconnect/reconnect. Natural transport-window experiment separately proves finite connection replay."
+    },
+    "V3-05": {
+      "status": "PASS",
+      "evidence": [
+        "../2026-09-25-natural-window/result.json",
+        "../2026-09-25-v4/v4-criterion-report.json"
+      ],
+      "assessment": "Real public completed-task SSE naturally ended after601.046s with39heartbeats; samecursor14 reconnect returned HTTP200 snapshot and heartbeat. Completed read lane does not prove authored progress latency: distinct active authored events in V4 do."
+    },
+    "V3-06": {
+      "status": "FAIL",
+      "evidence": [
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml"
+      ],
+      "assessment": "Actual route inspection found plain StreamingResponse never applied standalone tested blocked-send timeout. Existing helper tests were insufficient. runtime_contracts owns route fix and real transport regression; requires installed-image qualification."
+    },
+    "V3-07": {
+      "status": "PASS",
+      "evidence": [
+        "../2026-09-25-t3-t6-t7/clarify3-final-events.ndjson",
+        "../2026-09-25-t3-t6-t7/clarify3-native-financial.json",
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml"
+      ],
+      "assessment": "Public clarification command accepted then consumed exactly once and linked to confirmed model turn; preserved native immutable turns and exact settled usage. Command/model durable transaction contention and pre/post-handoff fault boundaries are deterministic tests; ordinary input never changes authority."
+    },
+    "V3-08": {
+      "status": "PASS",
+      "evidence": [
+        "../2026-09-25-v4/cancel-snapshot.json",
+        "../2026-09-25-v4/cancel-replayed-receipt.json",
+        "../2026-09-25-v4/cancel-redrive-result.json",
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml"
+      ],
+      "assessment": "Real cancellation and repeated receipt show confirmed child exit. Historical transport required bounded owned-message DLQ redrive and native ack; it is not represented as automatic initial ack. Prestart and completion-race atomicity covered by canonical tests; cancelled state cannot be inferred from request alone."
+    },
+    "V3-09": {
+      "status": "PASS",
+      "evidence": [
+        "../2026-09-25-t3-t6-t7/live-stream-revocation.json",
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml"
+      ],
+      "assessment": "Actual alias revoked during active stream: closure11.456s, later snapshot/stream403, restored alias200. Canonical tests cover expired access and scoped command/artifact checks. No credentials embedded in event/URL evidence."
+    },
+    "V3-10": {
+      "status": "PASS",
+      "evidence": [
+        "../2026-09-25-v4/cancel-snapshot.json",
+        "../2026-09-25-t3-t6-t7/gateway-tests.xml",
+        "../2026-09-25-t3-t6-t7/native-financial.json"
+      ],
+      "assessment": "Actual failed and cancelled tasks retain honest terminal results; provider unknown is not zero spend/success. Exhausted recovery/model uncertainty fixtures verify discoverability and conservative holds; historical repair explicitly retained."
+    }
+  },
+  "open_defects": [
+    "PR6029 missing durable prior-attempt history; implementation ready pending native rerun/deployment",
+    "T6 actual HTTP send bound omitted; runtime_contracts fix pending"
+  ],
+  "cleanup": "All21exact native keys strongly verified absent and private FIFO deleted in predecessor run; no shared queues purged, provider tasks launched or live policies altered. Shared completed public fixtures retained for read/replay evaluation under their existing retention."
+}
