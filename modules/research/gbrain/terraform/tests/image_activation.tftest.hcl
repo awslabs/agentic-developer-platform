@@ -67,3 +67,44 @@ run "bootstrap_build_without_an_image_or_ecs_activation" {
     error_message = "Bootstrap must make the build project available without an image."
   }
 }
+
+run "preserve_runtime_settings_during_image_delivery" {
+  command = plan
+  module {
+    source = "./modules/fargate"
+  }
+  variables {
+    name_prefix          = "gbrain-test"
+    container_command    = ["exec gbrain serve --http --port 3000"]
+    container_entrypoint = ["/bin/sh", "-c"]
+    container_environment = [
+      { name = "AWS_REGION", value = "us-east-1" },
+      { name = "LITELLM_BASE_URL", value = "http://litellm.example.invalid" },
+      { name = "PORT", value = "3000" }
+    ]
+    vpc_id             = "vpc-0123456789abcdef0"
+    subnet_ids         = ["subnet-0123456789abcdef0"]
+    service_sg_id      = "sg-0123456789abcdef0"
+    container_image    = "111122223333.dkr.ecr.us-east-1.amazonaws.com/gbrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    db_endpoint        = "db.example.invalid:5432"
+    db_credentials_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:db-test"
+    mcp_token_arn      = "arn:aws:secretsmanager:us-east-1:111122223333:secret:mcp-test"
+    s3_bucket_name     = "gbrain-test"
+    log_group_name     = "/gbrain-test"
+    task_role_arn      = "arn:aws:iam::111122223333:role/task-test"
+    execution_role_arn = "arn:aws:iam::111122223333:role/exec-test"
+  }
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.serve.container_definitions)[0].image == var.container_image
+    error_message = "Task definition must preserve the verified digest exactly."
+  }
+  assert {
+    condition = (
+      jsonencode(jsondecode(aws_ecs_task_definition.serve.container_definitions)[0].command) == jsonencode(var.container_command) &&
+      jsonencode(jsondecode(aws_ecs_task_definition.serve.container_definitions)[0].entryPoint) == jsonencode(var.container_entrypoint) &&
+      jsonencode(jsondecode(aws_ecs_task_definition.serve.container_definitions)[0].environment) == jsonencode(var.container_environment) &&
+      length(jsondecode(aws_ecs_task_definition.serve.container_definitions)[0].secrets) == 3
+    )
+    error_message = "Image updates must preserve explicit runtime settings and secret references."
+  }
+}

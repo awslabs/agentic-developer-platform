@@ -1,4 +1,5 @@
 """Execute the production publisher/deployer with isolated AWS, Docker and TF tools."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,12 @@ args=sys.argv[1:]
 with open(os.environ['LOG'],'a') as f: f.write(json.dumps([name,*args])+'\\n')
 if name=='aws':
  if args[:2]==['sts','get-caller-identity']: print('111122223333')
+ elif args[:2]==['s3api','head-object']:
+  if os.environ.get('STATE_EXISTS')=='true': print('{}')
+  else:
+   print('AccessDenied' if os.environ.get('STATE_ERROR') else 'NoSuchKey',file=sys.stderr);sys.exit(1)
+ elif args[:2]==['ecs','describe-services']:
+  print('gbrain' if os.environ.get('SERVICE_EXISTS')=='true' else '')
  elif args[:2]==['ecr','get-login-password']: print('stub')
  elif args[:2]==['ecr','describe-images']:
   if os.environ.get('REGISTRY_ERROR'):
@@ -62,7 +69,7 @@ elif name=='terraform':
         self.env = {**os.environ, "PATH": f"{self.bin}:/usr/bin:/bin", "LOG": str(self.log),
                     "PUSHED": str(self.root / "pushed"), "ADP_SOURCE_SHA": SHA,
                     "SOURCE_SHA": SHA, "REGISTRY": "example.invalid", "AWS_REGION": "us-east-1"}
-        for name in ("GBRAIN_IMAGE_DIGEST", "BUILD_STATUS", "PUSH_STATUS", "MISSING_IMAGE", "REGISTRY_ERROR", "RESULT_DIGEST"):
+        for name in ("GBRAIN_IMAGE_DIGEST", "BUILD_STATUS", "PUSH_STATUS", "MISSING_IMAGE", "REGISTRY_ERROR", "RESULT_DIGEST", "GBRAIN_RUNTIME_TFVARS", "GBRAIN_RUNTIME_TFVARS_SHA256", "STATE_EXISTS", "STATE_ERROR", "SERVICE_EXISTS"):
             self.env.pop(name, None)
 
     def run_script(self, script, **env):
@@ -125,7 +132,7 @@ elif name=='terraform':
         result, calls = self.run_script("deploy-image.sh", BUILD_STATUS="7")
         self.assertEqual(result.returncode, 7)
         self.assertFalse(any("container_image_digest=" in c for c in calls))
-        self.assertFalse(any('"ecs"' in c for c in calls))
+        self.assertFalse(any('"update-service"' in c for c in calls))
 
     def test_missing_digest_does_not_activate_service(self):
         result, calls = self.run_script("deploy-image.sh", RESULT_DIGEST="None")
@@ -143,6 +150,43 @@ elif name=='terraform':
         result, calls = self.run_script("deploy-image.sh", GBRAIN_IMAGE_DIGEST=DIGEST, REGISTRY_ERROR="true")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any('"apply"' in c for c in calls))
+
+    def test_existing_state_or_service_requires_profile_before_mutation(self):
+        for existing in ({"STATE_EXISTS": "true"}, {"SERVICE_EXISTS": "true"}, {"STATE_ERROR": "true"}):
+            with self.subTest(existing=existing):
+                self.log.unlink(missing_ok=True)
+                result, calls = self.run_script("deploy-image.sh", **existing)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any('"terraform"' in c or c.startswith("codebuild") for c in calls))
+
+    def test_missing_profile_fails_before_mutation(self):
+        result, calls = self.run_script("deploy-image.sh", GBRAIN_RUNTIME_TFVARS=str(self.root / "missing"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any('"terraform"' in c for c in calls))
+
+    def test_reviewed_profile_is_reused_for_build_retry_and_rollback(self):
+        profile = self.root / "runtime.tfvars.json"
+        profile.write_text(json.dumps({"container_command": ["serve"], "container_entrypoint": ["/bin/sh"],
+                                       "container_environment": [{"name": "EXTRA", "value": "retained"}],
+                                       "service_subnet_ids": ["subnet-a", "subnet-b"]}))
+        env = {"GBRAIN_RUNTIME_TFVARS": str(profile),
+               "GBRAIN_RUNTIME_TFVARS_SHA256": hashlib.sha256(profile.read_bytes()).hexdigest()}
+        for extra in ({}, {}, {"GBRAIN_IMAGE_DIGEST": DIGEST}):
+            self.log.unlink(missing_ok=True)
+            result, calls = self.run_script("deploy-image.sh", **env, **extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            applies = [json.loads(c) for c in calls if c.startswith('["terraform", "apply"')]
+            self.assertEqual(len(applies), 1 if extra else 2)
+            self.assertTrue(all("-var-file=" + str(profile) in args for args in applies))
+        profile.write_text("{}")
+        self.log.unlink(missing_ok=True)
+        result, calls = self.run_script("deploy-image.sh", **env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any('"terraform"' in c for c in calls))
+        env["GBRAIN_RUNTIME_TFVARS_SHA256"] = hashlib.sha256(profile.read_bytes()).hexdigest()
+        result, calls = self.run_script("deploy-image.sh", **env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any('"terraform"' in c for c in calls))
 
 if __name__ == "__main__":
     unittest.main()

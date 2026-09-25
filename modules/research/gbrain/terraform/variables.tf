@@ -81,3 +81,27 @@ variable "endpoint_security_group_ids" {
   type        = set(string)
   default     = []
 }
+
+variable "container_command" {
+  description = "Optional explicit runtime command to preserve an existing deployment during image delivery"
+  type        = list(string)
+  default     = null
+}
+
+variable "container_entrypoint" {
+  description = "Optional explicit runtime entrypoint to preserve an existing deployment during image delivery"
+  type        = list(string)
+  default     = null
+}
+
+variable "container_environment" {
+  description = "Optional complete ordered environment list; retain deployment-specific settings when updating the image"
+  type        = list(object({ name = string, value = string }))
+  default     = null
+}
+
+variable "service_subnet_ids" {
+  description = "Optional ECS-only subnet list; preserve service networking without changing the database subnet group"
+  type        = list(string)
+  default     = null
+}
