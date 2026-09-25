@@ -171,6 +171,103 @@ class TaskToolReceipts:
                 return existing, False
             raise TaskStoreError("tool claim lost current authority") from None
 
+    def verify_history(self, *, identity, turn_id, history):
+        """Verify the complete ordered tool transcript before model continuation.
+
+        Reads canonical turns and immutable receipts, never child-supplied turn
+        lists. The caller must fence its model claim to current Task authority.
+        This verifies executable history only, not semantic grounding of prose.
+        """
+        from src.agentauth.task_turns import TaskTurnStore
+
+        if not isinstance(history, list) or len(history) > 256:
+            raise TaskStoreError("invalid tool history")
+        turns = TaskTurnStore(self.repository).list_turns(identity.task_id)
+        if not turns or turns[-1]["turn_id"] != turn_id:
+            raise TaskStoreError("tool history requires the latest canonical turn")
+        binding = (identity.invocation_id, identity.generation, identity.runtime_attempt_id)
+        seen = set()
+        index = 0
+        for turn in turns:
+            if (turn.get("invocation_id"), int(turn.get("generation", 0)), turn.get("runtime_attempt_id")) != binding:
+                raise TaskStoreError("tool history turn belongs to another attempt")
+            if turn["turn_id"] == turn_id:
+                break
+            model = self.repository._get(task_ops_partition(identity.task_id), model_operation_sort_key(turn["turn_id"]))
+            if (
+                not model
+                or model.get("operation_status") != "confirmed"
+                or (model.get("invocation_id"), int(model.get("generation", 0)), model.get("runtime_attempt_id")) != binding
+            ):
+                raise TaskStoreError("tool history has an unconfirmed model turn")
+            calls = [item for item in model.get("responses_response", {}).get("output", []) if item.get("type") == "function_call"]
+            if len(calls) > 1:
+                raise TaskStoreError("parallel tool history unavailable")
+            for call in calls:
+                call_id = call.get("call_id")
+                if call_id in seen or index + 2 > len(history):
+                    raise TaskStoreError("incomplete or duplicate tool history")
+                seen.add(call_id)
+                row = self.read(identity.task_id, call_id)
+                if (
+                    not row
+                    or row.get("operation_status") != "confirmed"
+                    or row.get("turn_id") != turn["turn_id"]
+                    or row.get("task_id") != identity.task_id
+                    or (row.get("invocation_id"), int(row.get("generation", 0)), row.get("runtime_attempt_id")) != binding
+                    or row.get("automatic_replay_permitted") is not False
+                    or not isinstance(row.get("content"), str)
+                    or len(row["content"].encode()) > 32768
+                    or type(row.get("is_error")) is not bool
+                ):
+                    raise TaskStoreError("tool history requires a confirmed bound receipt")
+                self._current(identity, row["tool"])
+                supplied_call, supplied_result = history[index : index + 2]
+                index += 2
+                expected_call = {key: value for key, value in call.items() if key != "id"}
+                if (
+                    not isinstance(supplied_call, dict)
+                    or supplied_call != expected_call
+                    or call.get("namespace") != "mcp__adp"
+                    or call.get("name") != self.catalogue[row["tool"]]
+                ):
+                    raise TaskStoreError("tool history call differs from confirmed model")
+                try:
+                    arguments_json = rfc8785.dumps(json.loads(call["arguments"])).decode()
+                except (ValueError, TypeError, KeyError):
+                    raise TaskStoreError("invalid model tool arguments") from None
+                expected_binding = {
+                    "turn_id": turn["turn_id"],
+                    "call_id": call_id,
+                    "tool": row["tool"],
+                    "arguments_json": arguments_json,
+                    "invocation_id": identity.invocation_id,
+                    "generation": identity.generation,
+                    "runtime_attempt_id": identity.runtime_attempt_id,
+                }
+                if row.get("arguments_json") != arguments_json or row.get("request_digest") != payload_digest(expected_binding):
+                    raise TaskStoreError("tool history receipt digest differs")
+                if (
+                    not isinstance(supplied_result, dict)
+                    or set(supplied_result) != {"type", "call_id", "output"}
+                    or supplied_result["type"] != "function_call_output"
+                    or supplied_result["call_id"] != call_id
+                ):
+                    raise TaskStoreError("tool history result identity differs")
+                parts = supplied_result["output"]
+                if (
+                    not isinstance(parts, list)
+                    or len(parts) != 2
+                    or any(not isinstance(part, dict) or set(part) != {"type", "text"} or part["type"] != "input_text" for part in parts)
+                    or not isinstance(parts[0]["text"], str)
+                    or not re.fullmatch(r"Wall time: [0-9]{1,8}(?:\.[0-9]{1,9})? seconds\nOutput:", parts[0]["text"])
+                    or parts[1]["text"] != row["content"]
+                ):
+                    raise TaskStoreError("tool history output differs from confirmed receipt")
+        if index != len(history):
+            raise TaskStoreError("tool history includes unconfirmed calls")
+        return True
+
     def settle(self, *, identity, call_id, owner_token, status, content=None, is_error=False):
         if status not in {"confirmed", "unknown", "rejected"} or type(is_error) is not bool:
             raise TaskStoreError("invalid tool outcome")

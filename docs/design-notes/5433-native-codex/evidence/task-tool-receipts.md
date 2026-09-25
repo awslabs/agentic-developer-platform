@@ -102,3 +102,30 @@ harness/IPC tests and 383 contract checks pass. TypeScript build and Python lint
 pass. Live auth-store fingerprints remain unchanged from the tool-session
 checkpoint. This increment does not qualify a tool-capable Task model or complete
 a live persona story.
+
+
+## Durable continuation verifier and separate tool wire contract
+
+`TaskToolReceipts.verify_history` now reads canonical Task turns in order and
+requires every earlier model operation to be confirmed in the same attempt.
+Every model function call must have its matching immutable, confirmed tool receipt
+and appear exactly once with its result in the submitted tool history. It checks
+current tool authority, permission/function mapping, argument digest, canonical
+turn and attempt, exact output text and the pinned SDK timing decoration. Missing
+pairs, extra pairs, unknown receipts, changed arguments and foreign identities
+are refused. The eventual model-claim caller must fence these reads against Task
+version and authority changes; this method alone does not enable execution.
+
+The separate `task-codex-sdk-serial-tools-v3` Python wire contract accepts one
+reviewed namespace, serial calls and paired tool history. It bounds declarations,
+arguments and usage and rejects alternate namespaces, model/endpoint overrides,
+open root argument schemas, duplicate tools and parallel output calls. Structural
+parsing does not authorize schemas or authenticate result text: frozen catalogue
+comparison and the durable verifier remain mandatory. Existing report-only v2
+request/result models still reject executable content.
+
+The combined journal/route/wire suite passes 59 tests. New history tests use actual
+DynamoDB reads and writes under Moto, with fixture canonical/model rows; they do
+not prove deployed inference or model-claim integration. Live profile qualification,
+frozen executable catalogue admission, route/model wiring and persona execution
+remain outstanding.

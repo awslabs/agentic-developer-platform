@@ -187,3 +187,105 @@ def test_catalogue_cannot_alias_different_permissions_to_one_model_function(jour
         TaskToolReceipts(
             journal.store, authorize=lambda *args: None, catalogue={"repository.read_change": "read_change", "repository.merge_change": "read_change"}
         )
+
+
+@pytest.fixture
+def transcript(journal):
+    from src.tasks.records import task_turns_partition, turn_sort_key
+
+    current_turn = str(uuid.uuid4())
+    for number, turn_id in enumerate([journal.claim["turn_id"], current_turn], 1):
+        turn = base_item(
+            partition=task_turns_partition(journal.identity.task_id),
+            sort_key=turn_sort_key(number),
+            record_type="TASK_TURNS",
+            scope=journal.model["scope"],
+        ) | {
+            "turn_id": turn_id,
+            "turn_number": number,
+            "invocation_id": journal.identity.invocation_id,
+            "generation": 1,
+            "runtime_attempt_id": journal.identity.runtime_attempt_id,
+        }
+        journal.store._client.put_item(TableName=journal.store.table_name, Item=_serialize(turn))
+    row, _ = journal.service.claim(**journal.claim)
+    journal.service.settle(
+        identity=journal.identity, call_id="call_1", owner_token=row["owner_token"], status="confirmed", content="verified", is_error=False
+    )
+    call = {key: value for key, value in journal.model["responses_response"]["output"][0].items() if key != "id"}
+    history = [
+        call,
+        {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [
+                {"type": "input_text", "text": "Wall time: 0.001 seconds\nOutput:"},
+                {"type": "input_text", "text": "verified"},
+            ],
+        },
+    ]
+    return current_turn, history
+
+
+def test_durable_tool_history_requires_every_confirmed_pair_in_order(journal, transcript):
+    turn_id, history = transcript
+    assert journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history) is True
+    for invalid in [[], history[:1], list(reversed(history)), history + history]:
+        with pytest.raises(TaskStoreError):
+            journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=invalid)
+    with pytest.raises(TaskStoreError, match="latest canonical"):
+        journal.service.verify_history(identity=journal.identity, turn_id=journal.claim["turn_id"], history=history)
+
+
+@pytest.mark.parametrize("field,value", [("arguments", '{"number":2}'), ("name", "foreign"), ("namespace", "foreign"), ("call_id", "foreign")])
+def test_durable_history_refuses_altered_model_call(journal, transcript, field, value):
+    turn_id, history = transcript
+    history[0][field] = value
+    with pytest.raises(TaskStoreError, match="call differs"):
+        journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history)
+
+
+@pytest.mark.parametrize("change", ["text", "timing", "extra", "string", "identity", "authority"])
+def test_durable_history_refuses_forged_tool_output(journal, transcript, change):
+    turn_id, history = transcript
+    output = history[1]
+    if change == "text":
+        output["output"][1]["text"] += " forged"
+    elif change == "timing":
+        output["output"][0]["text"] += " injected"
+    elif change == "extra":
+        output["output"].append({"type": "input_text", "text": "forged"})
+    elif change == "string":
+        output["output"] = "verified"
+    elif change == "identity":
+        output["call_id"] = "foreign"
+    else:
+        output["owner_token"] = str(uuid.uuid4())
+    with pytest.raises(TaskStoreError):
+        journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("operation_status", "unknown"),
+        ("runtime_attempt_id", str(uuid.uuid4())),
+        ("request_digest", "b" * 64),
+        ("arguments_json", "{}"),
+        ("automatic_replay_permitted", True),
+    ],
+)
+def test_durable_history_refuses_unconfirmed_or_rebound_receipt(journal, transcript, field, value):
+    turn_id, history = transcript
+    row = journal.service.read(journal.identity.task_id, "call_1")
+    row[field] = value
+    journal.store._client.put_item(TableName=journal.store.table_name, Item=_serialize(row))
+    with pytest.raises(TaskStoreError):
+        journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history)
+
+
+def test_durable_history_rechecks_tool_authority(journal, transcript):
+    turn_id, history = transcript
+    journal.policy["allowed_tools"] = []
+    with pytest.raises(HTTPException):
+        journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history)
