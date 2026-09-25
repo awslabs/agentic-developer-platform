@@ -9,8 +9,10 @@ Endpoints (IAM-signed / shared-secret; internal only):
     POST /internal/v1/credential-raw-read   — escape hatch: return raw value (dual-gated)
 
 Authentication:
-    All endpoints require the X-Internal-Api-Key shared secret.
-    See src/internal/routes.py for the _verify_internal_key dependency.
+    The canonical verify_internal_or_irsa dependency accepts edge-verified IAM
+    identity with internal/platform scope, or the legacy shared key when no IAM
+    identity is asserted. Protected worker brokers additionally require their
+    run-bound identity. See src/internal/auth_deps.py.
 
 Scope gating:
     materialize   — requires X-Agent-Scopes header to contain "credential:materialize"

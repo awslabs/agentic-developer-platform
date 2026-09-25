@@ -29,7 +29,7 @@ import logging
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,28 +73,6 @@ from src.shared.models.vault import ChannelTenantMap, MagicLinkNonce, UserIdenti
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal/v1", tags=["internal"])
-
-
-# ---------------------------------------------------------------------------
-# Auth dependency
-# ---------------------------------------------------------------------------
-
-
-def _verify_internal_key(x_internal_api_key: str | None = Header(default=None)) -> None:
-    """Validate the shared internal API key.
-
-    Missing or wrong key → 403 (not 401) so external scanners don't learn that
-    the endpoint exists from a WWW-Authenticate header.
-    """
-    settings = get_settings()
-    expected = settings.internal_api_key
-    if not expected:
-        # Key not configured — reject all calls in a loud way so misconfiguration
-        # is obvious in logs rather than silently open.
-        logger.error("BG_INTERNAL_API_KEY is not set; all /internal/v1/* calls will be rejected")
-        raise HTTPException(status_code=503, detail={"error": "not_configured", "message": "Internal API not configured"})
-    if not x_internal_api_key or x_internal_api_key != expected:
-        raise HTTPException(status_code=403, detail={"error": "forbidden", "message": "Invalid internal API key"})
 
 
 # ---------------------------------------------------------------------------
