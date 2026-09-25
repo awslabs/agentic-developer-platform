@@ -458,3 +458,35 @@ The startup tests use a fixture child boundary. Official SDK workspace-tool stor
 qualification, concrete developer/reviewer completion callbacks, provider publish/
 merge, validation-check binding to the new workspace, the remaining personas,
 source retention operations and live OTLP evidence remain outstanding.
+
+
+## Official SDK workspace read across the complete Task lifecycle
+
+The combined gateway/worker/official SDK suite now includes `tools_workspace`.
+Admission freezes a repository alias, the worker stages and provisions provider
+fixture bytes, and TaskHost supplies a typed host-only repository projection in
+`start`: immutable provider repository ID, source revision and implemented
+read/write capabilities. The SDK Task adapter validates that projection against
+the admitted tools; repository-shaped task inputs cannot substitute for it.
+Without the projection repository capabilities remain unavailable.
+
+The official SDK calls the actual workspace read implementation through MCP,
+the gateway model/tool journal confirms the call, the Task artifact API persists
+the result, and the SDK continues using that confirmed receipt. The fixture
+verifies source content in the durable journal, one staging operation, final Task
+completion and removal of the temporary workspace/attempt tool binding.
+
+This test exposed another integration defect: completion queried every TASK_OPS
+row as though it were a model call, so staged SOURCE metadata prevented otherwise
+valid completion. Completion now compares MODEL rows with committed turns and
+separately requires confirmed TOOL rows. Source metadata cannot replace a model
+operation; pending/unknown/rejected tool operations still prevent completion.
+Sixteen gateway finalization tests and 72 worker lifecycle/workspace tests pass.
+The rebuilt TypeScript suite passes 76 tests; the Task contract checker passes
+383 checks. The process protocol schema now describes the host repository field.
+
+The model response and provider archive acquisition remain fixtures. This proves
+the repository handoff and read execution path through the official SDK, not a
+live generated application story or developer/reviewer acceptance. Validation
+binding, provider publication/merge, full persona completion, OTLP operations and
+live qualification remain required.

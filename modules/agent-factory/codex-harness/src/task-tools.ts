@@ -33,7 +33,8 @@ export class TaskTools {
   private readonly descriptors: Descriptor[];
   private readonly definitions: HostTool[];
   private readonly completed: ToolHistory[] = [];
-  constructor(descriptors: readonly Descriptor[], private readonly bridge: TaskBridge, private readonly maxCalls: number) {
+  constructor(descriptors: readonly Descriptor[], private readonly bridge: TaskBridge, private readonly maxCalls: number,
+    private readonly repositoryCapabilities: NonNullable<SessionHost["toolBroker"]>["repositoryCapabilities"] = []) {
     this.descriptors = descriptors.map(value => taskRuntimeToolSchema.parse(structuredClone(value)));
     this.definitions = this.descriptors.map(compileTool);
     if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > 128) throw new Error("Invalid Task tool limit");
@@ -58,7 +59,7 @@ export class TaskTools {
         return receipt;
       },
       toolBroker: {
-        definitions: this.definitions, maxCalls: this.maxCalls, repositoryCapabilities: [],
+        definitions: this.definitions, maxCalls: this.maxCalls, repositoryCapabilities: this.repositoryCapabilities,
         execute: async (name, args, signal) => {
           signal.throwIfAborted();
           const binding = pending;

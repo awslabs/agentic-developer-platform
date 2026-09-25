@@ -26,13 +26,13 @@ function finish(error, report) {
 }
 
 async function run() {
-  const { snapshot, policy, tools } = taskHarness(start);
+  const { snapshot, policy, tools, repository } = taskHarness(start);
   policy.deadlineMs = Math.min(policy.deadlineMs, Date.now() + Math.min(policy.limits.maxDurationMs, JSON.parse(snapshot.definition).limits.maxDurationMs));
   bridge.progress('Validated the task and persona bindings.', 'evidence_inventory');
   const amendments = [];
   let operations = 0;
   const maxOperations = Math.min(start.limits.max_turns, policy.limits.maxTurns, JSON.parse(snapshot.definition).limits.maxTurns);
-  const taskTools = tools.length ? new TaskTools(tools, bridge, maxOperations) : undefined;
+  const taskTools = tools.length ? new TaskTools(tools, bridge, maxOperations, repository?.capabilities ?? []) : undefined;
   let repair = false;
   let previous;
   const input = { instructions: start.instructions, inputs: start.inputs ?? {}, acceptance_criteria: start.acceptance_criteria ?? [], artifacts: start.artifacts ?? [] };
@@ -42,6 +42,7 @@ async function run() {
     amendments.push(...bridge.takeSteering());
     const toolSession = taskTools?.session();
     const evidence = await runAdmittedSession({
+      ...(repository ? { repository: repository.binding } : {}),
       runId: start.invocation_id, snapshot, policy, source: { kind: 'task-api', taskId: start.task_id, generation: start.generation },
       prompt: JSON.stringify({ task: input, amendments, evidence_refs: [...bridge.evidence.values()], output_contract: outputContract,
         ...(repair ? { correction: 'Previous output failed the report schema or cited unsupported evidence. Produce a corrected grounded report.', previous_output: previous } : {}) }),
@@ -93,8 +94,8 @@ if (!process.argv.includes('--embedded') || process.env.ADP_TASK_NETWORK !== 'ho
         if (value.type === 'artifact.chunk') { if (start) throw new Error('late artifact'); transfers.accept(parseHostFrame(line)); }
         else if (value.type === 'start') {
           if (start) throw new Error('repeated start');
-          const { harness, model_binding, persona, deadline_at, ...task } = value;
-          start = { ...transfers.start(parseHostFrame(JSON.stringify(task))), harness, model_binding, persona, deadline_at };
+          const { harness, model_binding, persona, deadline_at, repository, ...task } = value;
+          start = { ...transfers.start(parseHostFrame(JSON.stringify(task))), harness, model_binding, persona, deadline_at, repository };
           taskHarness(start);
           bridge = new HostBridge(start, write, { allowSteering: true });
           bridge.send('ready', { capabilities: ['input', 'cancel'] });

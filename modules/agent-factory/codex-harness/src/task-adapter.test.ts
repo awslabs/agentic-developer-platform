@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { snapshotPersona } from "./persona.js";
 import { HARNESS_CONTRACT_REVISION } from "./admission.js";
-import { taskHarness, parseTaskReport } from "./task-adapter.js";
+import { taskHarness, parseTaskReport, taskToolName } from "./task-adapter.js";
 
 function start() {
   const limits = { maxTurns: 2, maxContextBytes: 60000, maxDurationMs: 15000 };
@@ -59,4 +59,18 @@ test("Task tool names match the gateway v1 vector without delimiter collisions",
   assert.ok(taskToolName("a".repeat(48) + "." + "b".repeat(64)).length <= 64);
   assert.throws(() => taskToolName("repository.*"));
   assert.throws(() => taskToolName("https://foreign.invalid"));
+});
+
+
+test("repository capabilities require the provisioned host binding and admitted tool", () => {
+  const base = start();
+  for (const layer of Object.values(base.harness.policy.capabilityLayers)) layer.push("repository.read");
+  const value = { ...base, harness: { ...base.harness, tools: [{ permission: "repository.read", capability: "repository.read",
+    definition: { type: "function", name: taskToolName("repository.read"), description: "Read source", strict: false, parameters: { type: "object" } } }] },
+    repository: { binding: { provider: "github", repositoryId: "456", sourceRevision: "b".repeat(40) }, capabilities: ["repository.read"] } };
+  assert.equal(taskHarness(value).repository?.binding.repositoryId, "456");
+  const taskTextOnly = { ...value, repository: undefined, inputs: { repository: value.repository } };
+  assert.equal(taskHarness(taskTextOnly).repository, undefined);
+  assert.throws(() => taskHarness({ ...value, repository: { ...value.repository, capabilities: ["repository.write"] } }));
+  assert.throws(() => taskHarness({ ...value, repository: { ...value.repository, binding: { ...value.repository.binding, sourceRevision: "main" } } }));
 });

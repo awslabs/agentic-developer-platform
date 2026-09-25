@@ -333,8 +333,8 @@ class TaskCommands:
         if outcome == "completed":
             operations = self.repo._client.query(
                 TableName=self.repo.table_name,
-                KeyConditionExpression="event_id = :pk",
-                ExpressionAttributeValues=_serialize({":pk": task_ops_partition(identity.task_id)}),
+                KeyConditionExpression="event_id = :pk AND begins_with(arrived_at, :model)",
+                ExpressionAttributeValues=_serialize({":pk": task_ops_partition(identity.task_id), ":model": "MODEL#"}),
                 ConsistentRead=True,
                 Limit=9,
             )
@@ -352,6 +352,16 @@ class TaskCommands:
                 raise errors.state_conflict("Every committed turn must have a confirmed model operation.")
             if operations.get("LastEvaluatedKey") or not rows or any(row.get("operation_status") != "confirmed" for row in rows):
                 raise errors.state_conflict("Model operations are not all confirmed.")
+            tools = self.repo._client.query(
+                TableName=self.repo.table_name,
+                KeyConditionExpression="event_id = :pk AND begins_with(arrived_at, :tool)",
+                ExpressionAttributeValues=_serialize({":pk": task_ops_partition(identity.task_id), ":tool": "TOOL#"}),
+                ConsistentRead=True,
+                Limit=129,
+            )
+            tool_rows = [_deserialize(row) for row in tools.get("Items", [])]
+            if tools.get("LastEvaluatedKey") or len(tool_rows) > 128 or any(row.get("operation_status") != "confirmed" for row in tool_rows):
+                raise errors.state_conflict("Tool operations are not all confirmed.")
         result = body["result"]
         refs = body["committed_result_refs"]
         if outcome == "completed" and set(refs) != set(result.get("artifact_ids", [])):

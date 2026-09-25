@@ -25,7 +25,7 @@ const harnessSchema = z.strictObject({
  * Gateway admission must freeze these fields before this entrypoint is registered.
  */
 export function taskHarness(start: {
-  harness: unknown; persona: string; deadline_at: string;
+  harness: unknown; persona: string; deadline_at: string; repository?: unknown;
   model_binding: { model_id: string; transport: string; invocability_verified: boolean };
   limits: { max_turns: number; max_output_tokens_per_turn: number };
 }) {
@@ -41,7 +41,14 @@ export function taskHarness(start: {
   if (new Set(tools.map(tool => tool.permission)).size !== tools.length
     || tools.some(tool => tool.definition.name !== taskToolName(tool.permission)
       || Object.values(policy.capabilityLayers).some(layer => !layer.includes(tool.capability)))) throw new Error("Task tool capability binding mismatch");
-  return { snapshot, policy, tools };
+  const repository = start.repository === undefined ? undefined : z.strictObject({
+    binding: z.strictObject({ provider: z.enum(["github", "gitlab"]), repositoryId: z.string().regex(/^[1-9][0-9]*$/),
+      sourceRevision: z.string().regex(/^[a-f0-9]{40}$/) }),
+    capabilities: z.array(z.enum(["repository.read", "repository.write"])).min(1).max(2),
+  }).parse(start.repository);
+  if (repository && (new Set(repository.capabilities).size !== repository.capabilities.length
+    || repository.capabilities.some(capability => !tools.some(tool => tool.capability === capability)))) throw new Error("Task repository capability mismatch");
+  return { snapshot, policy, tools, repository };
 }
 
 interface Citation { ref: string; source: string; artifact_id?: string }

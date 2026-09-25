@@ -96,6 +96,7 @@ def provision_workspace(client, *, attempt, root):
         provider=source["provider"],
         repository=source["repository"],
         source_revision=manifest["commit"],
+        repository_id=source["repository_id"],
     )
     workspace.materialize(bytes(content), archive_sha256=manifest["archive_sha256"])
     return workspace

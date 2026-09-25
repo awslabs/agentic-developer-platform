@@ -313,3 +313,30 @@ def test_stop_only_revoked_run_terminalizes_without_releasing_model_reservation(
     assert snapshot["error"]["provider_outcome"] == "unknown"
     assert snapshot["error"]["total_usd"] is None
     assert store._get(task_ops_partition(req.task_id), "MODEL#" + turn_id)["reservation_status"] == "reserved"
+
+
+def test_staged_source_is_not_a_model_operation_and_cannot_replace_one(store):
+    req, service = accepted(store)
+    identity = running(store, req)
+    tid = turn(store, req, 1)
+    store._client.put_item(
+        TableName=store.table_name,
+        Item=_serialize({"event_id": task_ops_partition(req.task_id), "arrived_at": "SOURCE#fixture", "record_type": "TASK_SOURCE"}),
+    )
+    with pytest.raises(errors.TaskApiError, match="Every committed turn"):
+        service.finalize(identity, final_body(identity))
+    model(store, req, tid)
+    assert service.finalize(identity, final_body(identity))["status"] == "completed"
+
+
+@pytest.mark.parametrize("status", ["pending", "unknown", "rejected"])
+def test_unconfirmed_tool_receipt_prevents_completion(store, status):
+    req, service = accepted(store)
+    identity = running(store, req)
+    model(store, req, turn(store, req, 1))
+    store._client.put_item(
+        TableName=store.table_name,
+        Item=_serialize({"event_id": task_ops_partition(req.task_id), "arrived_at": "TOOL#fixture", "operation_status": status}),
+    )
+    with pytest.raises(errors.TaskApiError, match="Tool operations"):
+        service.finalize(identity, final_body(identity))

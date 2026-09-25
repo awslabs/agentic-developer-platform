@@ -55,6 +55,7 @@
     "start_frame": {
       "type": "object",
       "allOf": [
+        { "if": { "required": ["repository"] }, "then": { "required": ["harness"] } },
         {
           "if": { "required": ["model_binding"], "properties": { "model_binding": { "required": ["transport"], "properties": { "transport": { "const": "openai_responses" } } } } },
           "then": { "required": ["harness"] }
@@ -78,6 +79,15 @@
         "generation": { "$ref": "common.schema.json#/$defs/generation" },
         "runtime_attempt_id": { "$ref": "common.schema.json#/$defs/uuid4" },
         "harness": { "$ref": "codex-harness.schema.json#" },
+        "repository": {
+          "type": "object", "additionalProperties": false, "required": ["binding", "capabilities"],
+          "description": "Trusted host projection after source provisioning; task inputs cannot supply this authority.",
+          "properties": {
+            "binding": { "type": "object", "additionalProperties": false, "required": ["provider", "repositoryId", "sourceRevision"],
+              "properties": { "provider": { "enum": ["github", "gitlab"] }, "repositoryId": { "type": "string", "pattern": "^[1-9][0-9]*$" }, "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" } } },
+            "capabilities": { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": { "enum": ["repository.read", "repository.write"] } }
+          }
+        },
         "persona": { "type": "string", "pattern": "^agent-task-gpt-[a-z][a-z0-9-]{0,62}$" },
         "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
         "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },

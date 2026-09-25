@@ -742,6 +742,7 @@ class TaskHost:
         sdk = False
         responses = False
         cyber_cleanup_confirmed = False
+        repository_context = None
 
         def stop_heartbeat() -> None:
             nonlocal heartbeat_stopped
@@ -801,6 +802,14 @@ class TaskHost:
                     from lib.codex_source import provision_workspace
                     repository = provision_workspace(self.client, attempt=attempt, root=workspace / "repository")
                     self.client.bind_workspace(attempt=attempt, workspace=repository, tools=admitted)
+                    capabilities = []
+                    if admitted & {"repository.read", "repository.list", "repository.state"}:
+                        capabilities.append("repository.read")
+                    if admitted & {"repository.write", "repository.commit"}:
+                        capabilities.append("repository.write")
+                    repository_context = {"binding": {"provider": repository.provider,
+                        "repositoryId": repository.repository_id, "sourceRevision": repository.source_revision},
+                        "capabilities": capabilities}
             stderr: list[str] = []
             process = subprocess.Popen(
                 command if sdk or responses else _network_wrapped_command(command),
@@ -833,6 +842,7 @@ class TaskHost:
                     **({"model_binding": bootstrap["model_binding"], "persona": bootstrap["persona"],
                         "deadline_at": bootstrap["deadline_at"],
                         **({"harness": bootstrap["harness"]} if "harness" in bootstrap else {})} if responses else {}),
+                    **({"repository": repository_context} if repository_context is not None else {}),
                     "instructions": task_input["instructions"],
                     "inputs": task_input.get("inputs", {}),
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),

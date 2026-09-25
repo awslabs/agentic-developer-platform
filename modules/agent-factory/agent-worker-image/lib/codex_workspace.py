@@ -22,13 +22,26 @@ class WorkspaceError(ValueError):
 
 
 class CodexWorkspace:
-    def __init__(self, root: Path, *, provider: str, repository: str, source_revision: str):
+    def __init__(
+        self,
+        root: Path,
+        *,
+        provider: str,
+        repository: str,
+        source_revision: str,
+        repository_id: str | None = None,
+    ):
         if provider not in {"github", "gitlab"} or not re.fullmatch(
             r"[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)+", repository
         ):
             raise WorkspaceError("Invalid authorized repository binding")
         if not re.fullmatch(r"[a-f0-9]{40}(?:[a-f0-9]{24})?", source_revision):
             raise WorkspaceError("Invalid provider source revision")
+        if repository_id is not None and (
+            not isinstance(repository_id, str) or not re.fullmatch(r"[1-9][0-9]*", repository_id)
+        ):
+            raise WorkspaceError("Invalid provider repository identity")
+        self.repository_id = repository_id
         self.root = root.resolve()
         self.provider, self.repository, self.source_revision = provider, repository, source_revision
 

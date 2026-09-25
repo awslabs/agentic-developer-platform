@@ -1410,7 +1410,7 @@ def test_workspace_is_bound_before_child_start_and_removed_on_startup_failure(tm
         provisioned.append(root)
         if source_refused:
             raise TaskRunClientError("source revoked")
-        return SimpleNamespace(root=root)
+        return SimpleNamespace(root=root, provider="github", repository_id="456", source_revision="b" * 40)
 
     def launch(*args, **kwargs):
         assert not source_refused
