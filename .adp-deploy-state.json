@@ -308,11 +308,13 @@
   },
   "outputs": {
     "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:b80ec5e6a3eb7fbe9a322eb10944ede161664e0705e5012c44ff2df9544a5f01",
-    "deployed_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:a84b11df06393cc21a1564a1b475a00db8f4a1cdf715eadd1b2e8c4e44d06a18",
+    "deployed_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d",
     "deployed_chat_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:d0b87ac11e6f5e320fae321a1230554468422a7dfb8573dccc2ae13a6dcce799",
     "agent_models_url": "https://d1g6cal2ts4iis.cloudfront.net/settings/agent-models",
-    "deployed_url_browser_broker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f",
-    "url_browser_broker_endpoint": "http://url-analysis-browser-broker.adp-agents.svc.cluster.local:8765"
+    "deployed_url_browser_broker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24",
+    "url_browser_broker_endpoint": "http://url-analysis-browser-broker.adp-agents.svc.cluster.local:8765",
+    "url_analysis_browser_mode": "native",
+    "url_browser_broker_replicas": 0
   },
   "validation": {
     "gateway_tests": 110,
@@ -641,5 +643,82 @@
     ],
     "artifact_readback_verified": true,
     "provenance_addendum_url": "https://github.com/aws-e/adp/issues/5920#issuecomment-5818622775"
+  },
+  "cyber_native_browser_20260925": {
+    "status": "complete",
+    "account_id": "879318057152",
+    "region": "us-east-1",
+    "profile": "embark1",
+    "source_commit": "2a2b1200c008461e66675a38afc798cca097f0f8",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d",
+    "base_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f",
+    "build_id": "adp-dev-agent-runtime:c70e0944-54de-4a83-bce0-dabdaf700eaf",
+    "pr": "https://github.com/aws-e/adp/pull/6083",
+    "browser_iam": "applied; only five regional Browser actions added to protected worker policy and boundary",
+    "local_tests": {
+      "url_analysis_and_boundary": 385,
+      "worker_iam_and_deployment_safety": 144,
+      "terraform_worker_rollout": 15,
+      "terraform_cyber": 4,
+      "hosted_evaluation": 5,
+      "native_chromium": 5
+    },
+    "initial_hosted_canary": "passed under protected worker identity; Example and IANA text, screenshot, navigation and verified cleanup",
+    "worker_admission": "unpaused independently by platform rollout; not changed by this release",
+    "broker_rollout": "complete; zero desired and running replicas",
+    "deployment_status": "complete",
+    "demo_status": "browser collection verified in fresh GitHub worker",
+    "record": "modules/domain-apps/cyber/docs/native-browser-release-2026-09-25.md",
+    "final_hosted_canary": {
+      "job": "cyber-native-browser-identity-final-20260925",
+      "status": "passed",
+      "protected_worker_identity": true,
+      "all_sessions_terminated": true,
+      "example_start_and_text_seconds": 3.44,
+      "iana_start_and_text_seconds": 3.8,
+      "sophos_start_and_text_seconds": 5.38,
+      "task_credential_transition_tested": true,
+      "caller_task_environment_unchanged": true
+    },
+    "github_demo": {
+      "issue": "https://github.com/aws-e/adp/issues/6091",
+      "trigger": "https://github.com/aws-e/adp/issues/6091#issuecomment-5829680949",
+      "status": "browser_collection_verified",
+      "check": "https://github.com/aws-e/adp/runs/108008726679",
+      "correlation_id": "22ed0c3e-34d6-433b-b0d0-4eea45f3f85a",
+      "invocation_id": "b2578d57-1806-50d5-a66f-17740b0320f2",
+      "pod": "agent-scaledjob-q672x-dq46m",
+      "all_three_targets_collected": true,
+      "screenshot_and_followup_navigation_verified": true,
+      "report_location": "https://github.com/aws-e/adp/issues/6091",
+      "common_crawl": "unavailable: protected task-session IAM denies Athena"
+    },
+    "work_admission_repair": {
+      "resource": "aws_iam_role_policy.lambda_work_claim_admission[0]",
+      "scope": "single POST work/admit endpoint; no checks disabled",
+      "iam_simulation": "allowed",
+      "github_worker_started": true
+    },
+    "identity_correction": {
+      "source_commit": "2a2b1200c008461e66675a38afc798cca097f0f8",
+      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d",
+      "build_id": "adp-dev-agent-runtime:c70e0944-54de-4a83-bce0-dabdaf700eaf",
+      "pr": "https://github.com/aws-e/adp/pull/6083",
+      "tests": {
+        "url_analysis": 379,
+        "browser_boundary": 6
+      },
+      "reason": "Browser SDK inherited customer task credentials; select preserved platform identity only inside native Browser subprocess and cleanup client",
+      "status": "deployed; hosted acceptance passed"
+    },
+    "implementation_pr": "https://github.com/aws-e/adp/pull/6078",
+    "initial_demo": {
+      "issue": "https://github.com/aws-e/adp/issues/6080",
+      "trigger": "https://github.com/aws-e/adp/issues/6080#issuecomment-5829467615",
+      "check": "https://github.com/aws-e/adp/runs/108003595605",
+      "correlation_id": "894a1979-91a7-4ce4-8a90-50f0e5415cb5",
+      "pod": "agent-scaledjob-bqjdv-fbl2q",
+      "status": "browser collection denied by task credential policy; corrected in new image"
+    }
   }
 }

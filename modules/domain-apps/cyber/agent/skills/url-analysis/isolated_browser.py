@@ -22,15 +22,21 @@ from case_contract import MAX_RESPONSE_BYTES, content_digest
 from runtime_limits import STARTUP_SECONDS, ACTION_SECONDS
 
 
-def stop_session(session_id):
+def stop_session(session_id, *, native=False):
     import boto3
     from botocore.config import Config
 
-    client = boto3.client(
-        "bedrock-agentcore",
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 0}),
-    )
+    config = Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 0})
+    if native:
+        from native_identity import cleanup_client
+
+        client = cleanup_client(config)
+    else:
+        client = boto3.client(
+            "bedrock-agentcore",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            config=config,
+        )
     client.stop_browser_session(
         browserIdentifier="aws.browser.v1", sessionId=session_id
     )
@@ -72,9 +78,11 @@ class ProcessActor:
         self.failure = None
         child_env = os.environ.copy()
         if command and "--native" in command:
-            # Injected Node preloads corrupt Playwright's private driver protocol.
-            # Keep the agent's telemetry; isolate only the browser subprocess.
-            child_env.pop("NODE_OPTIONS", None)
+            from native_identity import browser_environment
+
+            child_env = browser_environment(child_env)
+            if stop is stop_session:
+                self.stop = lambda sid: stop_session(sid, native=True)
         self.process = subprocess.Popen(
             command or [sys.executable, str(Path(__file__).resolve()), "--worker"],
             stdin=subprocess.PIPE,
