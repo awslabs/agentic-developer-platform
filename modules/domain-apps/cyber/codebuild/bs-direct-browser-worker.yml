@@ -1,13 +1,5 @@
 version: 0.2
 phases:
-  pre_build:
-    commands:
-      - test -n "$ADP_SOURCE_SHA"
-      - 'echo "$WORKER_BASE_IMAGE" | grep -Eq "@sha256:[a-f0-9]{64}$"'
-      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
   build:
     commands:
-      - docker build --pull --build-arg WORKER_BASE_IMAGE="$WORKER_BASE_IMAGE" -f modules/domain-apps/cyber/agent/Dockerfile.browser-overlay -t "$REGISTRY/adp-agent-runtime:$IMAGE_TAG" .
-      - docker run --rm --entrypoint python3 "$REGISTRY/adp-agent-runtime:$IMAGE_TAG" -m lib.contract_selfcheck
-      - docker run --rm --entrypoint python3 "$REGISTRY/adp-agent-runtime:$IMAGE_TAG" -c "import sys; sys.path.insert(0, '/app/skills/url-analysis'); import native_browser, local_browser, direct_capture; from bedrock_agentcore.tools.browser_client import BrowserClient; from playwright.sync_api import sync_playwright"
-      - docker push "$REGISTRY/adp-agent-runtime:$IMAGE_TAG"
+      - python3 modules/domain-apps/cyber/scripts/publish-direct-browser-image.py
