@@ -25,11 +25,18 @@ pytestmark = requires_postgres
 
 
 @pytest.mark.parametrize(
-    "deny_network,deny_node_role", [(False, False), (True, False), (False, True)]
+    "deny_network,deny_node_role,probe_mode",
+    [
+        (False, False, None),
+        (True, False, None),
+        (False, True, None),
+        (False, False, "approved"),
+        (False, False, "foreign_service"),
+    ],
 )
 @pytest.mark.parametrize("shared_membership", [False, True])
 async def test_registered_worker_networks_selected_region_before_launch_success(
-    system, deny_network, deny_node_role, shared_membership
+    system, deny_network, deny_node_role, shared_membership, probe_mode
 ):
     pool, admit, server, cloud, _kube, _registry, _ = system
     await schema(pool)
@@ -241,6 +248,53 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
         },
         "serving_auth_contract": None,
     }
+    service_reads = []
+    if probe_mode:
+        from superplane_executor.network_probe_contract import COMMAND
+        import httpx
+
+        workload.update(
+            command=COMMAND, args=[], image="registry.example/probe@sha256:" + "b" * 64
+        )
+        profile["network_probe"] = {
+            "version": 1,
+            "namespace": target["namespace"],
+            "service_name": "acceptance",
+            "service_uid": "approved-service",
+            "port": 8080,
+            "cidrs": ["172.20.1.4/32"],
+        }
+        original_request = _kube.request
+
+        async def request(operation, actual_target, method, path, **kwargs):
+            if path.endswith("/services/acceptance"):
+                assert (
+                    method == "GET"
+                    and actual_target["namespace"] == target["namespace"]
+                )
+                service_reads.append(cloud.launches)
+                return httpx.Response(
+                    200,
+                    json={
+                        "metadata": {
+                            "name": "acceptance",
+                            "namespace": target["namespace"],
+                            "uid": "foreign-service"
+                            if probe_mode == "foreign_service"
+                            else "approved-service",
+                        },
+                        "spec": {
+                            "type": "ClusterIP",
+                            "clusterIP": "172.20.1.4",
+                            "ports": [{"port": 8080}],
+                        },
+                    },
+                )
+            return await original_request(
+                operation, actual_target, method, path, **kwargs
+            )
+
+        _kube.request = request
     preview = build_deployment_preview(
         org_id=ws["org_id"],
         workspace_id=ws["id"],
@@ -357,6 +411,8 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
         )
         assert result[1] == "settle"
         assert cloud.launches == 1 and aws.peerings and aws.routes
+        if probe_mode:
+            assert service_reads == [0]
         async with pool.acquire() as c:
             assert (
                 await c.fetchval(

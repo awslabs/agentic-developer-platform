@@ -63,6 +63,9 @@ async def capture(provider, operation, target, plan, known_references, authorize
     """
     workspace = provider.workspace
     spec = plan.data["workload"]
+    from .network_probe_contract import for_operation, verify_result
+
+    probe = for_operation(operation, plan)
     lease = operation.grant.lease
     job_path = workspace.path(target, "Job", spec["name"])
     await authorize()
@@ -150,6 +153,8 @@ async def capture(provider, operation, target, plan, known_references, authorize
     if len(completed) > 1:
         raise OperationRefused("batch result Pod identity is ambiguous")
     if not completed:
+        if probe is not None:
+            raise OperationRefused("approved probe Pod evidence unavailable")
         return  # No retained output is claimed, including after external Pod GC.
     pod = completed[0]
     metadata = pod["metadata"]
@@ -158,7 +163,13 @@ async def capture(provider, operation, target, plan, known_references, authorize
     )
     content = result_text(message)
     if content is None:
+        if probe is not None:
+            raise OperationRefused("approved probe result unavailable")
         return
+    if probe is not None:
+        await verify_result(
+            workspace, operation, target, plan, probe, pod, content[0], authorize
+        )
     fresh_pod = await get(workspace.path(target, "Pod", metadata["name"]))
     fresh_job = await get(job_path)
     # Exact read documents, not just names, bind the output to one completed Pod.

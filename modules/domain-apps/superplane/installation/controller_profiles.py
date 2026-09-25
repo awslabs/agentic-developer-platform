@@ -1,6 +1,7 @@
 """Explicit serving policy projection; no workload or credential defaults."""
 
 import json
+import ipaddress
 import re
 
 from .config import digest, require
@@ -94,8 +95,13 @@ def policy(env):
                 isinstance(profile_id, str)
                 and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", profile_id)
                 and isinstance(profile, dict)
-                and set(profile)
-                in (PROFILE_FIELDS, GPU_PROFILE_FIELDS, REGIONAL_PROFILE_FIELDS),
+                and (set(profile) - {"network_probe"})
+                in (
+                    PROFILE_FIELDS,
+                    GPU_PROFILE_FIELDS,
+                    REGIONAL_PROFILE_FIELDS,
+                    REGIONAL_PROFILE_FIELDS | {"network"},
+                ),
                 "controller_profiles has an invalid profile identity",
             )
             if "regions" in profile:
@@ -131,6 +137,55 @@ def policy(env):
                     "distinct regions with distinct, region-scoped image IDs",
                 )
             workload = profile.get("workload", {})
+            if "network_probe" in profile:
+                probe = profile["network_probe"]
+                require(
+                    isinstance(probe, dict)
+                    and set(probe)
+                    == {
+                        "version",
+                        "service_name",
+                        "namespace",
+                        "service_uid",
+                        "port",
+                        "cidrs",
+                    }
+                    and type(probe["version"]) is int
+                    and probe["version"] == 1
+                    and probe["namespace"] == profile["namespace"]
+                    and isinstance(probe["service_name"], str)
+                    and re.fullmatch(
+                        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", probe["service_name"]
+                    )
+                    and isinstance(probe["service_uid"], str)
+                    and re.fullmatch(r"[a-zA-Z0-9-]{1,128}", probe["service_uid"])
+                    and type(probe["port"]) is int
+                    and 1 <= probe["port"] <= 65535
+                    and isinstance(probe["cidrs"], list)
+                    and 1 <= len(probe["cidrs"]) <= 4
+                    and isinstance(workload, dict)
+                    and workload.get("kind") == "batch"
+                    and workload.get("command")
+                    == ["python3", "-m", "superplane_executor.network_workload_probe"]
+                    and workload.get("args") == [],
+                    "network_probe requires an explicit bound Service and probe command",
+                )
+                try:
+                    service_network = ipaddress.ip_network(
+                        profile["service_cidr"], strict=True
+                    )
+                    ranges = [
+                        ipaddress.ip_network(c, strict=True) for c in probe["cidrs"]
+                    ]
+                    valid = len(set(ranges)) == len(ranges) and all(
+                        c.subnet_of(service_network) for c in ranges
+                    )
+                except (ValueError, TypeError):
+                    valid = False
+                require(
+                    valid,
+                    "network_probe addresses must remain inside the cluster Service CIDR",
+                )
             require(
                 isinstance(workload, dict)
                 and set(workload)

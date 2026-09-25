@@ -333,6 +333,13 @@ class Provider:
                 # during either must be visible before the provider mutation.
                 self.registry.check_handoff(current, handoff)
 
+            from .network_probe_contract import for_operation, service as probe_service
+
+            probe = for_operation(operation, plan)
+            if probe is not None and call.operation_kind in {"launch", "deploy"}:
+                await authorize()
+                await probe_service(self.workspace, operation, target, probe)
+                await authorize()
             await self.cloud(operation, plan)
             networking = None
             if plan.network is not None:
