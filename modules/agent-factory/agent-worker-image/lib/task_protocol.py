@@ -178,27 +178,46 @@ def validate_child_frame(value: object, task_id: str) -> dict:
         ):
             raise TaskProtocolError("task progress frame is invalid")
     elif frame_type == "model.request":
-        body = _exact(
-            value,
-            common | {"turn_id", "messages"},
-            {"max_tokens", "system"},
-        )
-        messages = body["messages"]
-        if not _uuid4(body["turn_id"]) or not isinstance(messages, list) or not messages:
-            raise TaskProtocolError("task model request is invalid")
-        for message in messages:
-            item = _exact(message, {"role", "content"})
-            if (
-                item["role"] not in {"user", "assistant"}
-                or not isinstance(item["content"], str)
-                or not item["content"]
-            ):
+        if "sdk_request" in value:
+            body = _exact(value, common | {"turn_id", "sdk_request"}, {"max_tokens"})
+            sdk = _exact(body["sdk_request"], {"messages"},
+                         {"system", "tools", "tool_choice", "stop_sequences"})
+            messages = sdk["messages"]
+            if not isinstance(messages, list) or not 1 <= len(messages) <= 32:
+                raise TaskProtocolError("SDK messages exceed bounds")
+            for message in messages:
+                item = _exact(message, {"role", "content"})
+                if item["role"] not in {"user", "assistant"} or not isinstance(item["content"], (str, list)) or not item["content"]:
+                    raise TaskProtocolError("SDK message is invalid")
+        else:
+            body = _exact(value, common | {"turn_id", "messages"}, {"max_tokens", "system"})
+            messages = body["messages"]
+            if not isinstance(messages, list) or not messages:
                 raise TaskProtocolError("task model request is invalid")
+            for message in messages:
+                item = _exact(message, {"role", "content"})
+                if item["role"] not in {"user", "assistant"} or not isinstance(item["content"], str) or not item["content"]:
+                    raise TaskProtocolError("task model request is invalid")
+        if not _uuid4(body["turn_id"]):
+            raise TaskProtocolError("task model turn is invalid")
         max_tokens = body.get("max_tokens")
         if max_tokens is not None and (
             type(max_tokens) is not int or not 1 <= max_tokens <= 4096
         ):
             raise TaskProtocolError("task model request is invalid")
+    elif frame_type == "cyber.request":
+        body = _exact(value, common | {"operation", "payload"})
+        if body["operation"] not in {"triage", "static", "result", "url_analysis", "dynamic", "enrich"} or not isinstance(body["payload"], dict):
+            raise TaskProtocolError("task cyber operation is invalid")
+        operation = body["operation"]
+        required = "sample_s3_uri" if operation in {"triage", "static", "dynamic"} else {"result": "job_id", "url_analysis": "url", "enrich": "sha256"}[operation]
+        optional = {"focus", "yara_rules"} if operation in {"triage", "static", "dynamic"} else set()
+        payload = _exact(body["payload"], {required}, optional)
+        if not isinstance(payload[required], str) or not 1 <= len(payload[required]) <= 4096:
+            raise TaskProtocolError("cyber payload identifier is invalid")
+        for key in optional & payload.keys():
+            if not isinstance(payload[key], list) or len(payload[key]) > 32 or any(not isinstance(item, str) or not 1 <= len(item) <= 4000 for item in payload[key]):
+                raise TaskProtocolError("cyber payload options exceed bounds")
     elif frame_type == "input.required":
         body = _exact(value, common | {"input_request_id", "prompt"})
         if (

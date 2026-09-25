@@ -1,0 +1,19 @@
+{
+  "name": "@adp/agent-task-cyber",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Agent SDK cyber orchestration with Task-host-mediated authority and exact MCP operations",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node dist/index.js --embedded",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "zod": "4.3.6"
+  }
+}

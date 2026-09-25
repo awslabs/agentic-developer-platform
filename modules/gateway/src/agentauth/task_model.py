@@ -50,6 +50,24 @@ _RECEIPT_FIELDS = {
 }
 
 
+def _valid_response_block(block, request):
+    if not isinstance(block, dict):
+        return False
+    if set(block) == {"type", "text"} and block["type"] == "text":
+        return isinstance(block["text"], str)
+    if "tools" not in request:
+        return False
+    from pydantic import ValidationError
+
+    from src.agentauth.task_runtime_routes import ModelToolUse
+
+    try:
+        tool = ModelToolUse.model_validate(block)
+    except ValidationError:
+        return False
+    return tool.name in {item["name"] for item in request["tools"]}
+
+
 async def invoke_task_messages(db, *, identity, binding, target, request, operation_id):
     credentials = None
     if not target.is_platform:
@@ -79,14 +97,7 @@ async def invoke_task_messages(db, *, identity, binding, target, request, operat
 
     document, metadata = await run_in_threadpool(invoke)
     content = document.get("content")
-    if (
-        not isinstance(content, list)
-        or not content
-        or any(
-            not isinstance(block, dict) or set(block) != {"type", "text"} or block["type"] != "text" or not isinstance(block["text"], str)
-            for block in content
-        )
-    ):
+    if not isinstance(content, list) or not content or any(not _valid_response_block(block, request) for block in content):
         raise TaskStoreError("task provider returned unsupported content")
     usage = document.get("usage", {})
     if any(type(usage.get(field)) is not int or usage[field] < 0 for field in ("input_tokens", "output_tokens")):
@@ -94,7 +105,12 @@ async def invoke_task_messages(db, *, identity, binding, target, request, operat
     if usage["output_tokens"] > request["max_tokens"]:
         raise TaskStoreError("task provider output exceeded bound")
     capture.response(document, metadata)
-    if not capture.provider_request_id or document.get("stop_reason") not in {"end_turn", "max_tokens", "stop_sequence"}:
+    stop_reason = document.get("stop_reason")
+    has_tool = any(block["type"] == "tool_use" for block in content)
+    allowed_stops = {"end_turn", "max_tokens", "stop_sequence"}
+    if "tools" in request:
+        allowed_stops.add("tool_use")
+    if not capture.provider_request_id or stop_reason not in allowed_stops or (stop_reason == "tool_use") != has_tool:
         raise TaskStoreError("task provider completion receipt unavailable")
     decision = await price_completed_usage(
         request_id=operation_id, org_id=identity.tenant, raw_usage=capture.raw_usage, evidence=capture.routing, api_format="anthropic"
@@ -344,10 +360,14 @@ class TaskModel:
                     raise
         raise TaskStoreError("model receipt persistence unavailable")
 
-    async def execute(self, *, identity, turn_id, request_digest, request):
+    async def execute(self, *, identity, turn_id, request_digest, request, sdk_request=False):
         if payload_digest(request) != request_digest:
             raise TaskStoreError("model request digest mismatch")
         task = await run_in_threadpool(self._current, identity)
+        if sdk_request and task["persona"] != "agent-task-cyber":
+            raise TaskStoreError("SDK model request requires cyber persona")
+        if len(json.dumps(request, ensure_ascii=False).encode()) > 65536:
+            raise TaskStoreError("model request exceeds task frame bound")
         existing = await run_in_threadpool(self._read, identity.task_id, turn_id)
         if existing:
             if existing["request_digest"] != request_digest:
@@ -365,6 +385,7 @@ class TaskModel:
             deadline=datetime.fromisoformat(task["deadline_at"].replace("Z", "+00:00")),
             expected_policy_version=grant["model_binding"]["model_policy_version"],
             include_context=True,
+            persona=task["persona"],
         )
         if binding != grant["model_binding"]:
             raise TaskStoreError("task model binding changed")

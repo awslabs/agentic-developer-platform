@@ -30,6 +30,7 @@ from __future__ import annotations
 #: package and its Dockerfile stage; it never changes the queue contract, the
 #: KEDA resources or the legacy command selection.
 TASK_AGENT_COMMANDS: dict[str, tuple[str, ...]] = {
+    "agent-task-cyber": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded"),
     "agent-task-investigator": (
         "node",
         "/app/task-agents/investigator/dist/index.js",

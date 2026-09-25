@@ -24,6 +24,7 @@ _ACTIONS = frozenset(
         "report",
         "turn",
         "model",
+        "cyber",
         "control",
         "artifact",
         "finalize",
@@ -193,6 +194,9 @@ class TaskRunClient:
 
     def model(self, body: dict) -> dict:
         return self._post("model", body, run_bound=True)
+
+    def cyber(self, body: dict) -> dict:
+        return self._post("cyber", body, run_bound=True)
 
     def control(self, body: dict) -> dict:
         return self._post("control", body, run_bound=True)

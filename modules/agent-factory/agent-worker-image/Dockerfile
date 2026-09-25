@@ -56,6 +56,17 @@ COPY modules/agent-factory/task-agents/investigator/tsconfig.json ./
 COPY modules/agent-factory/task-agents/investigator/src/ ./src/
 RUN npx tsc --project tsconfig.json && npm prune --omit=dev
 
+# Trusted SDK Task cyber driver has its own pinned dependency tree.
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS task-cyber-builder
+WORKDIR /build
+COPY modules/agent-factory/task-agents/cyber/package.json modules/agent-factory/task-agents/cyber/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY modules/agent-factory/task-agents/cyber/src/ ./src/
+COPY modules/agent-factory/task-agents/cyber/build.mjs ./
+RUN npm run build && npm prune --omit=dev
+COPY modules/domain-apps/cyber/agent/skills/ /skills/
+RUN find /skills -type f ! -name SKILL.md -delete
+
 # -----------------------------------------------------------------------------
 # Stage 4: Stage personas and skills
 # -----------------------------------------------------------------------------
@@ -262,6 +273,10 @@ COPY --chown=agent:agent modules/agent-factory/codex-reviewer/prompts/ /app/code
 #     node /app/task-agents/investigator/dist/index.js --embedded
 COPY --from=task-investigator-builder --chown=agent:agent /build/dist/ /app/task-agents/investigator/dist/
 COPY --from=task-investigator-builder --chown=agent:agent /build/package.json /app/task-agents/investigator/package.json
+COPY --from=task-cyber-builder --chown=agent:agent /build/dist/ /app/task-agents/cyber/dist/
+COPY --from=task-cyber-builder --chown=agent:agent /build/package.json /app/task-agents/cyber/package.json
+COPY --from=task-cyber-builder --chown=agent:agent /build/node_modules/ /app/task-agents/cyber/node_modules/
+COPY --from=task-cyber-builder --chown=agent:agent /skills/ /app/task-agents/cyber/skills/
 
 # Copy staged personas and skills
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/

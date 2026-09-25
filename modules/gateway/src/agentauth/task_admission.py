@@ -47,6 +47,11 @@ class TaskAdmission:
 
     async def admit(self, *, caller, submit, idempotency_key, db):
         caller.require("adp-tasks/submit")
+        if submit["persona"] == "agent-task-cyber":
+            import os
+
+            if os.environ.get("ADP_TASK_CYBER_ENABLED", "false").lower() != "true":
+                raise TaskAdmissionError("prerequisite_unavailable", 503)
         policy = await run_in_threadpool(self.policies.get, tenant_id=caller.tenant_id, canonical_principal_id=caller.principal_id)
         if not policy or policy["status"] != "active" or "submit" not in policy["task_scopes"]:
             raise TaskAdmissionError("disallowed_scope", 403)
@@ -65,7 +70,12 @@ class TaskAdmission:
         now = self.clock()
         deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
         binding = await self.model_resolver(
-            db, tenant=caller.tenant_id, principal=caller.principal_id, deadline=deadline, expected_policy_version=policy["model_policy_version"]
+            db,
+            tenant=caller.tenant_id,
+            principal=caller.principal_id,
+            deadline=deadline,
+            expected_policy_version=policy["model_policy_version"],
+            **({"persona": submit["persona"]} if submit["persona"] == "agent-task-cyber" else {}),
         )
         refs = []
         total_bytes = 0

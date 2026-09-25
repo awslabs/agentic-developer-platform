@@ -1,0 +1,77 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { HostBridge, frame } from '../src/protocol.mjs';
+import { normalizeRequest, streamedMessage, startProxy } from '../src/model-proxy.mjs';
+import { groundedReport, runCyber, TOOL_NAMES, cyberTools } from '../src/driver.mjs';
+const start = () => ({ task_id: 'tsk_' + randomUUID(), instructions: 'Investigate', inputs: { url: 'https://example.com' }, limits: { max_turns: 4, max_output_tokens_per_turn: 2000 } });
+const report = () => ({ summary: 'Evidence insufficient', findings: [], uncertainties: ['No external analysis available'], recommendations: [], evidence_refs: [] });
+const tick = () => new Promise(resolve => setImmediate(resolve));
+test('SDK normalization strips transport/cache metadata and preserves tool semantics', () => {
+  const input = {model:'untrusted', max_tokens:5000, stream:true, metadata:{user_id:'legacy'}, messages:[{role:'assistant',content:[{type:'tool_use',id:'t1',name:'triage',input:{x:1},cache_control:{type:'ephemeral'}}]}],system:[{type:'text',text:'sys',cache_control:{type:'ephemeral'}}],tools:[{name:'triage',input_schema:{type:'object'},cache_control:{type:'ephemeral'}}]};
+  const result = normalizeRequest(input, 1000);
+  assert.equal(result.max_tokens,1000); assert.equal(result.sdk_request.model,undefined);
+  assert.equal(result.sdk_request.messages[0].content[0].cache_control,undefined);
+  assert.deepEqual(result.sdk_request.messages[0].content[0].input,{x:1});
+  assert.throws(() => normalizeRequest({messages:[{role:'user',content:[{type:'image'}]}]},1000));
+  assert.throws(() => normalizeRequest({...input,tools:[{type:'web_search_20250305'}]},1000));
+});
+test('SSE contains tool JSON, real usage and terminal markers', () => {
+  const result = streamedMessage({content:[{type:'tool_use',id:'t1',name:'triage',input:{x:1}}],stop_reason:'tool_use',usage:{input_tokens:7,output_tokens:9}});
+  assert.match(result,/input_json_delta/); assert.match(result,/"input_tokens":7/); assert.match(result,/event: message_stop/);
+});
+test('host serializes model and broker calls and correlates operation', async () => {
+  const writes=[]; const bridge = new HostBridge(start(),value=>writes.push(value));
+  const model=bridge.model({messages:[]},100); const cyber=bridge.cyber('enrich',{sha256:'a'.repeat(64)});
+  await tick(); assert.equal(writes.length,1);
+  bridge.receive(frame('model.result',bridge.start.task_id,{turn_id:writes[0].turn_id,operation_status:'pending'}));
+  await tick(); assert.equal(writes.length,1);
+  bridge.receive(frame('model.result',bridge.start.task_id,{turn_id:writes[0].turn_id,operation_status:'confirmed',content:[{type:'text',text:'ok'}],stop_reason:'end_turn'}));
+  await model; await tick(); assert.equal(writes.length,2);
+  assert.throws(()=>bridge.receive({...writes[1],type:'cyber.result',operation:'static',operation_status:'confirmed'}));
+  bridge.receive({...writes[1],type:'cyber.result',operation_status:'confirmed',result:{},artifact:{artifact_id:'art_evidence'}});
+  await cyber; assert.equal(bridge.evidence.get('art_evidence').source,'artifact');
+});
+test('cancel interrupts blocked tool and input, binding cancellation command', async()=>{
+  const bridge=new HostBridge(start(),()=>{}); const pending=bridge.ask('Need evidence');
+  const command_id=randomUUID(); bridge.receive(frame('cancel',bridge.start.task_id,{command_id,intentional:true}));
+  await assert.rejects(pending); assert.equal(bridge.cancelCommand,command_id); assert.equal(bridge.controller.signal.aborted,true);
+});
+test('unknown model outcome aborts proxy and never fabricates usage',async()=>{
+  const bridge=new HostBridge(start(),value=>queueMicrotask(()=>bridge.receive(frame('model.result',bridge.start.task_id,{turn_id:value.turn_id,operation_status:'unknown'}))));
+  const proxy=await startProxy(bridge,{maxTokens:100});
+  try { const response=await fetch(proxy.url+'/v1/messages',{method:'POST',headers:{authorization:'Bearer '+proxy.token},body:JSON.stringify({messages:[{role:'user',content:'hello'}]})}); assert.equal(response.status,502);assert.equal(bridge.controller.signal.aborted,true); } finally {await proxy.close();}
+});
+test('report does not accept invented provenance or discard unsupported uncertainty',()=>{
+  const value=report();value.findings=[{statement:'x'.repeat(2000),evidence_refs:['fake']}];value.evidence_refs=[{ref:'fake',source:'artifact',artifact_id:'fake'}];
+  const actual=groundedReport(value,new Map());assert.equal(actual.findings.length,0);assert.equal(actual.evidence_refs.length,0);assert.equal(actual.uncertainties.slice(1).join(''),'Unsupported finding: '+'x'.repeat(2000));
+});
+test('driver has exact MCP-only SDK policy and closes session/proxy',async()=>{
+  const bridge=new HostBridge(start(),()=>{});let closed=0;let options;
+  const result=await runCyber(bridge.start,bridge,{proxyFactory:async()=>({url:'http://127.0.0.1:1',token:'local',close:async()=>closed++}),sdkQuery:args=>{options=args.options;bridge.report=report();return {async *[Symbol.asyncIterator](){yield {type:'result',subtype:'success',is_error:false};},close(){closed++;}};}});
+  assert.equal(result.summary,'Evidence insufficient');assert.equal(closed,2);assert.deepEqual(options.tools,[]);assert.deepEqual(options.settingSources,[]);assert.equal(options.persistSession,false);assert.deepEqual(options.allowedTools,TOOL_NAMES);assert.equal(options.env.AWS_ACCESS_KEY_ID,undefined);assert.notEqual(options.env.HOME,process.env.HOME);assert.equal(options.cwd,options.env.HOME);assert.equal(existsSync(options.env.HOME),false);assert.equal((await options.canUseTool('Bash',{})).behavior,'deny');
+});
+test('skill enum rejects traversal at schema boundary',()=>{
+  const tools=cyberTools(new HostBridge(start(),()=>{}));const skill=tools.find(t=>t.name==='read_skill');assert.throws(()=>skill.inputSchema.name.parse('../../secrets'));
+});
+test('queued jobs prevent report until terminal poll; mutation receipts deduplicate',async()=>{
+ const bridge=new HostBridge(start(),()=>{});let calls=0;
+ bridge.cyber=async operation=>{calls++;return {operation_status:'confirmed',result:{job_id:'job1',status:operation==='result'?'completed':'pending'}};};
+ const tools=cyberTools(bridge);const tool=name=>tools.find(value=>value.name===name);
+ const payload={sample_s3_uri:'s3://owned/sample'};
+ await tool('triage').handler(payload);await tool('triage').handler(payload);assert.equal(calls,1);
+ assert.equal((await tool('submit_report').handler(report())).isError,true);assert.equal(bridge.report,null);
+ await tool('result').handler({job_id:'job1'});assert.equal(calls,2);
+ await tool('submit_report').handler(report());assert.ok(bridge.report);
+});
+test('input replay does not lose command provenance or mint another turn',async()=>{
+ const writes=[];const bridge=new HostBridge(start(),value=>writes.push(value));const input=bridge.ask('Needed');
+ const turn=frame('turn',bridge.start.task_id,{turn_id:randomUUID(),messages:[{command_id:randomUUID(),text:'supplied'}]});
+ bridge.receive(turn);assert.equal(await input,'supplied');bridge.receive(turn);
+ assert.equal(bridge.nextTurn,turn.turn_id);assert.equal(bridge.evidence.get('follow_up_input.'+turn.messages[0].command_id).source,'follow_up_input');
+ assert.throws(()=>bridge.receive({...turn,messages:[{...turn.messages[0],text:'changed'}]}));
+});
+test('secondary SDK abort preserves original unknown model failure',()=>{
+ const bridge=new HostBridge(start(),()=>{});const original=new Error('model_outcome_unknown');bridge.fail(original);bridge.fail(new Error('cancelled'));assert.equal(bridge.failure,original);
+});

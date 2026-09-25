@@ -23,7 +23,14 @@ async def test_task_model_requires_explicit_transport_selection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_task_transport_cannot_reuse_cli_probe(monkeypatch):
+@pytest.mark.parametrize(
+    "persona,revision,shape",
+    [
+        (module.TASK_PERSONA, module.TASK_CONTRACT_REVISION, module.TASK_REQUEST_SHAPE),
+        (module.TASK_CYBER_PERSONA, module.TASK_CYBER_CONTRACT_REVISION, module.TASK_CYBER_REQUEST_SHAPE),
+    ],
+)
+async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revision, shape):
     policy = SimpleNamespace(
         principal_status="active",
         service_policy_unavailable_reason=None,
@@ -45,8 +52,13 @@ async def test_task_transport_cannot_reuse_cli_probe(monkeypatch):
     )
     with pytest.raises(ModelPolicyError, match="task_model_probe_required"):
         await module.resolve_task_model(
-            db, tenant="tenant", principal="principal", deadline=datetime.now(UTC) + timedelta(minutes=30), expected_policy_version="1"
+            db,
+            tenant="tenant",
+            principal="principal",
+            deadline=datetime.now(UTC) + timedelta(minutes=30),
+            expected_policy_version="1",
+            persona=persona,
         )
     assert lookup.call_args.kwargs["compatibility_class"] == "anthropic_messages"
-    assert lookup.call_args.kwargs["harness_contract_revision"] == "task-messages-v1"
-    assert lookup.call_args.kwargs["request_shape_sha256"] == module.TASK_REQUEST_SHAPE
+    assert lookup.call_args.kwargs["harness_contract_revision"] == revision
+    assert lookup.call_args.kwargs["request_shape_sha256"] == shape

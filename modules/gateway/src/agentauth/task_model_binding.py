@@ -34,8 +34,29 @@ TASK_PROBE_BODY = {
 }
 TASK_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
+TASK_CYBER_PERSONA = "agent-task-cyber"
+TASK_CYBER_CONTRACT_REVISION = "task-cyber-sdk-messages-v1"
+TASK_CYBER_PROBE_BODY = {
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 64,
+    "messages": [{"role": "user", "content": [{"type": "text", "text": "Call task_probe with value OK."}]}],
+    "tools": [
+        {
+            "name": "task_probe",
+            "description": "Return probe evidence.",
+            "input_schema": {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"], "additionalProperties": False},
+        }
+    ],
+    "tool_choice": {"type": "tool", "name": "task_probe"},
+}
+TASK_CYBER_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_CYBER_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version, include_context=False):
+
+async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version, include_context=False, persona=TASK_PERSONA):
+    if persona not in {TASK_PERSONA, TASK_CYBER_PERSONA}:
+        raise ModelPolicyError("task_model_transport_unsupported")
+    revision = TASK_CYBER_CONTRACT_REVISION if persona == TASK_CYBER_PERSONA else TASK_CONTRACT_REVISION
+    shape = TASK_CYBER_REQUEST_SHAPE if persona == TASK_CYBER_PERSONA else TASK_REQUEST_SHAPE
     policy = await _resolve_active_allowlist_policy(
         db, tenant_id=tenant, principal_kind="service_account", principal_id=principal, expires_at=deadline
     )
@@ -46,7 +67,7 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
             PersonaModelPreference.org_id == tenant,
             PersonaModelPreference.principal_kind == "service_account",
             PersonaModelPreference.principal_id == principal,
-            PersonaModelPreference.persona_key == TASK_PERSONA,
+            PersonaModelPreference.persona_key == persona,
         )
     )
     # This transport has no implicit CLI-class default. Enrollment must record
@@ -75,8 +96,8 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
         region=region,
         canonical_model_id=model_id,
         compatibility_class=TASK_TRANSPORT,
-        harness_contract_revision=TASK_CONTRACT_REVISION,
-        request_shape_sha256=TASK_REQUEST_SHAPE,
+        harness_contract_revision=revision,
+        request_shape_sha256=shape,
     )
     if evidence is None or evidence.is_stale or not evidence.is_proven or not evidence.provider_request_id:
         raise ModelPolicyError("task_model_probe_required")
@@ -100,7 +121,7 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
         "model_id": model_id,
         "transport": TASK_TRANSPORT,
         "model_policy_version": str(preference.revision),
-        "request_shape_version": TASK_REQUEST_SHAPE,
+        "request_shape_version": shape,
         "pricing_evidence_version": pricing_version,
         "invocability_verified": True,
     }

@@ -359,3 +359,74 @@ async def test_three_sequential_completed_tasks_release_slots_and_duplicate_sett
             )
         assert all(model.repository._get_authority(key, "ACTIVE")["active_count"] == 0 for key in grant["execution_capacity_keys"])
     assert model.provider.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_sdk_request_refused_for_investigator_before_provider(model):
+    with pytest.raises(TaskStoreError, match="requires cyber persona"):
+        await execute(model, sdk_request=True)
+    model.provider.assert_not_awaited()
+    model.enforcement.check_budget_hierarchy.assert_not_awaited()
+
+
+def _make_cyber_fixture(model):
+    from src.tasks.records import task_binding_sort_key, task_policy_sort_key
+    from src.tasks.store import _protected_grant_digest, _serialize
+
+    repo, identity = model.repository, model.identity
+    pk = "TENANT#" + identity.tenant
+    grant = repo._get_authority(pk, f"TASK_RUN#{identity.invocation_id}#GEN#{identity.generation:010d}")
+    grant["persona"] = "agent-task-cyber"
+    digest = _protected_grant_digest(grant)
+    binding = repo._get_authority(pk, task_binding_sort_key(identity.task_id))
+    binding.update(persona="agent-task-cyber", grant_digest=digest)
+    policy = repo._get_authority(pk, task_policy_sort_key(identity.canonical_principal))
+    policy["personas"] = ["agent-task-cyber"]
+    for row in (grant, binding, policy):
+        repo._client.put_item(TableName=repo.authority_table_name, Item=_serialize(row))
+    task = repo.read_task(identity.task_id)
+    task.update(persona="agent-task-cyber", grant_digest=digest)
+    repo._client.put_item(TableName=repo.table_name, Item=_serialize(task))
+    from src.tasks.records import dispatch_sort_key, task_work_locator_partition, task_work_partition
+
+    work = repo._get(task_work_partition(identity.task_id), dispatch_sort_key(task["dispatch_id"]))
+    work["envelope"]["persona"] = "agent-task-cyber"
+    work.update(grant_digest=digest, envelope_digest=payload_digest(work["envelope"]))
+    locator = repo._get_authority(task_work_locator_partition(task["dispatch_id"]), "BINDING")
+    locator.update(grant_digest=digest, envelope_digest=work["envelope_digest"])
+    repo._client.put_item(TableName=repo.table_name, Item=_serialize(work))
+    repo._client.put_item(TableName=repo.authority_table_name, Item=_serialize(locator))
+
+
+@pytest.mark.asyncio
+async def test_sdk_tool_receipt_is_durable_and_never_replayed(model, monkeypatch):
+    _make_cyber_fixture(model)
+    model.request["tools"] = [{"name": "cyber_inspect", "input_schema": {"type": "object"}}]
+    tool = {"type": "tool_use", "id": "toolu_1", "name": "cyber_inspect", "input": {}}
+    model.provider.return_value.update(content=[tool], stop_reason="tool_use")
+    result = await execute(model, sdk_request=True)
+    assert result["content"] == [tool] and result["stop_reason"] == "tool_use"
+    assert result["reservation_status"] == "settled"
+    assert await execute(model, sdk_request=True) == result
+    model.provider.assert_awaited_once()
+    assert model.service.readiness.call_args.kwargs["persona"] == "agent-task-cyber"
+
+
+@pytest.mark.asyncio
+async def test_sdk_unknown_provider_outcome_is_not_replayed(model, monkeypatch):
+    _make_cyber_fixture(model)
+    model.provider.side_effect = TimeoutError("provider outcome unknown")
+    result = await execute(model, sdk_request=True)
+    assert result["operation_status"] == "unknown" and not result["automatic_replay_permitted"]
+    assert await execute(model, sdk_request=True) == result
+    model.provider.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sdk_request_size_limit_applies_before_claim(model):
+    _make_cyber_fixture(model)
+    model.request["system"] = "x" * 65536
+    with pytest.raises(TaskStoreError, match="frame bound"):
+        await execute(model, sdk_request=True)
+    model.provider.assert_not_awaited()
+    assert model.service._read(model.identity.task_id, model.turn_id) is None

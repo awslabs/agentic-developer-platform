@@ -6,7 +6,7 @@ import os
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.adapter import CREDENTIAL_HEADER
@@ -199,15 +199,111 @@ class ModelMessage(BaseModel):
     content: list[ModelText] = Field(min_length=1, max_length=16)
 
 
+class ModelToolUse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["tool_use"]
+    id: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    input: dict
+
+
+class ModelToolResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["tool_result"]
+    tool_use_id: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
+    content: str | list[ModelText] = Field(max_length=32000)
+    is_error: bool | None = Field(default=None, strict=True)
+
+
+class SdkMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["user", "assistant"]
+    content: str | list[ModelText | ModelToolUse | ModelToolResult] = Field(min_length=1, max_length=32000)
+
+    @model_validator(mode="after")
+    def role_blocks(self):
+        if isinstance(self.content, list):
+            if len(self.content) > 64:
+                raise ValueError("too many content blocks")
+            for block in self.content:
+                if isinstance(block, ModelToolUse) and self.role != "assistant":
+                    raise ValueError("tool_use requires assistant role")
+                if isinstance(block, ModelToolResult) and self.role != "user":
+                    raise ValueError("tool_result requires user role")
+        return self
+
+
+class SdkTool(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    description: str | None = Field(default=None, max_length=16000)
+    input_schema: dict
+
+    @model_validator(mode="after")
+    def object_schema(self):
+        if self.input_schema.get("type") != "object":
+            raise ValueError("custom tool requires object input schema")
+        return self
+
+
+class SdkToolChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["auto", "any", "tool", "none"]
+    name: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+    disable_parallel_tool_use: bool | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def named_tool(self):
+        if (self.type == "tool") != (self.name is not None):
+            raise ValueError("only a named tool choice accepts name")
+        return self
+
+
+class SdkRequest(BaseModel):
+    """Custom tools only; no server tools, URLs, media, credentials or model override."""
+
+    model_config = ConfigDict(extra="forbid")
+    messages: list[SdkMessage] = Field(min_length=1, max_length=32)
+    system: str | list[ModelText] | None = Field(default=None, max_length=16000)
+    tools: list[SdkTool] | None = Field(default=None, max_length=32)
+    tool_choice: SdkToolChoice | None = None
+    stop_sequences: list[str] | None = Field(default=None, max_length=16)
+
+    @model_validator(mode="after")
+    def bounded_custom_tools(self):
+        names = [tool.name for tool in self.tools or []]
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate tool name")
+        if self.tool_choice and self.tool_choice.type == "tool" and self.tool_choice.name not in names:
+            raise ValueError("tool choice must name a declared tool")
+        if any(not value or len(value) > 1000 for value in self.stop_sequences or []):
+            raise ValueError("invalid stop sequence")
+        return self
+
+
 class ModelBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["1.0"]
     attempt: TaskAttemptBody
     turn_id: str = Field(pattern=UUID4)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    messages: list[ModelMessage] = Field(min_length=1, max_length=32)
+    messages: list[ModelMessage] | None = Field(default=None, min_length=1, max_length=32)
     max_tokens: int = Field(ge=1, le=4096, strict=True)
     system: str | None = Field(default=None, max_length=16000)
+    sdk_request: SdkRequest | None = None
+
+    @model_validator(mode="after")
+    def exclusive_request(self):
+        if (self.messages is None) == (self.sdk_request is None):
+            raise ValueError("supply exactly one model request form")
+        if self.sdk_request is not None and self.system is not None:
+            raise ValueError("SDK system belongs inside sdk_request")
+        return self
+
+    def invocation(self):
+        if self.sdk_request is not None:
+            return {**self.sdk_request.model_dump(exclude_none=True), "max_tokens": self.max_tokens}
+        return self.model_dump(include={"messages", "max_tokens", "system"}, exclude_none=True)
 
 
 @router.post("/model")
@@ -218,14 +314,14 @@ async def model(body: ModelBody, request: Request, runtime=Depends(get_agent_run
 
     identity = await authenticate_task_attempt(request)
     require_body_attempt(identity, body.attempt)
-    invocation = body.model_dump(include={"messages", "max_tokens", "system"}, exclude_none=True)
+    invocation = body.invocation()
     import json
 
     if len(json.dumps(invocation, ensure_ascii=False).encode()) > 65536:
         raise HTTPException(413, "task model request too large")
     try:
         return await TaskModel(task_runtime(runtime).repository, db=db).execute(
-            identity=identity, turn_id=body.turn_id, request_digest=body.request_digest, request=invocation
+            identity=identity, turn_id=body.turn_id, request_digest=body.request_digest, request=invocation, sdk_request=body.sdk_request is not None
         )
     except (TaskStoreError, WorkBindingError, ModelPolicyError, TaskBudgetError):
         raise HTTPException(409, "task model refused") from None

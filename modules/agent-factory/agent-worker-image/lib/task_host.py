@@ -92,7 +92,7 @@ def _write_frame(process: subprocess.Popen, frame: dict) -> None:
     process.stdin.flush()
 
 
-def _child_environment(workspace: Path) -> dict[str, str]:
+def _child_environment(workspace: Path, *, sdk: bool = False) -> dict[str, str]:
     home = workspace / "home"
     temporary = workspace / "tmp"
     home.mkdir(mode=0o700)
@@ -105,7 +105,7 @@ def _child_environment(workspace: Path) -> dict[str, str]:
         "LC_ALL": "C.UTF-8",
         "PYTHONUNBUFFERED": "1",
         "ADP_TASK_PROTOCOL_VERSION": str(PROTOCOL_VERSION),
-        "ADP_TASK_NETWORK": "disabled",
+        "ADP_TASK_NETWORK": "host-mediated-sdk" if sdk else "disabled",
     }
 
 
@@ -313,22 +313,25 @@ class TaskHost:
     def _model_request(self, assignment, attempt: dict, frame: dict, max_tokens: int) -> dict:
         if self._pending_turn_id is not None and frame["turn_id"] != self._pending_turn_id:
             raise TaskProtocolError("child model request skipped its assigned input turn")
-        messages = frame["messages"]
-        if not isinstance(messages, list) or not 1 <= len(messages) <= 32:
-            raise TaskProtocolError("child model messages exceed gateway bounds")
-        normalized = []
-        for message in messages:
-            content = message.get("content") if isinstance(message, dict) else None
-            if not isinstance(content, str) or not content or message.get("role") not in {"user", "assistant"}:
-                raise TaskProtocolError("child model message must contain text")
-            blocks = [{"type": "text", "text": content[offset:offset + 32000]}
-                      for offset in range(0, len(content), 32000)]
-            if len(blocks) > 16:
-                raise TaskProtocolError("child model message exceeds text block limit")
-            normalized.append({"role": message["role"], "content": blocks})
-        request = {"messages": normalized, "max_tokens": frame.get("max_tokens", max_tokens)}
-        if "system" in frame:
-            request["system"] = frame["system"]
+        if "sdk_request" in frame:
+            request = {**frame["sdk_request"], "max_tokens": frame.get("max_tokens", max_tokens)}
+        else:
+            messages = frame["messages"]
+            if not isinstance(messages, list) or not 1 <= len(messages) <= 32:
+                raise TaskProtocolError("child model messages exceed gateway bounds")
+            normalized = []
+            for message in messages:
+                content = message.get("content") if isinstance(message, dict) else None
+                if not isinstance(content, str) or not content or message.get("role") not in {"user", "assistant"}:
+                    raise TaskProtocolError("child model message must contain text")
+                blocks = [{"type": "text", "text": content[offset:offset + 32000]}
+                          for offset in range(0, len(content), 32000)]
+                if len(blocks) > 16:
+                    raise TaskProtocolError("child model message exceeds text block limit")
+                normalized.append({"role": message["role"], "content": blocks})
+            request = {"messages": normalized, "max_tokens": frame.get("max_tokens", max_tokens)}
+            if "system" in frame:
+                request["system"] = frame["system"]
         prepared = {
             "schema_version": SCHEMA_VERSION,
             "attempt": attempt,
@@ -336,6 +339,10 @@ class TaskHost:
             "request_digest": _canonical_digest(request),
             **request,
         }
+        if "sdk_request" in frame:
+            prepared = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
+                        "turn_id": frame["turn_id"], "request_digest": _canonical_digest(request),
+                        "max_tokens": request["max_tokens"], "sdk_request": frame["sdk_request"]}
         # Match both the transport bytes and the gateway's invocation-size check.
         # The child reserves wrapper headroom while selecting labelled excerpts.
         if (len(json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES
@@ -392,12 +399,51 @@ class TaskHost:
             "task_id": assignment.task_id,
             "turn_id": frame["turn_id"],
             "operation_status": status,
+            **({"usage": response["usage"]} if isinstance(response.get("usage"), dict) else {}),
             "content": response.get("content"),
             "stop_reason": response.get("stop_reason"),
             "error_code": (
                 "model_outcome_unknown" if status == "unknown" else response.get("error_code")
             ),
         }
+
+    def _cyber(self, assignment, attempt: dict, frame: dict) -> dict:
+        response = self.client.cyber({"schema_version": SCHEMA_VERSION, "attempt": attempt,
+            "operation_id": frame["request_id"], "operation": frame["operation"], "payload": frame["payload"]})
+        if (response.get("schema_version") != SCHEMA_VERSION or response.get("task_id") != assignment.task_id
+                or response.get("operation_id") != frame["request_id"]
+                or response.get("operation_status") not in {"confirmed", "pending", "unknown", "rejected"}):
+            raise TaskRunClientError("cyber receipt identity or status is invalid")
+        if response["operation_status"] == "confirmed" and (
+                not isinstance(response.get("result"), dict) or not isinstance(response.get("artifact"), dict)):
+            raise TaskRunClientError("confirmed cyber receipt lacks durable artifact")
+        if response["operation_status"] == "confirmed":
+            artifact = response["artifact"]
+            if (not isinstance(artifact.get("artifact_id"), str) or not artifact["artifact_id"].startswith("art_")
+                    or artifact.get("content_type") != "application/json"
+                    or not isinstance(artifact.get("content_sha256"), str) or len(artifact["content_sha256"]) != 64
+                    or type(artifact.get("byte_length")) is not int or not 0 < artifact["byte_length"] <= 32768):
+                raise TaskRunClientError("cyber artifact metadata is invalid")
+        return {"protocol_version": PROTOCOL_VERSION, "type": "cyber.result", "operation": frame["operation"],
+            "request_id": frame["request_id"], "task_id": assignment.task_id,
+            "operation_status": response["operation_status"], "result": response.get("result", {}),
+            **({"artifact": response["artifact"]} if "artifact" in response else {}),
+            **({"error_code": response["error_code"]} if "error_code" in response else {})}
+
+    def _cancel_cyber_jobs(self, assignment, attempt: dict) -> None:
+        # A stable UUID4-shaped identity permits cleanup receipt checks without
+        # replaying normal tools. Stopping the SDK process alone is insufficient.
+        operation_id = str(uuid.UUID(bytes=hashlib.sha256(
+            f"{attempt['runtime_attempt_id']}:cyber.cancel_jobs".encode()
+        ).digest()[:16], version=4))
+        response = self.client.cyber({"schema_version": SCHEMA_VERSION, "attempt": attempt,
+            "operation_id": operation_id, "operation": "cancel_jobs", "payload": {}})
+        if (response.get("schema_version") != SCHEMA_VERSION or response.get("task_id") != assignment.task_id
+                or response.get("operation_id") != operation_id or response.get("operation_status") != "confirmed"
+                or not isinstance(response.get("result"), dict)
+                or response["result"].get("status") != "confirmed"
+                or response["result"].get("pending_jobs") != []):
+            raise TaskRunClientError("cyber downstream cancellation remains unconfirmed")
 
     def _control(self, assignment, attempt: dict, cursor: str | None) -> dict:
         response = self.client.control(
@@ -644,6 +690,8 @@ class TaskHost:
         attempt: dict | None = None
         finalized = False
         heartbeat_stopped = False
+        sdk = False
+        cyber_cleanup_confirmed = False
 
         def stop_heartbeat() -> None:
             nonlocal heartbeat_stopped
@@ -683,6 +731,7 @@ class TaskHost:
                 raise TaskRunClientError("task attempt was not registered")
             artifacts = self._input_artifacts(assignment, bootstrap)
             command = self.command_resolver(bootstrap["persona"])
+            sdk = bootstrap["persona"] == "agent-task-cyber"
             self.work_root.mkdir(parents=True, exist_ok=True)
             workspace = Path(
                 tempfile.mkdtemp(prefix=f"task-{assignment.invocation_id[:8]}-", dir=self.work_root)
@@ -690,9 +739,9 @@ class TaskHost:
             workspace.chmod(0o700)
             stderr: list[str] = []
             process = subprocess.Popen(
-                _network_wrapped_command(command),
+                command if sdk else _network_wrapped_command(command),
                 cwd=workspace,
-                env=_child_environment(workspace),
+                env=_child_environment(workspace, sdk=sdk),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -746,6 +795,9 @@ class TaskHost:
             deferred_model: dict | None = None
 
             model_job = None
+            cyber_job = None
+            cyber_started = None
+            cyber_ids: set[str] = set()
 
             def launch_model_call(job):
                 def call():
@@ -760,8 +812,13 @@ class TaskHost:
 
             def deliver_model(model_frame: dict) -> None:
                 nonlocal model_job
-                if model_job is not None:
-                    raise TaskProtocolError("task child emitted concurrent model requests")
+                if model_job is not None or cyber_job is not None:
+                    raise TaskProtocolError("task child emitted concurrent operations")
+                if "sdk_request" in model_frame and not sdk:
+                    raise TaskProtocolError("SDK model transport is not authorized for persona")
+                admission = self._control(assignment, attempt, cursor)
+                if admission["cancel_requested"] or cancel_started is not None:
+                    return
                 body = self._model_request(assignment, attempt, model_frame,
                     bootstrap["limits"]["max_output_tokens_per_turn"])
                 model_job = {"frame": model_frame, "body": body, "responses": queue.Queue(maxsize=1),
@@ -927,6 +984,18 @@ class TaskHost:
                                 model_job = None
                     if model_job is not None and not model_job["inflight"] and now >= model_job["next_poll"]:
                         launch_model_call(model_job)
+                if cyber_job is not None and process.poll() is None and cancel_started is None:
+                    if now - cyber_started >= _MODEL_RECEIPT_SECONDS:
+                        raise TaskHostError("Cyber broker receipt remained unavailable", code="process_failed")
+                    try:
+                        cyber_response = cyber_job.get_nowait()
+                    except queue.Empty:
+                        pass
+                    else:
+                        cyber_job = None
+                        if isinstance(cyber_response, Exception):
+                            raise cyber_response
+                        finish_model(cyber_response)
                 events = selector.select(timeout=0.1)
                 for key, _ in events:
                     chunk = os.read(key.fileobj.fileno(), MAX_FRAME_BYTES + 1)
@@ -976,7 +1045,28 @@ class TaskHost:
                             else:
                                 deliver_model(frame)
 
+                        elif frame["type"] == "cyber.request":
+                            if not sdk or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
+                                raise TaskProtocolError("cyber operation is not admitted")
+                            if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:
+                                raise TaskProtocolError("cyber operation request identity reused or limit exceeded")
+                            control = self._control(assignment, attempt, cursor)
+                            if cancel_started is not None or control["cancel_requested"]:
+                                continue
+                            cyber_ids.add(frame["request_id"])
+                            cyber_started = time.monotonic()
+                            cyber_job = queue.Queue(maxsize=1)
+                            def call_cyber(job=cyber_job, request=frame):
+                                try:
+                                    value = self._cyber(assignment, attempt, request)
+                                except Exception as exc:
+                                    value = exc
+                                job.put(value)
+                            threading.Thread(target=call_cyber, daemon=True, name="task-cyber-broker").start()
+
                         elif frame["type"] == "result":
+                            if cancel_started is None and (cyber_job is not None or model_job is not None or deferred_model is not None):
+                                raise TaskProtocolError("child finished with an operation in flight")
                             if result_report is not None:
                                 raise TaskProtocolError("task child emitted more than one result")
                             result_report = frame["report"]
@@ -992,6 +1082,9 @@ class TaskHost:
                             raise TaskHostError(frame["message"], code=frame["code"])
             exit_code = process.wait()
             stderr_thread.join(timeout=1)
+            if sdk:
+                self._cancel_cyber_jobs(assignment, attempt)
+                cyber_cleanup_confirmed = True
             if cancel_started is not None:
                 self._finalize(
                     assignment,
@@ -1066,6 +1159,8 @@ class TaskHost:
                 else "process_failed"
             )
             try:
+                if sdk and not cyber_cleanup_confirmed:
+                    self._cancel_cyber_jobs(assignment, attempt)
                 self._finalize(
                     assignment,
                     attempt,

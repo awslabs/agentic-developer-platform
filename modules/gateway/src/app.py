@@ -69,6 +69,7 @@ UNIT_MODULES = [
     # recovery holds a distinct role allowlist from dispatch.
     "src.agentauth.task_dispatch_routes",
     "src.agentauth.task_runtime_routes",
+    "src.agentauth.task_cyber",  # Pod/attempt-bound cyber broker and stop-only cleanup.
     # #5799: Task API v1 read, streaming, artifact and host-reporting surface.
     # Mounted always and gated inside by ADP_TASK_API_READ_ENABLED /
     # ADP_TASK_API_WORKER_ENABLED (both default false, design section 11), which is
