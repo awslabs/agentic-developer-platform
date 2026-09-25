@@ -24,7 +24,7 @@ def runtime_counters(config, observation):
     """Bind private progress and an actual listener journal read to this worker."""
     progress, state = observation['progress'], observation['state']
     if (progress.get('invocation_id') != config['live_run_id'] or
-        progress.get('run_id') != config['fixture_run_id'] or
+        progress.get('run_id') != config['runtime_run_id'] or
         progress.get('source_revision') != config['runtime_revision'] or
         progress.get('generation') != config['runtime_generation'] or
         state.get('generation') != config['runtime_generation'] or

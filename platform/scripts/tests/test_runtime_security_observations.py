@@ -12,7 +12,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
 def inputs():
-    config = dict(live_run_id='live', fixture_run_id='fixture', runtime_revision='a'*40,
+    config = dict(live_run_id='live', fixture_run_id='live', runtime_run_id='fixture', runtime_revision='a'*40,
                   runtime_generation=2, runtime_pod_uid='pod')
     observation = dict(pod_uid='pod', observed_by='actual local snapshot and listener state',
         observed_at='2026-09-24T18:00:00Z',
@@ -22,7 +22,7 @@ def inputs():
         state=dict(generation=2, commands=[{'command_id':'pause-command'}]))
     return config, observation
 
-@pytest.mark.parametrize('field,value', [('invocation_id','foreign'),('source_revision','b'*40),
+@pytest.mark.parametrize('field,value', [('invocation_id','foreign'),('run_id','live'),('source_revision','b'*40),
     ('generation',3),('counters_complete',False),('dropped_events',1),('active_tools',1),
     ('sdk_queries',True),('tool_starts',-1)])
 def test_reject_invalid_runtime_snapshot(field,value):
@@ -40,7 +40,7 @@ def test_counts_actual_journal_and_requires_unique_ids():
 @pytest.mark.parametrize('failure_at',[1,2])
 def test_measurement_failure_preserves_responses_and_stops_probing(monkeypatch,failure_at):
     config, observed = inputs()
-    config.update(gateway_url='https://fixture.invalid',fixture_identity={'run_id':'fixture'},
+    config.update(gateway_url='https://fixture.invalid',fixture_identity={'run_id':'live'},
         identity_env={role:role for role in ['owner','nonowner','other_tenant']},
         terminal_run_id='terminal',unknown_run_id='unknown')
     for role in config['identity_env']:monkeypatch.setenv(role,'token')
