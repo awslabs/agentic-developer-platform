@@ -182,7 +182,7 @@ def task_partition(task_id: str) -> str:
 
 
 def task_run_partition(task_id: str) -> str:
-    """``TASK_RUN#<task_id>`` — run history, one row per generation."""
+    """``TASK_RUN#<task_id>`` — generation records and immutable runtime-attempt history."""
     return f"{TASK_RUN_NAMESPACE}#{validate_task_id(task_id)}"
 
 

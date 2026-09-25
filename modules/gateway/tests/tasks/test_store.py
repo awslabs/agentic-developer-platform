@@ -2986,3 +2986,58 @@ def test_current_attempt_report_retries_after_concurrent_input_version_change(st
     events = store.read_events(task_id=request.task_id)
     assert sum(row["type"] == "run.started" for row in events) == 1
     assert sum(row["type"] == "progress.updated" for row in events) == 1
+
+
+def test_runtime_attempt_history_is_atomic_immutable_and_retained(store, client):
+    from src.tasks.records import run_sort_key, task_run_partition
+
+    request = _request()
+    store.accept(request)
+    first = _bind_attempt(store, request.task_id, request.invocation_id)
+    second = str(uuid.uuid4())
+    store.bind_runtime_attempt(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=1,
+        runtime_attempt_id=second,
+        expected_version=2,
+        expected_runtime_attempt_id=first,
+    )
+    prefix = run_sort_key(invocation_id=request.invocation_id, generation=1) + "#ATTEMPT#"
+    initial = store._get(task_run_partition(request.task_id), prefix + first)
+    replacement = store._get(task_run_partition(request.task_id), prefix + second)
+    assert initial["previous_runtime_attempt_id"] is None
+    assert replacement["previous_runtime_attempt_id"] == first
+    assert [initial["task_version"], replacement["task_version"]] == [2, 3]
+    assert "expires_at" not in initial and "expires_at" not in replacement
+    with pytest.raises(StaleAttemptError):
+        store.bind_runtime_attempt(
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=1,
+            runtime_attempt_id=first,
+            expected_version=3,
+            expected_runtime_attempt_id=second,
+        )
+    assert store.read_task(request.task_id)["runtime_attempt_id"] == second
+    assert store._get(task_run_partition(request.task_id), prefix + first) == initial
+    assert store._get(task_run_partition(request.task_id), prefix + second) == replacement
+
+
+def test_failed_runtime_attempt_binding_leaves_no_history(store):
+    from src.tasks.records import run_sort_key, task_run_partition
+
+    request = _request()
+    store.accept(request)
+    attempt = str(uuid.uuid4())
+    with pytest.raises(StaleAttemptError):
+        store.bind_runtime_attempt(
+            task_id=request.task_id,
+            invocation_id=request.invocation_id,
+            generation=1,
+            runtime_attempt_id=attempt,
+            expected_version=99,
+        )
+    key = run_sort_key(invocation_id=request.invocation_id, generation=1) + "#ATTEMPT#" + attempt
+    assert store._get(task_run_partition(request.task_id), key) is None
+    assert store.read_task(request.task_id).get("runtime_attempt_id") is None

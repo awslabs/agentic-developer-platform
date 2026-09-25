@@ -69,6 +69,14 @@ def test_attempt_is_atomically_bound_and_replaced(runtime):
     first = str(uuid.uuid4())
     attempt = {"task_id": identity.task_id, "invocation_id": identity.invocation_id, "generation": identity.generation, "runtime_attempt_id": first}
     service.register_attempt(identity=identity, body=attempt)
+    from src.tasks.records import run_sort_key, task_run_partition
+
+    history_key = run_sort_key(invocation_id=identity.invocation_id, generation=identity.generation) + "#ATTEMPT#" + first
+    history = service.repository._get(task_run_partition(identity.task_id), history_key)
+    version = service.repository.read_task(identity.task_id)["version"]
+    service.register_attempt(identity=identity, body=attempt)  # Lost response retry.
+    assert service.repository._get(task_run_partition(identity.task_id), history_key) == history
+    assert service.repository.read_task(identity.task_id)["version"] == version
     current = service.authenticate(credential=result["run_credential"], pod=pod)
     assert current.runtime_attempt_id == first
     service.register_attempt(identity=current, body={**attempt, "runtime_attempt_id": str(uuid.uuid4())})
