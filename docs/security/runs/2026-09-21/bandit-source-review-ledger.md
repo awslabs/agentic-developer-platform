@@ -14,7 +14,8 @@ non-applicable. Runtime and operator assertions still require review.
 | --- | ---: |
 | Fixed fail-soft logging gaps | 4 |
 | Verified test assertions | 187 |
-| Pending source review, owned by #6108 | 1279 |
+| Reviewed parameterized SQL boundaries | 2 |
+| Pending source review, owned by #6108 | 1277 |
 | Total original selectors | 1470 |
 
 Every original selector is retained exactly once in
@@ -34,3 +35,11 @@ checks that only the fixed event text is logged:
 
 This PR can deliver those bounded fixes and the exact reconciliation. It does
 not close #6108 or transfer unfinished runtime findings to another owner.
+
+The gateway list/count query selectors `ri=1118` and `ri=1119` now have a
+[source-specific SQL review](bandit-gateway-asset-list-review.md). Their MEDIUM
+B608 scanner severity is retained: the interpolated text contains fixed SQL
+fragments, while caller values are bound parameters. The review also found and
+fixed a separate production authorization defect: default list/count results
+included other users' personal assets. This is a source fix only; gateway rollout
+and acceptance remain held, and the other 1,277 pending selectors retain #6108.

@@ -6,9 +6,10 @@
   "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
-    "pending-source-review": 1279,
+    "pending-source-review": 1277,
     "nonsecurity-test-assertion": 187,
-    "fixed": 4
+    "fixed": 4,
+    "reviewed-parameterized-sql": 2
   },
   "scope_complete": false,
   "selectors": [
@@ -16055,8 +16056,16 @@
       "rule": "B608",
       "line": 353,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-parameterized-sql",
+      "owner_issue": 6108,
+      "evidence": {
+        "review_document": "docs/security/runs/2026-09-21/bandit-gateway-asset-list-review.md",
+        "current_function": "src.knowledge.routes.list_assets",
+        "sql_boundary": "Interpolated where_clause consists only of source-controlled condition literals. Authenticated tenant/canonical owner, filter values, limit and offset remain SQLAlchemy bound parameters.",
+        "source_fix": "Default list/count now applies the detail route personal-owner restriction to non-admin callers before pagination. This is an authorization repair, not a claimed SQL-injection scanner disappearance.",
+        "test": "modules/gateway/tests/knowledge/test_asset_list_visibility.py",
+        "runtime_acceptance": "No gateway deployment or live acceptance performed; gateway/tick holds remain."
+      }
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1119",
@@ -16069,8 +16078,16 @@
       "rule": "B608",
       "line": 364,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-parameterized-sql",
+      "owner_issue": 6108,
+      "evidence": {
+        "review_document": "docs/security/runs/2026-09-21/bandit-gateway-asset-list-review.md",
+        "current_function": "src.knowledge.routes.list_assets",
+        "sql_boundary": "Interpolated where_clause consists only of source-controlled condition literals. Authenticated tenant/canonical owner, filter values, limit and offset remain SQLAlchemy bound parameters.",
+        "source_fix": "Default list/count now applies the detail route personal-owner restriction to non-admin callers before pagination. This is an authorization repair, not a claimed SQL-injection scanner disappearance.",
+        "test": "modules/gateway/tests/knowledge/test_asset_list_visibility.py",
+        "runtime_acceptance": "No gateway deployment or live acceptance performed; gateway/tick holds remain."
+      }
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1120",
