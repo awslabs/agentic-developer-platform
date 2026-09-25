@@ -545,8 +545,9 @@ class TokenContextMiddleware:
                 # Also set on request.state for downstream middleware
                 request.state.token_context = token_context
             except Exception:
-                # Auth failed — let the route handler deal with it
-                pass
+                # Auth failed — let the route handler deal with it.
+                # Log so operators can detect systemic failures (e.g. JWKS outage).
+                logger.warning("token_context pre-population failed")
 
         await self.app(scope, receive, send)
 

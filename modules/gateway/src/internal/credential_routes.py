@@ -511,7 +511,8 @@ async def proxy_request(
             )
             await db.commit()
         except Exception:
-            pass  # Don't let audit-log failures mask the security rejection.
+            # Don't let audit-log failures mask the security rejection.
+            logger.warning("credential denial audit write failed")
 
     # Issue #1158: Validate target URL before resolving credentials or making requests.
     try:
