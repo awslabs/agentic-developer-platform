@@ -1,10 +1,39 @@
+# ---------------------------------------------------------------------------
+# Stage 1: builder — compile C extensions, then discard build tools.
+#
+# build-essential, git, and libyara-dev are needed only for pip install
+# (yara-python, capstone, lief compile native code). They are NOT copied to
+# the runtime stage, which eliminates the gcc, binutils, and git CVE families
+# from the production image.  Issue #6123.
+# ---------------------------------------------------------------------------
+FROM public.ecr.aws/docker/library/python:3.13-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      git \
+      libyara-dev \
+      libmagic1 \
+      libssl-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY workers/requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime — only runtime OS packages + pre-compiled Python site.
+# ---------------------------------------------------------------------------
 FROM public.ecr.aws/docker/library/python:3.13-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# System tools for triage + static analysis
+# Runtime-only system packages. build-essential, git and unzip are excluded:
+# - build-essential/git: moved to the builder stage (issue #6123)
+# - unzip: unused at runtime (binwalk has its own decompression)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       file \
       libseccomp2 \
@@ -15,9 +44,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libssl-dev \
       osslsigncode \
       upx-ucl \
-      build-essential \
-      git \
-      unzip \
       binwalk \
       ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -27,10 +53,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Issue #272: Removed baked git clone of signature-base (~200 MB savings).
 # The YARA_RULES_DIR env var points to the volume-mounted /rules/ directory.
 
-WORKDIR /app
+# Copy pre-compiled Python packages from the builder stage.
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-COPY workers/requirements.txt .
-RUN pip install -r requirements.txt
+WORKDIR /app
 
 COPY workers/entrypoint.py ./entrypoint.py
 COPY workers/sample_access.py ./sample_access.py
