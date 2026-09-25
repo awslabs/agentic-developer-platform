@@ -8441,6 +8441,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E21",
         "E22",
         "E24",
+        "E30",
     }
 
 
@@ -10224,7 +10225,15 @@ def test_observer_artifacts_grant_only_two_named_reads():
 
 def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
     selected = cases.resolve_suites(("nightly",))
-    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22", "E24"}
+    assert {case.id for case in selected} == {
+        "E01",
+        "C01",
+        "E20",
+        "E21",
+        "E22",
+        "E24",
+        "E30",
+    }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
         "#5628",
@@ -10353,3 +10362,27 @@ def test_vault_nightly_is_selected_and_shipped():
     assert cases.BY_ID["E24"].owner == "#5631"
     assert "E24" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()
+
+
+def test_gitlab_nightly_does_not_claim_live_delivery_or_write(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "contract": "gitlab_cli_v1",
+            "providers": [],
+            "identity_linked": False,
+            "webhook_delivery": "unverified",
+            "agent_runtime": "unverified",
+        },
+    }
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.gitlab(cli, evidence)
+    assert evidence["provider_count"] == 0
+    assert "live_acceptance_hold" in evidence
+    assert all("--yes" not in call.args[0] for call in cli.method_calls)
+    assert cases.BY_ID["E30"].owner == "#5635"
+    assert "E30" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E30"] in bundle.purposes()

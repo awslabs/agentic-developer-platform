@@ -45,6 +45,7 @@ def parser():
         commands.add_parser("bedrock", help="Connect and verify Bedrock destinations; inspect routing")
     if Path(__file__).with_name("adp-github-admin.py").is_file():
         commands.add_parser("github", help="Configure this deployment's GitHub App; check sign-in and repository access")
+    commands.add_parser("gitlab", help="Manage deployment-approved GitLab integration")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
 
@@ -147,6 +148,11 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     as_json = "--json" in argv
     try:
+        if argv and argv[0] == "gitlab":
+            module = common.load_provider("adp-gitlab.py")
+            if not module:
+                raise common.CliError("GitLab helper missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "gitlab", *argv[1:]])
         if argv and argv[0] == "usage":
             module = common.load_provider("adp-usage.py")
             if not module:

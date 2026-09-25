@@ -476,6 +476,27 @@
     "classification": "durable-operation"
   },
   {
+    "method": "POST",
+    "path": "/gitlab/admin/configure",
+    "module": "src.gitlab.routes",
+    "endpoint": "configure",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/connect",
+    "module": "src.gitlab.routes",
+    "endpoint": "connect",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/disconnect",
+    "module": "src.gitlab.routes",
+    "endpoint": "disconnect",
+    "classification": "durable-operation"
+  },
+  {
     "method": "DELETE",
     "path": "/me/bedrock-routing/selection",
     "module": "src.admin.bedrock_routing.self_routes",

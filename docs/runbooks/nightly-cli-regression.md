@@ -145,3 +145,5 @@ usage in the live test DB before making authenticated requests. This avoids
 assuming a fixed request price. Synthetic balances are removed between cases;
 case 7 independently verifies real model usage accrual. Spending through a cap
 with a newly triggered agent remains outside this key-scenario regression.
+
+E30 (#5635) joins `story-reads`/default nightly: served-CLI GitLab discovery and invalid project refusal, without provider writes. Unconfigured GitLab reports no approved providers. The scenario cannot satisfy real project connect, delivered webhook/agent artifact or cleanup acceptance.

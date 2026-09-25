@@ -156,3 +156,5 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity list` |  | `--json`, `--provider` |
 | `adp identity link` |  | `--dry-run`, `--json`, `--provider`, `--provider-user-id`, `--resume`, `--yes` |
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
+
+GitLab (#5635) adds `gitlab status|connect|disconnect` and `admin gitlab status|configure|revalidate`. The [GitLab human API contract](gitlab.md) records approved-host discovery, vault references, exact project/root admission, preserved external hooks, recovery and live acceptance holds. These are source command forms; deployment and real hosted delivery require separate evidence.

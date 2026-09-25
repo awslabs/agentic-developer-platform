@@ -352,6 +352,10 @@ OPERATIONS = (
         platform_admin=True,
         mutates=True,
     ),
+    Operation("gitlab.connection.read", summary="Read approved GitLab integration"),
+    Operation("gitlab.connection.write", summary="Manage own approved GitLab association", mutates=True),
+    Operation("gitlab.admin.read", summary="Read GitLab provider readiness", platform_admin=True),
+    Operation("gitlab.admin.write", summary="Select approved GitLab provider", platform_admin=True, mutates=True),
     Operation(
         "github.app.admin.read",
         summary="Read deployment GitHub App status",

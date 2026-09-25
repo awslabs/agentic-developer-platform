@@ -292,6 +292,13 @@ CASES = (
         "Credential/identity metadata and mutation previews use the served CLI without reading secrets or writing provider claims",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E30",
+        "#5635",
+        "story-reads",
+        "GitLab approved-provider discovery and invalid project refusal through the served CLI; no provider writes",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

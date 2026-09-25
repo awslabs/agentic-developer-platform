@@ -343,3 +343,5 @@ two fresh full runs against the same deployed revision, plus interruption/resume
 repeat cleanup, and failure-injection evidence. The shared nightly workflow now
 schedules the key install/login checkpoint; full runs remain manually selectable,
 and blocked cases still prevent full acceptance.
+
+E30 (#5635) runs GitLab discovery/refusal through the installed CLI. It needs only the ordinary platform/login fixture and does not mutate a GitLab host. Dedicated project connect/retry/rename/delivery/disconnect remains a live acceptance hold.
