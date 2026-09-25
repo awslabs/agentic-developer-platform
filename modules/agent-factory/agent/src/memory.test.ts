@@ -89,6 +89,24 @@ describe('memory in hosted shallow clones', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it('limits memory by timestamp rather than issue number, with legacy names last', async () => {
+    seedMemory();
+    const folder = path.join(seed, 'agent_context/components/general');
+    for (const [name, content] of Object.entries({
+      'issue-999_2026-01-01T12-00.md': 'old',
+      'issue-2_2026-09-01T12-00.md': 'new',
+      'run_issue-1_2026-08-01T12-00.md': 'middle',
+      'aaa.md': 'legacy',
+    })) writeFileSync(path.join(folder, name), content);
+    git(seed, 'add', '.');
+    git(seed, 'commit', '-m', 'mixed memory chronology');
+    git(seed, 'push', 'origin', 'adp');
+    configureMemory({ cwd: work, issueNumber: '42', agentType: 'reviewer', log: logs, maxFilesPerFolder: 3 });
+    expect(await readComponentContext('general')).toEqual(['new', 'middle', 'old']);
+    configureMemory({ cwd: work, issueNumber: '42', agentType: 'reviewer', log: logs, maxFilesPerFolder: 5 });
+    expect(await readComponentContext('general')).toEqual(['new', 'middle', 'old', 'prior knowledge', 'legacy']);
+  });
+
   it('loads an existing orphan branch without attempting to recreate it', async () => {
     const memorySha = seedMemory();
     const mainSha = git(work, 'rev-parse', 'HEAD');

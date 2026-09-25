@@ -268,12 +268,15 @@ async function readContextFolder(folderPath: string): Promise<string[]> {
     return [];
   }
 
-  // Sort descending (newest first by filename convention) and limit
+  // Issue numbers are not chronological. Timestamped records precede legacy
+  // names, which retain deterministic reverse-lexical ordering.
   const files = listing
     .split('\n')
     .filter((f) => f.endsWith('.md'))
-    .sort()
-    .reverse()
+    .sort((a, b) => {
+      const stamp = (name: string) => name.match(/_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2})\.md$/)?.[1] ?? '';
+      return stamp(b).localeCompare(stamp(a)) || b.localeCompare(a);
+    })
     .slice(0, maxFiles);
 
   const results: ContextFile[] = [];

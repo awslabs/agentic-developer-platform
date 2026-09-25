@@ -300,6 +300,10 @@ COPY --chown=agent:agent modules/agent-factory/agent-worker-image/codex-config.t
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/entrypoint.py /app/entrypoint.py
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/lib/ /app/lib/
 
+# Commit-scoped validation runner (implementation is included in lib/ above).
+RUN printf '#!/bin/sh\nexec python3 -m lib.validation "$@"\n' > /usr/local/bin/adp-validate && \
+    chmod +x /usr/local/bin/adp-validate
+
 # Install adp-cred CLI (vault credential access for skills, #137).
 # /usr/local/bin/adp-cred is a small shell wrapper that execs the Python
 # package at /app/adp_cred/. No symlink; the package doesn't ship a

@@ -718,6 +718,11 @@ class TestEntrypointMain:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
 
         # create_check_run raises — should be silently swallowed
         mock_create_cr.side_effect = RuntimeError("API down")
@@ -2251,6 +2256,11 @@ class TestBedrockViaGateway:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # Proxy starts successfully
@@ -2463,6 +2473,11 @@ class TestGhAppCredentialsExported:
         }
         mock_mint.return_value = "ghs_test_token"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -2898,6 +2913,11 @@ class TestSqsMessageDeletion:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -3013,6 +3033,11 @@ class TestSqsMessageDeletion:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # _delete_message raises an exception (e.g., expired credentials)
@@ -3176,6 +3201,11 @@ class TestIdempotencyGuard:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Completed implementation is committed; only git log reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # Idempotency guard returns False (no merged PR — fresh run)
@@ -3823,10 +3853,10 @@ class TestZeroTokenFailureDetection:
     @patch("entrypoint._post_comment")
     @patch("entrypoint._write_outbound_correlation")
     @patch("entrypoint.run_cmd")
-    def test_handle_success_with_diff_never_checks_metadata(
+    def test_handle_success_with_diff_preserves_unvalidated_checkpoint(
         self, mock_run_cmd, mock_write_corr, mock_post, mock_status, tmp_path, monkeypatch
     ):
-        """A run that produced a diff → success path unchanged (PR created)."""
+        """Leftover work is preserved without claiming a ready PR."""
         import entrypoint
 
         # Non-empty diff/status → has_uncommitted True; gh pr list returns no PR.
@@ -3848,9 +3878,10 @@ class TestZeroTokenFailureDetection:
             "acme/repo", 42, "agent/issue-42", "developer", "msg-1", "2026-07-04T00:00:00Z"
         )
 
-        assert rc == 0
-        assert mock_post.call_args[0][3] == "completed"
-        assert "PR opened" in mock_post.call_args[0][4]
+        assert rc == 1
+        assert mock_post.call_args[0][3] == "failed"
+        assert "Incomplete work preserved" in mock_post.call_args[0][4]
+        assert not any(call.args[0][:3] == ["gh", "pr", "create"] for call in mock_run_cmd.call_args_list)
 
 
 # =============================================================================

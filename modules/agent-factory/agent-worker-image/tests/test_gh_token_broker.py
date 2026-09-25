@@ -131,6 +131,11 @@ class TestBrokerModeKeyNotExported:
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-broker-1")
         mock_broker.return_value = _BROKER_RESULT
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Clean implementation commit; git log still reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -183,6 +188,11 @@ class TestBrokerModeKeyNotExported:
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-broker-2")
         mock_broker.return_value = _BROKER_RESULT
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Clean implementation commit; git log still reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -239,6 +249,11 @@ class TestBrokerModeKeyNotExported:
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-broker-email")
         mock_broker.return_value = _BROKER_RESULT
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Clean implementation commit; git log still reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -291,6 +306,11 @@ class TestBrokerModeKeyNotExported:
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-broker-3")
         mock_broker.return_value = _BROKER_RESULT
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Clean implementation commit; git log still reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -345,6 +365,11 @@ class TestBrokerFailureIsLoud:
         mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-broker-4")
         mock_broker.side_effect = RuntimeError("gateway unreachable")
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Clean implementation commit; git log still reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -445,6 +470,11 @@ class TestFlagOffIsUnchanged:
         }
         mock_mint.return_value = "ghs_local_mint"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Clean implementation commit; git log still reports unpushed work.
+        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 

@@ -4251,7 +4251,7 @@ def _handle_success(
     review_note: str = "",
     review_only: bool = False,
 ) -> int:
-    """Step 11: Commit remaining changes, push branch, create PR if needed."""
+    """Step 11: Finalize delivery, preserving incomplete developer work separately."""
     if review_only:
         # The review already names its inspected commit. Auto-committing a report
         # here changes that head and causes an endless fresh-review cycle.
@@ -4268,6 +4268,44 @@ def _handle_success(
         diff = run_cmd(["git", "diff", "--stat"], cwd=WORK_DIR)
         status_out = run_cmd(["git", "status", "--porcelain"], cwd=WORK_DIR)
         has_uncommitted = bool(diff.stdout.strip() or status_out.stdout.strip())
+
+        if persona == "developer":
+            from lib.validation import state_dir, verify
+
+            validation_note = "No validation receipts recorded; final-commit checks are unverified."
+            can_finalize = not has_uncommitted
+            # Older/non-code runs can have no manifest. Report missing evidence;
+            # do not invent checks or infer semantic acceptance from a receipt.
+            try:
+                git_path = Path(WORK_DIR) / ".git"
+                folder = (state_dir(Path(WORK_DIR)) if git_path.is_file()
+                          else git_path / "adp-validation")
+                manifest = folder / "commands.json"
+                if manifest.exists():
+                    # The SDK tool shell and Python supervisor have different
+                    # environments. Inspect the latest actual test evidence here;
+                    # the CLI owns environment matching and cache reuse.
+                    can_finalize, validation_note = verify(
+                        Path(WORK_DIR), strict_environment=False
+                    )
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                can_finalize = False
+                validation_note = f"Final-commit validation unavailable: {exc}"
+            if has_uncommitted or not can_finalize:
+                if has_uncommitted:
+                    run_cmd(["git", "add", "-A"], cwd=WORK_DIR)
+                    run_cmd(["git", "commit", "-m", f"WIP: unvalidated agent/{persona} work for #{issue}"], cwd=WORK_DIR)
+                # A separate ref preserves work without updating an existing ready PR.
+                suffix = re.sub(r"[^a-zA-Z0-9-]", "-", message_id)[:64] or "run"
+                checkpoint = f"{branch}-incomplete-{suffix}"
+                run_cmd(["git", "push", "origin", f"HEAD:refs/heads/{checkpoint}"], cwd=WORK_DIR)
+                note = (f"Incomplete work preserved on `{checkpoint}`; no review handoff was made. "
+                        + ("Uncommitted files were checkpointed without validation. " if has_uncommitted else "")
+                        + validation_note)
+                _post_comment(repo, issue, message_id, "failed", note, check_run_url)
+                update_invocation_status(message_id, arrived_at, "failed", summary=note)
+                return 1
+            review_note = _join_notes(review_note, validation_note)
 
         if has_uncommitted:
             run_cmd(["git", "add", "-A"], cwd=WORK_DIR)

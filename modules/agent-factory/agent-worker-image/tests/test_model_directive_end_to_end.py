@@ -344,6 +344,11 @@ def _run_worker(
         }
         mint.return_value = "ghs_test"
         run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        # Clean implementation commit; git log still reports unpushed work.
+        run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
+            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
+            returncode=0,
+        )
         create_cr.return_value = {"id": 1, "html_url": "http://example.invalid/cr"}
         subprocess_run.side_effect = _subprocess_side_effect
 

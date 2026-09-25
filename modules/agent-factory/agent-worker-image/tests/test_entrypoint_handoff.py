@@ -28,7 +28,7 @@ def _stub_entrypoint(entrypoint, monkeypatch, path: str):
 
     def run(cmd, **_kwargs):
         stdout = ""
-        if cmd[:3] == ["git", "diff", "--stat"] and path != "self_created":
+        if cmd[:2] == ["git", "log"] and path != "self_created":
             stdout = "code.py"
         if cmd[:3] == ["gh", "pr", "list"] and path == "existing_pr":
             stdout = "5293"
