@@ -34,7 +34,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5626 | Person-wide caps and inherited defaults | Existing person budget policy |
 | #5627 | Rate-limit administration and client enforcement | Existing rate-limit services |
 | #5628 | Usage, spend and request-log exports | Existing scoped readers |
-| #5629 | Activity list/chain/state and supported pause/resume/steer/abort | Existing Activity/ControlService; Task input/cancel remain Task API operations |
+| #5629 | [Activity CLI](agent.md): list/chain/detail/status/wait/transcript/SSE and capability-gated controls; live acceptance held | Existing Activity/ControlService; Task input/cancel remain Task API operations |
 | #5630 | Recovery and integrated CLI qualification | Existing AI-DLC and regression runner |
 | #5631 | Vault credentials and linked identities | Existing vault and identity APIs; never print secret values |
 | #5632 | Knowledge assets and indexing progress | Existing knowledge/indexing APIs |

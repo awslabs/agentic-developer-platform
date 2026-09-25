@@ -63,3 +63,15 @@ Publication remains blocked on the existing protected deployment runner: the gat
 Next eligible coverage to assign after capability integration is #5628 (usage/spend readback). #5516 needs explicit Task API human-authentication and developer-persona support; #5629 should resume from its existing issue with a narrower implementation request. Neither should introduce another dispatcher or reset the paused Epic's expired policy.
 
 A focused #5628 assignment is prepared but has not been dispatched. Before another hosted qualification run, verify the remaining shared daily inference allowance and independently enforced run bounds; the completed run alone recorded $2.950319 against the documented $5 daily envelope. The existing Epic policy remains paused/expired.
+
+## Additional terminal scenarios (25 September)
+
+Eight public-API probes on the retained aborted #5629 run passed: two concurrent same-ID pause requests and resume/steer/abort each returned HTTP 410, terminal streaming returned 409, unauthenticated state returned 401, and a nonexistent run returned 404. The invocation stayed aborted. These tests launched no agent and used a private copy of the operator session; they did not write live login/configuration. [Redacted observations](terminal-refusal-observations.json).
+
+The existing remote dispatcher now includes `agent_terminal_controls`, a reusable diagnostic for the installed `adp agent` helper from #5629. Supply `agent_terminal_controls: {"run_id": "<owned-terminal-invocation>"}` with the normal owned EC2/session/installed-CLI payload. It checks terminal status before any mutation, concurrent terminal pause refusals, resume/steer/abort refusals, stream refusal and unchanged final status. Transport errors and unavailable nonterminal controls cannot count as passing terminal refusals. It creates no fixture, starts no inference, and changes no budget.
+
+This diagnostic is deliberately outside the full acceptance matrix: it covers terminal refusals, not active command replay, full pause quiescence, steering comprehension, foreign-tenant isolation or installed-CLI revision qualification. Those story criteria remain open. The #5629 CLI helper must be included in the served bundle before the remote diagnostic can run there.
+
+The diagnostic then passed through the new `adp agent` front door against the public gateway, using a source bundle copied into a private temporary directory. [CLI command evidence](terminal-cli-observations.json) records its helper hash and run ID. This is dev-box source-CLI integration evidence, not freshly served EC2 acceptance. The run remained aborted.
+
+Additional source-CLI live reads passed: paginated list (four items across two pages with continuation retained), own chain, retained transcript, terminal status, unsuccessful wait on aborted work, nonexistent-run 404 and JSON usage error. [Read-command observations](activity-read-cli-observations.json) omit transcript contents. No new agent was launched for these checks.

@@ -763,3 +763,5 @@ and `ADP_NATIVE_LIVE_CLIENT` to the **CLI** app client ID (not the discovery
 raw SDK failures out of output. It creates no users or grants and changes no
 passwords. Its native routes/database run locally; deployment, gateway IAM and
 PostgreSQL rate-limit concurrency still require release verification.
+
+Human run discovery, transcripts, explanation streaming and supported controls: [Agent Activity CLI](../../../docs/adp-cli/agent.md). Task submission continues to use `adp task`.

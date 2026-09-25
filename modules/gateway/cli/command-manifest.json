@@ -3132,6 +3132,427 @@
         "tests/cli/test_command_manifest.py"
       ],
       "required_capabilities": []
+    },
+    {
+      "command": "adp agent list",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--cursor",
+        "--json",
+        "--max-pages",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent chain",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--json"
+      ],
+      "arguments": [
+        "chain_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent detail",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent status",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent ping",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent state",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent logs",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--follow",
+        "--json",
+        "--last-event-id",
+        "--run",
+        "--timeout"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**",
+          "/activity/invocations/{invocation_id}/agent/events"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "ndjson",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent wait",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--interval",
+        "--json",
+        "--run",
+        "--timeout"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent abort",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--json",
+        "--reason",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp agent pause",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--json",
+        "--reason",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp agent resume",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--json",
+        "--reason",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp agent steer",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--instruction",
+        "--json",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
     }
   ]
 }

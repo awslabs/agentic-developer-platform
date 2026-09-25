@@ -15,6 +15,18 @@ Options are parser options, excluding `--help`; shell launchers pass tool argume
 | `adp admin github status` |  | `--json` |
 | `adp admin login` |  | `--credentials-file`, `--credentials-stdin`, `--json` |
 | `adp admin setup` |  | `--dry-run`, `--json`, `--org`, `--yes` |
+| `adp agent list` |  | `--admin`, `--cursor`, `--json`, `--max-pages`, `--page-size` |
+| `adp agent chain` | `chain_id` | `--admin`, `--json` |
+| `adp agent detail` |  | `--admin`, `--json`, `--run` |
+| `adp agent status` |  | `--admin`, `--json`, `--run` |
+| `adp agent ping` |  | `--json`, `--run` |
+| `adp agent state` |  | `--json`, `--run` |
+| `adp agent logs` |  | `--admin`, `--follow`, `--json`, `--last-event-id`, `--run`, `--timeout` |
+| `adp agent wait` |  | `--admin`, `--interval`, `--json`, `--run`, `--timeout` |
+| `adp agent abort` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--json`, `--reason`, `--run`, `--yes` |
+| `adp agent pause` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--json`, `--reason`, `--run`, `--yes` |
+| `adp agent resume` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--json`, `--reason`, `--run`, `--yes` |
+| `adp agent steer` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--instruction`, `--json`, `--run`, `--yes` |
 | `adp aws connect` |  | `--account`, `--download`, `--dry-run`, `--external-id-file`, `--external-id-stdin`, `--json`, `--name`, `--no-external-id`, `--profile`, `--region`, `--resume`, `--role-arn`, `--yes` |
 | `adp aws disconnect` | `connection` | `--dry-run`, `--json`, `--yes` |
 | `adp aws list` |  | `--json` |

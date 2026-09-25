@@ -150,6 +150,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-models.py", ["adp", "models"]),
         ("adp-flow.py", ["adp", "flow"]),
         ("adp-task.py", ["adp", "task"]),
+        ("adp-agent.py", ["adp", "agent"]),
         ("adp-doctor.py", ["adp"]),
     ]
     checked_helpers = {helper for helper, _prefix in helper_prefixes} | {
@@ -406,7 +407,11 @@ def test_manifest_itself_is_installed_updated_and_downloadable() -> None:
 def test_http_mutations_have_capabilities_and_setup_declares_provider_variants(commands):
     for row in commands:
         if row["mutates"] and row["request"]["kind"] == "http":
-            if row.get("authentication") == "task-service-principal":
+            if row.get("capability_source") == "/activity/invocations/{invocation_id}/agent/state":
+                assert row["command"] in {"adp agent " + action for action in ("pause", "resume", "steer", "abort")}
+                assert row["helper"] == "adp-agent.py"
+                assert not row["required_capabilities"]  # actual runtime capability, not invented global IDs
+            elif row.get("authentication") == "task-service-principal":
                 assert row["required_oauth_scopes"], row["command"]
                 assert not row["required_capabilities"], "Task service tokens must not use human discovery"
             else:
