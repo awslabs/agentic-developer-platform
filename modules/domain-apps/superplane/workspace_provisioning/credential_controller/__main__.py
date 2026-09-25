@@ -14,7 +14,14 @@ from uuid import uuid4
 from superplane_bootstrap.errors import BootstrapRefused
 from superplane_bootstrap.membership import SharedMembership
 
-from .registry import Authority, acquire, load_authority, renew, verify
+from .registry import (
+    Authority,
+    acquire,
+    load_authority,
+    renew,
+    require_runtime_database_role,
+    verify,
+)
 from .renewal import Renewal
 from .transports import compose_transports
 
@@ -278,17 +285,7 @@ async def main():
                 await register(pool, authority)
             return
         async with pool.acquire() as connection:
-            broad = await connection.fetchval(
-                "SELECT has_table_privilege(current_user,'cluster_credential_authorities','INSERT,DELETE') "
-                "OR EXISTS(SELECT 1 FROM unnest(ARRAY['authority_id','org_id','cluster_id','document_json','enabled']) AS col "
-                "WHERE has_column_privilege(current_user,'cluster_credential_authorities',col,'UPDATE')) "
-                "OR EXISTS(SELECT 1 FROM unnest(ARRAY['clusters','workspaces','cluster_memberships']) AS tab "
-                "WHERE has_table_privilege(current_user,tab,'INSERT,UPDATE,DELETE'))"
-            )
-            if broad:
-                raise BootstrapRefused(
-                    "renewal database role may not install or enable its own authority"
-                )
+            await require_runtime_database_role(connection)
         holder, loop = str(uuid4()), asyncio.get_running_loop()
         cursors = {}
         while True:

@@ -179,6 +179,23 @@ async def load_authority(connection, org_id, cluster_id):
     return authority
 
 
+async def require_runtime_database_role(connection):
+    """Column grants confer write authority even without a table-level grant."""
+    broad = await connection.fetchval(
+        "SELECT has_table_privilege(current_user,'cluster_credential_authorities','INSERT,DELETE,TRUNCATE,TRIGGER') "
+        "OR has_any_column_privilege(current_user,'cluster_credential_authorities','INSERT') "
+        "OR EXISTS(SELECT 1 FROM unnest(ARRAY['authority_id','org_id','cluster_id','document_json','enabled']) AS col "
+        "WHERE has_column_privilege(current_user,'cluster_credential_authorities',col,'UPDATE')) "
+        "OR EXISTS(SELECT 1 FROM unnest(ARRAY['clusters','workspaces','cluster_memberships']) AS tab "
+        "WHERE has_table_privilege(current_user,tab,'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER') "
+        "OR has_any_column_privilege(current_user,tab,'INSERT,UPDATE'))"
+    )
+    if broad:
+        raise BootstrapRefused(
+            "renewal database role may not install or enable its own authority"
+        )
+
+
 async def acquire(connection, authority, holder):
     fence = await connection.fetchval(
         "UPDATE cluster_credential_authorities SET holder=$2,fence_token=fence_token+1,"
