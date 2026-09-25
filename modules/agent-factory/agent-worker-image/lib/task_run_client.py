@@ -32,6 +32,7 @@ _ACTIONS = frozenset(
         "model",
         "cyber",
         "tool-authorize",
+        "repository-source",
         "tool-operation",
         "control",
         "artifact",
@@ -284,6 +285,9 @@ class TaskRunClient:
 
     def model(self, body: dict) -> dict:
         return self._post("model", body, run_bound=True)
+
+    def repository_source(self, body: dict) -> dict:
+        return self._post("repository-source", body, run_bound=True)
 
     def tool_authorize(self, body: dict) -> dict:
         return self._post("tool-authorize", body, run_bound=True)

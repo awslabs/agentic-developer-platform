@@ -80,11 +80,7 @@ class TaskGitHubSource(GitHubProvider):
         return ArchiveSlice(commit_sha=head, total_bytes=total, digest=digest, content=content)
 
 
-async def fetch_task_source(*, db, tenant, frozen, reauthorize, provider_client=None):
-    validate_frozen_repository(frozen)
-    binding = frozen["binding"]
-    # GitLab has separate connection/credential semantics. It must have its own
-    # adapter; accepting its URL through a GitHub token path would be incorrect.
+async def authorize_source_connection(*, db, tenant, binding):
     if binding["provider"] != "github":
         raise OperationRefusedError("Task source provider adapter is unavailable")
     matched = re.fullmatch(r"installation:([1-9][0-9]{0,19})", binding["connection_id"])
@@ -93,13 +89,21 @@ async def fetch_task_source(*, db, tenant, frozen, reauthorize, provider_client=
     installation_id = int(matched[1])
     from src.admin.installations.resolver import OwnerState, resolve_installation_owner
 
+    owner, state = await resolve_installation_owner(installation_id, db=db)
+    if state is not OwnerState.RESOLVED or owner is None or owner.tenant_id != tenant:
+        raise OperationRefusedError("Task provider connection is not owned by the tenant")
+    return installation_id
+
+
+async def fetch_task_source(*, db, tenant, frozen, reauthorize, provider_client=None):
+    validate_frozen_repository(frozen)
+    binding = frozen["binding"]
+
     async def authorize():
         await reauthorize()
-        owner, state = await resolve_installation_owner(installation_id, db=db)
-        if state is not OwnerState.RESOLVED or owner is None or owner.tenant_id != tenant:
-            raise OperationRefusedError("Task provider connection is not owned by the tenant")
+        return await authorize_source_connection(db=db, tenant=tenant, binding=binding)
 
-    await authorize()
+    installation_id = await authorize()
     token = await installation_token(
         org_id=tenant, installation_id=installation_id, repository=binding["repository"], permissions={"contents": "read", "metadata": "read"}
     )

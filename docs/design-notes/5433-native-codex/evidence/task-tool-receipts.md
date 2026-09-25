@@ -386,3 +386,35 @@ worker with provider/local revision identities kept separate. Focused lint passe
 These are adapter tests, not live GitHub qualification. Trusted source staging,
 Task transport/provisioner wiring, and provider publication remain to be connected;
 no model-visible source endpoint or persona is enabled by this increment.
+
+
+## Staged source transfer and worker provisioning
+
+The run-authenticated `/internal/v1/agent/task/repository-source` route now stages
+a verified provider archive in the existing Task S3 bucket under `tasks/sources/`
+and an attempt-bound `SOURCE#` record in TASK_OPS. The manifest carries the frozen
+repository identity, provider commit, total digest and per-chunk digests. Bytes
+are uploaded before the manifest; the manifest transaction includes Task attempt,
+version and protected authority conditions. Existing staged source is reused.
+
+The host receives 512 KiB chunks through run-bound `TaskRunClient` requests, within
+the existing 1 MiB response bound. Each S3 range is checked against the manifest;
+source and tool authority are rechecked before return. Canonical installation
+ownership is also checked for cached transfers. No signed S3 URL, provider token,
+new report artifact type or expanded caller-selected storage key is exposed.
+
+`codex_source.provision_workspace` verifies the attempt authorization, frozen
+binding, every chunk, stable manifest, whole-archive digest and final authority
+before creating a workspace. A combined HTTP route/Moto S3/DynamoDB/real-Git test
+transfers a multichunk provider fixture and creates the workspace with one source
+fetch. Corrupted chunks, changed commits and substituted repository identities
+leave no workspace. Source storage tests also cover foreign attempts, revocation,
+incomplete provider receipts and altered S3 bytes. The provider/transfer/tool-route
+suite passes 62 tests; all 30 worker-client tests and 383 Task contract checks pass.
+The dedicated harness CI now includes workspace and source-transfer checks.
+
+HTTP workload authentication and the provider download are fixtures in the combined
+transfer test. Automatic TaskHost workspace lifecycle and file tools are still to
+be wired; source object retention/cleanup needs deployment qualification alongside
+provider publication, persona execution, OTLP operation and live story acceptance.
+This increment does not mark any persona story complete.

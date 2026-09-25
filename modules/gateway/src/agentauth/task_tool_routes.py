@@ -25,6 +25,7 @@ from src.agentauth.task_runtime_routes import (
 )
 from src.agentauth.task_service_policy import TaskServicePolicyError, TaskServicePolicyStore
 from src.agentauth.task_tool_policy import TOOL_PATTERN, TaskToolPolicyError, persona_tools, valid_tools
+from src.shared.database import get_db
 from src.tasks.store import TaskStoreError, WorkBindingError, _protected_grant_digest
 
 router = APIRouter(prefix="/internal/v1/agent/task", tags=["task-api"], dependencies=[Depends(require_agent_transport)])
@@ -220,3 +221,53 @@ async def tool_operation(body: Annotated[ToolClaimBody | ToolSettleBody, Field(d
         raise HTTPException(403, "Task tool authority unavailable") from None
     except TaskStoreError:
         raise HTTPException(409, "Task tool operation could not be confirmed") from None
+
+
+class RepositorySourceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"]
+    attempt: TaskAttemptBody
+    index: int = Field(default=0, ge=0, le=63, strict=True)
+
+
+@router.post("/repository-source")
+async def repository_source(body: RepositorySourceBody, request: Request, db=Depends(get_db)):
+    """Trusted-host transfer; the SDK receives workspace tools, not this route."""
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    from src.agentauth.github_operations import OperationRefusedError
+    from src.agentauth.task_repository_source import authorize_source_connection, fetch_task_source
+    from src.agentauth.task_source_staging import TaskSourceStaging
+    from src.tasks.routes import get_store
+
+    identity = await authenticate_task_attempt(request)
+    require_body_attempt(identity, body.attempt)
+    artifacts = get_store()
+    repo = artifacts.repository
+    policies = TaskServicePolicyStore(table_name=repo.authority_table_name, client=repo._client)
+    staging = TaskSourceStaging(
+        repo, s3=artifacts.s3, bucket=artifacts.bucket, authorize=lambda current, tool: authorize_tool(repo, policies, current, tool)
+    )
+
+    async def reauthorize():
+        if await authenticate_task_attempt(request) != identity:
+            raise HTTPException(403, "Task source identity changed")
+        await run_in_threadpool(authorize_tool, repo, policies, identity, "repository.read")
+
+    try:
+        row = await run_in_threadpool(staging.read, identity)
+        if row is None:
+            if body.index != 0:
+                raise HTTPException(409, "Task source must be initialized first")
+            authorization = await run_in_threadpool(authorize_tool, repo, policies, identity, "repository.read")
+            archive = await fetch_task_source(
+                db=db, tenant=identity.tenant, frozen=authorization["task"]["repository_binding"], reauthorize=reauthorize
+            )
+            await run_in_threadpool(staging.stage, identity, archive)
+        authorization = await run_in_threadpool(authorize_tool, repo, policies, identity, "repository.read")
+        await authorize_source_connection(db=db, tenant=identity.tenant, binding=authorization["task"]["repository_binding"]["binding"])
+        result = await run_in_threadpool(staging.chunk, identity, index=body.index)
+        await reauthorize()
+        return result
+    except (TaskStoreError, WorkBindingError, TaskToolPolicyError, TaskServicePolicyError, OperationRefusedError, BotoCoreError, ClientError):
+        raise HTTPException(409, "Task source transfer could not be confirmed") from None

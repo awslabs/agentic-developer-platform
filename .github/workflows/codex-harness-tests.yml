@@ -64,9 +64,13 @@ jobs:
         run: python3 test/run-isolated.py -- python3 -m venv "$RUNNER_TEMP/codex-task-fixtures"
       - name: Install fixture worker dependencies
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install pytest==9.0.3 requests==2.32.5 rfc8785==0.1.4 boto3==1.36.0 cryptography==50.0.1
+      - name: Workspace and run-bound worker client tests
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../agent-worker-image/tests/test_codex_workspace.py ../agent-worker-image/tests/test_task_run_client.py -q
       - name: Real worker and Codex SDK Task lifecycle with fixture inference
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_task_codex_host.py -q
       - name: Install gateway fixture dependencies
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install -e "../../gateway[dev]"
       - name: Combined gateway, worker and SDK lifecycle with fixture inference
         run: python3 test/run-isolated.py -- env AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_DEFAULT_REGION=us-east-1 "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_gateway_runtime.py -q
+      - name: Task repository authority and staged source transfer
+        run: python3 test/run-isolated.py -- env AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing AWS_DEFAULT_REGION=us-east-1 "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../../gateway/tests/agentauth/test_task_repository_policy.py ../../gateway/tests/agentauth/test_task_repository_source.py ../../gateway/tests/agentauth/test_task_source_staging.py -q
