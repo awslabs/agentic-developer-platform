@@ -216,12 +216,49 @@ def verify_inventory(config, aws=read, nodes=cluster_nodes):
     return {"account": account, "roles": len(roles), "ceilings": len(policies), "execution_targets": len(targets)}
 
 
+def verify_webhook_code_targets(config, aws=read):
+    """Lambda-only admission: verify each target's execution role is bounded."""
+    account = aws("sts", "get-caller-identity")["Account"]
+    assert account == config["account_id"], "Wrong AWS account"
+    targets = config["webhook_code_lambda_targets"]
+    boundaries = config["deployment_role_boundaries"]
+    assert targets, "No webhook code Lambda targets to verify"
+    manifest = config["deployment_manifest"]
+    assert manifest["account_id"] == account, "Deployment manifest account mismatch"
+    assert manifest["archive_prefix"] == config["webhook_code_archive_prefix"], "Deployment manifest archive mismatch"
+    assert {t["function_arn"]: t["execution_role"] for t in manifest["targets"]} == targets, "Deployment manifest target mismatch"
+    assert len(manifest["targets"]) == len(targets), "Duplicate deployment manifest target"
+    for fn_arn, expected_role in targets.items():
+        service, region, fn_account = fn_arn.split(":", 5)[2:5]
+        assert service == "lambda", f"Not a Lambda ARN: {fn_arn}"
+        assert fn_account == account, f"Cross-account Lambda target: {fn_arn}"
+        assert region == manifest["region"], "Deployment manifest region mismatch"
+        actual_role = aws("lambda", "get-function-configuration", "--region", region, "--function-name", fn_arn)["Role"]
+        assert actual_role == expected_role, f"Lambda {fn_arn} execution role mismatch: expected {expected_role}, got {actual_role}"
+        assert expected_role in boundaries, f"Execution role not in admitted boundary map: {expected_role}"
+        boundary = boundaries[expected_role]
+        assert expected_role.split(":")[4] == account and boundary.split(":")[4] == account, "Cross-account role or ceiling"
+        role = aws("iam", "get-role", "--role-name", expected_role.rsplit("/", 1)[1])["Role"]
+        assert role["Arn"] == expected_role and role.get("PermissionsBoundary", {}).get("PermissionsBoundaryArn") == boundary, "Missing/wrong ceiling"
+        metadata = aws("iam", "get-policy", "--policy-arn", boundary)["Policy"]
+        policy = aws("iam", "get-policy-version", "--policy-arn", boundary, "--version-id", metadata["DefaultVersionId"])["PolicyVersion"]["Document"]
+        # Code deployment inherits execution authority. Admit only bounded data
+        # roles; transitive execution/PassRole requires a separate reviewed profile.
+        verify_ceiling(policy, set(), set())
+    return {"account": account, "targets": len(targets)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inventory", type=Path, nargs="?")
     parser.add_argument("--terraform", action="store_true")
+    parser.add_argument("--webhook-code", action="store_true")
     args = parser.parse_args()
-    if args.terraform:
+    if args.webhook_code:
+        config = json.loads(json.load(sys.stdin)["inventory"])
+        result = verify_webhook_code_targets(config)
+        print(json.dumps({"verified": "true", "inventory": json.dumps(result)}))
+    elif args.terraform:
         config = json.loads(json.load(sys.stdin)["inventory"])
         result = verify_inventory(config)
         print(json.dumps({"verified": "true", "inventory": json.dumps(result)}))

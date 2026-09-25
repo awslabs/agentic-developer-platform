@@ -52,6 +52,7 @@
   "superplane-migrate.yml",
   "undeploy.yml",
   "webhook-ingress-ci.yml",
+  "webhook-code-deploy.yml",
   "webhook-ingress-deploy.yml",
   "webhook-ingress-destroy.yml"
 ]

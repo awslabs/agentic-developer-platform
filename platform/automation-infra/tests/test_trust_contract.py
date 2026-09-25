@@ -94,11 +94,18 @@ def assert_gateway_reviewed_source(workflow, job, authority_index):
             assert step["name"] == "Summary"
 
 
+# Workflows using a dedicated (non-deployment/build) trusted action are tested
+# individually below rather than in this parametrized loop.
+DEDICATED_ACTION_WORKFLOWS = {"webhook-code-deploy.yml"}
+
+
 @pytest.mark.parametrize("kind", ["deployment", "build"])
 def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
     inventory = json.loads((AUTOMATION / f"{kind}-workflows.json").read_text())
     assert inventory
     for name in inventory:
+        if name in DEDICATED_ACTION_WORKFLOWS:
+            continue
         workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
         found = 0
         for job in workflow["jobs"].values():
@@ -141,12 +148,45 @@ def test_runner_has_no_ambient_credential_and_uses_separate_nodes():
     assert sa["automountServiceAccountToken"] is False
 
 
-@pytest.mark.parametrize("kind", ["deployment", "build", "scan", "rules", "checks"])
+@pytest.mark.parametrize("kind", ["deployment", "build", "scan", "rules", "checks", "webhook-code"])
 def test_credential_action_cannot_fall_back_to_irsa(kind):
     action = yaml.safe_load((ROOT / f".github/actions/trusted-{kind}/action.yml").read_text())
     config = next(s["with"] for s in action["runs"]["steps"] if s.get("uses", "").startswith("aws-actions/configure-aws-credentials@"))
     assert config["unset-current-credentials"] is True
     assert config["force-skip-oidc"] is False and config["role-chaining"] is False
+
+
+def test_webhook_code_workflow_uses_dedicated_identity_and_main_guard():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/webhook-code-deploy.yml").read_text())
+    job = workflow["jobs"]["deploy-code"]
+    assert "github.ref == 'refs/heads/main'" in job["if"]
+    assert job["runs-on"] == {"group": "adp-deployment", "labels": "arc-runner-deployment"}
+    assert job["environment"] == "adp-webhook-code-dev"
+    assert "github.run_attempt == 1" in job["if"]
+    # Permissions may be at workflow level or job level
+    permissions = job.get("permissions", workflow.get("permissions", {}))
+    assert permissions["id-token"] == "write"
+    steps = job["steps"]
+    # Verify source ancestry before credentials
+    ancestry = [i for i, s in enumerate(steps) if s.get("name") == "Prepare clean committed source"]
+    assert len(ancestry) == 1
+    assert "prepare-webhook-source.py" in steps[ancestry[0]].get("run", "")
+    # Uses dedicated webhook-code action, not the generic deployment action
+    oidc = [i for i, s in enumerate(steps) if s.get("uses") == "./.github/actions/trusted-webhook-code"]
+    assert len(oidc) == 1
+    assert ancestry[0] < oidc[0], "Source verification must precede credential exchange"
+    # No cloud operations before the trusted identity step
+    for step in steps[:oidc[0]]:
+        assert not re.search(r"\b(aws|terraform|kubectl)\s", step.get("run", "")), "Cloud operation before trusted identity"
+        if "uses" in step:
+            assert step["uses"].startswith("actions/checkout@") or step["uses"] == "./.github/actions/trusted-webhook-code"
+    # No sudo or untrusted input interpolation
+    for step in steps:
+        assert "sudo " not in step.get("run", "")
+        assert not re.search(r"\$\{\{\s*(?:inputs\.|github\.event\.inputs\.)", step.get("run", ""))
+    # No Terraform or kubectl in the entire workflow — code-only
+    for step in steps:
+        assert not re.search(r"\b(terraform|kubectl)\s", step.get("run", "")), "Webhook-code workflow must not use Terraform or kubectl"
 
 
 def test_scan_jobs_keep_scoped_identity_and_no_schedule():
