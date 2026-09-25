@@ -7,7 +7,7 @@ from typing import Literal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -437,6 +437,7 @@ async def create_workspace(
 
 @router.get("", response_model=WorkspaceListResponse | EligibleClusterListResponse)
 async def list_workspaces(
+    request: Request,
     view: Literal["workspaces", "eligible-clusters"] = "workspaces",
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
@@ -446,7 +447,7 @@ async def list_workspaces(
     Research workspaces appear with a [research] tag in the display_name.
     """
     if view == "eligible-clusters":
-        return await list_eligible_clusters(org_id=org_id, db=db)
+        return await list_eligible_clusters(request=request, org_id=org_id, db=db)
     result = await db.execute(
         select(Workspace)
         .where(Workspace.org_id == org_id)
@@ -460,10 +461,11 @@ async def list_workspaces(
 
 
 async def list_eligible_clusters(
+    request: Request,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> EligibleClusterListResponse:
-    """List clusters the caller's organization may select for shared placement.
+    """List clusters the verified caller has explicit live authority to use.
 
     Issue #6048. Selected through GET /workspaces?view=eligible-clusters,
     retaining the existing Gateway route contract. Returns only
@@ -475,7 +477,12 @@ async def list_eligible_clusters(
         list_eligible_clusters as resolve_eligible_clusters,
     )
 
-    eligible = await resolve_eligible_clusters(db, org_id)
+    try:
+        eligible = await resolve_eligible_clusters(
+            db, org_id, caller=getattr(request.state, "caller", None)
+        )
+    except ProvisioningRefused as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return EligibleClusterListResponse(
         clusters=[
             EligibleClusterResponse(

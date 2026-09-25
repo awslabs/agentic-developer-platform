@@ -60,3 +60,5 @@ from app.models.controller_network import (  # noqa: F401
     ControllerNetworkMember,
     ControllerNetworkEffect,
 )
+
+from app.models.cluster_grant_scope import OrganizationGrantClusterScope  # noqa: F401

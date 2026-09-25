@@ -132,7 +132,7 @@ class TestListEligibleClusters:
         assert response.status_code in (401, 403)
 
     @pytest.mark.asyncio
-    async def test_lists_only_this_organizations_explicitly_shared_clusters(
+    async def test_legacy_org_token_cannot_discover_shared_clusters(
         self, client
     ):
         from app.models.cluster import Cluster
@@ -180,11 +180,7 @@ class TestListEligibleClusters:
         response = await client.get(
             "/workspaces?view=eligible-clusters", headers=_auth_header(org_id)
         )
-        assert response.status_code == 200
-        body = response.json()
-        assert [c["id"] for c in body["clusters"]] == [str(shared_cluster_id)]
-        assert body["clusters"][0]["name"] == "shared-eligible"
-        assert body["clusters"][0]["member_count"] == 0
+        assert response.status_code == 403
 
 
 class TestGetWorkspace:

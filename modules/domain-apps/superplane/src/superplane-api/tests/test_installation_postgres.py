@@ -141,7 +141,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "037_shared_cluster_membership"
+    assert observed["revision"] == "038_cluster_grant_scopes"
     async with engine.connect() as conn:
         assert (
             await conn.execute(
@@ -211,7 +211,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
         async with engine.connect() as conn:
             assert (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == "037_shared_cluster_membership"
+            ).scalar_one() == "038_cluster_grant_scopes"
             assert (
                 await conn.execute(
                     text("SELECT workload_kind FROM deployments WHERE id=:id"),
@@ -246,7 +246,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
             ).scalar_one() == "kept"
             assert (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == "037_shared_cluster_membership"
+            ).scalar_one() == "038_cluster_grant_scopes"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))
@@ -618,4 +618,111 @@ async def test_audit_migration_preserves_unattributed_evidence_on_downgrade(
         ).one() == ("unresolved", "denied")
         assert (
             await conn.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "037_shared_cluster_membership"
+        ).scalar_one() == "038_cluster_grant_scopes"
+
+
+async def test_cluster_scopes_migrate_empty_and_enforce_tenant_foreign_keys(
+    isolated_database,
+):
+    from sqlalchemy.exc import IntegrityError
+
+    _, engine, url, _, schema, _ = isolated_database
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema)
+
+    def migrate(*args):
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+
+    migrate("upgrade", "037_shared_cluster_membership")
+    org_a, org_b, cluster, grant = (uuid.uuid4() for _ in range(4))
+    async with engine.begin() as conn:
+        for org in (org_a, org_b):
+            await conn.execute(
+                text("INSERT INTO organizations(id,name) VALUES (:id,'scope-org')"),
+                {"id": org},
+            )
+        await conn.execute(
+            text(
+                "INSERT INTO clusters(id,org_id,name,sharing_enabled) VALUES (:id,:org,'shared',true)"
+            ),
+            {"id": cluster, "org": org_a},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO organization_grants(id,org_id,principal,principal_type,permissions,granted_by) VALUES (:id,:org,'alice','human','organization:administer','fixture')"
+            ),
+            {"id": grant, "org": org_a},
+        )
+    migrate("upgrade", "head")
+    async with engine.begin() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT count(*) FROM organization_grant_cluster_scopes")
+            )
+        ).scalar_one() == 0
+        insert = text(
+            "INSERT INTO organization_grant_cluster_scopes(id,org_id,grant_id,cluster_id,permissions,generation) VALUES (:id,:org,:grant,:cluster,'cluster:use','generation-1')"
+        )
+        # Both composite FKs must reject cross-tenant rows independently.
+        foreign_grant, foreign_cluster = uuid.uuid4(), uuid.uuid4()
+        await conn.execute(
+            text(
+                "INSERT INTO organization_grants(id,org_id,principal,principal_type,permissions,granted_by) VALUES (:id,:org,'bob','service','','fixture')"
+            ),
+            {"id": foreign_grant, "org": org_b},
+        )
+        await conn.execute(
+            text("INSERT INTO clusters(id,org_id,name) VALUES (:id,:org,'foreign')"),
+            {"id": foreign_cluster, "org": org_b},
+        )
+        for selected_grant, selected_cluster in (
+            (foreign_grant, cluster),
+            (grant, foreign_cluster),
+        ):
+            with pytest.raises(IntegrityError):
+                async with conn.begin_nested():
+                    await conn.execute(
+                        insert,
+                        {
+                            "id": uuid.uuid4(),
+                            "org": org_a,
+                            "grant": selected_grant,
+                            "cluster": selected_cluster,
+                        },
+                    )
+        await conn.execute(
+            insert,
+            {"id": uuid.uuid4(), "org": org_a, "grant": grant, "cluster": cluster},
+        )
+        with pytest.raises(IntegrityError):
+            async with conn.begin_nested():
+                await conn.execute(
+                    insert,
+                    {
+                        "id": uuid.uuid4(),
+                        "org": org_a,
+                        "grant": grant,
+                        "cluster": cluster,
+                    },
+                )
+    migrate("downgrade", "037_shared_cluster_membership")
+    async with engine.connect() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT to_regclass('organization_grant_cluster_scopes')")
+            )
+        ).scalar_one() is None
+        assert (
+            await conn.execute(
+                text("SELECT permissions FROM organization_grants WHERE id=:id"),
+                {"id": grant},
+            )
+        ).scalar_one() == "organization:administer"

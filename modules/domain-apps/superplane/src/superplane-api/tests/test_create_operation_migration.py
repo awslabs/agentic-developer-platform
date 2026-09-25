@@ -13,7 +13,11 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["037_shared_cluster_membership"]
+    assert scripts.get_heads() == ["038_cluster_grant_scopes"]
+    assert (
+        scripts.get_revision("038_cluster_grant_scopes").down_revision
+        == "037_shared_cluster_membership"
+    )
     assert (
         scripts.get_revision("037_shared_cluster_membership").down_revision
         == "036_users_cognito_sub_per_org"

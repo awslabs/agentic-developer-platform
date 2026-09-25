@@ -915,3 +915,9 @@ Baseline inspected: ADP main `c6f20b354` plus #6049 design amendments and merged
 #5925 source. Status is evidence at this revision, not a continually updated runtime
 health report. Update this document when a tracked capability is implemented,
 when its public contract changes, or when evidence changes its advertised status.
+
+### Explicit cluster grant scopes
+
+See the [cluster authority scope contract](workspace_provisioning/cluster-authority-contract.md)
+for bounded storage and discovery. Shared runtime admission remains disabled
+pending current ADP identity and approval/effect revalidation interfaces.

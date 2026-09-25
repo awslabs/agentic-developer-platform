@@ -35,6 +35,9 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import VerifiedCaller
+from app.cluster_authorization import REFUSAL, authorized_cluster_ids
+from app.models.cluster_grant_scope import CLUSTER_USE
 from app.models.cluster import Cluster
 from app.models.cluster_membership import (
     STATE_ACTIVE,
@@ -86,9 +89,9 @@ class ResolvedSharedTarget:
 
 
 async def list_eligible_clusters(
-    db: AsyncSession, org_id: uuid.UUID
+    db: AsyncSession, org_id: uuid.UUID, *, caller: VerifiedCaller | None = None
 ) -> list[EligibleCluster]:
-    """Clusters this organization may select for shared placement.
+    """Clusters this exact caller may select with an explicit live use scope.
 
     Returns only clusters explicitly marked `sharing_enabled` under this exact
     organization — never another organization's, even one sharing the same AWS
@@ -96,8 +99,10 @@ async def list_eligible_clusters(
     identifier"). `member_count` counts live (non-removed) memberships so a
     caller can see how many workspaces are already there before choosing.
     """
+    allowed = await authorized_cluster_ids(db, org_id, caller, CLUSTER_USE)
     result = await db.execute(
         select(Cluster).where(
+            Cluster.id.in_(allowed),
             Cluster.org_id == org_id,
             Cluster.sharing_enabled.is_(True),
             Cluster.status.in_(ELIGIBLE_CLUSTER_STATUSES),
@@ -128,10 +133,15 @@ async def list_eligible_clusters(
 
 
 async def resolve_shared_target(
-    db: AsyncSession, org_id: uuid.UUID, shared_cluster_id: uuid.UUID
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    shared_cluster_id: uuid.UUID,
+    *,
+    caller: VerifiedCaller | None = None,
 ) -> ResolvedSharedTarget:
     """Verify a shared-placement selection under the caller's organization.
 
+    Requires the exact verified caller's live cluster-use scope.
     Refuses (never returns a partial result) for every ineligible case: cluster
     absent, cluster belongs to another organization, sharing not enabled, or
     cluster not currently `Ready`/`Active`. All four refusals use the same
@@ -141,7 +151,14 @@ async def resolve_shared_target(
     organization's inventory, and revealing it would make this an enumeration
     oracle. A caller sees only "no eligible shared cluster" either way.
     """
-    cluster = await db.get(Cluster, shared_cluster_id)
+    allowed = await authorized_cluster_ids(db, org_id, caller, CLUSTER_USE)
+    if shared_cluster_id not in allowed:
+        raise ProvisioningRefused(REFUSAL)
+    cluster = await db.scalar(
+        select(Cluster)
+        .where(Cluster.id == shared_cluster_id, Cluster.org_id == org_id)
+        .execution_options(populate_existing=True)
+    )
     if (
         cluster is None
         or cluster.org_id != org_id

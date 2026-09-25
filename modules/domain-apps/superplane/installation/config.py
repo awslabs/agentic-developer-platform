@@ -368,9 +368,9 @@ def validate(
         # (`runner.py`), so an unrecognized head is as much a refusal as a stale one.
         # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
-        # #6048 advances it to 036 for explicit shared cluster membership.
+        # #6048 advances it to 038 for explicit cluster grant scopes.
         require(
-            head == "037_shared_cluster_membership",
+            head == "038_cluster_grant_scopes",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})
