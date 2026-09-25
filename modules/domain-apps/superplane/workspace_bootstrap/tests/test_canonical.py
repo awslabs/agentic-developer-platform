@@ -26,9 +26,7 @@ class _RaisingStore:
     """
 
     def execute(self, *_args, **_kwargs):
-        raise AssertionError(
-            "publish issued SQL before validating cluster_placement"
-        )
+        raise AssertionError("publish issued SQL before validating cluster_placement")
 
 
 def test_unknown_cluster_placement_is_refused_before_any_sql():
