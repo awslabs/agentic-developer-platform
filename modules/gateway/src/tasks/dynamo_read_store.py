@@ -239,7 +239,7 @@ class DynamoTaskReadStore:
 
         from src.tasks.records import base_item, task_partition
 
-        if not 0 < len(content) <= 1048576 or content_type not in {"text/plain", "application/json"}:
+        if not 0 < len(content) <= 1048576 or content_type not in {"text/plain", "application/json", "text/html"}:
             raise TaskStoreError("Result artifact violates fixed bounds")
         if hashlib.sha256(content).hexdigest() != digest:
             raise TaskStoreError("Result artifact digest mismatch")

@@ -11,7 +11,10 @@ Roles (ordered by privilege):
 import logging
 from typing import Callable
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_session
 
 from app.middleware.auth import get_current_user_context
 
@@ -42,8 +45,21 @@ def require_role(minimum_role: str) -> Callable:
     """
 
     async def _check_role(
+        request: Request,
         user_ctx: dict = Depends(get_current_user_context),
+        db: AsyncSession = Depends(get_session),
     ) -> dict:
+        caller = getattr(request.state, "caller", None)
+        if caller is not None:
+            # Display roles are not ADP permissions. User-management mutations
+            # require a current human organization grant, never a service's grant
+            # or the initiating human's role carried by a delegated service.
+            if minimum_role != "org-admin" or caller.principal.account_type != "human":
+                raise HTTPException(403, "human organization administration required")
+            from app.auth import Permission, authorize_organization_operation
+
+            await authorize_organization_operation(db, caller, Permission.ADMINISTER)
+            return user_ctx
         user_role = user_ctx.get("role", "")
         if not _has_permission(user_role, minimum_role):
             logger.warning(

@@ -370,7 +370,7 @@ def validate(
         # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         # #6048 advances it to 036 for explicit shared cluster membership.
         require(
-            head == "036_shared_cluster_membership",
+            head == "037_shared_cluster_membership",
             "release schema must include credential-reference, replay-safe create, and workspace operation state",
         )
         sources = lock.get("image_sources", {})

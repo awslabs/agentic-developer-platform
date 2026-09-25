@@ -114,6 +114,9 @@ class TestCliScriptDownload:
             # so serving it publicly exposes nothing. Added in the PR that ships
             # the helper, never before it.
             "adp-flow.py",
+            # Task commands and reusable protocol code; no embedded credentials.
+            "adp-task.py",
+            "adp_task_client.py",
             # Issue #5730: `adp superplane onboarding`. A sibling helper rather
             # than more verbs inside adp-superplane.py, so it stays separable
             # from the concurrent CLI transport work on that file. Carries no

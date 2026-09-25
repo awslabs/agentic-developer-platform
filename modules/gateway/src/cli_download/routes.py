@@ -98,6 +98,8 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-superplane-onboarding.py": (_CLI_DIR / "adp-superplane-onboarding.py").resolve(),
     "adp-models.py": (_CLI_DIR / "adp-models.py").resolve(),
     "adp-flow.py": (_CLI_DIR / "adp-flow.py").resolve(),
+    "adp-task.py": (_CLI_DIR / "adp-task.py").resolve(),
+    "adp_task_client.py": (_CLI_DIR / "adp_task_client.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -121,6 +123,8 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-superplane-onboarding.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-models.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-flow.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-task.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp_task_client.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 

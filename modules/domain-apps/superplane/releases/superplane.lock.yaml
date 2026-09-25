@@ -252,13 +252,14 @@ schema:
     # later recovery run does not have to re-derive it by re-checking every approved
     # region. Extends 033 on the same linear head; adds one nullable column, no new table.
     # #5926 adds durable network resources, effects, memberships and completion evidence.
+    # #6127 scopes domain user subject uniqueness to each organization.
     # #6048 adds explicit cluster sharing eligibility and per-workspace memberships.
-    version_files: 50
+    version_files: 51
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 036_shared_cluster_membership
+    head: 037_shared_cluster_membership
     base: 001_initial
   compatible_with: null
   blocked_by:

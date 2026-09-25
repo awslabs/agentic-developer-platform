@@ -1,0 +1,22 @@
+{
+  "stringprep.py": {
+    "before": "60b6c83581093029312efb6670b11c540090b3f78bcf72264467b494f02f21a5",
+    "after": "52618dbafb21fac84147d4241a364b08d1f0d803806cb86e4fcb921c200c754d"
+  },
+  "urllib/request.py": {
+    "before": "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430",
+    "after": "48fcaa1b047f09f53abf37a36184686a96d56ddaacc63ae6f9ebe9db1827f784"
+  },
+  "poplib.py": {
+    "before": "527e714523264093910a0a0b1a55c6583f952835c89061537fc40ad98c347056",
+    "after": "a6ffff188814b56d95b043c31d9e0dfee51ac6d6e92afe74ab070cb6136b076f"
+  },
+  "tarfile.py": {
+    "before": "3c8d585a77d7d376aea66e5e11a4d53c2605100d4c05a71b5385ed54bc526f51",
+    "after": "1390f6ad4683892ca2ca2a8dc60db44419cbcf3aea0043626095e960b18dff72"
+  },
+  "zipfile/__init__.py": {
+    "before": "adb6f48ee990b42cabfc665d910992c5a30cee31d5d50d846e18e0e45c6a3f31",
+    "after": "0e39a3dce18037f350f4d65dfc684c03a68d91bd75fcb1b03568e4d032b296a2"
+  }
+}

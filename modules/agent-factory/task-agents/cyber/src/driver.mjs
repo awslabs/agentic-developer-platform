@@ -132,5 +132,6 @@ export async function runCyber(start, bridge, { sdkQuery = query, proxyFactory =
         'Pending jobs are not completed evidence: poll result with their job_id. Unknown submissions must never be repeated. Denied/unavailable stages must be disclosed. ' +
         'Progress must be authored observations, not private reasoning. Ask for missing input using request_input. The caller may be an automated service. ' +
         'Only cite exact initial evidence_refs or host-returned artifact.artifact_id references, with source artifact for tool artifacts. ' +
+        'For a URL report, start summary with Verdict: malicious, suspicious, no malicious behavior observed, or inconclusive; include a concise evidence-based rationale and confidence. Explain observed facts and uncertainty, never private reasoning. Distinguish historical Common Crawl findings from live browsing findings and cite each. State untested behavior and missing sources in uncertainties; absence of detections is not proof of safety. The host generates an HTML report with separate source sections and a recorded action timeline. ' +
         'Do not guess tool results. Submit the final grounded Task report using submit_report, then finish. If a skill describes unsupported operations, state the limitation rather than inventing success.' });
 }

@@ -27,7 +27,7 @@ persona_model_mapping_enabled = true
 
 # Protected worker image source f1c9c66d92031409da8fe75f2e1019275b5d3a22; includes exact citation feedback and bounded control retries.
 # Browser broker keeps its independently reviewed image below.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:beae9a4b9e6c6ebd4f442eebf2a65965d077b072a76baa0563caa689289979d4"
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:a396eeae0ebd032866b33550a876aeae7a317d0bce00163608d790b4bafc55c3"
 
 # The matching broker and worker support session-owner capabilities.
 domain_app_images = {
@@ -70,7 +70,7 @@ agent_legacy_worker_admin_retired      = true
 agent_worker_admission_paused          = false
 shared_run_reporting_enabled           = true
 shared_worker_continuation_enabled     = false
-agent_authority_worker_image_digests   = ["sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f", "sha256:2923326ff83e0335cbf9e17a0c0f80b6c2ab0b01c70c76fac9fd059851b6eb94", "sha256:3d19d3fba77538bba11d57c9ef05026e54b70bf465515bca42746f3534cf96e4", "sha256:6beab1ad04b9249aa72b2f25bf6b8bbfc3f8ecfc82eac250ac2eb8e083819d67", "sha256:7c1541d515717d54da677797ebd37cac67b39f3e8de116cd6e391f0de08b201d", "sha256:beae9a4b9e6c6ebd4f442eebf2a65965d077b072a76baa0563caa689289979d4", "sha256:e25a54c3037f9bde26a3aa400e3af9bf367288e7a6977cece2d508f5f259fe27", "sha256:f14998af44cc77df24365371675ffe7fef54878d7a254c83e65a9dcbcbfdbabe", "sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d"]
+agent_authority_worker_image_digests   = ["sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f", "sha256:2923326ff83e0335cbf9e17a0c0f80b6c2ab0b01c70c76fac9fd059851b6eb94", "sha256:3d19d3fba77538bba11d57c9ef05026e54b70bf465515bca42746f3534cf96e4", "sha256:6beab1ad04b9249aa72b2f25bf6b8bbfc3f8ecfc82eac250ac2eb8e083819d67", "sha256:7c1541d515717d54da677797ebd37cac67b39f3e8de116cd6e391f0de08b201d", "sha256:a396eeae0ebd032866b33550a876aeae7a317d0bce00163608d790b4bafc55c3", "sha256:beae9a4b9e6c6ebd4f442eebf2a65965d077b072a76baa0563caa689289979d4", "sha256:e25a54c3037f9bde26a3aa400e3af9bf367288e7a6977cece2d508f5f259fe27", "sha256:f14998af44cc77df24365371675ffe7fef54878d7a254c83e65a9dcbcbfdbabe", "sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d"]
 
 # Six-hour Task deadline plus startup/cleanup headroom for the owning pod.
 agent_pod_deadline_seconds = 22200

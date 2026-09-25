@@ -74,6 +74,9 @@ jobs:
     name: CLI onboarding and agent conversations
     needs: prepare
     if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/eval-cli-onboarding.yml
     with:
       environment: dev
@@ -84,6 +87,9 @@ jobs:
     # A failed onboarding assertion must not hide budget regressions. The called
     # workflow must verify cleanup before this next suite obtains the live lock.
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.onboarding.outputs.cleanup_ok == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/eval-budget-ratelimit.yml
     with:
       environment: dev
