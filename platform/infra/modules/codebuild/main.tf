@@ -129,6 +129,12 @@ locals {
       privileged     = true
       privileged_why = "docker build of the maintained Superplane platform monitor image"
     }
+    "superplane-executor" = {
+      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/executor.yml"
+      ecr_repos      = ["adp-superplane-executor"]
+      privileged     = true
+      privileged_why = "docker build of the maintained Superplane executor image"
+    }
   }
 
   projects = merge(local.core_projects, [for manifest in sort(tolist(fileset("${path.module}/../../../../modules/domain-apps", "*/codebuild/projects.json"))) :

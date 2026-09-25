@@ -45,6 +45,12 @@ mock_provider "aws" {
   }
 }
 
+# Distinct from the global mock role ARN: catches service-role miswiring.
+override_resource {
+  target = aws_iam_role.project["superplane-executor"]
+  values = { arn = "arn:aws:iam::123456789012:role/adp-test-codebuild-superplane-executor" }
+}
+
 variables {
   name_prefix                = "adp-test"
   state_bucket               = "adp-terraform-state-123456789012"
@@ -349,5 +355,39 @@ run "smoke_source_and_service_identity_are_project_bound" {
   assert {
     condition     = aws_iam_role.gateway_pr.permissions_boundary == aws_iam_policy.codebuild_boundary.arn && !contains(one([for s in jsondecode(aws_iam_role_policy.gateway_pr.policy).Statement : s if s.Sid == "DenyOtherApis"]).NotAction, "ecr:PutImage")
     error_message = "PR validation must explicitly deny publication and retain the build boundary."
+  }
+}
+
+
+run "executor_build_has_exact_generated_identity_and_resources" {
+  command = apply
+  assert {
+    condition = (
+      aws_codebuild_project.main["superplane-executor"].service_role == "arn:aws:iam::123456789012:role/adp-test-codebuild-superplane-executor" &&
+      aws_iam_role.project["superplane-executor"].permissions_boundary == aws_iam_policy.codebuild_boundary.arn &&
+      aws_codebuild_project.main["superplane-executor"].source[0].buildspec == "modules/domain-apps/superplane/releases/buildspecs/executor.yml" &&
+      aws_codebuild_project.main["superplane-executor"].source[0].location == "adp-terraform-state-123456789012/codebuild/src/adp-test-superplane-executor/explicit-source-required.zip" &&
+      aws_codebuild_project.main["superplane-executor"].logs_config[0].cloudwatch_logs[0].group_name == "/aws/codebuild/adp-test-superplane-executor" &&
+      aws_codebuild_project.main["superplane-executor"].environment[0].privileged_mode
+    )
+    error_message = "Executor must use its bounded role, own source/logs, maintained buildspec and explicitly reviewed Docker privilege."
+  }
+  assert {
+    condition = toset([for statement in jsondecode(aws_iam_role_policy.project["superplane-executor"].policy).Statement : statement.Sid]) == toset([
+      "OwnBuildLogs", "BuildSourceRead", "EcrAuth", "OwnEcrRepositories", "EcrRepositoryBootstrap"
+    ])
+    error_message = "Executor build must not acquire scanner, shared-artifact or other optional grants."
+  }
+  assert {
+    condition = alltrue([for statement in jsondecode(aws_iam_role_policy.project["superplane-executor"].policy).Statement :
+      statement.Effect == "Allow" && toset(flatten([statement.Resource])) == toset(
+        statement.Sid == "OwnBuildLogs" ? [
+          "arn:aws:logs:us-east-1:123456789012:log-group:/aws/codebuild/adp-test-superplane-executor",
+          "arn:aws:logs:us-east-1:123456789012:log-group:/aws/codebuild/adp-test-superplane-executor:*"
+        ] : statement.Sid == "BuildSourceRead" ? ["arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-superplane-executor/*"] :
+        statement.Sid == "EcrAuth" ? ["*"] : ["arn:aws:ecr:us-east-1:123456789012:repository/adp-superplane-executor"]
+      )
+    ])
+    error_message = "Every executor statement must remain scoped to exact source/log/repository resources, including unlisted sibling repositories."
   }
 }
