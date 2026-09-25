@@ -1,0 +1,10 @@
+{
+  "README.md": "96c2b56347e19d0ed96227f1863d71f09f18664bdd5b3ec4f35c4dde942db0b8",
+  "completion-report.json": "b36fa444c6563fb4ab0ebefece28ee49c1e59bee83fedb998bcf0982f3bb94a2",
+  "progress-latency.json": "b77158ec1b9f4ce1177198c626fb2ca48fe35d35c5bef92f75d87a817d9c6910",
+  "public-events.ndjson": "2bd850b9c4cdeb19a4f963c31d76603d76e40ef42a6d670e7999f27ce30a433e",
+  "public-snapshot.json": "83bf27789cb12cc27eafa88a5e6e375511d29fe9e0172d546c2b87d2543b6648",
+  "qualification-runner.py": "dcee90f1cd66840049d8763bf589f9030e02b885da0f8e7eb6803d79fdb4d270",
+  "result-artifact.json": "e7e993ac7ce632e264b7335cfad091dd5f4a4acb16acc884b5f5d05e8372e6cc",
+  "worker-progress.log": "3e9d7e90c23431a5935833bcb0e1551ce4a9bc35080944a7493ca491a8d716d1"
+}
