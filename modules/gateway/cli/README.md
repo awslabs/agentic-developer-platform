@@ -28,6 +28,8 @@ or Codex.
 | `adp-superplane-onboarding.py` | Workspace and provider onboarding — `adp superplane onboarding`: capability and readiness reporting, plan review, credential-reference binding, durable operation receipts |
 | `adp-task.py`, `adp_task_client.py` | Submit, monitor and abort work as a registered Task principal — `adp task` ([guide](../../../docs/adp-cli/tasks.md)) |
 | `adp-flow.py` | Follow and control AI-DLC delivery flows — `adp flow` ([guide](flow.md)) |
+| `adp-doctor.py` | What this deployment offers you, and why a call failed — `adp capabilities`, `adp doctor` ([guide](doctor.md)). Read-only |
+| `command-manifest.json` | The checked list of commands, their mutation class and required capability. Held against the real dispatcher, install/update lists, download allowlist and server contract by `tests/cli/test_command_manifest.py` |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
@@ -761,3 +763,6 @@ and `ADP_NATIVE_LIVE_CLIENT` to the **CLI** app client ID (not the discovery
 raw SDK failures out of output. It creates no users or grants and changes no
 passwords. Its native routes/database run locally; deployment, gateway IAM and
 PostgreSQL rate-limit concurrency still require release verification.
+
+Usage and redacted inference metadata: [Usage CLI](../../../docs/adp-cli/usage.md).
+Human run discovery, transcripts, explanation streaming and supported controls: [Agent Activity CLI](../../../docs/adp-cli/agent.md). Task submission continues to use `adp task`.

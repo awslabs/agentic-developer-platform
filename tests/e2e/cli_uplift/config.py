@@ -365,6 +365,51 @@ def validate(config):
                 )
     result["github"] = github
 
+    contrast = result.get("capability_contrast") or {}
+    require(isinstance(contrast, dict), "capability_contrast must be an object")
+    if contrast:
+        required = (
+            "disabled_feature",
+            "enabled_feature",
+            "disabled_operation",
+            "enabled_operation",
+            "denied_operation",
+            "foreign_request_id",
+            "ordinary_fixture_name",
+        )
+        missing_contrast = [
+            key
+            for key in required
+            if not isinstance(contrast.get(key), str) or not contrast.get(key)
+        ]
+        require(
+            not missing_contrast,
+            "capability_contrast is missing: " + ", ".join(missing_contrast),
+        )
+        for key in ("disabled_operation", "enabled_operation", "denied_operation"):
+            require(
+                re.fullmatch(r"[a-z][a-z0-9_.]{2,127}", contrast[key]),
+                f"capability_contrast.{key} is not an operation ID",
+            )
+        require(
+            re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", contrast["disabled_feature"]),
+            "capability_contrast.disabled_feature is not a feature name",
+        )
+        require(
+            re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", contrast["enabled_feature"]),
+            "capability_contrast.enabled_feature is not a feature name",
+        )
+        require(
+            re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", contrast["foreign_request_id"]),
+            "capability_contrast.foreign_request_id is not a request ID",
+        )
+        require(
+            not contrast["ordinary_fixture_name"].startswith("arn:")
+            and "://" not in contrast["ordinary_fixture_name"],
+            "capability_contrast.ordinary_fixture_name must be a Secrets Manager name",
+        )
+    result["capability_contrast"] = contrast
+
     # #5413: the three deployment bindings E16/E17 run against. Absent means those
     # two cases BLOCK (see `fixture_classes`), which is the honest state until a
     # coordinator supplies real integration and pre-production URLs.
@@ -559,6 +604,13 @@ OVERLAY = {
     "CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN": "destination_role_arn",
     "CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN": "provisioner_role_arn",
     "CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME": "credential_secret_name",
+    "CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE": "capability_contrast.disabled_feature",
+    "CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE": "capability_contrast.enabled_feature",
+    "CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION": "capability_contrast.disabled_operation",
+    "CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION": "capability_contrast.enabled_operation",
+    "CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION": "capability_contrast.denied_operation",
+    "CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID": "capability_contrast.foreign_request_id",
+    "CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE": "capability_contrast.ordinary_fixture_name",
 }
 
 # #5413. The three deployment bindings, as a JSON array, because they are a list
@@ -697,6 +749,8 @@ def fixture_classes(config):
     # here means three genuinely distinct deployments were configured.
     if len(config.get("deployments") or []) >= REQUIRED_DEPLOYMENTS:
         available.add(cases.THREE_DEPLOYMENTS)
+    if config.get("capability_contrast"):
+        available.add(cases.CAPABILITY_CONTRAST)
     # #5637. Configured is not the same as reachable here either, and preflight
     # discards this class again if the domain does not answer through the gateway —
     # a 404 from the proxy means nothing is mounted behind the allowlist, which

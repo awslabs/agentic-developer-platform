@@ -192,6 +192,12 @@ UNIT_MODULES = [
     "src.features.routes",  # Issue #3566: Feature-flag endpoint
     "src.auth.gitlab_sso",  # Issue #3775: GitLab SSO JWT minting + JWKS
     "src.cli_download.routes",  # Issue #4146: /setup page CLI helper-script download
+    # Issue #5621 (CLI-08): own-scope CLI capability discovery. Read-only, and
+    # deliberately separate from cli_download.routes — that router is public and
+    # unauthenticated by design, whereas this one is authenticated and
+    # tenant-scoped. Sharing a module would put a public route and a per-caller
+    # route behind one review.
+    "src.cli_capabilities.routes",
     # Issue #4200: orchestration plan amendment. OPERATOR plane (Cognito + the
     # PLAN_APPROVE permission), deliberately NOT src.internal.* — agent pods can
     # call any internal route with any method, so promotion state must never be

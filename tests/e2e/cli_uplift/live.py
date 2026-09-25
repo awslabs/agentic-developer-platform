@@ -550,6 +550,11 @@ def _journey_payload(cfg, ctx):
         "expected_hashes": ctx.get("expected_hashes")
         or (ctx["preflight"] or {}).get("served_cli_hashes")
         or {},
+        "expected_revision": cfg["expected_revision"],
+        "expected_cli_version": ctx.get("expected_cli_version")
+        or ((ctx.get("preflight") or {}).get("expected_release") or {}).get(
+            "cli_version", ""
+        ),
         "cli_path": session.get("cli_path", ""),
         # A reference, not the tokens. install_auth keeps the real session material
         # in a private on-instance vault because the only channel out of the
@@ -611,6 +616,7 @@ def _journey_payload(cfg, ctx):
         # without them: checking only the CLI consumer would report a pass on a
         # response the UI cannot render, which is the whole property under test.
         "ui_contracts": ctx.get("ui_contracts") or {},
+        "capability_contrast": cfg.get("capability_contrast") or {},
         # E18 receives references and bounded workload choices only. The admin
         # password remains in Secrets Manager and is read on the instance.
         "superplane": cfg.get("superplane") or {},
@@ -632,6 +638,24 @@ def _github_available(cfg):
         if not (github.get("org") and github.get("repo")):
             return False
         return bool(github.get("app_fixture") or github.get("existing_app_fixture"))
+
+    return check
+
+
+def _capability_contrast_available(aws, cfg):
+    def check():
+        contrast = cfg.get("capability_contrast") or {}
+        if not contrast:
+            return False
+        try:
+            result = aws.call(
+                "secretsmanager",
+                "describe_secret",
+                SecretId=contrast["ordinary_fixture_name"],
+            )
+        except ports_module.PortError:
+            return False
+        return bool(result.get("ARN"))
 
     return check
 
@@ -1329,6 +1353,7 @@ def wire(cfg, supplied=None, *, journeys=None):
         "admin_fixtures": _admin_fixtures(aws, cfg),
         "github_available": _github_available(cfg),
         "hosted_available": _hosted_available(cfg),
+        "capability_contrast_available": _capability_contrast_available(aws, cfg),
         "harness_auth_helper": _read_harness_helper,
         # `ssm` so the API deleters can resolve the session token off the instance
         # before the sweep terminates it. See `_vault_token`.

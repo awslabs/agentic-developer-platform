@@ -104,6 +104,18 @@ THREE_DEPLOYMENTS = "three_deployments"
 # A capability requirement, deliberately never granted by current preflight.
 # Gateway availability does not prove enforcement of inference spend limits.
 MULTI_DEPLOYMENT_MODEL_LIMITS = "multi_deployment_model_limits"
+# #5621 (CLI-08-AC-04): a deployment where one module is deliberately DISABLED
+# and one is enabled, plus an ordinary non-admin identity alongside the admin one.
+#
+# Its own class rather than a flag on PLATFORM, because the criterion is a
+# CONTRAST: proving the CLI distinguishes "switched off" from "not permitted" from
+# "available" needs a deployment configured to exhibit all three at once, and a
+# second identity that genuinely lacks a permission the first holds. A single
+# admin on a fully-enabled platform can demonstrate none of them — every answer
+# would be "available", so the four axes could all be collapsed into one boolean
+# and the case would still pass. Absent, E18 BLOCKS rather than testing the one
+# state that proves nothing.
+CAPABILITY_CONTRAST = "capability_contrast"
 # #5637: a deployed Superplane domain service reachable through the gateway's
 # forwarding allowlist, plus an ordinary and an admin identity in it.
 #
@@ -242,6 +254,13 @@ CASES = (
         "superplane",
         "Served CLI traverses the gateway to the real domain: workspace create/read/kubeconfig/cost/events/quota/deploy and the provider credential handoff carry both identifiers; a failed second-stage registration compensates only its own credential; account registration reports unavailable without writing",
         (EC2, PLATFORM, SUPERPLANE_DOMAIN),
+    ),
+    Case(
+        "E19",
+        "#5621",
+        "parity",
+        "Freshly served CLI on EC2: adp capabilities distinguishes an enabled operation from an intentionally disabled one and from one the caller may not perform; adp doctor reports read-only bounded findings with no mutation and no paid inference; a foreign request ID is indistinguishable from an absent one",
+        (EC2, PLATFORM, CAPABILITY_CONTRAST),
     ),
 )
 

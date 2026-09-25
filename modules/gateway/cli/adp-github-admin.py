@@ -394,6 +394,12 @@ def parser():
 
 def run(args, api, interactive=None):
     interactive = sys.stdin.isatty() and not args.json if interactive is None else interactive
+    mutation_capability = {
+        "setup": "github.app.admin.setup.write",
+        "revalidate": "github.app.admin.revalidate.write",
+    }.get(args.command)
+    if mutation_capability and not getattr(args, "dry_run", False):
+        common.ensure_can_mutate(mutation_capability, request=api.request)
     if args.command == "status":
         return describe(api)
     if args.command == "revalidate":
@@ -414,7 +420,7 @@ def configure(ctx):
     args.dry_run = bool(ctx.get("dry_run"))
     if args.dry_run or not ctx.get("interactive"):
         return describe(ctx["api"])
-    return setup(ctx["api"], args, True)
+    return run(args, ctx["api"], interactive=True)
 
 
 def main(argv=None):

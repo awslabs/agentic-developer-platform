@@ -488,9 +488,34 @@ def test_verify_does_not_assign_or_provision(environment):
     cli.run(arguments(), api)
     api.calls.clear()
     aws.calls.clear()
-    result = cli.run(cli.parser().parse_args(["verify", api.rows[0]["id"]]), api)
+    result = cli.run(cli.parser().parse_args(["verify", api.rows[0]["id"], "--yes"]), api)
     assert result["verified"] and not result["assigned"]
     assert len(mutations(api)) == 1 and not aws.calls
+
+
+def test_verify_dry_run_does_not_probe_or_change_routing_evidence(environment):
+    api, aws = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+    aws.calls.clear()
+
+    result = cli.run(cli.parser().parse_args(["verify", api.rows[0]["id"], "--dry-run"]), api)
+
+    assert result["action"] == "refresh_verification_evidence"
+    assert result["dry_run"] is True
+    assert not mutations(api) and not aws.calls
+
+
+def test_verify_requires_confirmation_before_the_probe(environment, monkeypatch):
+    api, _ = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
+
+    with pytest.raises(cli.CliError, match="--yes"):
+        cli.run(cli.parser().parse_args(["verify", api.rows[0]["id"]]), api)
+
+    assert not mutations(api)
 
 
 def test_json_handoff_is_pending_and_excludes_setup_secrets(environment, tmp_path, capsys):

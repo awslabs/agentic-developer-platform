@@ -1302,6 +1302,7 @@ def revise_draft(args, api):
     }
     if args.draft_action == "save":
         body["expected_proposal_hash"] = args.expect_proposal_hash
+        common.ensure_can_mutate("flows.draft.write", request=api.request)
     unavailable = require_engine(api, command)
     if unavailable:
         return unavailable
@@ -1797,6 +1798,8 @@ def start_flow(args, api):
         if args.issue:
             opening += f"\n\nStart from issue #{args.issue} in that repository."
 
+        if not any((args.outcome, args.repo, args.issue)):
+            common.ensure_can_mutate("flows.draft.write", request=api.request)
         request_id = args.request_id or uuid.uuid4().hex
         detail["request_id"] = request_id
         progress(f"Opening planning request {request_id}. If delivery is interrupted, retry with --request-id {request_id}.")
@@ -1816,6 +1819,8 @@ def start_flow(args, api):
             return common.envelope("pending", "flow start", detail, stop)
 
     if resuming and args.answer:
+        if not any((args.outcome, args.repo, args.issue)):
+            common.ensure_can_mutate("flows.draft.write", request=api.request)
         request_id = args.request_id or uuid.uuid4().hex
         detail["request_id"] = request_id
         progress(f"Sending answer {request_id}. Retry this answer with --request-id {request_id} if delivery is interrupted.")
@@ -2039,6 +2044,15 @@ HANDLERS = {
 
 
 def run(args, api):
+    if args.command == "start" and args.resume is None and not any((args.outcome, args.repo, args.issue)):
+        return HANDLERS[args.command](args, api)
+    operation = None
+    if args.command in {"start", "create"}:
+        operation = "flows.draft.write"
+    elif args.command == "gate":
+        operation = "flows.approve.write"
+    if operation:
+        common.ensure_can_mutate(operation, request=api.request)
     return HANDLERS[args.command](args, api)
 
 

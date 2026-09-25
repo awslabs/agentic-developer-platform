@@ -309,6 +309,8 @@ def parser():
     connect.add_argument("--json", action="store_true", help="Print machine-readable output")
     verification = commands.add_parser("verify", help="Verify an existing destination through ADP")
     verification.add_argument("destination", help="Destination ID")
+    verification.add_argument("--yes", action="store_true", help="Approve updating stored verification and routing evidence without a prompt")
+    verification.add_argument("--dry-run", action="store_true", help="Show which verification evidence would be refreshed without probing or writing")
     verification.add_argument("--json", action="store_true")
     selection = commands.add_parser("status", help="Show the effective routing rule and its source")
     selection.add_argument("--user", help="Inspect another user (requires administrator authority)")
@@ -347,6 +349,12 @@ def resume_details(api, args):
 
 
 def run(args, api):
+    mutation_capability = {
+        "connect": "routing.bedrock.write",
+        "verify": "routing.bedrock.verify.write",
+    }.get(args.command)
+    if mutation_capability and not args.dry_run:
+        common.ensure_can_mutate(mutation_capability, request=api.request)
     if args.command == "list":
         org = organization(api, args.org) if args.org else None
         return {"destinations": [row for row in destinations(api) if org is None or row["owner_org_id"] in {None, org["id"]}]}
@@ -359,6 +367,25 @@ def run(args, api):
         return {"effective": effective, "verification": "configured_route_only", "applies_to": "personal and user-owned cloud calls"}
     if args.command == "verify":
         destination = destination_by_id(api, args.destination)
+        plan = {
+            "action": "refresh_verification_evidence",
+            "destination_id": destination["id"],
+            "account_id": destination["account_id"],
+            "dry_run": args.dry_run,
+            "effect": "The probe updates routing readiness and can make existing routing unavailable.",
+        }
+        if args.dry_run:
+            return plan
+        if not args.yes:
+            if not sys.stdin.isatty():
+                raise CliError("Non-interactive changes require --yes. Use --dry-run to inspect the plan first.", "confirmation_required", 1)
+            print(
+                f"Probe destination {destination['id']} now and replace its stored routing evidence?",
+                file=sys.stderr,
+            )
+            print("A failed probe can make existing routing unavailable. Continue? Type yes: ", end="", file=sys.stderr, flush=True)
+            if input().strip() != "yes":
+                raise CliError("Cancelled; no verification evidence was changed.", "cancelled")
         verified = verify(api, destination["id"])
         return {"destination_id": verified["id"], "account_id": verified["account_id"], "verified": True, "assigned": False}
     destination = resume_details(api, args) if args.resume else None
@@ -464,6 +491,11 @@ def display(result, as_json, command="connect"):
         print(f"Bedrock account: {route.get('account_id') or 'platform default (account not reported)'}")
         print(f"Rule: {route['rung']} | Destination: {route.get('destination_label') or 'platform default'}")
         print("Applies to personal and user-owned cloud calls. This is the configured route; no inference was run.")
+    elif result.get("dry_run") and result.get("action") == "refresh_verification_evidence":
+        print(
+            f"Would probe destination {result['destination_id']} in AWS account {result['account_id']} "
+            "and replace its stored routing evidence. No probe sent."
+        )
     elif command == "verify":
         print(f"Verified destination {result['destination_id']} in AWS account {result['account_id']}. No routing rule was assigned.")
     elif "destinations" in result:

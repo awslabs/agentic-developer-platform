@@ -201,12 +201,14 @@ def preflight_stage(cfg, ports):
         # installer's own CLI_FILES at that revision, so the set cannot silently
         # shrink back to a subset.
         expected_hashes = release.manifest(cfg["expected_revision"])
+        expected_cli_version = release.cli_version(cfg["expected_revision"])
         require(
             len(expected_hashes) >= 2,
             "The release manifest at the revision under test lists too few files to be a CLI release",
         )
         record["expected_release"] = {
             "revision": cfg["expected_revision"],
+            "cli_version": expected_cli_version,
             "files": dict(sorted(expected_hashes.items())),
         }
         # One comparison, in the reviewed helper, against hashes the gateway
@@ -217,6 +219,7 @@ def preflight_stage(cfg, ports):
         # Carried into the instance payload so "the gateway serves the release"
         # and "the instance installed the release" are the same assertion.
         ctx["expected_hashes"] = expected_hashes
+        ctx["expected_cli_version"] = expected_cli_version
 
         # E13's other consumer. Read from the same git object store, at the same
         # revision, for the same reason the hashes are: a contract the deployment
@@ -286,6 +289,12 @@ def preflight_stage(cfg, ports):
             # more gateway reads and every other suite runs one deployment. The
             # check itself is read-only and never aborts: an unreachable binding
             # blocks E16/E17 and leaves the rest of the matrix to run.
+            capability_contrast_available=ports["capability_contrast_available"]()
+            if any(
+                cases.CAPABILITY_CONTRAST in cases.BY_ID[case_id].requires
+                for case_id in ctx["matrix"]
+            )
+            else None,
             deployments_available=preflight.check_deployment_bindings(
                 cfg, record, fetch=_deployment_discovery(http)
             )
@@ -758,6 +767,7 @@ JOURNEY_DRIVERS = {
     # this run created, and splitting them would mean either creating two
     # workspaces or making one case depend on the other's leftovers.
     "E18": "superplane_domain",
+    "E19": "capability_contrast",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

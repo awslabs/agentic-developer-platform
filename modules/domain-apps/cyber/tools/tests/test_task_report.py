@@ -101,3 +101,26 @@ def test_missing_sources_are_explicit_and_untrusted_image_types_are_never_embedd
     ].decode()
     assert text.count("This source was not investigated") == 2
     assert "No tool operations were recorded" in text
+
+
+def test_verdict_banner_promotes_only_explicit_assessment():
+    cases = [
+        ("Verdict: malicious. Evidence follows.", "MALICIOUS", "danger"),
+        ("Verdict: suspicious with medium confidence.", "SUSPICIOUS", "warning"),
+        (
+            "Verdict: no malicious behavior observed.",
+            "NO MALICIOUS BEHAVIOR OBSERVED",
+            "clear",
+        ),
+        ("Verdict: inconclusive", "INCONCLUSIVE", "neutral"),
+        ("No malicious behavior was mentioned.", "VERDICT NOT SPECIFIED", "neutral"),
+        ("Verdict: maliciousness unclear", "VERDICT NOT SPECIFIED", "neutral"),
+    ]
+    for summary, label, tone in cases:
+        text = render_report(report={"summary": summary}, context={})[
+            "content"
+        ].decode()
+        assert "<h1>DOMAIN MRI</h1>" in text
+        assert f'class="verdict-banner {tone}"' in text
+        assert f"<h2>{label}</h2>" in text
+        assert summary in text

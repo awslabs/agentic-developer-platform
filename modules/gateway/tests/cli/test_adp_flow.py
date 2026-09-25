@@ -546,7 +546,7 @@ def test_start_prints_the_session_id_before_waiting_for_a_reply(monkeypatch, ser
 
     assert code == 4, "pending: the conversation is healthy, the agent just has not answered"
     printed_id = next((i for i, (kind, text) in enumerate(events) if kind == "print" and SESSION_ID in text), None)
-    first_poll = next((i for i, (kind, _) in enumerate(events) if kind == "poll"), None)
+    first_poll = next((i for i, (kind, path) in enumerate(events) if kind == "poll" and "/intake/sessions/" in path), None)
     assert printed_id is not None, "the session id was never printed"
     assert first_poll is not None, "the CLI never waited, so the ordering was not exercised"
     assert printed_id < first_poll, "the session id must be printed BEFORE the first wait, not after it"
@@ -711,7 +711,8 @@ def test_an_answered_question_becomes_a_new_turn_in_the_same_conversation(monkey
     original_do_get = server.do_GET
 
     def do_GET(handler):  # noqa: N802 - matches BaseHTTPRequestHandler
-        route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", next_state())
+        if "/orchestration/intake/sessions/" in handler.path:
+            route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", next_state())
         original_do_get(handler)
 
     monkeypatch.setattr(server, "do_GET", do_GET)
@@ -760,7 +761,7 @@ def test_resume_without_an_id_finds_the_callers_newest_conversation(server):
 
     assert code == 0
     assert result["detail"]["session_id"] == SESSION_ID
-    assert "/latest" in [path for _, path, _ in server.received][0]
+    assert any("/latest" in path for _, path, _ in server.received)
 
 
 def test_resuming_when_there_is_nothing_to_resume_is_an_actionable_error(server):
@@ -2608,3 +2609,11 @@ def test_wave_preview_displays_metadata_and_preserves_legacy_fallback():
     text = "\n".join(cli.wave_lines(waves))
     assert "stage 0 (concurrent): Contracts (epic-1/wave-1), epic-2/wave-1" in text
     assert "Freeze contracts." in text
+
+
+def test_unavailable_discovery_is_retained_in_successful_flow_output(server):
+    _conversation_done(server)
+    code, result = run_cli(["start", "Improve checkout", "--refine-only", "--json"])
+    assert code == 0
+    assert result["capability_preflight"]["flows.draft.write"]["source"] == "unavailable"
+    assert any(method == "POST" for method, _path, _body in server.received)

@@ -1,6 +1,6 @@
 # CLI command inventory
 
-Parser inventory for the reviewed CLI integration on 25 September 2026. Task commands are merged in #6074; capabilities/doctor and their manifest are awaiting #5716 merge. This source inventory does not assert publication or live acceptance. See [master coverage](master-coverage.md) for Epic targets and API boundaries.
+Parser inventory for the reviewed CLI integration on 25 September 2026. Task commands are merged in #6074; capabilities/doctor and their manifest are merged in #5716. This source inventory does not assert publication or live acceptance. See [master coverage](master-coverage.md) for Epic targets and API boundaries.
 
 Options are parser options, excluding `--help`; shell launchers pass tool arguments through. `adp --deployment NAME` applies before the command.
 
@@ -15,6 +15,18 @@ Options are parser options, excluding `--help`; shell launchers pass tool argume
 | `adp admin github status` |  | `--json` |
 | `adp admin login` |  | `--credentials-file`, `--credentials-stdin`, `--json` |
 | `adp admin setup` |  | `--dry-run`, `--json`, `--org`, `--yes` |
+| `adp agent list` |  | `--admin`, `--cursor`, `--json`, `--max-pages`, `--page-size` |
+| `adp agent chain` | `chain_id` | `--admin`, `--json` |
+| `adp agent detail` |  | `--admin`, `--json`, `--run` |
+| `adp agent status` |  | `--admin`, `--json`, `--run` |
+| `adp agent ping` |  | `--json`, `--run` |
+| `adp agent state` |  | `--json`, `--run` |
+| `adp agent logs` |  | `--admin`, `--follow`, `--json`, `--last-event-id`, `--run`, `--timeout` |
+| `adp agent wait` |  | `--admin`, `--interval`, `--json`, `--run`, `--timeout` |
+| `adp agent abort` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--json`, `--reason`, `--run`, `--yes` |
+| `adp agent pause` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--json`, `--reason`, `--run`, `--yes` |
+| `adp agent resume` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--json`, `--reason`, `--run`, `--yes` |
+| `adp agent steer` |  | `--command-id`, `--dry-run`, `--expected-generation`, `--instruction`, `--json`, `--run`, `--yes` |
 | `adp aws connect` |  | `--account`, `--download`, `--dry-run`, `--external-id-file`, `--external-id-stdin`, `--json`, `--name`, `--no-external-id`, `--profile`, `--region`, `--resume`, `--role-arn`, `--yes` |
 | `adp aws disconnect` | `connection` | `--dry-run`, `--json`, `--yes` |
 | `adp aws list` |  | `--json` |
@@ -114,3 +126,20 @@ Options are parser options, excluding `--help`; shell launchers pass tool argume
 | `adp token` |  |  |
 | `adp update` |  | `--rollback`, `--to` |
 | `adp version` |  |  |
+
+Usage and metadata commands added by #5628 (source implementation; live acceptance held):
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp usage summary` |  | `--end`, `--json`, `--request-id`, `--run`, `--start` |
+| `adp usage timeline` |  | `--end`, `--json`, `--request-id`, `--run`, `--start` |
+| `adp usage models` |  | `--end`, `--json`, `--request-id`, `--run`, `--start` |
+| `adp usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp usage request` | `request_id` | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--run`, `--start` |
+| `adp logs list` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp logs show` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp logs export` |  | `--cursor`, `--end`, `--format`, `--json`, `--max-pages`, `--page-size`, `--request-id`, `--run`, `--start` |
+| `adp admin usage summary` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
+| `adp admin usage users` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
+| `adp admin usage departments` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
+| `adp admin usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--org`, `--page-size`, `--request-id`, `--run`, `--start` |

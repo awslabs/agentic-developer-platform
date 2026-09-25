@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
+import hashlib
 import importlib.util
 import json
 import os
@@ -20,17 +22,60 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+ERROR_CODE_ALIASES = {
+    "budget_exceeded": "budget_exhausted",
+    "budget_exhausted": "budget_exhausted",
+    "revision_conflict": "stale_revision",
+    "stale_revision": "stale_revision",
+}
+ERROR_EXIT_CODES = {
+    "budget_exhausted": 4,
+    "dependency_pending": 4,
+    "request_timeout": 4,
+    "stale_revision": 4,
+    "unknown_mutation_outcome": 4,
+}
+
+
+def normalize_error_code(code):
+    if not isinstance(code, str):
+        return "http_error"
+    normalized = ERROR_CODE_ALIASES.get(code, code)
+    if normalized.endswith("_revision_conflict"):
+        return "stale_revision"
+    return normalized
+
 
 class CliError(Exception):
     def __init__(self, message, code="operation_failed", exit_code=5, *, status_code=None):
         super().__init__(message)
-        self.code, self.exit_code = code, exit_code
+        self.code = normalize_error_code(code)
+        self.exit_code = ERROR_EXIT_CODES.get(self.code, exit_code)
         self.status_code = status_code
 
 
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         raise CliError(message, "usage_error", 1)
+
+
+CAPABILITIES_PATH = "/me/cli-capabilities"
+CAPABILITY_SCHEMA_VERSIONS = ("2026-09-21",)
+CAPABILITY_CACHE_TTL_SECONDS = 300
+CAPABILITY_AXES = ("supported", "enabled", "permitted", "ready")
+CAPABILITY_STATES = ("yes", "no", "unknown")
+CAPABILITY_FAILURES = {
+    "supported": ("no", "unsupported_operation", 5),
+    "enabled": ("no", "feature_disabled", 5),
+    "permitted": ("no", "permission_denied", 3),
+    "ready": ("no", "dependency_pending", 4),
+}
+CAPABILITY_MESSAGES = {
+    "unsupported_operation": "This ADP deployment does not offer that operation.",
+    "feature_disabled": "That feature is switched off on this ADP deployment.",
+    "permission_denied": "You are not permitted to do that on this ADP deployment.",
+    "dependency_pending": "A service this needs is not ready yet.",
+}
 
 
 _UNRESOLVED = object()
@@ -175,10 +220,13 @@ class Api:
         except urllib.error.HTTPError as exc:
             code = "http_error"
             try:
-                detail = json.load(exc).get("detail", {})
-                reason = detail.get("error", detail.get("reason", "")) if isinstance(detail, dict) else ""
-                if re.fullmatch(r"[a-z_]{1,80}", reason):
-                    code = reason
+                payload = json.load(exc)
+                detail = payload.get("detail", {}) if isinstance(payload, dict) else {}
+                reason = payload.get("error", payload.get("reason", "")) if isinstance(payload, dict) else ""
+                if not reason and isinstance(detail, dict):
+                    reason = detail.get("error", detail.get("reason", ""))
+                if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,80}", reason):
+                    code = normalize_error_code(reason)
             except (ValueError, AttributeError):
                 pass
             hints = {
@@ -188,10 +236,34 @@ class Api:
                 409: "Configuration changed. Read its current status before retrying.",
                 429: "Wait a minute before retrying.",
             }
-            hint = hints.get(exc.code, "Check status before retrying; an interrupted request may have changed configuration.")
-            raise CliError(f"ADP returned HTTP {exc.code} ({code}). {hint}", code, {401: 2, 403: 3}.get(exc.code, 5), status_code=exc.code) from None
-        except (urllib.error.URLError, TimeoutError, ValueError):
-            raise CliError("ADP could not be reached or returned an invalid response. Check status before retrying.", "gateway_unavailable") from None
+            code_hints = {
+                "budget_exhausted": "The spending limit is blocking this operation. Check `adp doctor --checks budget`.",
+                "stale_revision": "Configuration changed. Read its current state before trying again.",
+            }
+            hint = code_hints.get(
+                code,
+                hints.get(exc.code, "Check status before retrying; an interrupted request may have changed configuration."),
+            )
+            exit_code = ERROR_EXIT_CODES.get(code, {401: 2, 403: 3}.get(exc.code, 5))
+            raise CliError(f"ADP returned HTTP {exc.code} ({code}). {hint}", code, exit_code, status_code=exc.code) from None
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+                raise CliError(
+                    "ADP did not confirm whether the change completed. Read the current state and reconcile the "
+                    "same operation; do not retry blindly.",
+                    "unknown_mutation_outcome",
+                    4,
+                ) from None
+            if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+                raise CliError(
+                    "ADP did not answer in time. Read the current state before retrying.",
+                    "request_timeout",
+                    4,
+                ) from None
+            raise CliError(
+                "ADP could not be reached or returned an invalid response. Check status before retrying.",
+                "gateway_unavailable",
+            ) from None
 
 
 def api(method, path, body=None, **kwargs):
@@ -290,6 +362,147 @@ def write_state(name, value):
     write_json(state_path(name), value)
 
 
+def _jwt_claims(token):
+    """Decode JWT claims only to partition local cache state, never to authorize."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return claims if isinstance(claims, dict) else {}
+    except (IndexError, ValueError, TypeError):
+        return {}
+
+
+def authenticated_scope(token=None):
+    """Return non-credential cache keys for the current authenticated scope."""
+    token = token or access_token()
+    fingerprint = hashlib.sha256(token.encode()).hexdigest()
+    claims = _jwt_claims(token)
+    subject = next((claims.get(key) for key in ("sub", "user_id", "username") if isinstance(claims.get(key), str)), "")
+    tenant = next(
+        (claims.get(key) for key in ("org_id", "custom:org_id", "tenant_id", "custom:tenant_id") if isinstance(claims.get(key), str)),
+        "",
+    )
+    identity_material = f"{claims.get('iss', '')}\0{subject}" if subject else fingerprint
+    return {
+        "identity": hashlib.sha256(identity_material.encode()).hexdigest(),
+        "tenant": tenant or f"session:{fingerprint}",
+        "tenant_claim": tenant,
+    }
+
+
+def capability_cache_context(token=None):
+    """Resolve the cache key and its scope from one immutable token snapshot."""
+    try:
+        scope = authenticated_scope(token)
+    except CliError:
+        return None, None
+    key = {**deployment_stamp(), "gateway": gateway_url(), "identity": scope["identity"], "tenant": scope["tenant"]}
+    return key, scope
+
+
+def capability_cache_key():
+    """Deployment, gateway, authenticated identity and tenant; never raw credentials."""
+    return capability_cache_context()[0]
+
+
+def validate_capability_document(document, *, scope=None):
+    if not isinstance(document, dict):
+        raise CliError("ADP returned a capability document this CLI could not read.", "invalid_response")
+    if document.get("schema_version") not in CAPABILITY_SCHEMA_VERSIONS:
+        raise CliError("ADP returned a capability schema this CLI does not support.", "schema_unsupported")
+    gateway = document.get("gateway")
+    tenant = document.get("tenant")
+    operations = document.get("operations")
+    if (
+        not isinstance(gateway, dict)
+        or gateway.get("state") not in CAPABILITY_STATES
+        or not isinstance(gateway.get("release"), str)
+        or not isinstance(tenant, dict)
+        or not isinstance(tenant.get("org_id"), str)
+        or not isinstance(operations, list)
+    ):
+        raise CliError("ADP returned a capability document this CLI could not read.", "invalid_response")
+    operation_ids = set()
+    for operation in operations:
+        operation_id = operation.get("id") if isinstance(operation, dict) else None
+        if not isinstance(operation_id, str) or not operation_id or operation_id in operation_ids:
+            raise CliError("ADP returned a capability document this CLI could not read.", "invalid_response")
+        operation_ids.add(operation_id)
+        if any(operation.get(axis) not in CAPABILITY_STATES for axis in CAPABILITY_AXES):
+            raise CliError("ADP reported a capability state this CLI could not read.", "invalid_response")
+    if scope and scope.get("tenant_claim") and tenant["org_id"] != scope["tenant_claim"]:
+        raise CliError("ADP returned capabilities for a different tenant.", "capability_scope_mismatch")
+    return document
+
+
+def read_capabilities(*, refresh=False, request=None, token=None):
+    """Read the authenticated capability document with a bounded scoped cache."""
+    requester = request or api
+    try:
+        token = token or access_token()
+    except CliError:
+        token = None
+        key, scope = capability_cache_context()
+    else:
+        key, scope = capability_cache_context(token)
+    if key and not refresh:
+        try:
+            cached = read_state("capabilities")
+            age = time.time() - cached.get("fetched_at", 0)
+            if cached.get("key") == key and 0 <= age <= CAPABILITY_CACHE_TTL_SECONDS:
+                return validate_capability_document(cached.get("document"), scope=scope), "cache"
+        except (CliError, AttributeError, TypeError):
+            pass
+    request_options = {"timeout": 30}
+    if token:
+        request_options["token"] = token
+    document = validate_capability_document(requester("GET", CAPABILITIES_PATH, **request_options), scope=scope)
+    if key:
+        try:
+            write_state("capabilities", {"key": key, "fetched_at": int(time.time()), "document": document})
+        except (CliError, OSError):
+            pass
+    return document, "gateway"
+
+
+def capability_operation(document, operation_id):
+    return next((row for row in document.get("operations", []) if row.get("id") == operation_id), None)
+
+
+def capability_blocking_reason(operation):
+    if operation is None:
+        return "unsupported_operation"
+    for axis in CAPABILITY_AXES:
+        expected, code, _exit = CAPABILITY_FAILURES[axis]
+        if operation.get(axis) == expected:
+            return code
+    return None
+
+
+_capability_preflight = {}
+
+
+def record_capability_preflight(operation_id, evidence):
+    if not evidence.get("checked") or evidence.get("unknown"):
+        _capability_preflight[operation_id] = dict(evidence)
+        print(f"Capability discovery for {operation_id} is unconfirmed; the server will authorize this request.", file=sys.stderr)
+    return evidence
+
+
+def ensure_can_mutate(operation_id, *, refresh=False, request=None, token=None):
+    """Refuse definitive capability failures before a mutation is sent."""
+    try:
+        document, source = read_capabilities(refresh=refresh, request=request, token=token)
+    except Exception:  # noqa: BLE001 - discovery is advisory; the mutation route still authorizes
+        return record_capability_preflight(operation_id, {"checked": False, "reason": "", "source": "unavailable"})
+    operation = capability_operation(document, operation_id)
+    reason = capability_blocking_reason(operation)
+    if reason:
+        exit_code = next(exit_code for _axis, (_state, code, exit_code) in CAPABILITY_FAILURES.items() if code == reason)
+        raise CliError(f"{CAPABILITY_MESSAGES[reason]} Nothing was sent.", reason, exit_code)
+    unknown = [axis for axis in CAPABILITY_AXES if operation.get(axis) == "unknown"]
+    return record_capability_preflight(operation_id, {"checked": True, "reason": "", "source": source, "unknown": unknown})
 @contextlib.contextmanager
 def file_lock(path, busy_message, timeout=30):
     """Hold an exclusive lock across processes for the duration of the block.
@@ -372,7 +585,10 @@ def organization_context(explicit, client):
 
 
 def envelope(status, command, detail=None, next_action=None):
-    return {"status": status, "command": command, "detail": detail or {}, "next_action": next_action}
+    result = {"status": status, "command": command, "detail": detail or {}, "next_action": next_action}
+    if _capability_preflight:
+        result["capability_preflight"] = dict(_capability_preflight)
+    return result
 
 
 def emit(result, as_json=False):

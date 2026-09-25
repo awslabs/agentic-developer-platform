@@ -18,7 +18,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | Candidate | Addition | Boundary |
 |---|---|---|
 | #6074 — merged | `task submit`, `task status`, `task monitor`, `task abort` | Existing `/v1/tasks` API and registered Task service-principal credentials; accepted submission is not completion |
-| #5716 / #5621 | `capabilities`, `doctor`, checked command manifest | Support, deployment enablement, permission and readiness remain separate |
+| #5716 — merged / #5621 | `capabilities`, `doctor`, checked command manifest | Support, deployment enablement, permission and readiness remain separate |
 
 ## Master coverage after the Epic's stories pass
 
@@ -26,15 +26,15 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 |---|---|---|
 | #5516 | Hosted submission and authoritative follow/status/logs/wait | Existing Task API; reconcile human authority and repository-persona support, no new dispatcher |
 | #5589 | Budget configuration and actual enforcement | Existing budget APIs and usage accounting |
-| #5621 | Capabilities, diagnostics and command inventory | PR #5716 |
+| #5621 | Capabilities, diagnostics and command inventory | PR #5716 merged; live acceptance pending |
 | #5622 | Tenant selection and isolation | Existing deployment/session selection and server-authorized membership |
 | #5623 | Organizations, departments, teams and memberships | Existing administration APIs |
 | #5624 | Service accounts, agent registrations and canonical principals | Existing identity/registration APIs |
 | #5625 | Access requests and session revocation | Existing authorized access administration |
 | #5626 | Person-wide caps and inherited defaults | Existing person budget policy |
 | #5627 | Rate-limit administration and client enforcement | Existing rate-limit services |
-| #5628 | Usage, spend and request-log exports | Existing scoped readers |
-| #5629 | Activity list/chain/state and supported pause/resume/steer/abort | Existing Activity/ControlService; Task input/cancel remain Task API operations |
+| #5628 ([usage CLI](usage.md), source implementation; live held) | Usage, spend and request-log exports | Existing scoped readers |
+| #5629 | [Activity CLI](agent.md): list/chain/detail/status/wait/transcript/SSE and capability-gated controls; live acceptance held | Existing Activity/ControlService; Task input/cancel remain Task API operations |
 | #5630 | Recovery and integrated CLI qualification | Existing AI-DLC and regression runner |
 | #5631 | Vault credentials and linked identities | Existing vault and identity APIs; never print secret values |
 | #5632 | Knowledge assets and indexing progress | Existing knowledge/indexing APIs |
@@ -52,4 +52,4 @@ The resulting CLI is a common terminal surface for identity, infrastructure conn
 
 Completion requires parser/help/manifest/install/update/download parity, stable machine output, authorization/refusal tests and each story's required live evidence. Source merged, bundle published and live accepted are distinct states.
 
-The [command inventory](command-inventory.md) lists parser-backed command forms and options, including the delegated Superplane onboarding helper. Task publication and #5716 merge are tracked in the [qualification record](../design-notes/5644-cli-control-qualification/README.md).
+The [command inventory](command-inventory.md) lists parser-backed command forms and options, including the delegated Superplane onboarding helper. Task and capability publication are tracked in the [qualification record](../design-notes/5644-cli-control-qualification/README.md).

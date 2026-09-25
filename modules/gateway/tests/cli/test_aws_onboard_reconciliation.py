@@ -100,6 +100,7 @@ def test_registration_sends_only_the_opaque_reference() -> None:
 
     assert api.sent == [
         ("GET", cli.ACCOUNT_ADAPTER_SUPPORT, None),
+        ("GET", cli.common.CAPABILITIES_PATH, None),
         (
             "POST",
             cli.API_BASE + "/accounts",
@@ -139,7 +140,7 @@ def test_both_preserved_command_forms_use_the_same_contract() -> None:
     )
 
     assert result["status"] == "ok"
-    assert api.sent[1][1:] == (
+    assert api.sent[2][1:] == (
         cli.API_BASE + "/accounts",
         {
             "name": "prod",
@@ -197,7 +198,7 @@ def test_malformed_success_is_reported_as_uncertain() -> None:
 
     assert raised.value.code == "malformed_response"
     assert "may have succeeded" in str(raised.value)
-    assert len(api.sent) == 2
+    assert len(api.sent) == 3
 
 
 def test_old_server_is_actionable_and_receives_no_mutation() -> None:

@@ -628,7 +628,7 @@ def test_verify_proves_the_connection_now_rather_than_replaying(environment, cap
     cli.run(arguments(), api)
     api.calls.clear()
 
-    result = cli.run(cli.parser().parse_args(["verify", NAME]), api)
+    result = cli.run(cli.parser().parse_args(["verify", NAME, "--yes"]), api)
     assert result["verified"] is True
     assert [call[1] for call in mutations(api)] == [cli.CONNECT + "/verify"]
     cli.display(result, False, "verify")
@@ -642,11 +642,35 @@ def test_verify_reports_a_broken_connection_as_failed(environment, monkeypatch, 
     api.reason = "The role's trust policy rejected the assume request."
     monkeypatch.setattr(cli, "Api", lambda: api)
 
-    code = cli.main(["verify", NAME, "--json"])
+    code = cli.main(["verify", NAME, "--yes", "--json"])
     assert code == 5
     envelope = json.loads(capsys.readouterr().out)
     assert envelope["status"] == "failed"
     assert envelope["error"]["code"] == "not_verified"
+
+
+def test_verify_dry_run_does_not_probe_or_change_stored_evidence(environment):
+    api, _ = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+
+    result = cli.run(cli.parser().parse_args(["verify", NAME, "--dry-run"]), api)
+
+    assert result["action"] == "refresh_verification_evidence"
+    assert result["dry_run"] is True
+    assert not mutations(api)
+
+
+def test_verify_requires_confirmation_before_the_probe(environment, monkeypatch):
+    api, _ = environment
+    cli.run(arguments(), api)
+    api.calls.clear()
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False, raising=False)
+
+    with pytest.raises(cli.CliError, match="--yes"):
+        cli.run(cli.parser().parse_args(["verify", NAME]), api)
+
+    assert not mutations(api)
 
 
 def test_verify_and_disconnect_resolve_by_name_or_id(environment):

@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-task.py adp_task_client.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-usage.py adp-agent.py adp-task.py adp_task_client.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -1687,7 +1687,47 @@ Follow autonomous delivery (AI-DLC flows):
     flow draft preview|save FLOW_ID --file plan.json
                           Revise an unapproved draft using explicit version/hash bindings
 
+Check what works here, and why something failed:
+    capabilities [--json] [--operation ID]
+                          What this deployment offers you: what is available,
+                          what is switched off, what you are not permitted to do
+    capabilities --refresh
+                          Re-read from ADP instead of the cached answer
+    doctor [--json]       Diagnose a failure: sign-in, gateway, spending limits,
+                          model routing and agent readiness. Only reads — it
+                          changes nothing and never runs a paid model call
+    doctor --checks auth,api,budget,models,agents
+                          Run just the checks you want
+    doctor --request-id ID
+                          Explain one of your past requests
+
   Administration:
+    usage summary         Own recorded usage in an explicit UTC window
+    usage timeline        Daily UTC usage groups
+    usage models          Recorded cost and token groups by model
+    usage requests        Paginate own usage metadata with --cursor
+    usage request         Lookup REQUEST_ID; --run for owned hosted work
+    admin usage summary   Managed organization usage (requires --org)
+    admin usage users     Managed usage grouped by billed identity
+    admin usage departments
+                          Managed usage grouped by department
+    admin usage requests  Paginate managed usage metadata
+    logs list             List redacted inference request metadata
+    logs show             Lookup --request-id in an explicit window
+    logs export           Bounded JSON/NDJSON/CSV with continuation metadata
+    agent list            Discover own runs (bounded pagination; --admin for admin reads)
+    agent chain           Read chain lineage by CHAIN_ID
+    agent detail          Inspect an existing run with --run RUN_ID
+    agent status          Read authoritative Activity status
+    agent wait            Wait within --timeout; unknown status never succeeds
+    agent logs            Read transcript; --follow streams bounded explanations
+    agent ping            Check the live control channel
+    agent state           Read capabilities, generation and command acknowledgements
+    agent pause           Request pause with --command-id UUID --reason TEXT --yes
+    agent resume          Resume with the same run; requires explicit intent
+    agent steer           Send --instruction TEXT when runtime capability allows
+    agent abort           Request abort; acknowledgement alone does not prove exit
+
     task submit           Submit a Task request file with a durable --key
     task status           Read Task state, result and artifact references
     task monitor          Follow bounded progress with a saved resume cursor
@@ -1836,8 +1876,19 @@ main() {
         # above, so it inherits the one credential path: the session `adp login`
         # already established. This dispatcher is also the foundation the later
         # amendment subcommands (#5329) attach to.
+        usage)   exec_python_helper "adp-usage.py" usage "$@" ;;
+        logs)    exec_python_helper "adp-usage.py" logs "$@" ;;
+        agent)   exec_python_helper "adp-agent.py" "$@" ;;
         task)    exec_python_helper "adp-task.py" "$@" ;;
         flow)    exec_python_helper "adp-flow.py" "$@" ;;
+        # Capability discovery and diagnosis (Issue #5621). Both verbs are reads
+        # and share one helper because they answer the same question from the two
+        # ends: `capabilities` asks what this deployment offers you before you
+        # try, `doctor` explains what happened after a call failed. They reach
+        # the server, so they go through the same helper path as the areas above
+        # and inherit the session `adp login` established.
+        capabilities|doctor)
+                 exec_python_helper "adp-doctor.py" "${command}" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.

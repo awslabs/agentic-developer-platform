@@ -41,6 +41,7 @@ CLI_FILES = [
     "modules/gateway/cli/adp-superplane.py",
     "modules/gateway/cli/adp-superplane-onboarding.py",
     "modules/gateway/cli/adp-flow.py",
+    "modules/gateway/cli/adp-doctor.py",
     "modules/gateway/cli/adp",
     "modules/gateway/cli/install.sh",
     "modules/gateway/cli/adp_common.py",
