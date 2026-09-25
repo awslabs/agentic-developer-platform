@@ -29,7 +29,19 @@
     "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index modules/gateway/tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
     "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority modules/gateway/tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report modules/gateway/tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
     "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit modules/gateway/tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically modules/gateway/tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key modules/gateway/tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone modules/gateway/tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention modules/gateway/tests/tasks/test_store.py::test_recovery_paging_is_bounded",
-    "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest"
+    "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_dispatch_routes.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_delivery.py modules/gateway/tests/agentauth/test_task_runtime.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/agentauth/test_task_model_binding.py",
+    "PYTHONPATH=modules/agent-factory/webhook-ingress/lambda uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/webhook-ingress/lambda/common/tests/test_task_dispatch.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py modules/gateway/tests/tasks/test_dynamo_read_integration.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py modules/gateway/tests/tasks/test_streaming.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_dynamo_read_integration.py modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/tasks/test_task_commands.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_cancel_before_start.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/tasks/test_command_routes.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py"
   ],
   "fixed_thresholds": {
     "legacy_observation_minimum": {
@@ -552,8 +564,8 @@
       "t0_artifacts": [
         "fixtures/valid/sqs-publish-attributes.json"
       ],
-      "command": "not yet implemented; to be registered by T3 dispatch implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_dispatch_routes.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+      "command_status": "runnable"
     },
     "T3-AC02": {
       "title": "Duplicate/redelivered messages cannot create competing authorized owners; transport IDs never replace ADP run IDs",
@@ -566,8 +578,8 @@
         "fixtures/invalid/envelope-transport-id-as-run-id.json",
         "fixtures/valid/envelope-dispatch.json"
       ],
-      "command": "not yet implemented; to be registered by T3 dispatch implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_delivery.py modules/gateway/tests/agentauth/test_task_runtime.py",
+      "command_status": "runnable"
     },
     "T3-AC03": {
       "title": "Service principal persona/model/budget/credential restrictions still apply, and unbound assignments cannot execute",
@@ -579,8 +591,8 @@
         "fixtures/invalid/sqs-dedup-id-is-invocation.json",
         "fixtures/valid/bootstrap-response.json"
       ],
-      "command": "not yet implemented; to be registered by T3 dispatch implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/agentauth/test_task_model_binding.py",
+      "command_status": "runnable"
     },
     "T3-AC04": {
       "title": "Recovery invocations are independently authenticated and cannot be selected by arbitrary public request content",
@@ -589,8 +601,8 @@
       "evidence_lane": "queue dispatch tests and recovery-path integration tests",
       "fixture_responsibility": "T3 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T3 dispatch implementer",
-      "command_status": "not_implemented"
+      "command": "PYTHONPATH=modules/agent-factory/webhook-ingress/lambda uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/webhook-ingress/lambda/common/tests/test_task_dispatch.py",
+      "command_status": "runnable"
     },
     "T3-AC05": {
       "title": "Real key/IAM/authority isolation meets the [T0](https://github.com/aws-e/adp/issues/5793) design while preserving existing workers; failed/exhausted work has a discoverable outcome",
@@ -601,8 +613,8 @@
       "t0_artifacts": [
         "fixtures/valid/result-failed-model-outcome-unknown.json"
       ],
-      "command": "not yet implemented; to be registered by T3 dispatch implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_delivery.py modules/gateway/tests/agentauth/test_task_runtime.py",
+      "command_status": "runnable"
     },
     "T4-AC01": {
       "title": "A task assignment with no GitHub fields reaches its executable with GitHub network access denied and no bootstrap/token/checkout attempt",
@@ -743,8 +755,8 @@
         "fixtures/valid/event-progress.json",
         "fixtures/valid/sse-heartbeat-frame.json"
       ],
-      "command": "not yet implemented; to be registered by T6 reporting implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py",
+      "command_status": "runnable"
     },
     "T6-AC02": {
       "title": "Subscribe-before-start, mid-run, completed task, backend restart and reconnect preserve retained history with no silent handoff gaps",
@@ -758,8 +770,8 @@
         "fixtures/valid/sse-snapshot-frame.json",
         "traces/reconnect-and-replay.json"
       ],
-      "command": "not yet implemented; to be registered by T6 reporting implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py modules/gateway/tests/tasks/test_dynamo_read_integration.py",
+      "command_status": "runnable"
     },
     "T6-AC03": {
       "title": "Cross-tenant/nonowner clients and wrong/stale attempts cannot read or fabricate task/events/results; expired/revoked streams terminate as specified",
@@ -768,8 +780,8 @@
       "evidence_lane": "reporting and SSE integration tests with recorded event streams",
       "fixture_responsibility": "T6 supplies its own evidence against the T0 contract artifacts",
       "t0_artifacts": [],
-      "command": "not yet implemented; to be registered by T6 reporting implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py modules/gateway/tests/tasks/test_streaming.py",
+      "command_status": "runnable"
     },
     "T6-AC04": {
       "title": "Slow/disconnected subscribers do not indefinitely block execution; loss/gaps and missing terminal evidence are explicit",
@@ -780,8 +792,8 @@
       "t0_artifacts": [
         "fixtures/valid/event-history-gap.json"
       ],
-      "command": "not yet implemented; to be registered by T6 reporting implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py",
+      "command_status": "runnable"
     },
     "T6-AC05": {
       "title": "Events/results are durable and correctly scoped without modifying existing GitHub persona streaming",
@@ -792,8 +804,8 @@
       "t0_artifacts": [
         "fixtures/valid/task-snapshot-running.json"
       ],
-      "command": "not yet implemented; to be registered by T6 reporting implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_dynamo_read_integration.py modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py",
+      "command_status": "runnable"
     },
     "T7-AC01": {
       "title": "An external clarification is durably acknowledged, consumed according to its ID and reflected in the completed result",
@@ -813,8 +825,8 @@
         "fixtures/valid/task-snapshot-waiting-for-input.json",
         "fixtures/valid/turn.json"
       ],
-      "command": "not yet implemented; to be registered by T7 input and cancellation implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/tasks/test_task_commands.py",
+      "command_status": "runnable"
     },
     "T7-AC02": {
       "title": "Retries/attempt replacement do not cause duplicated privileged action or let an old worker consume/acknowledge another attempt command",
@@ -825,8 +837,8 @@
       "t0_artifacts": [
         "fixtures/valid/attempt-request.json"
       ],
-      "command": "not yet implemented; to be registered by T7 input and cancellation implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/tasks/test_task_commands.py",
+      "command_status": "runnable"
     },
     "T7-AC03": {
       "title": "Cancellation before queue publication, while running and racing completion produces the defined honest outcome; repeated requests are idempotent",
@@ -843,8 +855,8 @@
         "fixtures/valid/result-cancelled-confirmed.json",
         "traces/cancellation.json"
       ],
-      "command": "not yet implemented; to be registered by T7 input and cancellation implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_cancel_before_start.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/tasks/test_command_routes.py",
+      "command_status": "runnable"
     },
     "T7-AC04": {
       "title": "cancel_requested is never equated with confirmed process exit; lost heartbeat is not cancellation or success",
@@ -858,8 +870,8 @@
         "fixtures/valid/task-snapshot-heartbeat-lost-unknown.json",
         "traces/cancellation.json"
       ],
-      "command": "not yet implemented; to be registered by T7 input and cancellation implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+      "command_status": "runnable"
     },
     "T7-AC05": {
       "title": "Unauthorized command targets and message-based authority escalation are rejected",
@@ -871,8 +883,8 @@
         "fixtures/valid/command-receipt-rejected-expired-authority.json",
         "fixtures/valid/control-response.json"
       ],
-      "command": "not yet implemented; to be registered by T7 input and cancellation implementer",
-      "command_status": "not_implemented"
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py",
+      "command_status": "runnable"
     },
     "T8-AC01": {
       "title": "A third-party developer can run the example without GitHub issue/account setup or adp-trigger/worker credentials",
