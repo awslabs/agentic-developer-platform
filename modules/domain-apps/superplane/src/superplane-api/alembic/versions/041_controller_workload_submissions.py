@@ -25,13 +25,17 @@ CREATE TABLE controller_workload_submissions (
  body text NOT NULL CHECK (octet_length(body)<=65536),
  body_sha256 varchar(64) NOT NULL,
  PRIMARY KEY (operation_id,kind,namespace,name)
-);
+)
+""")
+    op.execute("""
 CREATE FUNCTION controller_workload_submission_immutable() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'original workload submission is immutable'; END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+""")
+    op.execute("""
 CREATE TRIGGER controller_workload_submission_immutable
  BEFORE UPDATE OR DELETE ON controller_workload_submissions
- FOR EACH ROW EXECUTE FUNCTION controller_workload_submission_immutable();
+ FOR EACH ROW EXECUTE FUNCTION controller_workload_submission_immutable()
 """)
 
 

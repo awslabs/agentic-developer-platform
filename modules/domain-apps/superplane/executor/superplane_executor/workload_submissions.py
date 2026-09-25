@@ -67,7 +67,9 @@ async def record(provider, operation, call, obj, authorize):
             )
             if row is None or any(row[key] != value for key, value in values.items()):
                 raise OperationRefused("original workload submission changed")
-            await authorize()
+    # The durable intent is not dispatch authority. Recheck after releasing both
+    # stores so authorization can use their pools without reentrant exhaustion.
+    await authorize()
 
 
 async def originals(provider, operation, creating):
