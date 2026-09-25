@@ -95,7 +95,8 @@ class TaskRuntime:
             transactions.append({"Update": {"TableName": self.repository.authority_table_name, "Key": key,
                 "UpdateExpression": ("SET workload_uid = :pod, workload_namespace = :namespace, credential_epoch = :epoch, "
                                      "execution_capacity_keys = :keys, execution_capacity_released = :false"),
-                "ConditionExpression": "#status = :active AND task_id = :task AND attribute_not_exists(workload_uid)",
+                "ConditionExpression": ("#status = :active AND task_id = :task AND attribute_not_exists(workload_uid) "
+                                        "AND attribute_not_exists(runtime_start_cancelled)"),
                 "ExpressionAttributeNames": {"#status": "status"},
                 "ExpressionAttributeValues": {":pod": {"S": pod.uid}, ":namespace": {"S": pod.namespace}, ":epoch": {"N": "1"},
                     ":active": {"S": "active"}, ":task": {"S": task["task_id"]}, ":false": {"BOOL": False},
