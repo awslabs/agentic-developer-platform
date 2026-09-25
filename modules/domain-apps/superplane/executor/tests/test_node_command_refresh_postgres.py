@@ -18,6 +18,7 @@ import threading
 from uuid import uuid4
 
 import pytest
+from harness_jobs.execution import CallOutcome, CallStage, read_call
 from harness_jobs.execution_plan import admitted_steps, step_key
 from harness_jobs.leases import read_lease
 from harness_jobs.store import OperationStore
@@ -216,13 +217,21 @@ async def test_native_observation_crosses_initial_assignment_with_same_fence(
             assert not task_registry.tokens
             assert not assignment.exists()
         release.set()
-        # Failure can surface through RPC/finalization or as a durable UNKNOWN;
-        # either way, accepted SSM output must not become provider success.
+        # A provider UNKNOWN deliberately retains the original intended call with
+        # no terminal outcome so recovery can observe its accepted handle.
         await asyncio.gather(asyncio.wait_for(execution, 10), return_exceptions=True)
         async with pool.acquire() as connection:
-            outcome = await connection.fetchval(
-                "SELECT outcome FROM harness_provider_call_intent WHERE idempotency_key=$1",
-                key,
+            call = await read_call(connection, idempotency_key=key)
+            assert call is not None
+            assert (call.operation_id, call.attempt_id, call.fence_token) == (
+                lease.operation_id,
+                lease.attempt_id,
+                lease.fence_token,
+            )
+            assert call.provider_ref
+            state = await connection.fetchval(
+                "SELECT state FROM harness_operations WHERE operation_id=$1",
+                lease.operation_id,
             )
             current = await read_lease(connection, operation_id=lease.operation_id)
             assert current is not None
@@ -247,12 +256,15 @@ async def test_native_observation_crosses_initial_assignment_with_same_fence(
         assert cloud.launches == 1
         if failure is None:
             assert observed == [success_receipt(value)]
-            assert outcome == "succeeded"
+            assert call.outcome is CallOutcome.SUCCEEDED
+            assert call.stage is CallStage.OBSERVED
             assert execution.exception() is None
             assert current.expires_at > lease.expires_at
         else:
             assert observed == []
-            assert outcome == "unknown"
+            assert call.outcome is None
+            assert call.stage is CallStage.INTENDED
+            assert state != "succeeded"
     finally:
         release.set()
         stop.set()
