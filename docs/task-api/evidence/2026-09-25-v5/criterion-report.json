@@ -56,7 +56,9 @@
       "status": "PASS",
       "evidence": [
         "release-matrix.json",
-        "release-acceptance.json"
+        "release-acceptance.json",
+        "final-infrastructure-readback.json",
+        "engine-paused.json"
       ],
       "proof": "All 40 V1-V5 criteria map to passing reports. Root reviewed merged final V3/V4 evidence and confirmed delegated release acceptance, conditional only on consolidated verifier success. Historical V0 waiver and source/lane limitations remain explicit."
     }
@@ -72,13 +74,14 @@
     "admission-off-active.json": "59c72ef88a912e7fa57625bdcddc6f90319e5f411f562a482291f2b9c09816fc",
     "admission-changes.ndjson": "d01bba977e2be97da0748fa7b90e1f2acb6dbb2fc6541404164e7a2c56a44fd8",
     "completed-artifact-off.json": "330668dbcea6bd52205d53232b17a1f3fbb35af024208229acde6b336d8c17d8",
-    "engine-paused.json": "55b6659f957eb3a23e831c4a8a0cd61896d89b759b6875823448233511ead511",
+    "engine-paused.json": "7b1e36d94cb3feaf771afaf37a18cd92783809a28e269bb5573dec951cd04959",
     "artifact-lifecycle.json": "3fb97668d38529f0142af1c40c2d84f7080f593a6cd02df3e855fce872b14907",
     "initial-ordering.json": "402e033cc315c0fd240f7c54bc277c0eaa079563497da56201e88dc3f04b338d",
     "release-matrix.json": "1532d60c6812ddce7ce41721983787f3256b82b1407b2a27987aa03a0a15fa9d",
     "credential-retention.json": "2072c74eef2021917f4436e9c4c2f9f733ead89b102bfca06af25fee82fd3cfb",
     "admission-off-completed.json": "8fee8ee496ff76a65debf6f089083b04a8e93d662c8c4940384df1a83e63d1bb",
     "prior-active-drain.json": "8617492d75f2c9526e1e79380a99ab4c7792d64de5ed236244408a18675e1289",
-    "release-acceptance.json": "009a34fa5eded3b95b389961a1fed5ac3075ba5a9b920c15f2732962fc7757a4"
+    "release-acceptance.json": "009a34fa5eded3b95b389961a1fed5ac3075ba5a9b920c15f2732962fc7757a4",
+    "final-infrastructure-readback.json": "7c1d6ae7d5ec169eb51c2a59f76fd8c7a77fedd25920be9f1da14d141b9812a5"
   }
 }
