@@ -500,7 +500,11 @@ VPC CNI `v1.22.4-eksbuild.3` uses a dedicated IRSA role restricted to this clust
 OIDC provider, STS audience and `kube-system/aws-node` service account. The addon
 is established before node creation. AWS DescribeAddonVersions was checked on
 2026-09-20 for Kubernetes 1.31–1.35 in all five supported regions. The node role
-retains the AWS-managed EKS worker discovery policy.
+retains the AWS-managed EKS worker discovery policy. The addon explicitly enables
+NetworkPolicy enforcement; its default leaves the running network-policy agent
+disabled. Bootstrap must still verify real allowed and denied traffic before
+reporting network isolation. A running sidecar or the configured flag alone does
+not prove that enforcement is working.
 
 New nodes carry `superplane.aws-e/bootstrap=pending:NoSchedule`. Infrastructure
 creation does not establish tenant readiness. Bootstrap (#5533) must configure

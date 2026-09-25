@@ -13,6 +13,7 @@
   "system_image_repositories": [
     "amazon-k8s-cni",
     "amazon-k8s-cni-init",
+    "amazon/aws-network-policy-agent",
     "eks/coredns",
     "eks/kube-proxy",
     "eks/eks-pod-identity-agent"

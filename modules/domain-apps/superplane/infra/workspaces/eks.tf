@@ -297,7 +297,7 @@ resource "aws_security_group" "cluster" {
 
 resource "aws_vpc_security_group_egress_rule" "cluster_all" {
   security_group_id = aws_security_group.cluster.id
-  description       = "Outbound: image pulls, AWS API calls, and the workspace's own outbound traffic via the NAT gateway."
+  description       = "Outbound: image pulls, AWS API calls, and workspace traffic via the NAT gateway."
 
   # Unrestricted egress. Stated plainly rather than presented as a restriction: this is what
   # EKS needs to function, and narrowing it requires knowing every registry, AWS endpoint and
