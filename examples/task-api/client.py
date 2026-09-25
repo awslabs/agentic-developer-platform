@@ -213,13 +213,15 @@ class Client:
                     timeout=min(15, max(0.1, deadline - time.monotonic())),
                 ) as response:
                     for event in parse_sse(response, deadline):
-                        if event.get("id") == cursor:
+                        event_id = event.get("id")
+                        if event_id is not None and event_id == cursor:
                             continue
-                        cursor = event.get("id", cursor)
+                        if event_id is not None:
+                            cursor = event_id
                         count += 1
                         yield event
                         if (
-                            event.get("event")
+                            event_type(event)
                             in ("task.completed", "task.failed", "task.cancelled")
                             or count >= max_events
                         ):
@@ -228,6 +230,16 @@ class Client:
                 pass
             if time.monotonic() < deadline:
                 time.sleep(min(1, deadline - time.monotonic()))
+
+
+def event_type(event):
+    """Public SSE uses event:event; the persisted kind is data.type."""
+    payload = event.get("data")
+    return (
+        payload.get("type", event.get("event"))
+        if isinstance(payload, dict)
+        else event.get("event")
+    )
 
 
 def segment(value):

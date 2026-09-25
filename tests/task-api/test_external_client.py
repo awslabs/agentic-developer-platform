@@ -252,3 +252,47 @@ def test_readiness_requires_actual_admission_flag_and_complete_rollout(tmp_path)
     )
     assert any("canonical task flags" in x for x in failures)
     assert any("rollout has not converged" in x for x in failures)
+
+
+def test_public_sse_event_wrapper_stops_on_persisted_terminal_type(monkeypatch):
+    monkeypatch.setattr(client.time, "sleep", lambda _: None)
+    raw = b'id: t:3\nevent: event\ndata: {"schema_version":"1.0","type":"task.completed","data":{"status":"completed"}}\n\n'
+    opener = Opener([Response(raw)])
+    api = client.Client("https://example.test", "secret", opener=opener)
+    events = list(api.events("task", seconds=1))
+    assert len(events) == 1
+    assert events[0]["event"] == "event"  # Preserve the actual transport envelope.
+    assert events[0]["data"]["type"] == "task.completed"
+    assert len(opener.requests) == 1  # No EOF reconnect after the terminal event.
+
+
+def test_public_sse_progress_kind_is_data_type_without_rewriting_wire():
+    frame = {
+        "event": "event",
+        "id": "t:2",
+        "data": {"type": "progress.updated", "data": {"message": "Authored update"}},
+    }
+    assert client.event_type(frame) == "progress.updated"
+    assert frame["event"] == "event"
+
+
+def test_sse_idless_frame_does_not_discard_initial_snapshot_or_reset_cursor(
+    monkeypatch,
+):
+    monkeypatch.setattr(client.time, "sleep", lambda _: None)
+    opener = Opener(
+        [
+            Response(
+                b'event: snapshot\ndata: {"type":"snapshot"}\n\nid: t:1\nevent: event\ndata: {"type":"progress.updated"}\n\nevent: heartbeat\ndata: {}\n\n'
+            ),
+            Response(b'id: t:2\nevent: event\ndata: {"type":"task.completed"}\n\n'),
+        ]
+    )
+    frames = list(
+        client.Client("https://example.test", "secret", opener=opener).events(
+            "task", seconds=1
+        )
+    )
+    assert frames[0]["event"] == "snapshot"
+    assert opener.requests[1].get_header("Last-event-id") == "t:1"
+    assert frames[-1]["data"]["type"] == "task.completed"
