@@ -379,6 +379,19 @@ def test_delegations_are_namespaced_and_scope_separated(fixture):
                 if binding.scope == "reader":
                     assert set(rule["verbs"]) <= {"get", "list", "watch"}
 
+        probe_actions = {
+            (resource, verb)
+            for rule in specs[1]["body"]["rules"]
+            for resource in rule["resources"]
+            for verb in rule["verbs"]
+            if resource in {"services", "pods/log", "services/proxy", "pods/exec"}
+        }
+        assert probe_actions == (
+            {("services", "get"), ("pods/log", "get")}
+            if binding.scope == "mutator"
+            else set()
+        )
+
 
 def test_projection_refuses_ca_scope_and_secret_identity_substitution(fixture):
     f = fixture

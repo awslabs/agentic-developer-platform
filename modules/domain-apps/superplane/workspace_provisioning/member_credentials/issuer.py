@@ -37,6 +37,11 @@ def delegation_specs(binding: CredentialBinding):
     }
     read = ["get", "list", "watch"]
     verbs = read if binding.scope == "reader" else [*read, "create", "patch", "delete"]
+    probe_reads = (
+        [{"apiGroups": [""], "resources": ["services", "pods/log"], "verbs": ["get"]}]
+        if binding.scope == "mutator"
+        else []
+    )
     bodies = [
         {
             "apiVersion": "v1",
@@ -61,6 +66,10 @@ def delegation_specs(binding: CredentialBinding):
                     "resources": ["superplanenodes"],
                     "verbs": verbs,
                 },
+                # The approved batch networking probe observes an existing
+                # Service and the original Job Pod's log in this namespace.
+                # It receives no Service mutation or Secret/fleet authority.
+                *probe_reads,
             ],
         },
         {
