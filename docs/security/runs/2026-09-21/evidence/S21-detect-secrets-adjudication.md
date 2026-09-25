@@ -15,7 +15,8 @@ with no raw candidate values or source-line content published.
 | --- | ---: |
 | Existing Git object identifiers, independently resolved | 209 |
 | Exact AWS published example identifier | 41 |
-| Pending context review, retained by #6110 | 1609 |
+| Artifact SHA256 with exact bytes and JSON checksum context, independently verified | 405 |
+| Pending context review, retained by #6110 | 1204 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -31,3 +32,15 @@ Source: `b1d0894c17c686f27c2747057dead0b5a0e6b17e`. Original manifests are index
 The exact joins remove the original evidence-access blocker. Completion still
 requires context-based dispositions for the remaining candidates; this PR does
 not close #6110 or transfer those candidates to the epic owner.
+
+An additional **405 original scan records** are verified artifact SHA256 values,
+bringing verified nonsecret dispositions to **655/1859**. Each candidate was
+joined using the private full original hash, checked at the exact frozen source
+line, compared to SHA256 computed from tracked artifact bytes, and checked in an
+explicit JSON checksum field or matching artifact-filename key. Merely residing
+in a fixture or manifest was not sufficient. Another 38 artifact hash matches
+without the narrow JSON context proof remain pending. The per-selector receipt
+is `S21-detect-secrets-artifact-digest-review.json`; the repeatable verifier is
+`scripts/security/s21/verify_nonsecret_artifact_digests.py`. It requires the
+private original scan/audit files and emits counts only. No raw candidate value
+is published. This does not close #6110; 1,204 original scan records remain.
