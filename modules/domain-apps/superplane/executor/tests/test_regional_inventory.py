@@ -4,12 +4,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from botocore.exceptions import ClientError
 from harness_jobs.inventory import AllocationResource, ResourcePresence
 from superplane_executor.inventory import Finalizer
 from superplane_executor.plan import Plan
 
 
-@pytest.mark.parametrize("state", ["present", "absent", "denied", "foreign", "bare"])
+@pytest.mark.parametrize(
+    "state", ["present", "empty", "not-found", "denied", "foreign", "bare"]
+)
 async def test_inventory_queries_exact_original_region_and_retains_unknown(state):
     calls = []
 
@@ -18,9 +21,13 @@ async def test_inventory_queries_exact_original_region_and_retains_unknown(state
             calls.append(kwargs)
             if state == "denied":
                 raise PermissionError("simulated regional inventory denial")
+            if state == "not-found":
+                raise ClientError(
+                    {"Error": {"Code": "InvalidVolume.NotFound"}}, "DescribeVolumes"
+                )
             return {
                 "Volumes": []
-                if state == "absent"
+                if state == "empty"
                 else [{"VolumeId": "vol-0123456789abcdef0", "State": "available"}]
             }
 
@@ -50,7 +57,10 @@ async def test_inventory_queries_exact_original_region_and_retains_unknown(state
         session_for=AsyncMock(return_value=(SimpleNamespace(client=client), "role"))
     )
     result = await finalizer.observe(None, None, plan, resource)
-    expected = {"present": ResourcePresence.PRESENT, "absent": ResourcePresence.ABSENT}
+    expected = {
+        "present": ResourcePresence.PRESENT,
+        "not-found": ResourcePresence.ABSENT,
+    }
     assert result.presence is expected.get(state, ResourcePresence.UNKNOWN)
     assert result.queried_by == ref
     assert len(calls) == (0 if state in {"foreign", "bare"} else 1)
