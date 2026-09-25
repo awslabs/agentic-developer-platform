@@ -124,32 +124,12 @@ class TestListWorkspaces:
 
 
 class TestListEligibleClusters:
-    """Test GET /workspaces/eligible-clusters — issue #6048."""
+    """Test GET /workspaces?view=eligible-clusters — issue #6048."""
 
     @pytest.mark.asyncio
     async def test_requires_auth(self, client):
-        response = await client.get("/workspaces/eligible-clusters")
+        response = await client.get("/workspaces?view=eligible-clusters")
         assert response.status_code in (401, 403)
-
-    @pytest.mark.asyncio
-    async def test_route_is_not_shadowed_by_the_dynamic_workspace_id_route(self):
-        """`/eligible-clusters` must not be swallowed by `/{workspace_id}`.
-
-        Registered before `/{workspace_id}` in the router precisely to avoid
-        this; asserted directly against the workspaces router's own route
-        list (rather than the wrapped `app.routes`, whose FastAPI-internal
-        `_IncludedRouter` entries do not expose `.path`) so a reordering
-        during a future edit fails a test rather than 404ing silently in
-        production only for callers whose `workspace_id` happens to route
-        differently.
-        """
-        from app.routers.workspaces import router
-
-        paths = [route.path for route in router.routes]
-        assert paths.count("/workspaces/eligible-clusters") == 1
-        assert paths.index("/workspaces/eligible-clusters") < paths.index(
-            "/workspaces/{workspace_id}"
-        )
 
     @pytest.mark.asyncio
     async def test_lists_only_this_organizations_explicitly_shared_clusters(
@@ -198,7 +178,7 @@ class TestListEligibleClusters:
             await session.commit()
 
         response = await client.get(
-            "/workspaces/eligible-clusters", headers=_auth_header(org_id)
+            "/workspaces?view=eligible-clusters", headers=_auth_header(org_id)
         )
         assert response.status_code == 200
         body = response.json()

@@ -3,6 +3,7 @@
 import json
 import logging
 import uuid
+from typing import Literal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -434,15 +435,18 @@ async def create_workspace(
     )
 
 
-@router.get("", response_model=WorkspaceListResponse)
+@router.get("", response_model=WorkspaceListResponse | EligibleClusterListResponse)
 async def list_workspaces(
+    view: Literal["workspaces", "eligible-clusters"] = "workspaces",
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
-) -> WorkspaceListResponse:
+) -> WorkspaceListResponse | EligibleClusterListResponse:
     """List all workspaces for the authenticated organization.
 
     Research workspaces appear with a [research] tag in the display_name.
     """
+    if view == "eligible-clusters":
+        return await list_eligible_clusters(org_id=org_id, db=db)
     result = await db.execute(
         select(Workspace)
         .where(Workspace.org_id == org_id)
@@ -455,15 +459,14 @@ async def list_workspaces(
     )
 
 
-@router.get("/eligible-clusters", response_model=EligibleClusterListResponse)
 async def list_eligible_clusters(
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> EligibleClusterListResponse:
     """List clusters the caller's organization may select for shared placement.
 
-    Issue #6048. Registered BEFORE ``/{workspace_id}`` so this literal path
-    segment is not swallowed by that route's dynamic parameter. Returns only
+    Issue #6048. Selected through GET /workspaces?view=eligible-clusters,
+    retaining the existing Gateway route contract. Returns only
     clusters explicitly ``sharing_enabled`` under the caller's own
     authenticated organization — never another organization's, even one in
     the same AWS account. See ``app/services/cluster_sharing.py``.

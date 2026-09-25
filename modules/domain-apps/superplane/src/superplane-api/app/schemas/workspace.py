@@ -30,9 +30,7 @@ class CreateWorkspaceRequest(BaseModel):
     # remains" requirement. Never inferred from `cluster_reference`: that field
     # is the pre-existing "adopt an existing cluster as MY dedicated cluster"
     # input, and naming a cluster there must not silently opt into sharing it.
-    cluster_placement: str = Field(
-        default="dedicated", pattern="^(dedicated|shared)$"
-    )
+    cluster_placement: str = Field(default="dedicated", pattern="^(dedicated|shared)$")
     # Opaque cluster identifier, required for `cluster_placement == "shared"` and
     # forbidden otherwise. Resolved and verified server-side under the caller's
     # authenticated organization (see `app/services/cluster_sharing.py`) — this
@@ -74,9 +72,7 @@ class CreateWorkspaceRequest(BaseModel):
         of ambiguous input DESIGN.md says must be refused rather than guessed at.
         """
         if self.cluster_placement == "shared" and self.shared_cluster_id is None:
-            raise ValueError(
-                "shared cluster placement requires shared_cluster_id"
-            )
+            raise ValueError("shared cluster placement requires shared_cluster_id")
         if self.cluster_placement == "dedicated" and self.shared_cluster_id is not None:
             raise ValueError(
                 "shared_cluster_id is only valid with cluster_placement=shared"
@@ -133,7 +129,7 @@ class EligibleClusterResponse(BaseModel):
 
 
 class EligibleClusterListResponse(BaseModel):
-    """GET /workspaces/eligible-clusters — response.
+    """GET /workspaces?view=eligible-clusters — response.
 
     Issue #6048. Shared placement selection at workspace creation lists only
     what this endpoint returns: clusters explicitly `sharing_enabled` under the

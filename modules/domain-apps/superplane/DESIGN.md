@@ -483,7 +483,7 @@ contracts and provider-specific credentials, inventory and recovery are required
 
 | Extension | Target contract |
 | --- | --- |
-| Eligible cluster discovery | Proposed `GET /clusters?eligible_for=workspace-sharing`, scoped to the caller's organization and permissions. Return identity, provider/home region, sharing readiness and generation; no other-tenant inventory. |
+| Eligible cluster discovery | `GET /workspaces?view=eligible-clusters`, scoped to the caller's organization and permissions. Return identity, provider/home region, sharing readiness and generation; no other-tenant inventory. |
 | Cluster details | Proposed `GET /clusters/{cluster_id}` with separately scoped cluster health and membership summaries. Ordinary members do not receive peer secrets or administrative credentials. |
 | Workspace placement | Add `cluster_placement: dedicated|shared` (default dedicated) and `shared_cluster_id` for shared placement. Resolve account/region/ARN/CA on the server; reject conflicting inputs and require namespace isolation. |
 | Provider-local workspace | Versioned provider and organization-authorized provider account/connection selection for AWS/Azure/GCP/neocloud. Reject unsupported providers before resource creation. |
@@ -752,6 +752,54 @@ Workspace submissions cover only their authorized scope. Expose common cluster
 health and workspace usage separately; never authorize all cluster writes to “any
 member workspace.” Audit approvals, membership changes, provider effects and
 cleanup outcomes without logging credentials.
+
+### 7.1 Shared membership credential composition
+
+This is the approved source implementation contract for #6048; installation and
+live readiness remain separate acceptance gates. One explicitly installed,
+cluster-owned issuer principal holds the stable EKS access entry. Its authority
+and admission-policy ownership are cluster dependencies, never member cleanup
+objects. Membership bootstrap uses that verified authority to create only its own
+namespace delegation. The existing bootstrap engine handles the namespace gate,
+component journal, observation and recovery; it must not reinstall cluster CRDs,
+patch system workloads or change every node's bootstrap taint for a new member.
+
+Each membership has distinct reader and mutator ServiceAccounts for each integer
+credential revision. Kubernetes TokenRequest issues bounded, API-audience tokens.
+The delegation journal retains the ServiceAccount UID before issuance so an
+interrupted response still has an exact revocation object. Token bytes never enter
+the domain database, operation parameters or audit output. The
+`membership_credentials` table retains revision, scope, namespace/ServiceAccount
+UIDs, expiry, projection identity, acknowledgement and revocation state. Rotation
+reserves a monotonic revision under the membership lock. Revoked revisions and
+namespace identities cannot be revived.
+
+A separately authorized projector updates only the exact workspace key in the
+installed reader or mutator Secret, using resourceVersion comparisons and pinned
+Secret/namespace UIDs. Peer keys must survive retries, rotation and retirement.
+Kubeconfigs carry public membership identity in the
+`superplane.aws-e/membership` extension; consumers compare it with fresh trusted
+registry state, rather than treating the extension as authority. The comparison
+includes organization, workspace, bound cluster, generation, namespace UID,
+ServiceAccount UID, revision, expiry and scope. Reader and mutator credentials
+cannot substitute for one another. Management-EKS access additionally requires
+current platform eligibility for that exact registered placement.
+
+Both consumers acknowledge actual scoped access before bootstrap activates the
+membership. A rotation activates only its acknowledged projection and retains the
+previous revision as revocation work. Removing a projected key does not revoke an
+issued token: cleanup deletes the generation/revision-specific ServiceAccount
+with a UID precondition and confirms absence. Fence renewal before membership
+retirement; retain cluster issuer authority and every surviving member's objects.
+
+Renewal requires fresh admitted service authority or an explicitly installed
+cluster-owned credential controller, with current membership and issuer checks
+before each effect. A completed bootstrap lease cannot authorize indefinite
+renewal. The privileged issuer/projector runs separately from the observer and
+executor: neither tenant credential gains Secret-writing, token-minting, RBAC
+administration or fleet-wide NodePool access. Until recurring renewal, consumer
+acknowledgement and scoped retirement are composed, shared creation stays
+unavailable even when its individual adapters pass source tests.
 
 ## 8. Delivery and acceptance
 

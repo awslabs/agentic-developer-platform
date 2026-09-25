@@ -40,6 +40,25 @@ class Workspace:
             cluster, context, user = (
                 data[name][0] for name in ("clusters", "contexts", "users")
             )
+            membership = target.get("membership_credential")
+            if membership is not None:
+                if (
+                    membership["workspace_id"] != operation.grant.lease.workspace_id
+                    or membership["org_id"] != operation.grant.lease.org_id
+                    or membership["cluster_id"] != target["cluster_id"]
+                    or membership["cluster_arn"] != target["cluster_arn"]
+                    or membership["namespace"] != target["namespace"]
+                    or membership["scope"] != "mutator"
+                    or datetime.fromisoformat(membership["expires_at"])
+                    <= datetime.now(UTC)
+                    or data.get("extensions")
+                    != [
+                        {"name": "superplane.aws-e/membership", "extension": membership}
+                    ]
+                ):
+                    raise ValueError("shared workspace credential identity mismatch")
+            elif data.get("extensions"):
+                raise ValueError("shared credential lacks current membership authority")
             if (
                 data["current-context"] != target["cluster_arn"]
                 or context["name"] != data["current-context"]
@@ -53,7 +72,13 @@ class Workspace:
                 or set(user["user"]) != {"token"}
                 or not user["user"]["token"]
                 or cluster["cluster"]["server"] != target["endpoint"]
-                or target["endpoint"].rstrip("/") == self.management_endpoint
+                or (
+                    target["endpoint"].rstrip("/") == self.management_endpoint
+                    and not (
+                        membership is not None
+                        and target.get("platform_eligible") is True
+                    )
+                )
             ):
                 raise ValueError("workspace credential boundary mismatch")
             ca = base64.b64decode(
@@ -92,12 +117,23 @@ class Workspace:
         if (
             response.status_code != 200
             or response.json().get("status", {}).get("phase") != "Active"
+            or (
+                target.get("membership_credential") is not None
+                and response.json().get("metadata", {}).get("uid")
+                != target["membership_credential"]["namespace_uid"]
+            )
         ):
             raise OperationRefused("workspace namespace unavailable")
         for resource, root in (
             ("nodepools", "/apis/superplane.ai/v1"),
             ("superplanenodes", f"/apis/superplane.ai/v1/namespaces/{ns}"),
         ):
+            if (
+                resource == "nodepools"
+                and target.get("membership_credential") is not None
+            ):
+                # Fleet inventory requires separate cluster observation authority.
+                continue
             response = await self.request(
                 operation,
                 target,

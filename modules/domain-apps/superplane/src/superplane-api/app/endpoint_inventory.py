@@ -198,7 +198,6 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # Issue #6048. Organization-scoped like `GET /workspaces` above: this lists
     # shared-placement eligibility across the caller's whole organization, not
     # one workspace, so it takes the same scope for the same reason.
-    ("GET", "/workspaces/eligible-clusters"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
     ("DELETE", "/workspaces/{workspace_id}"): (
         Scope.WORKSPACE,

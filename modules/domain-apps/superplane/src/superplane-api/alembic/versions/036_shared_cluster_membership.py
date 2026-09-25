@@ -118,6 +118,62 @@ def upgrade():
         unique=True,
         postgresql_where=sa.text("state <> 'removed'"),
     )
+    # Secret bytes stay in the two Kubernetes projections. This journal retains
+    # only exact issuance/rotation/revocation identity and observed delivery.
+    op.create_table(
+        "membership_credentials",
+        sa.Column(
+            "membership_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("cluster_memberships.id"),
+            primary_key=True,
+        ),
+        sa.Column("revision", sa.Integer(), primary_key=True),
+        sa.Column("scope", sa.String(16), primary_key=True),
+        sa.Column("namespace_uid", sa.String(255), nullable=False),
+        sa.Column("service_account_uid", sa.String(255), nullable=True),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("state", sa.String(16), nullable=False, server_default="reserved"),
+        sa.Column("projection_uid", sa.String(255), nullable=True),
+        sa.Column("projection_version", sa.String(255), nullable=True),
+        sa.Column("observed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.CheckConstraint(
+            "revision BETWEEN 1 AND 2147483647",
+            name="ck_membership_credentials_revision",
+        ),
+        sa.CheckConstraint(
+            "scope IN ('reader','mutator')", name="ck_membership_credentials_scope"
+        ),
+        sa.CheckConstraint(
+            "state IN ('reserved','issued','projected','active','revoking','revoked')",
+            name="ck_membership_credentials_state",
+        ),
+        sa.CheckConstraint(
+            "state IN ('reserved','revoking','revoked') OR (service_account_uid IS NOT NULL AND expires_at IS NOT NULL)",
+            name="ck_membership_credentials_issued",
+        ),
+        sa.CheckConstraint(
+            "state NOT IN ('projected','active') OR (projection_uid IS NOT NULL AND projection_version IS NOT NULL)",
+            name="ck_membership_credentials_projected",
+        ),
+        sa.CheckConstraint(
+            "state <> 'active' OR observed_at IS NOT NULL",
+            name="ck_membership_credentials_observed",
+        ),
+    )
+    op.create_index(
+        "uq_membership_credentials_active",
+        "membership_credentials",
+        ["membership_id", "scope"],
+        unique=True,
+        postgresql_where=sa.text("state = 'active'"),
+    )
 
 
 def downgrade():
@@ -126,6 +182,10 @@ def downgrade():
             RAISE EXCEPTION 'Retain membership identity and removal history before rollback';
         END IF;
     END $$""")
+    op.drop_index(
+        "uq_membership_credentials_active", table_name="membership_credentials"
+    )
+    op.drop_table("membership_credentials")
     op.drop_index("uq_cluster_memberships_workspace_live", table_name=_TABLE)
     op.drop_index("uq_cluster_memberships_cluster_namespace_live", table_name=_TABLE)
     op.drop_index("ix_cluster_memberships_workspace_id", table_name=_TABLE)
