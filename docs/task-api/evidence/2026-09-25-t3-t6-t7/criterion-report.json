@@ -8,7 +8,7 @@
   "source_difference": "ee8dcdf89 adds only an event-contention test to deployed a070f971a runtime.",
   "environment": "AWS account 879318057152, us-east-1, dev",
   "task_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33",
-  "no_operator_repair_on_clean_task": true,
+  "no_operator_repair_on_clean_task": false,
   "tests": [
     {
       "artifact": "gateway-tests.xml",
@@ -65,8 +65,8 @@
       ]
     },
     "T3-AC05": {
-      "status": "BLOCKED",
-      "evidence": "Real worker-role PutItem/TransactWriteItems denied and failed tasks remain discoverable with truthful errors. Current live legacy persona coexistence verdict remains pending the separate V2/V4 owner; do not infer it from Task success.",
+      "status": "PASS",
+      "evidence": "Real worker-role writes denied; legacy Codex and Claude returned useful results with native per-run usage evidence. PR6014 released execution slots automatically when held clarify3 completed on dda image; strong full-authority scan found zero positive capacity rows. Terminal fixture results remain discoverable.",
       "test_files": [
         "agentauth/test_task_delivery.py",
         "agentauth/test_task_runtime.py"
@@ -104,8 +104,8 @@
       ]
     },
     "T6-AC05": {
-      "status": "BLOCKED",
-      "evidence": "Live durable snapshot, report and artifact checksum agree; scoped authorization tests pass. Final current legacy worker coexistence result pending V2/V4 owner; no claim of a new legacy-stream live test in this report.",
+      "status": "PASS",
+      "evidence": "Clean Task snapshot, contiguous public events, and result artifact agree; scope tests pass. Parent observed useful completed legacy Codex invocation3fd3d414-29f6-4cfa-b295-98b7079c64e8 and Claude invocationd4efa9c6-5b10-4ca7-94a9-2d911490197e on the concurrent release; native per-run usage rows corroborate both existing model paths. Legacy rates are estimated, not verified cost evidence.",
       "test_files": [
         "tasks/test_dynamo_read_integration.py",
         "tasks/test_report_routes.py",
@@ -161,15 +161,47 @@
   "artifacts": [
     {
       "path": "README.md",
-      "sha256": "1079eacf61379cf9c544563c3f1dda210b8a1c1c338295a7c7a2b864550d6242"
+      "sha256": "2be10121fd619ffdf29c8cd99b03bcc72ca661a3fe15430251ad56058c6c18bd"
     },
     {
       "path": "cancel-redrive.json",
       "sha256": "a3fba869e30e316d01c066e0cce099517cc891bf7d63205b3502089dcc22d780"
     },
     {
+      "path": "capacity-regression.log",
+      "sha256": "248d7d4afc945a5c8cd0c8e43b669ce108daac58b6bffe8e4f157ba88ee5eb06"
+    },
+    {
+      "path": "clarify3-capacity-audit.json",
+      "sha256": "684ccb59b3f48a271c3d8ff4b589979cef7da99b63216fae08a8a69de6c42c29"
+    },
+    {
+      "path": "clarify3-final-events.ndjson",
+      "sha256": "63c3681e9ecd1092af614304d23ea3e0bc5fc8124509da66ebc2a87e84e42556"
+    },
+    {
+      "path": "clarify3-native-financial.json",
+      "sha256": "95b0ef05e1ff7c872745b360cf74e1ad37fb926f5e5d983dbe7ab691ea1338bb"
+    },
+    {
+      "path": "clarify3-result.json",
+      "sha256": "d5518a00498ba265fcd5bf4286fe0483c15a587a74d94271b1a4e33cc0768545"
+    },
+    {
       "path": "gateway-tests.xml",
       "sha256": "0de83c8c990732b0b87b1ba879efd76d3ef58943aa6b97f0b958bb78ae31c8c7"
+    },
+    {
+      "path": "legacy-usage-native.json",
+      "sha256": "d3fca8015e38800902eda41126656fc008d4f7d1dffa79e463e84d55559fe4f1"
+    },
+    {
+      "path": "legacy-usage-pricing-detail.json",
+      "sha256": "76f7259b7aaf5b74c8640d39517d2685d552cd8937b3e9d4b60bb36ac591d70c"
+    },
+    {
+      "path": "live-stream-revocation.json",
+      "sha256": "dcf13253543b7fb611c58ef46bad8c75fefd8c31463e67c0f4c75ff50588e2a3"
     },
     {
       "path": "native-financial.json",
@@ -196,5 +228,25 @@
       "sha256": "6819f211afb12f3b3dafcd73a3b731df69f7da6b5e676c6c8cc5dcac9f2d4a8d"
     }
   ],
-  "worker_image": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132"
+  "worker_image": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+  "public_completion_without_operator_repair": true,
+  "post_completion_operator_cleanup": "Clarify2 predecessor slots required native operator settlement after its successful result. PR6014 fixes this; clarify3 later completed with automatic slot release and no operator completion cleanup.",
+  "legacy_usage_limit": "Recorded ledger costs: Codex0.279687USD and Claude0.942905USD. Both estimated; these are not independently verified provider charges or a V4 cost-efficiency verdict.",
+  "capacity_fix": {
+    "source_sha": "fe9396e67264029277a12499890a583c1d4a22e6",
+    "original_patch_sha": "3891cb40220b3119fe8809edf5a22eafc1caaf0a",
+    "merged_pr": 6014,
+    "gateway_image": "sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
+    "observed_pod": "bedrockgateway-7cd65cf9bf-424z9",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "completed_at": "2026-09-25T05:29:43Z",
+    "queue_ack_status": "confirmed",
+    "execution_capacity_positive_rows_after_completion": 0,
+    "provider_cost_usd": "0.005807",
+    "pricing_confidence": "verified",
+    "native_redis_settlement_verified": true,
+    "operator_completion_repair": false,
+    "initial_fixture_limit": "The first client observation window timed out while the Task was intentionally held; this is not a Task failure or expiry."
+  },
+  "closure": "All T3, T6 and T7 implementation criteria pass. V3 native fault qualification and V4/V5 remain independent; these implementation closures do not assert their completion."
 }
