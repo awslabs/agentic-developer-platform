@@ -17,19 +17,42 @@ from workspace_provisioning.shared_credential_verification import (
 from .test_member_credentials import CA, fixture  # noqa: F401
 
 
+@pytest.mark.parametrize("expect_closed", [False, True])
 @pytest.mark.parametrize("scope", ["reader", "mutator"])
 @pytest.mark.parametrize(
     "drift",
-    [None, "uid", "namespace-mutation", "evaluation-error", "expired", "gate-bypass"],
+    [
+        None,
+        "uid",
+        "namespace-mutation",
+        "evaluation-error",
+        "expired",
+        "gate-bypass",
+        "missing-job-patch",
+        "missing-node-delete",
+        "mutation-evaluation-error",
+        "mutation-missing-answer",
+    ],
 )
 def test_projected_identity_and_namespace_boundary(
-    fixture, tmp_path, monkeypatch, scope, drift
+    fixture, tmp_path, monkeypatch, scope, drift, expect_closed
 ):  # noqa: F811
     from kubernetes import client
     from kubernetes.client.exceptions import ApiException
 
-    if drift == "gate-bypass" and scope == "reader":
-        pytest.skip("readers have no Pod create permission")
+    if drift == "gate-bypass" and (scope == "reader" or not expect_closed):
+        pytest.skip("only bootstrap mutators prove closed admission")
+    if (
+        drift
+        in {
+            "missing-job-patch",
+            "missing-node-delete",
+            "mutation-evaluation-error",
+            "mutation-missing-answer",
+        }
+        and scope == "reader"
+    ):
+        pytest.skip("reader credentials have no required write permissions")
     f = fixture
     binding = replace(f.binding, scope=scope)
     f.projector.scope = scope
@@ -48,7 +71,7 @@ def test_projected_identity_and_namespace_boundary(
                 return expiry + timedelta(seconds=1)
 
         monkeypatch.setattr(verifier, "datetime", Future)
-    calls, closed, ca_paths = [], [], []
+    calls, closed, ca_paths, write_reviews = [], [], [], []
 
     class Api:
         def __init__(self, configuration):
@@ -75,19 +98,42 @@ def test_projected_identity_and_namespace_boundary(
                 assert path == f"/api/v1/namespaces/{binding.membership.namespace}/pods"
                 return {"kind": "PodList", "items": []}
             if path.endswith("/selfsubjectaccessreviews"):
-                assert (
-                    kwargs["body"]["spec"]["resourceAttributes"]["resource"]
-                    == "namespaces"
-                )
+                attrs = kwargs["body"]["spec"]["resourceAttributes"]
+                if attrs["resource"] == "namespaces":
+                    assert (
+                        "namespace" not in attrs
+                        and attrs["name"] == binding.membership.namespace
+                    )
+                    return {
+                        "status": {
+                            "allowed": drift == "namespace-mutation",
+                            "evaluationError": "unavailable"
+                            if drift == "evaluation-error"
+                            else "",
+                        }
+                    }
+                assert scope == "mutator"
+                assert attrs["namespace"] == binding.membership.namespace
+                assert "name" not in attrs
+                action = attrs["group"], attrs["resource"], attrs["verb"]
+                write_reviews.append(action)
+                if drift == "mutation-missing-answer":
+                    return {"status": {}}
                 return {
                     "status": {
-                        "allowed": drift == "namespace-mutation",
+                        "allowed": not (
+                            drift == "missing-job-patch"
+                            and action == ("batch", "jobs", "patch")
+                            or drift == "missing-node-delete"
+                            and action == ("superplane.ai", "superplanenodes", "delete")
+                        ),
                         "evaluationError": "unavailable"
-                        if drift == "evaluation-error"
+                        if drift == "mutation-evaluation-error"
                         else "",
                     }
                 }
-            assert scope == "mutator" and kwargs["query_params"] == [("dryRun", "All")]
+            assert scope == "mutator" and expect_closed
+            assert kwargs["query_params"] == [("dryRun", "All")]
             if drift == "gate-bypass":
                 return {"kind": "Pod"}
             error = ApiException(status=403)
@@ -102,7 +148,7 @@ def test_projected_identity_and_namespace_boundary(
         target=f.issuer.grants.target,
         directory=tmp_path,
         verify=lambda: None,
-        expect_closed=True,
+        expect_closed=expect_closed,
     )
     if drift:
         with pytest.raises(BootstrapRefused):
@@ -113,5 +159,21 @@ def test_projected_identity_and_namespace_boundary(
             == credential.metadata
         )
         assert any(path.endswith("/selfsubjectreviews") for path, _ in calls)
+        expected_writes = {
+            (group, resource, verb)
+            for group, resource in (
+                ("", "pods"),
+                ("batch", "jobs"),
+                ("superplane.ai", "superplanenodes"),
+            )
+            for verb in ("create", "patch", "delete")
+        }
+        assert set(write_reviews) == (expected_writes if scope == "mutator" else set())
+        pod_creates = [
+            path
+            for path, method in calls
+            if method == "POST" and path.endswith("/pods")
+        ]
+        assert len(pod_creates) == int(expect_closed and scope == "mutator")
     assert all(not path.exists() for path in ca_paths)
     assert len(closed) == len(ca_paths)

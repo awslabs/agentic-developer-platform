@@ -9,6 +9,7 @@ import tempfile
 from superplane_bootstrap.errors import BootstrapRefused
 
 from .member_credentials.binding import IssuedCredential
+from .member_credentials.issuer import delegation_specs
 
 
 def verify_projected_credential(
@@ -19,6 +20,9 @@ def verify_projected_credential(
     The caller fences the whole invocation against its operation/controller lease.
     Returned metadata contains no token. The exact delivered bytes are verified
     through SelfSubjectReview, a namespaced read and denial of namespace mutation.
+    Mutators must also hold every compiled namespace write permission. This
+    positive authorization proof runs with both closed bootstrap and open renewal
+    gates; only bootstrap additionally requires admission to reject its dry run.
     """
     from kubernetes import client
     from kubernetes.client.exceptions import ApiException
@@ -166,6 +170,49 @@ def verify_projected_credential(
                     raise BootstrapRefused(
                         "member credential can alter namespace admission labels"
                     )
+            if binding.scope == "mutator":
+                # A Pod list proves reader access only. Verify the actual write
+                # permissions before acknowledging a replacement mutator token.
+                # SSAR tests authorization even while bootstrap admission is
+                # closed, without persisting a workload or changing any peer.
+                role = delegation_specs(binding)[1]["body"]
+                actions = {
+                    (group, resource, verb)
+                    for rule in role["rules"]
+                    for group in rule["apiGroups"]
+                    for resource in rule["resources"]
+                    for verb in rule["verbs"]
+                    if verb not in {"get", "list", "watch"}
+                }
+                if not actions:
+                    raise BootstrapRefused(
+                        "member mutator has no compiled write permissions"
+                    )
+                for group, resource, verb in sorted(actions):
+                    review = call(
+                        "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+                        "POST",
+                        body={
+                            "apiVersion": "authorization.k8s.io/v1",
+                            "kind": "SelfSubjectAccessReview",
+                            "spec": {
+                                "resourceAttributes": {
+                                    "group": group,
+                                    "resource": resource,
+                                    "namespace": namespace,
+                                    "verb": verb,
+                                }
+                            },
+                        },
+                    ).get("status", {})
+                    if (
+                        not isinstance(review, dict)
+                        or review.get("allowed") is not True
+                        or review.get("evaluationError")
+                    ):
+                        raise BootstrapRefused(
+                            "member mutator namespace write permission was not observed"
+                        )
             if expect_closed and binding.scope == "mutator":
                 result = call(
                     f"/api/v1/namespaces/{namespace}/pods",
