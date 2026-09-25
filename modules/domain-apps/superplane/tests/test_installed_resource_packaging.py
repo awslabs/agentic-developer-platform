@@ -125,6 +125,27 @@ class TestDockerfileAssertedResources:
         )
 
 
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "member_credentials/__init__.py",
+        "member_credentials/issuer.py",
+        "member_credentials/projection.py",
+        "credential_controller/__init__.py",
+        "credential_controller/__main__.py",
+        "credential_controller/registry.py",
+        "credential_controller/renewal.py",
+        "credential_controller/transports.py",
+    ),
+)
+def test_installed_credential_packages_are_in_the_built_wheel(wheel_contents, relative):
+    path = "workspace_provisioning/" + relative
+    assert wheel_contents.get(path) == (MODULE_ROOT / path).read_bytes()
+    assert not any(
+        name.startswith("workspace_provisioning/tests/") for name in wheel_contents
+    )
+
+
 class TestWheelResourceContentIntegrity:
     """Packaged resources must match the maintained source byte-for-byte."""
 

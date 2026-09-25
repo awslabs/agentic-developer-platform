@@ -8,14 +8,16 @@ requires-python = ">=3.12"
 dependencies = ["pydantic>=2.7,<3", "superplane-contracts"]
 
 [project.optional-dependencies]
-worker = ["boto3>=1.35", "kubernetes>=31,<32"]
+worker = ["boto3>=1.35", "kubernetes>=31,<32", "PyYAML>=6.0"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["workspace_provisioning"]
+include = ["workspace_provisioning", "workspace_provisioning.*"]
+exclude = ["workspace_provisioning.tests", "workspace_provisioning.tests.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 workspace_provisioning = ["_data/workspaces/*", "_data/workspaces/.terraform.lock.hcl", "_data/workspaces/scripts/*", "_data/crds.yaml"]
