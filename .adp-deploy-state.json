@@ -667,7 +667,7 @@
     "worker_admission": "unpaused independently by platform rollout; not changed by this release",
     "broker_rollout": "complete; zero desired and running replicas",
     "deployment_status": "complete",
-    "demo_status": "all three assessments complete; artifact-link delivery reported 403",
+    "demo_status": "all three assessments complete; direct S3 artifact upload denied",
     "record": "modules/domain-apps/cyber/docs/native-browser-release-2026-09-25.md",
     "final_hosted_canary": {
       "job": "cyber-native-browser-identity-final-20260925",
@@ -698,7 +698,7 @@
         "sso-auths-bitmart-sso.webflow.io": "malicious"
       },
       "all_sessions_independently_verified_terminated": true,
-      "artifact_link_status": "agent reports authenticated S3 readback succeeded; standalone presigned requests return 403; operator did not fetch evidence"
+      "artifact_link_status": "Agent corrected earlier upload/readback success claims: S3 writes are blocked by explicit IAM deny; standalone presigned links return 403. Operator did not fetch evidence or change permissions."
     },
     "work_admission_repair": {
       "resource": "aws_iam_role_policy.lambda_work_claim_admission[0]",

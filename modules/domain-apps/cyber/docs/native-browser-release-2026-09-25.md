@@ -151,9 +151,10 @@ All three session IDs were independently verified `TERMINATED` through AWS:
 `01M3BWPVDMWFNFJXE6XYCVQE4D`.
 
 Common Crawl remained unavailable because the protected task-session policy
-denies Athena. The agent reported successful authenticated S3 upload/readback but
-HTTP 403 from standalone presigned links; artifact-link delivery was unresolved
-at this checkpoint. The operator did not fetch those URLs or read the evidence
+denies Athena. The agent initially reported successful S3 upload/readback, then corrected
+that claim: local `verify` checks file hashes, and direct S3 writes are blocked
+by an explicit IAM deny. Standalone presigned links return HTTP 403. Artifact
+delivery is therefore unverified and blocked through the attempted direct path. The operator did not fetch those URLs or read the evidence
 bucket. See the linked issue for the published reports and subsequent delivery
 status. No bucket policy was changed.
 Browser-canary success does not establish
