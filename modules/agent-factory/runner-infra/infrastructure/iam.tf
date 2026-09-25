@@ -190,12 +190,16 @@ resource "aws_iam_role" "runner" {
 
 # The in-place update removes old deployment grants.
 resource "aws_iam_policy" "runner_base" {
-  name   = "${var.project_name}-runner-base"
-  policy = jsonencode({ Version = "2012-10-17", Statement = module.runtime_policy.grants })
+  # IAM descriptions are immutable; retain historical metadata for in-place rollout.
+  description = "Runner scoped policy — infrastructure (EC2, EKS, IAM, KMS, CloudTrail, EventBridge, CodeBuild, ECR, ELB)"
+  name        = "${var.project_name}-runner-base"
+  policy      = jsonencode({ Version = "2012-10-17", Statement = module.runtime_policy.grants })
 }
 resource "aws_iam_policy" "runner_services" {
-  name   = "${var.project_name}-runner-services"
-  policy = jsonencode({ Version = "2012-10-17", Statement = module.runtime_policy.grants })
+  # IAM descriptions are immutable; retain historical metadata for in-place rollout.
+  description = "Runner scoped policy — application deploy (S3, Secrets, SSM, CloudFront, Lambda, SQS, DynamoDB, Logs, WAF, STS, Bedrock, CloudWatch)"
+  name        = "${var.project_name}-runner-services"
+  policy      = jsonencode({ Version = "2012-10-17", Statement = module.runtime_policy.grants })
 }
 resource "aws_iam_role_policy_attachment" "runner_base" {
   role       = aws_iam_role.runner.name
