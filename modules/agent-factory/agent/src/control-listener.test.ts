@@ -1962,3 +1962,20 @@ test.each(['human_session', 'delegated_grant'] as const)('steer attribution come
     expect(store.steeringOrigin(UUID_B)).toBeNull();
   } finally { await listener.stop(); }
 });
+
+
+test('a pending pause leaves all steering slots and a bounded abort slot available', () => {
+  const store = new ControlStateStore({ generation: GENERATION,
+    supportedActions: new Set(['pause', 'resume', 'steer', 'abort']) });
+  expect(store.submit('pause', 'pause', 'pause').kind).toBe('accepted');
+  store.markDelivered('pause');
+  for (let n = 0; n < DEFAULT_MAX_PENDING; n++) {
+    expect(store.submit('steer', `steer-${n}`, `steer-${n}`).kind).toBe('accepted');
+  }
+  expect(store.submit('steer', 'overflow', 'overflow').kind).toBe('queue_full');
+  expect(store.submit('abort', 'abort', 'abort').kind).toBe('accepted');
+  expect(store.submit('abort', 'abort', 'abort').kind).toBe('replayed');
+  expect(store.submit('abort', 'another-abort', 'another-abort').kind).toBe('queue_full');
+  expect(store.submit('resume', 'resume', 'resume').kind).toBe('accepted');
+  expect(store.submit('resume', 'another-resume', 'another-resume').kind).toBe('queue_full');
+});
