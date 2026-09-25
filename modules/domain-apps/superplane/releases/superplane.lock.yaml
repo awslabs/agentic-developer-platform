@@ -256,7 +256,7 @@ schema:
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 034_provider_request_region
+    head: 035_shared_cluster_membership
     base: 001_initial
   compatible_with: null
   blocked_by:
