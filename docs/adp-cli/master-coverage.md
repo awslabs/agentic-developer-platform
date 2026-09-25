@@ -44,7 +44,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5636 | Model defaults, runtime posture and persona cost | Existing model-policy APIs; retain upstream evidence dependencies |
 | #5637 | Superplane wire-contract repairs | Already closed; regression only |
 | #5638 | Superplane workspace/deployment/provider lifecycle | Existing Superplane commands and domain contracts |
-| #5639 | Research inspection and proposal review | Existing Superplane research APIs |
+| #5639 | [Research reads and proposal review](research.md), E25 nightly reads; bounded scan/generation held | Existing Superplane research APIs; idempotent proposal identity and human revision checks |
 | #5640 | Durable hosted conversation start/resume/readback | Existing hosted chat APIs; no replacement Task dispatcher |
 | #5641 | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
 

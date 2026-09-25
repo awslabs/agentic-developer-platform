@@ -137,6 +137,7 @@ class TestCliScriptDownload:
             # any credential-shaped flag before parsing, and moves credential
             # references only — never values.
             "adp-superplane-onboarding.py",
+            "adp-superplane-research.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

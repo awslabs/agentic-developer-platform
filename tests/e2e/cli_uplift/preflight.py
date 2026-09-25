@@ -507,6 +507,7 @@ def missing_fixture_report(cfg, available):
     go and create the fixture, instead of a bare 'blocked'.
     """
     names = {
+        cases.SUPERPLANE_RESEARCH: "an existing Superplane domain selected for read-only checks (research_readback=true); actual CLI reads must establish readiness",
         cases.DESTINATION: "cross-account destination and provisioner roles (config destination_role_arn + provisioner_role_arn)",
         cases.GITHUB_APP: "an isolated GitHub App fixture (config github.org + github.app_fixture/existing_app_fixture)",
         cases.GITHUB_REPO: "a dedicated evaluation repository (config github.repo)",

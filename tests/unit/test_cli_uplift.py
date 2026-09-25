@@ -448,7 +448,9 @@ def test_every_case_present_with_owners():
     duplicate, so a case cannot be added under an id another already uses.
     """
     identifiers = [case.id for case in cases.CASES]
-    assert identifiers == [f"E{n:02d}" for n in range(1, len(identifiers) + 1)]
+    assert identifiers == [f"E{n:02d}" for n in range(1, 23)] + [
+        "E25"
+    ]  # E23/E24 reserved by concurrent tenant/vault stories
     assert all(case.owner for case in cases.CASES)
     assert all(case.suite in cases.SUITES for case in cases.CASES)
 
@@ -1005,6 +1007,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E17",
         "E18",
         "E19",
+        "E25",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
@@ -8426,6 +8429,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         # environment, so it blocks here exactly as the GitHub cases do.
         "E18",
         "E19",
+        "E25",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
@@ -10214,7 +10218,7 @@ def test_observer_artifacts_grant_only_two_named_reads():
 
 def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
     selected = cases.resolve_suites(("nightly",))
-    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22"}
+    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22", "E25"}
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
         "#5628",

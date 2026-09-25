@@ -47,6 +47,7 @@ SUITES = (
     "full",
     "nightly",
     "story-reads",
+    "research",
     "login",
     "install",
     "admin",
@@ -88,6 +89,7 @@ class Case:
 
 # Fixture classes. Preflight proves each of these independently; a case is
 # blocked when any class it requires is unavailable.
+SUPERPLANE_RESEARCH = "superplane_research_read_fixture"
 PLATFORM = "platform"
 DESTINATION = "destination"
 SECOND_DESTINATION = "second_destination"
@@ -285,6 +287,13 @@ CASES = (
         "Own Activity pagination and missing-run status/state/detail errors are structured; no active-control claim",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E25",
+        "#5639",
+        "story-reads",
+        "Served research reads preserve scoped findings/proposal IDs and pagination; no scan, mutation or decision",
+        (EC2, PLATFORM, COGNITO, SUPERPLANE_RESEARCH),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance
@@ -311,6 +320,8 @@ def suite_cases(suite):
             LOGIN_CHECKPOINT,
             *(case for case in CASES if case.suite == "story-reads"),
         )
+    if suite == "research":
+        return (BY_ID["E25"],)
     if suite == "login":
         return (BY_ID["E01"], LOGIN_CHECKPOINT)
     return tuple(case for case in CASES if case.suite == suite)

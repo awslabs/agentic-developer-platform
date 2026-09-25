@@ -147,6 +147,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-bedrock.py", ["adp", "bedrock"]),
         ("adp-github.py", ["adp", "github"]),
         ("adp-superplane.py", ["adp", "superplane"]),
+        ("adp-superplane-research.py", ["adp", "superplane", "research"]),
         ("adp-models.py", ["adp", "models"]),
         ("adp-flow.py", ["adp", "flow"]),
         ("adp-task.py", ["adp", "task"]),

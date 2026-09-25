@@ -2014,6 +2014,9 @@ def parser():
     # Onboarding is a separate helper file, and it is advertised only when that
     # file actually shipped. An install missing it must not list a verb that then
     # fails — the same rule `adp-admin.py` applies to its sub-areas.
+    research = common.load_provider("adp-superplane-research.py")
+    if research:
+        commands.add_parser("research", parents=[research.parser()], add_help=False, help="Read research and review exact proposal revisions")
     if Path(__file__).with_name(ONBOARDING_HELPER).is_file():
         commands.add_parser("onboarding", add_help=False, help="Discover, plan and bind workspace and provider onboarding")
 
@@ -2050,6 +2053,11 @@ def main(argv=None):
         # one. Rejecting here first would answer with the wrong remedy — "type it at
         # the prompt instead" — for a surface that has no such prompt. The helper's
         # check is a superset of this one and is the first thing its main() runs.
+        if argv and argv[0] == "research":
+            module = common.load_provider("adp-superplane-research.py")
+            if not module:
+                raise CliError("Research helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv[1:])
         if argv and argv[0] == "onboarding":
             module = common.load_provider(ONBOARDING_HELPER)
             if not module:

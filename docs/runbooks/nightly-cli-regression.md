@@ -145,3 +145,5 @@ usage in the live test DB before making authenticated requests. This avoids
 assuming a fixed request price. Synthetic balances are removed between cases;
 case 7 independently verifies real model usage accrual. Spending through a cap
 with a newly triggered agent remains outside this key-scenario regression.
+
+E25 (#5639) adds bounded research findings/proposal/source/stat reads to the existing nightly client. Select `--suite research` for this case alone. An existing-domain fixture must declare `research_readback: true` through the existing run config/binding overlay; absent configuration is blocked. This gate is separate from E18 mutation recovery, and actual authenticated CLI reads must prove service readiness. No scan/generate/approve/reject is run by E25.

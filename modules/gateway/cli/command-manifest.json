@@ -4049,6 +4049,370 @@
       ],
       "required_capabilities": [],
       "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp superplane research findings list",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size",
+        "--source",
+        "--start",
+        "--workspace"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research findings show",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal list",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size",
+        "--start",
+        "--status",
+        "--workspace"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal show",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal create",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--request-file",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ]
+    },
+    {
+      "command": "adp superplane research proposal generate",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--request-file",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Unavailable; no request is sent"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal approve",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ]
+    },
+    {
+      "command": "adp superplane research proposal reject",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--reason",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ]
+    },
+    {
+      "command": "adp superplane research sources",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research stats",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research scan",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--request-file",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Unavailable; no request is sent"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
     }
   ]
 }
