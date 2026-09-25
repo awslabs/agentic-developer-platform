@@ -195,5 +195,90 @@ def test_canonical_publication_retains_the_pre_namespace_reservation(
             registry.reserve, binding.workspace_id, _target_mapping(target)
         )
         assert replay["replayed"] is True
+        await _assert_shared_result_anchor(
+            harness, binding, target, claim["attempt_token"]
+        )
 
     harness.run(run())
+
+
+async def _assert_shared_result_anchor(harness, binding, target, attempt_token):
+    """Authority rows are fixture evidence, not a claim of live shared bootstrap."""
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    from superplane_bootstrap.registry import _target_mapping
+    from superplane_bootstrap.state import claim_fingerprint
+    from workspace_provisioning.bootstrap_result import read_bootstrap_anchor
+
+    operation_id = str(uuid4())
+    claim = claim_fingerprint(attempt_token)
+    generation = hashlib.sha256(("fixture-authority:" + claim).encode()).hexdigest()
+    progress = json.dumps(
+        {
+            "phase": "revoked",
+            "complete": True,
+            "retain_workspace": True,
+            "component_inventory_complete": True,
+        }
+    )
+    peer_id = uuid4()
+    metadata = json.dumps({"workspace_bootstrap": {"peer": "original-registration"}})
+    async with harness.connect() as connection:
+        await connection.execute(
+            "INSERT INTO workspaces(id,org_id,name,isolation_mode,status,is_default) "
+            "VALUES($1,$2,'original-owner','namespace','active',false)",
+            peer_id,
+            UUID(binding.org_id),
+        )
+        await connection.execute(
+            "UPDATE clusters SET workspace_id=$1,actual_state_json=$2::jsonb WHERE id=$3",
+            peer_id,
+            metadata,
+            UUID(binding.cluster_id),
+        )
+        await connection.execute(
+            "INSERT INTO workspace_bootstrap_authority(workspace_id,generation,operation_id,org_id,cluster_arn,claim,plan_json,progress_json,revoked) "
+            "VALUES($1,$2,$3,$4,$5,$6,'{}',$7,true)",
+            binding.workspace_id,
+            generation,
+            operation_id,
+            binding.org_id,
+            binding.cluster_arn,
+            claim,
+            progress,
+        )
+    arguments = dict(
+        context=SimpleNamespace(domain_connect=harness.connect),
+        operation_id=operation_id,
+        org_id=binding.org_id,
+        workspace_id=binding.workspace_id,
+        registration=_target_mapping(target),
+        claim=claim,
+    )
+    anchored = await read_bootstrap_anchor(**arguments)
+    assert anchored["registration"]["membership_generation"] == binding.generation
+    assert anchored["current_generation"] == generation
+    with pytest.raises(LifecycleRefused, match="unique original authority"):
+        await read_bootstrap_anchor(**{**arguments, "claim": "b" * 64})
+    async with harness.connect() as connection:
+        await connection.execute(
+            "UPDATE cluster_memberships SET namespace_uid='replaced-namespace'"
+        )
+        with pytest.raises(LifecycleRefused, match="membership changed"):
+            await read_bootstrap_anchor(**arguments)
+        await connection.execute(
+            "UPDATE cluster_memberships SET namespace_uid=$1", target.namespace_uid
+        )
+        await connection.execute(
+            "UPDATE workspace_bootstrap_authority SET revoked=false"
+        )
+        with pytest.raises(LifecycleRefused, match="recovery is still outstanding"):
+            await read_bootstrap_anchor(**arguments)
+        observed = await connection.fetchrow(
+            "SELECT workspace_id,actual_state_json FROM clusters WHERE id=$1",
+            UUID(binding.cluster_id),
+        )
+        assert observed["workspace_id"] == peer_id
+        assert json.loads(observed["actual_state_json"]) == json.loads(metadata)
