@@ -1,0 +1,726 @@
+{
+  "captured_at": "2026-09-25T05:30:34.171147+00:00",
+  "limitations": [
+    "Shared service aggregates include unrelated traffic; missing datapoints are not zero. Baseline window includes previously accepted Task activity; admission itself was disabled for the ten baseline probes. During window includes queueing and held Task execution, not continuous concurrent model requests."
+  ],
+  "metrics": [
+    {
+      "phase": "baseline",
+      "window": [
+        "2026-09-25T05:10:00+00:00",
+        "2026-09-25T05:12:00+00:00"
+      ],
+      "namespace": "AWS/Lambda",
+      "metric": "Invocations",
+      "dimensions": [
+        {
+          "Name": "FunctionName",
+          "Value": "adp-dev-github-webhook"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:10:00+00:00",
+          "Sum": 20.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:11:00+00:00",
+          "Sum": 24.0,
+          "Unit": "Count"
+        }
+      ]
+    },
+    {
+      "phase": "baseline",
+      "window": [
+        "2026-09-25T05:10:00+00:00",
+        "2026-09-25T05:12:00+00:00"
+      ],
+      "namespace": "AWS/Lambda",
+      "metric": "Errors",
+      "dimensions": [
+        {
+          "Name": "FunctionName",
+          "Value": "adp-dev-github-webhook"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:10:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:11:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        }
+      ]
+    },
+    {
+      "phase": "baseline",
+      "window": [
+        "2026-09-25T05:10:00+00:00",
+        "2026-09-25T05:12:00+00:00"
+      ],
+      "namespace": "AWS/Lambda",
+      "metric": "Throttles",
+      "dimensions": [
+        {
+          "Name": "FunctionName",
+          "Value": "adp-dev-github-webhook"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:10:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:11:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        }
+      ]
+    },
+    {
+      "phase": "baseline",
+      "window": [
+        "2026-09-25T05:10:00+00:00",
+        "2026-09-25T05:12:00+00:00"
+      ],
+      "namespace": "AWS/SQS",
+      "metric": "ApproximateAgeOfOldestMessage",
+      "dimensions": [
+        {
+          "Name": "QueueName",
+          "Value": "adp-dev-agent-submit.fifo"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:10:00+00:00",
+          "Average": 50.0,
+          "Maximum": 50.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:11:00+00:00",
+          "Average": 7.0,
+          "Maximum": 7.0,
+          "Unit": "Seconds"
+        }
+      ]
+    },
+    {
+      "phase": "baseline",
+      "window": [
+        "2026-09-25T05:10:00+00:00",
+        "2026-09-25T05:12:00+00:00"
+      ],
+      "namespace": "AWS/DynamoDB",
+      "metric": "SuccessfulRequestLatency",
+      "dimensions": [
+        {
+          "Name": "TableName",
+          "Value": "adp-dev-webhook-events"
+        },
+        {
+          "Name": "Operation",
+          "Value": "GetItem"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:10:00+00:00",
+          "Average": 5.1403688197718616,
+          "Maximum": 64.176,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:11:00+00:00",
+          "Average": 3.478456138596491,
+          "Maximum": 38.307,
+          "Unit": "Milliseconds"
+        }
+      ]
+    },
+    {
+      "phase": "during",
+      "window": [
+        "2026-09-25T05:12:00+00:00",
+        "2026-09-25T05:30:00+00:00"
+      ],
+      "namespace": "AWS/Lambda",
+      "metric": "Invocations",
+      "dimensions": [
+        {
+          "Name": "FunctionName",
+          "Value": "adp-dev-github-webhook"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:12:00+00:00",
+          "Sum": 15.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:13:00+00:00",
+          "Sum": 30.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:14:00+00:00",
+          "Sum": 9.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:15:00+00:00",
+          "Sum": 20.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:16:00+00:00",
+          "Sum": 16.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:17:00+00:00",
+          "Sum": 27.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:18:00+00:00",
+          "Sum": 34.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:19:00+00:00",
+          "Sum": 8.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:20:00+00:00",
+          "Sum": 7.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:21:00+00:00",
+          "Sum": 12.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:22:00+00:00",
+          "Sum": 9.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:23:00+00:00",
+          "Sum": 8.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:24:00+00:00",
+          "Sum": 17.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:25:00+00:00",
+          "Sum": 31.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:26:00+00:00",
+          "Sum": 20.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:27:00+00:00",
+          "Sum": 19.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:28:00+00:00",
+          "Sum": 13.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:29:00+00:00",
+          "Sum": 17.0,
+          "Unit": "Count"
+        }
+      ]
+    },
+    {
+      "phase": "during",
+      "window": [
+        "2026-09-25T05:12:00+00:00",
+        "2026-09-25T05:30:00+00:00"
+      ],
+      "namespace": "AWS/Lambda",
+      "metric": "Errors",
+      "dimensions": [
+        {
+          "Name": "FunctionName",
+          "Value": "adp-dev-github-webhook"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:12:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:13:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:14:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:15:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:16:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:17:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:18:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:19:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:20:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:21:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:22:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:23:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:24:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:25:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:26:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:27:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:28:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:29:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        }
+      ]
+    },
+    {
+      "phase": "during",
+      "window": [
+        "2026-09-25T05:12:00+00:00",
+        "2026-09-25T05:30:00+00:00"
+      ],
+      "namespace": "AWS/Lambda",
+      "metric": "Throttles",
+      "dimensions": [
+        {
+          "Name": "FunctionName",
+          "Value": "adp-dev-github-webhook"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:12:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:13:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:14:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:15:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:16:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:17:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:18:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:19:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:20:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:21:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:22:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:23:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:24:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:25:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:26:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:27:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:28:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        },
+        {
+          "Timestamp": "2026-09-25 05:29:00+00:00",
+          "Sum": 0.0,
+          "Unit": "Count"
+        }
+      ]
+    },
+    {
+      "phase": "during",
+      "window": [
+        "2026-09-25T05:12:00+00:00",
+        "2026-09-25T05:30:00+00:00"
+      ],
+      "namespace": "AWS/SQS",
+      "metric": "ApproximateAgeOfOldestMessage",
+      "dimensions": [
+        {
+          "Name": "QueueName",
+          "Value": "adp-dev-agent-submit.fifo"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:12:00+00:00",
+          "Average": 0.0,
+          "Maximum": 0.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:13:00+00:00",
+          "Average": 17.0,
+          "Maximum": 17.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:14:00+00:00",
+          "Average": 56.0,
+          "Maximum": 56.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:15:00+00:00",
+          "Average": 121.0,
+          "Maximum": 121.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:16:00+00:00",
+          "Average": 175.0,
+          "Maximum": 175.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:17:00+00:00",
+          "Average": 239.0,
+          "Maximum": 239.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:18:00+00:00",
+          "Average": 296.0,
+          "Maximum": 296.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:19:00+00:00",
+          "Average": 356.0,
+          "Maximum": 356.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:20:00+00:00",
+          "Average": 415.0,
+          "Maximum": 415.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:21:00+00:00",
+          "Average": 475.0,
+          "Maximum": 475.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:22:00+00:00",
+          "Average": 535.0,
+          "Maximum": 535.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:23:00+00:00",
+          "Average": 596.0,
+          "Maximum": 596.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:24:00+00:00",
+          "Average": 656.0,
+          "Maximum": 656.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:25:00+00:00",
+          "Average": 716.0,
+          "Maximum": 716.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:26:00+00:00",
+          "Average": 776.0,
+          "Maximum": 776.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:27:00+00:00",
+          "Average": 836.0,
+          "Maximum": 836.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:28:00+00:00",
+          "Average": 896.0,
+          "Maximum": 896.0,
+          "Unit": "Seconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:29:00+00:00",
+          "Average": 956.0,
+          "Maximum": 956.0,
+          "Unit": "Seconds"
+        }
+      ]
+    },
+    {
+      "phase": "during",
+      "window": [
+        "2026-09-25T05:12:00+00:00",
+        "2026-09-25T05:30:00+00:00"
+      ],
+      "namespace": "AWS/DynamoDB",
+      "metric": "SuccessfulRequestLatency",
+      "dimensions": [
+        {
+          "Name": "TableName",
+          "Value": "adp-dev-webhook-events"
+        },
+        {
+          "Name": "Operation",
+          "Value": "GetItem"
+        }
+      ],
+      "datapoints": [
+        {
+          "Timestamp": "2026-09-25 05:12:00+00:00",
+          "Average": 3.5070645096774196,
+          "Maximum": 40.081,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:13:00+00:00",
+          "Average": 3.031774998624999,
+          "Maximum": 36.548,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:14:00+00:00",
+          "Average": 2.039942307307692,
+          "Maximum": 22.788,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:15:00+00:00",
+          "Average": 2.741702702702703,
+          "Maximum": 21.4,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:16:00+00:00",
+          "Average": 2.0159736842105263,
+          "Maximum": 9.829,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:17:00+00:00",
+          "Average": 3.2797826065217386,
+          "Maximum": 40.166,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:18:00+00:00",
+          "Average": 2.0197631549999997,
+          "Maximum": 22.676,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:19:00+00:00",
+          "Average": 2.476095230714286,
+          "Maximum": 40.372,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:20:00+00:00",
+          "Average": 5.578898732025316,
+          "Maximum": 50.339,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:21:00+00:00",
+          "Average": 3.4292673969230765,
+          "Maximum": 47.583,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:22:00+00:00",
+          "Average": 3.172699618745246,
+          "Maximum": 44.115,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:23:00+00:00",
+          "Average": 2.4021835923437496,
+          "Maximum": 44.384,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:24:00+00:00",
+          "Average": 2.5914741013147413,
+          "Maximum": 57.441,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:25:00+00:00",
+          "Average": 5.507330673904384,
+          "Maximum": 50.02,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:26:00+00:00",
+          "Average": 4.930161415669293,
+          "Maximum": 47.338,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:27:00+00:00",
+          "Average": 2.1794712626053636,
+          "Maximum": 38.847,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:28:00+00:00",
+          "Average": 2.791171640074628,
+          "Maximum": 45.054,
+          "Unit": "Milliseconds"
+        },
+        {
+          "Timestamp": "2026-09-25 05:29:00+00:00",
+          "Average": 1.8894297514462817,
+          "Maximum": 48.095,
+          "Unit": "Milliseconds"
+        }
+      ]
+    }
+  ]
+}

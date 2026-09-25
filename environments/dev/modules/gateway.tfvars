@@ -136,22 +136,22 @@ persona_model_probe_destination_enabled = true
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
 
-# Durable operator-prepared Task API bindings. Admission awaits live qualification.
+# Operator-activated Task API bindings; acceptance evidence is recorded separately.
 task_api_prerequisites_enabled = true
 task_api_artifact_bucket_name  = "adp-dev-chat-artifacts-879318057152"
-task_api_flags                 = { admission = false, read = true, worker = true, recovery = false }
+task_api_flags                 = { admission = true, read = true, worker = true, recovery = true }
 task_api_runtime_bindings = {
   queue_url                = "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-submit.fifo"
   admission_producer_roles = ["arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role"]
   dispatch_producer_roles  = ["arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role"]
   recovery_producer_roles  = ["arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role"]
   qualification_id         = "task-api-5792-20260925"
-  worker_image_digests     = ["sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3"]
+  worker_image_digests     = ["sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3", "sha256:146442e6acf6c00c46c42070fa40c61ccaf775eec7c9aee5be56ffac23ae9dda", "sha256:a500a81d38e42f12ea12e5bba5a75847153c52f8ebf14ea8a0bec6059119e697", "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132"]
   worker_service_account   = "agent-scaledjob-sa"
 }
 
 # Existing public task route targets the shared webhook Lambda; route presence is
-# independent of admission, which stays false above.
+# independent of admission.
 enable_task_api_route         = true
 task_api_lambda_function_name = "adp-dev-github-webhook"
 task_api_lambda_invoke_arn    = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:879318057152:function:adp-dev-github-webhook/invocations"
