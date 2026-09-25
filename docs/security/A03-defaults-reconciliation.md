@@ -9,14 +9,15 @@ raw scanner content and credentials are not included in this repository.
 
 | Finding | Source disposition and contributing changes |
 |---|---|
-| `f-0054d7ee-bbe7-4b3d-8f88-91695dbc247f` | A02 commit `3cb303b00` / PR #5786 requires verified research tenant/actor and preserves tenant filtering in legacy mode. A01 commit `6455f8b5c` / PR #5737 validates gateway caller/client binding. The budget target-read half belongs to A12 #5668 / PR #6087 (`445dbbcb5`) and must be merged and verified before A03 closes. Its budget read matrix passes 114 tests; activity owner-chain repair passes 943 tests, with review/CI still required. A03 changes no budget authorization implementation. |
-| `f-16d7f58c-3049-4afc-8715-99b824be7108` | The remaining default mismatch is repaired here: Superplane strict authentication and Door tenant scoping default on; disabled auth/isolation require explicit development profiles. CORS was repaired by A02; Cognito access-token/client binding by A01. Door readiness/provenance filtering is A06 commit `e6e8f3226` / PR #5790; the integrated S15 public-provenance marker checks are `b361419c0` / PR #6079. Shared rate-limit persistence/counters are A14 PR #6085 at `53b443b7e`; this successor additionally requires its memory opt-in to use the development profile. |
+| `f-0054d7ee-bbe7-4b3d-8f88-91695dbc247f` | A02 commit `3cb303b00` / PR #5786 requires verified research tenant/actor and preserves tenant filtering in legacy mode. A01 commit `6455f8b5c` / PR #5737 validates gateway caller/client binding. The budget target-read half is A12 #5668 / PR #6087, merged at `b76e9d4880a87fae787a24af64dd01faed91b3e1`. Its source acceptance and CI were recorded before A03 closure. A03 changes no budget authorization implementation. |
+| `f-16d7f58c-3049-4afc-8715-99b824be7108` | The remaining default mismatch is repaired here: Superplane strict authentication and Door tenant scoping default on; disabled auth/isolation require explicit development profiles. CORS was repaired by A02; Cognito access-token/client binding by A01. Door readiness/provenance filtering is A06 commit `e6e8f3226` / PR #5790; the integrated S15 public-provenance marker checks are `b361419c0` / PR #6079. Shared rate-limit persistence/counters are A14 PR #6085, merged at `f12603324954d792d628eb0a1ab6dce991bf35ff`; A03 additionally requires its memory opt-in to use the development profile. |
 | `f-93db06c3-561a-49cf-8f42-16c66137301c` | A04 commit `a5f3570cf` / PR #5739 removed embedded signing/database secrets and requires secret references. A02 repaired research authentication, actor attribution and CORS; A01 validates the proxy caller. This change aligns the legacy API manifest/template with the strict installer and code default. Missing issuer/client allowlist cannot construct a production policy; missing signing key is already a startup refusal. |
 
 The constituent auth, tenant ownership, token validation, budget and rate-limit
 implementations are reused. There is no second permission or identity resolver.
-A03 must remain open until A12 and A14 source dependencies are merged and their
-checks pass. The table records contributing source revisions, not scanner status
+A12 and A14 source dependencies merged with checks passing. A03 merged in PR
+#6088 at `3d74b256484d11973ade7d92ecf5aa9d259c9925`, and #5655 closed with
+source-acceptance evidence. The table records contributing source revisions, not scanner status
 updates or evidence of a live exploit attempt.
 
 ## Defaults and installer agreement
