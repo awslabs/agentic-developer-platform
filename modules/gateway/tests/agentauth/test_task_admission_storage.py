@@ -45,6 +45,7 @@ async def test_real_admission_reserves_once_and_failed_loser_cannot_release(clie
     from src.agentauth.task_budget import TaskBudget
     from src.agentauth.task_service_policy import TaskServicePolicyStore
     from src.budget.reservations import ReservationStore
+    from tests.agentauth.test_task_repository_policy import BINDING
 
     policies = TaskServicePolicyStore(table_name=AUTHORITY_TABLE, client=client, clock=lambda: NOW)
     client.delete_item(TableName=AUTHORITY_TABLE, Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}})
@@ -55,6 +56,7 @@ async def test_real_admission_reserves_once_and_failed_loser_cannot_release(clie
         updated_by="test",
         policy={
             "status": "active",
+            "repositories": {"application": BINDING},
             "allowed_personas": ["agent-task-investigator"],
             "task_scopes": ["submit"],
             "model_policy_version": "1",
@@ -78,11 +80,19 @@ async def test_real_admission_reserves_once_and_failed_loser_cannot_release(clie
 
     service = TaskAdmission(store, policies=policies, budget=budget, model_resolver=model, clock=lambda: NOW)
     caller = SimpleNamespace(tenant_id="tenant-a", principal_id="svc-principal-1", require=lambda scope: None)
-    submit = {"schema_version": "1.0", "persona": "agent-task-investigator", "instructions": "investigate"}
+    submit = {
+        "schema_version": "1.0",
+        "persona": "agent-task-investigator",
+        "instructions": "investigate",
+        "inputs": {"repository_binding": "application"},
+    }
     first = await service.admit(caller=caller, submit=submit, idempotency_key="admission-test", db=None)
     replay = await service.admit(caller=caller, submit=submit, idempotency_key="admission-test", db=None)
     assert first["task_id"] == replay["task_id"]
     assert replay["idempotent_replay"]
+    task = store.read_task(first["task_id"])
+    grant = store._get_authority("TENANT#tenant-a", task["grant_reference"])
+    assert grant["repository_binding"] == {"alias": "application", "binding": BINDING}
     assert len(calls) == 1
     task = store.read_task(first["task_id"])
     receipt = task["budget_reservation"]
@@ -169,3 +179,20 @@ async def test_expired_preacceptance_hold_cleanup_is_owner_fenced(client, commit
         TableName=AUTHORITY_TABLE, KeyConditionExpression="pk = :pk", ExpressionAttributeValues={":pk": {"S": "TASK_ADMISSION_CLEANUP#" + shard}}
     ).get("Items")
     await reservations.close()
+
+
+def test_repository_binding_is_inside_durable_protected_grant(client, store):
+    from tests.agentauth.test_task_repository_policy import BINDING
+
+    request = _request(repository_binding={"alias": "application", "binding": BINDING})
+    store.accept(request)
+    grant = store._get_authority("TENANT#" + request.tenant, request.grant_reference)
+    assert grant["repository_binding"] == request.repository_binding
+    store.resolve_work(request.dispatch_id)
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": "TENANT#" + request.tenant}, "sk": {"S": request.grant_reference}},
+        UpdateExpression="REMOVE repository_binding",
+    )
+    with pytest.raises(WorkBindingError):
+        store.resolve_work(request.dispatch_id)

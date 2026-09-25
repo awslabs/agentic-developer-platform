@@ -58,6 +58,12 @@ class TaskAdmission:
             tool_grants = freeze_tools(submit["persona"], policy)
         except TaskToolPolicyError:
             raise TaskAdmissionError("prerequisite_unavailable", 503) from None
+        from src.agentauth.task_repository_policy import TaskRepositoryPolicyError, freeze_repository
+
+        try:
+            repository_binding = freeze_repository(submit.get("inputs", {}), policy)
+        except (TaskRepositoryPolicyError, ValueError, TypeError):
+            raise TaskAdmissionError("disallowed_repository", 403) from None
         digest = payload_digest(submit)
         idem_key = idempotency_partition(tenant=caller.tenant_id, canonical_principal=caller.principal_id, idempotency_key=idempotency_key)
         existing = await run_in_threadpool(self.repository._read_idempotency, idem_key)
@@ -163,6 +169,7 @@ class TaskAdmission:
             idempotency_key=idempotency_key,
             persona=submit["persona"],
             tool_grants=tool_grants,
+            repository_binding=repository_binding,
             harness=harness,
             request_payload=submit,
             deadline_at=deadline,

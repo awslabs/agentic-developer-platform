@@ -355,6 +355,7 @@ class AcceptanceRequest:
     generation: int = 1
     tool_grants: tuple[str, ...] = field(default_factory=tuple)
     harness: dict[str, Any] | None = None
+    repository_binding: dict[str, Any] | None = None
     input_reference: dict[str, Any] | None = None
     artifact_ids: tuple[str, ...] = field(default_factory=tuple)
     budget_reservation: dict[str, Any] | None = None
@@ -651,6 +652,8 @@ class TaskStore:
             "runtime_attempt_id": None,
             "created_at": now_iso,
         }
+        if request.repository_binding is not None:
+            run_grant["repository_binding"] = request.repository_binding
         if request.harness is not None:
             run_grant["harness"] = request.harness
         if request.budget_reservation is not None:
@@ -1180,6 +1183,12 @@ class TaskStore:
             grant_condition += " AND #tool_grants = :grant_tool_grants"
             grant_values[":grant_tool_grants"] = grant["tool_grants"]
             grant_names["#tool_grants"] = "tool_grants"
+        grant_names["#repository_binding"] = "repository_binding"
+        if "repository_binding" in grant:
+            grant_condition += " AND #repository_binding = :grant_repository_binding"
+            grant_values[":grant_repository_binding"] = grant["repository_binding"]
+        else:
+            grant_condition += " AND attribute_not_exists(#repository_binding)"
         grant_names["#harness"] = "harness"
         if "harness" in grant:
             grant_condition += " AND #harness = :grant_harness"
@@ -3550,6 +3559,8 @@ def _protected_grant_digest(grant: dict[str, Any]) -> str:
         fields += ("tool_grants",)
     if "harness" in grant:
         fields += ("harness",)
+    if "repository_binding" in grant:
+        fields += ("repository_binding",)
     return payload_digest({field_name: grant[field_name] for field_name in fields})
 
 
@@ -3558,6 +3569,13 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
 
     if not isinstance(request.tool_grants, tuple) or not valid_tools(list(request.tool_grants)):
         raise TaskStoreError("invalid frozen tool grants")
+    if request.repository_binding is not None:
+        from src.agentauth.task_repository_policy import validate_frozen_repository
+
+        try:
+            validate_frozen_repository(request.repository_binding)
+        except (ValueError, TypeError):
+            raise TaskStoreError("invalid frozen repository binding") from None
     if request.harness is not None:
         from src.agentauth.task_harness import TaskHarnessError, validate_harness
 

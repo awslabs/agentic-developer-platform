@@ -329,3 +329,31 @@ This verifies deterministic workspace editing and real container execution.
 Model inference, Task-authorized repository provisioning, provider publication,
 and deployed persona completion are not exercised by this scenario. It is not
 live generated-story acceptance evidence and does not complete a persona story.
+
+
+## Task repository selection and standing policy
+
+The existing human-admin Task service-policy API now accepts a bounded
+`repositories` map. Each alias names `provider` (`github` or `gitlab`),
+`connection_id`, immutable numeric `repository_id` (as a string), provider
+`repository` path, and `base_branch`. No credentials or arbitrary URLs are
+accepted. For example, a Task selects an administrator-defined `application`
+alias with `inputs.repository_binding = "application"`; supplying a repository
+object or unknown alias is refused before model resolution or budget reservation.
+Tasks without a selection retain their existing report/tool behavior.
+
+Admission snapshots the selected binding in the protected run grant, within the
+existing version-fenced acceptance transaction. The grant digest and subsequent
+transaction conditions cover the binding, including its absence. Tool
+authorization projects the protected binding only after checking that the current
+principal policy still contains an identical alias/binding. Changing or removing
+it denies further tool access; freeform Task prose cannot replace it. Stop-only
+cleanup remains possible after revocation and does not expose repository scope.
+
+This is the standing-policy and durable admission path, not provider credential
+validation. A provider adapter must verify tenant connection ownership and the
+immutable repository ID before fetching source or performing effects. No Task
+provider fetch, publication, merge, or persona rollout is enabled by this change.
+Tests exercise real admission with Moto DynamoDB/fakeredis budget reservation,
+admin schema/policy round trips, protected-grant tampering, changed policy, and
+malformed selections. The Task API contract checker still passes all 383 checks.

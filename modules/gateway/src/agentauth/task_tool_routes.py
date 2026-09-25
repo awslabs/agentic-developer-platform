@@ -74,6 +74,13 @@ def authorize_tool(repo, policies, identity, tool, *, cleanup=False, env=None):
             raise HTTPException(403, "Task tool policy refused")
         if tool not in frozen or tool not in policy.get("allowed_tools", []) or tool not in persona_tools(task["persona"], env):
             raise HTTPException(403, "Task tool permission refused")
+        if "repository_binding" in grant:
+            from src.agentauth.task_repository_policy import require_current_repository
+
+            try:
+                require_current_repository(grant["repository_binding"], policy)
+            except (ValueError, TypeError):
+                raise HTTPException(403, "Task repository authority unavailable") from None
     # Return only execution input/identity, never protected credentials/budget grants.
     snapshot = {
         key: task[key]
@@ -93,6 +100,8 @@ def authorize_tool(repo, policies, identity, tool, *, cleanup=False, env=None):
         if key in task
     }
     snapshot["version"] = int(task["version"])
+    if not cleanup and "repository_binding" in grant:
+        snapshot["repository_binding"] = grant["repository_binding"]
     return {
         "schema_version": "1.0",
         "identity": {

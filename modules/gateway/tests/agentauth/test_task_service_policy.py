@@ -193,3 +193,21 @@ def test_fractional_persisted_duration_cannot_be_truncated_by_admission(store):
     )
     with pytest.raises(TaskServicePolicyError, match="corrupt_policy"):
         repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)
+
+
+def test_repository_policy_round_trips_through_admin_schema_and_dynamo(store):
+    from src.admin.persona_models.schemas import TaskPolicyPutRequest
+    from tests.agentauth.test_task_repository_policy import BINDING
+
+    repository, _ = store
+    body = TaskPolicyPutRequest.model_validate({"expected_version": 0, **policy(repositories={"application": BINDING})})
+    created = repository.put(
+        tenant_id=TENANT,
+        canonical_principal_id=PRINCIPAL,
+        expected_version=body.expected_version,
+        policy=body.model_dump(exclude={"expected_version"}),
+        updated_by="human-admin-1",
+    )
+    loaded = repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)
+    assert loaded == created
+    assert TaskPolicyResponse.model_validate(loaded).repositories["application"].model_dump() == BINDING

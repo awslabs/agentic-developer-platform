@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.agentauth.task_repository_policy import TaskRepositoryBinding
 from src.shared.models.persona_models import ALIAS_SOURCES
 
 # The registrable alias vocabulary is DERIVED from the model's ALIAS_SOURCES, which
@@ -300,6 +301,7 @@ class TaskPolicyPutRequest(BaseModel):
     status: Literal["active", "disabled"]
     allowed_personas: list[str] = Field(min_length=1, max_length=16)
     allowed_tools: list[str] = Field(default_factory=list, max_length=64)
+    repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict, max_length=32)
     task_scopes: list[Literal["submit", "read", "input", "cancel", "artifacts"]] = Field(min_length=1, max_length=5)
     model_policy_version: str = Field(min_length=1, max_length=128)
     limits: TaskPolicyLimits
@@ -314,6 +316,7 @@ class TaskPolicyResponse(BaseModel):
     status: Literal["active", "disabled"]
     allowed_personas: list[str]
     allowed_tools: list[str] = Field(default_factory=list)
+    repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict)
     task_scopes: list[str]
     model_policy_version: str
     limits: TaskPolicyLimits

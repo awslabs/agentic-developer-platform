@@ -155,7 +155,13 @@ class TaskServicePolicyStore:
 def _validate_policy(policy: dict) -> None:
     if policy.get("status") not in {"active", "disabled"}:
         raise TaskServicePolicyError("invalid_policy")
+    from src.agentauth.task_repository_policy import repositories
     from src.agentauth.task_tool_policy import valid_tools
+
+    try:
+        repositories(policy)
+    except (ValueError, TypeError):
+        raise TaskServicePolicyError("invalid_policy") from None
 
     if not valid_tools(policy.get("allowed_tools", [])):
         raise TaskServicePolicyError("invalid_policy")
