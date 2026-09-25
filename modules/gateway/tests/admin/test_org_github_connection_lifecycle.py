@@ -61,6 +61,16 @@ FREE_INSTALL = 124731131
 FREE_ACCOUNT = "88881"
 
 
+@pytest.fixture(autouse=True)
+def forbid_real_aws(monkeypatch):
+    """These SQL/HTTP fixtures must never mutate a deployment through boto3."""
+
+    def refused(*args, **kwargs):
+        raise AssertionError("Lifecycle unit fixture attempted a real AWS API call")
+
+    monkeypatch.setattr("botocore.client.BaseClient._make_api_call", refused)
+
+
 @pytest.fixture
 def index() -> AsyncMock:
     mock = AsyncMock()
@@ -593,7 +603,7 @@ def _client(*, user: TokenContext, db: AsyncSession) -> TestClient:
 
 
 @pytest.fixture
-def no_real_index(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+def no_real_index(monkeypatch: pytest.MonkeyPatch, index: AsyncMock) -> AsyncMock:
     """Stub the identity-index writer for the HTTP tests.
 
     The routes construct the service themselves (no injection point), and the
@@ -601,10 +611,12 @@ def no_real_index(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     ``_writer`` accessor — which exists for exactly this reason — so these tests
     exercise the real route/service wiring without reaching AWS.
     """
-    stub = AsyncMock()
-    stub.sync_org_channels = AsyncMock()
-    monkeypatch.setattr(OrgConnectionsService, "_writer", lambda self: stub)
-    return stub
+    # Detach now creates its durable revocation writer independently of the
+    # legacy projection accessor. Both boundaries must share the isolated fake:
+    # mocking only _writer allowed fixture installation IDs to reach real AWS.
+    monkeypatch.setattr(OrgConnectionsService, "_writer", lambda self: index)
+    monkeypatch.setattr("src.admin.installations.revocation.IdentityIndexClient", lambda: index._client)
+    return index
 
 
 @pytest.mark.usefixtures("no_real_index")
@@ -659,7 +671,7 @@ class TestRouteContract:
         response = client.post(f"/admin/organizations/{OWNER_ORG}/connections/github", json={"installation_id": 0})
         assert response.status_code == 422
 
-    async def test_the_lifecycle_round_trips_over_http(self, db_session: AsyncSession, platform_admin_context: TokenContext):
+    async def test_the_lifecycle_round_trips_over_http(self, db_session: AsyncSession, platform_admin_context: TokenContext, no_real_index):
         """The issue's smoke test, in CI: GitHub-free org → attach → detach.
 
         Exercises the sequence end-to-end through the real ASGI app so the route
@@ -682,5 +694,7 @@ class TestRouteContract:
         detached = client.delete(f"{base}/{FREE_INSTALL}")
         assert detached.status_code == 200
         assert detached.json()["detached"] is True
+        no_real_index._client.put_installation_revocation.assert_awaited_once_with(str(FREE_INSTALL), OWNER_ORG)
+        no_real_index._client.delete_installation_projection.assert_awaited_once_with(str(FREE_INSTALL), OWNER_ORG)
 
         assert client.get(base).json()["total"] == 0
