@@ -216,17 +216,17 @@ jobs:
           template_file manifests/agent-context-configmap.yaml | kubectl apply -f -
           echo "ConfigMap agent-context-config deployed"
 
-      - name: Apply RBAC (runner access to agent-context namespace)
+      - name: Apply RBAC (trusted deployment access to agent-context namespace)
         continue-on-error: true
         run: |
           cd modules/agent-context
           source scripts/_common.sh
           load_config "$(pwd)"
 
-          export NAMESPACE RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT
+          export NAMESPACE
           template_file manifests/ingestion-rbac.yaml | kubectl apply -f - \
             || echo "WARNING: Cannot apply RBAC (likely pre-existing). Continuing."
-          echo "RBAC: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} → ingestion-pipeline-role"
+          echo "RBAC: adp:trusted-deployment → ingestion-pipeline-role"
 
       - name: Run DB migrations (in-cluster Job)
         if: ${{ inputs.skip_migrations != true }}

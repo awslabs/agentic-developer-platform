@@ -23,7 +23,7 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# RBAC for the kubectl-apply runner SA (github-runner-sa in arc-runners).
+# RBAC for the separately admitted adp:trusted-deployment group.
 # The existing runner-keda-manage Role only covers KEDA CRDs; the warm pool also
 # needs Deployments (namespaced) + the cluster-scoped PriorityClass.
 # -----------------------------------------------------------------------------
@@ -64,9 +64,9 @@ resource "kubernetes_role_binding" "runner_warm_pool_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -114,9 +114,9 @@ resource "kubernetes_cluster_role_binding" "runner_priorityclass_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
