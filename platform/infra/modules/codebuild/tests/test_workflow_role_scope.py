@@ -52,7 +52,11 @@ def test_chat_and_gateway_builds_publish_to_distinct_repositories() -> None:
         REPO_ROOT / "platform/infra/modules/codebuild/main.tf"
     ).read_text()
 
-    assert 'ECR_REPO="adp-chat-agent"' in chat_buildspec
-    assert 'ECR_REPO="adp-agent-gateway"' in gateway_buildspec
+    assert yaml.safe_load(chat_buildspec)["phases"]["build"]["commands"] == [
+        "bash platform/scripts/publish-shared-image.sh adp-chat-agent"
+    ]
+    assert yaml.safe_load(gateway_buildspec)["phases"]["build"]["commands"] == [
+        "bash platform/scripts/publish-shared-image.sh adp-agent-gateway"
+    ]
     assert 'ecr_repos      = ["adp-chat-agent"]' in codebuild_module
     assert 'ecr_repos      = ["adp-agent-gateway"]' in codebuild_module

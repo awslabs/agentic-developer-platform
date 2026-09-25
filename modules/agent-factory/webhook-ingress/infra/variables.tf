@@ -237,9 +237,13 @@ variable "eks_cluster_name" {
 # module (keda.tf) rather than discovered via data source. See issue #1052.
 
 variable "agent_image" {
-  description = "Container image for the agent worker (ECR URI with tag). Built by .github/workflows/agent-worker-image.yml via CodeBuild → ECR repo adp-agent-runtime."
+  description = "Verified agent-worker image URI pinned by OCI digest or full source SHA. No implicit mutable fallback."
   type        = string
   default     = ""
+  validation {
+    condition     = can(regex("(@sha256:[0-9a-f]{64}|:[0-9a-f]{40})$", var.agent_image))
+    error_message = "agent_image must explicitly select an OCI digest or full immutable source SHA; empty, latest and placeholders are refused."
+  }
 }
 
 variable "agent_pod_deadline_seconds" {

@@ -87,7 +87,7 @@ if [ "$UPDATE_MODE" = true ]; then
     case ",${UPGRADE_MODULES:-}," in *,webhook-ingress,*) ;; *) fail "--update requires existing webhook-ingress state" ;; esac
   fi
 else
-  IMAGE_TAG="${IMAGE_TAG:-latest}"
+  IMAGE_TAG="${IMAGE_TAG:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
 fi
 
 echo "deploy-webhook-ingress: env=$ENVIRONMENT region=$AWS_REGION account=$ACCOUNT_ID bucket=$STATE_BUCKET"
@@ -119,7 +119,7 @@ elif [ "$DRY_RUN" = true ]; then
 else
   # Use codebuild-run.sh which handles the source-SHA contract:
   # zips source → uploads to unique S3 key → passes --source-location-override + ADP_SOURCE_SHA
-  STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
+  ADP_RELEASE_BUILD=true SOURCE_SHA="$IMAGE_TAG" STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
     bash "$CODEBUILD_RUN" "adp-${ENVIRONMENT}-agent-runtime" \
       "name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT" \
       "name=ACCOUNT_ID,value=${ACCOUNT_ID},type=PLAINTEXT" \
@@ -127,6 +127,13 @@ else
       "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
       "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
   ok "adp-${ENVIRONMENT}-agent-runtime: SUCCEEDED"
+fi
+
+# Resolve and validate the image before Lambda upload, Terraform import or apply.
+if [ "$DRY_RUN" = false ] && [ "$SKIP_TF" = false ]; then
+  VERIFIED_AGENT_IMAGE=$(python3 "$REPO_ROOT/platform/scripts/resolve-ecr-image.py" \
+    "${ADP_RELEASE_AGENT_RUNTIME_IMAGE:-${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}}")
+  export TF_VAR_agent_image="$VERIFIED_AGENT_IMAGE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -254,7 +261,7 @@ else
     TF_ARGS=(
       -var="environment=${ENVIRONMENT}"
       -var="aws_region=${AWS_REGION}"
-      -var="agent_image=${ADP_RELEASE_AGENT_RUNTIME_IMAGE:-${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}}"
+      -var="agent_image=$VERIFIED_AGENT_IMAGE"
     )
     if [ "$UPDATE_MODE" = false ]; then
       TF_ARGS+=(-var="gateway_api_url=${GATEWAY_API_URL}")

@@ -115,14 +115,36 @@ class AgentGatewayBuildTests(unittest.TestCase):
             shutil.copytree(MODULE / 'rules/personas', module / 'rules/personas')
             for name in ('Dockerfile', 'Dockerfile.dockerignore', 'entrypoint.sh'):
                 shutil.copyfile(MODULE / 'gateway' / name, module / 'gateway' / name)
+            helper = root / 'platform/scripts/publish-shared-image.sh'
+            helper.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / 'platform/scripts/publish-shared-image.sh', helper)
+            (root / 'tmp').mkdir()
             binaries = root / 'bin'
             binaries.mkdir()
             stubs = {
                 'docker': DOCKER,
-                'aws': '#!/bin/sh\nif [ "$1 $2" = "sts get-caller-identity" ]; then echo 111122223333; fi\n',
+                'aws': """#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+if sys.argv[1:3] == ['sts','get-caller-identity']: print('111122223333')
+elif sys.argv[1:3] == ['ecr','get-login-password']: print('stub')
+elif sys.argv[1:3] == ['ecr','describe-images']:
+ p=Path(os.environ['BUILD_TEST_RECORD'])
+ if p.exists() and any('push' in json.loads(line) for line in p.read_text().splitlines()):
+  print('sha256:'+'a'*64)
+ else:
+  print('ImageNotFoundException',file=sys.stderr);sys.exit(254)
+""",
                 # A reintroduced shared staging directory must fail without
                 # deleting or overwriting anything outside this throwaway tree.
-                'rm': '#!/bin/sh\nexit 97\n',
+                "rm": """#!/usr/bin/env python3
+import os,sys
+from pathlib import Path
+if len(sys.argv)!=3 or sys.argv[1]!='-f': sys.exit(97)
+p=Path(sys.argv[2]).resolve()
+if p.parent!=Path(os.environ['TMPDIR']).resolve(): sys.exit(97)
+p.unlink(missing_ok=True)
+""",
                 'cp': '#!/bin/sh\nexit 97\n',
             }
             for name, body in stubs.items():
@@ -134,13 +156,14 @@ class AgentGatewayBuildTests(unittest.TestCase):
             record = root / 'calls.jsonl'
             env.update(PATH=str(binaries) + os.pathsep + env['PATH'], ROOT_DIR=str(root), MODULE_ROOT=str(module),
                        AWS_REGION='us-east-1', REGISTRY=registry, ECR_REPO='adp-agent-gateway',
-                       ECR_REPO_NAME='adp-agent-gateway', IMAGE_TAG='release-sha', LOCAL_IMAGE_TAG='release-sha',
+                       ECR_REPO_NAME='adp-agent-gateway', IMAGE_TAG=('b' * 40 if path == 'codebuild' else 'release-sha'), LOCAL_IMAGE_TAG='release-sha',
+                       ADP_SOURCE_SHA='b' * 40, PUBLISH_LATEST='false', TMPDIR=str(root/'tmp'),
                        AGENT_IMAGE_TAG='release-sha', SKIP_IMG='false', DRY_RUN='false',
                        BUILD_TEST_RECORD=str(record), BUILD_TEST_FAIL=str(fail).lower())
             result = subprocess.run(['bash', '-c', 'set -euo pipefail\n' + build_commands(path)],
                                     cwd=root, env=env, text=True, capture_output=True)
             calls = [json.loads(line) for line in record.read_text().splitlines()] if record.exists() else []
-            return result, calls, registry + '/adp-agent-gateway:release-sha'
+            return result, calls, registry + '/adp-agent-gateway:' + ('b' * 40 if path == 'codebuild' else 'release-sha')
 
     def assert_build(self, path):
         result, calls, image = self.execute(path)
@@ -174,19 +197,15 @@ class AgentGatewayBuildTests(unittest.TestCase):
         self.assert_failed_build_stops_push('standalone')
 
     def test_failed_codebuild_does_not_report_success(self):
-        commands = '\n'.join(BUILDSPEC['phases']['post_build']['commands'])
-        result = subprocess.run(['bash', '-c', commands], env=dict(os.environ, CODEBUILD_BUILD_SUCCEEDING='0'),
-                                text=True, capture_output=True)
+        result, calls, _ = self.execute('codebuild', fail=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn('Pushed ', result.stdout)
+        self.assertNotIn('Published ', result.stdout)
+        self.assertFalse(any('push' in call for call in calls))
 
     def test_successful_codebuild_reports_publication(self):
-        commands = '\n'.join(BUILDSPEC['phases']['post_build']['commands'])
-        result = subprocess.run(['bash', '-c', commands], env=dict(os.environ, CODEBUILD_BUILD_SUCCEEDING='1',
-                                REGISTRY='example.test', ECR_REPO='worker', IMAGE_TAG='release'),
-                                text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0)
-        self.assertIn('Pushed example.test/worker:release', result.stdout)
+        result, _, _ = self.execute('codebuild')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Published 111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:', result.stdout)
 
 
 if __name__ == '__main__':
