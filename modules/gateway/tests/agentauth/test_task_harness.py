@@ -267,3 +267,41 @@ def test_responses_acceptance_cannot_omit_snapshot(store, frozen):
     args, _, _ = frozen
     with pytest.raises(TaskStoreError, match="requires a frozen harness"):
         store.accept(_request(persona=args["persona"], model_binding=args["model_binding"]))
+
+
+def test_executable_catalogue_freezes_only_granted_schemas_and_requires_tool_probe(frozen):
+    from src.agentauth.task_model_binding import TASK_RESPONSES_TOOLS_REQUEST_SHAPE
+    from src.agentauth.task_tool_policy import codex_tool_name
+
+    arguments, _, file = frozen
+    tool = {
+        "permission": "repository.read_change",
+        "capability": "repository.read",
+        "definition": {
+            "type": "function",
+            "name": codex_tool_name("repository.read_change"),
+            "description": "Read bound change.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "strict": False,
+        },
+    }
+    catalogue = json.loads(file.read_text())
+    catalogue["tools"] = [tool]
+    file.write_text(json.dumps(catalogue))
+    arguments = {
+        **arguments,
+        "tool_grants": [tool["permission"]],
+        "service_policy": {**arguments["service_policy"], "allowed_tools": [tool["permission"]]},
+    }
+    with pytest.raises(harness.TaskHarnessError):
+        harness.freeze_harness(**arguments)
+    arguments["model_binding"] = {**arguments["model_binding"], "request_shape_version": TASK_RESPONSES_TOOLS_REQUEST_SHAPE}
+    value = harness.freeze_harness(**arguments)
+    assert value["tools"] == [tool]
+    assert all("repository.read" in layer for layer in value["policy"]["capabilityLayers"].values())
+    file.write_text("unavailable")
+    assert harness.validate_harness(value, **{k: arguments[k] for k in ("persona", "model_binding", "limits")}) == value
+    file.write_text(json.dumps(catalogue))
+    for bad in [[], ["repository.merge_change"]]:
+        with pytest.raises(harness.TaskHarnessError):
+            harness.freeze_harness(**{**arguments, "service_policy": {**arguments["service_policy"], "allowed_tools": bad}})

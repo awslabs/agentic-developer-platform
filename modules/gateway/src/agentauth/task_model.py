@@ -206,8 +206,21 @@ class TaskModel:
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         return task
 
-    def _claim(self, *, identity, turn_id, digest, model_id, max_turns=None):
+    def _claim(self, *, identity, turn_id, digest, model_id, max_turns=None, tool_history=None):
         task = self._current(identity)
+        if tool_history is not None:
+            from src.agentauth.task_service_policy import TaskServicePolicyStore
+            from src.agentauth.task_tool_receipts import TaskToolReceipts
+            from src.agentauth.task_tool_routes import authorize_tool
+
+            policies = TaskServicePolicyStore(table_name=self.repository.authority_table_name, client=self.repository._client)
+            journal = TaskToolReceipts(
+                self.repository,
+                authorize=lambda current, tool: authorize_tool(self.repository, policies, current, tool),
+                catalogue=tool_history["catalogue"],
+                clock=self.clock,
+            )
+            journal.verify_history(identity=identity, turn_id=turn_id, history=tool_history["history"])
         turn = next((turn for turn in TaskTurnStore(self.repository).list_turns(identity.task_id) if turn["turn_id"] == turn_id), None)
         if turn is None:
             raise TaskStoreError("model turn has not been committed")
@@ -369,8 +382,9 @@ class TaskModel:
             raise TaskStoreError("ambiguous model transport")
         if responses_request:
             from src.agentauth.task_responses_contract import TaskResponsesRequest
+            from src.agentauth.task_responses_tools_contract import TaskToolsResponsesRequest
 
-            TaskResponsesRequest.model_validate(request)
+            (TaskToolsResponsesRequest if "tools" in request else TaskResponsesRequest).model_validate(request)
         if payload_digest(request) != request_digest:
             raise TaskStoreError("model request digest mismatch")
         task = await run_in_threadpool(self._current, identity)
@@ -390,6 +404,8 @@ class TaskModel:
         if grant["model_binding"].get("transport") != transport:
             raise TaskStoreError("task model transport does not match grant")
         max_persona_turns = None
+        tool_history = None
+        tool_profile = False
         if responses_request:
             from src.admin.persona_models.catalogue import persona_compatibility_class
 
@@ -403,6 +419,27 @@ class TaskModel:
                 )
             except TaskHarnessError:
                 raise TaskStoreError("Responses harness binding unavailable") from None
+            declared = harness.get("tools", [])
+            tool_profile = bool(declared)
+            if tool_profile != ("tools" in request):
+                raise TaskStoreError("Responses tool profile differs from frozen admission")
+            if declared:
+                expected_namespace = [
+                    {
+                        "type": "namespace",
+                        "name": "mcp__adp",
+                        "description": "Authorized ADP tools.",
+                        "tools": [tool["definition"] for tool in declared],
+                    }
+                ]
+                if request["tools"] != expected_namespace or not {tool["permission"] for tool in declared}.issubset(grant.get("tool_grants", [])):
+                    raise TaskStoreError("Responses tools differ from protected catalogue")
+                tool_history = {
+                    "catalogue": {tool["permission"]: tool["definition"]["name"] for tool in declared},
+                    "history": [item for item in request["input"] if item.get("type") in {"function_call", "function_call_output"}]
+                    if isinstance(request["input"], list)
+                    else [],
+                }
             frozen_policy = harness["policy"]
             if request["reasoning"]["effort"] not in frozen_policy["allowedEfforts"]:
                 raise TaskStoreError("Responses effort is not admitted")
@@ -420,11 +457,18 @@ class TaskModel:
             expected_policy_version=grant["model_binding"]["model_policy_version"],
             include_context=True,
             persona=task["persona"],
+            **({"responses_tools": True} if tool_profile else {}),
         )
         if binding != grant["model_binding"]:
             raise TaskStoreError("task model binding changed")
         operation, owned = await run_in_threadpool(
-            self._claim, identity=identity, turn_id=turn_id, digest=request_digest, model_id=binding["model_id"], max_turns=max_persona_turns
+            self._claim,
+            identity=identity,
+            turn_id=turn_id,
+            digest=request_digest,
+            model_id=binding["model_id"],
+            max_turns=max_persona_turns,
+            tool_history=tool_history,
         )
         if not owned:
             return self.receipt(operation)

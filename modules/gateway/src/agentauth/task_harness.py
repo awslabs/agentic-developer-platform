@@ -121,9 +121,26 @@ class Policy(Closed):
     deadlineMs: Annotated[int, Field(ge=1, le=9007199254740991)]
 
 
+class RuntimeTool(Closed):
+    permission: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,47}\.[a-z][a-z0-9_]{0,63}$")]
+    capability: CAPABILITIES
+    definition: dict
+
+    @model_validator(mode="after")
+    def reviewed_definition(self):
+        from src.agentauth.task_responses_tools_contract import TaskFunction
+        from src.agentauth.task_tool_policy import codex_tool_name
+
+        tool = TaskFunction.model_validate(self.definition)
+        if tool.name != codex_tool_name(self.permission):
+            raise ValueError("tool permission/function mismatch")
+        return self
+
+
 class Harness(Closed):
     snapshot: Snapshot
     policy: Policy
+    tools: Annotated[list[RuntimeTool], Field(min_length=1, max_length=64)] | None = None
 
 
 def _sha(value: str) -> str:
@@ -187,14 +204,25 @@ def validate_harness(value, *, persona, model_binding, limits):
             raise TaskHarnessError("invalid capability layers")
         if any(not set(definition.requiredCapabilities).issubset(layer) for layer in layers.values()):
             raise TaskHarnessError("required capabilities unavailable")
-        if not set(layers["runtime"]).issubset(TASK_RUNTIME_CAPABILITIES):
+        tools = harness.tools or []
+        permissions = [tool.permission for tool in tools]
+        if len(permissions) != len(set(permissions)):
+            raise TaskHarnessError("duplicate runtime permission")
+        runtime_capabilities = {*TASK_RUNTIME_CAPABILITIES, *(tool.capability for tool in tools)}
+        from src.agentauth.task_model_binding import TASK_RESPONSES_TOOLS_REQUEST_SHAPE
+
+        if bool(tools) != (model_binding["request_shape_version"] == TASK_RESPONSES_TOOLS_REQUEST_SHAPE):
+            raise TaskHarnessError("tool profile is not qualified")
+        if any(tool.capability not in layer for tool in tools for layer in layers.values()):
+            raise TaskHarnessError("tool capability unavailable")
+        if not set(layers["runtime"]).issubset(runtime_capabilities):
             raise TaskHarnessError("runtime capabilities unavailable")
-        return harness.model_dump()
+        return harness.model_dump(exclude_none=True)
     except (ValidationError, ValueError, TypeError, KeyError, OverflowError) as error:
         raise TaskHarnessError("invalid protected task harness") from error
 
 
-def freeze_harness(*, persona, model_binding, limits, service_policy, env=None):
+def freeze_harness(*, persona, model_binding, limits, service_policy, tool_grants=(), env=None):
     """Called before reservations/admission; authority comes only from server config."""
     if model_binding["transport"] != "openai_responses":
         return None
@@ -213,7 +241,8 @@ def freeze_harness(*, persona, model_binding, limits, service_policy, env=None):
         catalogue = json.loads(raw)
         if (
             not isinstance(catalogue, dict)
-            or set(catalogue) != {"schemaVersion", "snapshots"}
+            or not {"schemaVersion", "snapshots"}.issubset(catalogue)
+            or set(catalogue) - {"schemaVersion", "snapshots", "tools"}
             or type(catalogue["schemaVersion"]) is not int
             or catalogue["schemaVersion"] != 1
         ):
@@ -234,7 +263,18 @@ def freeze_harness(*, persona, model_binding, limits, service_policy, env=None):
         # Submit authority already permits the worker's report publication. No
         # executable permission is conferred by instructions or catalogue content.
         layers = {key: list(TASK_RUNTIME_CAPABILITIES) for key in ("tenant", "principal", "run", "surface", "runtime")}
+        reviewed = [RuntimeTool.model_validate(tool) for tool in catalogue.get("tools", [])]
+        if len(reviewed) > 64 or len({tool.permission for tool in reviewed}) != len(reviewed):
+            raise TaskHarnessError("invalid reviewed tool catalogue")
+        tools = [tool for tool in reviewed if tool.permission in tool_grants]
+        if set(tool_grants) != {tool.permission for tool in tools}:
+            raise TaskHarnessError("admitted tool lacks reviewed implementation schema")
+        if not set(tool_grants).issubset(service_policy.get("allowed_tools", [])):
+            raise TaskHarnessError("tool lacks principal authority")
+        for layer in layers.values():
+            layer.extend(sorted({tool.capability for tool in tools} - set(layer)))
         value = {
+            **({"tools": [tool.model_dump() for tool in tools]} if tools else {}),
             "snapshot": snapshot.model_dump(),
             "policy": {
                 "personaKey": definition.key,

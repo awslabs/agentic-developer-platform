@@ -129,3 +129,33 @@ DynamoDB reads and writes under Moto, with fixture canonical/model rows; they do
 not prove deployed inference or model-claim integration. Live profile qualification,
 frozen executable catalogue admission, route/model wiring and persona execution
 remain outstanding.
+
+
+## Gateway admission and model-path integration
+
+The deployment-owned persona catalogue can now contain reviewed tool descriptors
+(permission, capability and exact function schema). Admission freezes only tools
+in the principal/persona tool-grant intersection; a missing descriptor, mismatched
+stable function name or missing principal permission fails admission. Each tool's
+capability must be present in every frozen capability layer. Protected bootstrap
+size bounds include the descriptors. Resumption validates the frozen descriptors
+without rereading mutable catalogue files.
+
+Tool admission selects the distinct serial-tools-v3 model-evidence key; a report
+or reviewer probe cannot certify it. The model route accepts the separate wire
+contract. TaskModel compares its exact namespace with the protected catalogue,
+requires the selected profile, and invokes the durable history verifier inside
+the model claim before its Task-version/authority transaction. History refusal
+happens before a budget reservation or provider send. The gateway-owned provider
+adapter parses serial output and refuses undeclared names and repeated call IDs.
+The schema exporter now publishes both Responses profiles.
+
+Validation: 75 admission/harness/Responses tests pass; the model/model-binding/
+harness group passes 47 tests. These groups overlap. All 383 contract checks pass.
+The new model fixture exercises a successful first tool-profile model request,
+refuses a caller-replaced declaration and refuses invented tool history on a later
+canonical turn before any additional reservation or provider call. Inference and
+budget sinks remain fixtures. The existing shared SDK Task entrypoint still does
+not consume executable descriptors, and live tool-profile probing, a complete
+Task tool continuation, persona registration and live story acceptance remain
+outstanding. Gateway parsing alone is not persona enablement.

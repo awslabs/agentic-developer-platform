@@ -1,0 +1,794 @@
+{
+  "$defs": {
+    "ResponsesInputDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "cached_tokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Cached Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cached_tokens"
+      ],
+      "title": "ResponsesInputDetails",
+      "type": "object"
+    },
+    "ResponsesMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "message",
+          "default": "message",
+          "title": "Type",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "system",
+            "developer",
+            "user",
+            "assistant"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/ResponsesText"
+              },
+              "type": "array",
+              "maxItems": 64
+            }
+          ],
+          "maxLength": 32000,
+          "title": "Content"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "completed",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "enum": [
+                "commentary",
+                "final_answer"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "title": "ResponsesMessage",
+      "type": "object"
+    },
+    "ResponsesOutputDetails": {
+      "additionalProperties": false,
+      "properties": {
+        "reasoning_tokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Reasoning Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reasoning_tokens"
+      ],
+      "title": "ResponsesOutputDetails",
+      "type": "object"
+    },
+    "ResponsesOutputMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "message",
+          "title": "Type",
+          "type": "string"
+        },
+        "role": {
+          "const": "assistant",
+          "title": "Role",
+          "type": "string"
+        },
+        "status": {
+          "const": "completed",
+          "title": "Status",
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "enum": [
+                "commentary",
+                "final_answer"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "content": {
+          "items": {
+            "$ref": "#/$defs/ResponsesOutputText"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Content",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "role",
+        "status",
+        "content"
+      ],
+      "title": "ResponsesOutputMessage",
+      "type": "object"
+    },
+    "ResponsesOutputText": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "output_text",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 32000,
+          "title": "Text",
+          "type": "string"
+        },
+        "annotations": {
+          "items": {},
+          "maxItems": 0,
+          "title": "Annotations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "title": "ResponsesOutputText",
+      "type": "object"
+    },
+    "ResponsesReasoning": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "title": "Effort",
+          "type": "string"
+        }
+      },
+      "required": [
+        "effort"
+      ],
+      "title": "ResponsesReasoning",
+      "type": "object"
+    },
+    "ResponsesReasoningInput": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "reasoning",
+          "title": "Type",
+          "type": "string"
+        },
+        "encrypted_content": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "title": "Encrypted Content",
+          "type": "string"
+        },
+        "summary": {
+          "items": {
+            "$ref": "#/$defs/ResponsesSummary"
+          },
+          "maxItems": 16,
+          "title": "Summary",
+          "type": "array"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "completed",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "type",
+        "encrypted_content",
+        "summary"
+      ],
+      "title": "ResponsesReasoningInput",
+      "type": "object"
+    },
+    "ResponsesReasoningOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "reasoning",
+          "title": "Type",
+          "type": "string"
+        },
+        "encrypted_content": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "title": "Encrypted Content",
+          "type": "string"
+        },
+        "summary": {
+          "items": {
+            "$ref": "#/$defs/ResponsesSummary"
+          },
+          "maxItems": 16,
+          "title": "Summary",
+          "type": "array"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "completed",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "encrypted_content",
+        "summary",
+        "id"
+      ],
+      "title": "ResponsesReasoningOutput",
+      "type": "object"
+    },
+    "ResponsesSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "summary_text",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 32000,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "title": "ResponsesSummary",
+      "type": "object"
+    },
+    "ResponsesText": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "input_text",
+            "output_text"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 32000,
+          "title": "Text",
+          "type": "string"
+        },
+        "annotations": {
+          "items": {},
+          "maxItems": 0,
+          "title": "Annotations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "title": "ResponsesText",
+      "type": "object"
+    },
+    "ResponsesUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "input_tokens_details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponsesInputDetails"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "output_tokens_details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponsesOutputDetails"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "ResponsesUsage",
+      "type": "object"
+    },
+    "TaskFunction": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "function",
+          "title": "Type",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "strict": {
+          "const": false,
+          "title": "Strict",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "description",
+        "parameters",
+        "strict"
+      ],
+      "title": "TaskFunction",
+      "type": "object"
+    },
+    "TaskFunctionCall": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "function_call",
+          "title": "Type",
+          "type": "string"
+        },
+        "call_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Call Id",
+          "type": "string"
+        },
+        "namespace": {
+          "const": "mcp__adp",
+          "title": "Namespace",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "arguments": {
+          "maxLength": 32768,
+          "minLength": 2,
+          "title": "Arguments",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "completed",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "type",
+        "call_id",
+        "namespace",
+        "name",
+        "arguments"
+      ],
+      "title": "TaskFunctionCall",
+      "type": "object"
+    },
+    "TaskFunctionOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "function_call",
+          "title": "Type",
+          "type": "string"
+        },
+        "call_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Call Id",
+          "type": "string"
+        },
+        "namespace": {
+          "const": "mcp__adp",
+          "title": "Namespace",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "arguments": {
+          "maxLength": 32768,
+          "minLength": 2,
+          "title": "Arguments",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "const": "completed",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "call_id",
+        "namespace",
+        "name",
+        "arguments",
+        "id"
+      ],
+      "title": "TaskFunctionOutput",
+      "type": "object"
+    },
+    "TaskFunctionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "function_call_output",
+          "title": "Type",
+          "type": "string"
+        },
+        "call_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Call Id",
+          "type": "string"
+        },
+        "output": {
+          "items": {
+            "$ref": "#/$defs/TaskToolText"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "title": "Output",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "call_id",
+        "output"
+      ],
+      "title": "TaskFunctionResult",
+      "type": "object"
+    },
+    "TaskNamespace": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "namespace",
+          "title": "Type",
+          "type": "string"
+        },
+        "name": {
+          "const": "mcp__adp",
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "const": "Authorized ADP tools.",
+          "title": "Description",
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/TaskFunction"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Tools",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "description",
+        "tools"
+      ],
+      "title": "TaskNamespace",
+      "type": "object"
+    },
+    "TaskToolText": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "input_text",
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 32768,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "title": "TaskToolText",
+      "type": "object"
+    },
+    "TaskToolsResponsesRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ResponsesMessage"
+                  },
+                  {
+                    "$ref": "#/$defs/ResponsesReasoningInput"
+                  },
+                  {
+                    "$ref": "#/$defs/TaskFunctionCall"
+                  },
+                  {
+                    "$ref": "#/$defs/TaskFunctionResult"
+                  }
+                ]
+              },
+              "type": "array",
+              "maxItems": 64
+            }
+          ],
+          "maxLength": 32000,
+          "minLength": 1,
+          "title": "Input"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "maxLength": 32000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "reasoning": {
+          "$ref": "#/$defs/ResponsesReasoning"
+        },
+        "max_output_tokens": {
+          "maximum": 4096,
+          "minimum": 1,
+          "title": "Max Output Tokens",
+          "type": "integer"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/TaskNamespace"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Tools",
+          "type": "array"
+        },
+        "parallel_tool_calls": {
+          "const": false,
+          "title": "Parallel Tool Calls",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input",
+        "reasoning",
+        "max_output_tokens",
+        "tools",
+        "parallel_tool_calls"
+      ],
+      "title": "TaskToolsResponsesRequest",
+      "type": "object"
+    },
+    "TaskToolsResponsesResult": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "const": "completed",
+          "title": "Status",
+          "type": "string"
+        },
+        "output": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ResponsesOutputMessage"
+              },
+              {
+                "$ref": "#/$defs/ResponsesReasoningOutput"
+              },
+              {
+                "$ref": "#/$defs/TaskFunctionOutput"
+              }
+            ]
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Output",
+          "type": "array"
+        },
+        "usage": {
+          "$ref": "#/$defs/ResponsesUsage"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "output",
+        "usage"
+      ],
+      "title": "TaskToolsResponsesResult",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "request": {
+      "$ref": "#/$defs/TaskToolsResponsesRequest"
+    },
+    "result": {
+      "$ref": "#/$defs/TaskToolsResponsesResult"
+    }
+  },
+  "required": [
+    "request",
+    "result"
+  ],
+  "title": "ToolsResponsesContracts",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-responses-tools.schema.json"
+}

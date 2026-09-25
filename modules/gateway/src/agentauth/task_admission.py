@@ -70,6 +70,9 @@ class TaskAdmission:
             return self.receipt(task, replayed=True)
         now = self.clock()
         deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
+        from src.admin.persona_models.catalogue import persona_compatibility_class
+
+        tool_profile = bool(tool_grants) and persona_compatibility_class(submit["persona"]) == "codex-sdk"
         binding = await self.model_resolver(
             db,
             tenant=caller.tenant_id,
@@ -77,6 +80,7 @@ class TaskAdmission:
             deadline=deadline,
             expected_policy_version=policy["model_policy_version"],
             persona=submit["persona"],
+            **({"responses_tools": True} if tool_profile else {}),
         )
         refs = []
         total_bytes = 0
@@ -122,7 +126,7 @@ class TaskAdmission:
         from src.agentauth.task_harness import TaskHarnessError, assert_bootstrap_size, freeze_harness
 
         try:
-            harness = freeze_harness(persona=submit["persona"], model_binding=binding, limits=limits, service_policy=policy)
+            harness = freeze_harness(persona=submit["persona"], model_binding=binding, limits=limits, service_policy=policy, tool_grants=tool_grants)
             if harness is not None:
                 assert_bootstrap_size(harness, immutable_input=immutable_input, model_binding=binding, limits=limits)
         except TaskHarnessError:

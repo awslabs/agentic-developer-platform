@@ -275,7 +275,10 @@
           "description": "Anthropic Messages-format content blocks when confirmed; null otherwise."
         },
         "stop_reason": { "type": ["string", "null"], "maxLength": 64 },
-        "responses_response": { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesResult" },
+        "responses_response": { "anyOf": [
+          { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesResult" },
+          { "$ref": "codex-responses-tools.schema.json#/$defs/TaskToolsResponsesResult" }
+        ] },
         "error_code": {
           "type": ["string", "null"],
           "enum": ["model_access_denied", "budget_exceeded", "authority_revoked", "model_outcome_unknown", "deadline_exceeded", null]
@@ -462,7 +465,10 @@
           "$ref": "common.schema.json#/$defs/turn_id"
         },
         "responses_request": {
-          "$ref": "codex-responses.schema.json#/$defs/TaskResponsesRequest"
+          "oneOf": [
+            { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesRequest" },
+            { "$ref": "codex-responses-tools.schema.json#/$defs/TaskToolsResponsesRequest" }
+          ]
         }
       }
     },

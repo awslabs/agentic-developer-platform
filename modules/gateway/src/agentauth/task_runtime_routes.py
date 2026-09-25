@@ -15,6 +15,7 @@ from src.agentauth.routes import require_agent_transport
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
 from src.agentauth.task_responses_contract import TaskResponsesRequest
+from src.agentauth.task_responses_tools_contract import TaskToolsResponsesRequest
 from src.agentauth.task_routes import task_delivery
 from src.agentauth.task_runtime import TaskRuntime
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
@@ -318,7 +319,7 @@ class ModelBody(BaseModel):
     max_tokens: int | None = Field(default=None, ge=1, le=4096, strict=True)
     system: str | None = Field(default=None, max_length=16000)
     sdk_request: SdkRequest | None = None
-    responses_request: TaskResponsesRequest | None = None
+    responses_request: TaskResponsesRequest | TaskToolsResponsesRequest | None = None
 
     @model_validator(mode="after")
     def exclusive_request(self):

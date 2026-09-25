@@ -21,9 +21,12 @@ from src.tasks.store import TaskStoreError
 async def invoke_task_responses(db, *, identity, binding, target, request, operation_id):
     # Do not use create_response: it independently settles proxy requests. This
     # caller must settle exactly once through the durable TaskModel operation.
+    from src.agentauth.task_model_binding import TASK_RESPONSES_TOOLS_REQUEST_SHAPE
+    from src.agentauth.task_responses_tools_contract import TaskToolsResponsesRequest, TaskToolsResponsesResult
     from src.proxy.routes import get_mantle_service
 
-    TaskResponsesRequest.model_validate(request)
+    tool_profile = binding.get("request_shape_version") == TASK_RESPONSES_TOOLS_REQUEST_SHAPE
+    (TaskToolsResponsesRequest if tool_profile else TaskResponsesRequest).model_validate(request)
     service = get_mantle_service()
     credentials = None
     if not target.is_platform:
@@ -71,14 +74,28 @@ async def invoke_task_responses(db, *, identity, binding, target, request, opera
         raise TaskStoreError("task Responses total usage inconsistent")
     # Keep only the output contract. Provider metadata is consumed for pricing;
     # it must not become a new instruction, credential or tool in the SDK child.
-    result = TaskResponsesResult.model_validate(
-        {
-            "id": document.get("id"),
-            "status": document.get("status"),
-            "output": document.get("output"),
-            "usage": {key: usage[key] for key in ("input_tokens", "output_tokens", "input_tokens_details", "output_tokens_details") if key in usage},
-        }
-    ).model_dump(exclude_none=True)
+    result = (
+        (TaskToolsResponsesResult if tool_profile else TaskResponsesResult)
+        .model_validate(
+            {
+                "id": document.get("id"),
+                "status": document.get("status"),
+                "output": document.get("output"),
+                "usage": {
+                    key: usage[key] for key in ("input_tokens", "output_tokens", "input_tokens_details", "output_tokens_details") if key in usage
+                },
+            }
+        )
+        .model_dump(exclude_none=True)
+    )
+    if tool_profile:
+        names = {tool["name"] for tool in request["tools"][0]["tools"]}
+        prior_ids = (
+            {item["call_id"] for item in request["input"] if item.get("type") == "function_call"} if isinstance(request["input"], list) else set()
+        )
+        for item in result["output"]:
+            if item["type"] == "function_call" and (item["name"] not in names or item["call_id"] in prior_ids):
+                raise TaskStoreError("provider returned unadmitted or replayed tool call")
     evidence = service._capture_usage(
         usage,
         body,

@@ -65,7 +65,8 @@ async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revis
 
 
 @pytest.mark.asyncio
-async def test_task_responses_requires_distinct_task_probe_and_codex_class(monkeypatch):
+@pytest.mark.parametrize("tools", [False, True])
+async def test_task_responses_requires_distinct_task_probe_and_codex_class(monkeypatch, tools):
     from src.agentauth.task_responses_contract import TASK_RESPONSES_REVISION
 
     persona = "agent-task-gpt-fixture"
@@ -78,6 +79,7 @@ async def test_task_responses_requires_distinct_task_probe_and_codex_class(monke
             deadline=datetime.now(UTC) + timedelta(minutes=30),
             expected_policy_version="1",
             persona=persona,
+            responses_tools=tools,
         )
     monkeypatch.setattr(module, "persona_compatibility_class", lambda key: "codex-sdk" if key == persona else None)
     policy = SimpleNamespace(
@@ -105,10 +107,15 @@ async def test_task_responses_requires_distinct_task_probe_and_codex_class(monke
             deadline=datetime.now(UTC) + timedelta(minutes=30),
             expected_policy_version="1",
             persona=persona,
+            responses_tools=tools,
         )
     assert lookup.call_args.kwargs["compatibility_class"] == "codex-sdk"
-    assert lookup.call_args.kwargs["harness_contract_revision"] == TASK_RESPONSES_REVISION
-    assert lookup.call_args.kwargs["request_shape_sha256"] == module.TASK_RESPONSES_REQUEST_SHAPE
+    from src.agentauth.task_responses_tools_contract import TASK_RESPONSES_TOOLS_REVISION
+
+    assert lookup.call_args.kwargs["harness_contract_revision"] == (TASK_RESPONSES_TOOLS_REVISION if tools else TASK_RESPONSES_REVISION)
+    assert lookup.call_args.kwargs["request_shape_sha256"] == (
+        module.TASK_RESPONSES_TOOLS_REQUEST_SHAPE if tools else module.TASK_RESPONSES_REQUEST_SHAPE
+    )
 
 
 @pytest.mark.asyncio

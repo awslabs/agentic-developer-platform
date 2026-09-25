@@ -62,7 +62,43 @@ TASK_RESPONSES_PROBE_BODY = {
 TASK_RESPONSES_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_RESPONSES_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version, include_context=False, persona=TASK_PERSONA):
+# Distinct evidence is required for namespace calls and their continuation. A
+# text/reviewer probe cannot certify this wire shape.
+TASK_RESPONSES_TOOLS_PROBE_BODY = {
+    "input": "Call task_probe with value OK.",
+    "reasoning": {"effort": "medium"},
+    "max_output_tokens": 128,
+    "parallel_tool_calls": False,
+    "tools": [
+        {
+            "type": "namespace",
+            "name": "mcp__adp",
+            "description": "Authorized ADP tools.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "task_probe",
+                    "description": "Return probe evidence.",
+                    "strict": False,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"],
+                        "additionalProperties": False,
+                    },
+                }
+            ],
+        }
+    ],
+}
+TASK_RESPONSES_TOOLS_REQUEST_SHAPE = hashlib.sha256(
+    json.dumps(TASK_RESPONSES_TOOLS_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
+
+
+async def resolve_task_model(
+    db, *, tenant, principal, deadline, expected_policy_version, include_context=False, persona=TASK_PERSONA, responses_tools=False
+):
     from src.agentauth.task_responses_contract import TASK_RESPONSES_REVISION, TASK_RESPONSES_TRANSPORT
 
     responses = persona.startswith("agent-task-") and persona_compatibility_class(persona) == "codex-sdk"
@@ -72,6 +108,12 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
     compatibility = "codex-sdk" if responses else TASK_TRANSPORT
     revision = TASK_RESPONSES_REVISION if responses else TASK_CYBER_CONTRACT_REVISION if persona == TASK_CYBER_PERSONA else TASK_CONTRACT_REVISION
     shape = TASK_RESPONSES_REQUEST_SHAPE if responses else TASK_CYBER_REQUEST_SHAPE if persona == TASK_CYBER_PERSONA else TASK_REQUEST_SHAPE
+    if responses_tools:
+        from src.agentauth.task_responses_tools_contract import TASK_RESPONSES_TOOLS_REVISION
+
+        if not responses:
+            raise ModelPolicyError("task_model_transport_unsupported")
+        revision, shape = TASK_RESPONSES_TOOLS_REVISION, TASK_RESPONSES_TOOLS_REQUEST_SHAPE
     policy = await _resolve_active_allowlist_policy(
         db, tenant_id=tenant, principal_kind="service_account", principal_id=principal, expires_at=deadline
     )

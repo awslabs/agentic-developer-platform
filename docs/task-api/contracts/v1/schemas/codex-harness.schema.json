@@ -224,6 +224,47 @@
       "title": "Policy",
       "type": "object"
     },
+    "RuntimeTool": {
+      "additionalProperties": false,
+      "properties": {
+        "permission": {
+          "pattern": "^[a-z][a-z0-9_]{0,47}\\.[a-z][a-z0-9_]{0,63}$",
+          "title": "Permission",
+          "type": "string"
+        },
+        "capability": {
+          "enum": [
+            "repository.read",
+            "repository.write",
+            "branch.push",
+            "change.create",
+            "change.update",
+            "review.submit",
+            "change.merge",
+            "story.create",
+            "tests.run",
+            "artifacts.publish",
+            "agents.delegate",
+            "aws.assume",
+            "aws.mutate"
+          ],
+          "title": "Capability",
+          "type": "string"
+        },
+        "definition": {
+          "additionalProperties": true,
+          "title": "Definition",
+          "type": "object"
+        }
+      },
+      "required": [
+        "permission",
+        "capability",
+        "definition"
+      ],
+      "title": "RuntimeTool",
+      "type": "object"
+    },
     "Snapshot": {
       "additionalProperties": false,
       "properties": {
@@ -265,6 +306,23 @@
     },
     "policy": {
       "$ref": "#/$defs/Policy"
+    },
+    "tools": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/RuntimeTool"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tools"
     }
   },
   "required": [
