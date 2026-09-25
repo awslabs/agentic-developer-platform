@@ -127,6 +127,23 @@ evaluation can accept it. A future run must still independently check rollout
 readiness, use this release's full expected source revision, and verify served
 CLI hashes; adding a receipt neither runs nor passes an evaluation.
 
+### Global stream-quota release receipt (2026-09-25)
+
+The current gateway image is
+`sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260`,
+built from `a16a2a851d17998b8cd51dfa47b77275251229cc` by successful CodeBuild
+`adp-dev-gateway-build:f7125871-a75e-4289-ae87-cf37ba7612c9`.
+Its uploaded source archive matches a fresh Git archive of that revision, and the
+build's push log binds the `task-api-global-stream-quota` tag to this exact digest.
+The catalog records its source key and archive hash and retains previous receipts.
+All 15 served CLI files, including the installer, were independently compared
+with the committed installer file list and Git bytes at this source revision.
+
+This is provenance for the currently deployed image, not an evaluation acceptance
+result. No receipt or acceptance claim is added for the interrupted S10 image
+rollout. Future evaluation still requires a settled deployment, the exact expected
+revision above and its own served-byte checks.
+
 ### Scoped observer rollout (supervisor only)
 
 These artifacts are prepared, not applied by the PR:
