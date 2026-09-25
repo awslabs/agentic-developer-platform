@@ -47,6 +47,7 @@ from tests.test_batch_results_postgres import (
         "defaulted",
         "journal-mismatch",
         "before-post",
+        "missing-submission",
     ],
 )
 async def test_original_paid_workload_recovery(output, monkeypatch, change):
@@ -200,6 +201,10 @@ async def test_original_paid_workload_recovery(output, monkeypatch, change):
 
     monkeypatch.setattr(worker.registry.authority, "delivery_role", recovery_role)
     observing = True
+    if change == "missing-submission":
+        monkeypatch.setattr(
+            workload_submissions, "originals", AsyncMock(return_value=None)
+        )
     if change in {"revoked", "foreign-step", "journal-mismatch"}:
         with pytest.raises(HTTPException) as refused:
             await routes.observe(body, output.c.api_request, observer)
