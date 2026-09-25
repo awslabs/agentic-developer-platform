@@ -99,7 +99,9 @@ by `fixture_identity.run_id`.
 
 To measure side effects during those requests, configure
 `runtime_observer_command` as an argv list invoking `observe_runtime.py --config`
-with the same config file. Also supply `kubeconfig`, `runtime_namespace`,
+with the same config file. Set `runtime_run_id` to the owned resource label
+(`adp.io/w2-fixture`), separate from the invocation UUID in `fixture_run_id`.
+Also supply `kubeconfig`, `runtime_namespace`,
 `runtime_pod_name`, `runtime_pod_uid`, `runtime_progress_path`, `runtime_revision`
 and integer `runtime_generation`. The observer reads the new private registered
 fixture progress file and the authenticated gateway journal. It requires the

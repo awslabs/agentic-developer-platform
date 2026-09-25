@@ -24,7 +24,7 @@ def observe(config, run, request):
         meta = obj['metadata']
         if (meta['uid'] != config['runtime_pod_uid'] or meta['name'] != pod_name or
             meta['namespace'] != config['runtime_namespace'] or
-            meta.get('labels', {}).get('adp.io/w2-fixture') != config['fixture_run_id']):
+            meta.get('labels', {}).get('adp.io/w2-fixture') != config['runtime_run_id']):
             raise ValueError('fixture pod ownership differs')
         statuses = obj.get('status', {}).get('containerStatuses', [])
         worker = next((x for x in statuses if x['name'] == 'agent-worker'), {})

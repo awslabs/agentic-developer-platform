@@ -18011,10 +18011,10 @@ def test_security_collector_preserves_real_responses_and_never_commands_live_own
         if token != 'Bearer OWNER' or '/unknown/' in url: return 404, {'detail': 'Not found'}
         assert '/terminal/' in url, 'collector must never issue a valid live-owner command'
         return 410, {}
-    config.update(runtime_revision='a'*40, runtime_generation=1, runtime_pod_uid='pod')
+    config.update(runtime_revision='a'*40, runtime_generation=1, runtime_pod_uid='pod', runtime_run_id='resource-label')
     def observe():
         return dict(pod_uid='pod', observed_by='measured runtime', observed_at='2026-09-24T18:00:00Z',
-            progress=dict(invocation_id='live', run_id=config['fixture_run_id'], source_revision='a'*40,
+            progress=dict(invocation_id='live', run_id=config['runtime_run_id'], source_revision='a'*40,
                 generation=1, counters_complete=True, dropped_events=0, active_tools=0, sdk_queries=1, tool_starts=2),
             state=dict(generation=1, commands=[]))
     gateway = collector.collect_gateway(config, request, observe if measure_runtime else None)
