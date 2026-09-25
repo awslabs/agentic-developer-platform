@@ -837,10 +837,9 @@ class TestRealPostgres:
         """
         import psycopg2
 
-        from alembic.script import ScriptDirectory
         from tests.migrations.conftest_postgres import downgrade, upgrade
 
-        upgrade(pg_url, "head")
+        upgrade(pg_url, MIG_056.revision)
         downgrade(pg_url, MIG_056.down_revision)
 
         with psycopg2.connect(pg_url) as conn, conn.cursor() as cursor:
@@ -852,16 +851,14 @@ class TestRealPostgres:
         leftover = [t for t in ALL_TABLES if t in after_downgrade]
         assert not leftover, f"downgrade left tables behind: {leftover}"
 
-        upgrade(pg_url, "head")
+        upgrade(pg_url, MIG_056.revision)
 
         with psycopg2.connect(pg_url) as conn, conn.cursor() as cursor:
             cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             restored = {row[0] for row in cursor.fetchall()}
             cursor.execute("SELECT version_num FROM alembic_version")
-            # Later migrations advance head; verify the real chain's current
-            # head rather than pinning this round trip to an old successor.
-            expected_head = ScriptDirectory(str(MIGRATIONS_DIR.parent)).get_current_head()
-            assert cursor.fetchone()[0] == expected_head
+            # Only round-trip the migration owned by this regression.
+            assert cursor.fetchone()[0] == MIG_056.revision
             cursor.execute(f"SELECT COUNT(*) FROM {SETTINGS}")
             assert cursor.fetchone()[0] == 1, "re-upgrade must re-seed exactly one settings row"
 

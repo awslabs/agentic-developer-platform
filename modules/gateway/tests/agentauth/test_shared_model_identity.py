@@ -100,6 +100,8 @@ async def invoke(model_path, shared, *, headers=None, during_upload=None, enforc
         sent.append(frame)
 
     async def provider(scope, receive, send):
+        # This fake models a submitted paid call, including unknown usage/errors.
+        scope["state"]["token_context"]._budget_provider_started = True
         assert b"x-adp-report-credential" not in dict(scope["headers"])
         assert shared.credential not in str(token.model_dump())
         model_path.calls += 1

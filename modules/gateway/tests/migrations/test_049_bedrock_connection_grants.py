@@ -79,11 +79,11 @@ def test_model_migration_parity_and_guarded_downgrade(connection):
 
 
 def test_real_postgres_migration_chain(pg_url):
-    upgrade(pg_url)
+    upgrade(pg_url, migration.revision)
     assert len(migration.revision) <= 32
     result = run_alembic(pg_url, "downgrade", migration.down_revision)
     assert result.returncode == 0, result.stdout + result.stderr
-    upgrade(pg_url)
+    upgrade(pg_url, migration.revision)
 
 
 async def test_concurrent_link_retries_and_mapping_unlink_serialize(pg_url, monkeypatch):

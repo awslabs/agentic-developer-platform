@@ -246,6 +246,8 @@ class _Harness:
 
     async def _inner_app(self, scope, receive, send):
         self.app_invoked = True
+        # This harness simulates an admitted provider call, not a free local response.
+        scope["state"]["token_context"]._budget_provider_started = True
         while True:
             message = await receive()
             if not message.get("more_body", False):

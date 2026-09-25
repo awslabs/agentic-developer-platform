@@ -60,10 +60,9 @@ class LoggingMiddleware:
         should_skip = _should_skip(path)
 
         # Extract or generate request ID from headers
-        headers_list = scope.get("headers", [])
         token_context = scope.get("state", {}).get("token_context")
         policy_request_id = getattr(token_context, "_policy_request_id", None)
-        request_id = policy_request_id or _extract_request_id(headers_list) or str(uuid.uuid4())
+        request_id = scope.get("state", {}).get("request_id") or policy_request_id or str(uuid.uuid4())
 
         # Set logging context
         set_request_context(request_id=request_id)
@@ -167,6 +166,8 @@ def _log_request_start(request: Request) -> None:
         "method": request.method,
         "path": request.url.path,
     }
+    if request.scope.get("state", {}).get("client_request_id"):
+        extra["client_request_id"] = request.scope["state"]["client_request_id"]
     query = str(request.query_params) if request.query_params else None
     if query:
         extra["query_string"] = query

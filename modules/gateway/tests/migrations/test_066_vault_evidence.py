@@ -22,7 +22,7 @@ def test_current_database_upgrades_and_vault_downgrade_preserves_controls(pg_url
     try:
         with engine.begin() as connection:
             connection.execute(text("INSERT INTO budget_enforcement_settings VALUES ('global', false, 1, 'operator', NOW())"))
-        upgrade(pg_url, "head")
+        upgrade(pg_url, "066_cred_evidence_delegation")
         with engine.connect() as connection:
             tables = inspect(connection).get_table_names()
             assert {"credential_workspace_delegations", "credential_validation_evidence"} <= set(tables)

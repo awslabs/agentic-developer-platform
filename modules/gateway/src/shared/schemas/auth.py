@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -155,6 +155,7 @@ class TokenContext(BaseModel):
     # degraded registry lookup all reserve no run/chain target and so release
     # none, reconciling exactly as they did before this issue.
     _run_scope_reservations: "list[ReservationTarget]" = PrivateAttr(default_factory=list)
+    _budget_admission_targets: "list[ReservationTarget] | None" = PrivateAttr(default=None)
     # Set after protected pod/grant verification, or authenticated shared-run
     # assignment and accepted policy verification in the model middleware.
     # Neither model parsing nor headers can supply a pydantic private attribute.
@@ -195,6 +196,8 @@ class TokenContext(BaseModel):
     _persona_usage_attribution: "PersonaUsageAttribution | None" = PrivateAttr(default=None)
     _budget_observation_scope: str | None = PrivateAttr(default=None)
     _budget_enforcement_enabled: bool = PrivateAttr(default=True)
+    _budget_provider_started: bool = PrivateAttr(default=False)
+    _budget_request_timestamp: datetime = PrivateAttr(default_factory=lambda: datetime.now(UTC))
     _budget_accounting_incomplete: bool = PrivateAttr(default=False)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_scope_caps: tuple[Decimal, Decimal] | None = PrivateAttr(default=None)

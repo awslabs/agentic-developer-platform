@@ -275,3 +275,14 @@ async def test_a_route_with_no_adapter_meters_as_before(monkeypatch):
     monkeypatch.setattr("src.orchestration.provider_quotes.adapter_for", lambda path: None)
     trusted = await mantle_service.MantlePassthroughService._trusted_usage({})
     assert trusted.known
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_sql_failure_does_not_release_mantle_reservation(settlement, monkeypatch, stream):
+    service = MagicMock()
+    service.log_request = AsyncMock(side_effect=RuntimeError("ledger unavailable"))
+    monkeypatch.setattr(mantle_service, "UsageService", lambda db: service)
+    await call({"input_tokens": 500, "output_tokens": 16}, stream=stream)
+    assert settlement.await_count == 1
+    assert settlement.await_args.kwargs["usage_known"] is False

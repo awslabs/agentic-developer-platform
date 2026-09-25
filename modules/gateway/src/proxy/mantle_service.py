@@ -38,7 +38,6 @@ import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -424,6 +423,7 @@ class MantlePassthroughService:
         headers = self._headers(body, routed)
         client = self._client()
         try:
+            context._budget_provider_started = True
             resp = await client.post(routed.upstream_url, content=body, headers=headers)
             status_code = resp.status_code
             metadata["provider_request_id"] = resp.headers.get("x-amzn-requestid") or resp.headers.get("x-request-id")
@@ -477,6 +477,7 @@ class MantlePassthroughService:
         # status, and guarantees the failure is logged (#3897).
         try:
             upstream_request = client.build_request("POST", routed.upstream_url, content=body, headers=headers, timeout=self._stream_timeout)
+            context._budget_provider_started = True
             resp = await client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:
             if owns_client:
@@ -799,56 +800,6 @@ class MantlePassthroughService:
                 extra={"request_id": request_id, "model": model, "reason": trusted.reason},
             )
 
-        await reconcile_budget_reservation(
-            context=context,
-            request_id=request_id,
-            model_id=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            actual_cost_usd=cost_usd,
-            usage_known=decision is not None and trusted.known,
-        )
-
-        # Budget & Spend reads budget_usage, not usage_logs. Only the S3 event
-        # consumed by budget-usage-tracker settles that ledger; writing the row
-        # below alone leaves Codex spend invisible once its reservation expires.
-        # Emit once from this common streaming/non-streaming completion hook.
-        # Usage-only payload: no prompt, response text, or credentials are needed
-        # for settlement. Missing usage is not a measured zero.
-        if decision is not None:
-            try:
-                if self._chat_logger is None:
-                    self._chat_logger = ChatLoggingService()
-                self._chat_logger.log_chat_async(
-                    request_id=request_id or str(uuid4()),
-                    timestamp=datetime.now(UTC),
-                    org_id=context.attributed_org_id,
-                    user_id=context.user_id,
-                    team_id=context.team_id,
-                    root_human_id=context.attributed_user_id,
-                    account_type="service" if context.account_type == "service" else "human",
-                    model=model,
-                    api_format="openai",
-                    latency_ms=latency_ms,
-                    request_body={},
-                    response_body={
-                        "model": model,
-                        "usage": {
-                            "input_tokens": decision.usage["total_input_tokens"],
-                            "output_tokens": output_tokens,
-                            "cache_read_input_tokens": decision.usage["cache_read_input_tokens"]
-                            if decision.usage["raw"]["cache_read_input_tokens"] is not None
-                            else None,
-                            "cache_creation_input_tokens": decision.usage["cache_creation_input_tokens"]
-                            if decision.usage["raw"]["cache_creation_input_tokens"] is not None
-                            else None,
-                        },
-                    },
-                    pricing_decision=decision.to_dict(),
-                )
-            except Exception as exc:  # noqa: BLE001 - settlement must not break the proxy or usage logging
-                logger.warning("Failed to schedule mantle budget settlement", extra={"error": str(exc), "model": model})
-
         try:
             # Issue #2792: compute real cost via the shared pricing table instead
             # of the previous hardcoded 0.0. Unknown models fall back to the
@@ -882,3 +833,61 @@ class MantlePassthroughService:
                 )
         except Exception as exc:  # noqa: BLE001 - metering must not break the proxy
             logger.warning("Failed to write mantle usage_logs row", extra={"error": str(exc), "model": model})
+            await reconcile_budget_reservation(
+                context=context,
+                request_id=request_id,
+                model_id=model,
+                input_tokens=0,
+                output_tokens=0,
+                actual_cost_usd=Decimal("0"),
+                usage_known=False,
+            )
+        else:
+            await reconcile_budget_reservation(
+                context=context,
+                request_id=request_id,
+                model_id=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                actual_cost_usd=cost_usd,
+                usage_known=decision is not None and trusted.known,
+            )
+
+        # Optional transcript emission shares the already-committed SQL receipt.
+        # The tracker can recover a failed SQL write without duplicating a debit.
+        # Usage-only payload: no prompt, response text, or credentials are needed
+        # for settlement. Missing usage is not a measured zero.
+        if decision is not None:
+            try:
+                if self._chat_logger is None:
+                    self._chat_logger = ChatLoggingService()
+                self._chat_logger.log_chat_async(
+                    request_id=request_id or str(uuid4()),
+                    timestamp=context._budget_request_timestamp,
+                    org_id=context.attributed_org_id,
+                    user_id=context.user_id,
+                    team_id=context.team_id,
+                    department_id=context.department_id,
+                    root_human_id=context.attributed_user_id,
+                    account_type="service" if context.account_type == "service" else "human",
+                    model=model,
+                    api_format="openai",
+                    latency_ms=latency_ms,
+                    request_body={},
+                    response_body={
+                        "model": model,
+                        "usage": {
+                            "input_tokens": decision.usage["total_input_tokens"],
+                            "output_tokens": output_tokens,
+                            "cache_read_input_tokens": decision.usage["cache_read_input_tokens"]
+                            if decision.usage["raw"]["cache_read_input_tokens"] is not None
+                            else None,
+                            "cache_creation_input_tokens": decision.usage["cache_creation_input_tokens"]
+                            if decision.usage["raw"]["cache_creation_input_tokens"] is not None
+                            else None,
+                        },
+                    },
+                    pricing_decision=decision.to_dict(),
+                )
+            except Exception as exc:  # noqa: BLE001 - settlement must not break the proxy or usage logging
+                logger.warning("Failed to schedule mantle budget settlement", extra={"error": str(exc), "model": model})

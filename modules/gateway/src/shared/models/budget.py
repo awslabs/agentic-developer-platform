@@ -231,3 +231,15 @@ class PersonBudgetDefault(Base):
             name="ck_person_budget_default_hard",
         ),
     )
+
+
+class BudgetSettlementReceipt(Base):
+    """Claim and all budget debits commit together; historical rows are not inferred."""
+
+    __tablename__ = "budget_settlement_receipts"
+    allocation_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    org_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)

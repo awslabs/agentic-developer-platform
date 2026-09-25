@@ -218,7 +218,7 @@ class ProxyService(IProxyService):
             client = await self._client_for_request(decision, context)
 
             # Invoke Bedrock
-            response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target)
+            response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, context=context)
 
             # Calculate latency
             latency_ms = (time.time() - start_time) * 1000
@@ -320,7 +320,7 @@ class ProxyService(IProxyService):
 
             # Invoke Bedrock with streaming
             response_id = str(uuid.uuid4())
-            bedrock_stream = await self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target)
+            bedrock_stream = await self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, context=context)
 
             # Convert stream to target format
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, api_format, model, response_id):
@@ -478,7 +478,7 @@ class ProxyService(IProxyService):
 
     async def _log_usage(self, **kwargs) -> None:
         capture = kwargs.get("pricing_capture")
-        if capture is None or not capture.is_claude:
+        if capture is None or capture.routing is None:
             await self._log_usage_impl(**kwargs)
             return
         # A disconnect may arrive after measured usage while pricing or usage
@@ -564,7 +564,7 @@ class ProxyService(IProxyService):
                 "Settling verified Bedrock rejection before inference",
                 extra={"request_id": request_id, "bedrock_error_code": rejection.code, "operation": rejection.operation},
             )
-        elif pricing_capture is not None and pricing_capture.is_claude:
+        elif pricing_capture is not None and pricing_capture.routing is not None:
             request_id = pricing_capture.request_id
             try:
                 priced = await price_completed_usage(
@@ -586,11 +586,14 @@ class ProxyService(IProxyService):
                     priced.usage["cache_creation_input_tokens"] if priced.usage["raw"]["cache_creation_input_tokens"] is not None else None
                 )
             except Exception as exc:
-                logger.warning("Claude usage could not be priced", extra={"request_id": request_id, "error": str(exc)})
+                logger.warning("Provider usage could not be priced", extra={"request_id": request_id, "error": str(exc)})
                 # Do not invent zero-token success or emit a legacy-priced event
                 # when the provider omitted usage or source verification failed.
                 pricing_failed = True
                 cost_usd = Decimal("0")
+
+        if pricing_capture is not None and pricing_capture.routing is None and rejection is None:
+            pricing_failed = True
 
         async def persist_usage():
             if pricing_failed:
@@ -630,16 +633,6 @@ class ProxyService(IProxyService):
                 shadow_target = await resolve_shadow_target(context)
                 bedrock_account_id = shadow_target.account_id if shadow_target else None
 
-            if not pricing_failed:
-                await reconcile_budget_reservation(
-                    context=context,
-                    request_id=request_id,
-                    model_id=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    **({"actual_cost_usd": actual_cost} if actual_cost is not None else {}),
-                )
-
             try:
                 session_factory = get_session_factory()
                 async with session_factory() as session:
@@ -668,12 +661,34 @@ class ProxyService(IProxyService):
                     "Failed to write usage_logs row",
                     extra={"error": str(exc), "model": model},
                 )
+                await reconcile_budget_reservation(
+                    context=context,
+                    request_id=request_id,
+                    model_id=model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    actual_cost_usd=Decimal("0"),
+                    usage_known=False,
+                )
+            else:
+                if not pricing_failed:
+                    await reconcile_budget_reservation(
+                        context=context,
+                        request_id=request_id,
+                        model_id=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        **({"actual_cost_usd": actual_cost} if actual_cost is not None else {}),
+                    )
 
-        if pricing_capture is not None and pricing_capture.is_claude:
+        if pricing_capture is not None and pricing_capture.routing is not None:
             try:
                 async with asyncio.timeout(CLAUDE_PERSISTENCE_TIMEOUT_SECONDS):
                     await persist_usage()
             except TimeoutError:
+                # The existing estimate remains held; never perform an unbounded
+                # second Redis attempt after this finalizer's deadline.
+                context._budget_accounting_incomplete = True
                 logger.warning(
                     "Claude usage persistence timed out; keeping measured pricing decision for settlement",
                     extra={"request_id": request_id, "pricing_decision_available": pricing_capture.decision is not None},
@@ -766,6 +781,7 @@ class ProxyService(IProxyService):
         request: BedrockInvokeRequest,
         target: BedrockTarget | None = None,
         pricing_capture: PricingCapture | None = None,
+        context: TokenContext | None = None,
     ) -> BedrockInvokeResponse:
         """Invoke Bedrock model.
 
@@ -797,9 +813,12 @@ class ProxyService(IProxyService):
                 attributes={"bedrock.model_id": model_id},
             ):
                 try:
+                    request_body = json.dumps(request.model_dump(exclude_none=True))
+                    if context is not None:
+                        context._budget_provider_started = True
                     response = await client.invoke_model(
                         modelId=model_id,
-                        body=json.dumps(request.model_dump(exclude_none=True)),
+                        body=request_body,
                         contentType="application/json",
                         accept="application/json",
                     )
@@ -828,6 +847,7 @@ class ProxyService(IProxyService):
         request: BedrockInvokeRequest,
         target: BedrockTarget | None = None,
         pricing_capture: PricingCapture | None = None,
+        context: TokenContext | None = None,
     ) -> AsyncIterator[bytes]:
         """Invoke Bedrock model with streaming.
 
@@ -861,9 +881,12 @@ class ProxyService(IProxyService):
         event_stream = None
         try:
             try:
+                request_body = json.dumps(request.model_dump(exclude_none=True))
+                if context is not None:
+                    context._budget_provider_started = True
                 response = await client.invoke_model_with_response_stream(
                     modelId=model_id,
-                    body=json.dumps(request.model_dump(exclude_none=True)),
+                    body=request_body,
                     contentType="application/json",
                     accept="application/json",
                 )
@@ -938,7 +961,9 @@ class ProxyService(IProxyService):
         try:
             decision = await resolve_routing_decision(context)
             client = await self._client_for_request(decision, context)
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
+            bedrock_response = await self._invoke_bedrock(
+                client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture, context=context
+            )
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -994,7 +1019,9 @@ class ProxyService(IProxyService):
             client = await self._client_for_request(decision, context)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
+            bedrock_stream = self._invoke_bedrock_stream(
+                client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture, context=context
+            )
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "openai", model, response_id):
                 # Extract usage from streaming chunks for logging
@@ -1052,7 +1079,9 @@ class ProxyService(IProxyService):
         try:
             decision = await resolve_routing_decision(context)
             client = await self._client_for_request(decision, context)
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
+            bedrock_response = await self._invoke_bedrock(
+                client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture, context=context
+            )
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -1108,7 +1137,9 @@ class ProxyService(IProxyService):
             client = await self._client_for_request(decision, context)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
+            bedrock_stream = self._invoke_bedrock_stream(
+                client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture, context=context
+            )
 
             async for chunk in self._stream_handler.create_sse_response(bedrock_stream, "anthropic", model, response_id):
                 self._extract_usage_from_sse_chunk(chunk, usage)
@@ -1163,7 +1194,9 @@ class ProxyService(IProxyService):
         try:
             decision = await resolve_routing_decision(context)
             client = await self._client_for_request(decision, context)
-            bedrock_response = await self._invoke_bedrock(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
+            bedrock_response = await self._invoke_bedrock(
+                client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture, context=context
+            )
             # Issue #1486: Read from response.usage dict (not top-level attrs)
             tokens_in = bedrock_response.usage.get("input_tokens", 0) or 0
             tokens_out = bedrock_response.usage.get("output_tokens", 0) or 0
@@ -1217,7 +1250,9 @@ class ProxyService(IProxyService):
             client = await self._client_for_request(decision, context)
             response_id = str(uuid.uuid4())
 
-            bedrock_stream = self._invoke_bedrock_stream(client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture)
+            bedrock_stream = self._invoke_bedrock_stream(
+                client, bedrock_model_id, bedrock_request, decision.target, pricing_capture=pricing_capture, context=context
+            )
 
             has_chunks = False
             async with aclosing(self._stream_handler.create_sse_response(bedrock_stream, "bedrock", bedrock_model_id, response_id)) as stream:

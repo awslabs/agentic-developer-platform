@@ -216,7 +216,7 @@ class AgentModelIdentityMiddleware:
                     context._policy_scope_caps = (policy._shared_run_spend_usd, policy._shared_chain_spend_usd)
                 context._policy_quote = quote
                 context._policy_estimated_cost = quote.total_usd if quote else None
-                context._policy_request_id = str(uuid4())
+                context._policy_request_id = scope.setdefault("state", {}).get("request_id") or str(uuid4())
                 scope.setdefault("state", {})["request_id"] = context._policy_request_id
                 remaining_frames = iter(frames)
                 upstream_receive = receive
@@ -409,7 +409,7 @@ class AgentModelIdentityMiddleware:
                     raise BootstrapRefusedError("bounded provider quote unavailable") from None
                 # Client IDs are trace hints, not spend idempotency keys. Every
                 # separate upstream submission gets its own reservation id.
-                context._policy_request_id = str(uuid4())
+                context._policy_request_id = scope.setdefault("state", {}).get("request_id") or str(uuid4())
                 scope.setdefault("state", {})["request_id"] = context._policy_request_id
             # Authenticated registry org remains __platform__. Only attribution
             # and budget binding use the protected run's tenant and principal.

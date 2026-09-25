@@ -21,6 +21,7 @@ from src.orchestration.flow_meter import meter_target, read_flow_meter
 from src.orchestration.policy_admission import load_in_force_policy
 from src.orchestration.provider_quotes import request_digest
 from src.shared.middleware.logging_middleware import LoggingMiddleware
+from src.shared.middleware.request_identity import RequestIdentityMiddleware
 from src.shared.schemas.auth import TokenContext
 from tests.orchestration.test_runtime_policy import (
     assignment as assignment_fixture,
@@ -109,6 +110,8 @@ async def invoke(
         sent.append(frame)
 
     async def provider(scope, receive, send):
+        # This fake models a submitted paid call, including unknown usage/errors.
+        scope["state"]["token_context"]._budget_provider_started = True
         model_path.calls += 1
         actual_request_id = scope["state"]["request_id"]
         model_path.request_ids.append(actual_request_id)
@@ -129,7 +132,8 @@ async def invoke(
             )
         await send({"type": "http.response.body", "body": b"second", "more_body": False})
 
-    await AgentModelIdentityMiddleware(BudgetEnforcementMiddleware(LoggingMiddleware(provider), model_path.service))(scope, receive, send)
+    app = RequestIdentityMiddleware(AgentModelIdentityMiddleware(BudgetEnforcementMiddleware(LoggingMiddleware(provider), model_path.service)))
+    await app(scope, receive, send)
     return sent, body
 
 

@@ -442,14 +442,14 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.0105"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.0105"), org_id="org-1", user_id="user-1")
 
         assert result is True
         mock_cursor.execute.assert_called_once()
         sql_call = mock_cursor.execute.call_args
         assert "UPDATE usage_logs" in sql_call[0][0]
         # Issue #1616: params now include chat_log_s3_key (None when not provided)
-        assert sql_call[0][1] == (Decimal("0.0105"), None, "req-123")
+        assert sql_call[0][1] == (Decimal("0.0105"), None, "req-123", "org-1", "user-1")
 
     def test_bridge_no_matching_row(self):
         """Test that bridge returns False when no matching row found."""
@@ -463,7 +463,7 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "nonexistent-req", Decimal("0.01"))
+        result = bridge_cost_to_usage_logs(mock_conn, "nonexistent-req", Decimal("0.01"), org_id="org-1", user_id="user-1")
 
         assert result is False
 
@@ -477,7 +477,7 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(side_effect=Exception("DB connection lost"))
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"), org_id="org-1", user_id="user-1")
 
         assert result is False
 
@@ -498,6 +498,8 @@ class TestBridgeCostToUsageLogs:
             "req-456",
             Decimal("0.05"),
             chat_log_s3_key="acme/user-1/2026/06/19/req-456.json",
+            org_id="org-1",
+            user_id="user-1",
         )
 
         assert result is True
@@ -505,7 +507,7 @@ class TestBridgeCostToUsageLogs:
         assert "chat_log_s3_key" in sql_call[0][0]
         assert "COALESCE" in sql_call[0][0]
         # Params: (cost, s3_key, request_id)
-        assert sql_call[0][1] == (Decimal("0.05"), "acme/user-1/2026/06/19/req-456.json", "req-456")
+        assert sql_call[0][1] == (Decimal("0.05"), "acme/user-1/2026/06/19/req-456.json", "req-456", "org-1", "user-1")
 
     def test_bridge_s3_key_none_when_not_provided(self):
         """Issue #1616: When chat_log_s3_key not provided, passes None."""
@@ -519,12 +521,12 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-789", Decimal("0.03"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-789", Decimal("0.03"), org_id="org-1", user_id="user-1")
 
         assert result is True
         sql_call = mock_cursor.execute.call_args
         # Params: (cost, None, request_id)
-        assert sql_call[0][1] == (Decimal("0.03"), None, "req-789")
+        assert sql_call[0][1] == (Decimal("0.03"), None, "req-789", "org-1", "user-1")
 
 
 @pytest.mark.skipif(
@@ -557,6 +559,7 @@ class TestTransactionIsolation:
     def _chat_log(request_id: str = "req-1") -> dict:
         return {
             "org_id": "org-1",
+            "settlement_version": 1,
             "user_id": "user-1",
             "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
             "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
@@ -574,12 +577,12 @@ class TestTransactionIsolation:
         mock_conn.cursor.return_value.__enter__ = MagicMock(side_effect=Exception("boom"))
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"), org_id="org-1", user_id="user-1")
 
         assert result is False
         mock_conn.rollback.assert_called_once()
 
-    def test_process_chat_log_commits_bridge_before_upserts(self):
+    def test_process_chat_log_keeps_bridge_and_receipt_in_one_transaction(self):
         """The cost bridge must be committed before any budget_usage upsert runs.
 
         If the commit happened after the upserts, an upsert failure would
@@ -605,7 +608,8 @@ class TestTransactionIsolation:
 
         assert "bridge" in calls and "upsert" in calls
         # A commit must sit between the bridge and the first upsert.
-        assert calls.index("bridge") < calls.index("commit") < calls.index("upsert")
+        assert "commit" not in calls
+        assert calls.index("bridge") < calls.index("upsert")
 
     def test_handler_isolates_failing_record(self):
         """One record failing mid-batch must not abort or roll back the others."""
@@ -620,9 +624,9 @@ class TestTransactionIsolation:
         cm.__exit__ = MagicMock(return_value=False)
 
         bodies = {
-            "logs/a.json": json_mod.dumps(self._chat_log("req-a")),
-            "logs/b.json": json_mod.dumps(self._chat_log("req-b")),
-            "logs/c.json": json_mod.dumps(self._chat_log("req-c")),
+            "org-1/user-1/req-a.json": json_mod.dumps(self._chat_log("req-a")),
+            "org-1/user-1/req-b.json": json_mod.dumps(self._chat_log("req-b")),
+            "org-1/user-1/req-c.json": json_mod.dumps(self._chat_log("req-c")),
         }
 
         def fake_get_object(Bucket, Key):  # noqa: N803 — boto3 kwarg names
@@ -634,10 +638,15 @@ class TestTransactionIsolation:
 
         def fake_process(conn, chat_log, pricing_table, chat_log_s3_key=None):
             process_calls.append(chat_log_s3_key)
-            if chat_log_s3_key == "logs/b.json":
+            if chat_log_s3_key == "org-1/user-1/req-b.json":
                 raise Exception("integer out of range")
 
-        event = {"Records": [{"s3": {"bucket": {"name": "bkt"}, "object": {"key": k}}} for k in ["logs/a.json", "logs/b.json", "logs/c.json"]]}
+        event = {
+            "Records": [
+                {"s3": {"bucket": {"name": "bkt"}, "object": {"key": k}}}
+                for k in ["org-1/user-1/req-a.json", "org-1/user-1/req-b.json", "org-1/user-1/req-c.json"]
+            ]
+        }
 
         with (
             patch.object(handler_mod, "get_db_connection", return_value=cm),
@@ -645,13 +654,11 @@ class TestTransactionIsolation:
             patch.object(handler_mod.s3_client, "get_object", side_effect=fake_get_object),
             patch.object(handler_mod, "process_chat_log", side_effect=fake_process),
         ):
-            result = handler_mod.handler(event, None)
-
-        body = json_mod.loads(result["body"])
+            with pytest.raises(RuntimeError, match="1 settlement records failed; 2 committed"):
+                handler_mod.handler(event, None)
         # All three attempted; the failure neither stopped the batch nor
         # counted the good records as errors.
-        assert process_calls == ["logs/a.json", "logs/b.json", "logs/c.json"]
-        assert body == {"processed": 2, "errors": 1}
+        assert process_calls == ["org-1/user-1/req-a.json", "org-1/user-1/req-b.json", "org-1/user-1/req-c.json"]
         # Good records committed individually; the bad one rolled back.
         assert mock_conn.commit.call_count >= 2
         mock_conn.rollback.assert_called_once()
@@ -676,8 +683,22 @@ class _LedgerCursor:
         # (entity_type, entity_id, period_type) -> {"cost": Decimal, "tokens": int, "requests": int}
         self.rows: dict[tuple[str, str, str], dict] = {}
         self.rowcount = 1
+        self.receipts = {}
+        self.result = None
+
+    def fetchone(self):
+        return self.result
 
     def execute(self, sql, params=None):
+        if "INSERT INTO budget_settlement_receipts" in sql:
+            org, request, user, cost, tokens, allocation = params
+            key = (org, request)
+            self.result = None if key in self.receipts else (request,)
+            self.receipts.setdefault(key, (user, cost, tokens, allocation))
+            return
+        if "SELECT user_id, cost_usd, total_tokens, allocation_key FROM budget_settlement_receipts" in sql:
+            self.result = self.receipts.get(tuple(params))
+            return
         if "INSERT INTO budget_usage" not in sql or params is None:
             return
         (_id, org_id, entity_type, entity_id, period_start, period_type, cost, tokens) = params
@@ -719,6 +740,7 @@ def _chat_log_4300(root_human_id=None, **overrides) -> dict:
     """A minimal valid chat log, optionally carrying a root-human attribution."""
     log = {
         "org_id": "org-acme",
+        "settlement_version": 1,
         "user_id": "cognito-sub-of-the-agent-service-account",
         "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
         "response": {"usage": {"input_tokens": 1000, "output_tokens": 500}},
@@ -1229,3 +1251,35 @@ class TestRootPrincipalHelperParity:
         handler_mod = load_handler("budget-usage-tracker")
 
         assert handler_mod.unqualify_root_principal_id is unqualify_root_principal_id
+
+
+@pytest.mark.parametrize("owner_matches", [True, False])
+def test_s3_notification_reads_exact_version_and_validates_owner(monkeypatch, owner_matches):
+    import io
+    import json
+    from unittest.mock import MagicMock
+
+    handler_mod = load_handler("budget-usage-tracker")
+    conn = MagicMock()
+    cm = MagicMock()
+    cm.__enter__.return_value = conn
+    monkeypatch.setattr(handler_mod, "get_db_connection", lambda: cm)
+    monkeypatch.setattr(handler_mod, "get_rate_source", lambda *args: _bundled_rate_source())
+    log = _chat_log_4300()
+    key = f"{log['org_id']}/{log['user_id']}/{log['request_id']}.json"
+    if not owner_matches:
+        log["user_id"] = "wrong-owner"
+    get = MagicMock(return_value={"Body": io.BytesIO(json.dumps(log).encode())})
+    process = MagicMock()
+    monkeypatch.setattr(handler_mod.s3_client, "get_object", get)
+    monkeypatch.setattr(handler_mod, "process_chat_log", process)
+    event = {"Records": [{"s3": {"bucket": {"name": "logs"}, "object": {"key": key.replace("/", "%2F"), "versionId": "immutable-v1"}}}]}
+    if owner_matches:
+        result = handler_mod.handler(event, None)
+        assert json.loads(result["body"])["processed"] == 1
+        process.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError):
+            handler_mod.handler(event, None)
+        process.assert_not_called()
+    get.assert_called_once_with(Bucket="logs", Key=key, VersionId="immutable-v1")

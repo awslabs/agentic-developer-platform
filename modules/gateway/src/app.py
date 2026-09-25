@@ -20,6 +20,7 @@ from src.shared.database_agent_context import get_agent_context_db  # Issue #218
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.logging import configure_logging
 from src.shared.middleware.logging_middleware import LoggingMiddleware
+from src.shared.middleware.request_identity import RequestIdentityMiddleware
 from src.shared.tracing import setup_tracing, shutdown_tracing
 
 logger = logging.getLogger("bedrockgateway")
@@ -376,8 +377,8 @@ def create_app() -> FastAPI:
 
     # Issue #131: Add enforcement middleware
     # Middleware order is important - they execute in reverse order of addition:
-    # Request → LoggingMiddleware → BudgetEnforcementMiddleware → RateLimitEnforcementMiddleware → Route Handler
-    # So we add rate limit first (executed second) then budget (executed first after logging)
+    # Request → Identity → Auth → Approval → ModelIdentity → Budget → RateLimit → Logging → Handler
+    # Registration is reversed: identity is added last to wrap admission.
     #
     # Note: Auth middleware sets request.state.token_context which enforcement middleware depends on
     # The enforcement middleware checks for token_context and skips if not present (auth handles 401)
@@ -407,6 +408,8 @@ def create_app() -> FastAPI:
     # budget and rate-limit middleware access it.
     app.add_middleware(TokenContextMiddleware)
     logger.info("Token context middleware enabled")
+    # Outermost: every admission/settlement path sees one server-owned identity.
+    app.add_middleware(RequestIdentityMiddleware)
 
     # Error handler for BedrockGatewayError
     @app.exception_handler(BedrockGatewayError)  # nosemgrep: useless-inner-function

@@ -3,11 +3,12 @@
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pricing_policy import PricingDecision
 from src.orchestration.dispatch import GraphAttribution
 from src.shared.interfaces.usage import IUsageService
 from src.shared.models.usage import UsageLog
@@ -19,9 +20,6 @@ from src.usage.schemas import (
     UsageTimelineEntry,
     UsageTimelineResponse,
 )
-
-if TYPE_CHECKING:
-    from pricing_policy import PricingDecision
 
 
 class UsageService(IUsageService):
@@ -94,6 +92,7 @@ class UsageService(IUsageService):
                 None means the pricing revision was not captured.
         """
         log_entry = UsageLog(
+            timestamp=context._budget_request_timestamp,
             # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
             # must land on the tenant that triggered it, not on __platform__.
             # Never context.org_id (authenticated-only, authorization's field).
@@ -123,6 +122,36 @@ class UsageService(IUsageService):
             **self._pricing_revision_for(pricing_decision),
         )
 
+        if isinstance(pricing_decision, PricingDecision) and request_id:
+            from src.budget.settlement import settle_priced_usage
+
+            fresh = await settle_priced_usage(self.db, context=context, request_id=request_id, decision=pricing_decision)
+            if not fresh:
+                # The tracker can win the receipt before this gateway writes its
+                # diagnostic row. Serialize gateway replays on the shared receipt,
+                # and suppress only a row that actually already exists.
+                from src.shared.models.budget import BudgetSettlementReceipt
+
+                await self.db.execute(
+                    select(BudgetSettlementReceipt)
+                    .where(
+                        BudgetSettlementReceipt.org_id == context.attributed_org_id,
+                        BudgetSettlementReceipt.request_id == request_id,
+                    )
+                    .with_for_update()
+                )
+                existing = await self.db.execute(
+                    select(UsageLog.id)
+                    .where(
+                        UsageLog.org_id == context.attributed_org_id,
+                        UsageLog.user_id == context.user_id,
+                        UsageLog.request_id == request_id,
+                    )
+                    .limit(1)
+                )
+                if existing.scalar_one_or_none() is not None:
+                    await self.db.commit()
+                    return
         self.db.add(log_entry)
         await self.db.commit()
 

@@ -32,7 +32,7 @@ def test_upgrade_requires_existing_credentials_to_reverify(pg_url):
                     "'arn:aws:secretsmanager:us-east-1:123456789012:secret:test', NOW(), NOW())"
                 )
             )
-        upgrade(pg_url, "head")
+        upgrade(pg_url, "069_aws_verification_binding")
         with engine.connect() as connection:
             row = connection.execute(text("SELECT * FROM user_credentials WHERE id='legacy-aws'")).mappings().one()
             assert row["aws_verified_at"] is not None
