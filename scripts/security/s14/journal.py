@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from recovery_contract import active_failure
 
 
 class ReconciliationRequired(RuntimeError):
@@ -82,17 +83,26 @@ class Journal:
     def summary(self):
         """Only this compact result is uploaded to Actions, not the full journal."""
         committed = self.last_committed or {}
-        reconciled = not self.poisoned and not self.result.get("failure")
+        reconciled = not self.poisoned and not active_failure(self.result)
         return {
             "reconciliation_required": not reconciled,
             "receipt_sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
-            "caller_arn": self.result.get("caller_arn"),
+            "caller_arn": self.result.get("continuation", {}).get(
+                "caller_arns", [self.result.get("caller_arn")]
+            )[-1],
+            "origin_run_id": self.result.get("workflow_run_id"),
+            "continuation_run_id": self.result.get("continuation", {}).get(
+                "workflow_run_id"
+            ),
+            "reconciled_origin_failure": self.result.get("failure")
+            if "continuation" in self.result
+            else None,
             "source_sha": self.result.get("source_sha"),
             "runtime_complete": self.result.get("runtime_complete", False),
             "build_id": self.result.get("build_id"),
             "build_status": self.result.get("build_status"),
             "checks": self.result.get("checks", {}),
-            "failure": self.result.get("failure"),
+            "failure": active_failure(self.result),
             "complete": bool(
                 reconciled
                 and committed.get("runtime_complete")

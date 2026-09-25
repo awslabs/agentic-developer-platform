@@ -80,3 +80,34 @@ competing journals, lost pods, model/build replay refusal, wrong-role rejection,
 secret output exclusion, exact source packaging/version/build acceptance, and
 negative authorization outcomes. The PR workflow runs only these offline tests;
 live acceptance requires a manual dispatch from main after review.
+
+## Reviewed continuation of run 36105148993
+
+The first live run stopped at ECR after endpoint, six-secret/KMS and all three
+negative-read checks passed. No log stream/event, model or build/source-upload
+intent existed. ECR returned the pinned image twice under `dbcae39cb` and `latest`;
+both manifests hash to the same requested digest. The parser now verifies every
+entry's registry, repository, digest and manifest-byte hash, then accepts only
+byte-identical duplicates. It does not substitute an easier image or accept a
+mixed response.
+
+`security-s14-continue-ecr.yml` is an explicit one-attempt continuation, not a
+rerun of the original workflow. Do not dispatch before its source/CI and concrete
+recovery intent are reviewed. It has no inputs and retains the original config,
+image, source SHA, role and fixed journal key. `claim_ecr_continuation.py` pins the
+exact failed journal SHA256
+`d247c8c74f26b9d5618ff90320abc5b0f50c19b16d97276255063c9d16e64c82`,
+ETag, object version, original run/main/config, sole ECR assertion failure and
+completed checks. Any prior log/model/build/source-upload intent, even a false
+placeholder flag, is rejected. A fresh read and conditional IfMatch write claim
+the same journal once. A changed or uncertain claim is not retried.
+
+The claim only appends a `continuation` object. Original caller, run, workflow
+SHA, failure, checks and negative-read results remain intact. The new context
+records its caller/run/workflow and the specifically reconciled ECR failure.
+Completed reads are skipped. New failures live inside the continuation rather
+than overwriting the original failure. Completion still requires an acknowledged
+durable terminal commit and no active failure; the old error is visible in the
+summary as `reconciled_origin_failure`. A second new runner cannot claim the
+already-changed journal. No generic force/reset, new receipt key, automatic
+recovery or automatic rollback is added.

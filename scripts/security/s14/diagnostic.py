@@ -22,10 +22,30 @@ from botocore.awsrequest import AWSRequest
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from journal import Journal, ReconciliationRequired
+from recovery_contract import ORIGIN_RUN, ORIGIN_WORKFLOW_SHA, validate_continuation
 
 APPROVED_CONFIG_SHA256 = (
     "c0c5980303b49d0256694e439ac4e1710dc7430388e8a2c3add73a7d2b83899f"
 )
+
+
+def verified_ecr_manifest(batch, account, repository, digest):
+    """Accept duplicate tag records only when every requested manifest is exact."""
+    assert batch.get("images") and not batch.get("failures"), "ECR query failed"
+    manifests = set()
+    for image in batch["images"]:
+        assert image.get("registryId") == account, "Unexpected ECR registry"
+        assert image.get("repositoryName") == repository, "Unexpected ECR repository"
+        assert image.get("imageId", {}).get("imageDigest") == digest, (
+            "Unexpected ECR digest"
+        )
+        raw = image["imageManifest"]
+        assert "sha256:" + hashlib.sha256(raw.encode()).hexdigest() == digest, (
+            "ECR manifest hash mismatch"
+        )
+        manifests.add(raw)
+    assert len(manifests) == 1, "Conflicting ECR manifests"
+    return json.loads(next(iter(manifests)))
 
 
 def main():
@@ -68,6 +88,16 @@ def main():
     assert identity["Account"] == cfg["account"] and identity["Arn"].startswith(
         "arn:aws:sts::" + cfg["account"] + ":assumed-role/" + cfg["role_name"] + "/"
     ), "WRONG_RUNTIME_IDENTITY"
+    workflow_run_id = os.environ["GITHUB_RUN_ID"]
+    workflow_sha = os.environ["GITHUB_SHA"]
+    if receipt.exists():
+        checkpoint = json.loads(receipt.read_text())
+        if "continuation" in checkpoint:
+            assert os.environ["GITHUB_REF"] == "refs/heads/main"
+            assert os.environ["GITHUB_RUN_ATTEMPT"] == "1"
+            validate_continuation(checkpoint, workflow_run_id, workflow_sha)
+            # Original evidence remains top-level; the new context is appended.
+            workflow_run_id, workflow_sha = ORIGIN_RUN, ORIGIN_WORKFLOW_SHA
     journal = Journal(
         receipt,
         session.client(
@@ -82,13 +112,17 @@ def main():
             "checks": {},
             "config_sha256": APPROVED_CONFIG_SHA256,
             "role_arn": cfg["role_arn"],
-            "workflow_run_id": os.environ["GITHUB_RUN_ID"],
-            "workflow_sha": os.environ["GITHUB_SHA"],
+            "workflow_run_id": workflow_run_id,
+            "workflow_sha": workflow_sha,
         },
     )
     result = journal.result
     save = journal.save
-    result["caller_arn"] = identity["Arn"]
+    if "continuation" in result:
+        if identity["Arn"] not in result["continuation"]["caller_arns"]:
+            result["continuation"]["caller_arns"].append(identity["Arn"])
+    else:
+        result["caller_arn"] = identity["Arn"]
     save()
     current = "identity"
     try:
@@ -162,8 +196,9 @@ def main():
                         repositoryName=cfg["ecr_repository"],
                         imageIds=[{"imageDigest": digest}],
                     )
-                    assert len(batch["images"]) == 1 and (not batch.get("failures"))
-                    image = json.loads(batch["images"][0]["imageManifest"])
+                    image = verified_ecr_manifest(
+                        batch, cfg["account"], cfg["ecr_repository"], digest
+                    )
                     if image.get("layers"):
                         break
                     candidates = [
@@ -474,14 +509,18 @@ def main():
             )
         )
     except Exception as exc:
-        result["failure"] = {"stage": current, "exception": type(exc).__name__}
+        failure = {"stage": current, "exception": type(exc).__name__}
         if isinstance(exc, urllib.error.HTTPError):
-            result["failure"].update(
+            failure.update(
                 {
                     "http_status": exc.code,
                     "route_refused": current == "gateway" and exc.code in [401, 403],
                 }
             )
+        if "continuation" in result:
+            result["continuation"]["failure"] = failure
+        else:
+            result["failure"] = failure
         try:
             save()
         except ReconciliationRequired:
