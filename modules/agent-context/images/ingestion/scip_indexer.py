@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tomllib
@@ -670,6 +671,10 @@ def _index_python(clone_path: str) -> tuple[str | None, str | None]:
     proc_env.setdefault("NODE_OPTIONS", "--max-old-space-size=4096")
 
     cmd = [scip_python, "index", "--project-name", os.path.basename(clone_path)]
+    # Isolated snapshots have no Git metadata; use their admitted digest.
+    project_version = os.environ.get("SCIP_PROJECT_VERSION", "")
+    if re.fullmatch(r"[a-f0-9]{64}", project_version):
+        cmd.extend(["--project-version", project_version])
     cmd.extend(["--output", scip_output, clone_path])
 
     try:

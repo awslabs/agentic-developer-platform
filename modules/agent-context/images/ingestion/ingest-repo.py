@@ -2,11 +2,11 @@
 """Per-repo ingestion pipeline.
 
 Pipeline steps:
-  1. Clone repo to persistent storage (S3 Files mount)
+  1. Clone repo to private per-attempt scratch
   2. Run cgc analyze -> code-index.json -> filesystem + S3 markdown summary
   3. Call DeepWiki API -> wiki.md -> S3 + S3 Vectors (via wiki_store)
   4. GraphRAG extraction -> Neptune (with delete-before-reload for stale entity cleanup)
-  5. Keep clone on persistent storage for downstream consumers
+  5. Remove private source; persistent reader publication is separately admitted
 
 Usage:
   python ingest-repo.py --repo org/repo
@@ -72,6 +72,10 @@ LLM_BASE_URL = settings.llm_base_url
 
 # SCIP structural graph configuration
 SCIP_ENABLED = os.environ.get("SCIP_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Only a container backend may be selected in production. Missing admission or
+# sandbox availability reports structural_stage_unavailable; no local fallback.
+SCIP_ISOLATED_BACKEND = os.environ.get("SCIP_ISOLATED_BACKEND", "").strip().lower()
 
 # DynamoDB configuration (for state tracking — replaces repo-state.json)
 DYNAMO_TABLE = settings.dynamo_table
@@ -199,20 +203,9 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
     if tags:
         item["user_tags"] = tags
 
-    # Get current SHA for last_sha tracking
-    clone_path = os.path.join(CLONE_BASE, org_repo)
-    if os.path.exists(os.path.join(clone_path, ".git")):
-        try:
-            sha_result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=clone_path,
-                capture_output=True,
-                timeout=10,
-            )
-            if sha_result.returncode == 0:
-                item["last_sha"] = sha_result.stdout.decode().strip()
-        except Exception:
-            pass
+    # Use the actual attempt's source SHA, never an old persistent clone.
+    if result.get("source_commit_sha"):
+        item["last_sha"] = result["source_commit_sha"]
 
     try:
         table.put_item(Item={k: v for k, v in item.items() if v is not None})
@@ -456,7 +449,9 @@ def _scoped_code_index_dir(scope: IngestionScope) -> str:
     return os.path.join(root, compute_s3_prefix(scope, leaf))
 
 
-def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_repo: str, *, scope: IngestionScope | None = None) -> bool:
+def _write_code_index_to_filesystem(
+    code_index_json: str, safe_name: str, org_repo: str, *, scope: IngestionScope | None = None
+) -> bool:
     """Write code-index JSON to the shared filesystem (platform-data PVC).
 
     This is the primary storage for structured code-index data, read by the
@@ -940,6 +935,88 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
     except Exception as e:
         log.warning("Neptune write failed for %s: %s", org_repo, e)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Isolated SCIP parser integration (#6059 — S15 parser isolation)
+# ---------------------------------------------------------------------------
+
+
+def _run_isolated_scip(
+    clone_path: str,
+    org_repo: str,
+    s3_store: "S3ContentStore",
+    tracker: Any,
+) -> str:
+    """Run SCIP structural indexing via the isolated parser pipeline.
+
+    Returns a status string for the result dict.  Integrates with the
+    existing stage tracker.  On isolated-backend failure, falls back to
+    a truthful "structural_stage_unavailable" — never to in-process
+    credential-bearing parsing.
+    """
+    from isolated_runner import (
+        DockerBackend,
+        IsolatedParserRunner,
+    )
+
+    # Select backend
+    if SCIP_ISOLATED_BACKEND == "docker":
+        parser_image = os.environ.get("SCIP_PARSER_IMAGE", "adp-scip-parser:latest")
+        backend = DockerBackend(image=parser_image)
+    else:
+        log.warning(
+            "Unknown SCIP_ISOLATED_BACKEND=%r — structural stage unavailable",
+            SCIP_ISOLATED_BACKEND,
+        )
+        if tracker:
+            tracker.mark_skipped(
+                "scip_structural",
+                f"unknown isolated backend: {SCIP_ISOLATED_BACKEND}",
+            )
+        return "structural_stage_unavailable"
+
+    runner = IsolatedParserRunner(backend=backend)
+    iso_result = runner.run(clone_path, org_repo)
+
+    # Map isolated result to the existing status vocabulary
+    if iso_result.status in {"backend_unavailable", "authority_unavailable"}:
+        log.info(
+            "Isolated parser backend unavailable for %s: %s — "
+            "structural stage reported as unavailable",
+            org_repo,
+            iso_result.error,
+        )
+        if tracker:
+            tracker.mark_skipped(
+                "scip_structural",
+                f"isolated backend unavailable: {iso_result.error}",
+            )
+        return "structural_stage_unavailable"
+
+    if iso_result.status == "no_languages":
+        if tracker:
+            tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
+        return "no_languages"
+
+    if iso_result.status == "complete" and iso_result.scip_files:
+        # The legacy ambient Neptune/S3 uploader is not a capability-aware sink.
+        # Do not treat validated parser bytes as authority to mutate graph data.
+        iso_result.cleanup()
+        if tracker:
+            tracker.mark_skipped(
+                "scip_structural", "canonical asset/graph publication authority unavailable"
+            )
+        return "publication_authority_unavailable"
+
+    # Error or indexing failure
+    if tracker:
+        try:
+            with tracker.stage("scip_structural") as ctx:
+                ctx.fail(iso_result.error or iso_result.status)
+        except Exception:
+            pass
+    return iso_result.status
 
 
 # ---------------------------------------------------------------------------
@@ -1542,6 +1619,22 @@ def ingest_repo(
     skip_deepwiki: bool = False,
     skip_scip: bool = False,
 ) -> dict[str, Any]:
+    from source_snapshot import source_snapshot
+
+    with source_snapshot(settings.scratch_base, (settings.state_dir, CLONE_BASE)) as clone_path:
+        return _ingest_repo_in_snapshot(
+            org_repo, skip_cgc, skip_deepwiki, skip_scip, clone_path=clone_path
+        )
+
+
+def _ingest_repo_in_snapshot(
+    org_repo: str,
+    skip_cgc: bool = False,
+    skip_deepwiki: bool = False,
+    skip_scip: bool = False,
+    *,
+    clone_path: str,
+) -> dict[str, Any]:
     """Full ingestion pipeline for one repo.
 
     Returns a result dict with status for each step.
@@ -1616,37 +1709,12 @@ def ingest_repo(
         if db_conn is not None:
             db_conn.close()
         log.error("Repository access registration failed: %s", type(e).__name__)
-        raise RuntimeError("Repository ownership could not be registered; refusing ingestion") from e
+        raise RuntimeError(
+            "Repository ownership could not be registered; refusing ingestion"
+        ) from e
 
-    # Step 1: Clone to persistent storage (S3 Files mount) — shared across enrichment consumers
-    # If clone exists, do git fetch instead of full re-clone
-    clone_path = os.path.join(CLONE_BASE, org_repo)
-    if os.path.exists(os.path.join(clone_path, ".git")):
-        try:
-            subprocess.run(
-                ["git", "fetch", "--depth=1"],
-                cwd=clone_path,
-                check=True,
-                capture_output=True,
-                timeout=120,
-            )
-            subprocess.run(
-                ["git", "reset", "--hard", "FETCH_HEAD"],
-                cwd=clone_path,
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
-            log.info("Updated existing clone: %s", clone_path)
-            clone_ok = True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            log.warning("git fetch failed, re-cloning: %s", e)
-            shutil.rmtree(clone_path, ignore_errors=True)
-            clone_ok = git_clone(f"https://github.com/{org_repo}", clone_path)
-    else:
-        if os.path.exists(clone_path):
-            shutil.rmtree(clone_path, ignore_errors=True)
-        clone_ok = git_clone(f"https://github.com/{org_repo}", clone_path)
+    # Fresh private source; no shared Git metadata or fetch/reset reuse.
+    clone_ok = git_clone(f"https://github.com/{org_repo}", clone_path)
     if not clone_ok:
         log.warning("Clone failed for %s — enrichment steps skipped", org_repo)
         result["clone"] = "failed"
@@ -1657,6 +1725,8 @@ def ingest_repo(
 
     # Get commit SHA for skip logic (must be after clone)
     commit_sha = _get_commit_sha(clone_path)
+    result["source_commit_sha"] = commit_sha
+    result["source_reader_handoff"] = "ephemeral_only_no_persistent_snapshot_published"
 
     # Initialize the stage tracker now that we have commit_sha
     if db_conn and repo_id:
@@ -1957,7 +2027,9 @@ def ingest_repo(
             try:
                 ci_data = None
                 if result.get("code_index") == "written":
-                    ci_path = os.path.join(_scoped_code_index_dir(scope), f"{org_repo.replace('/', '-')}.json")
+                    ci_path = os.path.join(
+                        _scoped_code_index_dir(scope), f"{org_repo.replace('/', '-')}.json"
+                    )
                     if os.path.isfile(ci_path):
                         with open(ci_path) as f:
                             ci_data = json.load(f)
@@ -2013,6 +2085,8 @@ def ingest_repo(
         tracker.mark_skipped("graphrag", "graphrag disabled")
 
     # Step 5a: SCIP structural graph ingestion (#1532 — Neptune deep graph)
+    # Only admitted isolated parsing is reachable. Environment values cannot
+    # restore credential-bearing local execution.
     if SCIP_ENABLED and not skip_scip:
         skip_scip_stage = tracker and tracker.should_skip("scip_structural")
         if skip_scip_stage:
@@ -2021,55 +2095,23 @@ def ingest_repo(
             )
             tracker.mark_skipped("scip_structural", "already verified at current SHA")
             result["scip_structural"] = "skipped_verified"
+        elif SCIP_ISOLATED_BACKEND:
+            # --- Isolated parser path (#6059) ---
+            result["scip_structural"] = _run_isolated_scip(clone_path, org_repo, s3_store, tracker)
         else:
-            try:
-                scip_result = scip_structural_ingest(clone_path, org_repo, s3_store)
-                result["scip_structural"] = scip_result.get("status", "unknown")
-
-                # Stage tracking
-                if tracker:
-                    try:
-                        scip_status = scip_result.get("status", "")
-                        if scip_status == "complete":
-                            with tracker.stage("scip_structural") as ctx:
-                                edge_count = scip_result.get("edges", 0)
-                                node_count = scip_result.get("nodes", 0)
-                                metrics = {
-                                    "nodes": node_count,
-                                    "edges": edge_count,
-                                }
-                                # Include per-language failure info in metrics (#3132)
-                                failed_langs = scip_result.get("failed_languages")
-                                if failed_langs:
-                                    metrics["failed_languages"] = failed_langs
-                                    metrics["indexed_languages"] = scip_result.get(
-                                        "indexed_languages", []
-                                    )
-                                ctx.set_artifact(f"neptune:{org_repo}:edges={edge_count}")
-                                ctx.set_metrics(metrics)
-                                ctx.verify(lambda: edge_count > 0)
-                        elif scip_status == "no_languages":
-                            tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
-                        elif scip_status == "no_edges":
-                            with tracker.stage("scip_structural") as ctx:
-                                ctx.fail(
-                                    "FAIL-LOUD: code-bearing repo produced 0 edges "
-                                    f"(languages: {scip_result.get('languages', {})})"
-                                )
-                        else:
-                            with tracker.stage("scip_structural") as ctx:
-                                ctx.fail(scip_result.get("error", f"status={scip_status}"))
-                    except Exception as e:
-                        log.warning("scip_structural stage tracking failed: %s", e)
-            except Exception as e:
-                log.warning("SCIP structural ingest failed for %s: %s — continuing", org_repo, e)
-                result["scip_structural"] = f"error: {e}"
-                if tracker:
-                    try:
-                        with tracker.stage("scip_structural") as ctx:
-                            ctx.fail(str(e))
-                    except Exception:
-                        pass
+            # Fail-closed: no isolated backend and in-process not allowed (#6059)
+            log.info(
+                "SCIP structural unavailable for %s: no isolated backend configured "
+                "(production has no in-process fallback)",
+                org_repo,
+            )
+            result["scip_structural"] = "structural_stage_unavailable"
+            if tracker:
+                tracker.mark_skipped(
+                    "scip_structural",
+                    "no isolated backend configured (SCIP_ISOLATED_BACKEND empty, "
+                    "production has no in-process fallback)",
+                )
     elif tracker:
         reason = "skip_scip flag set" if skip_scip else "scip disabled"
         tracker.mark_skipped("scip_structural", reason)
@@ -2149,15 +2191,7 @@ def ingest_repo(
         except Exception:
             pass
 
-    # Step 6: Keep clone on persistent storage (S3 Files) — don't delete
-    # Clone is reused by GraphRAG, learning artifacts, and daily refresh.
-    # Only /tmp clones should be cleaned up.
-    if CLONE_BASE.startswith("/tmp"):
-        shutil.rmtree(clone_path, ignore_errors=True)
-        log.info("Cleaned up temp clone %s", clone_path)
-    else:
-        log.info("Kept persistent clone at %s", clone_path)
-
+    # The outer source_snapshot context owns cleanup on success and every exit.
     return result
 
 
