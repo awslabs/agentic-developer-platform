@@ -231,6 +231,13 @@ async def public_command(request: Request, task_id: str, kind: str, db: AsyncSes
         tenant=caller.tenant_id,
         expires_at=context.expires_at,
     )
+    if kind == "cancel":
+        from types import SimpleNamespace
+        cancelled = await run_in_threadpool(TaskCommands(store.repository).cancel_unstarted, task_id)
+        if cancelled:
+            task = await run_in_threadpool(store.repository.read_task, task_id)
+            await settle_admission_headroom(store.repository, SimpleNamespace(task_id=task_id,
+                invocation_id=task["invocation_id"], generation=int(task["generation"]), runtime_attempt_id=None))
     return http.ok(result, status=202)
 
 
@@ -299,8 +306,9 @@ async def settlement(request: Request):
 
 
 async def settle_admission_headroom(repository, identity):
-    from src.agentauth.task_budget_settlement import settle_task_admission
     import logging
+
+    from src.agentauth.task_budget_settlement import settle_task_admission
     try:
         await settle_task_admission(repository, identity)
     except Exception as exc:

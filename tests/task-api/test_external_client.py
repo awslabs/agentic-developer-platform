@@ -204,3 +204,51 @@ def test_retained_jobs_and_generic_authority_cannot_be_ignored(tmp_path):
     )
     assert any("old shared-queue jobs" in item for item in failures)
     assert any("generic agent authority" in item for item in failures)
+
+
+def test_bound_old_worker_requires_complete_nonrestart_proof(tmp_path):
+    import hashlib
+
+    proof = tmp_path / "proof.json"
+    proof.write_text("{}")
+    consumer = {
+        "name": "old",
+        "source": "job",
+        "image_digest": "old",
+        "task_capable": False,
+        "can_receive_new_work": False,
+        "restart_disabled": True,
+        "acquisition_complete": True,
+        "one_acquisition_proven": True,
+        "disposition_evidence": {
+            "path": "proof.json",
+            "sha256": hashlib.sha256(proof.read_bytes()).hexdigest(),
+        },
+    }
+    inventory = {"queue_consumers": [consumer]}
+    assert not any(
+        x.startswith("incompatible or unverified")
+        for x in readiness.inspect(inventory, tmp_path)
+    )
+    consumer["one_acquisition_proven"] = False
+    assert any(
+        x.startswith("incompatible or unverified")
+        for x in readiness.inspect(inventory, tmp_path)
+    )
+
+
+def test_readiness_requires_actual_admission_flag_and_complete_rollout(tmp_path):
+    failures = readiness.inspect(
+        {
+            "flags": {"ADP_TASK_API_SUBMIT_ENABLED": False},
+            "gateway_rollout": {
+                "desired": 7,
+                "updated": 6,
+                "ready": 7,
+                "verified_image_ready_pods": 6,
+            },
+        },
+        tmp_path,
+    )
+    assert any("canonical task flags" in x for x in failures)
+    assert any("rollout has not converged" in x for x in failures)

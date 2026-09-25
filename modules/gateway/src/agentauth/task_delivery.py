@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 import uuid
+from datetime import UTC, datetime
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
@@ -46,6 +47,7 @@ class TaskDelivery:
         self.store, self.sqs, self.queue_url, self.clock = store, sqs, queue_url, clock
         self.allow_task_api, self.allow_legacy = allow_task_api, allow_legacy
         self.allow_shared_legacy = allow_shared_legacy
+        self.cancelled_tasks = {}
 
     def read(self, pod_uid: str) -> dict | None:
         raw = self.store._read(f"PODTASK#{pod_uid}", "DELIVERY")
@@ -74,6 +76,28 @@ class TaskDelivery:
         if assignment.get("lease_until", 0) <= int(self.clock()) + _LEASE_MARGIN:
             raise TaskDeliveryError("lease_expired")
 
+    def _cancelled_before_start(self, body):
+        if not self.allow_task_api:
+            return False
+        envelope = json.loads(body)
+        if not isinstance(envelope, dict) or envelope.get("kind") != "adp.task":
+            return False
+        from src.tasks.records import dispatch_sort_key, task_work_partition
+        from src.tasks.store import TaskStore
+        from src.tasks.task_commands import TaskCommands
+        repository = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table,
+            clock=lambda: datetime.fromtimestamp(self.clock(), UTC))
+        task = repository.read_task(envelope.get("task_id", ""))
+        if not task or task.get("dispatch_id") != envelope.get("dispatch_id"):
+            return False
+        work = repository._get(task_work_partition(task["task_id"]), dispatch_sort_key(task["dispatch_id"]))
+        if not work or work.get("envelope") != envelope:
+            return False
+        cancelled = TaskCommands(repository).cancel_unstarted(task["task_id"])
+        if cancelled:
+            self.cancelled_tasks[task["task_id"]] = task
+        return cancelled
+
     def acquire(self, pod_uid: str) -> str | None:
         now = int(self.clock())
         previous = self.read(pod_uid)
@@ -82,6 +106,9 @@ class TaskDelivery:
         if previous:
             if previous["state"] in {"assigned", "heartbeating"}:
                 self._live(previous)
+                if self._cancelled_before_start(previous["body"]):
+                    self.maintain(pod_uid, acknowledge=True)
+                    return None
                 return previous["body"]
             if previous["state"] == "empty":
                 return None
@@ -127,13 +154,15 @@ class TaskDelivery:
                     raise TaskDeliveryError("invalid_task")
                 from src.tasks.store import TaskStore, TaskStoreError, WorkBindingError
 
-                try:
-                    work = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table).resolve_work(
-                        envelope.get("dispatch_id", ""), expected_kind="dispatch")
-                    if work.get("envelope") != envelope:
-                        raise TaskDeliveryError("invalid_task")
-                except (TaskStoreError, WorkBindingError):
-                    raise TaskDeliveryError("invalid_task") from None
+                if not self._cancelled_before_start(body):
+                    try:
+                        work = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table,
+                            clock=lambda: datetime.fromtimestamp(self.clock(), UTC)).resolve_work(
+                                envelope.get("dispatch_id", ""), expected_kind="dispatch")
+                        if work.get("envelope") != envelope:
+                            raise TaskDeliveryError("invalid_task")
+                    except (TaskStoreError, WorkBindingError):
+                        raise TaskDeliveryError("invalid_task") from None
             elif shared_legacy:
                 pass  # Same normal legacy body the old shared consumer already received.
             else:
@@ -156,6 +185,9 @@ class TaskDelivery:
             }
             self._live(assigned)
             self.save(pod_uid, assigned, reservation)
+            if self._cancelled_before_start(body):
+                self.maintain(pod_uid, acknowledge=True)
+                return None
             return body
         except AuthorityStoreError:
             # A failed response may hide a committed assignment. Do not release

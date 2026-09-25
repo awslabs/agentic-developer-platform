@@ -189,6 +189,32 @@ class TaskCommands:
             raise
         return receipt(row)
 
+    def cancel_unstarted(self, task_id):
+        import uuid
+        from types import SimpleNamespace
+        for _ in range(3):
+            task = self.snapshot(task_id)
+            if task.get("runtime_not_started") and task["state"] == "cancelled":
+                return True
+            if task["state"] != "cancel_requested" or task.get("runtime_attempt_id") is not None:
+                return False
+            identity = SimpleNamespace(task_id=task_id, invocation_id=task["invocation_id"], generation=int(task["generation"]),
+                runtime_attempt_id=None, tenant=task["scope"]["tenant"])
+            now = _iso(self.repo._clock())
+            body = {"schema_version": "1.0", "outcome": "cancelled", "final_report_id": str(uuid.uuid4()),
+                "child_exit": {"confirmed": False, "exit_code": None, "signal": None, "stopped_at": None},
+                "result": None, "committed_result_refs": [], "error": {"schema_version": "1.0", "outcome": "cancelled",
+                    "code": "cancelled_by_client", "message": "Task cancelled before any runtime attempt started.",
+                    "committed_at": now, "runtime_not_started": True, "child_exit_confirmed": False, "recovery_required": False,
+                    "provider_outcome": "not_started", "total_usd": 0}}
+            try:
+                self.finalize(identity, body, no_child=True)
+                return True
+            except errors.TaskApiError as exc:
+                if exc.status != 409:
+                    raise
+        return False
+
     def _attempt(self, identity: Any) -> dict:
         snapshot = self.snapshot(identity.task_id)
         if (
@@ -211,12 +237,14 @@ class TaskCommands:
             "attempt_valid": True,
         }
 
-    def finalize(self, identity: Any, body: dict, *, stop_only: bool = False) -> dict:
+    def finalize(self, identity: Any, body: dict, *, stop_only: bool = False, no_child: bool = False) -> dict:
         from datetime import timedelta
 
         from src.tasks.records import task_artifact_partition, task_capacity_partition, task_ops_partition, task_turns_partition
         from src.tasks.store import _deserialize
 
+        if not no_child and isinstance(body.get("error"), dict) and "runtime_not_started" in body["error"]:
+            raise errors.invalid_request("Runtime-not-started proof is gateway-owned.")
         snapshot = self._attempt(identity)
         final_digest = payload_digest(body)
         if snapshot["state"] in TERMINAL:
@@ -290,8 +318,38 @@ class TaskCommands:
             "content_expires_at": int((self.repo._clock() + timedelta(days=30)).timestamp()),
             "expires_at": int((self.repo._clock() + timedelta(days=90)).timestamp()),
         }
+        if no_child:
+            if snapshot.get("runtime_attempt_id") is not None or outcome != "cancelled":
+                raise errors.state_conflict("Task runtime already started.")
+            updates["runtime_not_started"] = True
+            updates["recovery_required"] = False
         transaction = [self._meta(snapshot, updates, attempt=identity.runtime_attempt_id)]
-        if stop_only:
+        if no_child:
+            grant = self.repo._get_authority(task_authority_partition(identity.tenant),
+                task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation))
+            if not grant or grant.get("runtime_attempt_id") is not None:
+                raise errors.state_conflict("Task runtime already started.")
+            values = {":task": identity.task_id, ":true": True, ":null": "NULL"}
+            condition = "task_id = :task AND (attribute_not_exists(runtime_attempt_id) OR attribute_type(runtime_attempt_id, :null))"
+            if grant.get("workload_uid") is None:
+                condition += " AND attribute_not_exists(workload_uid)"
+            else:
+                condition += " AND workload_uid = :pod"
+                values[":pod"] = grant["workload_uid"]
+            transaction.append({"Update": {"TableName": self.repo.authority_table_name,
+                "Key": _serialize({"pk": task_authority_partition(identity.tenant),
+                    "sk": task_run_grant_sort_key(invocation_id=identity.invocation_id, generation=identity.generation)}),
+                "UpdateExpression": "SET runtime_start_cancelled = :true, execution_capacity_released = :true",
+                "ConditionExpression": condition, "ExpressionAttributeValues": _serialize(values)}})
+            if not grant.get("execution_capacity_released", False):
+                for capacity_key in grant.get("execution_capacity_keys", []):
+                    transaction.append({"Update": {"TableName": self.repo.authority_table_name,
+                        "Key": _serialize({"pk": capacity_key, "sk": "ACTIVE"}),
+                        "UpdateExpression": "REMOVE reservations.#task ADD active_count :minus",
+                        "ConditionExpression": "reservations.#task = :invocation AND active_count > :zero",
+                        "ExpressionAttributeNames": {"#task": identity.task_id},
+                        "ExpressionAttributeValues": _serialize({":invocation": identity.invocation_id, ":minus": -1, ":zero": 0})}})
+        elif stop_only:
             # Stop-only credentials can no longer spend/report. They can settle
             # this exact persisted attempt even after policy revocation.
             transaction.append(
@@ -379,7 +437,8 @@ class TaskCommands:
                             {
                                 ":settled": "cancelled" if outcome == "cancelled" else "rejected",
                                 ":now": timestamp,
-                                ":reason": "Task process stopped before this command was consumed.",
+                                ":reason": ("Task cancelled before any runtime attempt started." if no_child else
+                                            "Task process stopped before this command was consumed."),
                                 ":accepted": "accepted",
                             }
                         ),

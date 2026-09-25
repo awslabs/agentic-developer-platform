@@ -18,7 +18,8 @@ async def settle_task_admission(repository, identity, *, budget=None):
     if not receipt or task["state"] not in {"completed", "failed", "cancelled"}:
         return False
     stop = task.get("stop_evidence") or {}
-    if not (task.get("child_exit", {}).get("confirmed") or stop.get("child_exit_confirmed") or stop.get("workload_terminated")):
+    if not (task.get("runtime_not_started") is True or task.get("child_exit", {}).get("confirmed")
+            or stop.get("child_exit_confirmed") or stop.get("workload_terminated")):
         return False
     page = await run_in_threadpool(repository._client.query, TableName=repository.table_name,
         KeyConditionExpression="event_id = :pk AND begins_with(arrived_at, :model)",

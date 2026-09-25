@@ -16,18 +16,20 @@
   "queue_consumers": [],
   "flags": {
     "ADP_TASK_API_READ_ENABLED": false,
-    "ADP_TASK_API_SUBMIT_ENABLED": false,
     "ADP_TASK_API_WORKER_ENABLED": false,
     "ADP_TASK_API_RECOVERY_ENABLED": false,
     "ADP_RUN_TASKS_ENABLED": false,
-    "ADP_AGENT_AUTHORITY_ENABLED": false
+    "ADP_AGENT_AUTHORITY_ENABLED": false,
+    "ADP_TASK_API_ADMISSION_ENABLED": false
   },
   "policy": {
     "principal_id": null,
     "persona": "agent-task-investigator",
     "max_tasks": 3,
     "max_total_usd": 3,
-    "expires_at": null
+    "status": null,
+    "version": null,
+    "max_usd_per_task": 1
   },
   "evidence": {
     "workers": {
@@ -64,5 +66,12 @@
     }
   },
   "task_workload_token_file": null,
-  "job_templates_enumerated": false
+  "job_templates_enumerated": false,
+  "deployment_templates_enumerated": false,
+  "gateway_rollout": {
+    "desired": null,
+    "updated": null,
+    "ready": null,
+    "verified_image_ready_pods": null
+  }
 }

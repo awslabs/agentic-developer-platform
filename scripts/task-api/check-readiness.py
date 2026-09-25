@@ -10,10 +10,21 @@ from pathlib import Path
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 FLAGS = (
     "ADP_TASK_API_READ_ENABLED",
-    "ADP_TASK_API_SUBMIT_ENABLED",
+    "ADP_TASK_API_ADMISSION_ENABLED",
     "ADP_TASK_API_WORKER_ENABLED",
     "ADP_TASK_API_RECOVERY_ENABLED",
 )
+
+
+def evidence_matches(item, directory):
+    if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+        return False
+    path = (directory / item["path"]).resolve()
+    return (
+        path.is_relative_to(directory.resolve())
+        and path.is_file()
+        and hashlib.sha256(path.read_bytes()).hexdigest() == item.get("sha256")
+    )
 
 
 def inspect(inventory, directory):
@@ -45,7 +56,19 @@ def inspect(inventory, directory):
     for consumer in consumers:
         if consumer.get("queue_arn") != inventory.get("queue_arn"):
             failures.append("queue identity mismatch")
-        if (
+        excluded_bound_worker = (
+            consumer.get("can_receive_new_work") is False
+            and consumer.get("restart_disabled") is True
+            and (
+                consumer.get("terminal") is True
+                or (
+                    consumer.get("acquisition_complete") is True
+                    and consumer.get("one_acquisition_proven") is True
+                )
+            )
+            and evidence_matches(consumer.get("disposition_evidence"), directory)
+        )
+        if not excluded_bound_worker and (
             consumer.get("image_digest") != digest
             or consumer.get("task_capable") is not True
         ):
@@ -62,7 +85,8 @@ def inspect(inventory, directory):
             failures.append("unknown consumer source")
     sources = {item.get("source") for item in consumers}
     if (
-        not {"deployment", "scaledjob"}.issubset(sources)
+        "scaledjob" not in sources
+        or inventory.get("deployment_templates_enumerated") is not True
         or inventory.get("job_templates_enumerated") is not True
     ):
         failures.append(
@@ -95,14 +119,21 @@ def inspect(inventory, directory):
     ):
         failures.append("canonical principal and allowed persona required")
     if (
-        not 0 < policy.get("max_tasks", 0) <= 3
-        or not 0 < policy.get("max_total_usd", 0) <= 3
+        not 0 < policy.get("max_tasks", 0) <= 6
+        or not 0 < policy.get("max_total_usd", 0) <= 25
+        or not 0 < policy.get("max_usd_per_task", 0) <= 1
     ):
         failures.append(
-            "evidence run requires at most3 tasks and USD3 explicit spend cap"
+            "evidence run requires at most6 tasks, USD1/task and USD25 total explicit caps"
         )
-    if not policy.get("expires_at"):
-        failures.append("evidence policy expiry required")
+    if policy.get("status") != "active" or not isinstance(policy.get("version"), int):
+        failures.append("observed active versioned TaskServicePolicy required")
+    gateway = inventory.get("gateway_rollout", {})
+    if not gateway.get("desired") or any(
+        gateway.get(field) != gateway["desired"]
+        for field in ("updated", "ready", "verified_image_ready_pods")
+    ):
+        failures.append("gateway rollout has not converged on the verified image")
     evidence = inventory.get("evidence", {})
     for name in (
         "workers",

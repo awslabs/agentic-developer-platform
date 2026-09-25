@@ -151,6 +151,39 @@
       },
       "allOf": [
         {
+          "if": {
+            "properties": {
+              "error": {
+                "type": "object",
+                "required": [
+                  "runtime_not_started"
+                ],
+                "properties": {
+                  "runtime_not_started": {
+                    "const": true
+                  }
+                }
+              }
+            },
+            "required": [
+              "error"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "cancelled"
+              },
+              "runtime_attempt_id": {
+                "const": null
+              },
+              "recovery_required": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
           "description": "A completed task has a committed successful result, no error and no open input request.",
           "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
           "then": {
