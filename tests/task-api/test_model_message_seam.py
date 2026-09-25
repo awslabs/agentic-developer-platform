@@ -254,6 +254,7 @@ def test_adapter_refuses_oversize_before_committing_a_turn():
 
 def test_actual_child_final_progress_can_exit_before_durable_report_ack(tmp_path, monkeypatch):
     import importlib.util
+    import shutil
 
     helper_path = ROOT / "modules/agent-factory/agent-worker-image/tests/test_task_host.py"
     spec = importlib.util.spec_from_file_location("host_fixture_helpers", helper_path)
@@ -289,9 +290,16 @@ def test_actual_child_final_progress_can_exit_before_durable_report_ack(tmp_path
     entry = ROOT / "modules/agent-factory/task-agents/investigator/dist/index.js"
     assert entry.is_file(), "Build actual investigator before running seam"
     monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": "fixture", "namespace": "test"})
+    # CI setup-python requires LD_LIBRARY_PATH, intentionally absent from the
+    # sandbox environment. Use the system interpreter for the same real network
+    # wrapper, and resolve setup-node before the host replaces PATH.
+    wrapper = ROOT / "modules/agent-factory/agent-worker-image/lib/task_network_exec.py"
+    monkeypatch.setattr("lib.task_host._network_wrapped_command", lambda command: ["/usr/bin/python3", str(wrapper), *command])
+    node = shutil.which("node")
+    assert node
     client = SlowReportClient(bootstrap, events)
-    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda _: ["node", str(entry), "--embedded"])
-    assert host.run(assignment, envelope, heartbeat=helpers.FakeHeartbeat(events), acknowledge=lambda: events.append("ack")) == 0
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda _: [node, str(entry), "--embedded"])
+    assert host.run(assignment, envelope, heartbeat=helpers.FakeHeartbeat(events), acknowledge=lambda: events.append("ack")) == 0, client.finalize_body
     assert client.finalize_body["outcome"] == "completed"
     assert client.finalize_body["result"]["artifact_ids"] == client.finalize_body["committed_result_refs"]
     assert len(client.finalize_body["committed_result_refs"]) == 1
