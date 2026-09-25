@@ -444,3 +444,20 @@ def test_the_job_has_a_bounded_lifetime() -> None:
     job, _ = render(deadline_seconds=900)
     assert job["spec"]["activeDeadlineSeconds"] == 900
     assert render()[0]["spec"]["activeDeadlineSeconds"] == 1800
+
+
+def test_task_api_worker_uses_fixture_identity_and_endpoints():
+    template = live_worker_template()
+    container = template['spec']['containers'][0]
+    container['env'].extend([
+        {'name': 'ADP_TASK_API_WORKER_ENABLED', 'value': 'false'},
+        {'name': 'ADP_TASK_API_QUEUE_URL', 'value': 'https://example/ordinary.fifo'},
+        {'name': 'ADP_GATEWAY_ENDPOINT', 'value': 'https://ordinary.invalid'},
+    ])
+    before = copy.deepcopy(template)
+    job, _ = render(template)
+    env = env_of(job)
+    assert env['ADP_TASK_API_WORKER_ENABLED'] == 'true'
+    assert env['ADP_TASK_API_QUEUE_URL'] == QUEUE_URL
+    assert env['ADP_GATEWAY_ENDPOINT'] == WORKER_CONTROL_ENDPOINT.removesuffix('/internal/v1/agent')
+    assert template == before

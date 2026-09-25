@@ -138,3 +138,22 @@ def test_reviewed_worker_checks_live_gateway_before_creation(run_create, tmp_pat
         objects = json.loads((run.tmp / 'evidence/manifests/20-worker.json').read_text())
         worker = objects['items'][0]['spec']['template']['spec']['containers'][0]
         assert worker['image'] == WORKER
+
+
+def test_task_api_configuration_stays_inside_fixture():
+    live = live_deployment()
+    container = live['spec']['template']['spec']['containers'][0]
+    container['env'].extend([
+        {'name': 'ADP_TASK_API_QUEUE_URL', 'value': 'https://example/ordinary.fifo'},
+        {'name': 'ADP_TASK_WORKER_IMAGE_DIGESTS', 'value': 'sha256:' + 'cd' * 32},
+        {'name': 'ADP_TASK_WORKER_SERVICE_ACCOUNT', 'value': 'ordinary-worker'},
+    ])
+    before = copy.deepcopy(live)
+    fixture = render(live, DIGEST)
+    env = {e['name']: e.get('value') for e in fixture['spec']['template']['spec']['containers'][0]['env']}
+    assert env['ADP_TASK_API_QUEUE_URL'] == env['ADP_RUN_TASK_QUEUE_URL']
+    assert env['ADP_TASK_API_WORKER_ENABLED'] == 'true'
+    assert env['ADP_TASK_WORKER_IMAGE_DIGESTS'] == env['AGENT_WORKER_IMAGE_DIGESTS'] == DIGEST
+    assert env['ADP_TASK_WORKER_SERVICE_ACCOUNT'] == 'agent-authority-worker-sa'
+    assert env['ADP_TASK_WORKER_NAMESPACE'] == 'adp-agents'
+    assert live == before

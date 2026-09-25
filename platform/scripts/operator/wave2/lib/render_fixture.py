@@ -314,10 +314,14 @@ def render_gateway(
         # Also inherited false; agentauth/task_delivery.py reads it and the task
         # routes 503 without it.
         "ADP_RUN_TASKS_ENABLED": "true",
+        "ADP_TASK_API_WORKER_ENABLED": "true",
+        "ADP_TASK_WORKER_SERVICE_ACCOUNT": WORKER_SERVICE_ACCOUNT,
+        "ADP_TASK_WORKER_NAMESPACE": WORKER_NAMESPACE,
         # The variable the task path actually reads. Normally Terraform-only, so
         # a k8s-only clone leaves it unset -- which is why the published fixture
         # could not deliver a task. Pointed at the run's OWN queue.
         "ADP_RUN_TASK_QUEUE_URL": queue_url,
+        "ADP_TASK_API_QUEUE_URL": queue_url,
         # The other queue reference. Redirected so no fixture traffic can reach
         # the shared submit queue.
         "AGENT_DISPATCH_QUEUE_URL": queue_url,
@@ -328,6 +332,7 @@ def render_gateway(
         # This literal overrides inherited envFrom only in the nonce-owned clone.
         # The shared registry is never modified for an evaluation.
         overrides["AGENT_WORKER_IMAGE_DIGESTS"] = fixture_worker_digest
+        overrides["ADP_TASK_WORKER_IMAGE_DIGESTS"] = fixture_worker_digest
     for key, value in overrides.items():
         _set_env(env, key, value)
 
@@ -701,15 +706,18 @@ def render_worker_job(
         # THE change #5836 made possible: the fixture's own edge. Everything else
         # here is bookkeeping around this one value.
         "ADP_AGENT_CONTROL_ENDPOINT": control_endpoint,
+        "ADP_GATEWAY_ENDPOINT": control_endpoint.removesuffix("/internal/v1/agent"),
         # Model calls must reach this same fixture gateway and its authority
         # configuration; the live template points at the ordinary /agent edge.
         "SIGV4_PROXY_TARGET": control_endpoint.removesuffix("/internal/v1/agent") + "/agent",
         # Required by the verifier, and required to be the sole entry of this name.
         AUTHORITY_FLAG: "true",
+        "ADP_TASK_API_WORKER_ENABLED": "true",
         # Every queue reference, so no fixture traffic reaches the shared submit
         # queue and no shared traffic reaches the fixture.
         "QUEUE_URL": queue_url,
         "ADP_RUN_TASK_QUEUE_URL": queue_url,
+        "ADP_TASK_API_QUEUE_URL": queue_url,
         "AGENT_DISPATCH_QUEUE_URL": queue_url,
         # The listener the gateway dials. Asserted rather than assumed below.
         "FEATURE_AGENT_CONTROL_ENABLED": "true",
