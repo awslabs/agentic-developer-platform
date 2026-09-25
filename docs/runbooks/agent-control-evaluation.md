@@ -224,6 +224,7 @@ generation and digests with your fixture's actual ones.
   "authorized_fixture_base": "main",
   "fixture_target_path": "target.txt",
   "fixture_expected_content": "steered target\n",
+  "steer_fixture_run_id": "YOUR_AUTHORIZED_PR_WORKER_INVOCATION_ID",
   "fixture_run_id": "YOUR_LIVE_FIXTURE_RUN_ID"
 }
 ```

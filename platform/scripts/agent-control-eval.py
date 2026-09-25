@@ -8468,7 +8468,12 @@ class Driver:
     def check_w3_10(self) -> None:
         """A delivered steer changes the authorized fixture and reaches a merged PR."""
         record = self._artifact("steer_fixture_pr")
-        if self._assert_fixture_identity(record, "steer_fixture_pr", self.config) != self._require("fixture_run_id"):
+        # The PR worker forbids task-phase pod access, while security collectors
+        # inspect their worker. Bind the separately declared PR run explicitly.
+        expected_run = self.config.get("steer_fixture_run_id", self._require("fixture_run_id"))
+        if not isinstance(expected_run, str) or not expected_run.strip():
+            raise PrerequisiteMissingError("steer_fixture_run_id must name the authorized PR fixture")
+        if self._assert_fixture_identity(record, "steer_fixture_pr", self.config) != expected_run:
             raise AssertionError("steer_fixture_pr: evidence belongs to another fixture run")
         repo = self._require("authorized_fixture_repo")
         branch = self._require("authorized_fixture_branch")

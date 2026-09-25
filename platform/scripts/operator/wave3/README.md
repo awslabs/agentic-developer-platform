@@ -48,7 +48,11 @@ or errors. Existing reports, missing tests, all-skipped suites, failed commands,
 foreign repositories/branches and task-phase pod access are rejected. Test logs
 and evidence remain private. The temporary checkout is removed on exit.
 
-Set `artifacts.steer_fixture_pr` to the resulting file. The evaluator separately
+Set `artifacts.steer_fixture_pr` to the resulting file. If the PR worker is separate
+from the security worker, declare its actual invocation ID as `steer_fixture_run_id`
+in the evaluation config. The collector config still names that PR worker as
+`fixture_run_id`. This keeps the no-pod-access PR test separate from security
+probes that inspect their worker; undeclared or mismatched workers still fail. The evaluator separately
 checks its authorized repository, command/handoff linkage, merge identity, file
 content/hash, and test revision. Keep the GitHub/fixture cleanup ledger even after
 the PR is merged; this command removes only its temporary local checkout.
