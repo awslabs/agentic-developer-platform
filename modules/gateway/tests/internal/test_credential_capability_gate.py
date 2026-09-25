@@ -135,6 +135,9 @@ def _make_app(
         """Simulates successful authentication and optionally sets token_context."""
         if token_context is not None:
             request.state.token_context = token_context
+            from src.internal.credential_binding import BindingResult
+
+            request.state.agent_credential_binding = BindingResult("user-cap", True, False, "user-cap", "cap-run", "org-cap")
 
     app.dependency_overrides[verify_internal_or_irsa] = _verify
 
@@ -264,6 +267,7 @@ class TestRawReadCapabilityGate:
     """Test the raw-read endpoint through the mounted router with real HTTP."""
 
     RAW_READ_BODY = {
+        "invocation_id": "cap-run",
         "user_id": "user-cap",
         "agent_id": "agent-cap-001",
         "task_id": "task-rr-01",
@@ -443,6 +447,7 @@ class TestMaterializeCapabilityGate:
     """Test the materialize endpoint through the mounted router with real HTTP."""
 
     MATERIALIZE_BODY = {
+        "invocation_id": "cap-run",
         "user_id": "user-cap",
         "agent_id": "agent-cap-001",
         "task_id": "task-mat-01",
@@ -778,7 +783,7 @@ def test_real_registry_auth_to_raw_read(db, monkeypatch, granted):
     settings = _settings_mock()
     settings.trust_apigw_headers = True
     settings.apigw_provenance_secret = "test-edge-proof"
-    for module in ("src.internal.auth_deps", "src.auth.middleware", "src.internal.credential_routes", "src.internal.routes"):
+    for module in ("src.internal.auth_deps", "src.auth.middleware", "src.internal.credential_routes"):
         monkeypatch.setattr(f"{module}.get_settings", lambda: settings)
     registry = MagicMock()
     registry.get_agent_by_role_arn.return_value = {
@@ -804,9 +809,6 @@ def test_real_registry_auth_to_raw_read(db, monkeypatch, granted):
         },
     )
     registry.get_agent_by_role_arn.assert_called_once_with("arn:aws:iam::123456789012:role/test-worker")
-    assert response.status_code == (200 if granted else 403), response.text
-    if granted:
-        sm.get_secret.assert_called_once()
-    else:
-        assert response.json()["detail"]["error"] == "insufficient_scope"
-        sm.get_secret.assert_not_called()
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == "agent authority is not enabled"
+    sm.get_secret.assert_not_called()

@@ -2,6 +2,10 @@
 
 Issue #785: Phase 2-b — action provenance write endpoint.
 
+Business-rule tests use explicit synthetic verified run identities. Transport
+negative tests retain the real dependency; canonical lookup and attribution
+negative cases are in test_provenance_chain_attribution.py.
+
 Coverage:
   - Valid request -> 201 + row inserted
   - Missing actor_user_id FK -> 400
@@ -14,16 +18,20 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from moto import mock_aws
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.provenance_routes import router
+from src.internal.run_identity import ServerRunIdentity
 from src.shared.database import get_db
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
@@ -99,10 +107,13 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession) -> TestClient:
+def _make_app(db_session: AsyncSession, *, identity_body=None, authenticated=True) -> TestClient:
     """Build a minimal FastAPI test app with the provenance router."""
     app = FastAPI()
     app.include_router(router)
+    app.state.verified_identity = _identity_for_body(identity_body or _valid_body())
+    if authenticated:
+        app.dependency_overrides[verify_internal_or_irsa] = lambda: None
 
     async def _get_db():
         yield db_session
@@ -115,6 +126,57 @@ def _settings_mock() -> MagicMock:
     s = MagicMock()
     s.internal_api_key = _VALID_KEY
     return s
+
+
+def _identity_for_body(body):
+    """Explicit synthetic server fixture for downstream FK/policy tests only.
+
+    The separate chain-attribution suite exercises the real canonical resolver.
+    This value is prepared before requests, never inferred by production auth.
+    """
+    return ServerRunIdentity(
+        "fixture-run",
+        body["org_id"],
+        body["actor_user_id"],
+        body["correlation_id"],
+        body["root_human_id"],
+        body["is_human_rooted"],
+        body.get("parent_invocation_id"),
+        triggered_by=body.get("triggered_by"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def verified_business_identity(monkeypatch):
+    async def identity(request):
+        return request.app.state.verified_identity
+
+    monkeypatch.setattr("src.internal.run_identity.verified_run_identity", identity)
+    with mock_aws():  # CloudWatch policy metrics stay offline too.
+        yield
+
+
+@contextmanager
+def _agreeing_chain(client, body: dict, *, monkeypatch):
+    """Provide an explicit verified fixture to reach the downstream policy gate."""
+    previous = client.app.state.verified_identity
+    client.app.state.verified_identity = _identity_for_body(body)
+    try:
+        yield
+    finally:
+        client.app.state.verified_identity = previous
+
+
+def _post_with_agreeing_chain(client, body: dict, *, monkeypatch):
+    """`_agreeing_chain` + the plain authenticated POST, for the tests that need no
+    extra patches."""
+    with _agreeing_chain(client, body, monkeypatch=monkeypatch):
+        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
+            return client.post(
+                "/internal/v1/provenance",
+                json=body,
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
 
 
 def _valid_body() -> dict:
@@ -165,6 +227,7 @@ class TestCreateProvenance:
         client = _make_app(db)
         body = _valid_body()
         body["actor_user_id"] = "nonexistent-user"
+        client.app.state.verified_identity = _identity_for_body(body)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -180,6 +243,7 @@ class TestCreateProvenance:
         client = _make_app(db)
         body = _valid_body()
         body["triggered_by"] = "ghost-user"
+        client.app.state.verified_identity = _identity_for_body(body)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -195,6 +259,7 @@ class TestCreateProvenance:
         client = _make_app(db)
         body = _valid_body()
         body["root_human_id"] = "no-such-user"
+        client.app.state.verified_identity = _identity_for_body(body)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -210,6 +275,7 @@ class TestCreateProvenance:
         client = _make_app(db)
         body = _valid_body()
         body["triggered_by"] = None
+        client.app.state.verified_identity = _identity_for_body(body)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -234,7 +300,7 @@ class TestCreateProvenance:
     @pytest.mark.asyncio
     async def test_missing_auth_returns_403(self, db):
         """No auth header -> 403."""
-        client = _make_app(db)
+        client = _make_app(db, authenticated=False)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -245,7 +311,7 @@ class TestCreateProvenance:
     @pytest.mark.asyncio
     async def test_invalid_auth_returns_403(self, db):
         """Wrong API key -> 403."""
-        client = _make_app(db)
+        client = _make_app(db, authenticated=False)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -276,13 +342,12 @@ class TestActorOrgCompare:
     with an EXPLICIT policy; ``test_unset_policy_permits_and_is_measured`` pins the
     permissive default so the posture change is visible rather than implicit.
 
-    The remaining defense for a leaked internal credential is the shared secret
-    itself, declared as inherited risk in the module header. #4048 tracks reconciling
-    the policy story.
+    These are downstream policy tests. Canonical authenticated-run binding is
+    independently exercised in test_provenance_chain_attribution.py.
     """
 
     @pytest.mark.asyncio
-    async def test_actor_in_other_org_rejected(self, db):
+    async def test_actor_in_other_org_rejected(self, db, monkeypatch):
         """Actor in a different org, target org restricts triggering -> 403, nothing written."""
         other_org = Organization(
             id="org-other",
@@ -317,13 +382,8 @@ class TestActorOrgCompare:
         body["actor_user_id"] = "user-outsider"  # actor is in org-other
         body["org_id"] = "org-closed"  # ...but caller claims org-closed
 
-        client = _make_app(db)
-        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
-            resp = client.post(
-                "/internal/v1/provenance",
-                json=body,
-                headers={"X-Internal-Api-Key": _VALID_KEY},
-            )
+        # Supply a synthetic verified identity to isolate this downstream policy.
+        resp = _post_with_agreeing_chain(_make_app(db), body, monkeypatch=monkeypatch)
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "actor_org_mismatch"
 
@@ -358,6 +418,7 @@ class TestActorOrgCompare:
         body["org_id"] = "org-member"
 
         client = _make_app(db)
+        client.app.state.verified_identity = _identity_for_body(body)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -367,7 +428,7 @@ class TestActorOrgCompare:
         assert resp.status_code == 201
 
     @pytest.mark.asyncio
-    async def test_membership_rows_override_users_org_id(self, db):
+    async def test_membership_rows_override_users_org_id(self, db, monkeypatch):
         """Once memberships exist they are authoritative; users.org_id is not consulted.
 
         Guards the fallback from becoming a bypass: an actor with a membership in
@@ -419,13 +480,8 @@ class TestActorOrgCompare:
         body["actor_user_id"] = "user-bot-legacy"
         body["org_id"] = "org-legacy"  # the actor's users.org_id, but not a membership
 
-        client = _make_app(db)
-        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
-            resp = client.post(
-                "/internal/v1/provenance",
-                json=body,
-                headers={"X-Internal-Api-Key": _VALID_KEY},
-            )
+        # Supply a synthetic verified identity to isolate this downstream policy.
+        resp = _post_with_agreeing_chain(_make_app(db), body, monkeypatch=monkeypatch)
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "actor_org_mismatch"
 
@@ -472,23 +528,25 @@ class TestCrossTenantTriggerPolicy:
         await db.commit()
 
     @pytest.mark.asyncio
-    async def test_explicit_any_adp_user_authorizes_cross_tenant_write(self, db):
+    async def test_explicit_any_adp_user_authorizes_cross_tenant_write(self, db, monkeypatch):
         """The flow the resolver permits must produce a row, not a 403."""
         await self._seed_cross_tenant(db, org_id="org-repo-open", settings={"trigger_policy": "any_adp_user"})
 
         body = _valid_body()
         body["org_id"] = "org-repo-open"  # actor user-bot's org is org-test
 
+        # Supply a synthetic verified identity to isolate this downstream policy.
         client = _make_app(db)
-        with (
-            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
-            patch("src.internal.provenance_routes._emit_provenance_authority_metric") as metric,
-        ):
-            resp = client.post(
-                "/internal/v1/provenance",
-                json=body,
-                headers={"X-Internal-Api-Key": _VALID_KEY},
-            )
+        with _agreeing_chain(client, body, monkeypatch=monkeypatch):
+            with (
+                patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+                patch("src.internal.provenance_routes._emit_provenance_authority_metric") as metric,
+            ):
+                resp = client.post(
+                    "/internal/v1/provenance",
+                    json=body,
+                    headers={"X-Internal-Api-Key": _VALID_KEY},
+                )
         assert resp.status_code == 201
 
         # The row is attributed to the repo org, consistent with DDB/Activity.
@@ -499,25 +557,20 @@ class TestCrossTenantTriggerPolicy:
         metric.assert_called_once_with("CrossTenantProvenanceAllowed", "org-repo-open")
 
     @pytest.mark.asyncio
-    async def test_home_tenant_only_still_fails_closed(self, db):
+    async def test_home_tenant_only_still_fails_closed(self, db, monkeypatch):
         """#3985 must survive: an org that restricts triggering still 403s."""
         await self._seed_cross_tenant(db, org_id="org-repo-closed", settings={"trigger_policy": "home_tenant_only"})
 
         body = _valid_body()
         body["org_id"] = "org-repo-closed"
 
-        client = _make_app(db)
-        with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
-            resp = client.post(
-                "/internal/v1/provenance",
-                json=body,
-                headers={"X-Internal-Api-Key": _VALID_KEY},
-            )
+        # Supply a synthetic verified identity to isolate this downstream policy.
+        resp = _post_with_agreeing_chain(_make_app(db), body, monkeypatch=monkeypatch)
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "actor_org_mismatch"
 
     @pytest.mark.asyncio
-    async def test_unset_policy_permits_and_is_measured(self, db):
+    async def test_unset_policy_permits_and_is_measured(self, db, monkeypatch):
         """An org with no explicit policy PERMITS — mirroring the ingress default.
 
         This is the case that matters most in practice: ``Organization.settings``
@@ -537,15 +590,16 @@ class TestCrossTenantTriggerPolicy:
         body["org_id"] = "org-repo-default"
 
         client = _make_app(db)
-        with (
-            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
-            patch("src.internal.provenance_routes._emit_provenance_authority_metric") as metric,
-        ):
-            resp = client.post(
-                "/internal/v1/provenance",
-                json=body,
-                headers={"X-Internal-Api-Key": _VALID_KEY},
-            )
+        with _agreeing_chain(client, body, monkeypatch=monkeypatch):
+            with (
+                patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+                patch("src.internal.provenance_routes._emit_provenance_authority_metric") as metric,
+            ):
+                resp = client.post(
+                    "/internal/v1/provenance",
+                    json=body,
+                    headers={"X-Internal-Api-Key": _VALID_KEY},
+                )
         assert resp.status_code == 201
 
         # The row is attributed to the repo org, consistent with DDB/Activity.
@@ -556,7 +610,7 @@ class TestCrossTenantTriggerPolicy:
         metric.assert_called_once_with("CrossTenantProvenanceAllowed", "org-repo-default")
 
     @pytest.mark.asyncio
-    async def test_unknown_org_denial_is_measured(self, db):
+    async def test_unknown_org_denial_is_measured(self, db, monkeypatch):
         """The residual 403 must stay visible, or it hides the way the 422 did.
 
         With unset ⇒ permitted, unknown-org and explicit ``home_tenant_only`` are the
@@ -565,16 +619,18 @@ class TestCrossTenantTriggerPolicy:
         body = _valid_body()
         body["org_id"] = "org-nonexistent-measured"
 
+        # Supply a synthetic verified identity to isolate this downstream policy.
         client = _make_app(db)
-        with (
-            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
-            patch("src.internal.provenance_routes._emit_provenance_authority_metric") as metric,
-        ):
-            resp = client.post(
-                "/internal/v1/provenance",
-                json=body,
-                headers={"X-Internal-Api-Key": _VALID_KEY},
-            )
+        with _agreeing_chain(client, body, monkeypatch=monkeypatch):
+            with (
+                patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+                patch("src.internal.provenance_routes._emit_provenance_authority_metric") as metric,
+            ):
+                resp = client.post(
+                    "/internal/v1/provenance",
+                    json=body,
+                    headers={"X-Internal-Api-Key": _VALID_KEY},
+                )
         assert resp.status_code == 403
         metric.assert_called_once_with("ProvenanceAuthorityDenied", "org-nonexistent-measured")
 
@@ -585,6 +641,7 @@ class TestCrossTenantTriggerPolicy:
         body["org_id"] = "org-does-not-exist"
 
         client = _make_app(db)
+        client.app.state.verified_identity = _identity_for_body(body)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -612,6 +669,7 @@ class TestCrossTenantTriggerPolicy:
         body["org_id"] = "org-repo-member"
 
         client = _make_app(db)
+        client.app.state.verified_identity = _identity_for_body(body)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
                 "/internal/v1/provenance",
@@ -621,21 +679,23 @@ class TestCrossTenantTriggerPolicy:
         assert resp.status_code == 201
 
     @pytest.mark.asyncio
-    async def test_metric_failure_does_not_break_the_write(self, db):
+    async def test_metric_failure_does_not_break_the_write(self, db, monkeypatch):
         """Telemetry must never fail a provenance write."""
         await self._seed_cross_tenant(db, org_id="org-repo-metricfail", settings={"trigger_policy": "any_adp_user"})
 
         body = _valid_body()
         body["org_id"] = "org-repo-metricfail"
 
+        # Supply a synthetic verified identity to isolate this downstream policy.
         client = _make_app(db)
-        with (
-            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
-            patch("boto3.client", side_effect=RuntimeError("no credentials")),
-        ):
-            resp = client.post(
-                "/internal/v1/provenance",
-                json=body,
-                headers={"X-Internal-Api-Key": _VALID_KEY},
-            )
+        with _agreeing_chain(client, body, monkeypatch=monkeypatch):
+            with (
+                patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+                patch("boto3.client", side_effect=RuntimeError("no credentials")),
+            ):
+                resp = client.post(
+                    "/internal/v1/provenance",
+                    json=body,
+                    headers={"X-Internal-Api-Key": _VALID_KEY},
+                )
         assert resp.status_code == 201

@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 
 from fastapi import Header, HTTPException, Request
 
@@ -242,15 +241,14 @@ async def verify_internal_or_irsa(
             )
 
         request.state.token_context = token_context
-        if (
-            getattr(token_context, "requires_run_identity", False)
-            or (os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and token_context.scope == "internal")
-            or request.headers.get("X-Adp-Run-Credential")
-            or request.headers.get("X-Adp-Workload-Token")
-        ):
-            from src.agentauth.broker_identity import BROKER_PATHS, verify_broker_worker
+        from src.agentauth.broker_identity import BROKER_PATHS, verify_broker_worker
 
-            if request.url.path in BROKER_PATHS:
+        if request.url.path in BROKER_PATHS:
+            if request.url.path == "/internal/v1/github-installation-token" and request.headers.get("X-Adp-Report-Credential"):
+                from src.agentauth.shared_review_identity import verify_shared_review_worker
+
+                await verify_shared_review_worker(request)
+            else:
                 await verify_broker_worker(request)
         logger.debug(
             "Internal endpoint authenticated via IRSA: agent=%s",
@@ -258,14 +256,9 @@ async def verify_internal_or_irsa(
         )
         return
 
-    # Legacy path: validate the shared-secret header.
-    if (
-        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
-        or request.headers.get("X-Adp-Run-Credential")
-        or request.headers.get("X-Adp-Workload-Token")
-    ):
-        from src.agentauth.broker_identity import BROKER_PATHS
+    # Shared transport secrets cannot establish which worker run is calling.
+    from src.agentauth.broker_identity import BROKER_PATHS
 
-        if request.url.path in BROKER_PATHS:
-            raise HTTPException(403, "worker credential brokers require IAM transport")
+    if request.url.path in BROKER_PATHS or request.url.path == "/internal/v1/provenance":
+        raise HTTPException(403, "run-bound operations require IAM transport")
     _verify_internal_key(x_internal_api_key)

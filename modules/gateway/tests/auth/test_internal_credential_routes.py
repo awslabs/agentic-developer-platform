@@ -47,10 +47,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import socket
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -135,7 +136,7 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession, mock_sm=None, *, token_context=None) -> TestClient:
+def _make_app(db_session: AsyncSession, mock_sm=None, *, token_context=None, user="user-alice") -> TestClient:
     """Build a minimal FastAPI test app with the credential router.
 
     Issue #6050: when token_context is provided, the auth override sets it on
@@ -174,9 +175,12 @@ def _make_app(db_session: AsyncSession, mock_sm=None, *, token_context=None) -> 
 
         app.add_middleware(_TokenContextMiddleware)
 
-    async def _verify(x_internal_api_key: str | None = Header(default=None)) -> None:
+    async def _verify(request: Request, x_internal_api_key: str | None = Header(default=None)) -> None:
         if x_internal_api_key != _VALID_KEY:
             raise HTTPException(status_code=403, detail={"error": "forbidden"})
+        from src.internal.credential_binding import BindingResult
+
+        request.state.agent_credential_binding = BindingResult(user, True, False, user, "delivery-run", "org-test")
 
     app.dependency_overrides[verify_internal_or_irsa] = _verify
 
@@ -300,11 +304,11 @@ class TestListUserCredentials:
 
         asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-list-1", service="openai", label="chat"))
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.get(
                 "/internal/v1/user-credentials",
-                params={"user_id": "user-alice", "service": "openai"},
+                params={"user_id": "user-alice", "invocation_id": "delivery-run", "service": "openai"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
         assert resp.status_code == 200
@@ -321,21 +325,21 @@ class TestListUserCredentials:
     def test_unknown_user_returns_404(self, mock_settings, db: AsyncSession):
         mock_settings.return_value = _settings_mock()
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
-            client = _make_app(db)
+        with nullcontext():
+            client = _make_app(db, user="user-nobody")
             resp = client.get(
                 "/internal/v1/user-credentials",
-                params={"user_id": "user-nobody", "service": "github"},
+                params={"invocation_id": "delivery-run", "user_id": "user-nobody", "service": "github"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
         assert resp.status_code == 404
 
     def test_missing_api_key_returns_403(self, db: AsyncSession):
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.get(
                 "/internal/v1/user-credentials",
-                params={"user_id": "user-alice", "service": "github"},
+                params={"user_id": "user-alice", "invocation_id": "delivery-run", "service": "github"},
             )
         assert resp.status_code == 403
 
@@ -378,7 +382,6 @@ class TestProxyRequest:
         mock_response.text = '{"id": 42}'
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -392,6 +395,7 @@ class TestProxyRequest:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-001",
                     "service": "github",
@@ -429,7 +433,6 @@ class TestProxyRequest:
             return mock_response
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -443,6 +446,7 @@ class TestProxyRequest:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-002",
                     "service": "openai",
@@ -484,7 +488,6 @@ class TestProxyRequest:
             return r
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -498,6 +501,7 @@ class TestProxyRequest:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-003",
                     "service": "jira",
@@ -533,7 +537,6 @@ class TestProxyRequest:
         r.text = "{}"
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -547,6 +550,7 @@ class TestProxyRequest:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-lastused",
                     "service": "stripe",
@@ -586,7 +590,6 @@ class TestProxyRequest:
         r.text = '{"ok": true}'
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -600,6 +603,7 @@ class TestProxyRequest:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-audit",
                     "task_id": "task-audit",
                     "service": "slack",
@@ -643,7 +647,6 @@ class TestProxyRequest:
         import httpx as _httpx
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -657,6 +660,7 @@ class TestProxyRequest:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-502",
                     "service": "badhost",
@@ -699,7 +703,6 @@ class TestProxyRequestAllowlist:
         r.text = "{}"
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -713,6 +716,7 @@ class TestProxyRequestAllowlist:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-pass",
                     "service": "github",
@@ -732,12 +736,13 @@ class TestProxyRequestAllowlist:
 
         asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-deny", service="evil", credential_type="bearer"))
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-deny",
                     "service": "evil",
@@ -760,12 +765,13 @@ class TestProxyRequestAllowlist:
 
         asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-priv", service="aws", credential_type="bearer"))
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-priv",
                     "service": "aws",
@@ -788,12 +794,13 @@ class TestProxyRequestAllowlist:
 
         asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-http", service="github", credential_type="bearer"))
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-http",
                     "service": "github",
@@ -816,12 +823,13 @@ class TestProxyRequestAllowlist:
 
         asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-empty", service="github", credential_type="bearer"))
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-empty",
                     "service": "github",
@@ -844,12 +852,13 @@ class TestProxyRequestAllowlist:
 
         asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-creds", service="github", credential_type="bearer"))
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-creds",
                     "service": "github",
@@ -879,7 +888,6 @@ class TestProxyRequestAllowlist:
         r.text = "{}"
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -893,6 +901,7 @@ class TestProxyRequestAllowlist:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-wild-pos",
                     "service": "jira",
@@ -912,12 +921,13 @@ class TestProxyRequestAllowlist:
 
         asyncio.get_event_loop().run_until_complete(_seed_credential(db, cred_id="cred-allowlist-wild-neg", service="jira", credential_type="bearer"))
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-al-wild-neg",
                     "service": "jira",
@@ -1027,7 +1037,7 @@ class TestCredentialHostBinding:
         r.text = "{}"
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
+            patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -1041,6 +1051,7 @@ class TestCredentialHostBinding:
                 "/internal/v1/proxy-request",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-egress",
                     "task_id": task_id,
                     "service": body_service,
@@ -1292,7 +1303,6 @@ class TestCredentialMaterialize:
             return fake_url
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("asyncio.to_thread", new=_selective_to_thread),
         ):
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
@@ -1300,6 +1310,7 @@ class TestCredentialMaterialize:
                 "/internal/v1/credential-materialize",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-mat-01",
                     "service": "github",
@@ -1331,12 +1342,13 @@ class TestCredentialMaterialize:
         )
         mock_sm = self._mock_sm("tok")
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-mat-02",
                     "service": "api-svc",
@@ -1365,12 +1377,13 @@ class TestCredentialMaterialize:
             )
         )
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-mat-03",
                     "service": "s3",
@@ -1397,12 +1410,13 @@ class TestCredentialMaterialize:
             )
         )
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-mat-04",
                     "service": "s3-cfg",
@@ -1431,12 +1445,13 @@ class TestCredentialMaterialize:
         )
         mock_sm = self._mock_sm("cert-data")
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-mat-05",
                     "service": "svc-x",
@@ -1474,7 +1489,6 @@ class TestCredentialMaterialize:
             return fake_url
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("asyncio.to_thread", new=_selective_to_thread),
         ):
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
@@ -1482,6 +1496,7 @@ class TestCredentialMaterialize:
                 "/internal/v1/credential-materialize",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-mat-lu",
                     "service": "ssh-svc",
@@ -1529,12 +1544,13 @@ class TestCredentialRawRead:
         )
         mock_sm = self._mock_sm("super-secret-value")
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:raw-read"]))
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-raw-1",
                     "service": "custom-api",
@@ -1566,12 +1582,13 @@ class TestCredentialRawRead:
             )
         )
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-raw-flag",
                     "service": "svc-flagoff",
@@ -1599,12 +1616,13 @@ class TestCredentialRawRead:
             )
         )
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db)
             resp = client.post(
                 "/internal/v1/credential-raw-read",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-raw-noscope",
                     "service": "svc-noscope",
@@ -1630,12 +1648,13 @@ class TestCredentialRawRead:
         )
         mock_sm = self._mock_sm("audit-secret")
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:raw-read"]))
             client.post(
                 "/internal/v1/credential-raw-read",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-audit-raw",
                     "task_id": "task-raw-audit",
                     "service": "audit-svc",
@@ -1678,12 +1697,13 @@ class TestCredentialRawRead:
         )
         mock_sm = self._mock_sm("lu-token")
 
-        with patch("src.internal.routes.get_settings", return_value=_settings_mock()):
+        with nullcontext():
             client = _make_app(db, mock_sm=mock_sm, token_context=_fake_token_context(credential_scopes=["credential:raw-read"]))
             client.post(
                 "/internal/v1/credential-raw-read",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "delivery-run",
                     "agent_id": "agent-001",
                     "task_id": "task-raw-lu",
                     "service": "lu-svc",

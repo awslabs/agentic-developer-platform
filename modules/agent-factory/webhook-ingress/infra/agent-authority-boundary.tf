@@ -6,6 +6,31 @@
 locals {
   agent_worker_role_arn = var.agent_authority_enabled ? aws_iam_role.agent_authority_worker[0].arn : aws_iam_role.agent_scaledjob.arn
   agent_worker_sa_name  = var.agent_authority_enabled ? kubernetes_service_account.agent_authority_worker[0].metadata[0].name : kubernetes_service_account.agent_scaledjob_sa.metadata[0].name
+  # Issue #5663 (A09): the exact attribute set the agent-worker role may write on
+  # adp-*-correlation-pointers. Enumerated from the real writers — see the long note
+  # on the "CorrelationUpdates" statement below for the per-file derivation and for
+  # why the (unread) `latest_*` names must stay in the list.
+  #
+  # The three names that are deliberately ABSENT are the point of the whole list:
+  # root_human_id, is_human_rooted, chain_depth. #4129 removed them from the Python
+  # writer's signature; this makes the credential itself unable to set them, so the
+  # property survives a future code change or a compromised pod. The absence is
+  # asserted by tests/test_correlation_pointer_attribute_boundary_5663.py, which
+  # fails if any of the three is ever added here.
+  correlation_pointer_worker_attributes = [
+    # Primary key (dynamodb:Attributes must include the key being addressed).
+    "channel_key",
+    # Python writer — agent-worker-image/lib/correlation_store.py
+    "correlation_id",
+    "updated_at",
+    "expires_at",
+    "triggering_invocation_id",
+    "last_triggered_persona",
+    # Node writer — agent/src/lib/correlationStore.ts (no consumer reads these)
+    "latest_correlation_id",
+    "latest_root_human_id",
+    "latest_is_human_rooted",
+  ]
   agent_authority_api_resources = [
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/agent/*",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/internal/v1/agent/*",
@@ -33,10 +58,63 @@ locals {
       Resource = aws_sqs_queue.agent_submit.arn
     },
     {
+      # Issue #5663 (A09). The grant was `UpdateItem` on the whole table with no
+      # Condition, so the worker could set ANY attribute on ANY channel_key —
+      # including `root_human_id` / `is_human_rooted` / `chain_depth`, the three the
+      # #4129 code change stopped it from SENDING. Code that no longer writes a field
+      # is not the same as a credential that cannot.
+      #
+      # dynamodb:Attributes + "SpecificAttributes" is the enforcement that makes the
+      # removal durable: DynamoDB refuses the whole request when the UpdateExpression
+      # names an attribute outside this list, so the three authority fields become
+      # unwritable by this credential regardless of what the pod's code does.
+      #
+      # THE LIST IS DERIVED FROM THE REAL WRITERS, not from what the policy wishes
+      # they sent. Verified against every worker-role write path in the repo:
+      #
+      #   agent-worker-image/lib/correlation_store.py:98-120 (the only Python writer;
+      #   entrypoint.py and lib/seed_trigger_pointer.py both funnel through it)
+      #     -> channel_key (the key), correlation_id, updated_at, expires_at,
+      #        triggering_invocation_id (conditional), last_triggered_persona
+      #        (conditional)
+      #
+      #   agent/src/lib/correlationStore.ts:40-51 (the Node writer)
+      #     -> channel_key (the key), latest_correlation_id, latest_root_human_id,
+      #        latest_is_human_rooted, updated_at, expires_at
+      #
+      # The `latest_*` names are included deliberately, and they are NOT a widening:
+      # nothing reads them. The Lambda's reader
+      # (lambda/common/correlation_store.py:119-124) reads `correlation_id` /
+      # `root_human_id` / `is_human_rooted`, so `latest_root_human_id` lands in a
+      # column no consumer consults and confers no authority. Excluding them would
+      # make this policy break a live writer — a fail-soft one whose
+      # AccessDeniedException is swallowed by `catch` at correlationStore.ts:52, i.e.
+      # a SILENT breakage. Renaming the TS writer's attributes (or applying #4129 to
+      # it, which was never done) is the right follow-up and is out of scope here;
+      # this boundary must match the writers that exist today.
+      #
+      # ORDERING: this is a source-only proposal and it is safe in either order,
+      # because it removes only attributes no current writer sends. It must NOT be
+      # applied live before the TS writer is reconciled if that reconciliation
+      # renames anything in this list — a boundary narrower than its writers fails
+      # closed and silently.
       Sid      = "CorrelationUpdates"
       Effect   = "Allow"
       Action   = ["dynamodb:UpdateItem"]
       Resource = "arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/${local.name_prefix}-correlation-pointers"
+      #
+      # Only `dynamodb:Attributes` is asserted here. `dynamodb:Select` is NOT included
+      # even though it appears in many fine-grained-access examples: it is evaluated
+      # for Query and Scan only, so on an UpdateItem-only grant it would be an
+      # inert clause that reads like a second control. `dynamodb:ReturnValues` is
+      # likewise omitted — the residual it would cover is read-back of the row the
+      # worker may already write to, and neither writer sets ReturnValues (both
+      # default to NONE), so asserting it would constrain nothing that exists.
+      Condition = {
+        "ForAllValues:StringEquals" = {
+          "dynamodb:Attributes" = local.correlation_pointer_worker_attributes
+        }
+      }
     },
     {
       Sid      = "CorrelationEncryption"

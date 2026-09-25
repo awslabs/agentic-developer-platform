@@ -6,9 +6,10 @@ Design reference: docs/agent-context/design-1736-knowledge-asset-registry.md S8.
 
 Pattern: row-before-publish invariant.
   1. Row is INSERT'd at status='registered' (caller's responsibility)
-  2. dispatch_ingestion() publishes to SQS
-  3. On success, status updated to 'queued'
-  4. On failure, row stays at 'registered' — recoverable by Phase 2 sweeper or /reindex
+  2. Commit an exclusive callback attempt, then publish to SQS.
+  3. On success, update status to 'queued' if the attempt is still current.
+  4. An uncertain publish retains the attempt and is never automatically replayed.
+     An authorized /reindex resets the attempt and invalidates its old grant.
 
 Phase 2 transition: when the sweeper CronJob deploys, these inline calls are removed.
 The gateway then loses sqs:SendMessage permission (additive, not breaking).
@@ -16,15 +17,18 @@ The gateway then loses sqs:SendMessage permission (additive, not breaking).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import uuid
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.knowledge.ingestion_callback_grant import GrantError, mint_ingestion_grant
 from src.knowledge.source_admission import SourceAdmissionError, admit_source
 from src.knowledge.type_registry import ASSET_TYPE_REGISTRY
 
@@ -191,7 +195,8 @@ async def dispatch_ingestion(
 
     Returns:
         True if publish succeeded and status updated to 'queued'.
-        False if publish failed (row stays at 'registered').
+        False if signing, reservation, publication or status update fails.
+        Publication errors retain the attempt; explicit reindex starts a new one.
     """
     # Look up type config
     type_config = ASSET_TYPE_REGISTRY.get(asset_type)
@@ -223,9 +228,41 @@ async def dispatch_ingestion(
     if installation_id is not None:
         message["installation_id"] = installation_id
 
+    queue_url = get_queue_url()
+
+    # Persist the exact generation and grant digest before making the message
+    # visible. A retry/reindex supersedes older grants; caller fields are checked
+    # against the already-authorized row before any publication.
+    attempt_id = str(uuid.uuid4())
+    try:
+        grant = mint_ingestion_grant(asset_id=asset_id, tenant_id=tenant_id, attempt_id=attempt_id)
+    except GrantError:
+        logger.warning("Ingestion grant unavailable; source was not queued")
+        return False
+    binding = await db.execute(
+        text("""
+        UPDATE knowledge_assets
+        SET ingestion_attempt_id = CAST(:attempt_id AS uuid), callback_grant_sha256 = :digest
+        WHERE id = :id AND status = 'registered'
+          AND ingestion_attempt_id IS NULL AND callback_grant_sha256 IS NULL
+          AND tenant_id IS NOT DISTINCT FROM :tenant_id AND source_ref = :source_ref
+        RETURNING id
+    """),
+        {
+            "id": asset_id,
+            "attempt_id": attempt_id,
+            "digest": hashlib.sha256(grant.encode()).hexdigest(),
+            "tenant_id": tenant_id,
+            "source_ref": source_ref,
+        },
+    )
+    if binding.fetchone() is None:
+        return False
+    await db.commit()
+    message["callback_grant"] = grant
+
     # Publish to SQS
     try:
-        queue_url = get_queue_url()
         client = get_sqs_client()
         client.send_message(
             QueueUrl=queue_url,
@@ -247,7 +284,7 @@ async def dispatch_ingestion(
         raise
     except Exception:
         logger.exception(
-            "dispatch_ingestion: SQS publish failed for asset_id=%s — row stays at 'registered'",
+            "dispatch_ingestion: SQS publication uncertain for asset_id=%s; attempt retained, explicit reindex required",
             asset_id,
         )
         return False
@@ -259,8 +296,9 @@ async def dispatch_ingestion(
                 UPDATE knowledge_assets
                 SET status = 'queued', updated_at = NOW()
                 WHERE id = :id AND status = 'registered'
+                  AND ingestion_attempt_id = CAST(:attempt_id AS uuid)
             """),
-            {"id": asset_id},
+            {"id": asset_id, "attempt_id": attempt_id},
         )
         await db.commit()
     except Exception:

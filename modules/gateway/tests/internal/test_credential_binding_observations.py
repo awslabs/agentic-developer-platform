@@ -23,13 +23,14 @@ def test_every_binding_result_has_one_coherent_observation(monkeypatch, capsys, 
     monkeypatch.setenv("BG_ENVIRONMENT", "test")
     monkeypatch.setattr(binding, "_lookup_authorized_user", lambda **_: registry)
     settings = SimpleNamespace(enforce_credential_binding=enforce, webhook_events_table="events", aws_region="us-east-1")
-    refused = enforce and (not invocation or registry != "alice")
+    verified = binding.BindingResult(registry, True, False, registry, "run-a", "tenant") if registry else None
+    refused = not invocation or registry != "alice"
     if refused:
         with pytest.raises(HTTPException) as error:
-            binding.resolve_credential_binding(invocation_id=invocation, body_user_id="alice", settings=settings)
+            binding.resolve_credential_binding(invocation_id=invocation, body_user_id="alice", settings=settings, verified_binding=verified)
         assert error.value.status_code == 403
     else:
-        result = binding.resolve_credential_binding(invocation_id=invocation, body_user_id="alice", settings=settings)
+        result = binding.resolve_credential_binding(invocation_id=invocation, body_user_id="alice", settings=settings, verified_binding=verified)
         assert result.resolved_user_id == (registry or "alice")
     lines = capsys.readouterr().out.splitlines()
     assert len(lines) == 1

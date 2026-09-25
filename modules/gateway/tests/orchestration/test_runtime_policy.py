@@ -250,7 +250,7 @@ async def test_broker_rechecks_policy_before_granting_binding(session, assignmen
     with pytest.raises(HTTPException) as exc:
         await verify_broker_worker(request)
     assert exc.value.status_code == 404
-    assert not hasattr(request.state, "agent_installation_binding")
+    assert getattr(request.state, "agent_installation_binding", None) is None
 
 
 @pytest.fixture

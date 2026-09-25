@@ -403,6 +403,7 @@ async def list_user_credentials(
     # Resolve the effective user from the webhook-events registry.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=invocation_id,
         body_user_id=user_id,
         settings=settings,
@@ -466,6 +467,7 @@ async def proxy_request(
     # If the caller isn't authorized, don't reveal whether the URL is allowlisted.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,
@@ -647,6 +649,7 @@ async def credential_materialize(
     # If the caller isn't bound to a valid run, fail fast before checking scopes.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,
@@ -799,6 +802,7 @@ async def credential_raw_read(
     # Resolve the effective user from the webhook-events registry.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,

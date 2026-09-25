@@ -455,7 +455,8 @@ async def reindex_asset(
     await db.execute(
         text("""
             UPDATE knowledge_assets
-            SET status = 'registered', last_error = NULL, updated_at = NOW()
+            SET status = 'registered', last_error = NULL, updated_at = NOW(),
+                ingestion_attempt_id = NULL, callback_grant_sha256 = NULL
             WHERE id = :id
         """),
         {"id": asset_id},

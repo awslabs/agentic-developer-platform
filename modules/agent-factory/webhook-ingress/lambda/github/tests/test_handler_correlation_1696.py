@@ -14,11 +14,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+# Issue #5663 (A09): lineage authority is now bound to the job's own tenant /
+# installation / repository as well as to the server-written row's fields. These
+# #1696 precedence tests are not about that predicate, so ``_chain`` and ``_payload``
+# below are kept CONSISTENT with the identity's tenant; the predicate itself is
+# asserted in test_handler_lineage_context_5663.py.
+TENANT = "test-org"
+REPO = "test-org/repo"
+INSTALLATION = "4242"
+
+
 @dataclass
 class MockResolvedIdentity:
     """Minimal mock of ResolvedIdentity."""
 
-    tenant_id: str = "test-org"
+    tenant_id: str = TENANT
     org_id: str = "test-org"
     user_id: str = "user-123"
     user_provisioning_mode: str = "strict"
@@ -58,7 +68,16 @@ def _chain(correlation_id, root_human_id, is_human_rooted, chain_depth):
         "root_human_id": root_human_id,
         "is_human_rooted": is_human_rooted,
         "chain_depth": chain_depth,
+        # Issue #5663: same tenant/installation/repo as ``_payload()``.
+        "tenant_id": TENANT,
+        "installation_id": INSTALLATION,
+        "repo": REPO,
     }
+
+
+def _payload() -> dict:
+    """Signature-verified payload fields the A09 job context is derived from."""
+    return {"repository": {"full_name": REPO}, "installation": {"id": INSTALLATION}}
 
 
 class TestDetermineCorrelationPrecedence:
@@ -82,7 +101,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] == "corr-marker-001"
@@ -118,7 +137,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,pr=1741", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,pr=1741", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] == "corr-marker-001"  # chain inherited
@@ -126,9 +145,20 @@ class TestDetermineCorrelationPrecedence:
         assert result["parent_invocation_id"] == "msg-parent-123"
         assert result["is_new_chain"] is False
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-marker-001", "user-marker", True, 2),
+    )
     @patch("handler._get_correlation_store")
-    def test_pointer_and_marker_different_correlation_uses_marker(self, mock_store_fn):
-        """Pointer + marker with different correlation_id → marker wins (cross-channel hop)."""
+    def test_pointer_and_marker_different_correlation_uses_marker(self, mock_store_fn, _chain_fn):
+        """Pointer + marker with different correlation_id → marker wins (cross-channel hop).
+
+        Issue #5663: the marker still WINS the precedence decision — it selects the
+        chain — but the human authority is now read from that chain's server-written
+        row rather than off the marker, so this test stubs the row for the marker's
+        correlation_id. Same adaptation #4129 already made to the pointer branches
+        above; the subject here is still precedence.
+        """
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -143,7 +173,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         # Marker data wins
@@ -172,7 +202,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=None
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=None
         )
 
         assert result["correlation_id"] == "corr-ptr-001"
@@ -180,9 +210,17 @@ class TestDetermineCorrelationPrecedence:
         assert result["chain_depth"] == 1  # inherited unchanged (#4268)
         assert result["is_new_chain"] is False
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-marker-001", "user-marker", True, 2),
+    )
     @patch("handler._get_correlation_store")
-    def test_marker_only_no_pointer(self, mock_store_fn):
-        """No pointer, valid marker → cross-channel first hop (marker wins)."""
+    def test_marker_only_no_pointer(self, mock_store_fn, _chain_fn):
+        """No pointer, valid marker → cross-channel first hop (marker wins).
+
+        Issue #5663: as above — the marker selects the chain, the chain's row supplies
+        the human.
+        """
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -191,7 +229,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] == "corr-marker-001"
@@ -212,7 +250,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=None
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=None
         )
 
         assert result["correlation_id"]  # UUID generated
@@ -239,7 +277,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _human_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] != "corr-marker-001"
@@ -279,7 +317,7 @@ class TestChainDepthInheritance:
         mock_store_fn.return_value = mock_store
 
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=None)
+        result = determine_correlation(_payload(), identity, "key", marker_text=None)
         assert result["chain_depth"] == 3
 
     @patch("handler._get_correlation_store")
@@ -297,7 +335,7 @@ class TestChainDepthInheritance:
             "adp-is-human-rooted:true adp-invocation:msg-m adp-chain-depth:5 -->"
         )
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=marker)
+        result = determine_correlation(_payload(), identity, "key", marker_text=marker)
         assert result["chain_depth"] == 5
 
     @patch("handler._get_correlation_store")
@@ -316,7 +354,7 @@ class TestChainDepthInheritance:
         mock_store_fn.return_value = mock_store
 
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=None)
+        result = determine_correlation(_payload(), identity, "key", marker_text=None)
         assert result["chain_depth"] == 0
 
     @patch("handler._get_correlation_store")
@@ -334,7 +372,7 @@ class TestChainDepthInheritance:
             "adp-is-human-rooted:true -->\nBody"
         )
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=legacy_marker)
+        result = determine_correlation(_payload(), identity, "key", marker_text=legacy_marker)
         assert result["chain_depth"] == 0
 
 

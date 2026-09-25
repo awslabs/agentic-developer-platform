@@ -46,6 +46,18 @@ on:
       # gateway-side edit to _PLACEHOLDER_KEYS must reach this job. Same
       # lockstep-reachability reason as the runner-iam path above.
       - 'modules/gateway/src/orchestration/command_attribution.py'
+      # Issue #5663 (A09): tests/test_correlation_pointer_attribute_boundary_5663.py
+      # bounds the worker credential's correlation-pointer writes to an attribute
+      # allow-list, and checks that list against the attribute names the REAL WRITERS
+      # send — parsed out of their source. Both writers live outside this module, so
+      # without these paths someone could add an attribute to a writer and the
+      # boundary would start refusing its writes with no CI run at all. That failure
+      # is SILENT in production (both writers swallow the error: `except Exception` in
+      # the Python one, `.catch` in the TS one), so lineage would simply stop
+      # connecting with nothing red anywhere. Same lockstep-reachability reason as the
+      # runner-iam and command_attribution paths above.
+      - 'modules/agent-factory/agent-worker-image/lib/correlation_store.py'
+      - 'modules/agent-factory/agent/src/lib/correlationStore.ts'
     branches:
       - main
 
@@ -80,7 +92,8 @@ jobs:
             modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py \
             modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py \
             modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py \
-            modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py
+            modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py \
+            modules/agent-factory/webhook-ingress/tests/test_correlation_pointer_attribute_boundary_5663.py
       - name: Check Terraform rollout states with mocked providers
         working-directory: modules/agent-factory/webhook-ingress/infra
         run: |

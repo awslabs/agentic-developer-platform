@@ -172,6 +172,7 @@ async def credential_assume_role(
     # Resolve the effective user from the webhook-events registry.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,

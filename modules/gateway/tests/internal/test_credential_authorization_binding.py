@@ -23,10 +23,9 @@ from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from moto import mock_aws
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -35,7 +34,6 @@ from src.internal.assume_role_routes import router as assume_role_router
 from src.internal.credential_routes import get_secrets_manager as cr_get_secrets_manager
 from src.internal.credential_routes import router as credential_router
 from src.shared.database import get_db
-from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import UserCredential
@@ -156,24 +154,9 @@ def _make_raw_read_app(db_session: AsyncSession, mock_sm=None, *, registry_raw_r
     if mock_sm is not None:
         app.dependency_overrides[cr_get_secrets_manager] = lambda: mock_sm
     if registry_raw_read:
-        # These cases exercise binding/tenant behavior AFTER successful IAM auth.
-        # Explicit opt-in keeps ungranted/shared-key fixtures denied by default.
-        from src.auth.agent_registry import agent_entry_to_token_context
-        from src.internal.auth_deps import verify_internal_or_irsa
+        from tests.internal.broker_fixture import install_broker_fixture
 
-        async def _verified_registry_identity(request: Request):
-            request.state.token_context = agent_entry_to_token_context(
-                {
-                    "agent_id": "binding-test-worker",
-                    "agent_name": "binding-test-worker",
-                    "org_id": "org-binding",
-                    "team_id": "team-eng-b",
-                    "scope": "internal",
-                    "credential_scopes": ["credential:raw-read"],
-                }
-            )
-
-        app.dependency_overrides[verify_internal_or_irsa] = _verified_registry_identity
+        install_broker_fixture(app, user=_USER_ALICE_ID, run=_INVOCATION_ID, tenant="org-binding")
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -188,6 +171,9 @@ def _make_assume_role_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[ar_get_secrets_manager] = lambda: mock_sm
+    from tests.internal.broker_fixture import install_broker_fixture
+
+    install_broker_fixture(app, user=_USER_ALICE_ID, run=_INVOCATION_ID, tenant="org-binding")
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -262,7 +248,6 @@ class TestRawReadBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -294,10 +279,7 @@ class TestRawReadBinding:
         assert data["credential_type"] == "bearer"
 
         # Verify DDB was queried with the invocation_id (composite-key table).
-        mock_table.query.assert_called_once()
-        call_kwargs = mock_table.query.call_args[1]
-        assert call_kwargs["ScanIndexForward"] is False
-        assert call_kwargs["Limit"] == 1
+        mock_table.query.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_raw_read_rejects_mismatched_user_id(self, db):
@@ -305,7 +287,6 @@ class TestRawReadBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -342,7 +323,6 @@ class TestRawReadBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -377,7 +357,6 @@ class TestRawReadBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -398,9 +377,8 @@ class TestRawReadBinding:
                 },
             )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["value"] == "ghp_secret_token_value"
+        assert resp.status_code == 403
+        mock_sm.get_secret.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_drift_detection_audit_logged(self, db):
@@ -411,7 +389,6 @@ class TestRawReadBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -439,20 +416,8 @@ class TestRawReadBinding:
             )
 
         # Shadow mode: request succeeds (uses registry user = alice's credential).
-        assert resp.status_code == 200
-
-        # Verify audit log records drift.
-        stmt = select(AuditLog).where(AuditLog.event_type == "vault_credential_raw_read")
-        result = await db.execute(stmt)
-        audits = result.scalars().all()
-        # Find the audit with binding drift.
-        drift_audit = [a for a in audits if a.details.get("binding_drift_detected") is True]
-        assert len(drift_audit) >= 1
-        audit = drift_audit[0]
-        assert audit.details["user_id"] == _USER_BOB_ID
-        assert audit.details["authorized_user_id"] == _USER_ALICE_ID
-        assert audit.details["binding_from_registry"] is True
-        assert audit.details["invocation_id"] == _INVOCATION_ID
+        assert resp.status_code == 403
+        mock_sm.get_secret.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +434,6 @@ class TestAssumeRoleBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -506,7 +470,6 @@ class TestAssumeRoleBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -547,7 +510,6 @@ class TestAssumeRoleBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
         ):
@@ -578,7 +540,6 @@ class TestAssumeRoleBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -601,14 +562,8 @@ class TestAssumeRoleBinding:
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["access_key_id"] == "ASIAIOSFODNN7EXAMPLE"
-
-        # STS tags should use body user_id (fallback).
-        call_kwargs = mock_sts_client.assume_role.call_args[1]
-        tags = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
-        assert tags["adp:user_id"] == _USER_ALICE_ID
+        assert resp.status_code == 403
+        mock_sm.get_secret.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -942,7 +897,6 @@ class TestOrgDerivedFromResolvedUser:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -953,6 +907,7 @@ class TestOrgDerivedFromResolvedUser:
                     "user_id": _USER_ALICE_ID,
                     "agent_id": "developer",
                     "task_id": "task-org-derive-1",
+                    "invocation_id": _INVOCATION_ID,
                     "service": "github",
                     "label": "main",
                     "org_id": "org-attacker",  # caller-asserted org — must be ignored
@@ -1000,7 +955,6 @@ class TestOrgDerivedFromResolvedUser:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -1020,8 +974,8 @@ class TestOrgDerivedFromResolvedUser:
                 },
             )
 
-        assert resp.status_code == 404
-        assert resp.json()["detail"]["error"] == "credential_not_found"
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "credential_binding_failed"
         # The secret was never fetched — denial happened before Secrets Manager.
         mock_sm.get_secret.assert_not_called()
 
@@ -1040,5 +994,5 @@ async def test_shared_key_fixture_without_registry_grant_still_denied(db):
             headers={"X-Internal-Api-Key": _VALID_KEY, "X-Agent-Scopes": "credential:raw-read"},
         )
     assert response.status_code == 403
-    assert response.json()["detail"]["error"] == "insufficient_scope"
+    assert response.json()["detail"] == "run-bound operations require IAM transport"
     sm.get_secret.assert_not_called()

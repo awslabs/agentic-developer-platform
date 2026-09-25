@@ -10,11 +10,15 @@ The function performs, in order:
   3. Self-re-trigger guard (same as last_triggered_persona on channel)
   4. Cross-persona loop guard (A->B->A->B alternation detection)
   5. Depth guard (MAX_CHAIN_DEPTH)
-  6. Pointer write (with recent_triggered_personas merge)
-  7. Provenance write
-  8. Envelope build
-  9. Webhook-events capture (DDB row BEFORE SQS)
-  10. SQS publish
+  6. Envelope build
+  7. Webhook-events capture (DDB chain row)
+  8. Pointer write + provenance write
+  9. SQS publish
+
+Issue #5663 (A09): steps 7 and 8 are in that order deliberately. The chain's
+webhook-events row is the server-owned record the gateway checks a provenance
+assertion against, so it has to exist before the provenance POST — otherwise the
+origin post of every new chain is unverifiable. See the comment at the call site.
 
 Returns SpawnResult indicating success (with message_id) or block (with reason).
 
@@ -304,22 +308,12 @@ def spawn_persona(
         except (AuthorityProvisionError, ValueError):
             return SpawnResult(success=False, block_reason="authority_provision_failed")
 
-    # Persist the final authorized lineage, after provisioning has succeeded.
-    _write_pointer_and_provenance(
-        persona=persona,
-        correlation_ctx=spawned_ctx,
-        channel_key=channel_key,
-        resolved_identity=resolved_identity,
-        actor_user_id=actor_user_id,
-        event_type=event_type,
-        action=action,
-        repo=repo,
-        payload=payload,
-    )
-
     # --- Step 8: Capture invocation event to DDB BEFORE SQS ---
     # Issue #3174: read tenant credential chain depth policy (fail-soft).
     max_cred_depth = _get_max_credential_chain_depth(installation_id)
+    # Persist the server-owned event before publication and provenance emission.
+    # Gateway verification uses the authenticated run's exact event key; this
+    # ordering alone does not authenticate a legacy provenance producer.
     _capture_invocation_event(
         envelope=envelope,
         tenant_id=tenant_id,
@@ -333,6 +327,20 @@ def spawn_persona(
         payload=payload,
         correlation_ctx=spawned_ctx,
         max_credential_chain_depth=max_cred_depth,
+    )
+
+    # Persist the final authorized lineage, after provisioning has succeeded and
+    # after the chain row above exists for the gateway to verify this POST against.
+    _write_pointer_and_provenance(
+        persona=persona,
+        correlation_ctx=spawned_ctx,
+        channel_key=channel_key,
+        resolved_identity=resolved_identity,
+        actor_user_id=actor_user_id,
+        event_type=event_type,
+        action=action,
+        repo=repo,
+        payload=payload,
     )
 
     # --- Step 9: Publish to SQS ---

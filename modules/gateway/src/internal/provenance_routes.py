@@ -1,34 +1,21 @@
-"""Internal provenance write endpoint.
+"""Write provenance only for an authenticated run's exact server-owned origin.
 
-Issue #785: Phase 2-b — gateway /internal/v1/provenance endpoint.
-
-Endpoint (IAM-signed / shared-secret; internal only):
-    POST /internal/v1/provenance — insert an action_provenance row
-
-Called by the webhook-ingress Lambda (not in VPC) to record provenance
-via the gateway's internal-only path.
-
-Authentication:
-    Reuses verify_internal_or_irsa from auth_deps.py (dual-auth: IRSA +
-    shared-secret). Returns 403 on auth failure (not 401) to avoid
-    endpoint discovery.
-
-# TODO: Per-endpoint auth scoping (vs. the current single shared-secret)
-# is a Phase 3 hardening item. The shared-secret grants access to ALL
-# /internal/v1/* endpoints — if it leaks, an attacker can insert fake
-# provenance rows. Tracked as inherited risk from the existing pattern.
+IAM transport, run credentials and workload proof are mandatory. The endpoint
+compares tenant, actor, correlation and human lineage to that origin before any
+membership policy or persistence. Legacy shared-secret producers must migrate.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_binding_metrics import observe_identity_binding
 from src.shared.database import get_db
 from src.shared.models.base import new_uuid, utcnow
 from src.shared.models.onboarding import TenantMembership
@@ -54,6 +41,9 @@ router = APIRouter(prefix="/internal/v1", tags=["internal-provenance"])
 TRIGGER_POLICY_ANY_ADP_USER = "any_adp_user"
 TRIGGER_POLICY_HOME_TENANT_ONLY = "home_tenant_only"
 DEFAULT_TRIGGER_POLICY = TRIGGER_POLICY_ANY_ADP_USER
+
+# Issue #5663 (A09): route label for the identity-binding counters.
+_PROVENANCE_ROUTE = "provenance"
 
 
 async def _org_permits_any_adp_user(db: AsyncSession, org_id: str) -> bool:
@@ -241,9 +231,25 @@ class CreateProvenanceResponse(BaseModel):
 )
 async def create_provenance(
     body: CreateProvenanceRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> CreateProvenanceResponse:
+    from src.internal.run_identity import verified_run_identity
+
+    identity = await verified_run_identity(request)
+    if (
+        body.org_id != identity.tenant_id
+        or body.actor_user_id != identity.actor_user_id
+        or body.correlation_id != identity.correlation_id
+        or body.root_human_id != identity.root_human_id
+        or body.is_human_rooted != identity.is_human_rooted
+        or body.parent_invocation_id != identity.parent_invocation_id
+        or body.triggered_by != identity.triggered_by
+    ):
+        observe_identity_binding(route=_PROVENANCE_ROUTE, outcome="denied", enforced=True)
+        raise HTTPException(403, "provenance does not match authenticated run")
+
     # Validate FK: actor_user_id must exist
     actor = await db.execute(select(User.id).where(User.id == body.actor_user_id))
     if actor.scalar_one_or_none() is None:

@@ -234,6 +234,51 @@ class Settings(BaseSettings):
     # resolve authorized_user_id). Set via SSM in prod.
     webhook_events_table: str = "adp-dev-webhook-events"
 
+    # Issue #5663 (A09): per-route enforcement of server-derived identity on the
+    # internal plane. Each value selects log-only (False) or enforce (True) for ONE
+    # route, so the rollout can watch that route's deny counter before flipping it
+    # and roll back by configuration without a redeploy.
+    #
+    # Defaults are deliberately split by whether enforcing can strand a live caller:
+    #
+    #   * Repository binding on the token mint has NO flag at all. Both of its
+    #     outcomes — requested repository differs from the run's, and the run has no
+    #     server-recorded repository — are refused unconditionally. Neither shape has
+    #     a legitimate caller (see _assert_token_repo_binding for the per-producer
+    #     evidence), so there is no compatibility window to stage, and a switch able
+    #     to disable the check would only reintroduce the escalation it closes. The
+    #     two flags that used to gate it were removed after review: an absent
+    #     server-side fact must not resolve to "allowed" because a counter recorded
+    #     it.
+    #
+    #   * The status callback defaults to log-only for ONE case: a request that
+    #     presents no signed callback grant at all. The grant is minted by
+    #     dispatch_ingestion() and travels in the SQS envelope, so messages already
+    #     queued and the ingestion image currently in service (it ships on its own
+    #     build pipeline) carry none; refusing them on this commit would stall
+    #     indexing status for every asset in flight. Consumer order is gateway ->
+    #     ingestion image -> this flag.
+    #
+    #     This flag does NOT gate the binding itself. On the default configuration a
+    #     presented grant is always verified, a grant that fails verification is
+    #     always refused, a grant for another asset is always refused, and the tenant
+    #     bound into the UPDATE is always the GRANT's tenant — body.tenant_id is only
+    #     ever a checked assertion and can no longer select a row. What the flag
+    #     selects is whether the absence of server-owned authority is refused or
+    #     counted as unresolved.
+    #
+    #   * Provenance chain attribution has NO flag either, for the same reason as the
+    #     token mint. It used to have one, defaulting to log-only, on the theory that
+    #     a chain aged out of the webhook-events TTL might otherwise lose audit rows.
+    #     But the caller chooses `correlation_id`, so "the chain did not resolve" was
+    #     a state the caller could always produce — and the log-only default meant
+    #     even a RESOLVED contradiction was merely counted. Both halves are now
+    #     unconditional, and the unresolvable case binds to a narrower server-owned
+    #     fact (the actor's own org record) instead of being waved through. A switch
+    #     able to disable that would restore the escalation; see
+    #     _assert_chain_attribution for the per-producer compatibility evidence.
+    enforce_status_callback_tenant: bool = False
+
     # Issue #3989: IAM role-name prefixes reserved for platform-owned roles.
     # An agent-registry row resolves ANY registered role_arn to an authenticated
     # `service` identity in that row's org (src/auth/agent_registry.py), and

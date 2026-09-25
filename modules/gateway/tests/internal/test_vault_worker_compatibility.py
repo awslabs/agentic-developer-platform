@@ -270,6 +270,7 @@ async def test_task_session_is_never_delivered_without_current_authority(vault, 
         )
     elif reason == "unprotected":
         monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        vault.runtime.authenticate = MagicMock(side_effect=BootstrapRefusedError("missing run proof"))
         headers = {key: value for key, value in headers.items() if key.lower() not in {"x-adp-run-credential", "x-adp-workload-token"}}
     elif reason == "caller-policy":
         body["targets"] = ["arn:aws:iam::222222222222:role/customer"]
@@ -281,3 +282,5 @@ async def test_task_session_is_never_delivered_without_current_authority(vault, 
     assert "source-key" not in response.text and "source-secret" not in response.text
     if reason not in {"revoked", "shortened"}:
         issue.assert_not_called()
+    if reason == "unprotected":
+        vault.runtime.authenticate.assert_called_once_with("", "")

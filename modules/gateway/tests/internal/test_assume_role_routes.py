@@ -111,7 +111,7 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
+def _make_app(db_session: AsyncSession, mock_sm=None, *, user="user-alice") -> TestClient:
     """Build a minimal FastAPI test app with the assume-role router."""
     app = FastAPI()
     app.include_router(router)
@@ -122,6 +122,9 @@ def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[get_secrets_manager] = lambda: mock_sm
+    from tests.internal.broker_fixture import install_broker_fixture
+
+    install_broker_fixture(app, user=user, run="assume-run", tenant="org-test", expected_key=_VALID_KEY)
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -236,14 +239,6 @@ class TestAssumeRoleHappyPath:
         client.app.dependency_overrides[verify_internal_or_irsa] = verify_broker_worker
         with (
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
-            patch(
-                "src.internal.assume_role_routes.resolve_credential_binding",
-                return_value=SimpleNamespace(
-                    resolved_user_id="user-alice",
-                    from_registry=True,
-                    drift_detected=False,
-                ),
-            ),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
             mock_boto3.client.return_value.assume_role.return_value = _mock_sts_response()
@@ -276,7 +271,6 @@ class TestAssumeRoleHappyPath:
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -290,6 +284,7 @@ class TestAssumeRoleHappyPath:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -316,7 +311,6 @@ class TestAssumeRoleHappyPath:
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -330,6 +324,7 @@ class TestAssumeRoleHappyPath:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -349,7 +344,6 @@ class TestAssumeRoleHappyPath:
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -363,6 +357,7 @@ class TestAssumeRoleHappyPath:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -385,7 +380,6 @@ class TestAssumeRoleHappyPath:
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -399,6 +393,7 @@ class TestAssumeRoleHappyPath:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -417,7 +412,6 @@ class TestAssumeRoleHappyPath:
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -431,6 +425,7 @@ class TestAssumeRoleHappyPath:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -470,6 +465,7 @@ class TestAssumeRoleErrors:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "github-workflow",
                     "task_id": "deploy-1",
                     "label": "prod",
@@ -493,7 +489,7 @@ class TestAssumeRoleErrors:
         ):
             response = _make_app(db, sm).post(
                 "/internal/v1/credential-assume-role",
-                json={"user_id": "user-alice", "agent_id": "developer", "task_id": "task-1", "label": "prod"},
+                json={"user_id": "user-alice", "invocation_id": "assume-run", "agent_id": "developer", "task_id": "task-1", "label": "prod"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
         assert response.status_code == 403
@@ -504,15 +500,15 @@ class TestAssumeRoleErrors:
         mock_sm = MagicMock()
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
         ):
-            client = _make_app(db, mock_sm)
+            client = _make_app(db, mock_sm, user="user-unknown")
             resp = client.post(
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-unknown",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -529,7 +525,6 @@ class TestAssumeRoleErrors:
         mock_sm = MagicMock()
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
         ):
@@ -538,6 +533,7 @@ class TestAssumeRoleErrors:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -567,7 +563,6 @@ class TestAssumeRoleErrors:
         mock_sm = MagicMock()
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
         ):
@@ -576,6 +571,7 @@ class TestAssumeRoleErrors:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -592,7 +588,6 @@ class TestAssumeRoleErrors:
         mock_sm = MagicMock()
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db, mock_sm)
@@ -600,6 +595,7 @@ class TestAssumeRoleErrors:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -618,7 +614,6 @@ class TestAssumeRoleErrors:
         from botocore.exceptions import ClientError
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -635,6 +630,7 @@ class TestAssumeRoleErrors:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -680,7 +676,6 @@ class TestAssumeRoleScopeFallback:
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
@@ -694,6 +689,7 @@ class TestAssumeRoleScopeFallback:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "service": "aws",
@@ -743,12 +739,11 @@ class TestAssumeRoleCanonicalResolution:
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
         with (
-            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.sts_assume_service.boto3") as mock_boto3,
         ):
-            client = _make_app(db, mock_sm)
+            client = _make_app(db, mock_sm, user="user-canonical-700")
             mock_sts_client = MagicMock()
             mock_boto3.client.return_value = mock_sts_client
             mock_sts_client.assume_role.return_value = _mock_sts_response()
@@ -757,6 +752,7 @@ class TestAssumeRoleCanonicalResolution:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-canonical-700",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-700",
                     "service": "aws",
@@ -786,14 +782,6 @@ class TestWorkspaceBrokerIntegration:
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
             patch("src.auth.sts_client.get_settings", return_value=_settings_mock()),
-            patch(
-                "src.internal.assume_role_routes.resolve_credential_binding",
-                return_value=SimpleNamespace(
-                    resolved_user_id="user-alice",
-                    from_registry=True,
-                    drift_detected=True,
-                ),
-            ),
             patch("src.auth.sts_client.boto3.client") as client_factory,
             patch("src.internal.assume_role_routes.assume_role") as legacy,
         ):
@@ -801,7 +789,8 @@ class TestWorkspaceBrokerIntegration:
             response = _make_app(db, sm).post(
                 "/internal/v1/credential-assume-role",
                 json={
-                    "user_id": "untrusted-body-user",
+                    "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "label": "prod",
@@ -856,6 +845,7 @@ class TestWorkspaceBrokerIntegration:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "label": "prod",
@@ -888,6 +878,7 @@ class TestWorkspaceBrokerIntegration:
                 "/internal/v1/credential-assume-role",
                 json={
                     "user_id": "user-alice",
+                    "invocation_id": "assume-run",
                     "agent_id": "developer",
                     "task_id": "task-xyz",
                     "label": "prod",

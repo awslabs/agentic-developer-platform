@@ -48,6 +48,18 @@ BOT = "bot-sender-id"
 REAL_HUMAN = "real-human-id"
 CHANNEL = "github:repo=org/repo,issue=1"
 
+# Issue #5663 (A09): the lineage-authority resolution now also requires the chain
+# row's tenant / installation / repository to match the job's own context, so these
+# fixtures carry the shape a real producer writes. Before A09 the builders below
+# emitted no tenant at all, which made every case here a case the new predicate
+# withholds authority from — for the right reason, but not the reason these tests
+# are about. The A09 predicate itself is asserted in
+# ``test_handler_lineage_context_5663.py``; here the context is kept CONSISTENT so
+# these tests keep testing #4129's field-sourcing and #1696's precedence.
+TENANT = "org"
+REPO = "org/repo"
+INSTALLATION = "4242"
+
 
 def _patch_chain(chain):
     """Stub the server-written chain lookup.
@@ -73,9 +85,24 @@ def _resolve(pointer, fallback):
 
 
 class _Identity:
-    def __init__(self, user_kind="bot", user_id=BOT):
+    def __init__(self, user_kind="bot", user_id=BOT, tenant_id=TENANT):
         self.user_kind = user_kind
         self.user_id = user_id
+        # Issue #5663: server-resolved tenant of the job, from the identity index.
+        self.tenant_id = tenant_id
+
+
+def _payload(repo=REPO, installation=INSTALLATION) -> dict:
+    """The signature-verified webhook payload fields A09's job context reads."""
+    return {
+        "repository": {"full_name": repo},
+        "installation": {"id": installation},
+    }
+
+
+def _job_context(tenant=TENANT, repo=REPO, installation=INSTALLATION) -> dict:
+    """The A09 job context, matching ``_chain_row()`` unless a test varies it."""
+    return {"tenant_id": tenant, "repo": repo, "installation_id": installation}
 
 
 def _forged_pointer(**overrides) -> dict:
@@ -115,18 +142,25 @@ def _chain_row(**overrides) -> dict:
         "root_human_id": REAL_HUMAN,
         "is_human_rooted": True,
         "chain_depth": 2,
+        # Issue #5663: same tenant/installation/repo as ``_payload()`` + ``_Identity``.
+        "tenant_id": TENANT,
+        "installation_id": INSTALLATION,
+        "repo": REPO,
     }
     row.update(overrides)
     return row
 
 
-def _determine(pointer, chain, *, marker_text=None, identity=None):
+def _determine(pointer, chain, *, marker_text=None, identity=None, payload=None):
     store = MagicMock()
     store.read_pointer.return_value = pointer
     with patch("handler._get_correlation_store", return_value=store):
         with _patch_chain(chain):
             return determine_correlation(
-                {}, identity or _Identity(), CHANNEL, marker_text=marker_text
+                payload if payload is not None else _payload(),
+                identity or _Identity(),
+                CHANNEL,
+                marker_text=marker_text,
             )
 
 
@@ -235,7 +269,7 @@ class TestForgedPointerIsInert:
         )
         with _patch_chain(chain):
             marker, trusted = _pr_marker_text_with_issue_fallback(
-                store, "org/repo", "## Summary", "agent/issue-77", BOT
+                store, "org/repo", "## Summary", "agent/issue-77", BOT, _job_context()
             )
         assert trusted is True
         assert VICTIM not in marker

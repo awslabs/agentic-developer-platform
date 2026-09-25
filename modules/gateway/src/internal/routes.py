@@ -24,7 +24,6 @@ Authentication:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -44,7 +43,7 @@ from src.auth.magic_link import (
     store_nonce,
 )
 from src.internal.auth_deps import verify_internal_or_irsa
-from src.internal.credential_binding import resolve_installation_binding
+from src.internal.credential_binding_metrics import observe_identity_binding
 from src.knowledge.github_app_service import (
     AGENT_RUN_PERMISSIONS,
     DEFAULT_IDENTITY,
@@ -685,6 +684,113 @@ async def _revalidate_github_binding(request: Request, binding, permissions=None
         raise HTTPException(404, "not found")
 
 
+_TOKEN_ROUTE = "github-installation-token"
+
+
+def _assert_token_repo_binding(binding, requested_repo: str) -> None:
+    """Refuse a mint for a repository the run was not assigned (#5663, A09).
+
+    The installation binding already proves "this run's originating webhook named
+    installation X for tenant T", and Postgres proves T owns X. Neither proves the
+    run was assigned the *repository* being requested. Within one installation that
+    gap is a real escalation: a run legitimately dispatched to ``org/service-a`` can
+    ask for, and receive, a write-capable token listing ``org/service-b``.
+
+    Why this lives here rather than in ``verify_broker_worker``, which already
+    performs an equivalent compare (``broker_identity.py``: ``execution.get("repo")
+    != {"S": repo}``): that function runs only when the caller presents a run
+    credential, is marked ``requires_run_identity``, or ``AGENT_AUTHORITY_ENABLED``
+    is true (``auth_deps.py``). That flag is false in live environments, so on the
+    default path the compare never happens. #5663's acceptance is explicit that the
+    repository binding must hold "with the authority feature flag absent or set to
+    its old default" — so the check has to sit on the path every caller takes. When
+    the protected path DID run, this is a cheap second assertion of the same fact,
+    not a substitute for it.
+
+    Both outcomes below are counted through ``observe_identity_binding`` so the
+    decision is measurable per route, but the counter never decides the outcome.
+
+    ABSENT SERVER EVIDENCE IS A REFUSAL, NOT AN ALLOWANCE (#5663 review). An
+    earlier revision of this function allowed a mint when the run's row carried no
+    ``repo`` at all, gated on ``enforce_unbound_repo_token_denial`` (default
+    false), on the theory that EventBridge/scheduled dispatch legitimately produces
+    repo-less runs. That preserved the exact escalation this check exists to close:
+    with no bound repository, the *caller's* ``repo_owner``/``repo_name`` became the
+    only input deciding which repository got a write-capable token. "The server has
+    no evidence for this claim" cannot mean "the claim is granted", whatever a
+    metric records alongside it.
+
+    The scheduled-dispatch concern turned out not to describe any caller that can
+    actually reach this route. Every mint path derives the repository from the SAME
+    envelope field that produced the row's ``repo`` attribute:
+
+    * ``spawn_persona`` passes one ``repo`` value to both ``_build_envelope``
+      (``source_ref.repo``) and ``log_event`` (the ``repo`` attribute). They cannot
+      disagree, so a run with a usable ``source_ref.repo`` has a row with ``repo``.
+    * ``agent-worker-image/entrypoint.py`` calls ``repo.split("/", 1)`` at parse
+      time, BEFORE any mint, and ``parse_envelope`` requires ``source_ref.repo`` to
+      be present. An empty value raises ``ValueError`` there, so a repo-less run
+      fails during bootstrap and never reaches a mint.
+    * ``agent/src/token-refresh.ts`` refuses broker mode without ``config.owner``,
+      and both TypeScript and Python clients send the run's own envelope values.
+
+    So the repo-less-but-minting run is unreachable: the only callers that arrive
+    here with no bound repository are ones whose claim cannot be checked at all.
+    Refusing them costs no legitimate traffic and is what makes the binding hold on
+    the default configuration, which the issue's acceptance requires explicitly.
+
+    If a future producer does need a repo-less scheduled run to mint, the fix is to
+    give it server-owned repository evidence (record ``repo`` on its event row, or
+    carry an authorization for the repository it may act on) — not to reopen the
+    caller-declared path. Recorded in the PR as a rollout note.
+    """
+    bound_repo = getattr(binding, "repo", None)
+
+    if not bound_repo:
+        observe_identity_binding(route=_TOKEN_ROUTE, outcome="denied", enforced=True)
+        logger.warning(
+            "github-installation-token DENIED — run has no bound repository tenant=%s installation=%s requested=%s",
+            binding.tenant_id,
+            binding.installation_id,
+            requested_repo,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "repo_binding_failed",
+                "message": "This invocation is not bound to a repository.",
+            },
+        )
+
+    # Case-insensitive: GitHub treats owner/repo case-insensitively, and the row's
+    # casing comes from the webhook payload while the request's comes from the
+    # worker's env. A case difference is not an authorization difference, and
+    # refusing on it would be a self-inflicted outage rather than a control.
+    if bound_repo.casefold() != requested_repo.casefold():
+        # Unconditional. There is no legitimate caller that asks for a repository
+        # other than its own run's, so there is no compatibility window to stage and
+        # nothing for a flag to protect — a switch that can turn this off is just a
+        # way to reintroduce the escalation. (#5663 review: "a metric does not
+        # establish the run's authority for the requested repository".)
+        observe_identity_binding(route=_TOKEN_ROUTE, outcome="denied", enforced=True)
+        logger.warning(
+            "github-installation-token DENIED — repo mismatch tenant=%s installation=%s bound=%s requested=%s",
+            binding.tenant_id,
+            binding.installation_id,
+            bound_repo,
+            requested_repo,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "repo_binding_mismatch",
+                "message": "Requested repository does not match this invocation's repository.",
+            },
+        )
+
+    observe_identity_binding(route=_TOKEN_ROUTE, outcome="allowed", enforced=True)
+
+
 def _validate_github_expiry(request: Request, expires_at: str) -> None:
     expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
     not_after = getattr(request.state, "agent_github_not_after", None)
@@ -741,8 +847,6 @@ async def github_installation_token(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> GithubInstallationTokenResponse:
-    settings = get_settings()
-
     # Issue #5350: reject an identity this gateway does not implement. Checked before
     # any authz work so a typo cannot be answered with a usable authoring token.
     if body.identity not in SUPPORTED_IDENTITIES:
@@ -762,12 +866,11 @@ async def github_installation_token(
     # shadows instead of enforcing.
     binding = getattr(request.state, "agent_installation_binding", None)
     if binding is None:
-        binding = await asyncio.to_thread(
-            resolve_installation_binding,
-            invocation_id=body.invocation_id,
-            requested_installation_id=body.installation_id,
-            settings=settings,
-        )
+        raise HTTPException(403, "authenticated run installation binding required")
+
+    # Reassert the repository bound by broker or shared-review authentication.
+    # Missing repository evidence is denied before provider minting.
+    _assert_token_repo_binding(binding, f"{body.repo_owner}/{body.repo_name}")
 
     # Layer 2 — the authoritative ownership check. Layer 1 proves "this run's
     # webhook said installation X for tenant T"; this proves T really owns X.

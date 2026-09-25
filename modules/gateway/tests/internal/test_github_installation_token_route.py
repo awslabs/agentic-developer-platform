@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -53,6 +53,11 @@ _BOUND_INSTALLATION = 555001
 _FOREIGN_INSTALLATION = 555002
 
 _INVOCATION_ID = "evt-abc-123"
+
+# The repository this run is assigned, as recorded on its originating event. The
+# request body's repo_owner/repo_name must agree with it (#5663).
+_BOUND_REPO = "acme/widgets"
+_FOREIGN_REPO = "acme/secrets"
 
 _GITHUB_EXPIRES_AT = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
 
@@ -157,6 +162,24 @@ def _make_app(db_session: AsyncSession, *, authorized_action: Action | None = No
         yield db_session
 
     app.dependency_overrides[get_db] = _get_db
+    from src.internal.auth_deps import _verify_internal_key, verify_internal_or_irsa
+    from src.internal.credential_binding import resolve_installation_binding
+
+    async def authenticated_fixture(request: Request):
+        # Route-unit fixture: the authenticated run is fixed independently of
+        # request selectors. Real broker/auth wiring is exercised separately.
+        _verify_internal_key(request.headers.get("X-Internal-Api-Key"))
+        body = await request.json()
+        if body.get("invocation_id") != _INVOCATION_ID:
+            raise HTTPException(403, "fixture run mismatch")
+        binding = resolve_installation_binding(
+            invocation_id=_INVOCATION_ID,
+            requested_installation_id=body["installation_id"],
+            settings=_settings_mock(),
+        )
+        request.state.agent_installation_binding = binding
+
+    app.dependency_overrides[verify_internal_or_irsa] = authenticated_fixture
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -169,6 +192,12 @@ def _settings_mock(*, enforce_credential_binding: bool = False) -> MagicMock:
     # False (its real value on embark1) precisely so that a guard accidentally
     # gated on it would fail these tests instead of shadowing in production.
     s.enforce_credential_binding = enforce_credential_binding
+    # Issue #5663 (A09): the repository binding reads NO setting. It used to take
+    # two, and a MagicMock's truthy auto-stub for an unset attribute is exactly how
+    # a fixture ends up testing a configuration that does not ship — so the absence
+    # of any repo-binding knob here is deliberate, not an omission. If someone
+    # reintroduces a flag, the unconditional tests below fail rather than silently
+    # start reading a stub.
     return s
 
 
@@ -183,10 +212,21 @@ def _bound_row(
     *,
     installation_id: int | None = _BOUND_INSTALLATION,
     tenant_id: str = _OWNER_TENANT,
+    repo: str | None = _BOUND_REPO,
 ) -> dict:
+    """A webhook-events row as ingress writes it for a GitHub-originated run.
+
+    Issue #5663 (A09): ``repo`` is part of the default shape because every
+    GitHub-delivered event carries one (``log_event`` writes it whenever non-empty,
+    and the handler always derives it from the payload). Pass ``repo=None`` to model
+    the EventBridge/scheduled case, where ``target.repo`` is optional and the
+    attribute is therefore genuinely absent.
+    """
     row: dict = {"tenant_id": tenant_id, "arrived_at": "2026-08-27T15:00:00Z"}
     if installation_id is not None:
         row["installation_id"] = installation_id
+    if repo is not None:
+        row["repo"] = repo
     return row
 
 
@@ -439,6 +479,166 @@ class TestMintFailure:
 
         assert resp.status_code == 502
         assert "ghs_leaked_secret" not in resp.text
+
+
+class TestRepoBinding:
+    """Issue #5663 (A09): the mint is bound to the run's OWN repository.
+
+    Installation binding proves "this run's webhook named installation X for tenant
+    T"; Postgres proves T owns X. Neither says which repository INSIDE X the run was
+    assigned, so before this change a run dispatched to acme/widgets could obtain a
+    write-capable token listing acme/secrets — same installation, same tenant, both
+    prior layers satisfied.
+
+    These tests drive the mounted route and assert the refusal REASON, so a schema
+    rejection or an unrelated 403 cannot be mistaken for the repository check firing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_repo_other_than_the_runs_own_is_refused(self, db):
+        """The escalation this check exists to close."""
+        resp, mint = _post(
+            db,
+            row=_bound_row(repo=_BOUND_REPO),
+            body=_body(repo_owner="acme", repo_name="secrets"),
+        )
+
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "repo_binding_mismatch"
+        mint.assert_not_awaited(), "a refused request must not reach GitHub"
+
+    @pytest.mark.asyncio
+    async def test_the_runs_own_repo_still_mints(self, db):
+        """The legitimate caller — the shape every worker actually sends."""
+        resp, mint = _post(db, row=_bound_row(repo=_BOUND_REPO), body=_body())
+
+        assert resp.status_code == 200, resp.text
+        mint.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_case_difference_is_not_a_denial(self, db):
+        """GitHub treats owner/repo case-insensitively; a case split is not an
+        authorization difference, and refusing it would be a self-inflicted outage.
+        The row's casing comes from the webhook payload, the request's from the
+        worker's env, so they legitimately differ."""
+        resp, mint = _post(
+            db,
+            row=_bound_row(repo="Acme/Widgets"),
+            body=_body(repo_owner="acme", repo_name="widgets"),
+        )
+
+        assert resp.status_code == 200, resp.text
+        mint.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_holds_with_the_authority_flag_absent(self, db, monkeypatch):
+        """Regression guard required by #5663's acceptance.
+
+        The equivalent compare already existed in verify_broker_worker, but that runs
+        only when the caller presents a run credential, is flagged
+        requires_run_identity, or AGENT_AUTHORITY_ENABLED is true — and that flag is
+        false in live environments, so on the default path the compare never ran.
+        This asserts the refusal with the flag ABSENT and with its old default, i.e.
+        it fails if a legacy non-verified path is ever reintroduced.
+        """
+        monkeypatch.delenv("AGENT_AUTHORITY_ENABLED", raising=False)
+        resp, _ = _post(db, row=_bound_row(repo=_BOUND_REPO), body=_body(repo_name="secrets"))
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "repo_binding_mismatch"
+
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        resp, _ = _post(db, row=_bound_row(repo=_BOUND_REPO), body=_body(repo_name="secrets"))
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "repo_binding_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_recorded_repository_is_refused_on_the_default_path(self, db):
+        """No server-side repository evidence must not resolve to "allowed".
+
+        This test previously asserted HTTP 200 for this exact shape, on the theory
+        that EventBridge/scheduled dispatch produces legitimate repo-less runs. That
+        left the caller's own repo_owner/repo_name as the only input deciding which
+        repository received a write-capable token — the escalation the check exists
+        to close — so it is now a refusal on the shipped configuration, with no flag
+        able to turn it back into a pass.
+
+        The scheduled-caller worry does not survive contact with the producers: the
+        worker parses source_ref.repo (required) and calls repo.split("/", 1) BEFORE
+        any mint, so a repo-less run fails at bootstrap and never gets here. See
+        _assert_token_repo_binding for the full per-producer evidence.
+        """
+        resp, mint = _post(db, row=_bound_row(repo=None), body=_body())
+
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "repo_binding_failed"
+        mint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_blank_recorded_repository_is_also_refused(self, db):
+        """An empty-string repo is absent evidence, not a repository named "".
+
+        DynamoDB will hold a blank string if a producer ever writes one, and a
+        truthiness bug here would compare "" to the request and refuse as a
+        *mismatch*, or worse normalise to None and be waved through by a
+        reintroduced allowance. Either way the run has no repository.
+        """
+        resp, mint = _post(db, row=_bound_row(repo=""), body=_body())
+
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "repo_binding_failed"
+        mint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_setting_can_turn_the_repository_check_back_off(self, db, capsys):
+        """Regression guard: the refusal must not be reachable through configuration.
+
+        The earlier revision allowed a cross-repository mint whenever
+        enforce_token_repo_binding was false, and allowed an unbound one whenever
+        enforce_unbound_repo_token_denial was false. Both flags are gone. A Settings
+        object that still carries them — or any other attribute someone adds later,
+        since MagicMock auto-stubs every name truthily — must not change the outcome.
+        """
+        permissive = _settings_mock()
+        permissive.enforce_token_repo_binding = False
+        permissive.enforce_unbound_repo_token_denial = False
+
+        mismatch, mismatch_mint = _post(db, row=_bound_row(repo=_BOUND_REPO), body=_body(repo_name="secrets"), settings=permissive)
+        assert mismatch.status_code == 403, mismatch.text
+        assert mismatch.json()["detail"]["error"] == "repo_binding_mismatch"
+        mismatch_mint.assert_not_awaited()
+
+        unbound, unbound_mint = _post(db, row=_bound_row(repo=None), body=_body(), settings=permissive)
+        assert unbound.status_code == 403, unbound.text
+        assert unbound.json()["detail"]["error"] == "repo_binding_failed"
+        unbound_mint.assert_not_awaited()
+
+        # Denials are counted as real denials, not as would-denies: the outcome the
+        # counter reports has to match the outcome the caller got.
+        emitted = capsys.readouterr().out
+        assert '"InternalIdentityBindingDenied": 1' in emitted
+        assert '"InternalIdentityBindingWouldDeny": 0' in emitted
+        assert '"Route": "github-installation-token"' in emitted
+
+    @pytest.mark.asyncio
+    async def test_repo_is_read_from_the_row_not_the_request(self, db):
+        """The projection must actually fetch repo, or the check is vacuous.
+
+        Without `repo` in the ProjectionExpression the attribute is absent from every
+        row, every run looks unbound, and the mismatch case above can never fire —
+        the check would pass its own tests while enforcing nothing in production.
+        """
+        table = _ddb_table_mock(_bound_row())
+        with patch("src.internal.credential_binding._get_dynamodb_table", return_value=table):
+            from src.internal.credential_binding import resolve_installation_binding
+
+            binding = resolve_installation_binding(
+                invocation_id=_INVOCATION_ID,
+                requested_installation_id=_BOUND_INSTALLATION,
+                settings=_settings_mock(),
+            )
+
+        assert "repo" in table.query.call_args.kwargs["ProjectionExpression"]
+        assert binding.repo == _BOUND_REPO
 
 
 class TestAuthn:
