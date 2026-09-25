@@ -24,6 +24,7 @@ export enum Permission {
   POOL_READ = 'pool:read',
   POOL_MANAGE = 'pool:manage',
   USAGE_READ = 'usage:read',
+  ACTIVITY_READ_ALL = 'activity:read_all',
   LOGS_READ = 'logs:read',
   LOGS_EXPORT = 'logs:export',
   USER_READ = 'user:read',

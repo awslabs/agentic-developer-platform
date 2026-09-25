@@ -109,10 +109,10 @@ async def get_my_stats(
     Cost enrichment: graceful degradation — if Postgres fails, spend is null.
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
-    result = stats_service.get_stats_by_user(user_id=canonical_user_id, days=days)
+    result = stats_service.get_stats_by_user(user_id=canonical_user_id, tenant_id=current_user.org_id, days=days)
 
     # Enrich with cost data from Postgres (cross-store pattern)
-    result = await _enrich_stats_with_cost(db, result, stats_service, canonical_user_id, days)
+    result = await _enrich_stats_with_cost(db, result, stats_service, canonical_user_id, days, tenant_id=current_user.org_id)
     return result
 
 
@@ -136,12 +136,10 @@ async def get_admin_stats(
     any tenant_id. days=N means the N calendar days ending today (UTC).
     Same aggregation + cost enrichment as the user endpoint.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     result = stats_service.get_stats_by_tenant(tenant_id=effective_tenant_id, days=days)
 
@@ -158,6 +156,7 @@ async def _enrich_stats_with_cost(
     days: int,
     *,
     is_tenant: bool = False,
+    tenant_id: str | None = None,
 ) -> StatsResponse:
     """Enrich stats response with cost data from Postgres.
 
@@ -179,6 +178,7 @@ async def _enrich_stats_with_cost(
         items = stats_service._fetch_items_merged(
             user_id=scope_id,
             days=days,
+            tenant_id=tenant_id,
         )
 
     run_ids = [item.get("event_id", "") for item in items if item.get("event_id")]
@@ -390,6 +390,7 @@ async def get_my_invocations(
         if view == "chains":
             chain_result = service.query_chains_by_user(
                 user_id=canonical_user_id,
+                tenant_id=current_user.org_id,
                 page_size=page_size,
                 last_key=last_key,
                 status=status,
@@ -404,6 +405,7 @@ async def get_my_invocations(
         else:
             result = service.query_by_user(
                 user_id=canonical_user_id,
+                tenant_id=current_user.org_id,
                 page_size=page_size,
                 last_key=last_key,
                 status=status,
@@ -454,16 +456,10 @@ async def get_admin_invocations(
     status no_op or webhook_received are excluded. An explicit status filter
     takes precedence.
     """
-    # Permission check — reuses USAGE_READ which all admin roles have
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    # Determine which tenant to query
-    if current_user.is_admin and tenant_id:
-        # Platform admin may specify any tenant
-        effective_tenant_id = tenant_id
-    else:
-        # Org admins are pinned to their own org (org_id == tenant_id in this product)
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     # Issue #4390: widen bare YYYY-MM-DD bounds to full-day instants
     since = _expand_date_bound(since, end=False)
@@ -516,6 +512,7 @@ async def get_my_invocation_chain(
     chain = service.get_chain(
         correlation_id=correlation_id,
         user_id=canonical_user_id,
+        tenant_id=current_user.org_id,
         include_non_triggering=include_non_triggering,
     )
     return await _enrich_chain_with_cost(db, chain)
@@ -544,7 +541,7 @@ async def get_my_invocation_detail(
     Returns 404 (not 403) if the run doesn't belong to the caller (existence-hiding).
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
-    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Invocation not found")
 
@@ -590,12 +587,10 @@ async def get_admin_invocation_chain(
     Issue #3708: When include_non_triggering is False (default), no_op and
     webhook_received items are excluded — same convention as flat list.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     chain = service.get_chain(
         correlation_id=correlation_id,
@@ -623,12 +618,10 @@ async def get_admin_invocation_detail(
 
     Issue #1653: Admin variant scoped by tenant_id.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
     if item is None:
@@ -711,7 +704,7 @@ async def get_my_invocation_transcript(
     the client), then proxies the S3 object. Returns text/markdown.
     """
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
-    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Invocation not found")
 
@@ -741,12 +734,10 @@ async def get_admin_invocation_transcript(
 
     Issue #3069: Admin variant scoped by tenant_id. Same AuthZ as admin detail.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
     if item is None:

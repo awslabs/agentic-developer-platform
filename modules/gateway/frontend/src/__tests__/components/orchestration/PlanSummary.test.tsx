@@ -327,14 +327,14 @@ it('explains user credential permissions and provider lifetime without claiming 
     human_decisions: ['deploy'],
     user_credentials: {
       permission_mode: 'user_configured', lifetime: 'provider_managed',
-      vault_credential_ids: ['deployment-key'],
-      aws_role_arns: ['arn:aws:iam::222222222222:role/CustomerDeploy'], actions: ['develop'],
+      vault_credential_count: 1,
+      aws_role_count: 1, actions: ['develop'],
     },
   })} />);
   const description = screen.getByTestId('policy-user-credentials');
   expect(description).toHaveTextContent('retain their configured permissions');
-  expect(description).toHaveTextContent('deployment-key');
-  expect(description).toHaveTextContent('CustomerDeploy');
+  expect(description).toHaveTextContent('Vault credentials: 1');
+  expect(description).toHaveTextContent('AWS roles: 1');
   expect(description).toHaveTextContent('Credentials already issued follow');
   expect(description).toHaveTextContent('may permit additional actions');
   expect(screen.getByTestId('policy-human-decisions')).toHaveTextContent('deploy');

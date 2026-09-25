@@ -34,6 +34,7 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.RATELIMIT_READ,
         Permission.RATELIMIT_UPDATE,
         Permission.USAGE_READ,
+        Permission.ACTIVITY_READ_ALL,
         Permission.LOGS_READ,
         Permission.LOGS_EXPORT,
         Permission.USER_READ,

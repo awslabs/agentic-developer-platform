@@ -418,6 +418,7 @@ class TestGetMyInvocationChain:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
+            tenant_id="org-tenant-001",
             include_non_triggering=False,
         )
 
@@ -520,6 +521,7 @@ class TestChainIncludeNonTriggering:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
+            tenant_id="org-tenant-001",
             include_non_triggering=False,
         )
 
@@ -529,6 +531,7 @@ class TestChainIncludeNonTriggering:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
+            tenant_id="org-tenant-001",
             include_non_triggering=True,
         )
 
@@ -538,6 +541,7 @@ class TestChainIncludeNonTriggering:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
+            tenant_id="org-tenant-001",
             include_non_triggering=False,
         )
 
@@ -600,7 +604,7 @@ class TestGetMyInvocationDetail:
         mock_service.get_invocation = MagicMock(return_value=None)
 
         client.get("/me/agent-invocations/inv-xyz")
-        mock_service.get_invocation.assert_called_once_with("inv-xyz", user_id=CANONICAL_USER_ID)
+        mock_service.get_invocation.assert_called_once_with("inv-xyz", user_id=CANONICAL_USER_ID, tenant_id="org-tenant-001")
 
     def test_does_not_match_chain_route(self, client, mock_service):
         """Requesting /me/agent-invocations/chain/abc hits chain route, not detail."""

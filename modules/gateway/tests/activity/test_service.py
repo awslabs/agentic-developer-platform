@@ -2593,14 +2593,10 @@ class TestGetInvocationBaseTableQuery:
 
 
 class TestGetChainMembershipScoping:
-    """Issue #3949: get_chain uses membership-based authorization.
+    """Every row requires owner proof; a correlation ID is not authority (#5668)."""
 
-    Authorize the CHAIN (any member has user_id or root_human_id = caller),
-    then return ALL members unfiltered. No per-row user_id filter.
-    """
-
-    def test_bot_owned_member_survives_membership_auth(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Chain with bot-owned members: all survive because root has root_human_id = caller."""
+    def test_proven_bot_owned_member_survives_but_sparse_member_is_omitted(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Delegated rows survive only when their own root_human_id proves ownership."""
         chain_items = [
             {
                 "event_id": "root-001",
@@ -2634,11 +2630,12 @@ class TestGetChainMembershipScoping:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.get_chain("corr-test", user_id="user-human")
 
-        # All 3 items returned (including sparse-root_human_id row)
-        assert result.total_count == 3
+        # The legacy bot row lacks owner proof and must not be disclosed.
+        assert result.total_count == 2
+        assert "child-bot-002" not in result.model_dump_json()
         assert len(result.items) == 1  # one root
         assert result.items[0].invocation_id == "root-001"
-        # Root has 1 direct child, which has 1 grandchild
+        # Only the proven direct child remains.
         assert len(result.items[0].children) == 1
         assert result.items[0].children[0].invocation_id == "child-bot-001"
 
@@ -2688,8 +2685,8 @@ class TestGetChainMembershipScoping:
             expr_str = str(filter_expr.get_expression())
             assert "user_id" not in expr_str
 
-    def test_sparse_root_human_id_no_orphan_promotion(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Pre-#2042 mid-chain row (no root_human_id) is NOT dropped — no tree restructure."""
+    def test_sparse_unproven_middle_is_omitted_and_proven_leaf_becomes_root(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Historical tree completeness does not justify disclosure without owner proof."""
         chain_items = [
             {
                 "event_id": "root-001",
@@ -2722,17 +2719,9 @@ class TestGetChainMembershipScoping:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.get_chain("corr-sparse", user_id="user-human")
 
-        # All 3 items returned — mid-chain row NOT dropped
-        assert result.total_count == 3
-        # Tree structure preserved: root → mid → leaf (not: root + orphan mid + orphan leaf)
-        assert len(result.items) == 1  # single root
-        root = result.items[0]
-        assert root.invocation_id == "root-001"
-        assert len(root.children) == 1
-        mid = root.children[0]
-        assert mid.invocation_id == "mid-001"
-        assert len(mid.children) == 1
-        assert mid.children[0].invocation_id == "leaf-001"
+        assert result.total_count == 2
+        assert {item.invocation_id for item in result.items} == {"root-001", "leaf-001"}
+        assert all(not item.children for item in result.items)
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ class Permission(str, Enum):
 
     # Usage and logs
     USAGE_READ = "usage:read"
+    ACTIVITY_READ_ALL = "activity:read_all"  # Tenant-wide individual activity; org/platform admins only.
     LOGS_READ = "logs:read"
     LOGS_EXPORT = "logs:export"
 
@@ -94,6 +95,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.POOL_READ,
         Permission.POOL_MANAGE,
         Permission.USAGE_READ,
+        Permission.ACTIVITY_READ_ALL,
         Permission.LOGS_READ,
         Permission.LOGS_EXPORT,
         Permission.USER_READ,
@@ -111,6 +113,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.RATELIMIT_READ,
         Permission.RATELIMIT_UPDATE,
         Permission.USAGE_READ,
+        Permission.ACTIVITY_READ_ALL,
         Permission.LOGS_READ,
         Permission.LOGS_EXPORT,
         Permission.USER_READ,

@@ -282,8 +282,16 @@ class ReleaseContracts(unittest.TestCase):
                         self.assertEqual(job['runs-on'], {
                             'group': 'adp-deployment', 'labels': 'arc-runner-deployment',
                         })
-                        self.assertTrue(str(job.get('environment', '')).startswith(('adp-deploy-', 'adp-build-')))
+                        if (path.name, name) == ('webhook-code-deploy.yml', 'deploy-code'):
+                            self.assertEqual(job.get('environment'), 'adp-webhook-code-dev')
+                        else:
+                            self.assertTrue(str(job.get('environment', '')).startswith(('adp-deploy-', 'adp-build-')))
                         self.assertIn("github.ref == 'refs/heads/main'", job.get('if', ''))
+                        continue
+                    # S14 isolates the developer persona on its reviewed agent lane.
+                    # This label is permitted only for that exact workflow/job pair.
+                    if (path.name, name) == ('agent-developer.yml', 'work'):
+                        self.assertEqual(job['runs-on'], 'arc-runner-agent')
                         continue
                     self.assertIn(
                         job['runs-on'],

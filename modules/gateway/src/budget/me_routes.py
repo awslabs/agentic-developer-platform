@@ -1373,6 +1373,7 @@ async def get_my_budget_runs(
     try:
         lineage = activity.query_by_user(
             user_id=canonical_user_id,
+            tenant_id=current_user.org_id,
             page_size=page_size,
             last_key=cursor,
             since=since,

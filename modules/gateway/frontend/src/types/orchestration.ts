@@ -247,7 +247,13 @@ export interface UserCredentialAuthority {
 }
 
 export interface PolicySummary {
-  user_credentials?: UserCredentialAuthority | null;
+  user_credentials?: {
+    permission_mode: 'user_configured';
+    lifetime: 'provider_managed';
+    vault_credential_count: number;
+    aws_role_count: number;
+    actions: PolicyAction[];
+  } | null;
   repository_ids: string[];
   environment_connection_ids: string[];
   team_ids: string[];

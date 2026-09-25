@@ -485,8 +485,15 @@ def test_summary_cannot_mutate_accepted_credential_authority():
 
     accepted = policy()
     summary = summarize_policy(accepted)
-    summary.user_credentials.vault_credential_ids.append("injected")
+    summary.user_credentials.actions.clear()
+    assert accepted.user_credentials.actions
     assert accepted.user_credentials.vault_credential_ids == ["approved-key"]
+    rendered = summary.model_dump_json()
+    assert "approved-key" not in rendered
+    assert "arn:aws:" not in rendered
+    assert "vault_credential_ids" not in rendered
+    assert "aws_role_arns" not in rendered
+    assert summary.user_credentials.vault_credential_count == 1
 
 
 async def test_metadata_hides_expired_selected_credentials(broker):
