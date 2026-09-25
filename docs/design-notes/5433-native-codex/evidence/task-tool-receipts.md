@@ -357,3 +357,32 @@ provider fetch, publication, merge, or persona rollout is enabled by this change
 Tests exercise real admission with Moto DynamoDB/fakeredis budget reservation,
 admin schema/policy round trips, protected-grant tampering, changed policy, and
 malformed selections. The Task API contract checker still passes all 383 checks.
+
+
+## Task GitHub source adapter
+
+`fetch_task_source` consumes the frozen repository binding and a current Task
+authorization callback. GitHub connections use `installation:<numeric-id>` and
+resolve ownership through the existing canonical installation resolver, including
+revocation and ambiguous ownership refusal. Tokens are minted inside the gateway
+with contents/metadata read permissions for the single repository. The adapter
+verifies the immutable provider repository ID and resolves the admitted base
+branch to a valid commit. No legacy EXEC record or GitHub-event grant is used.
+GitLab currently fails with adapter unavailable; its connection model is not
+silently routed through GitHub credentials.
+
+The source adapter streams one bounded archive download, reusing the mediated
+archive byte/digest accounting. This avoids the legacy slice protocol's repeated
+whole-archive downloads. Redirects are limited to HTTPS codeload.github.com on
+port 443 without URL credentials; the signed download receives no installation
+token. Task/connection authorization runs before provider calls and again before
+returning source. Provider mutations are refused by the read-only adapter.
+
+Thirteen isolated tests pass with HTTP provider fixtures and real workspace Git:
+tenant mismatch, immutable repository mismatch, revocation after transfer,
+malformed commit, oversized archive, write refusal, redirect restrictions,
+a 7 MiB archive fetched once, and a valid source archive materialized by the
+worker with provider/local revision identities kept separate. Focused lint passes.
+These are adapter tests, not live GitHub qualification. Trusted source staging,
+Task transport/provisioner wiring, and provider publication remain to be connected;
+no model-visible source endpoint or persona is enabled by this increment.
