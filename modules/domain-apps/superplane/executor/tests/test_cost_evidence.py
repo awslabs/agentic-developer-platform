@@ -70,7 +70,7 @@ def test_retained_regional_handles_survive_cleanup_without_invented_charges(rele
             for item in evidence["resource_observations"]
         )
         assert evidence["resource_inventory_complete"] is released
-        assert evidence["resource_observed_at"] == accounting["checked_at"]
+        assert evidence["accounting_checked_at"] == accounting["checked_at"]
         for name in ("usage", "billed_cost"):
             assert evidence[name]["status"] == "unknown"
             assert evidence[name]["interval_start"] is None

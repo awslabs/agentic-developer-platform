@@ -48,7 +48,7 @@ def build_cost_evidence(operation, plan, resources, accounting):
             )
         categories[category] = {
             "resource_observations": observations,
-            "resource_observed_at": accounting["checked_at"],
+            "accounting_checked_at": accounting["checked_at"],
             "resource_inventory_complete": accounting["inventory_complete"],
             "usage": {
                 "status": "unknown",
