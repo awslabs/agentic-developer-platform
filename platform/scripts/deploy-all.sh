@@ -364,8 +364,7 @@ run_codebuild() {
   fi
 
   # Delegate to codebuild-run.sh for per-build isolated source upload + start + poll
-  # In update mode, forward IMAGE_TAG so CodeBuild pushes the SHA-tagged image
-  # (without this, only :latest is pushed and kubectl set image :<sha> fails).
+  # Forward the full source SHA expected by the immutable publisher.
   local _CB_IMAGE_TAG_OVERRIDE=""
   if [ -n "${IMAGE_TAG:-}" ]; then
     _CB_IMAGE_TAG_OVERRIDE="name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT"
@@ -828,18 +827,14 @@ else
   # Migrations run after rollout on Ready replicas of this exact release.
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
-    cd "$ROOT_DIR/modules/gateway"
-    docker build -t adp-gateway .
-    aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-    docker run --rm --entrypoint python adp-gateway:latest -m pricing_policy.selfcheck
-    docker tag adp-gateway:latest "$REGISTRY/adp-gateway:${IMAGE_TAG}"
-    docker push "$REGISTRY/adp-gateway:${IMAGE_TAG}"
-    docker tag adp-gateway:latest "$REGISTRY/adp-gateway:latest"
-    docker push "$REGISTRY/adp-gateway:latest"
+    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-gateway
   else
     # Docker build via CodeBuild (Terraform-managed project)
     run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml"
   fi
+  GATEWAY_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" "$GATEWAY_IMAGE") \
+    || fail "Gateway release digest could not be verified"
 
   # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/gateway/infra"
@@ -1490,21 +1485,16 @@ EOF
   step "Step 10b/12: Build and deploy agent gateway"
 
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
-  LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
-    cd "$ROOT_DIR/modules/agent-factory"
-
-    aws ecr describe-repositories --repository-names "adp-agent-gateway" --region "$AWS_REGION" 2>/dev/null || \
-      aws ecr create-repository --repository-name "adp-agent-gateway" --region "$AWS_REGION" --no-cli-pager
-    aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-    docker build -f gateway/Dockerfile -t "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" .
-    docker tag "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" "$REGISTRY/adp-agent-gateway:latest"
-    docker push "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
-    docker push "$REGISTRY/adp-agent-gateway:latest"
+    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-agent-gateway
   else
     # Docker build via CodeBuild (Terraform-managed project)
     run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml"
   fi
+  AGENT_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
+    "${ADP_RELEASE_AGENT_GATEWAY_IMAGE:-$REGISTRY/adp-agent-gateway:$IMAGE_TAG}") \
+    || fail "Agent gateway release digest could not be verified"
 
   # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/agent-factory"
@@ -1512,7 +1502,6 @@ EOF
   INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url)
   RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url)
   SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table)
-  AGENT_IMAGE="${ADP_RELEASE_AGENT_GATEWAY_IMAGE:-$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG}"
   sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
       -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
       -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
@@ -1532,19 +1521,20 @@ EOF
   fi
 
   # The WebSocket ingest Lambda sends to the chat FIFO queue. Its TypeScript
-  # consumer is a separate image from the legacy Python worker above, although
-  # both use the same ECR repository. Never overwrite one release with the other.
+  # consumer has its own repository, so both images use the full source SHA
+  # without a suffix that would violate the shared publication contract.
   step "Step 10c/12: Build and deploy chat agent"
-  CHAT_IMAGE_TAG="${IMAGE_TAG}-chat"
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
-    cd "$ROOT_DIR/modules/agent-factory"
-    docker build -f agent/Dockerfile -t "$REGISTRY/adp-chat-agent:$CHAT_IMAGE_TAG" .
-    docker push "$REGISTRY/adp-chat-agent:$CHAT_IMAGE_TAG"
+    SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+      bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-chat-agent
   else
-    IMAGE_TAG="$CHAT_IMAGE_TAG" run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
+    run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
   fi
+  CHAT_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
+    "${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-chat-agent:$IMAGE_TAG}") \
+    || fail "Chat agent release digest could not be verified"
   ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
-    AGENT_IMAGE="${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-chat-agent:$CHAT_IMAGE_TAG}" \
+    AGENT_IMAGE="$CHAT_IMAGE" \
     bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
   ok "Chat agent deployed (SHA: $IMAGE_TAG)"
 else

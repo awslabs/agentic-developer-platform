@@ -47,6 +47,22 @@ A failed build leaves the existing consumers unchanged. Rollback selects a
 previous verified digest; enabling PUBLISH_LATEST is not a valid rollback under
 IMMUTABLE.
 
+The local gateway, agent-gateway and chat-agent paths in `deploy-all.sh`, and the
+standalone `modules/agent-factory/scripts/deploy-gateway.sh`, use
+`platform/scripts/publish-local-image.sh`. Local Docker builds retain cache use
+but take their inputs from `git archive` of the full selected commit; commit any
+intended source edits before publishing. The current shared publisher stages the
+gateway contracts and runs the same self-checks as CodeBuild. An existing source
+tag reuses its verified digest; a registry error, failed build or failed
+self-check stops publication. These entry points resolve the full-SHA tag to an
+ECR digest before promoting a workload. Chat and agent-gateway use separate
+repositories and the same full source SHA, without a `-chat` suffix.
+
+For a standalone agent-gateway rollback, use `--skip-image-build` with an explicit
+`AGENT_IMAGE` digest (or a full-SHA `AGENT_IMAGE_TAG`). The script verifies that
+image before Terraform or Kubernetes writes. Shared repositories must already
+exist under their Terraform owner; local publishers do not create replacements.
+
 ## SkyPilot adoption
 
 Preserve the published image digest:

@@ -58,6 +58,7 @@ _AWS_STUB = """#!/usr/bin/env bash
 # Minimal `aws` good-citizen stub. Answers only what deploy-all.sh's preamble needs.
 case "$1 $2" in
   "sts get-caller-identity") echo "111122223333" ;;
+  "ecr describe-images") echo "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
   "s3api head-bucket") exit 0 ;;
   "dynamodb describe-table") echo '{"Table":{}}' ;;
   "eks describe-cluster") echo "ACTIVE" ;;
@@ -86,7 +87,7 @@ esac
 _NOOP_STUB = "#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 0\n"
 _KUBECTL_STUB = """#!/usr/bin/env bash
 if [ "$1 $2 $3" = "get scaledjob agent-gateway-worker" ]; then
-  echo "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway:0000000000000000000000000000000000000000"
+  echo "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   exit 0
 fi
 cat >/dev/null 2>&1 || true
@@ -189,7 +190,14 @@ def harness(tmp_path):
 
     # Copy the real local helpers so the scope checks exercise the shared resolver.
     # External tools remain stubbed; these helpers only run against the temp tree.
-    for name in ("terraform-update.sh", "upgrade-scope.sh", "gateway-alb-vars.sh", "prepare-backends.py", "render-model-root-config.py"):
+    for name in (
+        "terraform-update.sh",
+        "upgrade-scope.sh",
+        "gateway-alb-vars.sh",
+        "prepare-backends.py",
+        "render-model-root-config.py",
+        "resolve-ecr-image.py",
+    ):
         _write_exec(root / "platform" / "scripts" / name, (_DEPLOY_ALL.parent / name).read_text())
 
     # Deployment scope tests stub remote release verification; the alignment
