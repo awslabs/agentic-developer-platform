@@ -406,6 +406,49 @@ class TaskHost:
             raise TaskRunClientError("task control response is invalid")
         return response
 
+    def _result_artifact(self, assignment, report: dict) -> str:
+        """Publish the validated report before completion, replaying identical bytes."""
+        try:
+            content = json.dumps(report, sort_keys=True, separators=(",", ":"),
+                                 ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError):
+            raise TaskProtocolError("result report is not valid JSON") from None
+        if not isinstance(report, dict) or not 0 < len(content) <= 1048576:
+            raise TaskProtocolError("result artifact exceeds its fixed bound")
+        digest = hashlib.sha256(content).hexdigest()
+        expected_id = "art_" + str(uuid.UUID(bytes=hashlib.sha256(
+            f"{assignment.task_id}:application/json:{digest}".encode()
+        ).digest()[:16], version=4))
+        body = {
+            "schema_version": SCHEMA_VERSION,
+            "run": {"task_id": assignment.task_id, "invocation_id": assignment.invocation_id,
+                    "generation": assignment.generation},
+            "content_type": "application/json",
+            "content_sha256": digest,
+            "content_base64": base64.b64encode(content).decode("ascii"),
+        }
+        for attempt_number in range(3):
+            try:
+                receipt = self.client.artifact(body)
+                break
+            except TaskRunClientUnavailable:
+                # The gateway derives immutable artifact identity from task/type/
+                # digest. A lost response retries the same write, not model work.
+                if attempt_number == 2:
+                    raise
+                time.sleep(_REPORT_RETRY_SECONDS)
+        if (
+            receipt.get("schema_version") != SCHEMA_VERSION
+            or receipt.get("artifact_id") != expected_id
+            or type(receipt.get("version")) is not int
+            or receipt["version"] != 1
+            or receipt.get("content_type") != "application/json"
+            or receipt.get("content_sha256") != digest
+            or receipt.get("expires_at", "missing") is not None
+        ):
+            raise TaskRunClientError("result artifact receipt integrity check failed")
+        return expected_id
+
     def _finalize(
         self,
         assignment,
@@ -420,12 +463,16 @@ class TaskHost:
         stopped_at = _now()
         result = None
         error = None
+        result_refs = []
         if outcome == "completed":
+            if exit_code != 0 or not isinstance(report, dict):
+                raise TaskProtocolError("completed result requires a validated report and zero child exit")
+            result_refs = [self._result_artifact(assignment, report)]
             result = {
                 "schema_version": SCHEMA_VERSION,
                 "outcome": "completed",
                 "report": report,
-                "artifact_ids": [],
+                "artifact_ids": result_refs,
                 "committed_at": stopped_at,
                 "process_exit_validated": True,
             }
@@ -454,7 +501,7 @@ class TaskHost:
                 "outcome": outcome,
                 "result": result,
                 "error": error,
-                "committed_result_refs": [],
+                "committed_result_refs": result_refs,
             }
         )
         if (

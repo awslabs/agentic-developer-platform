@@ -119,6 +119,17 @@ class FakeClient:
         self.events.append("model")
         return copy.deepcopy(self.model_response)
 
+    def artifact(self, body):
+        import hashlib
+        import uuid
+        self.events.append("artifact")
+        artifact_id = "art_" + str(uuid.UUID(bytes=hashlib.sha256(
+            f"{body['run']['task_id']}:{body['content_type']}:{body['content_sha256']}".encode()
+        ).digest()[:16], version=4))
+        return {"schema_version": "1.0", "artifact_id": artifact_id,
+                "version": 1, "content_type": body["content_type"],
+                "content_sha256": body["content_sha256"], "expires_at": None}
+
     def finalize(self, body):
         self.events.append("finalize:" + body["outcome"])
         self.finalize_body = body
@@ -1272,3 +1283,75 @@ def test_pending_model_receipt_wait_is_bounded_and_never_becomes_fake_success(tm
     assert client.finalize_body["error"]["code"] == "model_outcome_unknown"
     assert client.finalize_body["error"]["total_usd"] is None
     assert len(bodies) >= 2 and all(body == bodies[0] for body in bodies)
+
+
+def test_result_artifact_replays_lost_receipt_before_finalization(assignment_and_bootstrap, monkeypatch):
+    import base64
+    from lib.task_run_client import TaskRunClientUnavailable
+    assignment, _, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events)
+    writes = []
+    original = client.artifact
+    def lost_first_response(body):
+        writes.append(copy.deepcopy(body))
+        receipt = original(body)  # Simulate durable acceptance before response loss.
+        if len(writes) == 1:
+            raise TaskRunClientUnavailable("lost upload receipt")
+        return receipt
+    client.artifact = lost_first_response
+    monkeypatch.setattr("lib.task_host.time.sleep", lambda _: None)
+    report = {"summary": "Observed café failure", "findings": [], "uncertainties": [], "recommendations": [], "evidence_refs": []}
+    host = TaskHost(client=client)
+    host._finalize(assignment, {"run": {"task_id": assignment.task_id}}, exit_code=0,
+                   outcome="completed", report=report, error_code=None, error_message=None)
+    assert writes[0] == writes[1]
+    assert json.loads(base64.b64decode(writes[0]["content_base64"])) == report
+    assert writes[0]["run"] == {"task_id": assignment.task_id, "invocation_id": assignment.invocation_id, "generation": assignment.generation}
+    body = client.finalize_body
+    assert len(body["result"]["artifact_ids"]) == 1
+    assert body["result"]["artifact_ids"] == body["committed_result_refs"]
+    assert events == ["artifact", "artifact", "finalize:completed"]
+
+
+@pytest.mark.parametrize("mutation", [
+    {"content_sha256": "0" * 64}, {"content_type": "text/plain"},
+    {"artifact_id": "art_00000000-0000-4000-8000-000000000000"},
+    {"version": True}, {"version": 2}, {"expires_at": "2030-01-01T00:00:00Z"},
+])
+def test_result_artifact_bad_receipt_never_finalizes(assignment_and_bootstrap, mutation):
+    from lib.task_run_client import TaskRunClientError
+    assignment, _, bootstrap = assignment_and_bootstrap
+    client = FakeClient(bootstrap, [])
+    original = client.artifact
+    client.artifact = lambda body: original(body) | mutation
+    with pytest.raises(TaskRunClientError, match="integrity"):
+        TaskHost(client=client)._finalize(assignment, {}, exit_code=0, outcome="completed",
+                                        report={"summary": "report"}, error_code=None, error_message=None)
+    assert client.finalize_body is None
+
+
+def test_result_artifact_unavailable_retries_are_bounded(assignment_and_bootstrap, monkeypatch):
+    from lib.task_run_client import TaskRunClientUnavailable
+    assignment, _, bootstrap = assignment_and_bootstrap
+    client = FakeClient(bootstrap, [])
+    writes = []
+    def unavailable(body):
+        writes.append(copy.deepcopy(body))
+        raise TaskRunClientUnavailable("storage unavailable")
+    client.artifact = unavailable
+    monkeypatch.setattr("lib.task_host.time.sleep", lambda _: None)
+    with pytest.raises(TaskRunClientUnavailable):
+        TaskHost(client=client)._finalize(assignment, {}, exit_code=0, outcome="completed",
+                                        report={"summary": "report"}, error_code=None, error_message=None)
+    assert len(writes) == 3 and writes[0] == writes[1] == writes[2]
+    assert client.finalize_body is None
+
+
+def test_result_artifact_rejects_oversize_before_upload(assignment_and_bootstrap):
+    assignment, _, bootstrap = assignment_and_bootstrap
+    events = []
+    from lib.task_protocol import TaskProtocolError
+    with pytest.raises(TaskProtocolError, match="fixed bound"):
+        TaskHost(client=FakeClient(bootstrap, events))._result_artifact(assignment, {"summary": "x" * 1048576})
+    assert events == []

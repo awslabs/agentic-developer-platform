@@ -146,7 +146,8 @@ class TaskRunClient:
                 ) as response:
                     if response.status_code >= 500:
                         raise TaskRunClientUnavailable("task service outcome unavailable")
-                    if response.status_code != 200:
+                    expected_status = 201 if action == "artifact" and body.get("operation") != "read" else 200
+                    if response.status_code != expected_status:
                         raise TaskRunClientError("task service refused operation")
                     raw = response.raw.read(_MAX_RESPONSE_BYTES + 1, decode_content=True)
                     if len(raw) > _MAX_RESPONSE_BYTES:
