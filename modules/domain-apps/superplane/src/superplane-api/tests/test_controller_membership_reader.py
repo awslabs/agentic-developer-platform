@@ -68,7 +68,12 @@ async def shared_reader(monkeypatch, *, state="active"):
             projection_version="5",
             observed_at=datetime.now(UTC) if state == "active" else None,
         )
-        db.add_all([cluster, workspace, member, credential])
+        # No ORM relationships order these inserts: persist each FK parent
+        # before its dependent row, as the real reservation transaction does.
+        for parent in (cluster, workspace, member):
+            db.add(parent)
+            await db.flush()
+        db.add(credential)
         await db.commit()
         return org, workspace, member, credential, cluster
 
@@ -118,7 +123,19 @@ async def test_reader_binding_refuses_stale_membership_or_credential(
         elif change == "removed":
             (await db.get(ClusterMembership, member.id)).state = "removed"
         elif change == "cluster":
-            (await db.get(Workspace, workspace.id)).shared_cluster_id = uuid.uuid4()
+            replacement = Cluster(
+                id=uuid.uuid4(),
+                org_id=org,
+                name="replacement-shared",
+                sharing_enabled=True,
+                status="Ready",
+                endpoint="https://replacement.example.test",
+                eks_cluster_arn="arn:aws:eks:us-east-1:123456789012:cluster/replacement",
+            )
+            db.add(replacement)
+            await db.flush()
+            # A valid foreign-key target still differs from the member's cluster.
+            (await db.get(Workspace, workspace.id)).shared_cluster_id = replacement.id
         else:
             (await db.get(Cluster, cluster.id)).sharing_enabled = False
         await db.commit()
