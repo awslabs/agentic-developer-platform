@@ -1,0 +1,126 @@
+{
+  "schema_version": "1.0",
+  "evaluation_issue": 5805,
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "source_sha": "fe9396e67264029277a12499890a583c1d4a22e6",
+  "worker_source_sha": "029fdfe9dc7e2593db028093a64fc93e05c0c657",
+  "worker_image": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+  "gateway_image": "sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
+  "evaluator": "t5_runtime with independent native financial/coexistence audit by t3_integration and root; runtime_contracts authority audit; root final independent approval",
+  "environment": {
+    "account_id": "879318057152",
+    "region": "us-east-1",
+    "api_url": "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev",
+    "engine_paused": true
+  },
+  "captured_at": "2026-09-25T05:40:21.287635+00:00",
+  "criteria": {
+    "V4-01": {
+      "outcome": "PASS",
+      "reason": "Actual existing public API task integrations, webhook Lambda115/version/config, Task flags and authority, shared queue/KEDA worker57d cohort, gateway/engine dda parity9ready recorded. Isolated older fixtureworker uses a different queue.",
+      "evidence": [
+        "parity-capacity-final.json",
+        "v5-consumer-boundary.json",
+        "final-bindings.json",
+        "keda-binding.json",
+        "task-route-integrations.json"
+      ]
+    },
+    "V4-02": {
+      "outcome": "PASS",
+      "reason": "Registered external service received separate task and invocation handles through public API; isolated tenant has zero GitHub installations. Useful completed grounded report retrieved.",
+      "evidence": [
+        "external-tenant-proof.jsonl",
+        "../2026-09-25-clean-completion/completion-report.json",
+        "held-completion/final-observation.json"
+      ]
+    },
+    "V4-03": {
+      "outcome": "PASS",
+      "reason": "Three distinct authored markers observed before gate release/terminal; conservative upper latency at most2.576seconds under frozen5seconds, independent clock bracket retained.",
+      "evidence": [
+        "held-completion/held-progress-proof.json",
+        "held-completion/clock-bound-held.json",
+        "held-completion/events.ndjson",
+        "held-completion/worker-progress.txt"
+      ]
+    },
+    "V4-04": {
+      "outcome": "PASS",
+      "reason": "Actual input accepted/consumed and confirmed handoff; cursor replay7through14; completed artifact exact digest; separate cancellation confirmed childexit/publiccancelled. Historical cancel queueack recovered by explicit native redrive; no claim of uninterrupted delivery.",
+      "evidence": [
+        "held-completion/final-events.ndjson",
+        "held-completion/final-observation.json",
+        "cancel-snapshot.json",
+        "cancel-events.ndjson",
+        "cancel-redrive-result.json"
+      ]
+    },
+    "V4-05": {
+      "outcome": "PASS",
+      "reason": "Actual cross-tenant/nonowner403; revoked alias closes heldstream11.456s and denies subsequentreads; unregisteredpersona403 with no idempotency row or capacity change. Actual ingress/worker IAM denied calls; artifact permissions simulation explicitly labeled.",
+      "evidence": [
+        "../2026-09-25-t1-storage/primary-owner-denial.json",
+        "../2026-09-25-t1-storage/iam-real-probe.json",
+        "../2026-09-25-t1-storage/t1-worker-artifact-iam-simulation.json",
+        "live-stream-revocation-proof.json",
+        "v4-invalid-persona-proof.json"
+      ]
+    },
+    "V4-06": {
+      "outcome": "PASS",
+      "reason": "Ten baseline and ten during ingress probes all200; p95 5296.3ms baseline/920.8ms during. Returned Lambda errors/throttles0; bounded useful Claude/Codex outputs/nativeusage and scheduling recorded. Shared queue956s peak correlates with heldtask; subsequent05:30\u201305:35 maximumage0s meets frozen5min recovery after05:29:43 completion.",
+      "evidence": [
+        "bounded-jobs.json",
+        "bounded-claude-pod-audit.json",
+        "bounded-claude-ack.json",
+        "legacy-authored-output.json",
+        "bounded-claude-usage.json",
+        "../2026-09-25-t3-t6-t7/legacy-usage-native.json",
+        "../2026-09-25-coexistence-metrics/baseline-legacy.json",
+        "../2026-09-25-coexistence-metrics/during-legacy.json",
+        "../2026-09-25-coexistence-metrics/cloudwatch-comparison.json",
+        "queue-held-task-correlation.json",
+        "queue-age-after-completion.json"
+      ]
+    },
+    "V4-07": {
+      "outcome": "PASS",
+      "reason": "Two real provider operations under isolated external principal settled verified totalUSD0.005807; native admissionbudget equals model ledger; no GitHub bootstrap.",
+      "evidence": [
+        "native-financial.json",
+        "external-tenant-proof.jsonl",
+        "terminal-capacities.json"
+      ]
+    }
+  },
+  "overall_outcome": "PASS",
+  "limitations": [
+    "Historical held observer FAIL retained; final observation resumes reads only.",
+    "Prior retained execution capacity required intervention before heldtask began; this task released automatically after deployedfix.",
+    "Actual artifact IAM simulation distinguished from actual DynamoDBdenial.",
+    "No production load or SLO claim."
+  ],
+  "commands": [
+    {
+      "lane": "held-live-task",
+      "command": "python3 /home/ubuntu/task-delivery-tmp/live-run/clarify.py --activation-ready --url https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev --output /home/ubuntu/task-delivery-tmp/live-run/clarify3 --key task-api-5792-20260925-clarify3 --input-release-file /home/ubuntu/task-delivery-tmp/live-run/clarify3/release-input",
+      "new_task_bound": 1,
+      "max_usd_per_task": 1,
+      "result": "Observer window expired during deliberate inputhold; original prematureFAIL retained, taskcompleted in read-only resumedobservation."
+    },
+    {
+      "lane": "recorded-evidence-integrity",
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "exit_status": 0,
+      "note": "Checks preserved files and complete matrix; does not replace any live observation."
+    },
+    {
+      "lane": "live-read-only-queue-recovery",
+      "command": "aws cloudwatch get-metric-statistics --region us-east-1 --namespace AWS/SQS --metric-name ApproximateAgeOfOldestMessage --dimensions Name=QueueName,Value=adp-dev-agent-submit.fifo --start-time 2026-09-25T05:29:00Z --end-time 2026-09-25T05:36:00Z --period 60 --statistics Maximum --output json",
+      "exit_status": 0
+    }
+  ],
+  "fixture_version": "Recorded exact held-runner bytes and all evidence hashes in sha256-manifest.json",
+  "closure_gate": "Do not close while reopened T6/V3 blocked-write transport fix and independent qualification remain outstanding. Seven V4 observations PASS; predecessor gate is separate."
+}

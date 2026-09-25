@@ -1,0 +1,30 @@
+{
+  "samples": [
+    {
+      "request_at": "2026-09-25T05:27:00.311816+00:00",
+      "pod_at": "2026-09-25T05:27:01.518464+00:00",
+      "response_at": "2026-09-25T05:27:01.526751+00:00",
+      "offset_lower_seconds": -0.008287,
+      "offset_upper_seconds": 1.206648
+    },
+    {
+      "request_at": "2026-09-25T05:27:01.526785+00:00",
+      "pod_at": "2026-09-25T05:27:02.710011+00:00",
+      "response_at": "2026-09-25T05:27:02.718613+00:00",
+      "offset_lower_seconds": -0.008602,
+      "offset_upper_seconds": 1.183226
+    },
+    {
+      "request_at": "2026-09-25T05:27:02.718646+00:00",
+      "pod_at": "2026-09-25T05:27:03.843538+00:00",
+      "response_at": "2026-09-25T05:27:03.851779+00:00",
+      "offset_lower_seconds": -0.008241,
+      "offset_upper_seconds": 1.124892
+    }
+  ],
+  "worker_minus_observer_offset_bound_seconds": [
+    -0.008241,
+    1.124892
+  ],
+  "method": "Independent pod timestamp lies within observer request-response interval; assumes stable clock offset across the measured run."
+}

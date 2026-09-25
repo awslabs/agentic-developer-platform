@@ -1,0 +1,82 @@
+[
+  {
+    "created_at": "2026-09-25T05:20:33Z",
+    "runtime_attempt_id": "4d4fcdeb-2150-4ec3-a43e-8b62a6d9ee3e",
+    "generation": "1",
+    "record_type": "TASK_REPORT",
+    "report_digest": "876492aab9749a3b5e7f4a6ecb891715d8e0ed5ca60fbf69be44929ab0bc26b3",
+    "event_id": "TASK_REPORT#tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "task_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:5",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "event_type": "progress.updated",
+    "scope": {
+      "tenant": "task-api-5792-isolation",
+      "canonical_principal": "7f737d62-4d1d-4b2a-acb3-8f677316291a"
+    },
+    "sequence": "5",
+    "report_id": "8d77ced3-518d-445f-ba1c-26dbf86b14e3",
+    "arrived_at": "REPORT#0000000001#8d77ced3-518d-445f-ba1c-26dbf86b14e3",
+    "invocation_id": "8143ce69-763e-4482-92e3-1bfcff33428f",
+    "schema_version": "1.0"
+  },
+  {
+    "runtime_attempt_id": "4d4fcdeb-2150-4ec3-a43e-8b62a6d9ee3e",
+    "generation": "1",
+    "record_type": "TASK_REPORT",
+    "created_at": "2026-09-25T05:20:34Z",
+    "event_id": "TASK_REPORT#tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "sequence": "6",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "report_digest": "4f42c106a49e92c769ade9d3448d2bcedb673d57dc01edf75ac56ed4eef6faba",
+    "event_type": "progress.updated",
+    "report_id": "b7ff53b0-9a84-45e5-8abe-0eaf1d2bff9a",
+    "scope": {
+      "tenant": "task-api-5792-isolation",
+      "canonical_principal": "7f737d62-4d1d-4b2a-acb3-8f677316291a"
+    },
+    "task_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:6",
+    "arrived_at": "REPORT#0000000001#b7ff53b0-9a84-45e5-8abe-0eaf1d2bff9a",
+    "invocation_id": "8143ce69-763e-4482-92e3-1bfcff33428f",
+    "schema_version": "1.0"
+  },
+  {
+    "report_digest": "d82336d71c0c006a10b9c59c360de79dc61fdde2786ab6686239e90ad7cdec3e",
+    "runtime_attempt_id": "4d4fcdeb-2150-4ec3-a43e-8b62a6d9ee3e",
+    "generation": "1",
+    "record_type": "TASK_REPORT",
+    "report_id": "babf978b-8e99-4b4e-9ea9-67c4d23483ce",
+    "event_id": "TASK_REPORT#tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "sequence": "4",
+    "created_at": "2026-09-25T05:20:26Z",
+    "arrived_at": "REPORT#0000000001#babf978b-8e99-4b4e-9ea9-67c4d23483ce",
+    "event_type": "progress.updated",
+    "scope": {
+      "tenant": "task-api-5792-isolation",
+      "canonical_principal": "7f737d62-4d1d-4b2a-acb3-8f677316291a"
+    },
+    "task_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:4",
+    "invocation_id": "8143ce69-763e-4482-92e3-1bfcff33428f",
+    "schema_version": "1.0"
+  },
+  {
+    "runtime_attempt_id": "4d4fcdeb-2150-4ec3-a43e-8b62a6d9ee3e",
+    "generation": "1",
+    "report_digest": "93c0e75be320b215692e22ae3c9b3ab6e4365b826446efbe074703169452adb6",
+    "record_type": "TASK_REPORT",
+    "created_at": "2026-09-25T05:20:34Z",
+    "event_id": "TASK_REPORT#tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "task_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:7",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "sequence": "7",
+    "arrived_at": "REPORT#0000000001#ebef2bb6-a743-4a36-b60b-27b59de8c01f",
+    "report_id": "ebef2bb6-a743-4a36-b60b-27b59de8c01f",
+    "scope": {
+      "tenant": "task-api-5792-isolation",
+      "canonical_principal": "7f737d62-4d1d-4b2a-acb3-8f677316291a"
+    },
+    "event_type": "input.required",
+    "invocation_id": "8143ce69-763e-4482-92e3-1bfcff33428f",
+    "schema_version": "1.0"
+  }
+]

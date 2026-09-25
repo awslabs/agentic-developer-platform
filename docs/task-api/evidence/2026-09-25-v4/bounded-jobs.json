@@ -1,0 +1,24 @@
+{
+  "agent-scaledjob-vdv48": {
+    "issue": "5980",
+    "persona": "agent-codex-reviewer",
+    "correlation": "5b3bd54f-743e-4056-8169-49711f82c97f",
+    "pod": "agent-scaledjob-vdv48-8qcrs",
+    "at": "2026-09-25T05:13:25.631774+00:00",
+    "before_deadline": 21600,
+    "before_backoff": 2,
+    "deadline": 180,
+    "backoff": 0
+  },
+  "agent-scaledjob-hbmm6": {
+    "issue": "5979",
+    "persona": "developer",
+    "correlation": "5fe0e438-edf6-4682-ad67-38c2aec4fde6",
+    "pod": "agent-scaledjob-hbmm6-ptx4s",
+    "at": "2026-09-25T05:24:45.679243+00:00",
+    "before_deadline": 21600,
+    "before_backoff": 2,
+    "deadline": 180,
+    "backoff": 0
+  }
+}

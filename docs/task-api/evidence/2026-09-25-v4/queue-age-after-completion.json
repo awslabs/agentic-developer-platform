@@ -1,0 +1,40 @@
+{
+    "Label": "ApproximateAgeOfOldestMessage",
+    "Datapoints": [
+        {
+            "Timestamp": "2026-09-25T05:35:00+00:00",
+            "Maximum": 0.0,
+            "Unit": "Seconds"
+        },
+        {
+            "Timestamp": "2026-09-25T05:30:00+00:00",
+            "Maximum": 0.0,
+            "Unit": "Seconds"
+        },
+        {
+            "Timestamp": "2026-09-25T05:34:00+00:00",
+            "Maximum": 0.0,
+            "Unit": "Seconds"
+        },
+        {
+            "Timestamp": "2026-09-25T05:29:00+00:00",
+            "Maximum": 956.0,
+            "Unit": "Seconds"
+        },
+        {
+            "Timestamp": "2026-09-25T05:33:00+00:00",
+            "Maximum": 0.0,
+            "Unit": "Seconds"
+        },
+        {
+            "Timestamp": "2026-09-25T05:32:00+00:00",
+            "Maximum": 0.0,
+            "Unit": "Seconds"
+        },
+        {
+            "Timestamp": "2026-09-25T05:31:00+00:00",
+            "Maximum": 0.0,
+            "Unit": "Seconds"
+        }
+    ]
+}

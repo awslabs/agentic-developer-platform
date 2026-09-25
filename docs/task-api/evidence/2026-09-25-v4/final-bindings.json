@@ -1,0 +1,62 @@
+{
+  "at": "2026-09-25T05:37:27.348007+00:00",
+  "account_id": "879318057152",
+  "api_id": "59o2rakc50",
+  "stage": "dev",
+  "routes": [
+    {
+      "path": "/v1/tasks",
+      "method": "ANY",
+      "authorization_type": "NONE",
+      "integration_type": "HTTP_PROXY",
+      "integration_uri": "http://internal-k8s-adpgatew-bedrockg-8c0085afd5-428441231.us-east-1.elb.amazonaws.com/v1/tasks"
+    },
+    {
+      "path": "/v1/tasks",
+      "method": "POST",
+      "authorization_type": "NONE",
+      "integration_type": "AWS_PROXY",
+      "integration_uri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:879318057152:function:adp-dev-github-webhook/invocations"
+    }
+  ],
+  "lambda": {
+    "name": "adp-dev-github-webhook",
+    "code_sha256": "ITVzgBjlSYZ0vn1rVK9sNMTnuvymz7nc8ESyEIHxFJE=",
+    "last_modified": "2026-09-25T05:31:19.000+0000",
+    "update_status": "Successful",
+    "recovery_alias": "115",
+    "settings": {
+      "GATEWAY_API_URL": "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev",
+      "ADP_TASK_API_RECOVERY_ENABLED": "true",
+      "INTERNAL_API_KEY_PARAMETER_NAME": "/adp/dev/gateway/internal-api-key",
+      "ADP_TASK_API_ADMISSION_ENABLED": "true",
+      "AGENT_AUTHORITY_ENABLED": "false",
+      "ADP_TASK_ADMIT_ENDPOINT": "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev",
+      "ADP_TASK_GATEWAY_ENDPOINT": "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev"
+    }
+  },
+  "gateway": {
+    "images": [
+      "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a"
+    ],
+    "desired": 9,
+    "ready": 9,
+    "updated": 9,
+    "generation": 1695,
+    "observed_generation": 1695,
+    "task_settings": {
+      "ADP_TASK_ADMISSION_PRODUCER_ROLES": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role",
+      "ADP_TASK_API_ADMISSION_ENABLED": "true",
+      "ADP_TASK_API_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-submit.fifo",
+      "ADP_TASK_API_READ_ENABLED": "true",
+      "ADP_TASK_API_RECOVERY_ENABLED": "true",
+      "ADP_TASK_API_WORKER_ENABLED": "true",
+      "ADP_TASK_DISPATCH_PRODUCER_ROLES": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role",
+      "ADP_TASK_QUALIFICATION_ID": "task-api-5792-20260925",
+      "ADP_TASK_RECOVERY_PRODUCER_ROLES": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role",
+      "ADP_TASK_WORKER_IMAGE_DIGESTS": "sha256:3b02abc4a587ec60dc28a90809c7a9c1a8d8ef017bd49fe2c4de8b466f23bef3,sha256:146442e6acf6c00c46c42070fa40c61ccaf775eec7c9aee5be56ffac23ae9dda,sha256:a500a81d38e42f12ea12e5bba5a75847153c52f8ebf14ea8a0bec6059119e697,sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+      "ADP_TASK_WORKER_SERVICE_ACCOUNT": "agent-scaledjob-sa",
+      "TASK_ARTIFACT_BUCKET_NAME": "adp-dev-chat-artifacts-879318057152"
+    }
+  }
+}
