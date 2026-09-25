@@ -1,0 +1,1 @@
+[{"label": "same-tenant", "signature_valid": true, "canonical_principal": "cc4aad19-1007-418e-9fc4-b9ebda5d39e8", "tenant": "aws-e"}, {"label": "isolated", "signature_valid": true, "canonical_principal": "7f737d62-4d1d-4b2a-acb3-8f677316291a", "tenant": "task-api-5792-isolation"}]
