@@ -10226,7 +10226,15 @@ def test_observer_artifacts_grant_only_two_named_reads():
 
 def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
     selected = cases.resolve_suites(("nightly",))
-    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22", "E24", "E25"}
+    assert {case.id for case in selected} == {
+        "E01",
+        "C01",
+        "E20",
+        "E21",
+        "E22",
+        "E24",
+        "E25",
+    }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
         "#5628",
