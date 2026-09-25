@@ -1,4 +1,4 @@
-FROM python:3.12.13-slim
+FROM python:3.13-slim
 RUN groupadd -g 1001 agent && useradd -u 1001 -g agent -m agent
 WORKDIR /app
 COPY browser/requirements.txt /tmp/requirements.txt

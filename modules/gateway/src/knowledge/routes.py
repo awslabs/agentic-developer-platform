@@ -338,6 +338,12 @@ async def list_assets(
         # invisible in every tab. (#2213 follow-up)
         conditions.append("(tenant_id = :tid OR tenant_id IS NULL)")
         params["tid"] = current_user.org_id
+        # Apply the same personal-owner check as the detail route before
+        # counting or paginating; a tenant match does not grant personal access.
+        if not current_user.is_admin:
+            canonical_sub = await resolve_canonical_user_id(gateway_db, current_user.user_id)
+            conditions.append("(owner_sub = :sub OR owner_sub IS NULL)")
+            params["sub"] = canonical_sub
 
     if asset_type:
         conditions.append("asset_type = :atype")

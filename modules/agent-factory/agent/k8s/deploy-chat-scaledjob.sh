@@ -29,6 +29,10 @@ INFRA_DIR="${SCRIPT_DIR}/../../infra"
 bash "${SCRIPT_DIR}/../../../../platform/scripts/enable-bedrock-models.sh" \
   --prepare-and-verify --region "$AWS_REGION"
 
+# Verify the selected release before any cluster mutation; both consumers use this digest.
+AGENT_IMAGE=$(python3 "$SCRIPT_DIR/../../../../platform/scripts/resolve-ecr-image.py" "$AGENT_IMAGE")
+
+
 echo "[deploy-chat] Reading Terraform outputs from ${INFRA_DIR}"
 pushd "${INFRA_DIR}" > /dev/null
 

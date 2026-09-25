@@ -167,6 +167,11 @@ variables {
 run "supplied_mode_declares_no_network_resource_at_all" {
   command = plan
 
+  assert {
+    condition     = length(aws_default_security_group.workspace) == 0
+    error_message = "Supplied mode must never adopt or revoke rules from the customer's default security group."
+  }
+
   # The core assertion of this file. Each of these is a resource whose destruction would
   # damage a network ADP does not own.
   assert {
@@ -268,6 +273,16 @@ run "owned_mode_declares_the_network_and_says_so" {
     availability_zones          = ["us-east-1a", "us-east-1b", "us-east-1c"]
     supplied_vpc_id             = ""
     supplied_private_subnet_ids = []
+  }
+
+  assert {
+    condition     = length(aws_default_security_group.workspace) == 1
+    error_message = "Owned mode must adopt exactly one default security group."
+  }
+
+  assert {
+    condition     = length(aws_default_security_group.workspace[0].ingress) == 0 && length(aws_default_security_group.workspace[0].egress) == 0
+    error_message = "Owned default security groups must plan explicit empty ingress and egress sets."
   }
 
   # THE ANTI-VACUOUS HALF. Every assertion in the first run is a count-is-zero check, and all

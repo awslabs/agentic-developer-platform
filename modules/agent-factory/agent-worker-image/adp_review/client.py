@@ -8,7 +8,9 @@ import os
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from lib.authenticated_http import open_authenticated as urlopen
 
 logger = logging.getLogger("adp_review")
 

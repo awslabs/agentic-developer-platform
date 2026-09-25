@@ -11,7 +11,7 @@ import * as path from 'path';
  * (the resource is invisible outside the token's installation).
  *
  * The fix resolves the installation for THIS run's target org via, in order:
- *   GH_APP_INSTALLATION_ID → /orgs|users/{REPO_OWNER}/installation → (last) installations[0].
+ *   GH_APP_INSTALLATION_ID → /orgs|users/{REPO_OWNER}/installation → refusal.
  *
  * Issue #4071: the ladder itself moved to `utils/installation.ts` so that
  * `utils/ghPost.ts` shares it instead of keeping its own `installations[0]`
@@ -44,11 +44,10 @@ describe('agent-worker installation resolution (cross-installation 404 fix)', ()
     const fn = resolverSource.slice(resolverSource.indexOf('export async function resolveInstallationId'));
     const explicitIdx = fn.indexOf('GH_APP_INSTALLATION_ID');
     const ownerIdx = fn.indexOf('REPO_OWNER');
-    const fallbackIdx = fn.indexOf('/app/installations');
     expect(explicitIdx).toBeGreaterThan(-1);
-    // explicit id resolved before the owner lookup, which is before the installations[0] fallback
+    // Explicit bootstrap binding is resolved before owner-specific lookup.
     expect(explicitIdx).toBeLessThan(ownerIdx);
-    expect(ownerIdx).toBeLessThan(fallbackIdx);
+
   });
 
   it('resolves by REPO_OWNER via both org and user installation endpoints', () => {
@@ -56,9 +55,9 @@ describe('agent-worker installation resolution (cross-installation 404 fix)', ()
     expect(resolverSource).toContain("for (const kind of ['orgs', 'users'])");
   });
 
-  it('only falls back to installations[0] as a last resort, with a warning', () => {
-    expect(resolverSource).toContain('last resort');
-    expect(resolverSource).toMatch(/installations\[0\]\.id/); // still present, but only in the guarded fallback
+  it('never discovers authority from the App-wide installation list', () => {
+    expect(resolverSource).not.toContain('/app/installations');
+    expect(resolverSource).not.toMatch(/installations\[0\]/);
   });
 
   it('shares one resolver with utils/ghPost.ts rather than forking it (issue #4071)', () => {

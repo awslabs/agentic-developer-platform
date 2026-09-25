@@ -17,12 +17,24 @@ spec:
         app: litellm-proxy
         app.kubernetes.io/part-of: agent-context-platform
     spec:
+      # API token is unnecessary; IRSA uses its separate projected web-identity token.
+      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
+      # Pod-level security context (#6105 — pod security reconciliation).
+      # Cannot set runAsNonRoot: litellm runs pip install and monkey-patches
+      # source files at startup, requiring root writes. Resolves when the
+      # patch is baked into a custom image (#6122).
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: litellm
         image: ${LITELLM_IMAGE}
         securityContext:
           allowPrivilegeEscalation: false
+          privileged: false
+          # Cannot drop ALL capabilities or set readOnlyRootFilesystem:
+          # pip install and source patching require root filesystem writes.
         command: ["/bin/sh", "-c"]
         args:
           - |

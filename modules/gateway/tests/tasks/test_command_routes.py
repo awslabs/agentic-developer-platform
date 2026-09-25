@@ -46,6 +46,7 @@ def api(store, monkeypatch):
         return identity
 
     monkeypatch.setattr(task_runtime_routes, "authenticate_task_attempt", verified)
+    monkeypatch.setattr(task_runtime_routes, "authenticate_task_settlement", verified)
     app = FastAPI()
     app.include_router(routes.router)
     app.dependency_overrides[get_db] = lambda: None
@@ -126,3 +127,24 @@ def test_explicit_null_and_numeric_boolean_are_not_contract_values(api):
     body = final_body(identity)
     body["child_exit"]["confirmed"] = 1
     assert web.post("/internal/v1/agent/task/finalize", json=body).status_code == 400
+
+
+def test_control_remains_readable_without_live_execution_credential(api, monkeypatch):
+    from fastapi import HTTPException
+
+    from src.agentauth import task_runtime_routes
+
+    async def expired(request):
+        raise HTTPException(404, "expired")
+
+    monkeypatch.setattr(task_runtime_routes, "authenticate_task_attempt", expired)
+    web, req, identity, _ = api
+    binding = {
+        "run": {key: getattr(identity, key) for key in ("task_id", "invocation_id", "generation")},
+        "runtime_attempt_id": identity.runtime_attempt_id,
+    }
+    body = {"schema_version": "1.0", "attempt": binding, "last_receipt_cursor": None}
+    response = web.post("/internal/v1/agent/task/control", json=body)
+    assert response.status_code == 200
+    # Stop-only control visibility does not confer normal completion authority.
+    assert web.post("/internal/v1/agent/task/finalize", json=final_body(identity)).status_code == 503

@@ -142,7 +142,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -174,7 +174,7 @@ class TestResolverModule:
             fp=io.BytesIO(error_body),
         )
 
-        with patch("user_resolver.urllib.request.urlopen", side_effect=http_error):
+        with patch("user_resolver._open_resolver", side_effect=http_error):
             result = user_resolver.resolve_user("slack", "T01ABC:U999")
 
         assert isinstance(result, user_resolver.UnresolvedUser)
@@ -194,7 +194,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -224,7 +224,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -375,14 +375,14 @@ class TestHandlerResolverIntegration:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        handler = _import_fresh(mock_bedrock=mock_bedrock)
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = resolver_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
             mock_resp.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_resp
 
-            handler = _import_fresh(mock_bedrock=mock_bedrock)
             # Force module-level flag on after fresh import
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
@@ -446,8 +446,8 @@ class TestHandlerResolverIntegration:
             fp=io.BytesIO(error_body),
         )
 
-        with patch("user_resolver.urllib.request.urlopen", side_effect=http_error):
-            handler = _import_fresh()
+        handler = _import_fresh()
+        with patch("user_resolver._open_resolver", side_effect=http_error):
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
             user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
@@ -499,7 +499,7 @@ class TestHandlerResolverIntegration:
             "reasoning": "Greeting",
         })
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             handler = _import_fresh(mock_bedrock=mock_bedrock)
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
@@ -537,7 +537,7 @@ class TestHandlerResolverIntegration:
             "reasoning": "Work",
         })
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             handler = _import_fresh(mock_bedrock=mock_bedrock)
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = False

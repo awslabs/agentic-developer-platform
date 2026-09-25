@@ -141,7 +141,8 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
     (root / "bin/terraform").write_text(
         '#!/usr/bin/env bash\nshift\nexec "$REAL_TERRAFORM" console -no-color "$@"\n'
     )
-    env.update(ADP_ENV=selected, REAL_TERRAFORM=real_terraform)
+    env.update(ADP_ENV=selected, REAL_TERRAFORM=real_terraform,
+               TF_VAR_agent_image="123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:" + "0" * 64)
     result = subprocess.run(
         ["bash", str(scripts / "terraform-webhook.sh"), "plan"],
         env=env,

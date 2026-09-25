@@ -50,8 +50,8 @@ RUN npm install -g \
     @sourcegraph/scip-typescript@0.4.0 \
     && npm cache clean --force
 
-# Go 1.25+ (scip-go v0.2.7 requires go >= 1.25; kept for dep resolution of Go repos)
-ARG GO_VERSION=1.25.4
+# Go 1.26+ (scip-go v0.2.7 requires go >= 1.25; kept for dep resolution of Go repos)
+ARG GO_VERSION=1.26.8
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -xz -C /usr/local
 ENV GOPATH="/opt/go"
@@ -80,13 +80,13 @@ ENV DOTNET_ROOT="/usr/share/dotnet"
 # When Java support is added, install: default-jdk-headless maven
 
 # Install Syft for SBOM generation (dual-rail #1358)
-ARG SYFT_VERSION=1.11.1
+ARG SYFT_VERSION=1.52.0
 RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
     | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
 
 # Install OSV-Scanner + Trivy for vulnerability scanning (#2536)
-ARG OSV_SCANNER_VERSION=2.3.8
-ARG TRIVY_VERSION=0.71.0
+ARG OSV_SCANNER_VERSION=2.6.0
+ARG TRIVY_VERSION=0.74.0
 RUN curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
         -o /usr/local/bin/osv-scanner && \
     chmod +x /usr/local/bin/osv-scanner && \

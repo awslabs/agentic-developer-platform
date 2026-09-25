@@ -73,6 +73,30 @@ enable_network_policy_controller = true
 # The deploy-all.sh and preflight-check.sh scripts autodetect the operator's IP
 # when this variable is unset.
 
+# Per-repository encryption overrides: four existing workload repositories use
+# AES256, verified by read-only ECR inventory on 2026-09-25. The skill registry
+# uses KMS and must retain that configuration. Without these overrides, a terraform
+# apply that changes image_tag_mutability would ALSO plan to replace (destroy +
+# recreate) these workload repositories due to the encryption mismatch — the #5003 drift.
+# These overrides make Terraform match the live state so that the mutability
+# convergence (#6120) can be applied in isolation. Encryption migration is
+# tracked separately in #5003; do not remove these overrides until that issue
+# resolves the drift intentionally.
+ecr_repository_encryption = {
+  "adp-gateway" = {
+    encryption_type = "AES256"
+  }
+  "adp-agent-runtime" = {
+    encryption_type = "AES256"
+  }
+  "adp-agent-gateway" = {
+    encryption_type = "AES256"
+  }
+  "adp-chat-agent" = {
+    encryption_type = "AES256"
+  }
+}
+
 # The legacy customer-source role must not regain platform Kubernetes access.
 agent_legacy_worker_admin_retired      = true
 agent_authority_legacy_workers_drained = true

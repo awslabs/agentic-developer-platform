@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.shared.models.persona_models import ALIAS_SOURCES
 
@@ -280,10 +280,18 @@ class AliasResponse(BaseModel):
 
 class TaskPolicyLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    max_duration_minutes: int = Field(ge=1, le=30)
+    max_duration_minutes: int = Field(ge=1, le=360, strict=True)
     max_turns: int = Field(ge=1, le=8)
     max_output_tokens_per_turn: int = Field(ge=1, le=4096)
     max_usd_per_task: Decimal = Field(gt=0, le=1)
+
+    @field_validator("max_duration_minutes", mode="before")
+    @classmethod
+    def integer_duration(cls, value):
+        # DynamoDB returns integral numbers as Decimal; JSON inputs remain strict.
+        if isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value():
+            return int(value)
+        return value
 
 
 class TaskPolicyPutRequest(BaseModel):
@@ -291,6 +299,7 @@ class TaskPolicyPutRequest(BaseModel):
     expected_version: int = Field(ge=0)
     status: Literal["active", "disabled"]
     allowed_personas: list[str] = Field(min_length=1, max_length=16)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=64)
     task_scopes: list[Literal["submit", "read", "input", "cancel", "artifacts"]] = Field(min_length=1, max_length=5)
     model_policy_version: str = Field(min_length=1, max_length=128)
     limits: TaskPolicyLimits
@@ -304,6 +313,7 @@ class TaskPolicyResponse(BaseModel):
     version: int
     status: Literal["active", "disabled"]
     allowed_personas: list[str]
+    allowed_tools: list[str] = Field(default_factory=list)
     task_scopes: list[str]
     model_policy_version: str
     limits: TaskPolicyLimits

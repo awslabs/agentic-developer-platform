@@ -167,3 +167,23 @@ run "no_image_reference_is_published_for_a_pending_image" {
     error_message = "no parameter may publish an image reference for one of the three pending Superplane images. The lock pins no digest for them (blocked by source_access), so any such reference would be either a fabricated pin or a floating tag."
   }
 }
+
+run "skypilot_tagged_rollback_images_do_not_expire" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for rule in jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-skypilot"].policy).rules :
+      rule.selection.tagStatus == "untagged"
+    ])
+    error_message = "SkyPilot tagged release and rollback images must never match an expiration rule."
+  }
+  assert {
+    condition     = length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-skypilot"].policy).rules) == 1
+    error_message = "Retain the bounded untagged-image cleanup policy."
+  }
+  assert {
+    condition     = length(jsondecode(aws_ecr_lifecycle_policy.superplane["adp-superplane-api"].policy).rules) == 2
+    error_message = "The SkyPilot exception must not remove other repositories' retention limits."
+  }
+}

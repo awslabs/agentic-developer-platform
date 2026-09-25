@@ -266,9 +266,11 @@ def bind(body: Attempt, identity):
 @router.post("/internal/v1/agent/task/control", dependencies=[Depends(require_agent_transport)])
 @http.contract_errors
 async def control(request: Request):
-    from src.agentauth.task_runtime_routes import authenticate_task_attempt
+    # Reading cancellation state must survive a short-lived run token expiring.
+    # This identity is pod/assignment/current-attempt bound and grants no starts.
+    from src.agentauth.task_runtime_routes import authenticate_task_settlement
 
-    identity = await authenticate_task_attempt(request)
+    identity = await authenticate_task_settlement(request)
     body = await parse(request, Control)
     bind(body.attempt, identity)
     return http.ok(await run_in_threadpool(TaskCommands(get_store().repository).control, identity), status=200)

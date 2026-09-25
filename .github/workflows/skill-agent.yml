@@ -21,6 +21,13 @@ on:
         description: 'Full target repo (owner/name) to checkout and work on'
         required: true
         type: string
+    secrets:
+      WEBAPP_TEST_USERNAME:
+        description: 'Username for webapp testing (Playwright skill)'
+        required: false
+      WEBAPP_TEST_PASSWORD:
+        description: 'Password for webapp testing (Playwright skill)'
+        required: false
 
 concurrency:
   group: skill-agent-${{ inputs.issue_number || github.event.issue.number }}

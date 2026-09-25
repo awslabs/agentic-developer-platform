@@ -1202,6 +1202,37 @@ Do not create draft PRs, even if older task text requests one. Complete the agre
 - **If a check fails on code you didn't touch** (pre-existing debt), note it in the PR description as "pre-existing on main: <file>:<line> <rule>" and move on. Don't clean up unrelated debt in the same PR (surgical changes principle from \`docs/agent-coding-guidelines.md\`).
 - **Auto-fix tools are fine**: \`ruff check --fix\`, \`ruff format\`, \`eslint --fix\`. Treat their output as code you wrote — review the diff before committing.
 
+### Final-commit validation and long tests
+
+Commit intended files before final validation. Use \`adp-validate run --cwd <module> --timeout 3600 -- <command> <args>\`
+for each required check. For compound commands use \`-- sh -c 'setup && check'\`.
+The command runs in a disposable detached worktree at HEAD: include dependency
+setup (for example \`npm ci\`) in that command. Do not share mutable node_modules
+or virtualenvs with the author checkout. Long suites must use this isolated runner;
+you may continue editing the author checkout, but any new commit needs fresh checks.
+Receipts and full logs are stored outside the source tree. Successful results are
+reused only for the same commit, command, cwd, timeout and recorded environment.
+Use \`--no-cache\` for checks depending on changing external services or dependencies.
+A receipt is local execution evidence, not proof of complete acceptance coverage.
+
+Immediately before publishing a ready PR/requesting review, run \`adp-validate verify\`.
+If it fails, rerun the recorded commands at the final HEAD and fix or disclose
+failures; do not describe an earlier commit's tests as validating the final commit.
+Do not leave uncommitted implementation for the entrypoint to finish: leftovers
+are preserved as an unvalidated checkpoint, with no ready-for-review handoff.
+If no executable checks apply, explain why in the handoff; do not invent a token check.
+
+### Requirement evidence in the final handoff (report-only)
+
+Re-read the issue and accepted clarifications, including requested amendments to
+an existing PR. In the PR description and final report, include one row per
+requirement: requirement | implementation location | evidence (command and commit,
+or manual observation) | met / partial / unverified / not applicable.
+Explicitly identify production wiring, error paths and documentation where the
+issue requires them. State missing evidence and unmet requirements plainly.
+Passing tests alone do not establish requirement coverage. This checklist reports
+coverage for the reviewer; it does not introduce a new automated acceptance gate.
+
 ### Post-commit sanity
 
 After committing, before pushing, run \`git diff HEAD~1 --stat\` and confirm the files you expected to change are the only ones that changed. If the linter reformatted a file you didn't mean to touch, that's a surgical-changes violation — revert it.

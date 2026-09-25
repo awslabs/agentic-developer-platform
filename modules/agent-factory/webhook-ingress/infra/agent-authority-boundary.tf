@@ -31,7 +31,7 @@ locals {
     "latest_root_human_id",
     "latest_is_human_rooted",
   ]
-  agent_authority_api_resources = [
+  agent_authority_api_resources = concat([
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/agent/*",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/internal/v1/agent/*",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/github-installation-token",
@@ -42,7 +42,7 @@ locals {
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/credential-materialize",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/GET/internal/v1/user-credentials",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/provenance*",
-  ]
+  ], var.task_tool_invoke_resources)
   # Fixed queue-consumer permissions are scoped to this deployment input queue.
   # Run authorization and archives continue to use the authenticated gateway.
   agent_authority_boundary_allow = concat([

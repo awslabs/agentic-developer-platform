@@ -19,8 +19,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "035_shared_cluster_membership"
-down_revision = "034_provider_request_region"
+revision = "036_shared_cluster_membership"
+down_revision = "035_controller_network_journal"
 branch_labels = None
 depends_on = None
 

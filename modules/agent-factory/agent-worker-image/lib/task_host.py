@@ -43,6 +43,7 @@ _MIN_PROGRESS_MARKERS = 2
 _CONTROL_POLL_SECONDS = 1.0
 _MODEL_POLL_SECONDS = 1.0
 _MODEL_RECEIPT_SECONDS = 150.0
+_TOOL_RECEIPT_SECONDS = 180.0
 _TERM_AFTER_SECONDS = 20.0
 _KILL_AFTER_SECONDS = 30.0
 _REPORT_BUFFER_MAX_REPORTS = 128
@@ -214,7 +215,7 @@ class TaskHost:
             raise TaskRunClientError("task report receipt is invalid")
         return response
 
-    def _turn(self, assignment, attempt: dict, request_id: str) -> dict | None:
+    def _turn(self, assignment, attempt: dict, request_id: str, *, allow_autonomous: bool = False) -> dict | None:
         if request_id in self._turns:
             return self._turns[request_id]
         response = self.client.turn(
@@ -223,6 +224,7 @@ class TaskHost:
                 "attempt": attempt,
                 "request_id": request_id,
                 "expected_transcript_version": self._turn_number + 1,
+                **({"allow_autonomous": True} if allow_autonomous else {}),
             }
         )
         if (
@@ -348,7 +350,7 @@ class TaskHost:
         if (len(json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES
                 or len(json.dumps(request, ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES):
             raise TaskProtocolError("wrapped model request exceeds 65536-byte bound")
-        turn = self._turn(assignment, attempt, frame["turn_id"])
+        turn = self._turn(assignment, attempt, frame["turn_id"], allow_autonomous="sdk_request" in frame)
         if turn is None:
             raise TaskProtocolError("child requested a model without a committed turn")
         self._pending_turn_id = None
@@ -408,8 +410,11 @@ class TaskHost:
         }
 
     def _cyber(self, assignment, attempt: dict, frame: dict) -> dict:
-        response = self.client.cyber({"schema_version": SCHEMA_VERSION, "attempt": attempt,
-            "operation_id": frame["request_id"], "operation": frame["operation"], "payload": frame["payload"]})
+        generic = frame["type"] == "tool.request"
+        operation = frame["tool"].split(".", 1)[1] if generic else frame["operation"]
+        body = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
+                "operation_id": frame["request_id"], "operation": operation, "payload": frame["payload"]}
+        response = self.client.tool(frame["tool"], body) if generic else self.client.cyber(body)
         if (response.get("schema_version") != SCHEMA_VERSION or response.get("task_id") != assignment.task_id
                 or response.get("operation_id") != frame["request_id"]
                 or response.get("operation_status") not in {"confirmed", "pending", "unknown", "rejected"}):
@@ -424,7 +429,8 @@ class TaskHost:
                     or not isinstance(artifact.get("content_sha256"), str) or len(artifact["content_sha256"]) != 64
                     or type(artifact.get("byte_length")) is not int or not 0 < artifact["byte_length"] <= 32768):
                 raise TaskRunClientError("cyber artifact metadata is invalid")
-        return {"protocol_version": PROTOCOL_VERSION, "type": "cyber.result", "operation": frame["operation"],
+        return {"protocol_version": PROTOCOL_VERSION, "type": "tool.result" if generic else "cyber.result",
+            **({"tool": frame["tool"]} if generic else {"operation": operation}),
             "request_id": frame["request_id"], "task_id": assignment.task_id,
             "operation_status": response["operation_status"], "result": response.get("result", {}),
             **({"artifact": response["artifact"]} if "artifact" in response else {}),
@@ -985,7 +991,7 @@ class TaskHost:
                     if model_job is not None and not model_job["inflight"] and now >= model_job["next_poll"]:
                         launch_model_call(model_job)
                 if cyber_job is not None and process.poll() is None and cancel_started is None:
-                    if now - cyber_started >= _MODEL_RECEIPT_SECONDS:
+                    if now - cyber_started >= _TOOL_RECEIPT_SECONDS:
                         raise TaskHostError("Cyber broker receipt remained unavailable", code="process_failed")
                     try:
                         cyber_response = cyber_job.get_nowait()
@@ -1045,7 +1051,7 @@ class TaskHost:
                             else:
                                 deliver_model(frame)
 
-                        elif frame["type"] == "cyber.request":
+                        elif frame["type"] in {"cyber.request", "tool.request"}:
                             if not sdk or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
                                 raise TaskProtocolError("cyber operation is not admitted")
                             if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:

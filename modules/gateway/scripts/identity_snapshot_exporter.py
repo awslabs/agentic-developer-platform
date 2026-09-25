@@ -638,9 +638,9 @@ def main(argv: list[str] | None = None) -> int:
             cursor = conn.cursor()
 
             # Set timeouts
-            cursor.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
-            cursor.execute(f"SET lock_timeout = {LOCK_TIMEOUT_MS}")
-            cursor.execute(f"SET idle_in_transaction_session_timeout = {IDLE_IN_TRANSACTION_TIMEOUT_MS}")
+            cursor.execute("SET statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+            cursor.execute("SET lock_timeout = %s", (LOCK_TIMEOUT_MS,))
+            cursor.execute("SET idle_in_transaction_session_timeout = %s", (IDLE_IN_TRANSACTION_TIMEOUT_MS,))
 
             # Begin REPEATABLE READ READ ONLY
             cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")

@@ -396,36 +396,37 @@ def enable_cyber_policy(flow):
         policy={
             **{key: policy[key] for key in ("status", "task_scopes", "model_policy_version", "limits")},
             "allowed_personas": ["agent-task-investigator", "agent-task-cyber"],
+            "allowed_tools": ["cyber.triage", "cyber.dynamic"],
         },
     )
 
 
-def test_cyber_disabled_refuses_before_model_resolver(flow, monkeypatch):
+def test_tools_unconfigured_admits_model_only_without_tool_grants(flow, monkeypatch):
     enable_cyber_policy(flow)
-    monkeypatch.delenv("ADP_TASK_CYBER_ENABLED", raising=False)
+    monkeypatch.delenv("ADP_TASK_PERSONA_TOOLS", raising=False)
     response = submit('{"schema_version":"1.0","persona":"agent-task-cyber","instructions":"inspect"}')
-    assert response["statusCode"] == 503, response
-    assert flow.model_calls == []
-    assert (
-        flow.store._read_idempotency(idempotency_partition(tenant="tenant-a", canonical_principal="svc-principal-1", idempotency_key="http-task"))
-        is None
-    )
+    assert response["statusCode"] == 202, response
+    task = flow.store.read_task(json.loads(response["body"])["task_id"])
+    assert task["tool_grants"] == []
 
 
 def test_cyber_enabled_uses_enrolled_persona_specific_resolver(flow, monkeypatch):
     enable_cyber_policy(flow)
-    monkeypatch.setenv("ADP_TASK_CYBER_ENABLED", "true")
+    monkeypatch.setenv("ADP_TASK_PERSONA_TOOLS", '{"agent-task-cyber":["cyber.triage"]}')
     response = submit('{"schema_version":"1.0","persona":"agent-task-cyber","instructions":"inspect"}')
     assert response["statusCode"] == 202, response
     assert len(flow.model_calls) == 1
     assert flow.model_calls[0]["persona"] == "agent-task-cyber"
     task = flow.store.read_task(json.loads(response["body"])["task_id"])
     assert task["persona"] == "agent-task-cyber"
+    assert task["tool_grants"] == ["cyber.triage"]
+    grant = flow.store._get_authority("TENANT#tenant-a", f"TASK_RUN#{task['invocation_id']}#GEN#0000000001")
+    assert grant["tool_grants"] == ["cyber.triage"]
     assert flow.store.resolve_work(task["dispatch_id"], expected_kind="dispatch")["envelope"]["persona"] == "agent-task-cyber"
 
 
 def test_cyber_enabled_still_requires_policy_enrollment(flow, monkeypatch):
-    monkeypatch.setenv("ADP_TASK_CYBER_ENABLED", "true")
+    monkeypatch.setenv("ADP_TASK_PERSONA_TOOLS", '{"agent-task-cyber":["cyber.triage"]}')
     response = submit('{"schema_version":"1.0","persona":"agent-task-cyber","instructions":"inspect"}')
     assert response["statusCode"] == 403, response
     assert flow.model_calls == []
@@ -435,7 +436,7 @@ def test_cyber_missing_exact_probe_refuses_without_task_or_hold(flow, monkeypatc
     from src.agentauth.model_policy import ModelPolicyError
 
     enable_cyber_policy(flow)
-    monkeypatch.setenv("ADP_TASK_CYBER_ENABLED", "true")
+    monkeypatch.setenv("ADP_TASK_PERSONA_TOOLS", '{"agent-task-cyber":["cyber.triage"]}')
 
     async def unproven(*args, **kwargs):
         flow.model_calls.append(kwargs)
@@ -451,3 +452,27 @@ def test_cyber_missing_exact_probe_refuses_without_task_or_hold(flow, monkeypatc
     )
     target = flow.budget._target(scope="qualification:http-integration", cap=25)
     assert flow.web.portal.call(flow.reservations.snapshot, target) is None
+
+
+def test_six_hour_policy_freezes_exact_deadline_in_task_and_run_grant(flow):
+    from datetime import timedelta
+
+    policy = flow.policies.get(tenant_id="tenant-a", canonical_principal_id="svc-principal-1")
+    flow.policies.put(
+        tenant_id="tenant-a",
+        canonical_principal_id="svc-principal-1",
+        expected_version=int(policy["version"]),
+        updated_by="six-hour-fixture",
+        policy={
+            **{key: policy[key] for key in ("status", "task_scopes", "allowed_personas", "model_policy_version")},
+            "limits": {**policy["limits"], "max_duration_minutes": 360},
+        },
+    )
+    response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
+    assert response["statusCode"] == 202, response
+    task = flow.store.read_task(json.loads(response["body"])["task_id"])
+    deadline = storage_tests.NOW + timedelta(hours=6)
+    assert task["deadline_at"] == deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert flow.model_calls[0]["deadline"] == deadline
+    grant = flow.store._get_authority("TENANT#tenant-a", f"TASK_RUN#{task['invocation_id']}#GEN#0000000001")
+    assert grant["limits"]["deadline_at"] == task["deadline_at"]

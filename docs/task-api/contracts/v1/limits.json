@@ -64,7 +64,7 @@
     "idempotent_retry_reserves_slot": false
   },
   "lifetime": {
-    "task_lifetime_minutes": 30,
+    "task_lifetime_minutes": 360,
     "lifetime_includes_queue_and_input_waits": true,
     "max_model_turns": 8,
     "max_provider_operation_seconds": 120,

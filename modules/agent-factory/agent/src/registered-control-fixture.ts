@@ -7,6 +7,7 @@ import { ExplanationEvents, HISTORY_BYTES, HISTORY_EVENTS, MAX_SUBSCRIBERS } fro
 import { resilientQuery } from './utils/resilientQuery';
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore } from './utils/spill';
+import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 
 type NativeHandle = { interrupt(): Promise<void>; close(): void };
 type Event = { type: string; at: string; [key: string]: unknown };
@@ -69,6 +70,7 @@ export async function runRegisteredControlFixture(): Promise<number> {
   let timedOut = false;
   let resultSeen = false;
   let sdkFailure = false;
+  let sdkError: { name: string; message: string } | undefined;
   let exitCode = 1;
   const unsubscribe = runtime.adapter.subscribe(event => {
     if (event.type === 'active_work') {
@@ -94,13 +96,34 @@ export async function runRegisteredControlFixture(): Promise<number> {
   try {
     const prompt = mode === 'native-interrupt'
       ? 'This is an authorized disposable control fixture. Run Bash sleep 30, then report completion. Do not run background commands.'
+      : process.env.ADP_CONTROL_BROWSER_EVAL === 'true'
+        ? `This disposable fixture checks dashboard controls. Repeatedly use the Read tool to inspect ${join(__dirname, 'explanation-events.ts')}, one separate tool call per round, until the operator aborts this run. Do not use Bash or any other tool, edit files, commit, push or open a PR. If a later user instruction asks you to switch to the steered approach, acknowledge the change in an ordinary authored explanation containing the words steered approach, then continue the separate Read calls so the dashboard can observe polling. The approach being changed is only the label of this disposable reading task. Do not end the task yourself.`
       : started.events
         ? `This task checks incremental delivery of technical explanations. Read ${join(__dirname, 'explanation-events.ts')} and ${join(__dirname, 'explanation-events.test.ts')} from this pinned source checkout first, then explain the implementation in your own words. These are the expected limits to verify: modules/agent-factory/agent/src/explanation-events.ts retains at most ${HISTORY_EVENTS} events and ${HISTORY_BYTES} encoded bytes, permits ${MAX_SUBSCRIBERS} subscribers, and replay(cursor) emits a reset for expired, foreign or future cursors. Explain the bounded-memory versus complete-history tradeoff. Reference that code path and modules/agent-factory/agent/src/explanation-events.test.ts. Give the reproducible command: cd modules/agent-factory/agent && npm test -- --runInBand src/explanation-events.test.ts. Do not claim you ran it; this fixture only records the command for a reviewer. Include STREAM-MECHANISM. Do not install dependencies. If the source files are unavailable, report that limitation and do not claim source verification. Run foreground Bash sleep 20 so the browser can observe the first explanation before the second. Next explain why reset means a history gap rather than invented continuity, and why incremental delivery does not establish durable cross-pod replay; include STREAM-EVIDENCE. Then run foreground Bash sleep 20 and finish. Do not combine both explanations in one message. Do not use background work.`
       : 'Validate foreground tool execution in this disposable directory. Perform exactly three steps in order. For each step, use Bash to run sleep 60 with timeout 90000, wait for that foreground call to finish, then use Write to put the step number in progress.txt. Use separate calls; never background the command or combine the steps into a shell loop. A later user instruction may change the task. Keep all files within this working directory.';
     const attach = runtime.adapter.onAttemptHandle();
-    const inputFactory = runtime.adapter.attemptInputFactory(pauseHooks => ({
-      hooks: createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(cwd), pauseHooks }),
-    }));
+    const inputFactory = runtime.adapter.attemptInputFactory(pauseHooks => {
+      const hooks = createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(cwd), pauseHooks });
+      if (process.env.ADP_CONTROL_BROWSER_EVAL === 'true') {
+        for (const matcher of hooks.PreToolUse ?? []) {
+          matcher.hooks = matcher.hooks.map(callback => {
+            const delayed: HookCallback = async (input, toolUseID, options) => {
+              const result = await callback(input, toolUseID, options);
+              // Keep a genuinely admitted Read in progress long enough for the
+              // browser to observe pending pause. No shell/background inference.
+              if ('tool_name' in input && input.tool_name === 'Read') {
+                record('browser_read_delay_started');
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                record('browser_read_delay_finished');
+              }
+              return result;
+            };
+            return delayed;
+          });
+        }
+      }
+      return { hooks };
+    });
     for await (const message of resilientQuery({
       queryParams: { prompt, options: {
         cwd, model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-6',
@@ -174,6 +197,11 @@ export async function runRegisteredControlFixture(): Promise<number> {
       exitCode = 1;
     }
   } catch (error) {
+    // Private evaluation report only; never put provider details in progress or
+    // the user-facing explanation stream. Retain enough to diagnose a failed run.
+    sdkError = error instanceof Error
+      ? { name: error.name, message: error.message.slice(0, 4096) }
+      : { name: 'unknown', message: String(error).slice(0, 4096) };
     record('sdk_exception', { error_name: error instanceof Error ? error.name : 'unknown' });
     exitCode = 1;
   } finally {
@@ -201,6 +229,8 @@ export async function runRegisteredControlFixture(): Promise<number> {
       authored_explanations: authored.replay().events,
       sdk_input_messages: sdkInputs, input_capture_complete: inputCaptureComplete,
       attempt_disposals: attemptDisposals, query_close_calls: queryCloses,
+      final_control_state: runtime.snapshot(),
+      sdk_error: sdkError,
       counters: { sdk_queries: sdkQueries, tool_starts: toolStarts, active_tools: activeTools,
         counters_complete: countersComplete },
     };

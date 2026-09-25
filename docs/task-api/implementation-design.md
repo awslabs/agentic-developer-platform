@@ -514,7 +514,7 @@ a reviewed design/configuration change before new acceptance measurements.
 | Process/report | Frame 64 KiB; progress event 8 KiB; 1 progress report/second sustained, burst 5; 10,000 events/task with final 100 slots reserved for control/terminal evidence. |
 | SSE | 2 streams/task, 10/principal, 32/environment; 100 frames or 256 KiB buffered per stream; disconnect after 10 seconds of blocked writes. |
 | Submit rate / capacity | 10 new tasks/minute/principal; 20 nonterminal tasks/tenant; 2 executing tasks/principal, 4/tenant and 4 across the pilot. Idempotent retries do not reserve another slot. |
-| Lifetime | 30 minutes from acceptance, including queue/input waits; at most 8 model turns; 120 seconds per provider operation; model output cap 4,096 tokens/turn. |
+| Lifetime | Up to 360 minutes (6 hours) from acceptance, configured per principal and including queue/input waits; at most 8 model turns; 120 seconds per provider operation; model output cap 4,096 tokens/turn. |
 | Spend | At most USD 1/task, USD 10/tenant/day and USD 25 for the entire qualification run, enforced through existing budget authority and per-call upper-bound reservation. Separate from the engine's code-development budget. |
 | Reporting / access | Two distinct authored progress markers arrive externally within 5 seconds each while a controlled healthy fixture is held open; access revocation closes streams within 30 seconds; queued input revalidated immediately before turn/model handoff. |
 | Heartbeat / cancellation | Host heartbeat every 30 seconds; SQS visibility 300 seconds with the existing lease safety margin; connected healthy host observes cancel within 5 seconds and confirms child stop within 30 seconds, otherwise explicit uncertainty. |

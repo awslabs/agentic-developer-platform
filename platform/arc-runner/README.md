@@ -12,8 +12,8 @@ Added tooling:
 
 - **Runtimes:** Node.js 22, Python 3.12
 - **AWS:** AWS CLI v2
-- **IaC:** Terraform 1.14.2
-- **K8s:** kubectl 1.35, Helm 3.17
+- **IaC:** Terraform 1.14.9
+- **K8s:** kubectl 1.35.9, Helm 3.17.4
 - **Git/GitHub:** git, gh CLI
 - **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko executor (daemonless image builds)
 - **Utilities:** zip, unzip, jq, curl, wget, sudo

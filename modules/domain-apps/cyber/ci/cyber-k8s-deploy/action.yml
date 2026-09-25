@@ -22,10 +22,18 @@ runs:
 
       '
     shell: bash
+  - name: Resolve immutable worker image
+    shell: bash
+    run: |
+      set -euo pipefail
+      IMAGE_TAG=$(aws ssm get-parameter --name /adp/dev/cyber/worker-image-tag --query Parameter.Value --output text)
+      IMAGE_DIGEST=$(aws ecr describe-images --repository-name adp-cyber-worker --image-ids "imageTag=$IMAGE_TAG" --query 'imageDetails[0].imageDigest' --output text)
+      [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Invalid worker digest" >&2; exit 1; }
+      echo "CYBER_WORKER_IMAGE_DIGEST=$IMAGE_DIGEST" >> "$GITHUB_ENV"
   - name: Resolve deployment variables
     id: vars
     run: "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)\nREGION=\"${{ env.AWS_REGION }}\"\n{\n \
-      \ echo \"account_id=${ACCOUNT_ID}\"\n  echo \"ecr_image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/adp-cyber-worker:latest\"\
+      \ echo \"account_id=${ACCOUNT_ID}\"\n  echo \"ecr_image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/adp-cyber-worker@${CYBER_WORKER_IMAGE_DIGEST}\"\
       \n  echo \"triage_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-tasks.fifo\"\n\
       \  echo \"triage_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-responses.fifo\"\
       \n  echo \"static_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-tasks.fifo\"\n\

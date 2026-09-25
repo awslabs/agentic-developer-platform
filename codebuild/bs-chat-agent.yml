@@ -1,57 +1,7 @@
 version: 0.2
-
-# CodeBuild buildspec for the complex-task-chat agent image.
-#
-# Builds the TypeScript agent at modules/agent-factory/agent/Dockerfile with the
-# build context set to modules/agent-factory/ (so the Dockerfile can COPY
-# rules/personas/ from a sibling directory).
-#
-# Pushes to the dedicated ECR repo adp-chat-agent so this build cannot
-# replace the Python agent-gateway artifact. The image is dispatched at runtime by AGENT_ENTRYPOINT:
-#   - AGENT_ENTRYPOINT=github         (default)  → runs the existing GH agent
-#   - AGENT_ENTRYPOINT=complex-task-chat         → runs the new chat agent
-#
-# Environment variables injected by the start-build caller:
-#   AWS_REGION, ENVIRONMENT, ACCOUNT_ID, REGISTRY, IMAGE_TAG
-
+# The production helper checks source identity, reuses existing immutable artifacts,
+# preserves image selfchecks and verifies the published digest. No post-build push.
 phases:
-  install:
-    runtime-versions:
-      nodejs: 22
-    commands:
-      - echo "Using Node $(node --version), npm $(npm --version)"
-
-  pre_build:
-    commands:
-      - |
-        if [ -z "${ADP_SOURCE_SHA:-}" ]; then
-          echo "ERROR: ADP_SOURCE_SHA not set. Build was started without --source-location-override." >&2
-          echo "All builds must use codebuild-run.sh or the codebuild-run composite action." >&2
-          exit 1
-        fi
-      - ECR_REPO="adp-chat-agent"
-      - IMAGE_TAG="${IMAGE_TAG:-latest}"
-      - |
-        if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
-          aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION" >/dev/null
-        fi
-      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-
   build:
     commands:
-      # Build context is modules/agent-factory/ so the Dockerfile can COPY
-      # rules/personas/ alongside agent/. See the Dockerfile's top-of-file note.
-      - cd modules/agent-factory
-      - docker build --no-cache --pull -f agent/Dockerfile -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
-      - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
-      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
-      - 'if [ "${PUBLISH_LATEST:-true}" = true ]; then docker push "$REGISTRY/$ECR_REPO:latest"; fi'
-
-  post_build:
-    commands:
-      - |
-        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
-          echo "Chat agent build failed; refusing to report publication success." >&2
-          exit 1
-        fi
-      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (latest publication controlled by PUBLISH_LATEST)"
+      - bash platform/scripts/publish-shared-image.sh adp-chat-agent

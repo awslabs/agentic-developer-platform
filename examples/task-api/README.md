@@ -70,7 +70,7 @@ must not be presented as successful completion or refunded usage.
 
 Accepted limits:64KiB submit,16000 instruction characters; four256KiB text/JSON
 artifacts and1MiB total;4000-character input/1000-character cancel reason and16KiB
-command;10 pending inputs plus reserved cancel,100 inputs/task;30-minute lifetime,
+command;10 pending inputs plus reserved cancel,100 inputs/task;up to six-hour lifetime (configured per principal),
 eight model turns,4096 output tokens/turn,USD1/task. Capacity is2 executing tasks
 per principal,4 per tenant and pilot. Existing stricter policy wins. Content and
 receipts remain30 days after terminal state; content-free idempotency tombstones

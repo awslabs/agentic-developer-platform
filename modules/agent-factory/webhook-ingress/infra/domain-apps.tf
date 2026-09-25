@@ -11,6 +11,8 @@ module "cyber" {
   worker_role_name        = aws_iam_role.agent_scaledjob.id
   broker_image            = lookup(var.domain_app_images, "cyber-browser", "")
   common_crawl_partitions = compact(split(",", lookup(lookup(var.domain_app_settings, "cyber", {}), "common_crawl_partitions", "")))
+  task_url_tools_enabled  = lookup(lookup(var.domain_app_settings, "cyber", {}), "task_url_tools_enabled", "false") == "true"
+  tools_endpoint          = lookup(lookup(var.domain_app_settings, "cyber", {}), "tools_endpoint", "")
   browser_mode            = lookup(lookup(var.domain_app_settings, "cyber", {}), "browser_mode", "broker")
   browser_broker_enabled  = lookup(lookup(var.domain_app_settings, "cyber", {}), "browser_broker_enabled", "true") == "true"
   session_owner_routing   = lookup(lookup(var.domain_app_settings, "cyber", {}), "session_owner_routing", "false") == "true"

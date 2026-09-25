@@ -75,6 +75,11 @@ def validate_findings(root: Path, expected_images: set[str]):
     if not isinstance(secret_audit, dict) or not isinstance(secret_audit.get("results"), list):
         raise ValueError("detect-secrets audit lacks a results list")
 
+    if (secret_scan.get("repository_matcher_policy")
+            or secret_audit.get("schema_version") == "adp.detect-secrets.audit/v2"):
+        from run_detect_secrets import validate_audit_coverage
+        validate_audit_coverage(secret_scan, secret_audit)
+
     cfn = load_json(root / "cfn-nag" / "cfn-nag-results.json")
     if not isinstance(cfn, list):
         raise ValueError("cfn-nag output must be a list")
@@ -187,6 +192,8 @@ def sanitize_summary(summary_path: Path, output: Path, source_revision: str, cor
             key: result.get(key, 0)
             for key in ("new_count", "resolved_count", "new_unrated_count")
         }
+        if "legacy_partial_identity_count" in result:
+            tools[tool]["legacy_partial_identity_count"] = result["legacy_partial_identity_count"]
         if any(type(value) is not int or value < 0 for value in tools[tool].values()):
             raise ValueError(f"summary counts for {tool} are invalid")
     output.write_text(json.dumps({

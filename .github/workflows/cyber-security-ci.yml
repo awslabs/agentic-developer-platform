@@ -14,6 +14,19 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  browser-publication-contract:
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Check isolated browser publisher contracts
+        run: python3 -m unittest discover -s modules/domain-apps/cyber/tests -p test_direct_browser_publication.py -v
+
   kernel-isolation:
     runs-on: arc-runner-org
     timeout-minutes: 20

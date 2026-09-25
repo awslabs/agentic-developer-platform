@@ -16012,10 +16012,10 @@ class TestSummarizeFixtureCleanupUsesTheDeclaredVerificationIds:
 def all_verb_security_payload():
     groups = {
         'auth_matrix': {'anonymous': 401, 'nonowner': 404, 'other_tenant': 404, 'unknown': 404},
-        'token_expiry': {'expired': 401, 'missing': 401, 'wrong': 401},
+        'token_expiry': {'expired': 502, 'missing': 502, 'wrong': 502},
         'malformed_payloads': {'json': 400, 'actor': 400, 'target': 400, 'token': 400, 'oversized': 413},
         'terminal_generation': {'owner': 410, 'nonowner': 404, 'other_tenant': 404},
-        'stale_generation': {'stale': 401},
+        'stale_generation': {'stale': 502},
     }
     result = dict(fixture_identity=fixture_identity(), verbs=list(_mod.CONTROL_VERBS),
                   side_effects={}, unsafe_targets=[], observed_by='owned fixture collector')
@@ -16029,6 +16029,8 @@ def all_verb_security_payload():
                         command_id=command_id, run_id='terminal' if group == 'terminal_generation' else
                         'unknown' if group == 'auth_matrix' and case == 'unknown' else 'live',
                         observed_at='2026-09-24T12:00:00Z', observed_by='actual response', response_body={'detail': 'Not found'}))
+                    if group in {'token_expiry', 'stale_generation'}:
+                        result[group][-1].update(listener_status=401, authenticated_forward_reached=True)
                     counters = dict(accepted_commands=0, sdk_queries=1, tool_starts=2)
                     result['side_effects'][command_id] = dict(before=dict(counters), after=dict(counters), observed_by='runtime counters')
                 for family in ('unregistered_ip', 'wrong_port', 'metadata', 'link_local', 'loopback', 'public', 'redirect'):
@@ -16047,6 +16049,22 @@ def run_all_verb_security(tmp_path, payload):
 def test_all_verb_security_matrix_accepts_complete_observations(tmp_path):
     result = run_all_verb_security(tmp_path, all_verb_security_payload())
     assert result.status == _mod.STATUS_PASSED, result.message
+
+
+@pytest.mark.parametrize('group', ['token_expiry', 'stale_generation'])
+@pytest.mark.parametrize('defect', ['browser-401', 'missing-worker-status', 'worker-success', 'unreached-route'])
+def test_listener_rejections_require_both_route_and_worker_observations(tmp_path, group, defect):
+    payload = all_verb_security_payload()
+    row = payload[group][0]
+    if defect == 'browser-401':
+        row['status'] = 401
+    elif defect == 'missing-worker-status':
+        del row['listener_status']
+    elif defect == 'worker-success':
+        row['listener_status'] = 202
+    else:
+        row['authenticated_forward_reached'] = False
+    assert run_all_verb_security(tmp_path, payload).status == _mod.STATUS_FAILED
 
 
 @pytest.mark.parametrize('group', ['auth_matrix', 'token_expiry', 'malformed_payloads', 'terminal_generation', 'stale_generation', 'unsafe_targets'])

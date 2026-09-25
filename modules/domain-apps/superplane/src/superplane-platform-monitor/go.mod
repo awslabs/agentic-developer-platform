@@ -2,7 +2,7 @@ module github.com/aws-innovate/AISuperPlane/src/superplane-platform-monitor
 
 go 1.23.0
 
-toolchain go1.23.8
+toolchain go1.26.8
 
 require go.uber.org/zap v1.27.0
 

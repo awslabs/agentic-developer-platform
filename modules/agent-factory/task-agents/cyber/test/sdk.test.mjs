@@ -18,3 +18,14 @@ test('real SDK executes exact MCP submit_report through loopback model adapter',
  const timer=setTimeout(()=>bridge.fail(new Error('SDK smoke timeout')),35000);
  try {assert.deepEqual(await runCyber(start,bridge),report);assert.equal(calls,2);}finally{clearTimeout(timer);process.env.HOME=previous;await rm(home,{recursive:true,force:true});}
 });
+
+test('real SDK accepts a grounded report submitted on the final permitted turn', {timeout:45000},async()=>{
+ const start={task_id:'tsk_'+randomUUID(),instructions:'Submit the report.',inputs:{},limits:{max_turns:1,max_output_tokens_per_turn:2000}};
+ const bridge=new HostBridge(start,()=>{});let calls=0;
+ bridge.model=async()=>{
+  calls++;assert.equal(calls,1,'no extra model call is permitted');
+  return {turn_id:randomUUID(),operation_status:'confirmed',content:[{type:'tool_use',id:'toolu_final',name:'mcp__cyber__submit_report',input:{summary:'No evidence requested',findings:[]}}],stop_reason:'tool_use',usage:{input_tokens:100,output_tokens:50}};
+ };
+ const result=await runCyber(start,bridge);
+ assert.equal(result.summary,'No evidence requested');assert.deepEqual(result.evidence_refs,[]);assert.equal(calls,1);
+});

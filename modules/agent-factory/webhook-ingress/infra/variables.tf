@@ -237,15 +237,19 @@ variable "eks_cluster_name" {
 # module (keda.tf) rather than discovered via data source. See issue #1052.
 
 variable "agent_image" {
-  description = "Container image for the agent worker (ECR URI with tag). Built by .github/workflows/agent-worker-image.yml via CodeBuild → ECR repo adp-agent-runtime."
+  description = "Verified agent-worker image URI pinned by OCI digest or full source SHA. No implicit mutable fallback."
   type        = string
   default     = ""
+  validation {
+    condition     = can(regex("(@sha256:[0-9a-f]{64}|:[0-9a-f]{40})$", var.agent_image))
+    error_message = "agent_image must explicitly select an OCI digest or full immutable source SHA; empty, latest and placeholders are refused."
+  }
 }
 
 variable "agent_pod_deadline_seconds" {
   description = "Max runtime for an agent pod before Kubernetes kills it. Decoupled from sqs_visibility_timeout (#2324) — the worker heartbeat bridges the gap. This controls the absolute max run time; sqs_visibility_timeout controls dead-worker detection speed."
   type        = number
-  default     = 21600 # 6h — max run time for long deploy orchestrators. Independent of sqs_visibility_timeout (300s); worker heartbeat extends visibility while alive.
+  default     = 22200 # 6h Task deadline + 10min startup/cleanup allowance. Independent of SQS visibility; heartbeat extends it while alive.
 }
 
 variable "agent_warm_pool_replicas" {
@@ -664,4 +668,18 @@ variable "internal_api_key_parameter_name" {
   description = "Existing SSM SecureString containing the gateway internal API key; no key value is stored in source."
   type        = string
   default     = ""
+}
+
+variable "task_persona_tools" {
+  type        = map(list(string))
+  default     = {}
+  description = "Generic Task persona tool permission names; intersected with service-principal policy at admission."
+  validation {
+    condition = length(var.task_persona_tools) <= 64 && length(jsonencode(var.task_persona_tools)) <= 16384 && alltrue([
+      for persona, tools in var.task_persona_tools : length(persona) > 0 && length(persona) <= 128 && length(tools) <= 64 && length(distinct(tools)) == length(tools) && alltrue([
+        for tool in tools : can(regex("^[a-z][a-z0-9_]{0,47}\\.[a-z][a-z0-9_]{0,63}$", tool))
+      ])
+    ])
+    error_message = "Task tool grants require at most 64 personas and 64 unique domain.operation names per persona within the 16384-byte policy bound."
+  }
 }

@@ -45,15 +45,24 @@ spec:
         component: control-plane
     spec:
       serviceAccountName: superplane-platform-monitor
+      # Pod-level security context (#6105 — pod security reconciliation).
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: platform-monitor
           image: superplane-platform-monitor:latest
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: metrics
               containerPort: 9090
@@ -100,6 +109,9 @@ spec:
               port: metrics
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 100m
@@ -107,6 +119,10 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
 
 ---
 apiVersion: v1

@@ -35,6 +35,8 @@ export interface ControlRuntime {
   readonly adapter: ClaudeControlAdapter;
   readonly gate: PauseGate;
   readonly steerQueue: SteerQueue;
+  /** Read the actual journal, including final cancellation, after listener shutdown. */
+  readonly snapshot: () => ReturnType<ControlStateStore['snapshot']>;
 }
 
 export interface ControlRuntimeStartResult {
@@ -129,7 +131,8 @@ export async function startControlRuntime(args: {
       steerQueue.dispose('read-only listener');
       return { runtime: null, listener, outcome, events };
     }
-    return { runtime: { adapter: controlAdapter, gate: pauseGate, steerQueue }, listener, outcome, events };
+    return { runtime: { adapter: controlAdapter, gate: pauseGate, steerQueue,
+      snapshot: () => controlStore.snapshot() }, listener, outcome, events };
   }
   // A listener that did not start means no command can ever arrive, so the
   // queue is disposed rather than left holding a runtime subscription for the

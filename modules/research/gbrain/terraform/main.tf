@@ -58,21 +58,24 @@ module "rds" {
 module "fargate" {
   source = "./modules/fargate"
 
-  name_prefix        = local.name_prefix
-  vpc_id             = var.vpc_id
-  subnet_ids         = var.private_subnet_ids
-  service_sg_id      = aws_security_group.svc.id
-  cpu                = var.cpu
-  memory             = var.memory
-  desired_count      = var.desired_count
-  container_image    = "${module.storage.ecr_repo_url}:latest"
-  db_endpoint        = module.rds.endpoint
-  db_credentials_arn = module.rds.credentials_secret_arn
-  mcp_token_arn      = aws_secretsmanager_secret.mcp_token.arn
-  s3_bucket_name     = module.storage.bucket_name
-  log_group_name     = aws_cloudwatch_log_group.gbrain.name
-  task_role_arn      = aws_iam_role.app.arn
-  execution_role_arn = aws_iam_role.task_execution.arn
+  name_prefix           = local.name_prefix
+  vpc_id                = var.vpc_id
+  subnet_ids            = var.service_subnet_ids != null ? var.service_subnet_ids : var.private_subnet_ids
+  service_sg_id         = aws_security_group.svc.id
+  cpu                   = var.cpu
+  memory                = var.memory
+  desired_count         = var.desired_count
+  container_image       = "${module.storage.ecr_repo_url}@${var.container_image_digest}"
+  container_command     = var.container_command
+  container_entrypoint  = var.container_entrypoint
+  container_environment = var.container_environment
+  db_endpoint           = module.rds.endpoint
+  db_credentials_arn    = module.rds.credentials_secret_arn
+  mcp_token_arn         = aws_secretsmanager_secret.mcp_token.arn
+  s3_bucket_name        = module.storage.bucket_name
+  log_group_name        = aws_cloudwatch_log_group.gbrain.name
+  task_role_arn         = aws_iam_role.app.arn
+  execution_role_arn    = aws_iam_role.task_execution.arn
 }
 
 # -----------------------------------------------------------------------------
@@ -83,7 +86,7 @@ module "scheduler" {
 
   name_prefix = local.name_prefix
   cluster_arn = module.fargate.cluster_arn
-  task_def    = module.fargate.task_definition_arn
+  task_def    = module.fargate.dream_task_definition_arn
   subnet_ids  = var.private_subnet_ids
   sg_id       = aws_security_group.svc.id
   role_arn    = aws_iam_role.scheduler.arn
@@ -293,7 +296,7 @@ resource "aws_iam_role_policy" "scheduler_run_task" {
       {
         Effect   = "Allow"
         Action   = "ecs:RunTask"
-        Resource = module.fargate.task_definition_arn
+        Resource = module.fargate.dream_task_definition_arn
         Condition = {
           ArnLike = {
             "ecs:cluster" = module.fargate.cluster_arn

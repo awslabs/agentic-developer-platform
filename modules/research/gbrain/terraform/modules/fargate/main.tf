@@ -20,6 +20,13 @@ resource "aws_ecs_cluster_capacity_providers" "gbrain" {
 }
 
 resource "aws_ecs_task_definition" "serve" {
+  lifecycle {
+    precondition {
+      condition     = can(regex("@sha256:[0-9a-f]{64}$", var.container_image))
+      error_message = "ECS activation requires a registry-verified image digest; bootstrap only storage/build before publication."
+    }
+  }
+
   family                   = "${var.name_prefix}-serve"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
@@ -28,7 +35,7 @@ resource "aws_ecs_task_definition" "serve" {
   task_role_arn            = var.task_role_arn
   execution_role_arn       = var.execution_role_arn
 
-  container_definitions = jsonencode([{
+  container_definitions = jsonencode([merge({
     name  = "gbrain"
     image = var.container_image
 
@@ -39,7 +46,7 @@ resource "aws_ecs_task_definition" "serve" {
       protocol      = "tcp"
     }]
 
-    environment = [
+    environment = var.container_environment != null ? var.container_environment : [
       { name = "PORT", value = "3000" },
       { name = "GBRAIN_DB_HOST", value = split(":", var.db_endpoint)[0] },
       { name = "GBRAIN_DB_PORT", value = "5432" },
@@ -79,7 +86,10 @@ resource "aws_ecs_task_definition" "serve" {
       retries     = 3
       startPeriod = 60
     }
-  }])
+    },
+    var.container_command != null ? { command = var.container_command } : {},
+    var.container_entrypoint != null ? { entryPoint = var.container_entrypoint } : {}
+  )])
 }
 
 resource "aws_ecs_service" "mcp" {

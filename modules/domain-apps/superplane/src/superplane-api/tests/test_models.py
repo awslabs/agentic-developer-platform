@@ -11,6 +11,10 @@ from app.database import Base
 def test_all_tables_registered():
     """All tables from design doc sections 6.1, 15.7, and auth are registered."""
     expected_tables = {
+        "controller_network_completion",
+        "controller_network_resources",
+        "controller_network_members",
+        "controller_network_effects",
         "organizations",
         "organization_grants",
         "workspaces",

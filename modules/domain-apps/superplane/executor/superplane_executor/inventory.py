@@ -205,9 +205,25 @@ class Finalizer:
         for binding in plan.region_bindings:
             for reference, kind in await asyncio.to_thread(tagged, binding["region"]):
                 add(reference, kind, "launch", binding["region"])
+        if plan.network is not None:
+            from .network_inventory import discover
+
+            network = await discover(
+                self.provider,
+                operation,
+                frozenset({creating["launch"]})
+                if "launch" in creating
+                else frozenset(),
+            )
+            for reference, resource in network.items():
+                resources.setdefault(reference, resource)
         return resources
 
     async def observe(self, operation, target, plan, resource):
+        if resource.kind == "network_dependency":
+            from .network_inventory import observe
+
+            return await observe(self.provider, operation, plan, resource)
         ref = resource.provider_reference
         if resource.kind == "workspace_object":
             try:

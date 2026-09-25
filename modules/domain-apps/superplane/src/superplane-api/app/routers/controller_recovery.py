@@ -200,6 +200,8 @@ async def observation_provider(request, claim):
                         "Effect": "Allow",
                         "Action": [
                             "ec2:Describe*",
+                            "ec2:SearchTransitGatewayRoutes",
+                            "ec2:GetTransitGatewayRouteTableAssociations",
                             "eks:DescribeCluster",
                             "sts:GetCallerIdentity",
                         ],

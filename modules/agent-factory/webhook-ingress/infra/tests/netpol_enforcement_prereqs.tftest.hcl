@@ -225,3 +225,8 @@ run "enforcement_preconditions_hold" {
     error_message = "Control-listener ingress must admit exactly the one control port (8770). Widening it re-opens the boundary W1-04 exists to verify."
   }
 }
+
+# Supply an explicit mock release; empty/mutable inputs are rejected before plan.
+variables {
+  agent_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

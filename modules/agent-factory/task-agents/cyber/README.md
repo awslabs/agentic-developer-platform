@@ -17,6 +17,14 @@ The worker image copies only SKILL.md files from existing cyber skills.
 
 The loopback adapter normalizes SDK Messages requests into bounded Task IPC. The
 host and gateway select the model, authorize every turn and retain usage/receipts.
+Cyber operations go from the host to the domain cyber tools service at the exact
+HTTPS URL configured by `ADP_CYBER_TOOLS_ENDPOINT`, ending in `/tools/cyber`.
+The route uses AWS_IAM authorization through shared `modules/tools` infrastructure.
+The host signs calls with SigV4 and includes its workload and run credentials;
+the SDK receives neither these credentials nor authority to select the endpoint.
+There is no fallback to the former gateway `/task/cyber` route. Missing or invalid
+service configuration fails the operation, including downstream cleanup. Model,
+control and artifact requests continue to use their existing generic Task routes.
 Unknown model outcomes abort the SDK; they are never automatically retried as new
 paid work. Broker and model operations serialize, job submissions deduplicate,
 and queued jobs require paced polling before a report is accepted. Unsupported or
@@ -78,3 +86,9 @@ The full host/SDK harness verifies durable model-turn request digests, broker
 artifact provenance in the final report, cleanup before finalization, and no
 second model call after an unknown outcome. These are the supported Task control
 guarantees; they do not claim that legacy steering or pause/resume is available.
+
+The shared Claude Agent SDK lifecycle and model transport now live in
+`modules/tools/task-sdk/`; this package supplies cyber tools, skills and prompt.
+New tool calls use generic `tool.request` frames and the host-owned
+`ADP_TASK_TOOL_ROUTES` registry. URL tool architecture, permissions and deployment
+are documented in `modules/domain-apps/cyber/tools/URL-TOOLS.md`.

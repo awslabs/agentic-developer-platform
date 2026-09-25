@@ -6,7 +6,7 @@ RUN apt-get update && \
     apt-get -y upgrade && \
     apt-get install -y --no-install-recommends git curl gcc g++ make && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    pip install --no-cache-dir codegraphcontext
+    pip install --no-cache-dir codegraphcontext==0.6.13
 
 # Non-root user for security
 RUN addgroup --system --gid 1001 appgroup && \

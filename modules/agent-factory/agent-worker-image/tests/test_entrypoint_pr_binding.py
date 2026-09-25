@@ -18,7 +18,7 @@ def test_delivery_and_retry_register_pr(path, persona, monkeypatch):
 
     def run(cmd, **_kwargs):
         stdout = ""
-        if cmd[:3] == ["git", "diff", "--stat"] and path != "self_created":
+        if cmd[:2] == ["git", "log"] and path != "self_created":
             stdout = "code.py"
         if cmd[:3] == ["gh", "pr", "list"] and path == "existing_pr":
             stdout = "5293"
@@ -49,7 +49,7 @@ def test_unacknowledged_handoff_keeps_delivered_work_pending(path, monkeypatch):
     import entrypoint
 
     def run(cmd, **kwargs):
-        stdout = "code.py" if path == "entrypoint_created" and cmd[:3] == ["git", "diff", "--stat"] else ""
+        stdout = "code.py" if path == "entrypoint_created" and cmd[:2] == ["git", "log"] else ""
         return MagicMock(stdout=stdout, returncode=0)
 
     monkeypatch.setattr(entrypoint, "run_cmd", run)

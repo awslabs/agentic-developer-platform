@@ -175,12 +175,12 @@ locals {
               # balloon reserves an agent-sized slot the real pod can take over.
               resources:
                 requests:
-                  cpu: "1"
-                  memory: 4Gi
+                  cpu: "4"
+                  memory: ${var.agent_worker_memory_request}
                   ephemeral-storage: 50Gi
                 limits:
-                  cpu: "1"
-                  memory: 4Gi
+                  cpu: "4"
+                  memory: ${var.agent_worker_memory_request}
                   ephemeral-storage: 50Gi
               securityContext:
                 allowPrivilegeEscalation: false

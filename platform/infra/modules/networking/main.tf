@@ -132,6 +132,27 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
+# ---------------------------------------------------------------------------
+# Default Security Group — deny-all (CKV2_AWS_12)
+# ---------------------------------------------------------------------------
+# Adopts the VPC's default security group and removes all rules. This ensures
+# nothing can accidentally rely on the permissive defaults AWS creates. All
+# workloads use dedicated, scoped security groups (ALB, EKS, RDS, Redis,
+# VPC endpoints).
+
+resource "aws_default_security_group" "main" {
+  vpc_id = aws_vpc.main.id
+
+  # Explicit empty sets keep both adoption and later drift reconciliation deny-all.
+  # Omitting these Optional+Computed fields would leave rules state-derived.
+  ingress = []
+  egress  = []
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-default-sg-restricted"
+  })
+}
+
 # Security Group - ALB
 # Issue #133: SECURITY FIX - Restrict ALB ingress based on alb_internal setting
 # For internal ALB: Only allow traffic from VPC CIDR

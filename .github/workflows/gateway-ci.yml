@@ -103,6 +103,8 @@ on:
       - 'codebuild/bs-gateway-build.yml'
       - 'codebuild/bs-gateway-smoke.yml'
       - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
     branches:
       - main
   push:
@@ -138,6 +140,8 @@ on:
       - 'codebuild/bs-gateway-build.yml'
       - 'codebuild/bs-gateway-smoke.yml'
       - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
     branches:
       - main
 

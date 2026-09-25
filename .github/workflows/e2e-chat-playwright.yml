@@ -56,10 +56,12 @@ jobs:
 
 
       - name: Resolve dashboard URL
+        env:
+          INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
         run: |
           set -e
-          if [ -n "${{ github.event.inputs.cloudfront_url }}" ]; then
-            URL="${{ github.event.inputs.cloudfront_url }}"
+          if [ -n "$INPUT_CLOUDFRONT_URL" ]; then
+            URL="$INPUT_CLOUDFRONT_URL"
             echo "Using dispatch override: $URL"
           else
             DOMAIN=$(aws ssm get-parameter \
@@ -78,7 +80,11 @@ jobs:
             URL="$DOMAIN"
             echo "Resolved from SSM: $URL"
           fi
-          echo "E2E_CLOUDFRONT_URL=${URL}" >> "$GITHUB_ENV"
+          if [[ "$URL" == *$'\n'* || "$URL" == *$'\r'* ]]; then
+            echo "::error::dashboard URL must be a single line"
+            exit 1
+          fi
+          printf 'E2E_CLOUDFRONT_URL=%s\n' "$URL" >> "$GITHUB_ENV"
 
 
       - name: Set up Python 3.12

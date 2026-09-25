@@ -116,6 +116,7 @@ def test_deploy_workflow_redeploys_all_three_artifacts_on_a_policy_change():
         "codebuild/bs-gateway-build.yml",
         "codebuild/bs-gateway-smoke.yml",
         "platform/scripts/zip-source.sh",
+        "platform/scripts/publish-shared-image.sh",
     ],
 )
 def test_ci_runs_on_pricing_artifact_changes(trigger, changed_file):
@@ -130,6 +131,15 @@ def test_dockerfile_bakes_the_package_into_the_image():
     assert "COPY pricing_policy/ pricing_policy/" in body
 
 
+def _deploy_build_program():
+    root = GATEWAY.parents[1]
+    spec = yaml.safe_load((root / "codebuild/bs-gateway-build.yml").read_text())
+    assert spec["phases"]["build"]["commands"] == ["bash platform/scripts/publish-shared-image.sh adp-gateway"]
+    # CodeBuild runs post_build after failure too. The helper must be the only writer.
+    assert not spec["phases"].get("post_build", {}).get("commands")
+    return (root / "platform/scripts/publish-shared-image.sh").read_text()
+
+
 def test_both_gateway_buildspecs_verify_the_built_image_can_price():
     """The image build must run ``pricing_policy.selfcheck`` on the built image.
 
@@ -141,7 +151,7 @@ def test_both_gateway_buildspecs_verify_the_built_image_can_price():
     is never pushed.
     """
     for name in ("bs-gateway-smoke.yml", "bs-gateway-build.yml"):
-        body = (GATEWAY.parents[1] / "codebuild" / name).read_text()
+        body = _deploy_build_program() if name == "bs-gateway-build.yml" else (GATEWAY.parents[1] / "codebuild" / name).read_text()
         assert "-m pricing_policy.selfcheck" in body, f"{name} does not verify the image can price"
 
 
@@ -151,40 +161,43 @@ def test_deploy_buildspec_verifies_before_it_pushes():
     A selfcheck that runs after ``docker push`` reports the failure only once the
     broken image is already the ``latest`` tag that the cluster pulls.
     """
-    body = (GATEWAY.parents[1] / "codebuild" / "bs-gateway-build.yml").read_text()
+    body = _deploy_build_program()
     assert body.index("-m pricing_policy.selfcheck") < body.index("docker push"), "selfcheck must gate the push, not follow it"
 
 
-@pytest.mark.parametrize("build_succeeding", ["0", "", "1"])
-def test_deploy_post_build_only_pushes_after_success(build_succeeding):
-    """CodeBuild invokes post_build even after a failed image selfcheck.
+@pytest.mark.parametrize("failure_stage", ["build", "selfcheck", "none"])
+def test_deploy_publication_only_pushes_after_selfcheck_success(failure_stage):
+    """Execute the actual shared publisher with Docker/AWS effects isolated.
 
-    Execute its actual commands with Docker stubbed so that a failed build
-    cannot publish either the latest image or its immutable deployment tag.
+    The fixture is shared with the publisher's command-path tests, so a renamed
+    helper or changed context cannot silently leave a copied shell snippet green.
     """
-    body = (GATEWAY.parents[1] / "codebuild" / "bs-gateway-build.yml").read_text()
-    commands = yaml.safe_load(body)["phases"]["post_build"]["commands"]
-    result = subprocess.run(
-        ["/bin/bash", "-eu", "-c", 'docker() { printf "%s\\n" "$*"; }\n' + "\n".join(commands)],
-        env={
-            "PATH": "/usr/bin:/bin",
-            "CODEBUILD_BUILD_SUCCEEDING": build_succeeding,
-            "REGISTRY": "example.invalid",
-            "IMAGE_TAG": "reviewed-commit",
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if build_succeeding == "1":
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.splitlines() == [
-            "push example.invalid/adp-gateway:latest",
-            "push example.invalid/adp-gateway:reviewed-commit",
-        ]
-    else:
-        assert result.returncode != 0
-        assert not result.stdout, "a failed build still pushed an image"
+    _deploy_build_program()
+    source = GATEWAY.parents[1] / "platform/scripts/tests/test_shared_image_publication.py"
+    spec = importlib.util.spec_from_file_location("gateway_publisher_fixture", source)
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    case = fixture.ReleaseTests()
+    case.setUp()
+    try:
+        env = {"MISSING_IMAGE": "true"}
+        if failure_stage == "build":
+            env["BUILD_STATUS"] = "41"
+        elif failure_stage == "selfcheck":
+            env["SELFCHECK_STATUS"] = "41"
+        result, calls = case.run_script("publish-shared-image.sh", repo="adp-gateway", **env)
+        pushes = [line for line in calls if '"push"' in line]
+        if failure_stage == "none":
+            assert result.returncode == 0, result.stderr
+            assert len(pushes) == 1
+            assert any("pricing_policy.selfcheck" in line for line in calls)
+            assert "Published " in result.stdout
+        else:
+            assert result.returncode == 41, result.stderr
+            assert not pushes, "a failed image build/selfcheck still published"
+            assert "Published " not in result.stdout
+    finally:
+        case.doCleanups()
 
 
 def test_selfcheck_reports_failure_when_snapshots_are_absent(tmp_path, monkeypatch):

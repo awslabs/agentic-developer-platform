@@ -205,6 +205,12 @@ def validate_child_frame(value: object, task_id: str) -> dict:
             type(max_tokens) is not int or not 1 <= max_tokens <= 4096
         ):
             raise TaskProtocolError("task model request is invalid")
+    elif frame_type == "tool.request":
+        body = _exact(value, common | {"tool", "payload"})
+        if (not isinstance(body["tool"], str)
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}\.[a-z][a-z0-9_]{0,63}", body["tool"])
+                or not isinstance(body["payload"], dict)):
+            raise TaskProtocolError("Invalid generic tool request")
     elif frame_type == "cyber.request":
         body = _exact(value, common | {"operation", "payload"})
         if body["operation"] not in {"triage", "static", "result", "url_analysis", "dynamic", "enrich"} or not isinstance(body["payload"], dict):

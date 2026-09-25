@@ -5,7 +5,7 @@
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     dumb-init curl git bash unzip && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 

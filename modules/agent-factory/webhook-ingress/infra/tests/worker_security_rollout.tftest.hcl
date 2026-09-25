@@ -225,13 +225,13 @@ run "activation_refuses_missing_release_acceptance" {
   expect_failures = [terraform_data.worker_security_rollout]
 }
 
-run "activation_refuses_mutable_worker_image" {
+run "activation_refuses_non_digest_worker_image" {
   command = plan
   variables {
     agent_authority_enabled                = true
     agent_authority_runtime_ready          = true
     agent_authority_legacy_workers_drained = true
-    agent_image                            = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
+    agent_image                            = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   }
   expect_failures = [terraform_data.worker_security_rollout]
 }
@@ -507,4 +507,20 @@ run "native_browser_preserves_protected_worker_boundary" {
     ])
     error_message = "Browser access must preserve artifact, secret and model-invocation restrictions."
   }
+}
+
+run "missing_worker_image_is_rejected" {
+  command = plan
+  variables {
+    agent_image = ""
+  }
+  expect_failures = [var.agent_image]
+}
+
+run "mutable_worker_image_is_rejected" {
+  command = plan
+  variables {
+    agent_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
+  }
+  expect_failures = [var.agent_image]
 }

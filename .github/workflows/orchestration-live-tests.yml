@@ -97,11 +97,17 @@ jobs:
       # with an empty argument.
       - name: Validate dispatch inputs
         id: dispatch
+        env:
+          INPUT_CONFIG_PATH: ${{ github.event.inputs.config_path }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_QUALIFICATION_ID: ${{ github.event.inputs.qualification_id }}
+          INPUT_SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
         run: |
           set -euo pipefail
-          CONFIG="${{ github.event.inputs.config_path }}"
-          MODE="${{ github.event.inputs.mode }}"
-          QUAL_ID="${{ github.event.inputs.qualification_id }}"
+          CONFIG="$INPUT_CONFIG_PATH"
+          MODE="$INPUT_MODE"
+          QUAL_ID="$INPUT_QUALIFICATION_ID"
 
           case "$CONFIG" in
             /*|*..*)
@@ -121,7 +127,7 @@ jobs:
           # workspace is empty, so without the originating run's artifact there is
           # no inventory to reconcile or delete against.
           if { [ "$MODE" = "resume" ] || [ "$MODE" = "cleanup" ]; } \
-             && [ -z "${{ github.event.inputs.source_run_id }}" ]; then
+             && [ -z "$INPUT_SOURCE_RUN_ID" ]; then
             echo "::error::mode '$MODE' requires source_run_id: the inventory recording the fixtures lives in the original run's artifact."
             exit 1
           fi
@@ -129,8 +135,8 @@ jobs:
           # The config declares its own target; a dispatch pointing a dev config
           # at staging must not proceed on the dispatch value.
           CONFIG_ENV=$(python -c "import json,sys; print(json.load(open(sys.argv[1])).get('environment',''))" "$CONFIG")
-          if [ "$CONFIG_ENV" != "${{ github.event.inputs.environment }}" ]; then
-            echo "::error::config targets '${CONFIG_ENV}' but the dispatch selected '${{ github.event.inputs.environment }}'."
+          if [ "$CONFIG_ENV" != "$INPUT_ENVIRONMENT" ]; then
+            echo "::error::config targets '${CONFIG_ENV}' but the dispatch selected '${INPUT_ENVIRONMENT}'."
             exit 1
           fi
           echo "config=$CONFIG mode=$MODE environment=$CONFIG_ENV"
@@ -170,6 +176,10 @@ jobs:
       # Reported before any mutation so the run log records which account was
       # actually touched, not which one the operator believed they selected.
       - name: Report the verified target account
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_CONFIG_PATH: ${{ github.event.inputs.config_path }}
         run: |
           set -euo pipefail
           ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
@@ -181,9 +191,9 @@ jobs:
             echo "|---|---|"
             echo "| Account | \`${ACCOUNT}\` |"
             echo "| Role | \`${ARN}\` |"
-            echo "| Environment | \`${{ github.event.inputs.environment }}\` |"
-            echo "| Mode | \`${{ github.event.inputs.mode }}\` |"
-            echo "| Config | \`${{ github.event.inputs.config_path }}\` |"
+            echo "| Environment | \`${INPUT_ENVIRONMENT}\` |"
+            echo "| Mode | \`${INPUT_MODE}\` |"
+            echo "| Config | \`${INPUT_CONFIG_PATH}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # resume/cleanup act on fixtures an EARLIER run created. That run's
@@ -208,6 +218,9 @@ jobs:
           ORCHESTRATION_EVALUATION_CONTEXT: ${{ inputs.evaluation_context }}
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_CONFIG_PATH: ${{ github.event.inputs.config_path }}
+          INPUT_QUALIFICATION_ID: ${{ github.event.inputs.qualification_id }}
           AWS_REGION: us-east-1
         run: |
           set -euo pipefail
@@ -215,20 +228,21 @@ jobs:
           # --restore-from installs the downloaded inventory into the config's
           # artifact directory, after verifying it belongs to this qualification
           # and environment. A foreign or mismatched archive is refused.
-          RESTORE=""
-          case "${{ github.event.inputs.mode }}" in
-            preflight) MODE_ARGS="--preflight" ;;
-            run)       MODE_ARGS="--run" ;;
-            resume)    MODE_ARGS="--resume ${{ github.event.inputs.qualification_id }}"
-                       RESTORE="--restore-from restored-inventory" ;;
-            cleanup)   MODE_ARGS="--cleanup ${{ github.event.inputs.qualification_id }}"
-                       RESTORE="--restore-from restored-inventory" ;;
+          RESTORE=()
+          case "$INPUT_MODE" in
+            preflight) MODE_ARGS=(--preflight) ;;
+            run)       MODE_ARGS=(--run) ;;
+            resume)    MODE_ARGS=("--resume=$INPUT_QUALIFICATION_ID")
+                       RESTORE=(--restore-from restored-inventory) ;;
+            cleanup)   MODE_ARGS=("--cleanup=$INPUT_QUALIFICATION_ID")
+                       RESTORE=(--restore-from restored-inventory) ;;
+            *) echo "::error::invalid qualification mode"; exit 1 ;;
           esac
 
           set +e
           python -m tests.e2e.orchestration.run \
-            --config "${{ github.event.inputs.config_path }}" \
-            $MODE_ARGS $RESTORE \
+            --config "$INPUT_CONFIG_PATH" \
+            "${MODE_ARGS[@]}" "${RESTORE[@]}" \
             2>&1 | tee test-results/qualification-output.txt
           RC=${PIPESTATUS[0]}
           set -e

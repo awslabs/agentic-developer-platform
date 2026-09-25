@@ -26,3 +26,16 @@ For live acceptance, the existing authenticated registered-control fixture emits
 Source `671c5a4b0551b208fb89c927501d125c368b33fd` delivered two real SDK-authored messages through CloudFront, the fixture API edge, gateway and worker into the built browser UI in 357 ms and 360 ms. Both arrived before SDK completion. Gateway mutation controls were disabled. Anonymous, non-owner, cross-tenant and target-override probes returned 401, 404, 404 and 400. The single SDK query completed with worker exit 0 and one durable queue acknowledgement.
 
 This used a locally served frontend build and a temporary CloudFront distribution; it does not claim ordinary-dashboard rollout. The demo explanation used “tokens” too broadly: the observed contract is authored messages. Human comprehension acceptance is pending in #5827. Ordinary mutation gates and the shared public frontend/login deployment were not changed for this test.
+
+### Live verification, September 25, 2026
+
+The source-grounded fixture `10db4297-0e56-4c6f-b0eb-6fe223d2fa0d`
+produced two distinct authored explanations through CloudFront, received by the
+browser 635 ms and 278 ms after their event timestamps. Keyboard access at
+390×844 and disconnect/reconnect passed. The actual worker completed with exit 0
+and one protected queue acknowledgement. Source revision:
+`3ed76d7196098a24c0e3806f095e060dc0dfdce7`.
+
+The read feature is configured for dev independently of mutation controls.
+Human comprehension/reproduction acceptance remains separate and pending;
+automated delivery evidence does not supply that review.

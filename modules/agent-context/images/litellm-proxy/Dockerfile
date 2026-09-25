@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir 'litellm[proxy]'
+RUN pip install --no-cache-dir 'litellm[proxy]==1.102.1'
 
 # Non-root user for security
 RUN addgroup --system --gid 1001 appgroup && \

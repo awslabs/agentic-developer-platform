@@ -1,5 +1,7 @@
 # ADP Task API: agreed architecture and implementation design
 
+**Long-running tasks:** [Six-hour deadlines and credential renewal](long-running-tasks.md).
+
 **Client integration:** [API Gateway integration guide](integration-guide.md) — authentication, submission, progress, input, cancellation and artifacts.
 
 **Decision date:** 2026-09-23

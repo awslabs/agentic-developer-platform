@@ -535,3 +535,65 @@ def test_zero_new_spend_exception_is_limited_to_reviewed_teardown(action, change
             org_id=values["org_id"],
             workspace_id=values["workspace_id"],
         )
+
+
+def test_network_profile_is_carried_unchanged_through_preview_and_teardown():
+    profile = regional_profile_fixture(uuid4())
+
+    def side(octet):
+        return {
+            "vpc_id": "vpc-0123456789abcdef0",
+            "vpc_cidr": f"10.{octet}.0.0/16",
+            "node_cidr": f"10.{octet}.0.0/24",
+            "pod_cidr": f"10.{octet + 10}.0.0/16",
+            "subnet_ids": ["subnet-0123456789abcdef0"],
+            "transit_gateway_id": "tgw-0123456789abcdef0",
+            "attachment_id": None,
+            "transit_gateway_route_table_id": "tgw-rtb-0123456789abcdef0",
+            "vpc_route_table_ids": ["rtb-0123456789abcdef0"],
+            "security_group_id": "sg-0123456789abcdef0",
+        }
+
+    profile["network"] = {
+        "cluster": {
+            "version": 1,
+            "cluster_id": profile["cluster_id"],
+            "membership_generation": "a" * 64,
+            "network": side(1),
+        },
+        "regions": {
+            "us-east-1": {
+                "network": side(2),
+                "peering_id": None,
+                "dns": {
+                    "rule_id": "rslvr-rr-12345678",
+                    "association_id": "rslvr-rrassoc-12345678",
+                    "outbound_endpoint_id": "rslvr-out-12345678",
+                    "inbound_endpoint_id": "rslvr-in-12345678",
+                },
+            }
+        },
+    }
+    preview, values = build(profile)
+    parsed = validate_request(
+        preview.request,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    assert parsed.network == profile["network"]
+    stopped = teardown_request(
+        preview.request,
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+        request_id=str(uuid4()),
+        source_operation_id="original",
+    )
+    assert (
+        stopped.parameters["controller_network_cluster"]
+        == preview.request.parameters["controller_network_cluster"]
+    )
+    assert (
+        stopped.parameters["controller_network_regions"]
+        == preview.request.parameters["controller_network_regions"]
+    )

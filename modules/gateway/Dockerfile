@@ -1,6 +1,15 @@
 # Base image pulled from public.ecr.aws (AWS-hosted mirror of Docker Hub) to
 # dodge the unauthenticated Docker Hub pull rate limit that periodically
 # fails CodeBuild runs with HTTP 429.
+#
+# Security: as of 2026-09, python:3.13-slim resolves to Debian Trixie (13).
+# Bookworm (12) entered LTS on 2026-07-11; Trixie is the current stable with
+# the smallest OS-level CVE surface. The rolling tag pulls the latest 3.13.x
+# patch (currently 3.13.15). Pin to a digest for reproducible builds when
+# needed; the rolling tag is intentional here so that `apt-get -y upgrade`
+# in the runtime stage and image rebuilds pick up Debian security fixes.
+# Issue #6112: documented base image posture for security scan reconciliation.
+#
 # Build stage
 FROM public.ecr.aws/docker/library/python:3.13-slim AS builder
 WORKDIR /app

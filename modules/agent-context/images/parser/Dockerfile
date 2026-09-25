@@ -18,11 +18,11 @@
 FROM python:3.13-slim AS parser
 
 # Install system dependencies for SCIP indexers
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
         git \
         curl \
         ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x (for scip-python and scip-typescript)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -35,16 +35,16 @@ RUN npm install -g \
         @sourcegraph/scip-typescript@0.4.0 \
     && npm cache clean --force
 
-# Install Go 1.25.4 and scip-go
-RUN curl -fsSL https://go.dev/dl/go1.25.4.linux-amd64.tar.gz \
+# Install Go 1.26.8 and scip-go (#6122)
+RUN curl -fsSL https://go.dev/dl/go1.26.8.linux-amd64.tar.gz \
     | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN GOBIN=/usr/local/bin go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7 \
     && rm -rf /root/go
 
-# Install Python dependencies — ONLY what the parser needs
+# Install Python dependencies — ONLY what the parser needs (#6122: pinned)
 RUN pip install --no-cache-dir \
-        "protobuf>=4.25.0" \
+        protobuf==5.29.6 \
     && pip cache purge
 
 # Verify NO credential-bearing packages are installed

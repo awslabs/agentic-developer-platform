@@ -3,11 +3,13 @@
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 root = Path(__file__).resolve().parents[1] / 'infra'
 blocks = '\n'.join(block for file in ('scaledjob-iam.tf', 'agent-authority-boundary.tf') for block in re.findall(r'^locals \{.*?^\}', (root / file).read_text(), re.S | re.M))
 values = {
+ 'var.task_tool_invoke_resources': json.dumps(json.loads(sys.argv[1]) if len(sys.argv) > 1 else []),
  # App outputs are provider-independent inputs, like the fixture resource ARNs below.
  'module.cyber.worker_browser_permissions': '[]',
  'local.domain_worker_artifact_resources': '["arn:aws:s3:::fixture-domain-artifacts/*"]',

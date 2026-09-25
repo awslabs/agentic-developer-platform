@@ -128,3 +128,10 @@ def test_reserved_terminal_slots_leave_usable_progress_budget() -> None:
     the store would refuse every progress event while reading as configured.
     """
     assert 0 < limits.RESERVED_TERMINAL_EVENT_SLOTS < limits.MAX_EVENTS_PER_TASK
+
+
+def test_task_duration_policy_ceiling_matches_contract():
+    from src.agentauth.task_service_policy import MAX_DURATION_MINUTES
+
+    contract = json.loads(CONTRACT.read_text())
+    assert MAX_DURATION_MINUTES == contract["lifetime"]["task_lifetime_minutes"]

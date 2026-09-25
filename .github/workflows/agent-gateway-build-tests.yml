@@ -7,6 +7,10 @@ on:
       - 'codebuild/bs-agent-gateway.yml'
       - 'platform/scripts/deploy-all.sh'
       - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
+      - 'platform/scripts/resolve-ecr-image.py'
+      - 'platform/scripts/tests/test_local_image_publication.py'
       - 'contracts/**'
       - 'platform/scripts/tests/test_agent_gateway_build_context.py'
       - 'modules/agent-factory/scripts/deploy-gateway.sh'
@@ -19,6 +23,10 @@ on:
       - 'codebuild/bs-agent-gateway.yml'
       - 'platform/scripts/deploy-all.sh'
       - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
+      - 'platform/scripts/resolve-ecr-image.py'
+      - 'platform/scripts/tests/test_local_image_publication.py'
       - 'contracts/**'
       - 'platform/scripts/tests/test_agent_gateway_build_context.py'
       - 'modules/agent-factory/scripts/deploy-gateway.sh'
@@ -79,3 +87,4 @@ jobs:
             sudo apt-get install -y zip
           fi
       - run: python -m unittest discover -s platform/scripts/tests -p test_agent_gateway_build_context.py -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_local_image_publication.py -v

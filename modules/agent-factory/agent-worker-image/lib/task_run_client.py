@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import base64
+import copy
+from datetime import datetime
 import json
 import os
+import re
+import threading
+import time
 from urllib.parse import urlparse
 
 import botocore.auth
@@ -15,6 +20,7 @@ from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from lib.run_identity import CONTROL_ENDPOINT_ENV, WORKLOAD_HEADER, read_workload_token
 
+CYBER_TOOLS_ENDPOINT_ENV = "ADP_CYBER_TOOLS_ENDPOINT"
 RUN_CREDENTIAL_HEADER = "X-Adp-Run-Credential"
 _MAX_RESPONSE_BYTES = 1024 * 1024
 _ACTIONS = frozenset(
@@ -25,6 +31,7 @@ _ACTIONS = frozenset(
         "turn",
         "model",
         "cyber",
+        "tool-authorize",
         "control",
         "artifact",
         "finalize",
@@ -85,7 +92,7 @@ def workload_identity(token: str | None = None) -> dict:
 class TaskRunClient:
     """Strict task-route client; credentials remain in the host process only."""
 
-    def __init__(self, *, timeout: int = 25) -> None:
+    def __init__(self, *, timeout: int = 25, clock=time.time) -> None:
         base = os.environ.get(CONTROL_ENDPOINT_ENV, "").rstrip("/")
         parsed = urlparse(base)
         if (
@@ -97,9 +104,43 @@ class TaskRunClient:
             or parsed.fragment
         ):
             raise TaskRunClientError("task service endpoint unavailable")
+        self._cyber_endpoint = os.environ.get(CYBER_TOOLS_ENDPOINT_ENV, "")
+        self._local_tools = {}
+        self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
+        self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
         self._base = base
         self._timeout = timeout
         self._run_credential: str | None = None
+        self._clock = clock
+        self._credential_lock = threading.RLock()
+        self._bootstrap_body = None
+        self._binding = None
+        self._credential_expiry = 0.0
+        self._deadline = 0.0
+        self._stopping = False
+
+    def _cyber_url(self) -> str:
+        endpoint = self._cyber_endpoint
+        try:
+            parsed = urlparse(endpoint)
+            valid = (
+                parsed.scheme == "https"
+                and bool(parsed.hostname)
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.port in (None, 443)
+                and not parsed.query
+                and not parsed.fragment
+                and "?" not in endpoint
+                and "#" not in endpoint
+                and not any(character.isspace() for character in endpoint)
+                and bool(re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*/tools/cyber", parsed.path))
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise TaskRunClientError("cyber tools endpoint unavailable")
+        return endpoint
 
     def _post(
         self,
@@ -108,12 +149,18 @@ class TaskRunClient:
         *,
         run_bound: bool,
         workload_token: str | None = None,
+        tool_endpoint: str | None = None,
     ) -> dict:
         if action not in _ACTIONS:
             raise TaskRunClientError("unsupported task operation")
+        if run_bound:
+            self._renew_for(action, body)
         if run_bound and not self._run_credential:
             raise TaskRunClientError("task run credential unavailable")
-        url = f"{self._base}/task/{action}"
+        # The target is selected only from host configuration, never a child
+        # operation body. Missing cyber service configuration must not fall back
+        # to the retired gateway domain broker route.
+        url = (tool_endpoint or self._cyber_url()) if action == "cyber" else f"{self._base}/task/{action}"
         data = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=action != "model").encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -146,7 +193,7 @@ class TaskRunClient:
                     stream=True,
                 ) as response:
                     if response.status_code >= 500:
-                        raise TaskRunClientUnavailable("task service outcome unavailable")
+                        raise TaskRunClientUnavailable(f"task {action} outcome unavailable (HTTP {response.status_code})")
                     expected_status = 201 if action == "artifact" and body.get("operation") != "read" else 200
                     if response.status_code != expected_status:
                         raise TaskRunClientError("task service refused operation")
@@ -169,19 +216,61 @@ class TaskRunClient:
         ):
             raise TaskRunClientUnavailable("task service unavailable") from None
 
-    def bootstrap(self, body: dict) -> dict:
+    def _accept_bootstrap(self, body, response, *, renewal):
+        try:
+            binding = {key: response[key] for key in
+                       ("task_id", "invocation_id", "generation", "persona", "deadline_at")}
+            if (response.get("schema_version") != "1.0"
+                    or binding["task_id"] != body["task_id"]
+                    or binding["invocation_id"] != body["invocation_id"]
+                    or type(binding["generation"]) is not int or binding["generation"] < 1
+                    or (renewal and binding != self._binding)):
+                raise ValueError("binding")
+            expiry_time = datetime.fromisoformat(response["run_credential_expires_at"].replace("Z", "+00:00"))
+            deadline_time = datetime.fromisoformat(binding["deadline_at"].replace("Z", "+00:00"))
+            if expiry_time.tzinfo is None or deadline_time.tzinfo is None:
+                raise ValueError("timezone")
+            expiry, deadline = expiry_time.timestamp(), deadline_time.timestamp()
+            credential = response["run_credential"]
+            now = self._clock()
+            if (not isinstance(credential, str) or not credential or
+                    not now < expiry <= min(deadline, now + 900)):
+                raise ValueError("expiry")
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise TaskRunClientError("invalid task bootstrap binding or expiry") from None
+        self._binding, self._deadline = binding, deadline
+        self._run_credential, self._credential_expiry = credential, expiry
+
+    def _bootstrap(self, body, *, renewal):
         token = read_workload_token()
-        response = self._post(
-            "bootstrap",
-            {**body, "workload": workload_identity(token)},
-            run_bound=False,
-            workload_token=token,
-        )
-        credential = response.get("run_credential")
-        if not isinstance(credential, str) or not credential:
-            raise TaskRunClientError("invalid task bootstrap response")
-        self._run_credential = credential
+        response = self._post("bootstrap", {**body, "workload": workload_identity(token)},
+                              run_bound=False, workload_token=token)
+        self._accept_bootstrap(body, response, renewal=renewal)
         return response
+
+    def bootstrap(self, body: dict) -> dict:
+        with self._credential_lock:
+            if self._stopping or (self._binding is not None and self._clock() >= self._deadline):
+                raise TaskRunClientError("task no longer admits credential renewal")
+            if self._bootstrap_body is not None and body != self._bootstrap_body:
+                raise TaskRunClientError("task bootstrap identity changed")
+            response = self._bootstrap(body, renewal=self._binding is not None)
+            self._bootstrap_body = copy.deepcopy(body)
+            return response
+
+    def _renew_for(self, action, body):
+        stop_only = (action == "tool-authorize" and body.get("cleanup") is True) or action == "control" or (action == "cyber" and body.get("operation") == "cancel_jobs") or (
+            action == "finalize" and body.get("outcome") != "completed")
+        if stop_only:
+            return
+        with self._credential_lock:
+            if self._bootstrap_body is None:
+                return
+            if self._stopping or self._clock() >= self._deadline:
+                raise TaskRunClientError("task no longer admits credential renewal")
+            if self._clock() < self._credential_expiry - 60:
+                return
+            self._bootstrap(self._bootstrap_body, renewal=True)
 
     def attempt(self, body: dict) -> dict:
         return self._post("attempt", body, run_bound=True)
@@ -195,11 +284,62 @@ class TaskRunClient:
     def model(self, body: dict) -> dict:
         return self._post("model", body, run_bound=True)
 
+    def tool(self, name: str, body: dict) -> dict:
+        # Exact host-configured registry. The child supplies a name, never a URL.
+        endpoint = self._tool_routes.get(name)
+        if isinstance(endpoint, str) and endpoint.startswith("local:"):
+            import importlib
+            target = endpoint.removeprefix("local:")
+            if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.]*", target):
+                raise TaskRunClientError("Invalid local tool handler")
+            if target not in self._local_tools:
+                module, factory = target.rsplit(".", 1)
+                self._local_tools[target] = getattr(importlib.import_module(module), factory)(self)
+            return self._local_tools[target].invoke(body)
+        if not isinstance(endpoint, str) or any(c.isspace() for c in endpoint):
+            raise TaskRunClientError("Tool is not configured")
+        try:
+            parsed = urlparse(endpoint)
+            valid = (parsed.scheme == "https" and parsed.hostname and not parsed.username
+                     and not parsed.password and parsed.port in (None, 443)
+                     and "?" not in endpoint and "#" not in endpoint
+                     and re.fullmatch(r"(?:/[A-Za-z0-9_-]+)+", parsed.path))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise TaskRunClientError("Tool endpoint unavailable")
+        return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
+
     def cyber(self, body: dict) -> dict:
-        return self._post("cyber", body, run_bound=True)
+        cleanup_receipts = []
+        if body.get("operation") == "cancel_jobs":
+            for name in self._tool_cleanup:
+                cleanup_receipts.append(self.tool(name, body))
+        receipt = self._post("cyber", body, run_bound=True)
+        for cleanup in cleanup_receipts:
+            if any(cleanup.get(key) != receipt.get(key) for key in ("schema_version", "task_id", "operation_id")):
+                raise TaskRunClientError("Tool cleanup identity differs")
+            if cleanup.get("operation_status") != "confirmed" or cleanup.get("result", {}).get("status") != "confirmed" or cleanup.get("result", {}).get("pending_jobs") != []:
+                return cleanup
+        return receipt
 
     def control(self, body: dict) -> dict:
-        return self._post("control", body, run_bound=True)
+        # A control read creates no model/tool work. Retry only its transient
+        # transport failures, keeping the same attempt/cursor and a 300ms total
+        # backoff. Refusals and exhausted reads still fail closed. In-flight
+        # model receipts remain owned by the host; never replay them here.
+        for attempt in range(3):
+            try:
+                response = self._post("control", body, run_bound=True)
+                break
+            except TaskRunClientUnavailable:
+                if attempt == 2:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
+        if response.get("cancel_requested") is True or response.get("attempt_valid") is False:
+            with self._credential_lock:
+                self._stopping = True
+        return response
 
     def artifact(self, body: dict) -> dict:
         return self._post("artifact", body, run_bound=True)
@@ -217,4 +357,8 @@ class TaskRunClient:
         )
 
     def clear_credential(self) -> None:
-        self._run_credential = None
+        with self._credential_lock:
+            self._run_credential = None
+            self._bootstrap_body = None
+            self._binding = None
+            self._stopping = True

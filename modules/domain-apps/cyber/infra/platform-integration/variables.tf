@@ -57,3 +57,19 @@ variable "browser_broker_enabled" {
   default     = true
   description = "Keep the legacy broker running until existing sessions drain; disable after native acceptance."
 }
+
+variable "tools_endpoint" {
+  type        = string
+  default     = ""
+  description = "Optional exact AWS_IAM cyber tools HTTPS route; empty leaves Task cyber calls unconfigured."
+  validation {
+    condition     = var.tools_endpoint == "" || can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9_-]+)*/tools/cyber$", var.tools_endpoint))
+    error_message = "tools_endpoint must be an HTTPS /tools/cyber endpoint without credentials, query, fragment or trailing slash."
+  }
+}
+
+variable "task_url_tools_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable URL tool routing after the Lambda and native Task worker pass acceptance."
+}

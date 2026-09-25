@@ -4,10 +4,10 @@ FROM public.ecr.aws/docker/library/python:3.13-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system dependencies + Debian security patches (#6122)
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Download Amazon RDS/Neptune CA bundle for TLS verification (#2224)
 RUN curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \

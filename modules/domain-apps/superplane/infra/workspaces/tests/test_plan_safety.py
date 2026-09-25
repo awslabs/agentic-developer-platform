@@ -1800,7 +1800,11 @@ def _genuine_network_context(plan, creating, networking):
         address = change["address"]
         detail = change["change"]
         expressions = {}
-        if address in {
+        if address == "aws_default_security_group.workspace[0]":
+            expressions["vpc_id"] = {
+                "references": ["aws_vpc.workspace[0].id", "aws_vpc.workspace"]
+            }
+        elif address in {
             "aws_security_group.cluster",
             "aws_security_group.private_sts[0]",
         }:
@@ -2193,6 +2197,15 @@ def _genuine_plan(*, creating: bool, networking: str = "owned") -> dict:
             },
         ),
         _change("aws_vpc.workspace[0]", actions, {**tags, **ident("vpc-0workspace")}),
+        _change(
+            "aws_default_security_group.workspace[0]",
+            actions,
+            {
+                **tags,
+                **ident("sg-0default"),
+                **({} if creating else {"vpc_id": "vpc-0workspace"}),
+            },
+        ),
         _change(
             "aws_internet_gateway.workspace[0]", actions, {**tags, **ident("igw-0ws")}
         ),
@@ -3491,3 +3504,72 @@ def test_non_network_imports_cannot_adopt_existing_resources(tmp_path, prefix):
     )
     change["change"]["importing"] = {"id": "pre-existing-resource"}
     _assert_denied(_run(_write(tmp_path, plan)), because="is being IMPORTED")
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["foreign_vpc", "supplied_mode", "unknown_foreign_reference", "missing_identity"],
+)
+def test_default_security_group_requires_owned_vpc_evidence(tmp_path, attack):
+    plan = _genuine_plan(creating=True)
+    group = next(
+        c
+        for c in plan["resource_changes"]
+        if c["address"] == "aws_default_security_group.workspace[0]"
+    )
+    if attack == "foreign_vpc":
+        group["change"]["after"]["vpc_id"] = "vpc-foreign"
+        group["change"]["after_unknown"] = {}
+    elif attack == "supplied_mode":
+        plan["variables"]["networking_mode"] = {"value": "supplied"}
+        plan["variables"]["supplied_vpc_id"] = {"value": "vpc-customer"}
+        group["change"]["after"]["vpc_id"] = "vpc-customer"
+        group["change"]["after_unknown"] = {}
+        entry = next(
+            c
+            for c in plan["configuration"]["root_module"]["resources"]
+            if c["address"] == "aws_default_security_group.workspace"
+        )
+        entry["expressions"]["vpc_id"] = {"references": ["local.vpc_id"]}
+    elif attack == "unknown_foreign_reference":
+        entry = next(
+            c
+            for c in plan["configuration"]["root_module"]["resources"]
+            if c["address"] == "aws_default_security_group.workspace"
+        )
+        entry["expressions"]["vpc_id"] = {"references": ["data.aws_vpc.supplied[0].id"]}
+    else:
+        group["change"]["after"].pop("tags_all")
+    result = _run(_write(tmp_path, plan))
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "aws_default_security_group.workspace[0]" in combined
+    assert ("OrgId" if attack == "missing_identity" else "vpc_id") in combined
+
+
+def test_default_security_group_foreign_before_side_cannot_be_destroyed(tmp_path):
+    plan = _genuine_plan(creating=False)
+    group = next(
+        c
+        for c in plan["resource_changes"]
+        if c["address"] == "aws_default_security_group.workspace[0]"
+    )
+    group["change"]["before"]["vpc_id"] = "vpc-foreign"
+    result = _run(_write(tmp_path, plan), *_authorize(tmp_path, plan))
+    assert result.returncode != 0
+    assert "aws_default_security_group.workspace[0]" in result.stdout + result.stderr
+    assert "vpc_id" in result.stdout + result.stderr
+
+
+def test_default_security_group_import_requires_separate_migration(tmp_path):
+    plan = _genuine_plan(creating=True)
+    group = next(
+        c
+        for c in plan["resource_changes"]
+        if c["address"] == "aws_default_security_group.workspace[0]"
+    )
+    group["change"]["importing"] = {"id": "sg-0default"}
+    result = _run(_write(tmp_path, plan))
+    assert result.returncode != 0
+    assert "aws_default_security_group.workspace[0]" in result.stdout + result.stderr
+    assert "IMPORTED" in result.stdout + result.stderr

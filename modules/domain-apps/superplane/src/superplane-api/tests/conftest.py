@@ -139,6 +139,7 @@ async def _setup_db():
             t
             for t in Base.metadata.sorted_tables
             if not t.info.get("postgresql_bootstrap_journal")
+            and not t.info.get("postgresql_only")
         ]
         await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=tables))
     yield

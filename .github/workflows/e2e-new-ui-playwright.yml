@@ -79,7 +79,15 @@ jobs:
           aws-region: us-east-1
 
       - name: Resolve environment
-        run: echo "ENVIRONMENT=${{ github.event.inputs.environment || 'dev' }}" >> "$GITHUB_ENV"
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]]; then
+            echo "::error::environment must be a lowercase environment name"
+            exit 1
+          fi
+          printf 'ENVIRONMENT=%s\n' "$INPUT_ENVIRONMENT" >> "$GITHUB_ENV"
 
       # Must go through CloudFront, not the internal ALB: Playwright drives a
       # browser against the SPA and S3 is only reachable via the distribution
@@ -87,9 +95,11 @@ jobs:
       # CloudFront allowlist. Never hardcode the domain — a hardcoded one drifted
       # in the chat workflow and silently exercised a different account.
       - name: Resolve dashboard URL
+        env:
+          INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
         run: |
           set -euo pipefail
-          OVERRIDE="${{ github.event.inputs.cloudfront_url }}"
+          OVERRIDE="$INPUT_CLOUDFRONT_URL"
           if [ -n "$OVERRIDE" ]; then
             URL="$OVERRIDE"
             echo "Using dispatch override: $URL"
@@ -113,7 +123,11 @@ jobs:
             fi
             echo "Resolved from SSM: $URL"
           fi
-          echo "E2E_CLOUDFRONT_URL=${URL}" >> "$GITHUB_ENV"
+          if [[ "$URL" == *$'\n'* || "$URL" == *$'\r'* ]]; then
+            echo "::error::dashboard URL must be a single line"
+            exit 1
+          fi
+          printf 'E2E_CLOUDFRONT_URL=%s\n' "$URL" >> "$GITHUB_ENV"
 
       # tests/e2e/new_ui/conftest.py requires E2E_NEW_UI_EXPECTED_FLAG=on|off
       # explicitly (it raises pytest.UsageError without it) and then asserts the
@@ -125,9 +139,11 @@ jobs:
       # parameter reaches a running pod: the literal "true" enables the preview,
       # an absent parameter means disabled, and anything else is disabled too.
       - name: Resolve preview flag mode
+        env:
+          INPUT_EXPECTED_FLAG: ${{ github.event.inputs.expected_flag || 'auto' }}
         run: |
           set -euo pipefail
-          FORCED="${{ github.event.inputs.expected_flag || 'auto' }}"
+          FORCED="$INPUT_EXPECTED_FLAG"
           PARAM="/adp/${ENVIRONMENT}/gateway/feature-new-ui"
 
           if [ "$FORCED" = "on" ] || [ "$FORCED" = "off" ]; then

@@ -37,12 +37,26 @@ spec:
         app.kubernetes.io/part-of: agent-context-platform
         app.kubernetes.io/component: mcp-server
     spec:
+      # API token is unnecessary; IRSA uses its separate projected web-identity token.
+      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
+      # Pod-level security context (#6105 — pod security reconciliation).
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: context-mcp
         image: ${CONTEXT_MCP_IMAGE}
         securityContext:
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
+          privileged: false
+          capabilities:
+            drop: ["ALL"]
         ports:
         - containerPort: 5100
           name: http
@@ -80,6 +94,9 @@ spec:
               name: agent-context-gateway-callback
               key: internal-api-key
               optional: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             cpu: "250m"
@@ -110,6 +127,10 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 5
           failureThreshold: 5
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 256Mi
 ---
 apiVersion: v1
 kind: Service

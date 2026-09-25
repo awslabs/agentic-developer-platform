@@ -12,7 +12,10 @@
 import { resolveInstallationId } from './installation';
 
 const mockFetch = jest.fn();
-global.fetch = mockFetch as any;
+global.fetch = (async (...args: any[]) => {
+  const response = await mockFetch(...args);
+  return response.url === undefined ? { ...response, url: String(args[0]) } : response;
+}) as any;
 
 function jsonResponse(body: unknown, ok = true) {
   return { ok, status: ok ? 200 : 404, json: async () => body };
@@ -82,7 +85,7 @@ describe('resolveInstallationId', () => {
     await expect(resolveInstallationId('jwt')).resolves.not.toBe(String(FOREIGN_ID));
   });
 
-  it('uses installations[0] only as a last resort, and warns', async () => {
+  it('refuses without an owner instead of selecting an unrelated installation', async () => {
     // No owner and no explicit id — the only rung left.
     const log = jest.fn();
     mockFetch.mockImplementation(async (url: string) =>
@@ -91,11 +94,12 @@ describe('resolveInstallationId', () => {
         : jsonResponse({ message: 'Not Found' }, false)
     );
 
-    await expect(resolveInstallationId('jwt', { log })).resolves.toBe(String(FOREIGN_ID));
-    expect(log).toHaveBeenCalledWith('WARN', expect.stringContaining('last resort'));
+    await expect(resolveInstallationId('jwt', { log })).resolves.toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('WARN', expect.stringContaining('missing or malformed'));
   });
 
-  it('warns before falling back when an owner was set but unresolvable', async () => {
+  it('refuses when an owner was set but unresolvable', async () => {
     const log = jest.fn();
     process.env.REPO_OWNER = 'org-a';
     mockFetch.mockImplementation(async (url: string) =>
@@ -104,7 +108,8 @@ describe('resolveInstallationId', () => {
         : jsonResponse({ message: 'Not Found' }, false)
     );
 
-    await resolveInstallationId('jwt', { log });
+    await expect(resolveInstallationId('jwt', { log })).resolves.toBeNull();
+    expect(mockFetch.mock.calls.map(([url]) => String(url))).not.toContain('https://api.github.com/app/installations');
 
     expect(log).toHaveBeenCalledWith(
       'WARN',
@@ -168,18 +173,16 @@ describe('resolveInstallationId', () => {
 
       await resolveInstallationId('jwt', { log: jest.fn() });
 
-      // The owner rung is skipped entirely: the only call is the fallback.
-      for (const [requested] of mockFetch.mock.calls) {
-        expect(String(requested)).toBe('https://api.github.com/app/installations');
-      }
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('warns and falls back rather than failing when the owner is malformed', async () => {
+    it('refuses when the owner is malformed', async () => {
       const log = jest.fn();
       process.env.REPO_OWNER = '../..';
       mockFetch.mockImplementation(async () => jsonResponse(INSTALLATIONS));
 
-      await expect(resolveInstallationId('jwt', { log })).resolves.toBe(String(FOREIGN_ID));
+      await expect(resolveInstallationId('jwt', { log })).resolves.toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
       expect(log).toHaveBeenCalledWith('WARN', expect.stringContaining('malformed'));
     });
 
@@ -223,7 +226,7 @@ describe('resolveInstallationId', () => {
       const resolved = await resolveInstallationId('jwt', { log: jest.fn() });
 
       expect(resolved).not.toBe(String(FOREIGN_BODY_ID));
-      expect(resolved).toBe(String(FOREIGN_ID));
+      expect(resolved).toBeNull();
     });
 
     it('rejects a fallback listing delivered from another origin by redirect', async () => {
@@ -235,15 +238,47 @@ describe('resolveInstallationId', () => {
       await expect(resolveInstallationId('jwt', { log: jest.fn() })).resolves.toBeNull();
     });
 
-    it('accepts a same-origin redirect, as GitHub issues for renamed owners', async () => {
+    it('refuses even same-origin relocation; caller must provide the current owner', async () => {
       process.env.REPO_OWNER = 'org-a';
       mockFetch.mockImplementation(async () => ({
         ...jsonResponse({ id: OWN_ID }),
         // GitHub redirects /orgs/{old-name}/... to the current name.
-        url: 'https://api.github.com/orgs/org-a-renamed/installation',
+        url: 'https://api.github.com/orgs/org-a-renamed/installation', redirected: true,
       }));
 
-      await expect(resolveInstallationId('jwt')).resolves.toBe(String(OWN_ID));
+      await expect(resolveInstallationId('jwt')).resolves.toBeNull();
     });
+  });
+});
+
+describe('installation refusal boundaries', () => {
+  const originalEnv = { ...process.env };
+  beforeEach(() => {
+    mockFetch.mockReset();
+    delete process.env.GH_APP_INSTALLATION_ID;
+    delete process.env.REPO_OWNER;
+  });
+  afterEach(() => { process.env = { ...originalEnv }; });
+
+  it.each(['', '0', '-1', '../111', '111/access_tokens', '1.5'])('rejects malformed authoritative ID %j without discovery', async (installationId) => {
+    await expect(resolveInstallationId('synthetic-jwt', { installationId, owner: 'org-a', log: jest.fn() })).resolves.toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, '111', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('does not mint from malformed provider ID %j', async (id) => {
+    mockFetch.mockImplementation(async () => jsonResponse({ id }));
+    await expect(resolveInstallationId('synthetic-jwt', { owner: 'org-a', log: jest.fn() })).resolves.toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('requests redirect refusal before transport can contact a redirect target', async () => {
+    const redirectHop = jest.fn();
+    mockFetch.mockImplementation(async (_url: string, init: RequestInit) => {
+      if (init.redirect !== 'error') redirectHop();
+      throw new Error('synthetic redirect refusal');
+    });
+    await expect(resolveInstallationId('synthetic-jwt', { owner: 'org-a', log: jest.fn() })).resolves.toBeNull();
+    expect(redirectHop).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });

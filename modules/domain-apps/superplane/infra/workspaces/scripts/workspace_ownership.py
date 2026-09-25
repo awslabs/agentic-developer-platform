@@ -80,6 +80,10 @@ ALLOWED_RESOURCE_TYPES = frozenset(
         # --- Network (owned mode only; every one is gated on local.owns_network, which
         # ../tests/test_networking_modes.py enforces by type category).
         "aws_vpc",
+        # The default group is adoptable only inside this workspace's OWNED VPC.
+        # Its AWS name is always "default": identity tags and the typed VPC
+        # relationship below provide ownership, never the name or address alone.
+        "aws_default_security_group",
         "aws_subnet",
         "aws_internet_gateway",
         "aws_nat_gateway",
@@ -631,6 +635,7 @@ IDENTITY_FIELDS: dict[str, str] = {
 TAG_IDENTIFIED_TYPES = frozenset(
     {
         "aws_vpc",
+        "aws_default_security_group",
         "aws_subnet",
         "aws_internet_gateway",
         "aws_nat_gateway",
@@ -728,6 +733,7 @@ RELATIONSHIP_TARGET_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         "launch_template[].id": ("aws_launch_template",),
     },
     "aws_security_group": {"vpc_id": ("aws_vpc",)},
+    "aws_default_security_group": {"vpc_id": ("aws_vpc",)},
     "aws_vpc_endpoint": {
         "vpc_id": ("aws_vpc",),
         "subnet_ids[]": ("aws_subnet",),
@@ -1297,7 +1303,28 @@ def _check_relationship_targets(
                 "subnet_ids[]",
                 "vpc_config[].subnet_ids[]",
             )
-            if network_field:
+            if (
+                resource_type == "aws_default_security_group"
+                and target_field == "vpc_id"
+            ):
+                # Unlike an additive SG, adopting a default SG revokes existing
+                # rules. A supplied VPC is never a legitimate parent, even with
+                # matching workspace tags or a plausible local.vpc_id reference.
+                allowed = mode == "owned" and (
+                    allowed
+                    or (
+                        not known
+                        and computed
+                        and _created_target_reference(
+                            plan,
+                            address,
+                            target_field,
+                            permitted_types,
+                            valid_addresses,
+                        )
+                    )
+                )
+            elif network_field:
                 subnet = target_field != "vpc_id"
                 local_ref = "local.private_subnet_ids" if subnet else "local.vpc_id"
                 if mode == "supplied":

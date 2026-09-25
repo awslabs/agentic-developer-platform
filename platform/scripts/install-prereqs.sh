@@ -184,12 +184,26 @@ if [ "$INSTALL_ALL" = true ]; then
     install_tool "node" "node@22" "nodejs" "nodejs" "https://nodejs.org/" || FAILED=$((FAILED+1))
   fi
 
-  # Helm
+  # Pin the Helm installer implementation and verify it before execution.
+  # Its binary checksum check is also explicitly enabled below.
   if command -v helm &>/dev/null; then
     ok "helm already installed"
   else
     echo -e "${BLUE}Installing Helm...${NC}"
-    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && ok "Helm installed" || { warn "Helm install failed — install manually: https://helm.sh/docs/intro/install/"; }
+    HELM_INSTALLER_SHA256="08edc9569a7115a22fdc4ec164a653d072440ad14a8dbe51ca9b321c903c59a9"
+    HELM_INSTALLER=$(mktemp /tmp/get-helm-3.XXXXXX)
+    # shasum is available on macOS; sha256sum is the GNU/Linux equivalent.
+    HELM_HASH_COMMAND=(shasum -a 256)
+    if command -v sha256sum &>/dev/null; then
+      HELM_HASH_COMMAND=(sha256sum)
+    fi
+    if curl -fsSL https://raw.githubusercontent.com/helm/helm/d31cd6992fc7858922de6ebe5984a06fd6aa0b80/scripts/get-helm-3 -o "$HELM_INSTALLER" && \
+       printf '%s  %s\n' "$HELM_INSTALLER_SHA256" "$HELM_INSTALLER" | "${HELM_HASH_COMMAND[@]}" --check --status; then
+      VERIFY_CHECKSUM=true bash "$HELM_INSTALLER" && ok "Helm installed" || { warn "Helm install failed — install manually: https://helm.sh/docs/intro/install/"; }
+    else
+      warn "Helm installer download or checksum verification failed — install manually: https://helm.sh/docs/intro/install/"
+    fi
+    rm -f "$HELM_INSTALLER"
   fi
 fi
 

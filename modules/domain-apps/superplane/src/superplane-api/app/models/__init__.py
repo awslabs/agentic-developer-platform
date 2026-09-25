@@ -48,3 +48,10 @@ from app.models.operation_approval import OperationApproval, OperationSettlement
 from app.models.controller_execution import ControllerExecution  # noqa: F401
 
 from app.models.controller_deployment import ControllerDeploymentOperation  # noqa: F401
+
+from app.models.controller_network import (  # noqa: F401
+    ControllerNetworkCompletion,
+    ControllerNetworkResource,
+    ControllerNetworkMember,
+    ControllerNetworkEffect,
+)

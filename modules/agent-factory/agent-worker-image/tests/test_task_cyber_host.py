@@ -136,3 +136,27 @@ def test_broker_confirmation_requires_bound_durable_receipt(assignment_and_boots
     host = TaskHost(client=client)
     with pytest.raises(TaskRunClientError):
         host._cyber(assignment, host._binding(assignment, str(uuid.uuid4())), frame(assignment.task_id, 'cyber.request', operation='enrich', payload={'sha256': 'a'*64}))
+
+
+def test_only_sdk_model_admission_requests_autonomous_turns(assignment_and_bootstrap):
+    assignment, _, bootstrap = assignment_and_bootstrap
+    client = FakeClient(bootstrap, [])
+    requests = []
+    original = client.turn
+    def turn(body):
+        requests.append(body)
+        return original(body)
+    client.turn = turn
+    host = TaskHost(client=client)
+    bound = host._binding(assignment, str(uuid.uuid4()))
+    # Input delivery retains the explicit caller-command contract.
+    host._turn(assignment, bound, str(uuid.uuid4()))
+    assert 'allow_autonomous' not in requests[-1]
+    sdk = frame(assignment.task_id, 'model.request', turn_id=str(uuid.uuid4()), max_tokens=32,
+                sdk_request={'messages':[{'role':'user','content':'continue tool analysis'}]})
+    host._model_request(assignment, bound, sdk, 32)
+    assert requests[-1]['allow_autonomous'] is True
+    legacy = frame(assignment.task_id, 'model.request', turn_id=str(uuid.uuid4()), max_tokens=32,
+                   messages=[{'role':'user','content':'investigator input'}])
+    host._model_request(assignment, bound, legacy, 32)
+    assert 'allow_autonomous' not in requests[-1]

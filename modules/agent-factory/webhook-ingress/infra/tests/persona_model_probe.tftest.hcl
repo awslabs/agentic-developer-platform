@@ -146,3 +146,14 @@ run "explicit_enable_only_unsuspends_scheduler" {
   }
 
 }
+
+# Supply an explicit mock release; empty/mutable inputs are rejected before plan.
+variables {
+  agent_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+override_data {
+  target          = data.aws_ssm_parameter.gateway_apigw_invoke_url
+  override_during = plan
+  values          = { value = "https://example123.execute-api.us-east-1.amazonaws.com/dev" }
+}

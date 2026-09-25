@@ -219,11 +219,11 @@ class BootstrapAuthorityFactory:
         self._resolved.append(clients)
         backend = BootstrapGrantBackend(clients, self.release, state_store)
         backend.resolve_observation = self.resolve_observation
-        clients.installer_access.tenant_identity_reader = (
-            lambda: backend.tenant_principals(temporary=True)
+        clients.installer_access.tenant_identity_reader = lambda: (
+            backend.tenant_principals(temporary=True)
         )
-        clients.supervisor_access.tenant_identity_reader = (
-            lambda: backend.tenant_principals()
+        clients.supervisor_access.tenant_identity_reader = lambda: (
+            backend.tenant_principals()
         )
         return backend
 

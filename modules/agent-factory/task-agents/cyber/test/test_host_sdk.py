@@ -7,18 +7,30 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+
+import boto3
+from moto import mock_aws
 
 import pytest
 
 FACTORY = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(FACTORY / 'agent-worker-image' / 'tests'))
-import test_task_host
-from test_task_host import FakeClient, FakeHeartbeat
-from lib.task_host import TaskHost, _canonical_digest
+import test_task_host  # noqa: E402 - repository fixture imports need the paths above
+from test_task_host import FakeClient, FakeHeartbeat  # noqa: E402 - repository fixture imports need the paths above
+from lib.task_host import TaskHost, _canonical_digest  # noqa: E402 - repository fixture imports need the paths above
+
+# Use the real gateway turn state machine. A client that always returns a
+# committed turn masks SDK autonomous continuation failures after the first tool.
+sys.path.insert(0, str(FACTORY.parents[1] / 'modules/gateway'))
+from src.agentauth.task_turns import TaskTurnStore  # noqa: E402 - repository fixture imports need the paths above
+from src.tasks.store import _serialize, _deserialize  # noqa: E402 - repository fixture imports need the paths above
+from src.tasks.records import task_partition  # noqa: E402 - repository fixture imports need the paths above
 
 assignment_and_bootstrap = test_task_host.assignment_and_bootstrap
 
 
+@mock_aws
 @pytest.mark.parametrize('unknown_model', [False, True])
 def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assignment_and_bootstrap, unknown_model):
     assignment, envelope, bootstrap = assignment_and_bootstrap
@@ -27,6 +39,26 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
     bootstrap['input']['inputs'] = {'url': 'https://example.com'}
     bootstrap['limits']['max_turns'] = 6
     events = []
+    ddb = boto3.client('dynamodb', region_name='us-east-1')
+    ddb.create_table(TableName='sdk-turns', BillingMode='PAY_PER_REQUEST',
+        KeySchema=[{'AttributeName':'event_id','KeyType':'HASH'},{'AttributeName':'arrived_at','KeyType':'RANGE'}],
+        AttributeDefinitions=[{'AttributeName':'event_id','AttributeType':'S'},{'AttributeName':'arrived_at','AttributeType':'S'}])
+    class Repository:
+        table_name = 'sdk-turns'
+        _client = ddb
+        def read_task(self, task_id):
+            row = ddb.get_item(TableName=self.table_name, Key=_serialize({'event_id':task_partition(task_id),'arrived_at':'META'}), ConsistentRead=True)
+            return _deserialize(row['Item'])
+        def resolve_work(self, dispatch_id, **kwargs):
+            assert dispatch_id == 'fixture-dispatch'
+        def _get_authority(self, *args):
+            return {'limits':bootstrap['limits']}
+        def read_commands(self, **kwargs):
+            return []
+        def _authority_condition_checks(self, **kwargs):
+            return []  # Authenticated fake client owns this test's fixed authority.
+    repository = Repository()
+    turns = TaskTurnStore(repository)
     artifact_id = 'art_' + str(uuid.uuid4())
     report = {'summary': 'URL analysis returned a scripted observation.',
               'findings': [{'statement': 'Scripted backend found no malicious behavior.', 'evidence_refs': [artifact_id]}],
@@ -36,6 +68,24 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
     class Client(FakeClient):
         model_bodies = []
         artifact_bodies = []
+        turn_requests = []
+
+        def attempt(self, body):
+            self.identity = SimpleNamespace(task_id=assignment.task_id, invocation_id=assignment.invocation_id,
+                generation=assignment.generation, runtime_attempt_id=body['runtime_attempt_id'], tenant='test')
+            task = {'event_id':task_partition(assignment.task_id),'arrived_at':'META','task_id':assignment.task_id,
+                'invocation_id':assignment.invocation_id,'generation':assignment.generation,
+                'runtime_attempt_id':body['runtime_attempt_id'],'scope':{'tenant':'test','canonical_principal':'test'},
+                'persona':'agent-task-cyber','dispatch_id':'fixture-dispatch','state':'running','turn_count':0,
+                'version':1,'event_sequence':1,'deadline_at':bootstrap['deadline_at']}
+            ddb.put_item(TableName=repository.table_name,Item=_serialize(task))
+            return super().attempt(body)
+
+        def turn(self, body):
+            self.turn_requests.append(body)
+            return turns.commit(identity=self.identity, request_id=body['request_id'],
+                expected_transcript_version=body['expected_transcript_version'],
+                allow_autonomous=body.get('allow_autonomous',False))
 
         def model(self, body):
             self.model_bodies.append(body)
@@ -61,6 +111,9 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
                     'stop_reason': 'tool_use' if number < 3 else 'end_turn',
                     'usage': {'input_tokens': 100, 'output_tokens': 30}}
 
+        def tool(self, name, body):
+            assert name == "cyber." + body["operation"]
+            return self.cyber(body)
         def cyber(self, body):
             events.append('cyber:' + body['operation'])
             base = {'schema_version': '1.0', 'task_id': assignment.task_id,
@@ -93,6 +146,9 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
         return
     assert exit_code == 0, (events, client.finalize_body, client.settlements)
     assert len(client.model_bodies) == 3
+    assert len(turns.list_turns(assignment.task_id)) == 3
+    assert all(request['allow_autonomous'] is True for request in client.turn_requests)
+    assert all(turn['command_ids'] == [] for turn in turns.list_turns(assignment.task_id))
     assert events.count('cyber:url_analysis') == 1
     assert events.count('cyber:cancel_jobs') == 1
     assert events.index('cyber:cancel_jobs') < events.index('finalize:completed') < events.index('ack')

@@ -158,6 +158,7 @@ class TurnBody(BaseModel):
     attempt: TaskAttemptBody
     request_id: str = Field(pattern=UUID4)
     expected_transcript_version: int = Field(ge=1, strict=True)
+    allow_autonomous: bool = Field(default=False, strict=True)
 
 
 def require_body_attempt(identity, attempt):
@@ -182,6 +183,7 @@ async def turn(body: TurnBody, request: Request, runtime=Depends(get_agent_runti
             identity=identity,
             request_id=body.request_id,
             expected_transcript_version=body.expected_transcript_version,
+            allow_autonomous=body.allow_autonomous,
         )
     except (TaskStoreError, WorkBindingError):
         raise HTTPException(409, "task turn refused") from None
@@ -207,11 +209,35 @@ class ModelToolUse(BaseModel):
     input: dict
 
 
+class ModelImageSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["base64"]
+    media_type: Literal["image/jpeg", "image/png"]
+    data: str = Field(min_length=1, max_length=16384)
+
+    @model_validator(mode="after")
+    def valid_image(self):
+        import base64
+
+        raw = base64.b64decode(self.data, validate=True)
+        if not 0 < len(raw) <= 12000 or not (
+            raw.startswith(b"\xff\xd8\xff") if self.media_type == "image/jpeg" else raw.startswith(b"\x89PNG\r\n\x1a\n")
+        ):
+            raise ValueError("Invalid bounded image preview")
+        return self
+
+
+class ModelImage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["image"]
+    source: ModelImageSource
+
+
 class ModelToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["tool_result"]
     tool_use_id: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
-    content: str | list[ModelText] = Field(max_length=32000)
+    content: str | list[ModelText | ModelImage] = Field(max_length=32000)
     is_error: bool | None = Field(default=None, strict=True)
 
 
@@ -260,7 +286,7 @@ class SdkToolChoice(BaseModel):
 
 
 class SdkRequest(BaseModel):
-    """Custom tools only; no server tools, URLs, media, credentials or model override."""
+    """Custom tools only; no server tools, remote media URLs, credentials or model override."""
 
     model_config = ConfigDict(extra="forbid")
     messages: list[SdkMessage] = Field(min_length=1, max_length=32)

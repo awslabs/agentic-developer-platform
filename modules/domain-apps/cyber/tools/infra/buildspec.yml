@@ -1,0 +1,17 @@
+version: 0.2
+# Use an explicitly provisioned trusted build project with Docker and ECR push
+# access to CYBER_TOOLS_ECR_REPOSITORY only. Checkout must be reviewed source.
+env:
+  shell: bash
+phases:
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        image_record=$(mktemp)
+        trap 'rm -f "$image_record"' EXIT
+        bash modules/domain-apps/cyber/tools/infra/build-image.sh "$CYBER_TOOLS_ECR_REPOSITORY" --push | tee "$image_record"
+        cp "$image_record" cyber-tools-image.txt
+artifacts:
+  files:
+    - cyber-tools-image.txt

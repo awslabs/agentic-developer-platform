@@ -90,3 +90,24 @@ def test_route_request_forms_are_exclusive_and_digest_covers_sdk():
     for extra in ({"system": "outside SDK"}, {"messages": [{"role": "user", "content": [{"type": "text", "text": "ambiguous"}]}]}):
         with pytest.raises(ValidationError):
             ModelBody.model_validate({**body, **extra})
+
+
+def test_sdk_accepts_bounded_inline_image_but_never_remote_image_urls():
+    import base64
+
+    from pydantic import ValidationError
+
+    from src.agentauth.task_runtime_routes import SdkRequest
+
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(b"\xff\xd8\xfffixture").decode()}}
+
+    def request(value):
+        return SdkRequest.model_validate(
+            {"messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [value]}]}]}
+        )
+
+    assert request(image).messages[0].content[0].content[0].source.media_type == "image/jpeg"
+    with pytest.raises(ValidationError):
+        request({"type": "image", "source": {"type": "url", "url": "https://untrusted.example/image"}})
+    with pytest.raises(ValidationError):
+        request({"type": "image", "source": {**image["source"], "data": base64.b64encode(b"\xff\xd8\xff" + b"a" * 12000).decode()}})
