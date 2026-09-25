@@ -1355,3 +1355,30 @@ def test_result_artifact_rejects_oversize_before_upload(assignment_and_bootstrap
     with pytest.raises(TaskProtocolError, match="fixed bound"):
         TaskHost(client=FakeClient(bootstrap, events))._result_artifact(assignment, {"summary": "x" * 1048576})
     assert events == []
+
+
+@pytest.mark.parametrize("exit_code,include_result", [(0, True), (7, True), (0, False)])
+def test_closed_child_input_does_not_discard_buffered_result(
+    tmp_path, monkeypatch, assignment_and_bootstrap, exit_code, include_result
+):
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    events = []
+    client = FakeClient(bootstrap, events)
+    executable = child_script(tmp_path)
+    source = executable.read_text().replace(
+        "for index in range(2):", "os.close(0)\nfor index in range(2):"
+    ).replace("    assert json.loads(sys.stdin.readline())['type'] == 'report.ack'", "")
+    if not include_result:
+        source = source.replace("result = base('result'); result['report'] = report; send(result)", "")
+    executable.write_text(source + f"\nsys.exit({exit_code})\n")
+    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": "fixture", "namespace": "test"})
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda _: [sys.executable, str(executable)])
+    code = host.run(assignment, envelope, heartbeat=FakeHeartbeat(events), acknowledge=lambda: events.append("ack"))
+    expected = "completed" if exit_code == 0 and include_result else "failed"
+    assert code == (0 if expected == "completed" else TASK_EXIT_FAILED)
+    assert client.finalize_body["outcome"] == expected
+    assert sum(e.startswith("report:") for e in events) == 2
+    if expected == "completed":
+        assert events.index("artifact") < events.index("finalize:completed") < events.index("ack")
+    else:
+        assert "artifact" not in events
