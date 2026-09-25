@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import html
+import re
 
 
 def esc(value):
@@ -10,6 +11,19 @@ def esc(value):
 
 
 def render_report(*, report, context):
+    summary = report.get("summary", "No verdict supplied.")
+    # Only promote an explicit leading verdict; never infer safety from prose.
+    match = re.match(
+        r"^\s*Verdict\s*:\s*(no malicious behavior observed|malicious|suspicious|inconclusive)(?=\s|[.,;:!]|$)",
+        summary,
+        re.IGNORECASE,
+    )
+    verdict = match.group(1).upper() if match else "VERDICT NOT SPECIFIED"
+    tone = {
+        "MALICIOUS": "danger",
+        "SUSPICIOUS": "warning",
+        "NO MALICIOUS BEHAVIOR OBSERVED": "clear",
+    }.get(verdict, "neutral")
     steps = context.get("steps", [])
     refs = {}
     for step in steps:
@@ -159,16 +173,16 @@ def render_report(*, report, context):
         limitations.append(
             "No additional limitations were supplied by the investigator. This does not establish complete coverage."
         )
-    css = """*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:#172b3a;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1120px;margin:32px auto;padding:0 24px}header{background:#102c3b;color:#fff;padding:40px;border-radius:20px}h1{font-size:32px;line-height:1.2;overflow-wrap:anywhere}h2{font-size:25px;line-height:1.3;margin:4px 0 18px}h3{font-size:18px}.eyebrow{font-size:12px;font-weight:800;letter-spacing:2px;color:#36766f}header .eyebrow{color:#8ddbc8}.meta{font-size:13px;opacity:.8;overflow-wrap:anywhere}nav{display:flex;gap:20px;flex-wrap:wrap;padding:20px 0}a{color:#176656}section{background:#fff;border:1px solid #dbe3e9;border-radius:16px;padding:30px;margin:0 0 22px}#verdict{border-top:5px solid #267c70}.verdict{font-size:19px}.muted,figcaption{color:#586a77;font-size:13px}.findings{padding-left:22px}.findings li{padding:8px 0;border-bottom:1px solid #edf0f3}.findings p{margin:0}.cite{font-size:12px;font-weight:700;background:#e7f3ef;padding:2px 6px;border-radius:5px;text-decoration:none}.notice{background:#fff4dd;padding:12px;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:#586a77}td,th{padding:12px 9px;border-bottom:1px solid #dfe6ec;vertical-align:top}.url,code{overflow-wrap:anywhere;word-break:break-word}.table-wrap{overflow-x:auto}figure{margin:24px 0}img{max-width:100%;height:auto;display:block;border:1px solid #dae2e8;border-radius:10px}figcaption{margin-top:8px}details{margin:14px 0;padding:14px;background:#f6f8fa;border-radius:8px}summary{cursor:pointer;font-weight:600}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace}footer{color:#586a77;font-size:12px;padding:15px 0 35px}@media(max-width:640px){main{padding:0 12px}header,section{padding:22px}h1{font-size:26px}}@media print{body{background:#fff}main{max-width:none;margin:0;padding:0}section,header{break-inside:avoid;border-radius:0}nav{display:none}details{display:block}a{color:inherit}header{color:#172b3a;background:#fff;border-bottom:3px solid #267c70}}"""
+    css = """*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:#172b3a;font:16px/1.65 system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1120px;margin:32px auto;padding:0 24px}header{background:#102c3b;color:#fff;padding:40px;border-radius:20px}h1{font-size:32px;line-height:1.2;overflow-wrap:anywhere}h2{font-size:25px;line-height:1.3;margin:4px 0 18px}h3{font-size:18px}.eyebrow{font-size:12px;font-weight:800;letter-spacing:2px;color:#36766f}header .eyebrow{color:#8ddbc8}.meta{font-size:13px;opacity:.8;overflow-wrap:anywhere}nav{display:flex;gap:20px;flex-wrap:wrap;padding:20px 0}a{color:#176656}section{background:#fff;border:1px solid #dbe3e9;border-radius:16px;padding:30px;margin:0 0 22px}#verdict{border-top:5px solid #267c70}.verdict-banner{padding:24px;border-radius:12px;margin-bottom:24px;background:#edf1f5;color:#263d50;border-left:6px solid currentColor}.verdict-label{font-size:12px;font-weight:800;letter-spacing:2px}.verdict-banner h2{font-size:clamp(26px,4vw,40px);line-height:1.15;margin:10px 0 0;overflow-wrap:anywhere}.verdict-banner.danger{background:#fff0ef;color:#a52020}.verdict-banner.warning{background:#fff4db;color:#805000}.verdict-banner.clear{background:#e8f5ee;color:#185c3d}.subject{font-size:23px;margin:8px 0 20px;overflow-wrap:anywhere}.verdict{font-size:17px}.muted,figcaption{color:#586a77;font-size:13px}.findings{padding-left:22px}.findings li{padding:8px 0;border-bottom:1px solid #edf0f3}.findings p{margin:0}.cite{font-size:12px;font-weight:700;background:#e7f3ef;padding:2px 6px;border-radius:5px;text-decoration:none}.notice{background:#fff4dd;padding:12px;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:#586a77}td,th{padding:12px 9px;border-bottom:1px solid #dfe6ec;vertical-align:top}.url,code{overflow-wrap:anywhere;word-break:break-word}.table-wrap{overflow-x:auto}figure{margin:24px 0}img{max-width:100%;height:auto;display:block;border:1px solid #dae2e8;border-radius:10px}figcaption{margin-top:8px}details{margin:14px 0;padding:14px;background:#f6f8fa;border-radius:8px}summary{cursor:pointer;font-weight:600}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace}footer{color:#586a77;font-size:12px;padding:15px 0 35px}@media(max-width:640px){main{padding:0 12px}header,section{padding:22px}h1{font-size:26px}}@media print{body{background:#fff}main{max-width:none;margin:0;padding:0}section,header{break-inside:avoid;border-radius:0}nav{display:none}details{display:block}a{color:inherit}header{color:#172b3a;background:#fff;border-bottom:3px solid #267c70}}"""
     document = [
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
         "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">",
-        "<title>Domain investigation report</title><style>",
+        "<title>DOMAIN MRI</title><style>",
         css,
         "</style></head><body><main>",
-        f'<header><div class="eyebrow">CYBER · DOMAIN INVESTIGATION</div><h1>{esc(subject)}</h1><div class="meta">Task {esc(context.get("task_id", ""))}<br>Investigation started {esc(context.get("started_at", ""))} · timestamps in UTC</div></header>',
+        f'<header><h1>DOMAIN MRI</h1><p class="subject">{esc(subject)}</p><div class="meta">Task {esc(context.get("task_id", ""))}<br>Investigation started {esc(context.get("started_at", ""))} · timestamps in UTC</div></header>',
         '<nav aria-label="Report sections"><a href="#verdict">Verdict</a><a href="#archive">Common Crawl</a><a href="#browser">Live browsing</a><a href="#steps">Investigation steps</a><a href="#coverage">Coverage</a><a href="#evidence">Evidence index</a></nav>',
-        f'<section id="verdict"><div class="eyebrow">ASSESSMENT</div><h2>Verdict and rationale</h2><p class="verdict">{esc(report.get("summary", "No verdict supplied."))}</p><h3>Evidence supporting the assessment</h3><ul class="findings">',
+        f'<section id="verdict"><div class="verdict-banner {tone}"><div class="verdict-label">VERDICT</div><h2>{esc(verdict)}</h2></div><h3>Reasoning and confidence</h3><p class="verdict">{esc(summary)}</p><h3>Evidence supporting the assessment</h3><ul class="findings">',
         "".join(map(finding, report.get("findings", []))),
         '</ul><p class="muted">The assessment reflects the recorded evidence and stated coverage. Confidence is shown per finding.</p></section>',
         source_section(
