@@ -1,5 +1,5 @@
 {
-  "at": "2026-09-25T06:10:28.767396+00:00",
+  "at": "2026-09-25T06:21:05.315517+00:00",
   "account_id": "879318057152",
   "api_id": "59o2rakc50",
   "stage": "dev",
@@ -58,8 +58,8 @@
     "desired": 9,
     "ready": 9,
     "updated": 9,
-    "generation": 1703,
-    "observed_generation": 1703,
+    "generation": 1706,
+    "observed_generation": 1706,
     "task_settings": {
       "ADP_TASK_ADMISSION_PRODUCER_ROLES": "arn:aws:iam::879318057152:role/adp-dev-webhook-lambda-role",
       "ADP_TASK_API_ADMISSION_ENABLED": "true",
@@ -76,6 +76,129 @@
       "BG_REDIS_IAM_AUTH": "true",
       "BG_REDIS_USERNAME": "bedrockgw-dev-iam-user",
       "TASK_ARTIFACT_BUCKET_NAME": "adp-dev-chat-artifacts-879318057152"
+    },
+    "exact_pod_cohort": {
+      "at": "2026-09-25T06:21:52.358463+00:00",
+      "all_nine_ready_on_qualified_image": true,
+      "pods": [
+        {
+          "pod": "bedrockgateway-798cf4f444-2mmwv",
+          "uid": "1eb42fd6-02c8-4ccf-91e9-447e3f5caa05",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-9cbqh",
+          "uid": "5b0abf2f-a95e-4c43-b5d7-4cc943bf3180",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-gvj6s",
+          "uid": "c4e30045-68a7-4c17-9721-9700f39910f9",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-lbbbb",
+          "uid": "e012eb41-277d-4fc6-beb0-4e5f63839a7e",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-lf647",
+          "uid": "25bda03b-4377-45ee-bd22-0093673be3aa",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-ln62h",
+          "uid": "2b3576d8-0ad5-4563-af45-f6464f486719",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-nbhtp",
+          "uid": "7c0a75bb-1e85-4981-85fe-8a3e8b16a1d5",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-pfchs",
+          "uid": "50a11554-a517-4ec8-87bc-6d7238882737",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        },
+        {
+          "pod": "bedrockgateway-798cf4f444-qtf57",
+          "uid": "d3da946e-c9de-4917-937d-b29fe17d7dac",
+          "deleting": false,
+          "phase": "Running",
+          "containers": [
+            {
+              "name": "bedrockgateway",
+              "ready": true,
+              "image_id": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260"
+            }
+          ]
+        }
+      ]
     }
   }
 }

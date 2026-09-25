@@ -25,5 +25,7 @@
     "registration_tests_passed": 5,
     "matrix_cells_matching_pass_reports": 40,
     "frozen_report_integrity": "V1, V2, V3, V4 and V5 PASS"
-  }
+  },
+  "final_parity_at": "2026-09-25T06:21:52.358463+00:00",
+  "final_parity": "All nine gateway pods ready, non-deleting and actually running fddd; competing unqualified image drift was restored before final acceptance."
 }

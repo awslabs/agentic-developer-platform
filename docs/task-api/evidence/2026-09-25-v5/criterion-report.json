@@ -2,7 +2,7 @@
   "evaluation": "V5 #5806",
   "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
   "evaluator": "runtime_contracts independent operations review",
-  "at": "2026-09-25T06:18:55.139213+00:00",
+  "at": "2026-09-25T06:21:52.358463+00:00",
   "criteria": {
     "V5-01": {
       "status": "PASS",
@@ -66,7 +66,7 @@
   "artifact_sha256": {
     "retained-task-metadata.json": "a9ae7e0db0fb1473afcae36e9973a0f16852a96cf214d951d7cafadf8800d46b",
     "cleanup-retention-inventory.json": "9ec23665d7bc93983a1bd1878df9c7421deadcea5f0029908e4b21f026e85490",
-    "final-bindings.json": "787e82408a7761e2b1aa22465badfca5f40f7f850af0ce35bb5897629366bff2",
+    "final-bindings.json": "fd4bc9c1bccaee4167fd1953f25830ccb2f2c0f18193d720e2ea605dfaf6cd4b",
     "README.md": "e9d6f8e84a41f84f8b8f071d41e166974c87b44ee825dc1ba5a69cf8d8207326",
     "consumer-boundary.json": "a77aad87c23d885097a44ec9038b041758e7d295ba89a1f038b5c3aee26713a5",
     "admission-off-active.json": "59c72ef88a912e7fa57625bdcddc6f90319e5f411f562a482291f2b9c09816fc",
@@ -79,6 +79,6 @@
     "credential-retention.json": "2072c74eef2021917f4436e9c4c2f9f733ead89b102bfca06af25fee82fd3cfb",
     "admission-off-completed.json": "8fee8ee496ff76a65debf6f089083b04a8e93d662c8c4940384df1a83e63d1bb",
     "prior-active-drain.json": "8617492d75f2c9526e1e79380a99ab4c7792d64de5ed236244408a18675e1289",
-    "release-acceptance.json": "b9d59888e39a370f395c0920e276e1394f3391a007b748cf753a5715cfeacbbe"
+    "release-acceptance.json": "009a34fa5eded3b95b389961a1fed5ac3075ba5a9b920c15f2732962fc7757a4"
   }
 }
