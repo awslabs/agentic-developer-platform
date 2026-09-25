@@ -42,7 +42,8 @@ organization policy, provider compatibility, available capacity and approved bud
 | --- | --- |
 | ADP identity/gateway, workspace preview/approval, AWS managed/adopted workspace lifecycle, protected worker and provider inventory | Implemented source paths exist; a particular installation must prove configured readiness. |
 | AWS regional SkyPilot allocation, pre-create binding checks, durable regional resource identity | #5925 merged in [PR #5968](https://github.com/aws-e/adp/pull/5968), with code-only CI evidence. |
-| Complete AWS cross-region connectivity, GPU join, recovery, issue workflow and exact live demonstration | #5926–#5930 remain delivery/acceptance work; existing pieces do not establish end-to-end completion. |
+| AWS private connectivity | #5926 merged in [PR #6162](https://github.com/aws-e/adp/pull/6162), with code-only CI evidence; live topology acceptance remains required. |
+| Complete GPU join, recovery, issue workflow and exact live demonstration | #5927–#5930 remain delivery/acceptance work; existing pieces do not establish end-to-end completion. |
 | Explicit same-organization shared-cluster creation and lifecycle | Accepted requirement, implementation pending in #6048. Existing schema fields alone do not implement it. |
 | Concurrent regional data-plane clusters composed with cross-region GPU workers | Required in #6054; existing per-workspace infrastructure is a starting point, not sufficient composed acceptance. |
 | Non-AWS GPU workers joining AWS EKS | Required hybrid topology; historical Nebius-to-EKS evidence exists, but maintained governed execution and live acceptance remain pending. |
@@ -50,10 +51,12 @@ organization policy, provider compatibility, available capacity and approved bud
 
 The shared-placement reservation adapter now participates in the API workspace
 transaction, and the worker validates immutable membership before any credential
-delivery or provider effects. Creation preview remains unavailable: namespace
-admission, cluster-owned bootstrap delegation and renewable Kubernetes credential
-issuance/projection are not yet composed. The static bootstrap credential reference
-is registration metadata, not evidence of credential delivery. Dedicated retirement
+delivery or provider effects. Namespace admission, membership-scoped bootstrap delegation, journalled credential
+issuance/projection and an installed renewal controller have source implementations.
+Creation preview and production shared runtime remain unavailable pending protected
+management-projector session delivery, original-authority recovery dispatch,
+membership-only retirement, current ADP identity/grant enforcement and separate
+cluster observation. Registration metadata alone is not credential-delivery proof. Dedicated retirement
 refuses clusters open for sharing or holding live peers; membership reservation
 also refuses clusters whose original owner has entered retirement. Completing
 member-only retirement requires its own scoped ownership inventory.
@@ -116,11 +119,12 @@ unbound installations. That is compatibility behavior, not an onboarding strateg
 New installations and shared/multi-cloud extensions require explicit reviewed ADP
 organization mappings. Never guess or relink a legacy tenant by name.
 
-The domain user model currently has one `org_id` and a globally unique nullable
-`cognito_sub`. It must not be assumed to mirror every ADP multi-organization user
-account. Keep authorization on the verified subject, mapped organization and live
-grants; any projection/schema changes needed for multi-organization users require
-an explicit migration and tests, not duplicate-user creation or automatic merging.
+The domain user model has one `org_id` per projection. Migration 036 makes nullable
+`cognito_sub` unique within that organization, allowing distinct organization-local
+projections of the same immutable subject. This does not establish current ADP
+membership or link accounts by email. Keep authorization on the verified subject,
+principal type, mapped organization and live grants; current ADP membership and
+service-delegation integration remain required under #6127.
 
 Authorization rules:
 
@@ -292,7 +296,7 @@ ADP credential references, not secret values or long-lived provider tokens.
 | Existing domain tables / records | Role and relevant limitation |
 | --- | --- |
 | `organizations`, `workspace_grants`, organization grants | Explicit ADP-to-domain tenant mapping and independently scoped, revocable principal permissions. Organization membership alone is not workspace authority. |
-| `users` | Organization-local domain profile/display-role projection; its current unique `cognito_sub` is not a complete ADP multi-organization membership model and must not replace ADP identity resolution. |
+| `users` | Organization-local domain profile/display-role projection; its organization-scoped unique `cognito_sub` is not a complete ADP multi-organization membership model and must not replace ADP identity resolution. |
 | `cloud_accounts`, `provider_connections`, `provider_connection_bindings` | Organization-owned provider identities, opaque credential references and workspace authorization bindings. New workspace bootstrap needs organization-authorized onboarding credentials, not a borrowed workspace's connection. |
 | `workspaces` | Name, isolation mode, status, operation identity, quotas; currently has both `cluster_id` and `shared_cluster_id`. The latter is not a complete shared lifecycle. |
 | `clusters` | Provider cluster identity/endpoint and health, organization, and legacy `workspace_id`. Canonical bootstrap currently binds one workspace and one `workspace_bootstrap` metadata object. |
