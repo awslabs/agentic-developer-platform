@@ -143,7 +143,7 @@ jobs:
         # protected environment, never schedules itself and uploads only
         # sanitized artifacts. Without it those tests skip and the guarantees go
         # unenforced in the one place that enforces them.
-        run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6
+        run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6 boto3
 
       - name: Lint and format check
         run: |

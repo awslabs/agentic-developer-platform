@@ -85,6 +85,10 @@ def _deployed_revision(aws, http, cfg):
 
     def resolve(record=None):
         note = record if record is not None else {}
+        if cfg.get("gateway_deployment") is not None:
+            from . import deployment_provenance
+
+            return deployment_provenance.resolve(aws, cfg, note)
         try:
             _, health = http.get(cfg["gateway_url"].rstrip("/") + "/health", expect=200)
         except ports_module.PortError:

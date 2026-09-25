@@ -6,6 +6,8 @@
   "_precedence": "config.example.json (base) < this file (dev bindings) < CLI_UPLIFT_EVAL_* environment overlay. Selected by CLI_UPLIFT_EVAL_BINDINGS, which the workflow points at this path.",
 
   "_state_bucket": "Private, versioned, SSE-S3, all public access blocked; created for this evaluation in platform account 879318057152. Holds the remote script bundle under bundles/ and the durable run state that makes resume and the non-EC2 recovery sweep possible. Without it build_run_config reports 'Durable state: DISABLED' and --restore raises, which is how a leak previously went green.",
+  "gateway_deployment": "dev",
+
   "state_bucket": "adp-cli-uplift-eval-state-879318057152",
 
   "_instance_profile": "Provisioned for this evaluation; the default name in config.example.json did not exist (GetInstanceProfile returned NoSuchEntity). The role carries AmazonSSMManagedInstanceCore plus exactly two scoped reads: GetObject on this bucket's bundles/* and GetSecretValue on the one Cognito fixture secret below. It deliberately has NO Bedrock permission — a pre-granted Bedrock policy would let a broken `adp connect` flow still show working inference, which is the false green E04-E06 exist to catch.",

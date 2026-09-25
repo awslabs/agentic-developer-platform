@@ -11,15 +11,22 @@ Those are `test_injected_*` below.
 
 from __future__ import annotations
 
+import base64
 import calendar
+import copy
 import json
 import os
 import pathlib
 import re
 import time
-from urllib.parse import unquote
+from pathlib import Path
+from unittest.mock import Mock
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
+from botocore.credentials import Credentials
+from tests.e2e.cli_uplift import deployment_provenance as dp
+from tests.e2e.cli_uplift.ports import PortError
 
 from tests.e2e.cli_uplift import (
     build_run_config,
@@ -9770,3 +9777,279 @@ def test_a_resumed_attempt_takes_the_new_session_not_the_dead_one(
     document = json.loads((tmp_path / STATE / runner.STATE_FILE).read_text())
     assert document["credentials_expire_at"] == NOW + 10_000
     assert "credentials_expired" not in document["stages"].values()
+
+
+@pytest.fixture
+def observed(monkeypatch):
+    cfg = config.load(config.EXAMPLE_PATH)
+    cfg["gateway_deployment"] = "dev"
+    selected = dp.binding(cfg)
+    digest, build = next(iter(selected["images"].items()))
+    deployment = {
+        "kind": "Deployment",
+        "metadata": {
+            "name": "bedrockgateway",
+            "namespace": "adp-gateway",
+            "generation": 42,
+            "uid": "fixture",
+        },
+        "spec": {
+            "replicas": 2,
+            "selector": {"matchLabels": selected["selector"]},
+            "template": {
+                "metadata": {"labels": selected["selector"]},
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "bedrockgateway",
+                            "image": selected["image_repository"] + "@" + digest,
+                        }
+                    ]
+                },
+            },
+        },
+        "status": {
+            "observedGeneration": 42,
+            "replicas": 2,
+            "updatedReplicas": 2,
+            "readyReplicas": 2,
+            "availableReplicas": 2,
+            "conditions": [
+                {"type": "Available", "status": "True"},
+                {
+                    "type": "Progressing",
+                    "status": "True",
+                    "reason": "NewReplicaSetAvailable",
+                },
+            ],
+        },
+    }
+    service = {
+        "kind": "Service",
+        "metadata": {"name": "bedrockgateway", "namespace": "adp-gateway"},
+        "spec": {"selector": copy.deepcopy(selected["selector"])},
+    }
+    cluster = {
+        "name": selected["cluster"],
+        "arn": selected["cluster_arn"],
+        "status": "ACTIVE",
+        "endpoint": "https://fixture.us-east-1.eks.amazonaws.com",
+        "certificateAuthority": {"data": "fixture-ca"},
+    }
+    aws = Mock()
+    aws.call.return_value = {"cluster": cluster}
+    aws.session.return_value.get_credentials.return_value = Credentials(
+        "fixture-access", "fixture-secret", "fixture-session"
+    )
+    reads = []
+
+    def read(url, bearer, ca):
+        reads.append((url, bearer, ca))
+        return copy.deepcopy(deployment if "/deployments/" in url else service)
+
+    monkeypatch.setattr(dp, "get_json", read)
+    return cfg, aws, deployment, service, cluster, reads, build
+
+
+def test_resolver_uses_actual_gateway_and_signed_cluster_auth(observed):
+    cfg, aws, _, _, _, reads, build = observed
+    # Deliberately different caller expectation: the resolver must not copy it.
+    cfg["expected_revision"] = "f" * 40
+    http = Mock()
+    record = {}
+    assert live._deployed_revision(aws, http, cfg)(record) == build["source_sha"]
+    http.get.assert_not_called()
+    aws.call.assert_called_once_with(
+        "eks", "describe_cluster", name="adp-dev-eks-cluster"
+    )
+    assert [urlsplit(x[0]).path for x in reads] == [
+        "/apis/apps/v1/namespaces/adp-gateway/deployments/bedrockgateway",
+        "/api/v1/namespaces/adp-gateway/services/bedrockgateway",
+    ]
+    assert all(x[2] == "fixture-ca" for x in reads)
+    token = reads[0][1].removeprefix("k8s-aws-v1.")
+    signed = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode()
+    query = parse_qs(urlsplit(signed).query)
+    assert query["Action"] == ["GetCallerIdentity"]
+    assert query["X-Amz-SignedHeaders"] == ["host;x-k8s-aws-id"]
+    assert query["X-Amz-Expires"] == ["60"]
+    assert query["X-Amz-Security-Token"] == ["fixture-session"]
+    assert "fixture-session" not in json.dumps(record)
+    assert record["revision_source"] == "gateway_eks_build_receipt"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "unknown_digest",
+        "mutable_image",
+        "foreign_repository",
+        "missing_container",
+        "service_selector",
+        "deployment_selector",
+        "template_selector",
+        "wrong_object",
+        "deleting",
+        "generation",
+        "old_replicas",
+        "unavailable",
+        "terminating",
+        "zero",
+        "paused",
+        "progressing",
+        "unready",
+        "wrong_cluster",
+        "cluster_inactive",
+        "foreign_endpoint",
+        "target_url",
+        "unknown_binding",
+    ],
+)
+def test_unproven_gateway_fails_without_lambda_fallback(observed, mutation):
+    cfg, aws, d, service, cluster, _, _ = observed
+    container = d["spec"]["template"]["spec"]["containers"][0]
+    if mutation == "unknown_digest":
+        container["image"] = container["image"].split("@")[0] + "@sha256:" + "0" * 64
+    elif mutation == "mutable_image":
+        container["image"] = container["image"].split("@")[0] + ":latest"
+    elif mutation == "foreign_repository":
+        container["image"] = container["image"].replace("adp-gateway@", "foreign@")
+    elif mutation == "missing_container":
+        container["name"] = "other"
+    elif mutation == "service_selector":
+        service["spec"]["selector"] = {"app": "foreign"}
+    elif mutation == "deployment_selector":
+        d["spec"]["selector"] = {"matchLabels": {"app": "foreign"}}
+    elif mutation == "template_selector":
+        d["spec"]["template"]["metadata"]["labels"] = {"app": "foreign"}
+    elif mutation == "wrong_object":
+        d["metadata"]["name"] = "other"
+    elif mutation == "deleting":
+        d["metadata"]["deletionTimestamp"] = "now"
+    elif mutation == "generation":
+        d["status"]["observedGeneration"] = 41
+    elif mutation == "old_replicas":
+        d["status"]["replicas"] = 3
+    elif mutation == "unavailable":
+        d["status"]["unavailableReplicas"] = 1
+    elif mutation == "terminating":
+        d["status"]["terminatingReplicas"] = 1
+    elif mutation == "zero":
+        d["spec"]["replicas"] = 0
+    elif mutation == "paused":
+        d["spec"]["paused"] = True
+    elif mutation == "progressing":
+        d["status"]["conditions"][1]["reason"] = "ReplicaSetUpdated"
+    elif mutation == "unready":
+        d["status"]["readyReplicas"] = 1
+    elif mutation == "wrong_cluster":
+        cluster["arn"] = cluster["arn"].replace("879318057152", "123456789012")
+    elif mutation == "cluster_inactive":
+        cluster["status"] = "UPDATING"
+    elif mutation == "foreign_endpoint":
+        cluster["endpoint"] = "https://evil.example"
+    elif mutation == "target_url":
+        cfg["gateway_url"] = "https://other.example/api"
+    elif mutation == "unknown_binding":
+        cfg["gateway_deployment"] = "other"
+    http = Mock()
+    with pytest.raises(PortError):
+        live._deployed_revision(aws, http, cfg)({})
+    http.get.assert_not_called()
+    assert all(call.args[0] != "lambda" for call in aws.call.call_args_list)
+
+
+def test_missing_observer_permission_is_not_a_fallback(observed):
+    cfg, aws, *_ = observed
+    aws.call.side_effect = PortError("AccessDenied")
+    with pytest.raises(PortError):
+        live._deployed_revision(aws, Mock(), cfg)({})
+
+
+def test_legacy_health_path_and_fingerprint_remain_available():
+    cfg = config.load(config.EXAMPLE_PATH)
+    http = Mock()
+    http.get.return_value = (200, {"revision": "a" * 40})
+    aws = Mock()
+    assert live._deployed_revision(aws, http, cfg)({}) == "a" * 40
+    aws.call.assert_not_called()
+    before = runner.fingerprint(cfg)
+    cfg["gateway_deployment"] = "dev"
+    assert runner.fingerprint(cfg) != before
+
+
+def test_transport_uses_cluster_ca_bearer_no_redirects_and_scrubs_failures(monkeypatch):
+    # Exercise the HTTP adapter without opening any socket.
+    context = Mock()
+    create = Mock(return_value=context)
+    monkeypatch.setattr(dp.ssl, "create_default_context", create)
+    response = Mock(status=200)
+    response.read.return_value = b'{"kind":"Service"}'
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=None)
+    opener = Mock()
+    opener.open.return_value = response
+    build = Mock(return_value=opener)
+    monkeypatch.setattr(dp.urllib.request, "build_opener", build)
+    assert dp.get_json(
+        "https://fixture.eks.amazonaws.com/path",
+        "never-print-me",
+        base64.b64encode(b"fixture CA").decode(),
+    ) == {"kind": "Service"}
+    create.assert_called_once_with(cadata="fixture CA")
+    request = opener.open.call_args.args[0]
+    assert request.get_header("Authorization") == "Bearer never-print-me"
+    assert opener.open.call_args.kwargs["timeout"] == 30
+    redirect = build.call_args.args[1]
+    assert (
+        redirect.redirect_request(None, None, 302, "", {}, "https://evil.example")
+        is None
+    )
+    opener.open.side_effect = RuntimeError("never-print-me provider response")
+    with pytest.raises(PortError, match="^Gateway metadata read failed$"):
+        dp.get_json(
+            "https://fixture.eks.amazonaws.com/path",
+            "never-print-me",
+            base64.b64encode(b"fixture CA").decode(),
+        )
+
+
+def test_observer_artifacts_grant_only_two_named_reads():
+    import yaml
+
+    directory = Path(__file__).parents[2] / "docs/evaluations/cli-uplift"
+    role, binding = list(
+        yaml.safe_load_all((directory / "gateway-observer-rbac.yaml").read_text())
+    )
+    assert (
+        role["metadata"]["namespace"]
+        == binding["metadata"]["namespace"]
+        == "adp-gateway"
+    )
+    assert role["rules"] == [
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "resourceNames": ["bedrockgateway"],
+            "verbs": ["get"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["services"],
+            "resourceNames": ["bedrockgateway"],
+            "verbs": ["get"],
+        },
+    ]
+    assert binding["subjects"] == [
+        {
+            "kind": "Group",
+            "name": "adp:cli-uplift-gateway-observer",
+            "apiGroup": "rbac.authorization.k8s.io",
+        }
+    ]
+    policy = json.loads((directory / "gateway-observer-policy.json").read_text())
+    assert policy["Statement"][0]["Action"] == "eks:DescribeCluster"
+    assert (
+        policy["Statement"][0]["Resource"]
+        == "arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster"
+    )

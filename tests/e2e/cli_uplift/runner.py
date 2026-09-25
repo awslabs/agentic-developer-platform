@@ -131,6 +131,8 @@ def fingerprint(cfg):
             "expected_revision",
         )
     }
+    if cfg.get("gateway_deployment") is not None:
+        material["gateway_deployment"] = cfg["gateway_deployment"]
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
 
 
