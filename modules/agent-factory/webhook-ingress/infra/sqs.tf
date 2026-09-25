@@ -10,6 +10,7 @@
 resource "aws_sqs_queue" "agent_submit_dlq" {
   name                        = "${local.name_prefix}-agent-submit-dlq.fifo"
   fifo_queue                  = true
+  sqs_managed_sse_enabled     = true
   content_based_deduplication = true
   message_retention_seconds   = 1209600 # 14 days for DLQ inspection
 }
@@ -17,6 +18,7 @@ resource "aws_sqs_queue" "agent_submit_dlq" {
 resource "aws_sqs_queue" "agent_submit" {
   name                        = "${local.name_prefix}-agent-submit.fifo"
   fifo_queue                  = true
+  sqs_managed_sse_enabled     = true
   content_based_deduplication = true
   visibility_timeout_seconds  = var.sqs_visibility_timeout
   message_retention_seconds   = var.sqs_message_retention
