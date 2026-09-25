@@ -232,6 +232,7 @@ async def lifespan(app: FastAPI):
     # create_all shadows alembic (no alembic_version row, missing constraints/indexes)
     # and causes DuplicateTableError on fresh-account deploys.
     settings = get_settings()
+    await app.state.ratelimit_service.initialize()
     if settings.db_auto_create:
         try:
             # Import all models so Base.metadata knows about them
@@ -316,6 +317,8 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await claims_task
 
+    await app.state.ratelimit_service.close()
+
     # Issue #144: Shutdown tracing on app shutdown
     shutdown_tracing()
 
@@ -373,6 +376,9 @@ def create_app() -> FastAPI:
 
     # Issue #992: Add request logging middleware to record requests in request_logs table
     # for the admin dashboard. Runs after LoggingMiddleware (i.e., sees the response status).
+    from src.ratelimit.service import RateLimitService
+
+    app.state.ratelimit_service = RateLimitService()
     app.add_middleware(create_request_logging_middleware())
 
     # Issue #131: Add enforcement middleware
@@ -383,7 +389,7 @@ def create_app() -> FastAPI:
     # Note: Auth middleware sets request.state.token_context which enforcement middleware depends on
     # The enforcement middleware checks for token_context and skips if not present (auth handles 401)
     if os.environ.get("RATELIMIT_ENFORCEMENT_ENABLED", "true").lower() == "true":
-        app.add_middleware(RateLimitEnforcementMiddleware)
+        app.add_middleware(RateLimitEnforcementMiddleware, ratelimit_service=app.state.ratelimit_service)
         logger.info("Rate limit enforcement middleware enabled")
 
     app.add_middleware(BudgetEnforcementMiddleware)

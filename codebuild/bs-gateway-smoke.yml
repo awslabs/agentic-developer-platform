@@ -71,7 +71,13 @@ phases:
         docker run --rm $RESTRICTIONS --entrypoint python \
           adp-gateway:pr-smoke -c 'import asyncpg'
 
+        # This fixture checks image permissions/startup without external stores.
+        # Production requires shared Redis; only this isolated development smoke
+        # opts into local counters (the rate-limit suites test shared enforcement).
         CONTAINER_ID=$(docker run -d $RESTRICTIONS \
+          -e RATELIMIT_SECURITY_PROFILE=development \
+          -e RATELIMIT_BACKEND_TYPE=memory \
+          -e RATELIMIT_ALLOW_MEMORY_BACKEND=true \
           -e AWS_EC2_METADATA_DISABLED=true \
           -e BG_TOKEN_SECRET_KEY=gateway-smoke-not-a-production-secret \
           -e BG_DATABASE_URL=postgresql+asyncpg://smoke:smoke@127.0.0.1:1/gateway-smoke \
