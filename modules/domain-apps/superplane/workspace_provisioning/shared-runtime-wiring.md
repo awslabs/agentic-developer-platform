@@ -1,6 +1,6 @@
 # Remaining installed shared-bootstrap wiring
 
-Shared execution is still disabled by `runtime.validate_phase` and absent from
+Shared execution is still disabled by `runtime.run_lifecycle` and absent from
 `supported_runtime_modes`. `bootstrap_runtime.bootstrap` accepts shared placement
 only with explicit protected composition. No lifecycle input, inferred role ARN,
 local AWS profile or boolean readiness assertion supplies that composition.
@@ -105,7 +105,8 @@ operation authority; it does not create a new principal/grant engine.
 `recovery_partial.PartialLifecycleRecovery` currently classifies incomplete
 bootstrap journals and explicitly reports `cleanup_authorized=False`. It builds
 the dedicated network recipe for every bootstrap-workspace phase. Its call to
-`runtime.validate_phase(require_fresh=False)` still refuses shared execution.
+`runtime.validate_phase(require_fresh=False)` validates original phase lineage;
+that validation does not supply a shared cleanup dispatcher or provider authority.
 `recovery_bootstrap.BootstrapRecovery` verifies already completed result anchors;
 it does not clean up an incomplete namespace. Neither currently reconstructs a
 shared factory and calls `recover_interrupted_bootstrap`.
