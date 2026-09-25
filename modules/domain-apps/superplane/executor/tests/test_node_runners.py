@@ -86,7 +86,7 @@ def test_local_cri_uses_only_fixed_native_endpoint(monkeypatch):
             "--config=/dev/null",
             "--runtime-endpoint=unix:///run/containerd/containerd.sock",
             "--image-endpoint=unix:///run/containerd/containerd.sock",
-            "--timeout=5",
+            "--timeout=5s",
             "ps",
             "--output=json",
         ]

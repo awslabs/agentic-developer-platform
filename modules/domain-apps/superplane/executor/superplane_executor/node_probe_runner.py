@@ -40,7 +40,7 @@ def cri_json(*arguments):
             "--config=/dev/null",
             "--runtime-endpoint=" + CRI_ENDPOINT,
             "--image-endpoint=" + CRI_ENDPOINT,
-            "--timeout=5",
+            "--timeout=5s",
             *arguments,
         ]
     )
