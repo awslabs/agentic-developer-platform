@@ -355,7 +355,8 @@ class Provider:
             ):
                 raise OperationRefused("provider call binding mismatch")
             if (
-                call.operation_kind in ("launch", "deploy")
+                call.operation_kind
+                in ("launch", "deploy", "run-node-bootstrap", "run-node-probe")
                 and operation.reservation_state != "confirmed"
             ):
                 raise OperationRefused("creating work requires confirmed budget")
@@ -413,6 +414,31 @@ class Provider:
                 await probe_service(self.workspace, operation, target, probe)
                 await authorize()
             await self.cloud(operation, plan)
+            if plan.node_bootstrap is not None:
+                from .node_command import (
+                    execute as execute_node,
+                    preflight as node_preflight,
+                )
+                from .node_command_plan import KINDS
+
+                if call.operation_kind == "launch":
+                    await node_preflight(self, operation, plan, authorize)
+                if call.operation_kind in KINDS:
+                    request_id = "native-command:" + call.operation_kind
+                    await self.remember(call, plan, request_id)
+                    node_reference = await execute_node(
+                        self, operation, target, plan, call, authorize
+                    )
+                    await authorize()
+                    return (
+                        CallOutcome.SUCCEEDED,
+                        "original native node command verified",
+                        node_reference,
+                    )
+                if call.operation_kind == "deploy":
+                    from .node_command_inventory import require_completed
+
+                    await require_completed(self, operation, plan, authorize)
             networking = None
             if plan.network is not None:
                 from .network_runtime import Network
@@ -570,7 +596,8 @@ class Provider:
                         await authorize()
                         self.workspace.require_dedicated_node_authority(target)
                         instances = await self.instances(operation, plan)
-                        if selected.step_id == "2":
+                        readiness_step = "3" if plan.node_bootstrap is not None else "2"
+                        if selected.step_id == readiness_step:
                             # Native EKS provider IDs must resolve to this allocation's
                             # actual EC2 instances, not merely Ready nodes in the cluster.
                             ready = len(instances) == plan.data[
@@ -616,7 +643,7 @@ class Provider:
                             )
                         if ready:
                             if (
-                                selected.step_id != "2"
+                                selected.step_id != readiness_step
                                 and plan.data["workload"]["kind"] == "batch"
                                 and "controller_deployment_id"
                                 in operation.request.parameters

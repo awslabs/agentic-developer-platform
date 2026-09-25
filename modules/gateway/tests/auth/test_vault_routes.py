@@ -1238,3 +1238,29 @@ async def test_idempotent_put_rejects_a_different_secret_for_the_same_id(db):
     assert "first-synthetic-secret" not in str(vault.calls[0][3])
     assert "first-synthetic-secret" not in str(raised.value)
     assert "second-synthetic-secret" not in str(raised.value)
+
+
+async def test_revision_adapter_rejects_stale_write_preserving_metadata(db, sm):
+    cred = await _insert_cred(db, user_id="user-alice", label="original")
+    client = _make_app(ALICE, db, sm)
+    before = client.get("/auth/credentials").json()[0]
+    revision = before["updated_at"] or before["created_at"]
+    if not revision.endswith("Z") and "+" not in revision:
+        revision += "+00:00"
+    response = client.patch(f"/auth/credentials/{cred.id}/metadata", json={"label": "new", "expected_revision": revision})
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == cred.id
+    stale = client.patch(f"/auth/credentials/{cred.id}/metadata", json={"label": "clobber", "expected_revision": revision})
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["error"] == "stale_revision"
+    assert client.get("/auth/credentials").json()[0]["label"] == "new"
+    sm.create_secret.assert_not_called()
+    sm.delete_secret.assert_not_called()
+
+
+async def test_revision_adapter_requires_precondition_and_hides_foreign_target(db, sm):
+    cred = await _insert_cred(db, user_id="user-bob", label="foreign")
+    client = _make_app(ALICE, db, sm)
+    path = f"/auth/credentials/{cred.id}/metadata"
+    assert client.patch(path, json={"label": "new"}).status_code == 422
+    assert client.patch(path, json={"label": "new", "expected_revision": "2026-09-25T00:00:00Z"}).status_code == 404

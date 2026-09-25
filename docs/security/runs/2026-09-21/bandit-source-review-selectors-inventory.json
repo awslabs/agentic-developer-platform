@@ -6,10 +6,10 @@
   "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
-    "pending-source-review": 1275,
+    "pending-source-review": 1072,
     "nonsecurity-test-assertion": 187,
-    "fixed-source-runtime-open": 2,
-    "fixed": 4,
+    "fixed-source-runtime-open": 10,
+    "fixed": 199,
     "reviewed-parameterized-sql": 2
   },
   "scope_complete": false,
@@ -13879,8 +13879,10 @@
       "rule": "B101",
       "line": 13,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=963",
@@ -13893,8 +13895,10 @@
       "rule": "B101",
       "line": 14,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=964",
@@ -13907,8 +13911,10 @@
       "rule": "B101",
       "line": 15,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=965",
@@ -13921,8 +13927,10 @@
       "rule": "B101",
       "line": 19,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=966",
@@ -14747,8 +14755,10 @@
       "rule": "B101",
       "line": 201,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1025",
@@ -14775,8 +14785,10 @@
       "rule": "B101",
       "line": 213,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1027",
@@ -14789,8 +14801,10 @@
       "rule": "B101",
       "line": 215,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1028",
@@ -14803,8 +14817,10 @@
       "rule": "B101",
       "line": 216,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1029",
@@ -14817,8 +14833,10 @@
       "rule": "B101",
       "line": 217,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1030",
@@ -14831,8 +14849,10 @@
       "rule": "B101",
       "line": 223,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1031",
@@ -14845,8 +14865,10 @@
       "rule": "B101",
       "line": 226,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1032",
@@ -14859,8 +14881,10 @@
       "rule": "B101",
       "line": 227,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1033",
@@ -14873,8 +14897,10 @@
       "rule": "B101",
       "line": 228,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1034",
@@ -14887,8 +14913,10 @@
       "rule": "B101",
       "line": 234,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1035",
@@ -14901,8 +14929,10 @@
       "rule": "B101",
       "line": 237,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1036",
@@ -14915,8 +14945,10 @@
       "rule": "B101",
       "line": 238,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1037",
@@ -14929,8 +14961,10 @@
       "rule": "B101",
       "line": 250,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1038",
@@ -14943,8 +14977,10 @@
       "rule": "B101",
       "line": 253,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1039",
@@ -14957,8 +14993,10 @@
       "rule": "B101",
       "line": 265,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1040",
@@ -14971,8 +15009,10 @@
       "rule": "B101",
       "line": 269,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1041",
@@ -14985,8 +15025,10 @@
       "rule": "B101",
       "line": 277,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1042",
@@ -14999,8 +15041,10 @@
       "rule": "B101",
       "line": 279,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1043",
@@ -15013,8 +15057,10 @@
       "rule": "B101",
       "line": 282,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1044",
@@ -15027,8 +15073,10 @@
       "rule": "B101",
       "line": 285,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1045",
@@ -15041,8 +15089,10 @@
       "rule": "B101",
       "line": 286,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1046",
@@ -15055,8 +15105,10 @@
       "rule": "B101",
       "line": 309,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1047",
@@ -15069,8 +15121,10 @@
       "rule": "B101",
       "line": 313,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1048",
@@ -15083,8 +15137,10 @@
       "rule": "B101",
       "line": 314,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1049",
@@ -15097,8 +15153,10 @@
       "rule": "B101",
       "line": 318,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1050",
@@ -15111,8 +15169,10 @@
       "rule": "B101",
       "line": 320,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1051",
@@ -15125,8 +15185,10 @@
       "rule": "B101",
       "line": 321,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1052",
@@ -15139,8 +15201,10 @@
       "rule": "B101",
       "line": 322,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1053",
@@ -15153,8 +15217,10 @@
       "rule": "B101",
       "line": 325,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1054",
@@ -15167,8 +15233,10 @@
       "rule": "B101",
       "line": 348,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1055",
@@ -16325,8 +16393,10 @@
       "rule": "B101",
       "line": 187,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1136",
@@ -16339,8 +16409,10 @@
       "rule": "B101",
       "line": 189,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1137",
@@ -16353,8 +16425,10 @@
       "rule": "B101",
       "line": 191,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1138",
@@ -16367,8 +16441,10 @@
       "rule": "B101",
       "line": 193,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1139",
@@ -16381,8 +16457,10 @@
       "rule": "B101",
       "line": 195,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1140",
@@ -16395,8 +16473,10 @@
       "rule": "B101",
       "line": 197,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1141",
@@ -16409,8 +16489,10 @@
       "rule": "B101",
       "line": 201,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1142",
@@ -16423,8 +16505,10 @@
       "rule": "B101",
       "line": 203,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1143",
@@ -16689,8 +16773,10 @@
       "rule": "B101",
       "line": 30,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1162",
@@ -16703,8 +16789,10 @@
       "rule": "B101",
       "line": 45,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1163",
@@ -16717,8 +16805,10 @@
       "rule": "B101",
       "line": 48,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1164",
@@ -16731,8 +16821,10 @@
       "rule": "B101",
       "line": 68,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1165",
@@ -16745,8 +16837,10 @@
       "rule": "B101",
       "line": 69,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1166",
@@ -16759,8 +16853,10 @@
       "rule": "B101",
       "line": 71,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1167",
@@ -16773,8 +16869,10 @@
       "rule": "B101",
       "line": 73,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1168",
@@ -16787,8 +16885,10 @@
       "rule": "B101",
       "line": 74,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1169",
@@ -16801,8 +16901,10 @@
       "rule": "B101",
       "line": 75,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1170",
@@ -16815,8 +16917,10 @@
       "rule": "B101",
       "line": 77,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1171",
@@ -16829,8 +16933,10 @@
       "rule": "B101",
       "line": 78,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1172",
@@ -16843,8 +16949,10 @@
       "rule": "B101",
       "line": 82,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1173",
@@ -16857,8 +16965,10 @@
       "rule": "B101",
       "line": 86,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1174",
@@ -16871,8 +16981,10 @@
       "rule": "B101",
       "line": 90,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1175",
@@ -16885,8 +16997,10 @@
       "rule": "B101",
       "line": 91,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1176",
@@ -16899,8 +17013,10 @@
       "rule": "B101",
       "line": 96,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1177",
@@ -16913,8 +17029,10 @@
       "rule": "B101",
       "line": 97,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1178",
@@ -16927,8 +17045,10 @@
       "rule": "B101",
       "line": 107,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1179",
@@ -16941,8 +17061,10 @@
       "rule": "B101",
       "line": 108,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1180",
@@ -16955,8 +17077,10 @@
       "rule": "B101",
       "line": 138,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1181",
@@ -16969,8 +17093,10 @@
       "rule": "B101",
       "line": 144,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1182",
@@ -16983,8 +17109,10 @@
       "rule": "B101",
       "line": 147,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1183",
@@ -16997,8 +17125,10 @@
       "rule": "B101",
       "line": 165,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1184",
@@ -17011,8 +17141,10 @@
       "rule": "B101",
       "line": 169,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1185",
@@ -17025,8 +17157,10 @@
       "rule": "B101",
       "line": 178,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1186",
@@ -17039,8 +17173,10 @@
       "rule": "B101",
       "line": 182,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1187",
@@ -17053,8 +17189,10 @@
       "rule": "B101",
       "line": 185,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1188",
@@ -17067,8 +17205,10 @@
       "rule": "B101",
       "line": 211,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1189",
@@ -17081,8 +17221,10 @@
       "rule": "B101",
       "line": 215,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1190",
@@ -17095,8 +17237,10 @@
       "rule": "B101",
       "line": 223,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1191",
@@ -17109,8 +17253,10 @@
       "rule": "B101",
       "line": 224,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1192",
@@ -17137,8 +17283,10 @@
       "rule": "B101",
       "line": 15,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1194",
@@ -17151,8 +17299,10 @@
       "rule": "B101",
       "line": 16,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1195",
@@ -17221,8 +17371,10 @@
       "rule": "B101",
       "line": 24,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1200",
@@ -17263,8 +17415,10 @@
       "rule": "B101",
       "line": 14,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1203",
@@ -17277,8 +17431,10 @@
       "rule": "B101",
       "line": 16,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1204",
@@ -17291,8 +17447,10 @@
       "rule": "B101",
       "line": 17,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1205",
@@ -17305,8 +17463,10 @@
       "rule": "B101",
       "line": 21,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1206",
@@ -17319,8 +17479,10 @@
       "rule": "B101",
       "line": 22,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1207",
@@ -17333,8 +17495,10 @@
       "rule": "B101",
       "line": 23,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1208",
@@ -17347,8 +17511,10 @@
       "rule": "B101",
       "line": 35,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1209",
@@ -17361,8 +17527,10 @@
       "rule": "B101",
       "line": 36,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1210",
@@ -17375,8 +17543,10 @@
       "rule": "B101",
       "line": 40,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1211",
@@ -17389,8 +17559,10 @@
       "rule": "B101",
       "line": 44,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1212",
@@ -17403,8 +17575,10 @@
       "rule": "B101",
       "line": 52,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1213",
@@ -17431,8 +17605,10 @@
       "rule": "B101",
       "line": 79,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1215",
@@ -17445,8 +17621,10 @@
       "rule": "B101",
       "line": 80,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1216",
@@ -17459,8 +17637,10 @@
       "rule": "B101",
       "line": 85,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1217",
@@ -17473,8 +17653,10 @@
       "rule": "B101",
       "line": 95,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1218",
@@ -17487,8 +17669,10 @@
       "rule": "B101",
       "line": 98,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1219",
@@ -17501,8 +17685,10 @@
       "rule": "B101",
       "line": 102,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1220",
@@ -17515,8 +17701,10 @@
       "rule": "B101",
       "line": 103,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1221",
@@ -17571,8 +17759,10 @@
       "rule": "B101",
       "line": 120,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1225",
@@ -17585,8 +17775,10 @@
       "rule": "B101",
       "line": 121,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1226",
@@ -17599,8 +17791,10 @@
       "rule": "B101",
       "line": 129,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1227",
@@ -17613,8 +17807,10 @@
       "rule": "B101",
       "line": 131,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1228",
@@ -17627,8 +17823,10 @@
       "rule": "B101",
       "line": 134,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1229",
@@ -17641,8 +17839,10 @@
       "rule": "B101",
       "line": 139,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1230",
@@ -17655,8 +17855,10 @@
       "rule": "B101",
       "line": 142,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1231",
@@ -17669,8 +17871,10 @@
       "rule": "B101",
       "line": 146,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1232",
@@ -17683,8 +17887,10 @@
       "rule": "B101",
       "line": 148,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1233",
@@ -17697,8 +17903,10 @@
       "rule": "B101",
       "line": 156,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1234",
@@ -17711,8 +17919,10 @@
       "rule": "B101",
       "line": 161,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1235",
@@ -17725,8 +17935,10 @@
       "rule": "B101",
       "line": 170,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1236",
@@ -17739,8 +17951,10 @@
       "rule": "B101",
       "line": 174,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1237",
@@ -17753,8 +17967,10 @@
       "rule": "B101",
       "line": 182,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1238",
@@ -17767,8 +17983,10 @@
       "rule": "B101",
       "line": 193,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1239",
@@ -17781,8 +17999,10 @@
       "rule": "B101",
       "line": 198,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1240",
@@ -17795,8 +18015,10 @@
       "rule": "B101",
       "line": 205,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1241",
@@ -17809,8 +18031,10 @@
       "rule": "B101",
       "line": 208,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1242",
@@ -17823,8 +18047,10 @@
       "rule": "B101",
       "line": 211,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1243",
@@ -17837,8 +18063,10 @@
       "rule": "B101",
       "line": 214,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1244",
@@ -17851,8 +18079,10 @@
       "rule": "B101",
       "line": 215,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1245",
@@ -17865,8 +18095,10 @@
       "rule": "B101",
       "line": 222,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1246",
@@ -17879,8 +18111,10 @@
       "rule": "B101",
       "line": 225,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1247",
@@ -17893,8 +18127,10 @@
       "rule": "B101",
       "line": 227,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1248",
@@ -17907,8 +18143,10 @@
       "rule": "B101",
       "line": 228,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1249",
@@ -17921,8 +18159,10 @@
       "rule": "B101",
       "line": 229,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1250",
@@ -17935,8 +18175,10 @@
       "rule": "B101",
       "line": 230,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1251",
@@ -17949,8 +18191,10 @@
       "rule": "B101",
       "line": 233,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1252",
@@ -17963,8 +18207,10 @@
       "rule": "B101",
       "line": 234,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1253",
@@ -17977,8 +18223,10 @@
       "rule": "B101",
       "line": 235,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1254",
@@ -17991,8 +18239,10 @@
       "rule": "B101",
       "line": 237,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1255",
@@ -18005,8 +18255,10 @@
       "rule": "B101",
       "line": 238,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1256",
@@ -18019,8 +18271,10 @@
       "rule": "B101",
       "line": 240,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1257",
@@ -18033,8 +18287,10 @@
       "rule": "B101",
       "line": 242,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1258",
@@ -19377,8 +19633,10 @@
       "rule": "B101",
       "line": 31,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1356",
@@ -19391,8 +19649,10 @@
       "rule": "B101",
       "line": 32,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1357",
@@ -19405,8 +19665,10 @@
       "rule": "B101",
       "line": 33,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1358",
@@ -19419,8 +19681,10 @@
       "rule": "B101",
       "line": 40,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1359",
@@ -19433,8 +19697,10 @@
       "rule": "B101",
       "line": 66,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1360",
@@ -19447,8 +19713,10 @@
       "rule": "B101",
       "line": 81,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1361",
@@ -19461,8 +19729,10 @@
       "rule": "B101",
       "line": 97,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1362",
@@ -19475,8 +19745,10 @@
       "rule": "B101",
       "line": 103,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1363",
@@ -19489,8 +19761,10 @@
       "rule": "B101",
       "line": 104,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1364",
@@ -19503,8 +19777,10 @@
       "rule": "B101",
       "line": 107,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1365",
@@ -19517,8 +19793,10 @@
       "rule": "B101",
       "line": 112,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1366",
@@ -19545,8 +19823,10 @@
       "rule": "B101",
       "line": 34,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1368",
@@ -19559,8 +19839,10 @@
       "rule": "B101",
       "line": 37,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1369",
@@ -19573,8 +19855,10 @@
       "rule": "B101",
       "line": 38,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1370",
@@ -19587,8 +19871,10 @@
       "rule": "B101",
       "line": 39,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1371",
@@ -19601,8 +19887,10 @@
       "rule": "B101",
       "line": 43,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1372",
@@ -19615,8 +19903,10 @@
       "rule": "B101",
       "line": 47,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1373",
@@ -19629,8 +19919,10 @@
       "rule": "B101",
       "line": 63,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1374",
@@ -19643,8 +19935,10 @@
       "rule": "B101",
       "line": 68,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1375",
@@ -19657,8 +19951,10 @@
       "rule": "B101",
       "line": 80,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1376",
@@ -19671,8 +19967,10 @@
       "rule": "B101",
       "line": 88,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1377",
@@ -19685,8 +19983,10 @@
       "rule": "B101",
       "line": 96,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1378",
@@ -19699,8 +19999,10 @@
       "rule": "B101",
       "line": 97,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1379",
@@ -19713,8 +20015,10 @@
       "rule": "B101",
       "line": 138,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1380",
@@ -19727,8 +20031,10 @@
       "rule": "B101",
       "line": 146,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1381",
@@ -19741,8 +20047,10 @@
       "rule": "B101",
       "line": 188,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1382",
@@ -19755,8 +20063,10 @@
       "rule": "B101",
       "line": 210,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1383",
@@ -19783,8 +20093,10 @@
       "rule": "B101",
       "line": 220,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1385",
@@ -19797,8 +20109,10 @@
       "rule": "B101",
       "line": 245,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1386",
@@ -19825,8 +20139,10 @@
       "rule": "B101",
       "line": 277,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1388",
@@ -19839,8 +20155,10 @@
       "rule": "B101",
       "line": 279,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1389",
@@ -19853,8 +20171,10 @@
       "rule": "B101",
       "line": 280,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1390",
@@ -19867,8 +20187,10 @@
       "rule": "B101",
       "line": 293,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1391",
@@ -19881,8 +20203,10 @@
       "rule": "B101",
       "line": 318,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1392",
@@ -19895,8 +20219,10 @@
       "rule": "B101",
       "line": 337,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1393",
@@ -19909,8 +20235,10 @@
       "rule": "B101",
       "line": 340,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1394",
@@ -19923,8 +20251,10 @@
       "rule": "B101",
       "line": 343,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1395",
@@ -19937,8 +20267,10 @@
       "rule": "B101",
       "line": 345,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1396",
@@ -19979,8 +20311,10 @@
       "rule": "B101",
       "line": 354,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1399",
@@ -19993,8 +20327,10 @@
       "rule": "B101",
       "line": 355,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1400",
@@ -20063,8 +20399,10 @@
       "rule": "B101",
       "line": 394,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1405",
@@ -20077,8 +20415,10 @@
       "rule": "B101",
       "line": 396,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1406",
@@ -20091,8 +20431,10 @@
       "rule": "B101",
       "line": 410,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1407",
@@ -20105,8 +20447,10 @@
       "rule": "B101",
       "line": 441,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1408",
@@ -20119,8 +20463,10 @@
       "rule": "B101",
       "line": 459,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1409",
@@ -20133,8 +20479,10 @@
       "rule": "B101",
       "line": 467,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1410",
@@ -20147,8 +20495,10 @@
       "rule": "B101",
       "line": 468,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1411",
@@ -20161,8 +20511,10 @@
       "rule": "B101",
       "line": 473,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1412",
@@ -20175,8 +20527,10 @@
       "rule": "B101",
       "line": 478,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1413",
@@ -20189,8 +20543,10 @@
       "rule": "B101",
       "line": 479,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1414",
@@ -20203,8 +20559,10 @@
       "rule": "B101",
       "line": 480,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1415",
@@ -20217,8 +20575,10 @@
       "rule": "B101",
       "line": 485,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1416",
@@ -20231,8 +20591,10 @@
       "rule": "B101",
       "line": 494,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1417",
@@ -20245,8 +20607,10 @@
       "rule": "B101",
       "line": 495,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1418",
@@ -20259,8 +20623,10 @@
       "rule": "B101",
       "line": 35,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1419",
@@ -20273,8 +20639,10 @@
       "rule": "B101",
       "line": 36,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1420",
@@ -20287,8 +20655,10 @@
       "rule": "B101",
       "line": 37,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1421",
@@ -20301,8 +20671,10 @@
       "rule": "B101",
       "line": 38,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1422",
@@ -20315,8 +20687,10 @@
       "rule": "B101",
       "line": 39,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1423",
@@ -20329,8 +20703,10 @@
       "rule": "B101",
       "line": 42,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1424",
@@ -20343,8 +20719,10 @@
       "rule": "B101",
       "line": 43,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1425",
@@ -20357,8 +20735,10 @@
       "rule": "B101",
       "line": 47,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1426",
@@ -20371,8 +20751,10 @@
       "rule": "B101",
       "line": 48,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1427",
@@ -20385,8 +20767,10 @@
       "rule": "B101",
       "line": 51,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1428",
@@ -20399,8 +20783,10 @@
       "rule": "B101",
       "line": 52,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1429",
@@ -20413,8 +20799,10 @@
       "rule": "B101",
       "line": 59,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1430",
@@ -20427,8 +20815,10 @@
       "rule": "B101",
       "line": 60,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1431",
@@ -20441,8 +20831,10 @@
       "rule": "B101",
       "line": 61,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1432",
@@ -20455,8 +20847,10 @@
       "rule": "B101",
       "line": 62,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1433",
@@ -20469,8 +20863,10 @@
       "rule": "B101",
       "line": 63,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1434",
@@ -20483,8 +20879,10 @@
       "rule": "B101",
       "line": 64,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1435",
@@ -20497,8 +20895,10 @@
       "rule": "B101",
       "line": 65,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1436",
@@ -20511,8 +20911,10 @@
       "rule": "B101",
       "line": 66,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1437",
@@ -20525,8 +20927,10 @@
       "rule": "B101",
       "line": 67,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1438",
@@ -20539,8 +20943,10 @@
       "rule": "B101",
       "line": 68,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Replaced removable assert with an explicit conditional raising AssertionError. AST equivalence verifies unchanged expression, evaluation order and failure message; guard now remains under -O and -OO. Offline component suites and negative optimized-interpreter tests validate refusal before side effects.",
+      "evidence": "evidence/bandit-optimization-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1439",

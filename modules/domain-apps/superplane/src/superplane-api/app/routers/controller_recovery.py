@@ -204,6 +204,7 @@ async def observation_provider(request, claim):
                             "ec2:GetTransitGatewayRouteTableAssociations",
                             "eks:DescribeCluster",
                             "sts:GetCallerIdentity",
+                            "ssm:GetCommandInvocation",
                         ],
                         "Resource": "*",
                     }
@@ -219,12 +220,21 @@ async def observation_provider(request, claim):
                     DurationSeconds=900,
                     Policy=json.dumps(policy),
                 )["Credentials"]
-                return boto3.Session(
+                session = boto3.Session(
                     aws_access_key_id=result["AccessKeyId"],
                     aws_secret_access_key=result["SecretAccessKey"],
                     aws_session_token=result["SessionToken"],
                     region_name=plan.cluster_region,
                 )
+                identity = session.client(
+                    "sts", region_name=plan.cluster_region
+                ).get_caller_identity()
+                prefix = f"arn:aws:sts::{plan.data['provider_account_id']}:assumed-role/{role.rsplit('/', 1)[-1]}/"
+                if identity.get("Account") != plan.data[
+                    "provider_account_id"
+                ] or not identity.get("Arn", "").startswith(prefix):
+                    raise HTTPException(403, "recovery provider identity refused")
+                return session
 
             session = await asyncio.to_thread(assume)
             await claim_context(request, claim)
@@ -233,12 +243,14 @@ async def observation_provider(request, claim):
     pool = SimpleNamespace(acquire=composition(request).operation_connect)
     sky = SkyPilot(sky_url, sky_token)
     try:
-        yield ReadProvider(
+        provider = ReadProvider(
             sky=sky,
             workspace=ReadWorkspace(directory, management),
             domain_pool=pool,
             execution_pool=pool,
         )
+        provider.node_observation_authorize = lambda: claim_context(request, claim)
+        yield provider
     finally:
         await sky.aclose()
 

@@ -151,6 +151,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-flow.py", ["adp", "flow"]),
         ("adp-task.py", ["adp", "task"]),
         ("adp-tenant.py", ["adp", "tenant"]),
+        ("adp-vault.py", ["adp"]),
         ("adp-usage.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
         ("adp-doctor.py", ["adp"]),

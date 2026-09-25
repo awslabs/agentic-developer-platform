@@ -198,7 +198,8 @@ def verify_lambda_code(args, function):
     """Compare normalized deployed ZIP contents with this reviewed checkout."""
     deployed = aws(args, "lambda", "get-function", "--function-name", function)
     config = deployed["Configuration"]
-    assert config["State"] == "Active" and config["LastUpdateStatus"] == "Successful", f"{function} is not ready"
+    if not (config["State"] == "Active" and config["LastUpdateStatus"] == "Successful"):
+        raise AssertionError(f"{function} is not ready")
     spec = importlib.util.spec_from_file_location("pricing_archive_builder", Path(__file__).with_name("build-budget-lambda-archives.py"))
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
@@ -210,32 +211,43 @@ def verify_lambda_code(args, function):
             payload = response.read(10 * 1024 * 1024 + 1)
     except Exception:
         raise RuntimeError(f"Could not download {function} code for release verification") from None
-    assert len(payload) <= 10 * 1024 * 1024, "Lambda archive exceeds verification size bound"
+    if not (len(payload) <= 10 * 1024 * 1024):
+        raise AssertionError("Lambda archive exceeds verification size bound")
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-        assert len(archive.namelist()) == len(set(archive.namelist())), "Duplicate deployed ZIP members"
-        assert set(archive.namelist()) == set(expected), f"{function} archive manifest differs from this release"
-        assert all(archive.read(name) == path.read_bytes() for name, path in expected.items()), f"{function} source differs from this release"
+        if not (len(archive.namelist()) == len(set(archive.namelist()))):
+            raise AssertionError("Duplicate deployed ZIP members")
+        if not (set(archive.namelist()) == set(expected)):
+            raise AssertionError(f"{function} archive manifest differs from this release")
+        if not (all(archive.read(name) == path.read_bytes() for name, path in expected.items())):
+            raise AssertionError(f"{function} source differs from this release")
     return config
 
 
 def verify_queue(args, arn):
     parts = arn.split(":")
-    assert len(parts) == 6 and parts[2] == "sqs" and parts[4] == args.account_id, "Unexpected pricing failure queue"
+    if not (len(parts) == 6 and parts[2] == "sqs" and parts[4] == args.account_id):
+        raise AssertionError("Unexpected pricing failure queue")
     url = aws(args, "sqs", "get-queue-url", "--queue-name", parts[5], "--queue-owner-aws-account-id", parts[4])["QueueUrl"]
     attributes = aws(args, "sqs", "get-queue-attributes", "--queue-url", url, "--attribute-names", "All")["Attributes"]
-    assert attributes["QueueArn"] == arn
-    assert int(attributes["MessageRetentionPeriod"]) == 1209600, "Pricing failure retention is not 14 days"
-    assert attributes.get("SqsManagedSseEnabled") == "true", "Pricing queue encryption is not configured"
+    if not (attributes["QueueArn"] == arn):
+        raise AssertionError()
+    if not (int(attributes["MessageRetentionPeriod"]) == 1209600):
+        raise AssertionError("Pricing failure retention is not 14 days")
+    if not (attributes.get("SqsManagedSseEnabled") == "true"):
+        raise AssertionError("Pricing queue encryption is not configured")
 
 
 def verify_alarm_routes(args):
     names = [f"bedrockgw-{args.environment}-pricing-{suffix}" for suffix in ("full-refresh-missing", "oldest-source")]
     alarms = aws(args, "cloudwatch", "describe-alarms", "--alarm-names", *names)["MetricAlarms"]
-    assert {alarm["AlarmName"] for alarm in alarms} == set(names), "Required pricing freshness alarms are missing"
+    if not ({alarm["AlarmName"] for alarm in alarms} == set(names)):
+        raise AssertionError("Required pricing freshness alarms are missing")
     topics = set()
     for alarm in alarms:
-        assert alarm["ActionsEnabled"] and alarm["AlarmActions"], "Pricing alarm has no enabled notification destination"
-        assert alarm["TreatMissingData"] == "breaching", "Pricing freshness alarm does not detect missing measurements"
+        if not (alarm["ActionsEnabled"] and alarm["AlarmActions"]):
+            raise AssertionError("Pricing alarm has no enabled notification destination")
+        if not (alarm["TreatMissingData"] == "breaching"):
+            raise AssertionError("Pricing freshness alarm does not detect missing measurements")
         topics.update(alarm["AlarmActions"])
     for topic in sorted(topics):
         subscriptions = []
@@ -247,10 +259,12 @@ def verify_alarm_routes(args):
             token = page.get("NextToken")
             if not token:
                 break
-        assert any(s["SubscriptionArn"].startswith("arn:") for s in subscriptions), "Pricing alarm topic has no confirmed subscription"
+        if not (any(s["SubscriptionArn"].startswith("arn:") for s in subscriptions)):
+            raise AssertionError("Pricing alarm topic has no confirmed subscription")
         if topic.endswith(f":bedrockgw-{args.environment}-pricing-alarms"):
             inboxes = [s["Endpoint"] for s in subscriptions if s["Protocol"] == "sqs" and s["SubscriptionArn"].startswith("arn:")]
-            assert inboxes, "Default pricing alarm inbox subscription is missing"
+            if not (inboxes):
+                raise AssertionError("Default pricing alarm inbox subscription is missing")
             for inbox in inboxes:
                 verify_queue(args, inbox)
 
@@ -262,28 +276,33 @@ def finalize(args):
         aws(args, "events", "disable-rule", "--name", rule_name)
     evidence = verify_seed(args)
     logging_states = {item["pricing"]["chat_logging_enabled"] for item in evidence}
-    assert len(logging_states) == 1, "Gateway replicas disagree on chat logging configuration"
+    if not (len(logging_states) == 1):
+        raise AssertionError("Gateway replicas disagree on chat logging configuration")
     if logging_states == {False}:
         print("Pricing seed verified; scheduled refresh remains disabled because chat logging is disabled")
         return
-    assert existing_rule is not None, (
-        "Pricing is enabled but its schedule is missing; apply reviewed budget-lambda infrastructure and rerun finalization"
-    )
+    if not (existing_rule is not None):
+        raise AssertionError("Pricing is enabled but its schedule is missing; apply reviewed budget-lambda infrastructure and rerun finalization")
     if any(item["pricing"]["refresh_paused"] for item in evidence):
         raise RuntimeError("Refresh is explicitly paused; resolve rollback before finalizing")
     function = f"bedrockgw-{args.environment}-pricing-refresh"
     config = verify_lambda_code(args, function)
     verify_lambda_code(args, f"bedrockgw-{args.environment}-budget-usage-tracker")
-    assert config["Timeout"] >= 180, "Pricing infrastructure timeout has not been applied"
+    if not (config["Timeout"] >= 180):
+        raise AssertionError("Pricing infrastructure timeout has not been applied")
     asynchronous = aws(args, "lambda", "get-function-event-invoke-config", "--function-name", function)
-    assert asynchronous["MaximumRetryAttempts"] == 2 and asynchronous["MaximumEventAgeInSeconds"] == 3600
+    if not (asynchronous["MaximumRetryAttempts"] == 2 and asynchronous["MaximumEventAgeInSeconds"] == 3600):
+        raise AssertionError()
     execution_queue = asynchronous["DestinationConfig"]["OnFailure"]["Destination"]
     rule = aws(args, "events", "describe-rule", "--name", rule_name)
-    assert rule["ScheduleExpression"] == "cron(0 6 * * ? *)"
+    if not (rule["ScheduleExpression"] == "cron(0 6 * * ? *)"):
+        raise AssertionError()
     targets = aws(args, "events", "list-targets-by-rule", "--rule", rule_name)["Targets"]
     target = next(t for t in targets if t["Arn"] == config["FunctionArn"])
-    assert target["RetryPolicy"] == {"MaximumRetryAttempts": 2, "MaximumEventAgeInSeconds": 3600}
-    assert target["DeadLetterConfig"]["Arn"] != execution_queue
+    if not (target["RetryPolicy"] == {"MaximumRetryAttempts": 2, "MaximumEventAgeInSeconds": 3600}):
+        raise AssertionError()
+    if not (target["DeadLetterConfig"]["Arn"] != execution_queue):
+        raise AssertionError()
     verify_queue(args, target["DeadLetterConfig"]["Arn"])
     verify_queue(args, execution_queue)
     verify_alarm_routes(args)
@@ -306,23 +325,31 @@ def finalize(args):
         if result.get("FunctionError") or result.get("StatusCode") != 200:
             raise RuntimeError("Immediate pricing refresh failed; inspect Lambda logs. Schedule remains disabled.")
         refresh = json.loads(payload.read_text())
-        assert refresh.get("status") == "published", "Refresh did not publish a validated generation"
+        if not (refresh.get("status") == "published"):
+            raise AssertionError("Refresh did not publish a validated generation")
         if refresh.get("partial"):
             if not getattr(args, "allow_partial_refresh", False):
                 raise RuntimeError("Refresh retained older rates; schedule remains disabled. Review source gaps before --allow-partial-refresh.")
-            assert refresh.get("fresh_variants", 0) > 0, "Partial refresh has no freshly verified prices"
-            assert not refresh.get("failed_sources"), "Transport failures must be resolved before partial finalization"
+            if not (refresh.get("fresh_variants", 0) > 0):
+                raise AssertionError("Partial refresh has no freshly verified prices")
+            if not (not refresh.get("failed_sources")):
+                raise AssertionError("Transport failures must be resolved before partial finalization")
             print("WARNING: enabling scheduled retries with retained, older rates; freshness and partial-refresh alarms remain active.")
         print(json.dumps({"immediate_refresh": refresh}))
     after = verify_seed(args)
-    assert after[0]["pricing"]["pointer_revision"] > evidence[0]["pricing"]["pointer_revision"], "Refresh did not publish a new generation"
+    if not (after[0]["pricing"]["pointer_revision"] > evidence[0]["pricing"]["pointer_revision"]):
+        raise AssertionError("Refresh did not publish a new generation")
     for item in after:
-        assert item["pricing"]["generation_id"] == refresh["generation_id"], "Active generation differs from the verified refresh"
-        assert item["pricing"]["pointer_revision"] == refresh["pointer_revision"], "Active pointer differs from the verified refresh"
-        assert item["pricing"]["variants"] == refresh["variants"], "Refresh coverage differs from the active generation"
+        if not (item["pricing"]["generation_id"] == refresh["generation_id"]):
+            raise AssertionError("Active generation differs from the verified refresh")
+        if not (item["pricing"]["pointer_revision"] == refresh["pointer_revision"]):
+            raise AssertionError("Active pointer differs from the verified refresh")
+        if not (item["pricing"]["variants"] == refresh["variants"]):
+            raise AssertionError("Refresh coverage differs from the active generation")
     try:
         aws(args, "events", "enable-rule", "--name", rule_name)
-        assert aws(args, "events", "describe-rule", "--name", rule_name)["State"] == "ENABLED"
+        if not (aws(args, "events", "describe-rule", "--name", rule_name)["State"] == "ENABLED"):
+            raise AssertionError()
     except Exception:
         aws(args, "events", "disable-rule", "--name", rule_name)
         raise
@@ -345,7 +372,8 @@ if __name__ == "__main__":
     parser.add_argument("--readiness-timeout", type=int, default=180, help="Seconds to wait for required release replicas (0-600)")
     args = parser.parse_args()
     try:
-        assert aws(args, "sts", "get-caller-identity")["Account"] == args.account_id, "AWS account mismatch"
+        if not (aws(args, "sts", "get-caller-identity")["Account"] == args.account_id):
+            raise AssertionError("AWS account mismatch")
         if args.phase == "finalize" and not args.expected_image:
             raise RuntimeError("Finalization requires --expected-image from the reviewed release")
         if args.phase == "quiesce":

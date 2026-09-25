@@ -225,6 +225,11 @@ _READINESS = {
 # IDs are `area.action[.scope]` and are STABLE — a client keys off them, so an ID
 # is renamed only with a schema version bump.
 OPERATIONS = (
+    Operation("vault.credentials.register", summary="Register an own credential; shared scopes require additional server authority", mutates=True),
+    Operation("vault.credentials.metadata", summary="Update visible credential metadata with revision and ownership checks", mutates=True),
+    Operation("vault.credentials.delete", summary="Delete an authorized credential; running work is not stopped", mutates=True),
+    Operation("vault.identities.claim", summary="Record an own unverified identity claim; does not establish access", mutates=True),
+    Operation("vault.identities.unlink", summary="Unlink an own external identity", mutates=True),
     Operation(
         "auth.session.read",
         summary="Read the signed-in session and its expiry",
