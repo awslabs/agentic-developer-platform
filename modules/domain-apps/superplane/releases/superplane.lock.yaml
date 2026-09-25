@@ -251,7 +251,7 @@ schema:
     # which approved region a multi-region launch actually used, filled in once known so a
     # later recovery run does not have to re-derive it by re-checking every approved
     # region. Extends 033 on the same linear head; adds one nullable column, no new table.
-    version_files: 48
+    version_files: 49
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.

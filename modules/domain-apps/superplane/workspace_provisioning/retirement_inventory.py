@@ -148,12 +148,9 @@ def load_bootstrap_retirement_review(*, registration_store, workspace_id, org_id
         metadata = canonical[0]["actual_state_json"]
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
-        from dataclasses import fields
-        from superplane_bootstrap.registration import WorkspaceTarget
+        from superplane_bootstrap.registry import _target_mapping
 
-        expected = {
-            field.name: getattr(target, field.name) for field in fields(WorkspaceTarget)
-        }
+        expected = _target_mapping(target)
         if (
             not isinstance(metadata, dict)
             or metadata.get("workspace_bootstrap") != expected
