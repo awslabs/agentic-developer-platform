@@ -51,9 +51,10 @@
       "status": "PASS",
       "evidence": [
         "../2026-09-25-natural-window/result.json",
-        "../2026-09-25-v4/v4-criterion-report.json"
+        "../2026-09-25-v4/v4-criterion-report.json",
+        "public-final-transport/result.json"
       ],
-      "assessment": "Real public completed-task SSE naturally ended after601.046s with39heartbeats; samecursor14 reconnect returned HTTP200 snapshot and heartbeat. Completed read lane does not prove authored progress latency: distinct active authored events in V4 do."
+      "assessment": "Real public completed-task SSE naturally ended after601.046s with39heartbeats; samecursor14 reconnect returned HTTP200 snapshot and heartbeat. Completed read lane does not prove authored progress latency: distinct active authored events in V4 do. Repeated on final5e3 wrapper: natural600.778s with39heartbeats, then samecursor reconnectHTTP200; all connections closed."
     },
     "V3-06": {
       "status": "BLOCKED",
@@ -62,9 +63,10 @@
         "stream-installed/provenance.json",
         "stream-installed/source-parity.json",
         "stream-installed/cleanup-check.json",
-        "final-module-parity.json"
+        "final-module-parity.json",
+        "public-final-transport/result.json"
       ],
-      "assessment": "Qualification exposed missing route write-timeout wiring, now corrected. Actual installed-image production response/stream loop under realTCP saturation closed slowclient in10.054s; independent producer committed terminal in0.148s. Explicitrelaydisconnect released slot; all2049events and terminal recovered on replay. Controlled fixture store isolates transport pressure, zero sharedwrites/modelcalls. Public realtask replay is separately qualified. Subsequent deployed-source audit found StreamRegistry enforces concurrency caps per replica; frozen 2/task,10/principal,32/environment limits require deployment-wide enforcement. Passing write-timeout/TCP evidence does not establish those global limits; global-cap correction and qualification remain required."
+      "assessment": "Qualification exposed missing route write-timeout wiring, now corrected. Actual installed-image production response/stream loop under realTCP saturation closed slowclient in10.054s; independent producer committed terminal in0.148s. Explicitrelaydisconnect released slot; all2049events and terminal recovered on replay. Controlled fixture store isolates transport pressure, zero sharedwrites/modelcalls. Public realtask replay is separately qualified. Subsequent deployed-source audit found StreamRegistry enforces concurrency caps per replica; frozen 2/task,10/principal,32/environment limits require deployment-wide enforcement. Passing write-timeout/TCP evidence does not establish those global limits; global-cap correction and qualification remain required. Public final5e3 completed-task unreadbody experiment disconnected after20.531s and replayed exactevents8\u201314 includingterminal with artifactintegrity. This corroborates public reconnect independently of installedTCP fixture; global concurrency caps remain separately blocked."
     },
     "V3-07": {
       "status": "PASS",

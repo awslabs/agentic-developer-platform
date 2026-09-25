@@ -1,6 +1,6 @@
 {
   "README.md": "686917278295eebf38887b6ec3bccce7afd435f8bdda8d3795a10d363658bda6",
-  "criterion-report.json": "8617333ff6e0a1806d3f39ff95081eed2dbaaaac86056728149edb666dc903af",
+  "criterion-report.json": "4dfe24a5a2dd7553957a2f07e58e6a57ae892ba0cf8182b8581bb73dc633938c",
   "final-module-parity.json": "125c7b1bfb471016e87955dae8d3a658843cef4d464a030ed2823f996d8fa3de",
   "native-fault-actual-before-history.jsonl": "b0abec80c079f827cb5cd6f0c2f48c4a34eddf3c1eb2060825873a2bf5f8e592",
   "native-fault-actual-final.jsonl": "c3694a852353ea3f09d1a648c241a06ddb375d954f1f94574097b5d40c1581e3",
@@ -11,6 +11,10 @@
   "original-accepted.json": "b5468f2e43e10345c460a033378a5eccfcdd2928d549959cbbd98312b53ef923",
   "original-automatic-publication-events.ndjson": "a1967c13c3152cf043a93d85cfaaec56700d519addb9064fca3e604472ff67c4",
   "original-failed-task-final.json": "93dc03021e7fd453d1c37eaee9849d4680db40c2b97d9d32001a3e1491b7eeef",
+  "public-final-transport/connection-1.ndjson": "8bcf954bd2ed694d0db007c6a1a3215e853cff3ff9278e0f5f08e843a7aefef8",
+  "public-final-transport/connection-2.ndjson": "3a8d09cad2458a7594924d6172329ab9942ae1a8f76d412af0613cb8b6a3a96e",
+  "public-final-transport/replay.ndjson": "c59899db1b622ee78012e82b8d8655450e34ad08e0446193c32c8d6d62a96634",
+  "public-final-transport/result.json": "8e511aa302666d0fdd0633621d98f21b7c34c009580e9a47cd492bbcbc090f3e",
   "stream-installed/cleanup-check.json": "844adc79b88204fb650a175e14a6eb8946bceb5cde57d484d4971fc996c56850",
   "stream-installed/fixture.py": "9d24886087bad08a57a5f5c2375d3bc21dbba7bb7e783d70da7d2c1ac282779b",
   "stream-installed/installed-source.json": "d2c0429f18912b414e7fea84d1c06d3b24158933f4832a26f63407a41c7fec61",

@@ -1,0 +1,61 @@
+{
+  "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+  "started_at": "2026-09-25T05:51:09.876998+00:00",
+  "writes_performed": 0,
+  "new_tasks": 0,
+  "model_calls": 0,
+  "connections": [
+    {
+      "started_at": "2026-09-25T05:51:31.650041+00:00",
+      "last_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:14",
+      "frames": 40,
+      "heartbeats": 39,
+      "http_status": 200,
+      "request_headers_returned": {
+        "x-request-id": "2a7614a6-3ae1-458e-9c3b-2533ec5c341a",
+        "x-amzn-requestid": "c64fd648-6491-483f-beec-4e7e4e161dc7",
+        "x-amz-apigw-id": "EPbLpFWIIAMEJUg="
+      },
+      "close": "natural-eof",
+      "ended_at": "2026-09-25T06:01:32.427639+00:00",
+      "elapsed_seconds": 600.7776200509979
+    },
+    {
+      "started_at": "2026-09-25T06:01:32.427957+00:00",
+      "last_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:14",
+      "frames": 2,
+      "heartbeats": 1,
+      "http_status": 200,
+      "request_headers_returned": {
+        "x-request-id": "4fa21b49-6fd9-42aa-92d5-fd9738cec680",
+        "x-amzn-requestid": "1942d5eb-40e8-4d1b-afc2-cc201f6fba98",
+        "x-amz-apigw-id": "EPcphHD-oAMESZg="
+      },
+      "close": "observer-after-snapshot-and-heartbeat",
+      "ended_at": "2026-09-25T06:01:47.895165+00:00",
+      "elapsed_seconds": 15.467214895004872
+    }
+  ],
+  "artifact_proofs": [
+    {
+      "artifact_id": "art_88884573-66c5-4daf-9cd5-cf190a3946f5",
+      "bytes": 2656,
+      "sha256": "d5518a00498ba265fcd5bf4286fe0483c15a587a74d94271b1a4e33cc0768545",
+      "matches_report": true
+    }
+  ],
+  "public_unread_body_disconnect": {
+    "started_at": "2026-09-25T05:51:10.650378+00:00",
+    "last_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:14",
+    "body_read": false,
+    "limitation": "Twenty-second unread-body pause and disconnect; small fixture does not prove public TCP saturation.",
+    "http_status": 200,
+    "ended_at": "2026-09-25T05:51:31.181137+00:00",
+    "seconds_open": 20.53078671300318,
+    "closed_by_observer": true
+  },
+  "replay_http_status": 200,
+  "replay_exact_cursors_8_through_14": true,
+  "criterion_outcome": "PASS",
+  "finished_at": "2026-09-25T06:01:47.895461+00:00"
+}
