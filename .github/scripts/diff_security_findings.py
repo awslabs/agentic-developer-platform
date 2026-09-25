@@ -272,6 +272,7 @@ def extract_detect_secrets_fingerprints(
                         entry.get("filename") or result_path,
                         [entry.get("type", "unknown")],
                         [entry.get("line_number", 0)],
+                        entry.get("hashed_secret"),
                     )
                 )
     elif isinstance(results, list):
@@ -288,14 +289,26 @@ def extract_detect_secrets_fingerprints(
                 if isinstance(lines, dict) and lines
                 else [entry.get("line_number", 0)]
             )
-            records.append((entry.get("filename", ""), finding_types, line_numbers))
+            candidate_hash = entry.get("hashed_secret")
+            if not candidate_hash and isinstance(entry.get("secrets"), str):
+                # Historical private audit schema: retain compatibility without
+                # ever copying the candidate into a fingerprint or report.
+                candidate_hash = hashlib.sha1(entry["secrets"].encode()).hexdigest()
+            records.append((entry.get("filename", ""), finding_types, line_numbers, candidate_hash))
     else:
         return fingerprints
 
-    for filename, finding_types, line_numbers in records:
+    full_identity_required = bool(data.get("repository_matcher_policy"))
+    for filename, finding_types, line_numbers, candidate_hash in records:
+        if candidate_hash is not None and not re.fullmatch(r"[0-9a-f]{40}", candidate_hash):
+            raise ValueError("Invalid detect-secrets candidate hash")
+        if full_identity_required and not candidate_hash:
+            raise ValueError("Full-identity detect-secrets artifact lacks candidate hash")
         for finding_type in finding_types:
             for line_number in line_numbers:
                 fingerprint = f"{finding_type}:{filename}:{line_number}"
+                if candidate_hash:
+                    fingerprint += f":sha1:{candidate_hash}"
                 fingerprints.add(fingerprint)
                 if severities is not None:
                     severities[fingerprint] = UNRATED
@@ -354,6 +367,7 @@ def process_tool_findings(
     severities: dict[str, str] = {}
     sev_sources: dict[str, str] = {}
     found_files = []
+    current_full_token_policy = False
 
     for path in findings_dir.rglob("*"):
         if not path.is_file():
@@ -368,6 +382,7 @@ def process_tool_findings(
 
         # Detect format: SARIF vs plain JSON
         if tool == "detect-secrets":
+            current_full_token_policy |= data.get("repository_matcher_policy", {}).get("version") == 1
             current_fingerprints |= extract_detect_secrets_fingerprints(
                 data, severities, sev_sources
             )
@@ -398,7 +413,18 @@ def process_tool_findings(
     else:
         baseline_fingerprints = set()
 
+    legacy_partial = set()
+    if (tool == "detect-secrets" and current_full_token_policy
+            and baseline_data.get("repository_matcher_policy", {}).get("version") != 1):
+        # An old prefix-only hash cannot establish whether a complete token was
+        # resolved. Keep these identities explicitly pending outside the diff.
+        legacy_partial = {fp for fp in baseline_fingerprints
+                          if fp.startswith(("GitHub Token:", "JSON Web Token:"))}
+        baseline_fingerprints -= legacy_partial
     result = diff_findings(current_fingerprints, baseline_fingerprints)
+    if legacy_partial:
+        result["legacy_partial_identity_count"] = len(legacy_partial)
+        result["legacy_partial_identities_pending_review"] = sorted(legacy_partial)
     result["files_scanned"] = [str(f) for f in found_files]
     # Severity of each NEW finding (unknown when not resolvable, e.g. JSON tools)
     result["new_severities"] = {fp: severities.get(fp, "unknown") for fp in result["new"]}
@@ -478,6 +504,10 @@ def main() -> None:
             count = res.get("new_unrated_count", 0)
             if count:
                 print(f"  {tool}: {count} unrated finding(s)")
+
+    legacy_partial_count = sum(result.get("legacy_partial_identity_count", 0) for result in summary.values())
+    if legacy_partial_count:
+        print(f"{legacy_partial_count} legacy partial token identities require separate review; not counted as resolved")
 
     # Hard gate: fail if any NEW finding matches a --fail-on severity.
     # Baseline-refresh runs pass no --fail-on and stay advisory.

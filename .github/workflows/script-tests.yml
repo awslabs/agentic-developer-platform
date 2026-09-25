@@ -17,6 +17,8 @@ on:
       - '.github/scripts/tests/**'
       # Subject scripts under test
       - '.github/scripts/diff_security_findings.py'
+      - '.github/scripts/run_detect_secrets.py'
+      - '.github/scripts/tests/test_complete_secret_identities.py'
       - '.github/scripts/discover_dockerfiles.py'
       - '.github/scripts/post_security_pr_comment.py'
       - '.github/scripts/ensure_umbrella_epic.py'
@@ -131,6 +133,8 @@ on:
       - '.github/scripts/tests/**'
       # Subject scripts under test
       - '.github/scripts/diff_security_findings.py'
+      - '.github/scripts/run_detect_secrets.py'
+      - '.github/scripts/tests/test_complete_secret_identities.py'
       - '.github/scripts/discover_dockerfiles.py'
       - '.github/scripts/post_security_pr_comment.py'
       - '.github/scripts/ensure_umbrella_epic.py'
@@ -282,6 +286,7 @@ jobs:
         run: |
           pytest \
             tests/test_diff_security_findings.py \
+            tests/test_complete_secret_identities.py \
             tests/test_discover_dockerfiles.py \
             tests/test_post_security_pr_comment.py \
             tests/test_security_agent_profile.py \

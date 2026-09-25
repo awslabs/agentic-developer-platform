@@ -382,7 +382,7 @@ jobs:
         run: |
           set -euo pipefail
           cp -f .github/security/.secrets.baseline detect-secrets-results.json
-          detect-secrets scan \
+          python3 .github/scripts/run_detect_secrets.py scan \
             --baseline detect-secrets-results.json \
             --exclude-files '^\.github/security/\.secrets\.baseline$' \
             --exclude-files '^detect-secrets-results\.json$'
@@ -414,7 +414,7 @@ jobs:
       - name: Audit for new secrets
         run: |
           set -euo pipefail
-          detect-secrets audit --report --json detect-secrets-results.json \
+          python3 .github/scripts/run_detect_secrets.py audit --report --json detect-secrets-results.json \
             > detect-secrets-audit.json
 
           python3 - <<'PY'
@@ -431,22 +431,12 @@ jobs:
               sys.exit("::error::detect-secrets audit report has no results list")
 
           scan = json.loads(Path("detect-secrets-results.json").read_text())
-          scan_candidates = {
-              (entry.get("filename") or filename, entry.get("type"), str(entry.get("line_number", 0)))
-              for filename, entries in scan.get("results", {}).items()
-              for entry in entries
-              if entry.get("is_secret") is not False
-          }
-          audit_candidates = {
-              (record.get("filename"), finding_type, str(line_number))
-              for record in results
-              if record.get("category") != "FALSE_POSITIVE"
-              for finding_type in record.get("types", [])
-              for line_number in (record.get("lines") or {"0": ""})
-          }
-          missing = scan_candidates - audit_candidates
-          if missing:
-              sys.exit(f"::error::detect-secrets audit omitted {len(missing)} current scan candidate(s)")
+          # The v2 report retains line numbers and full-token hashes, but never
+          # raw candidate values or source snippets. Same-line distinct tokens
+          # must each have their own audit identity.
+          sys.path.insert(0, ".github/scripts")
+          from run_detect_secrets import validate_audit_coverage
+          validate_audit_coverage(scan, report)
 
           categories = Counter(record.get("category", "UNKNOWN") for record in results)
           category_counts = ", ".join(

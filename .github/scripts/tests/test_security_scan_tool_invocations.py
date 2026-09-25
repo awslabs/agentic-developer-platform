@@ -106,7 +106,7 @@ def test_scan_does_not_ask_for_the_plugin_list(workflow):
     """`--list-all-plugins` prints detector names and exits 0 — not findings."""
     script = strip_comments(job_script(workflow, "detect-secrets"))
     assert "--list-all-plugins" not in script
-    assert "detect-secrets scan" in script
+    assert "python3 .github/scripts/run_detect_secrets.py scan" in script
 
 
 def test_scan_reads_results_out_of_the_baseline_not_stdout(workflow):
@@ -121,7 +121,7 @@ def test_scan_reads_results_out_of_the_baseline_not_stdout(workflow):
     ), "must scan into a copy so the committed baseline is not modified"
     assert "--baseline detect-secrets-results.json" in script
     # The defect being locked out: capturing stdout from `scan --baseline`.
-    assert not re.search(r"detect-secrets scan[^\n]*>\s*detect-secrets-results\.json", script)
+    assert not re.search(r"run_detect_secrets\.py scan[^\n]*>\s*detect-secrets-results\.json", script)
 
 
 def test_scanner_failures_are_not_swallowed(workflow):
@@ -153,7 +153,7 @@ def test_audit_reads_the_current_scan_artifact(workflow):
     )
     assert "audit --report --json detect-secrets-results.json" in script
     assert "audit --report --json .github/security/.secrets.baseline" not in script
-    assert "audit omitted" in script
+    assert "validate_audit_coverage(scan, report)" in script
 
 
 def test_audit_logs_only_aggregate_counts(workflow):
@@ -217,7 +217,7 @@ def test_fixed_invocation_finds_a_planted_secret(tmp_path):
     artifact.write_text(BASELINE_PATH.read_text())
     proc = subprocess.run(
         [
-            "detect-secrets", "scan",
+            sys.executable, str(REPO / ".github/scripts/run_detect_secrets.py"), "scan",
             "--baseline", "detect-secrets-results.json",
             "--exclude-files", r"^\.github/security/\.secrets\.baseline$",
             "--exclude-files", r"^detect-secrets-results\.json$",
@@ -237,7 +237,7 @@ def test_fixed_invocation_finds_a_planted_secret(tmp_path):
     audit = tmp_path / "detect-secrets-audit.json"
     proc = subprocess.run(
         [
-            "detect-secrets", "audit", "--report", "--json",
+            sys.executable, str(REPO / ".github/scripts/run_detect_secrets.py"), "audit", "--report", "--json",
             "detect-secrets-results.json",
         ],
         cwd=tmp_path,
@@ -258,8 +258,12 @@ def test_fixed_invocation_finds_a_planted_secret(tmp_path):
         "detect-secrets", tmp_path, tmp_path / ".github/security"
     )
     assert summary["new_count"] == 2
-    assert "AWS Access Key:planted.py:1" in summary["new"]
-    assert summary["new_severities"]["AWS Access Key:planted.py:1"] == "unrated"
+    assert any(fp.startswith("AWS Access Key:planted.py:1:sha1:") for fp in summary["new"])
+    fingerprint = next(
+        fp for fp in summary["new"]
+        if fp.startswith("AWS Access Key:planted.py:1:sha1:")
+    )
+    assert summary["new_severities"][fingerprint] == "unrated"
 
 
 # --------------------------------------------------------------------------
