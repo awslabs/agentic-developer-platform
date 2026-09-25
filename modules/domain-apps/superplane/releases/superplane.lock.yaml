@@ -255,7 +255,8 @@ schema:
     # #6127 scopes domain user subject uniqueness to each organization.
     # #6048 adds explicit cluster sharing eligibility and per-workspace memberships.
     # Explicit cluster scope children preserve maintained organization grant authority.
-    version_files: 52
+    # #5927 adds the original-instance native command journal.
+    version_files: 53
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
