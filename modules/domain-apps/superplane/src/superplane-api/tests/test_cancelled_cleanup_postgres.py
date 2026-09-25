@@ -22,6 +22,11 @@ from app.routers.proxy import (
 from app.schemas.proxy import CancelWorkloadRequest, DeleteDeploymentRequest
 from app.services import controller_deployments, workload_cancellation
 from app.services.provisioning import ProvisioningRefused
+from tests.test_batch_deployment_postgres import (
+    batch_workload as batch_workload,
+    batch_runtime as batch_runtime,
+    create as create_batch,
+)
 from tests.test_controller_deployment_postgres import (
     api_create,
     workload as workload,
@@ -504,4 +509,81 @@ async def test_paid_cleanup_recovers_lost_domain_registration_without_second_adm
                 "SELECT count(*) FROM controller_deployment_operations WHERE action='teardown'"
             )
             == 1
+        )
+
+
+async def test_batch_cancelled_source_passes_preview_admission_and_paid_assignment(
+    batch_workload, batch_runtime, ledger, monkeypatch
+):
+    from app.routers.proxy import cancel_batch, delete_batch, preview_batch_teardown
+
+    c = batch_workload
+    created = await create_batch(c)
+    source = await batch_runtime.publish(SimpleNamespace(**created))
+    original = source.server._provider_call
+
+    async def interrupted_before_launch(call):
+        assert call.operation_kind == "launch"
+        await expire(c, created["operation_id"])
+        raise OperationRefused("simulated crash before original launch")
+
+    source.server._provider_call = interrupted_before_launch
+    with pytest.raises((OperationRefused, ProviderCallRefused)):
+        await source.server.dispatch(
+            {
+                "token": source.token,
+                "method": "execute_step",
+                "arguments": {"step_id": "1"},
+            }
+        )
+    source.server._provider_call = original
+    c.composition.ledger = ledger[0]
+    monkeypatch.setattr(workload_cancellation, "async_session_factory", c.sessions)
+    job_id = uuid.UUID(str(created["job_id"]))
+    with c.actor(workspace_id=c.workload_id):
+        async with c.sessions() as db:
+            cancelled = await cancel_batch(
+                c.workload_id,
+                job_id,
+                CancelWorkloadRequest(operation_id=created["operation_id"]),
+                c.api_request,
+                c.org_id,
+                db,
+            )
+    assert cancelled["cancellation_requested"]
+    assert await takeover(c, created["operation_id"]) is not None
+    body = DeleteDeploymentRequest(operation_id=uuid.uuid4())
+    with c.actor(workspace_id=c.workload_id):
+        async with c.sessions() as db:
+            document = await preview_batch_teardown(
+                c.workload_id, job_id, body, c.api_request, c.org_id, db
+            )
+    approval = await c.approve(document)
+    body = body.model_copy(
+        update={"approval_id": approval, "plan_revision": document["revision"]}
+    )
+    with c.actor(workspace_id=c.workload_id):
+        async with c.sessions() as db:
+            stopped = await delete_batch(
+                c.workload_id, job_id, body, c.api_request, c.org_id, db
+            )
+    cleanup = await batch_runtime.publish(SimpleNamespace(**stopped))
+    assert cleanup.plan.data["workload"]["kind"] == "batch"
+    assert [step["operation_kind"] for step in cleanup.plan.steps] == ["delete_cluster"]
+    # No compute ownership was ever established, so this test stops at the
+    # assignment gate and does not invent a capacity row to authorize deletion.
+    assert batch_runtime.cloud.launches == 0
+    async with c.connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT stage FROM harness_provider_call_intent WHERE operation_id=$1",
+                created["operation_id"],
+            )
+            == "intended"
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM operation_budget_reservations WHERE state='released'"
+            )
+            == 0
         )
