@@ -260,6 +260,9 @@ def upgrade():
 
 
 def downgrade():
+    op.execute(
+        "LOCK TABLE cluster_memberships, cluster_credential_authorities IN ACCESS EXCLUSIVE MODE"
+    )
     op.execute("""DO $$ BEGIN
         IF EXISTS(SELECT 1 FROM cluster_memberships) THEN
             RAISE EXCEPTION 'Retain membership identity and removal history before rollback';

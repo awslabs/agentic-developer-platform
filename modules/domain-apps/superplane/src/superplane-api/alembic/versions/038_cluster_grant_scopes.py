@@ -46,6 +46,8 @@ def upgrade():
 
 
 def downgrade():
+    # Keep the history check and destructive DDL atomic with concurrent writers.
+    op.execute("LOCK TABLE organization_grant_cluster_scopes IN ACCESS EXCLUSIVE MODE")
     op.execute(
         "DO $$ BEGIN IF EXISTS (SELECT 1 FROM organization_grant_cluster_scopes) "
         "THEN RAISE EXCEPTION 'cluster scope history must be explicitly preserved before rollback'; "
