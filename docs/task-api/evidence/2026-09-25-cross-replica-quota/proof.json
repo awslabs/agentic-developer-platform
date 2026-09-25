@@ -1,0 +1,16 @@
+{
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "source_sha": "a16a2a851d17998b8cd51dfa47b77275251229cc",
+  "image": "sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260",
+  "command": "python3 /home/ubuntu/task-delivery-tmp/transport-independent/cross_replica_probe.py --image-digest sha256:fddd951f2375102355024db47f5e405ca331bfb991ac3f028ce6871f0a826260 --source-sha a16a2a851d17998b8cd51dfa47b77275251229cc",
+  "exit_status": 0,
+  "outcome": "PASS",
+  "held_seconds": 60.53813411699957,
+  "lease_seconds": 45,
+  "public_recovered_seconds_after_one_close": 1.757246,
+  "qualified_scope": "Deployment-wide two-stream Task cap, renewal beyond initial lease, public refusal/re-admission and cleanup; native private Redis fixture separately tests principal/environment caps and lease-loss cases.",
+  "task_state_writes": 0,
+  "new_tasks": 0,
+  "provider_calls": 0,
+  "closure_gate": "Root accepted functional validation; issue closure waits code PR6040 CI/merge and independent V3 report merge."
+}
