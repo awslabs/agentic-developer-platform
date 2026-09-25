@@ -359,7 +359,16 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
     operation, token = await admit(
         "provision", admitted_request=preview.request, prepare_registration=register
     )
-    if deny_node_role:
+    if probe_mode:
+        from superplane_executor.network_probe_contract import for_operation
+        from superplane_executor.plan import Plan
+
+        contract = for_operation(operation, Plan.read(operation, target))
+        assert contract["org_id"] == ws["org_id"]
+        assert contract["workspace_id"] == ws["id"]
+        assert contract["service_uid"] == "approved-service"
+        assert preview.deployment_request["args"] == []
+    if deny_node_role or probe_mode == "foreign_service":
         # The provider returns UNKNOWN; Harness retains the original unsettled
         # intent for recovery rather than terminalizing it as unresolved. The
         # finalizer refuses empty inventory, not the prerequisite exception.
@@ -373,7 +382,12 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
                     "arguments": {"step_id": "1"},
                 }
             )
-        assert access_checks and cloud.launches == 0
+        if deny_node_role:
+            assert access_checks
+        else:
+            # Service proof runs before cloud/node-role checks and before spend.
+            assert service_reads == [0] and not access_checks
+        assert cloud.launches == 0
         assert not cloud.exists and not cloud.ever_created
         assert not aws.attachments and not aws.peerings and not aws.routes
         async with pool.acquire() as c:
