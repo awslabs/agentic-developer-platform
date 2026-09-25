@@ -11,6 +11,7 @@ import base64
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -53,7 +54,8 @@ spec.loader.exec_module(worker)
 
 
 @pytest.mark.parametrize(
-    "scenario", ["success", "repair", "steer", "cancel", "unknown", "tools", "tools_repair"]
+    "scenario",
+    ["success", "repair", "steer", "cancel", "unknown", "tools", "tools_repair", "tools_docker"],
 )
 def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario):
     def now():
@@ -67,6 +69,42 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         ).read_text()
     )
     tool_mode = scenario.startswith("tools")
+    actual_validation = scenario == "tools_docker"
+    image = os.environ.get("ADP_CODEX_VALIDATION_IMAGE")
+    if actual_validation and not image:
+        pytest.skip("requires an explicitly provisioned immutable Docker image")
+    tool_arguments = {}
+    if actual_validation:
+        repository = tmp_path / "validation-repository"
+        repository.mkdir()
+
+        def git(*args):
+            return subprocess.check_output(
+                [
+                    "/usr/bin/git",
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@localhost",
+                    *args,
+                ],
+                cwd=repository,
+                text=True,
+            ).strip()
+
+        git("init", "-q")
+        (repository / "test.sh").write_text('test "$(cat value.txt)" = expected\n')
+        (repository / "value.txt").write_text("expected\n")
+        git("add", "test.sh", "value.txt")
+        git("commit", "-qm", "Task validation fixture")
+        validation_head = git("rev-parse", "HEAD")
+        tool_arguments = {"check": "acceptance", "commit": validation_head}
+        validation_binding = tmp_path / "validation-binding.json"
+        monkeypatch.setenv("ADP_CODEX_VALIDATION_BINDING_FILE", str(validation_binding))
+        monkeypatch.setenv(
+            "ADP_TASK_TOOL_ROUTES",
+            json.dumps({"validation.run": "local:lib.codex_validation_tool.create"}),
+        )
     from src.agentauth.task_tool_policy import codex_tool_name
     from src.agentauth.task_model_binding import TASK_RESPONSES_TOOLS_REQUEST_SHAPE
     import rfc8785
@@ -82,6 +120,13 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "strict": False,
         },
     }
+    if actual_validation:
+        tool["definition"]["parameters"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"check": {"type": "string"}, "commit": {"type": "string"}},
+            "required": ["check", "commit"],
+        }
     if tool_mode:
         definition = json.loads(golden["harness"]["snapshot"]["definition"])
         definition["optionalCapabilities"] = ["tests.run"]
@@ -177,6 +222,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         require_assignment=lambda *args: None, read=lambda uid: {"body": json.dumps(envelope)}
     )
     events = []
+    validated_receipts = []
     budget = SimpleNamespace(
         _target=lambda **kw: ReservationTarget(
             org_id="fixture",
@@ -258,7 +304,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                     "namespace": "mcp__adp",
                     "call_id": "fixture_call",
                     "name": tool["definition"]["name"],
-                    "arguments": "{}",
+                    "arguments": json.dumps(tool_arguments),
                 }
             ]
         from src.agentauth.task_responses_tools_contract import TaskToolsResponsesResult
@@ -330,6 +376,31 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
 
         def gateway_attempt(self, body):
             runtime.register_attempt(identity=self.identity(False), body=body)
+            if actual_validation:
+                identity = self.identity()
+                validation_binding.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": "1.0",
+                            "attempt": {
+                                "run": {
+                                    key: getattr(identity, key)
+                                    for key in ("task_id", "invocation_id", "generation")
+                                },
+                                "runtime_attempt_id": identity.runtime_attempt_id,
+                            },
+                            "repository_path": str(repository),
+                            "checks": [
+                                {
+                                    "name": "acceptance",
+                                    "image": image,
+                                    "argv": ["/bin/sh", "test.sh"],
+                                    "max_output_bytes": 8192,
+                                }
+                            ],
+                        }
+                    )
+                )
             return {
                 "schema_version": "1.0",
                 "operation_status": "confirmed",
@@ -382,9 +453,22 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             ).model_validate(body)
             return asyncio.run(routes.tool_operation(parsed, SimpleNamespace()))
 
+        def gateway_tool_authorize(self, body):
+            from src.agentauth.task_tool_routes import ToolAuthorizationBody, authorize_tool
+            from src.agentauth.task_runtime_routes import require_body_attempt
+
+            parsed = ToolAuthorizationBody.model_validate(body)
+            identity = self.identity()
+            require_body_attempt(identity, parsed.attempt)
+            return authorize_tool(
+                store, SimpleNamespace(get=lambda **kwargs: policy), identity, parsed.tool
+            )
+
         def tool(self, name, body):
             assert name == tool["permission"]
             events.append("tool-effect")
+            if actual_validation:
+                return super().tool(name, body)
             content = b'{"validated":true}'
             record = reads.put_run_artifact(
                 attempt=self.identity(),
@@ -446,6 +530,27 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             from src.agentauth.task_budget_settlement import settle_task_admission
 
             identity = self.identity()
+            if actual_validation:
+                from src.agentauth.task_validation_evidence import TaskValidationEvidence
+                from src.agentauth.task_tool_routes import authorize_tool
+
+                reader = TaskValidationEvidence(
+                    store,
+                    artifacts=reads,
+                    authorize=lambda current, permission: authorize_tool(
+                        store, SimpleNamespace(get=lambda **kwargs: policy), current, permission
+                    ),
+                )
+                validated_receipts.extend(reader.read(identity=identity, commit=validation_head))
+                assert reader.read(identity=identity, commit="f" * 40) == []
+                from src.tasks.store import TaskStoreError
+
+                with monkeypatch.context() as altered:
+                    altered.setattr(
+                        reads, "read_artifact", lambda **kwargs: b"forged execution bytes"
+                    )
+                    with pytest.raises(TaskStoreError, match="artifact"):
+                        reader.read(identity=identity, commit=validation_head)
             result = commands.finalize(identity, body)
             settled = asyncio.run(settle_task_admission(store, identity, budget=admission_budget))
             assert settled is (scenario != "unknown")
@@ -477,8 +582,28 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         events,
     )
     assert len(model_requests) == (
-        3 if scenario == "tools_repair" else 2 if scenario in {"repair", "steer", "tools"} else 1
+        3
+        if scenario == "tools_repair"
+        else 2
+        if scenario in {"repair", "steer", "tools", "tools_docker"}
+        else 1
     )
+    if actual_validation:
+        from src.agentauth.task_tool_receipts import TaskToolReceipts
+        from src.tasks.records import task_ops_partition
+
+        stored = store._get(
+            task_ops_partition(assignment.task_id), TaskToolReceipts._key("fixture_call")
+        )
+        assert stored["operation_status"] == "confirmed"
+        execution = json.loads(stored["content"])["result"]
+        assert execution["status"] == "passed" and execution["commit"] == validation_head
+        assert execution["check"] == "acceptance" and execution["exitCode"] == 0
+        assert len(validated_receipts) == 1
+        assert (
+            validated_receipts[0]["commit"] == validation_head
+            and validated_receipts[0]["status"] == "passed"
+        )
     if tool_mode:
         assert events.count("tool-effect") == 1
         for invocation in model_requests[1:]:

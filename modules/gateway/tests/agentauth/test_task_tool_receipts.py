@@ -289,3 +289,53 @@ def test_durable_history_rechecks_tool_authority(journal, transcript):
     journal.policy["allowed_tools"] = []
     with pytest.raises(HTTPException):
         journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history)
+
+
+@pytest.mark.parametrize("phase", ["claim", "settle"])
+def test_metadata_version_conflict_rechecks_authority_without_reexecuting_tool(journal, monkeypatch, phase):
+    row = journal.service.claim(**journal.claim)[0] if phase == "settle" else None
+    original = journal.store._client.transact_write_items
+    calls = 0
+
+    def write(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            journal.store._client.update_item(
+                TableName=journal.store.table_name,
+                Key=_serialize({"event_id": task_partition(journal.identity.task_id), "arrived_at": "META"}),
+                UpdateExpression="ADD #v :one",
+                ExpressionAttributeNames={"#v": "version"},
+                ExpressionAttributeValues=_serialize({":one": 1}),
+            )
+        return original(**kwargs)
+
+    monkeypatch.setattr(journal.store._client, "transact_write_items", write)
+    if phase == "claim":
+        result, created = journal.service.claim(**journal.claim)
+        assert created and result["operation_status"] == "pending"
+    else:
+        result = journal.service.settle(
+            identity=journal.identity, call_id="call_1", owner_token=row["owner_token"], status="confirmed", content="verified"
+        )
+        assert result["operation_status"] == "confirmed"
+    assert calls == 2
+    assert journal.service.claim(**journal.claim)[1] is False
+
+
+def test_uncertain_dynamodb_settlement_is_not_automatically_resent(journal, monkeypatch):
+    from botocore.exceptions import EndpointConnectionError
+
+    row, _ = journal.service.claim(**journal.claim)
+    calls = 0
+
+    def unavailable(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise EndpointConnectionError(endpoint_url="https://fixture.invalid")
+
+    monkeypatch.setattr(journal.store._client, "transact_write_items", unavailable)
+    with pytest.raises(EndpointConnectionError):
+        journal.service.settle(identity=journal.identity, call_id="call_1", owner_token=row["owner_token"], status="confirmed", content="verified")
+    assert calls == 1
+    assert journal.service.read(journal.identity.task_id, "call_1")["operation_status"] == "pending"

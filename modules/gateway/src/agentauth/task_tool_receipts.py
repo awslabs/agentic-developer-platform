@@ -87,7 +87,19 @@ class TaskToolReceipts:
             *self.repository._authority_condition_checks(snapshot=task, runtime_attempt_id=identity.runtime_attempt_id),
         ]
 
-    def claim(self, *, identity, turn_id, call_id, tool, arguments):
+    def _metadata_conflict(self, error, task):
+        reasons = error.response.get("CancellationReasons", [])
+        if (
+            len(reasons) < 2
+            or reasons[1].get("Code") != "ConditionalCheckFailed"
+            or any(reason.get("Code") not in {None, "None"} for index, reason in enumerate(reasons) if index != 1)
+        ):
+            return False
+        current = self.repository.read_task(task["task_id"])
+        stable = ("state", "invocation_id", "generation", "runtime_attempt_id", "scope", "deadline_at", "grant_digest", "tool_grants")
+        return bool(current) and all(current.get(key) == task.get(key) for key in stable)
+
+    def claim(self, *, identity, turn_id, call_id, tool, arguments, _conflicts=0):
         task = self._current(identity, tool)
         try:
             canonical_arguments = rfc8785.dumps(arguments)
@@ -169,6 +181,10 @@ class TaskToolReceipts:
             existing = self.read(identity.task_id, call_id)
             if existing and existing.get("request_digest") == digest:
                 return existing, False
+            if _conflicts < 3 and self._metadata_conflict(error, task):
+                # A rejected transaction performed no effect. Re-read current
+                # authority and Task version; never repeat an uncertain send.
+                return self.claim(identity=identity, turn_id=turn_id, call_id=call_id, tool=tool, arguments=arguments, _conflicts=_conflicts + 1)
             raise TaskStoreError("tool claim lost current authority") from None
 
     def verify_history(self, *, identity, turn_id, history):
@@ -268,7 +284,7 @@ class TaskToolReceipts:
             raise TaskStoreError("tool history includes unconfirmed calls")
         return True
 
-    def settle(self, *, identity, call_id, owner_token, status, content=None, is_error=False):
+    def settle(self, *, identity, call_id, owner_token, status, content=None, is_error=False, _conflicts=0):
         if status not in {"confirmed", "unknown", "rejected"} or type(is_error) is not bool:
             raise TaskStoreError("invalid tool outcome")
         if (status == "confirmed" and (not isinstance(content, str) or len(content.encode()) > 32768)) or (
@@ -306,6 +322,16 @@ class TaskToolReceipts:
                     *self._fences(task, identity),
                 ]
             )
-        except ClientError:
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "TransactionCanceledException" and _conflicts < 3 and self._metadata_conflict(error, task):
+                return self.settle(
+                    identity=identity,
+                    call_id=call_id,
+                    owner_token=owner_token,
+                    status=status,
+                    content=content,
+                    is_error=is_error,
+                    _conflicts=_conflicts + 1,
+                )
             raise TaskStoreError("tool receipt settlement could not be confirmed") from None
         return updated

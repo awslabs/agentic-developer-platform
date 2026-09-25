@@ -258,3 +258,42 @@ are test fixtures, not generated application stories. The backend is not yet
 registered as a Task tool or a source of durable completion records. Kubernetes
 workers need a trusted executor service; mounting the Docker socket into the SDK
 child is not part of this design. Existing legacy validation behavior is unchanged.
+
+
+## Named Task validation tool and durable evidence reader
+
+`local:lib.codex_validation_tool.create` connects the existing Task local-tool
+registry to the isolated executor. Its binding file is written by a trusted
+workspace provisioner for one exact Task attempt. The child supplies only a named
+check and expected commit; workspace paths, commands, image and limits come from
+that host binding. The handler reauthorizes `validation.run` before execution,
+before artifact publication and before returning. It stores the canonical result
+through the existing run-bound Task artifact API and verifies the deterministic
+artifact identity/digest. Failed checks remain confirmed execution receipts with
+`status=failed`; they are never represented as passing validation.
+
+`TaskValidationEvidence` reads only confirmed validation tool journal rows for the
+current attempt, verifies request binding, matches results to requested checks and
+commits, and reads the actual artifact bytes through the existing S3 integrity
+checks. It projects commit/check/specification/environment/status/receipt fields
+for completion adapters. An uploaded report or a model citation is insufficient.
+Wrong-head results are excluded; unavailable or altered execution artifacts fail.
+
+The combined SDK/worker/gateway suite now has eight passing scenarios when an
+immutable Docker image is supplied. The new scenario executes a named check in
+an actual container against a real Git commit, persists the result in Moto-backed
+DynamoDB/S3, continues the official SDK, and verifies the durable validation record
+before fixture finalization. It separately refuses forged artifact bytes and
+excludes a different commit. Inference, HTTP/IAM delivery and workspace provisioning
+remain fixtures; this is not a live generated-story acceptance result.
+
+Seven local-tool authorization/input tests and 30 worker-client tests pass. All
+47 gateway tool-route/journal tests pass. Journal retries are bounded to explicit
+Task-metadata version conflicts with unchanged authority/state and no other failed
+transaction condition. Tests inject a real DynamoDB condition conflict for claim
+and settlement, retain cancellation/model-mutation fences, and prove uncertain
+DynamoDB sends are not automatically repeated. No tool effect is retried.
+
+Focused lint and auth fingerprint checks pass. The workspace provisioner, concrete
+repository adapters, full persona completion wiring, deployed executor backend,
+OTLP operations and live story qualification remain outstanding.
