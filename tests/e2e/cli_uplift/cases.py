@@ -292,6 +292,13 @@ CASES = (
         "Credential/identity metadata and mutation previews use the served CLI without reading secrets or writing provider claims",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E32",
+        "#5632",
+        "story-reads",
+        "Served knowledge discovery/status errors and soft-delete previews; live indexing and retrieval acceptance held",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

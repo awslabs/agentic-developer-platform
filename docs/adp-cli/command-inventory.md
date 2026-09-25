@@ -156,3 +156,21 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity list` |  | `--json`, `--provider` |
 | `adp identity link` |  | `--dry-run`, `--json`, `--provider`, `--provider-user-id`, `--resume`, `--yes` |
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
+
+## Knowledge and indexing (#5632)
+
+Source implementation; dedicated live indexing/retrieval acceptance remains held. See [knowledge](knowledge.md).
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp knowledge add` |  | `--file`, `--json`, `--key`, `--yes` |
+| `adp knowledge list` |  | `--json`, `--page`, `--page-size`, `--scope`, `--status`, `--type` |
+| `adp knowledge show` | `asset_id` | `--json` |
+| `adp knowledge delete` | `asset_id` | `--json`, `--yes` |
+| `adp knowledge status` | `asset_id` | `--json` |
+| `adp knowledge watch` | `asset_id` | `--interval`, `--json`, `--timeout` |
+| `adp knowledge reindex` | `asset_id` | `--json`, `--key`, `--yes` |
+| `adp knowledge bulk preview` |  | `--file`, `--json` |
+| `adp knowledge bulk commit` |  | `--expect-hash`, `--json`, `--preview-id`, `--yes` |
+| `adp admin indexing list` |  | `--json`, `--page`, `--page-size` |
+| `adp admin indexing show` |  | `--json`, `--run` |

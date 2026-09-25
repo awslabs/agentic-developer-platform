@@ -37,7 +37,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5629 | [Activity CLI](agent.md): list/chain/detail/status/wait/transcript/SSE and capability-gated controls; live acceptance held | Existing Activity/ControlService; Task input/cancel remain Task API operations |
 | #5630 | Recovery and integrated CLI qualification | Existing AI-DLC and regression runner |
 | #5631 | [Credential and identity CLI](vault.md), source implementation; live acceptance held | Existing vault and identity APIs; metadata revision adapter, protected input and unverified claim readback |
-| #5632 | Knowledge assets and indexing progress | Existing knowledge/indexing APIs |
+| #5632 | [Knowledge assets and indexing progress](knowledge.md) | CRUD/status/watch, keyed reindex, exact bulk receipts, guarded admin indexing; E32 reads/previews; live retrieval acceptance held |
 | #5633 | Personal Bedrock routing and administrator mappings | Existing routing helpers/services |
 | #5634 | GitHub installations, App keys and org bindings | Existing GitHub helpers/services |
 | #5635 | GitLab connection and agent readiness | Existing GitLab integration |
