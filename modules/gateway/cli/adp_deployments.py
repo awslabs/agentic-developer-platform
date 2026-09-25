@@ -940,6 +940,13 @@ def setup_port(deployment):
 def helper_command(deployment, adp_path):
     environment = deployment.environment()
     environment["ADP_DEPLOYMENT_SOURCE"] = "setup"
+    # Claude invokes this persisted helper outside the setup shell. Preserve
+    # its identity and membership pin so another terminal cannot retarget it.
+    # Keep these out of Deployment.environment(): raw-token acquisition uses
+    # that environment after deliberately clearing tenant pins.
+    for key in ("ADP_TENANT_ID", "ADP_TENANT_SUB", "ADP_TENANT_SOURCE", "ADP_TENANT_MODE", "ADP_TENANT_MEMBERSHIP"):
+        if key in os.environ:
+            environment[key] = os.environ[key]
     return shlex.join(["env", "-u", "ADP_DEPLOYMENT", *[f"{key}={value}" for key, value in environment.items()], adp_path, "token"])
 
 
