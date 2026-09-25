@@ -4,6 +4,7 @@
 # ruff: noqa: F811
 
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 import uuid
@@ -158,10 +159,34 @@ async def interrupted(workload, worker_runtime, ledger, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("workload", [False, True, "regions"], indirect=True)
 async def test_cancelled_source_cleanup_has_own_grant_and_retains_unknown_creation(
     interrupted,
 ):
     f = interrupted
+    parameters = f.worker.operation.request.parameters
+    raw_plan = json.loads(parameters["controller_plan"])
+    assert raw_plan != f.worker.plan.data
+    assert "certificate_authority_sha256" in raw_plan
+    assert "certificate_authority" not in raw_plan
+    assert (
+        f.worker.plan.data["certificate_authority"]
+        == parameters["controller_certificate_authority"]
+    )
+    if raw_plan["version"] == 4:
+        assert "regions_sha256" in raw_plan and "regions" not in raw_plan
+        assert f.worker.plan.data["regions"] == json.loads(
+            parameters["controller_regions"]
+        )
+    async with f.c.connections.connect() as connection:
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM harness_allocation_resource "
+                "WHERE operation_id=$1 AND kind='kubernetes_node'",
+                f.created.operation_id,
+            )
+            == 1
+        )
     body = await approve_cleanup(f.c, f.created)
     stopped = await submit(f.c, f.created, body)
     cleanup = await f.runtime.publish(stopped)
@@ -184,6 +209,8 @@ async def test_cancelled_source_cleanup_has_own_grant_and_retains_unknown_creati
         await f.runtime.execute(cleanup)
     assert f.runtime.cloud.launches == 1
     assert not f.runtime.cloud.exists
+    assert f.runtime.kube.node_deleted
+    assert ("DELETE", "/api/v1/nodes/allocated-node") in f.runtime.kube.requests
     async with f.c.connections.connect() as connection:
         source = await connection.fetchrow(
             "SELECT state,cancel_requested_at FROM harness_operations WHERE operation_id=$1",
