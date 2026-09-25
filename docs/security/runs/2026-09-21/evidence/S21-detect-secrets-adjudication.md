@@ -18,7 +18,8 @@ with no raw candidate values or source-line content published.
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 496 |
 | Derived checksums recomputed from immutable source inputs | 22 |
-| Pending context review, retained by #6110 | 1054 |
+| Resource references with explicit field/consumer binding | 33 |
+| Pending context review, retained by #6110 | 1021 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -104,6 +105,25 @@ receipt `S21-detect-secrets-derived-digest-review.json` links source algorithms
 and per-record input paths. No fixture is accepted merely because of its path.
 Seven focused tests reject incorrect projection populations and changed inputs.
 
-Current verified nonsecret dispositions: **805/1859**. **1,054** original scan
+The derived-digest review reached **805/1859** verified nonsecret dispositions
+and left **1,054** original scan records pending.
+
+A sixth batch verifies **33** Secrets Manager resource references. Each has a
+complete reference shape and an explicit ARN field or API `SecretId` argument;
+Python AST binding checks reject unconsumed names, unrelated shadowed variables,
+and concatenated prefixes. Frozen source consumers separately pass `SecretId`
+to `get_secret_value`, whose returned secret value is distinct from the
+identifier. Official API documentation provenance is recorded in
+`S21-detect-secrets-resource-reference-review.json`. No resource was queried.
+Short numeric account placeholders retain reference semantics but are not
+asserted to be valid live ARNs. Resource-identifier privacy policies remain
+separate; this receipt publishes no ARN, account or session value.
+
+One KMS reference, two candidates without sufficient binding proof, three
+templates and 24 abbreviated stubs remain pending. Ten focused tests cover
+incorrect payload fields, missing bindings, shadowing, concatenation and
+unsupported/incomplete identifier shapes.
+
+Current verified nonsecret dispositions: **838/1859**. **1,021** original scan
 records remain pending. #6110 remains open; no credential was exercised and no
 rotation or zero-secrets conclusion is claimed.
