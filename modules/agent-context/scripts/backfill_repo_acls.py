@@ -19,22 +19,11 @@ repairs the legacy rows without fetching and re-indexing their source content.
 
 What it does
 ------------
-For each repository whose stored ACL is exactly ``["*"]``, re-derive the ACL from
-GitHub (``repo_acl.resolve_allowed_principals``) and:
-
-  * GitHub says public  → leave the row alone. ``["*"]`` was correct.
-  * GitHub says private → replace with the derived principals.
-  * Cannot determine    → leave the row alone and report it.
-
-That last case deserves its own explanation, because it is the opposite of the
-fail-closed default used everywhere else in this change. At *ingestion* time an
-unknown ACL means "we are about to publish something we do not understand", so we
-deny. Here the row already exists and is already readable; rewriting it to ``[]``
-on a transient GitHub 500 would take away access that currently works, across an
-unbounded number of repos, in a single batch. So an indeterminate row is reported
-and skipped, and ``--verify`` keeps failing until it is resolved. Use
-``--deny-unknown`` to force the fail-closed choice when you would rather break
-reads than leave a possible over-share in place.
+For each unverified wildcard ACL, re-derive visibility from GitHub. Confirmed
+public rows receive persisted verification; private rows receive derived private
+principals. Unknown rows remain unverified and are denied public access by readers,
+even when skipped. --deny-unknown additionally replaces their ACL with [].
+Verification checks persisted state, never temporary source observations.
 
 Dry-run is the default. Nothing is written without ``--apply``.
 
@@ -58,8 +47,8 @@ Usage
 Rollback
 --------
 ``--apply`` writes a JSON journal of every change (``--journal``, default
-``/tmp/acl-backfill-journal.json``) containing each row's id, name, previous ACL
-and new ACL. To undo:
+``/tmp/acl-backfill-journal.json``) containing each row's id, name, previous ACL, new ACL and both verification
+states. To undo:
 
     python scripts/backfill_repo_acls.py --rollback /tmp/acl-backfill-journal.json
 
@@ -67,11 +56,8 @@ Rollback restores the previous values verbatim and is itself dry-run by default;
 add ``--apply``. Keep the journal — without it the prior ACLs are not recoverable
 from the database, since the old value is overwritten in place.
 
-Note that rolling back re-opens the over-share this backfill closed. It exists
-because a bad ACL derivation (e.g. a token missing ``read:org``, which makes
-private repos look like they have no collaborators) can make many repos abruptly
-unreadable, and restoring service quickly is worth more than holding the fix.
-Re-run the backfill with a correctly scoped token afterwards.
+Rollback restores both ACL and verification state with compare-and-swap guards.
+Old journals without verification fields default to false, preserving quarantine.
 
 Environment variables
 ---------------------
@@ -117,7 +103,7 @@ def get_connection():
 
 
 def find_legacy_rows(conn, repo: str | None = None) -> list[dict]:
-    """Find repositories whose ACL is exactly the public sentinel.
+    """Find repositories carrying an unverified public sentinel.
 
     Rows with a genuinely derived ACL are not candidates, and neither are rows
     with ``[]``/NULL — those already deny and will be filled in by the next
@@ -126,9 +112,9 @@ def find_legacy_rows(conn, repo: str | None = None) -> list[dict]:
     cursor = conn.cursor()
     try:
         sql = """
-            SELECT id, repo_name, owner, allowed_principals, tenant_id
+            SELECT id, repo_name, owner, allowed_principals, tenant_id, acl_public_verified
             FROM repositories
-            WHERE allowed_principals = '["*"]'::jsonb
+            WHERE allowed_principals ? '*' AND acl_public_verified IS NOT TRUE
         """
         params: tuple = ()
         if repo:
@@ -144,6 +130,7 @@ def find_legacy_rows(conn, repo: str | None = None) -> list[dict]:
                 "owner": row[2],
                 "allowed_principals": row[3],
                 "tenant_id": row[4],
+                "acl_public_verified": row[5],
             }
             for row in cursor.fetchall()
         ]
@@ -182,20 +169,22 @@ def apply_changes(
     try:
         for item in plan:
             outcome = item["outcome"]
-            if outcome == OUTCOME_PUBLIC_CONFIRMED:
-                continue
             if outcome == OUTCOME_INDETERMINATE and not deny_unknown:
                 continue
 
             new_acl = item["new_acl"]
+            public_verified = outcome == OUTCOME_PUBLIC_CONFIRMED and new_acl == LEGACY_ACL
             cursor.execute(
-                "UPDATE repositories SET allowed_principals = %s::jsonb "
-                "WHERE id = %s AND repo_name = %s AND allowed_principals = %s::jsonb",
+                "UPDATE repositories SET allowed_principals = %s::jsonb, acl_public_verified = %s "
+                "WHERE id = %s AND repo_name = %s AND allowed_principals = %s::jsonb "
+                "AND acl_public_verified = %s",
                 (
                     json.dumps(new_acl),
+                    public_verified,
                     item["id"],
                     item["repo_name"],
                     json.dumps(item["allowed_principals"]),
+                    item.get("acl_public_verified", False),
                 ),
             )
             if cursor.rowcount != 1:
@@ -205,7 +194,9 @@ def apply_changes(
                 {
                     "id": item["id"],
                     "repo_name": item["repo_name"],
-                    "previous_acl": LEGACY_ACL,
+                    "previous_acl": item["allowed_principals"],
+                    "previous_public_verified": item.get("acl_public_verified", False),
+                    "new_public_verified": public_verified,
                     "new_acl": new_acl,
                 }
             )
@@ -244,21 +235,20 @@ def rollback(conn, journal_path: str, *, apply: bool) -> int:
         log.info("--- DRY RUN --- (use --apply to execute the rollback)")
         return 0
 
-    log.warning(
-        "Rolling back re-opens the over-share this backfill closed (#5658). "
-        "Re-run the backfill with a correctly scoped token afterwards."
-    )
     cursor = conn.cursor()
     try:
         for entry in entries:
             cursor.execute(
-                "UPDATE repositories SET allowed_principals = %s::jsonb "
-                "WHERE id = %s AND repo_name = %s AND allowed_principals = %s::jsonb",
+                "UPDATE repositories SET allowed_principals = %s::jsonb, acl_public_verified = %s "
+                "WHERE id = %s AND repo_name = %s AND allowed_principals = %s::jsonb "
+                "AND acl_public_verified = %s",
                 (
                     json.dumps(entry["previous_acl"]),
+                    entry.get("previous_public_verified", False),
                     entry["id"],
                     entry["repo_name"],
                     json.dumps(entry["new_acl"]),
+                    entry.get("new_public_verified", False),
                 ),
             )
         conn.commit()
@@ -275,8 +265,8 @@ def rollback(conn, journal_path: str, *, apply: bool) -> int:
 def verify(conn) -> bool:
     """Fail while any row still carries an unverified public sentinel.
 
-    Public rows must be positively re-confirmed with the same GitHub derivation.
-    Unknown or private rows retaining the sentinel fail verification.
+    Public verification must be persisted by trusted ingestion or this backfill.
+    Quarantined wildcard rows fail completion verification.
     """
     rows = find_legacy_rows(conn)
     cursor = conn.cursor()
@@ -298,15 +288,9 @@ def verify(conn) -> bool:
         denied,
         total - len(rows) - denied,
     )
-    unresolved = [
-        row
-        for row in rows
-        if classify(row, token=os.environ.get("GITHUB_TOKEN", ""))["outcome"]
-        != OUTCOME_PUBLIC_CONFIRMED
-    ]
-    for row in unresolved:
-        log.warning("Unverified public sentinel remains: %s", row["repo_name"])
-    return not unresolved
+    for row in rows:
+        log.warning("Quarantined unverified public sentinel remains: %s", row["repo_name"])
+    return not rows
 
 
 def _summarize(plan: list[dict]) -> None:
@@ -319,9 +303,9 @@ def _summarize(plan: list[dict]) -> None:
     unknown = buckets.get(OUTCOME_INDETERMINATE, [])
 
     log.info("=== Repo ACL backfill plan (Issue #5658) ===")
-    log.info('Legacy ["*"] rows examined:        %d', len(plan))
+    log.info('Unverified wildcard rows examined:        %d', len(plan))
     log.info("  private, will be tightened:      %d", len(tighten))
-    log.info("  confirmed public, left as-is:    %d", len(public))
+    log.info("  confirmed public, mark verified:    %d", len(public))
     log.info("  indeterminate:                   %d", len(unknown))
 
     if tighten:
@@ -344,7 +328,7 @@ def main() -> int:
     parser.add_argument(
         "--deny-unknown",
         action="store_true",
-        help="Set [] on rows whose ACL could not be derived (breaks reads; see module docstring)",
+        help="Set [] on rows whose ACL could not be derived (already quarantined for public reads)",
     )
     parser.add_argument(
         "--journal",
@@ -364,7 +348,7 @@ def main() -> int:
 
         rows = find_legacy_rows(conn, args.repo or None)
         if not rows:
-            log.info('No rows with allowed_principals = ["*"] — nothing to backfill.')
+            log.info("No unverified wildcard ACLs — nothing to backfill.")
             return 0
 
         token = os.environ.get("GITHUB_TOKEN", "")

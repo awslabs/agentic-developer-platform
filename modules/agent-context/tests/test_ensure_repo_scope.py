@@ -35,7 +35,7 @@ class Connection:
         self.connection = sqlite3.connect(":memory:")
         self.connection.execute("""CREATE TABLE repositories (
             id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), repo_name TEXT UNIQUE NOT NULL,
-            git_url TEXT, owner TEXT, allowed_principals TEXT, tenant_id TEXT, owner_sub TEXT)""")
+            git_url TEXT, owner TEXT, allowed_principals TEXT, tenant_id TEXT, owner_sub TEXT, acl_public_verified BOOLEAN NOT NULL DEFAULT false)""")
 
     def cursor(self):
         return Cursor(self.connection.cursor())

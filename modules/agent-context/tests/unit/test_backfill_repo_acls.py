@@ -5,11 +5,9 @@ The properties that matter, in order:
 1. Dry-run writes nothing. This is the whole safety contract of the script — an
    operator runs it against production to see the plan. A dry run that mutates is
    worse than no script.
-2. A confirmed-public repo is left alone. ``["*"]`` is the correct value there, and
-   rewriting it would break every public repo's reads.
-3. An indeterminate row is not silently denied. Batch-denying on a transient GitHub
-   error would take down reads across an unbounded number of repos at once.
-4. Rollback restores the exact prior value.
+2. A confirmed-public repo receives persisted source verification.
+3. An indeterminate row remains quarantined even if skipped by the backfill.
+4. Rollback restores ACL and marker without promoting old wildcard journals.
 """
 
 from __future__ import annotations
@@ -53,6 +51,7 @@ def _legacy_row(name="org/repo", row_id="uuid-1"):
         "owner": name.split("/")[0],
         "allowed_principals": ["*"],
         "tenant_id": None,
+        "acl_public_verified": False,
     }
 
 
@@ -73,8 +72,8 @@ class TestCandidateSelection:
         backfill.find_legacy_rows(mock_conn)
 
         sql = cursor.execute.call_args[0][0]
-        assert "'[\"*\"]'::jsonb" in sql
-        assert "allowed_principals =" in sql
+        assert "allowed_principals ? '*'" in sql
+        assert "acl_public_verified IS NOT TRUE" in sql
 
     def test_repo_filter_is_parameterized(self, backfill, mock_conn):
         """The repo name reaches the query as a bound parameter, not interpolated."""
@@ -132,16 +131,16 @@ class TestClassification:
 
 
 class TestApplySemantics:
-    def test_confirmed_public_rows_are_never_updated(self, backfill, mock_conn):
-        """Rewriting a genuinely public repo's ACL would break its reads."""
+    def test_confirmed_public_rows_persist_verification(self, backfill, mock_conn):
+        """A positive source observation must be persisted to authorize public reads."""
         plan = [{**_legacy_row(), "outcome": backfill.OUTCOME_PUBLIC_CONFIRMED, "new_acl": ["*"]}]
         journal = backfill.apply_changes(mock_conn, plan, deny_unknown=False)
 
-        assert journal == []
-        assert _updates(mock_conn.cursor.return_value) == []
+        assert journal[0]["new_public_verified"] is True
+        assert len(_updates(mock_conn.cursor.return_value)) == 1
 
     def test_indeterminate_rows_are_skipped_by_default(self, backfill, mock_conn):
-        """A transient GitHub failure must not deny reads across the fleet."""
+        """Unknown rows remain quarantined without rewriting their private principals."""
         plan = [{**_legacy_row(), "outcome": backfill.OUTCOME_INDETERMINATE, "new_acl": []}]
         journal = backfill.apply_changes(mock_conn, plan, deny_unknown=False)
 
@@ -149,7 +148,7 @@ class TestApplySemantics:
         assert _updates(mock_conn.cursor.return_value) == []
 
     def test_indeterminate_rows_are_denied_with_the_explicit_flag(self, backfill, mock_conn):
-        """--deny-unknown is available for operators who prefer fail-closed."""
+        """--deny-unknown additionally removes the quarantined ACL."""
         plan = [{**_legacy_row(), "outcome": backfill.OUTCOME_INDETERMINATE, "new_acl": []}]
         journal = backfill.apply_changes(mock_conn, plan, deny_unknown=True)
 
@@ -166,6 +165,8 @@ class TestApplySemantics:
                 "repo_name": "org/repo",
                 "previous_acl": ["*"],
                 "new_acl": ["alice"],
+                "previous_public_verified": False,
+                "new_public_verified": False,
             }
         ]
         cursor = mock_conn.cursor.return_value
@@ -192,7 +193,7 @@ class TestDryRunWritesNothing:
         import repo_acl
 
         cursor = mock_conn.cursor.return_value
-        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None)]
+        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None, False)]
 
         monkeypatch.setattr(backfill, "get_connection", lambda: mock_conn)
         monkeypatch.setattr(repo_acl, "resolve_allowed_principals", lambda *a, **k: ["alice"])
@@ -208,7 +209,7 @@ class TestDryRunWritesNothing:
         import repo_acl
 
         cursor = mock_conn.cursor.return_value
-        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None)]
+        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None, False)]
         journal_path = tmp_path / "journal.json"
 
         monkeypatch.setattr(backfill, "get_connection", lambda: mock_conn)
@@ -227,7 +228,7 @@ class TestDryRunWritesNothing:
     ):
         """No token means no derivation; the run must not proceed to write [] everywhere."""
         cursor = mock_conn.cursor.return_value
-        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None)]
+        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None, False)]
 
         monkeypatch.setattr(backfill, "get_connection", lambda: mock_conn)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
@@ -281,7 +282,7 @@ class TestRollback:
 class TestVerify:
     def test_verify_fails_while_legacy_rows_remain(self, backfill, mock_conn):
         cursor = mock_conn.cursor.return_value
-        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None)]
+        cursor.fetchall.return_value = [("uuid-1", "org/priv", "org", ["*"], None, False)]
         cursor.fetchone.side_effect = [(10,), (2,)]
 
         assert backfill.verify(mock_conn) is False
@@ -324,12 +325,14 @@ def test_concurrent_acl_change_is_not_overwritten_or_journaled(backfill, mock_co
     assert backfill.apply_changes(mock_conn, plan, deny_unknown=False) == []
     sql, params = mock_conn.cursor.return_value.execute.call_args.args
     assert "AND allowed_principals =" in sql
-    assert json.loads(params[-1]) == ["*"]
+    assert json.loads(params[-2]) == ["*"]
 
 
-def test_verified_public_rows_do_not_make_verification_impossible(backfill, mock_conn, monkeypatch):
+def test_source_observation_alone_does_not_verify_unpersisted_rows(
+    backfill, mock_conn, monkeypatch
+):
     cursor = mock_conn.cursor.return_value
-    cursor.fetchall.return_value = [("uuid-1", "org/public", "org", ["*"], None)]
+    cursor.fetchall.return_value = [("uuid-1", "org/public", "org", ["*"], None, False)]
     cursor.fetchone.side_effect = [(10,), (2,)]
     monkeypatch.setattr("repo_acl.resolve_allowed_principals", lambda *a, **kw: ["*"])
-    assert backfill.verify(mock_conn)
+    assert backfill.verify(mock_conn) is False

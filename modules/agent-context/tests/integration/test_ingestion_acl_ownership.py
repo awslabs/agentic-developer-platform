@@ -48,7 +48,7 @@ def local_acl_database():
                     cur.execute("""CREATE TABLE repositories (
                         id uuid PRIMARY KEY DEFAULT gen_random_uuid(), repo_name text UNIQUE NOT NULL,
                         git_url text, owner text, allowed_principals jsonb,
-                        tenant_id text, owner_sub text)""")
+                        tenant_id text, owner_sub text, acl_public_verified boolean NOT NULL DEFAULT false)""")
             yield kwargs
         finally:
             subprocess.run(
@@ -234,6 +234,9 @@ def test_real_door_query_denies_unowned_private_and_another_persons_rows(conn, r
     caller = CallerPrincipal(
         github_login="alice", tenant_id="team-a", owner_sub="alice-id", run_bound=run_bound
     )
+    with conn.cursor() as cur:
+        cur.execute("UPDATE repositories SET acl_public_verified=true WHERE repo_name='org/public'")
+    conn.commit()
     expected = {"org/public", "org/team-a", "org/alice-personal"}
     if not run_bound:
         expected.add("org/alice-other-tenant")

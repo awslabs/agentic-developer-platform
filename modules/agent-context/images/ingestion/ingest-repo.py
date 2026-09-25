@@ -1508,11 +1508,13 @@ def _generate_source_sbom(
                     # Issue #3529: propagate scope for SBOM path too
                     # Issue #5658: and the derived ACL, for the same reason as
                     # the main path — an omitted ACL used to default to public.
+                    derived_principals = resolve_allowed_principals(org_repo)
                     repo_id = sbom_db.ensure_repo_exists(
                         conn,
                         org_repo,
                         git_url,
-                        allowed_principals=resolve_allowed_principals(org_repo),
+                        allowed_principals=derived_principals,
+                        public_verified=derived_principals == ["*"],
                         tenant_id=scope.tenant_id if scope else None,
                         owner_sub=scope.owner_sub if scope else None,
                     )
@@ -1697,11 +1699,13 @@ def _ingest_repo_in_snapshot(
         # Issue #5658: state the ACL explicitly. This call used to omit it and
         # rely on a ["*"] default, so the row the Door filters reads on was
         # stamped public for every repo including private ones.
+        derived_principals = resolve_allowed_principals(org_repo)
         repo_id = stage_db.ensure_repo_exists(
             db_conn,
             org_repo,
             f"https://github.com/{org_repo}",
-            allowed_principals=resolve_allowed_principals(org_repo),
+            allowed_principals=derived_principals,
+            public_verified=derived_principals == ["*"],
             tenant_id=scope.tenant_id,
             owner_sub=scope.owner_sub,
         )

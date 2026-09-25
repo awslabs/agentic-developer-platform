@@ -184,6 +184,7 @@ def ensure_repo_exists(
     allowed_principals: list[str] | None = None,
     tenant_id: str | None = None,
     owner_sub: str | None = None,
+    public_verified: bool = False,
 ) -> str:
     """Create a denied-by-default row or refresh ACLs without changing its owner.
 
@@ -196,17 +197,22 @@ def ensure_repo_exists(
     """
     import json as _json
 
+    # This is an internal trusted-producer argument, never a queue/body field.
+    # A caller supplying only the historical wildcard cannot confer public access.
+    if type(public_verified) is not bool or (public_verified and allowed_principals != ["*"]):
+        raise ValueError("Public verification requires an explicitly derived public ACL")
+
     owner = org_repo.split("/")[0] if "/" in org_repo else org_repo
     principals_json = _json.dumps(allowed_principals if allowed_principals is not None else [])
     cursor = conn.cursor()
     try:
         cursor.execute(
             """
-            INSERT INTO repositories (repo_name, git_url, owner, allowed_principals, tenant_id, owner_sub)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO repositories (repo_name, git_url, owner, allowed_principals, tenant_id, owner_sub, acl_public_verified)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (repo_name) DO NOTHING
             """,
-            (org_repo, git_url, owner, principals_json, tenant_id, owner_sub),
+            (org_repo, git_url, owner, principals_json, tenant_id, owner_sub, public_verified),
         )
         cursor.execute(
             "SELECT id, tenant_id, owner_sub FROM repositories WHERE repo_name = %s FOR UPDATE",
@@ -219,8 +225,8 @@ def ensure_repo_exists(
             raise RuntimeError(f"Repository {org_repo} ownership conflicts with ingestion scope")
         if allowed_principals is not None:
             cursor.execute(
-                "UPDATE repositories SET allowed_principals = %s::jsonb WHERE id = %s",
-                (principals_json, row[0]),
+                "UPDATE repositories SET allowed_principals = %s::jsonb, acl_public_verified = %s WHERE id = %s",
+                (principals_json, public_verified, row[0]),
             )
         conn.commit()
         return str(row[0])

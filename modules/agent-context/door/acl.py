@@ -228,7 +228,7 @@ def _normalize_repo_name(name: str) -> str:
     """
     for prefix in _DOMAIN_PREFIXES:
         if name.startswith(prefix):
-            return name[len(prefix):]
+            return name[len(prefix) :]
     return name
 
 
@@ -407,7 +407,7 @@ class PostgresACLStore:
             with conn.cursor() as cur:
                 cur.execute("SET LOCAL statement_timeout = '1000ms'")
                 cur.execute(
-                    "SELECT repo_name, allowed_principals, tenant_id, owner_sub "
+                    "SELECT repo_name, allowed_principals, tenant_id, owner_sub, acl_public_verified "
                     "FROM repositories LIMIT 0"
                 )
         finally:
@@ -433,9 +433,9 @@ class PostgresACLStore:
         # Use ? (element exists) and ?| (any element exists) operators.
         query = """
             SELECT repo_name FROM repositories
-            WHERE allowed_principals ? %s
-               OR allowed_principals ? %s
-               OR allowed_principals ?| %s
+            WHERE (allowed_principals ? %s AND acl_public_verified IS TRUE)
+               OR (allowed_principals - '*') ? %s
+               OR (allowed_principals - '*') ?| %s
         """
         params = [PUBLIC_SENTINEL, login, teams]
 
@@ -462,6 +462,9 @@ class PostgresACLStore:
         tenant_id = principal.tenant_id or ""
         owner_sub = principal.owner_sub or ""
 
+        # An old wildcard is not proof of public visibility. The persisted marker
+        # is set only by a trusted producer/backfill after source re-observation.
+        # Remove the wildcard from ordinary principal comparisons as well.
         # Unknown legacy ownership is not shared content. Only positively public
         # rows can use the unowned branch. Personal rows never inherit the
         # tenant-wide principal branch; their owner is the authority.
@@ -469,11 +472,12 @@ class PostgresACLStore:
             SELECT repo_name FROM repositories
             WHERE (
                 tenant_id = %s AND owner_sub IS NULL
-                AND (allowed_principals ? %s OR allowed_principals ? %s
-                     OR allowed_principals ?| %s)
+                AND ((allowed_principals ? %s AND acl_public_verified IS TRUE)
+                     OR (allowed_principals - '*') ? %s
+                     OR (allowed_principals - '*') ?| %s)
             ) OR (
                 tenant_id IS NULL AND owner_sub IS NULL
-                AND allowed_principals ? '*'
+                AND allowed_principals ? '*' AND acl_public_verified IS TRUE
             ) OR (
                 %s != '' AND owner_sub = %s
             )
