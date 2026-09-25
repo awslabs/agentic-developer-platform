@@ -62,7 +62,8 @@ def images(destination, source_sha, release_id):
         password = run(['aws', 'ecr', 'get-login-password', '--region', REGION], capture=True)
         run(['skopeo', 'login', '--authfile', auth, '--username', 'AWS', '--password-stdin', registry], input=password, capture=True)
         for name, (repository, project, suffix) in IMAGES.items():
-            tag = f'release-{release_id}-{name}'
+            # Shared publishers identify the archived source, not the release bundle.
+            tag = source_sha
             env = dict(os.environ, AWS_REGION=REGION, STATE_BUCKET=f'adp-terraform-state-{ACCOUNTS["integration-test"]}', SOURCE_SHA=source_sha, ADP_RELEASE_BUILD='true')
             run(['bash', 'platform/scripts/codebuild-run.sh', f'adp-dev-{project}',
                  f'name=IMAGE_TAG,value={tag},type=PLAINTEXT', f'name=REGISTRY,value={registry}',

@@ -12,6 +12,26 @@ from storage import client, put_once
 OVERRIDE = 'adp_release_override.tf.json'
 
 
+def publish_image(ecr, repository, tag, digest, path, registry, auth):
+    """Reuse a matching immutable transport tag; never overwrite another release."""
+    from botocore.exceptions import ClientError
+
+    try:
+        found = ecr.describe_images(repositoryName=repository, imageIds=[{'imageTag': tag}])['imageDetails']
+    except ClientError as exc:
+        if exc.response['Error']['Code'] != 'ImageNotFoundException':
+            raise
+    else:
+        if len(found) != 1 or found[0]['imageDigest'] != digest:
+            raise ValueError(f'Existing release tag selects a different image: {repository}:{tag}')
+        return
+    run(['skopeo', 'copy', '--all', '--preserve-digests', '--dest-authfile', auth,
+         f'dir:{path}', f'docker://{registry}/{repository}:{tag}'])
+    found = ecr.describe_images(repositoryName=repository, imageIds=[{'imageTag': tag}])['imageDetails']
+    if len(found) != 1 or found[0]['imageDigest'] != digest:
+        raise ValueError(f'Destination image digest changed: {repository}:{tag}')
+
+
 def key(manifest, name):
     return f"adp-releases/sha256/{manifest['files'][name]['sha256']}/{Path(name).name}"
 
@@ -66,6 +86,8 @@ def prepare(directory, environment, output, *, source_checked=False):
         auth = Path(temp) / 'auth.json'
         password = run(['aws', 'ecr', 'get-login-password', '--region', REGION], capture=True)
         run(['skopeo', 'login', '--authfile', auth, '--username', 'AWS', '--password-stdin', registry], input=password, capture=True)
+        import boto3
+        ecr = boto3.client('ecr', region_name=REGION)
         for name in IMAGES:
             path = Path(temp) / name
             extract(directory / 'images' / f'{name}.zip', path)
@@ -75,12 +97,7 @@ def prepare(directory, environment, output, *, source_checked=False):
             repository = manifest['images'][name]['repository']
             # A unique transport tag is only for ECR publication. Workloads use @digest.
             tag = f"release-{manifest['release_id']}-{name}"
-            run(['skopeo', 'copy', '--all', '--preserve-digests', '--dest-authfile', auth,
-                 f'dir:{path}', f'docker://{registry}/{repository}:{tag}'])
-            found = aws('ecr', 'describe-images', '--repository-name', repository,
-                        '--image-ids', f'imageTag={tag}')['imageDetails']
-            if len(found) != 1 or found[0]['imageDigest'] != digest:
-                raise ValueError(f'Destination image digest changed: {name}')
+            publish_image(ecr, repository, tag, digest, path, registry, auth)
             shutil.rmtree(path)
     with zipfile.ZipFile(directory / 'terraform-locks.zip') as locks:
         expected = {module + '/.terraform.lock.hcl' for module in TERRAFORM_MODULES}
