@@ -1,4 +1,5 @@
 import type { ThreadOptions } from "@openai/codex-sdk";
+import { restrictedSdkConfig } from "./sdk-config.js";
 import { personaSchema, type Capability, type Persona, snapshotPersona, sha256 } from "./persona.js";
 
 export const HARNESS_CONTRACT_REVISION = "codex-sdk-0.155.1/adp-v1";
@@ -81,6 +82,6 @@ export function planVerifiedRun(
     approvalPolicy: "never", sandboxMode: capabilities.includes("repository.write") ? "workspace-write" : "read-only",
     threadSource: `adp-${persona.key}`,
   };
-  return { persona, capabilities, limits, options,
+  return { persona, capabilities, limits, options, sdkConfig: restrictedSdkConfig(),
     unavailableOptionalCapabilities: persona.optionalCapabilities.filter(c => !permitted(c)) };
 }
