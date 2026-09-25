@@ -8445,6 +8445,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E23",
         "E24",
         "E29",
+        "E26",
     }
 
 
@@ -10236,6 +10237,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E23",
         "E24",
+        "E26",
         "E29",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
@@ -10404,3 +10406,52 @@ def test_hierarchy_read_refuses_foreign_row(tmp_path):
     ]
     with pytest.raises(common.RemoteError, match="Foreign hierarchy"):
         module.hierarchy(cli, {})
+
+
+def test_story_budget_reads_all_periods_without_writes(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "period": {"period_type": p},
+                "lines": [
+                    {"cap_status": "uncapped", "cap_usd": None, "remaining_usd": None}
+                ],
+            },
+        }
+        for p in ("daily", "weekly", "monthly")
+    ]
+    evidence = {}
+    module.budget(cli, evidence)
+    assert [c.args[0] for c in cli.json.call_args_list] == [
+        ["budget", "me", "--period", p] for p in ("daily", "weekly", "monthly")
+    ]
+    cli.run.assert_not_called()
+
+
+def test_story_budget_rejects_uncapped_zero(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "period": {"period_type": "daily"},
+            "lines": [
+                {
+                    "cap_status": "uncapped",
+                    "cap_usd": "0.00",
+                    "remaining_usd": "0.000000",
+                }
+            ],
+        },
+    }
+    with pytest.raises(common.RemoteError, match="zero headroom"):
+        module.budget(cli, {})
+
+
+def test_budget_story_is_wired_into_nightly():
+    assert cases.BY_ID["E26"].owner == "#5589"
+    assert "E26" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E26"] in bundle.purposes()

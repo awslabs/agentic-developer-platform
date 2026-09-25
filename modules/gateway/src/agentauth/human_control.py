@@ -34,7 +34,7 @@ async def require_live_human_membership(db: AsyncSession, *, user_id: str, tenan
             User.is_shadow.is_(False),
             TenantMembership.tenant_id == tenant_id,
             TenantMembership.is_active.is_(True),
-                    TenantMembership.revoked_at.is_(None),
+            TenantMembership.revoked_at.is_(None),
         )
     )
     if member is None:

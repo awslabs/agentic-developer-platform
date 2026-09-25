@@ -309,8 +309,17 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
-        "E29", "#5623", "story-reads",
+        "E29",
+        "#5623",
+        "story-reads",
         "Bounded administrator hierarchy reads preserve organization scope; no mutation lifecycle acceptance claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E26",
+        "#5589",
+        "story-reads",
+        "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
         (EC2, PLATFORM, COGNITO),
     ),
 )

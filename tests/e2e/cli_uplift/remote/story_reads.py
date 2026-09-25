@@ -213,12 +213,40 @@ def hierarchy(cli, evidence):
     )
 
 
+def budget(cli, evidence):
+    periods = ("daily", "weekly", "monthly")
+    for period in periods:
+        result = detail(cli.json(["budget", "me", "--period", period]))
+        common.require(
+            isinstance(result.get("period"), dict)
+            and result["period"].get("period_type") == period
+            and isinstance(result.get("lines"), list),
+            "Own budget period or lines are malformed",
+        )
+        for line in result["lines"]:
+            common.require(isinstance(line, dict), "Budget line is malformed")
+            common.require(
+                line.get("cap_status") in {"capped", "uncapped"},
+                "Budget cap status missing",
+            )
+            if line["cap_status"] == "uncapped":
+                common.require(
+                    line.get("cap_usd") is None and line.get("remaining_usd") is None,
+                    "Uncapped budget was represented as zero headroom",
+                )
+    evidence.update(
+        periods=list(periods),
+        qualification="own budget reads only; no spend-through or enforcement claim",
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "hierarchy": hierarchy,
+    "budget": budget,
 }
 
 

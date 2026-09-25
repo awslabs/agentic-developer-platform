@@ -166,3 +166,13 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 
 
 Hierarchy administration: `adp admin org`, `department`, `team`, `member`, `team members`, and `tenant org-links`; see [exact flags, examples and revocation semantics](hierarchy.md). The checked manifest records all 25 leaf forms. Live lifecycle qualification remains pending.
+Budget additions ([contract and examples](budgets.md)); source implemented, live enforcement acceptance pending:
+
+| Command | Purpose |
+|---|---|
+| `adp budget me` | Existing own-budget envelope for one explicit period |
+| `adp admin budget list` | Bounded managed cap pages |
+| `adp admin budget show` | Exact tenant/target/ledger/period configuration and revision |
+| `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
+| `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
+| `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |

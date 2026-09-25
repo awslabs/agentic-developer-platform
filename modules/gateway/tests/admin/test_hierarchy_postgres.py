@@ -1,4 +1,5 @@
 """Concurrent guarded updates serialize on the real PostgreSQL target row."""
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -17,8 +18,15 @@ async def test_stale_concurrent_patch_cannot_replace_winner(pg_url, monkeypatch)
     upgrade(pg_url, "head")
     engine = create_async_engine(to_async_url(pg_url))
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    actor = TokenContext(user_id="admin", org_id="owned", team_id="", department_id="", account_type="human", is_admin=True,
-                         expires_at=datetime.now(UTC) + timedelta(hours=1))
+    actor = TokenContext(
+        user_id="admin",
+        org_id="owned",
+        team_id="",
+        department_id="",
+        account_type="human",
+        is_admin=True,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
     monkeypatch.setattr(routes, "write_admin_audit", AsyncMock())
     async with sessions() as db:
         db.add(Organization(id="owned", name="Owned"))
@@ -38,8 +46,9 @@ async def test_stale_concurrent_patch_cannot_replace_winner(pg_url, monkeypatch)
 
     async def change(name):
         async with sessions() as db:
-            return await hierarchy.patch("owned", "department", "dept",
-                hierarchy.Change(expected_revision=before["revision"], patch={"name": name}), db, actor)
+            return await hierarchy.patch(
+                "owned", "department", "dept", hierarchy.Change(expected_revision=before["revision"], patch={"name": name}), db, actor
+            )
 
     first = asyncio.create_task(change("Winner"))
     await asyncio.wait_for(entered.wait(), 5)
