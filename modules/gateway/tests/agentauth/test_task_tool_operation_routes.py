@@ -141,3 +141,84 @@ def test_route_factory_uses_frozen_tool_permissions_for_sdk_name_binding(api, mo
     result = http.post(PATH, json=body)
     assert result.status_code == 200
     assert result.json()["created"] is True
+
+
+@pytest.mark.parametrize("scenario", ["success", "lost_claim", "lost_settlement", "tool_unknown", "wrong_receipt"])
+def test_worker_claim_execute_settle_with_real_http_journal(api, scenario):
+    import sys
+    import uuid
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "modules/agent-factory/agent-worker-image"))
+    from lib.task_host import TaskHost
+    from lib.task_protocol import validate_child_frame
+    from lib.task_run_client import TaskRunClientError
+
+    http, body, journal = api
+    effects = []
+    lost = False
+
+    class WorkerClient:
+        def tool_operation(self, request):
+            nonlocal lost
+            response = http.post(PATH, json=request)
+            if response.status_code != 200:
+                raise TaskRunClientError("journal refused")
+            result = response.json()
+            if scenario == "wrong_receipt":
+                result["receipt"]["request_digest"] = "f" * 64
+            if not lost and (
+                (scenario == "lost_claim" and request["action"] == "claim") or (scenario == "lost_settlement" and request["action"] == "settle")
+            ):
+                lost = True
+                raise TaskRunClientError("fixture lost response")
+            return result
+
+        def tool(self, name, request):
+            effects.append(name)
+            if scenario == "tool_unknown":
+                raise TaskRunClientError("private-provider-detail")
+            return {
+                "schema_version": "1.0",
+                "task_id": journal.identity.task_id,
+                "operation_id": request["operation_id"],
+                "operation_status": "confirmed",
+                "result": {"verified": True},
+                "artifact": {
+                    "artifact_id": "art_" + str(uuid.uuid4()),
+                    "content_type": "application/json",
+                    "content_sha256": "a" * 64,
+                    "byte_length": 18,
+                },
+            }
+
+    worker = TaskHost(client=WorkerClient())
+    assignment = SimpleNamespace(task_id=journal.identity.task_id)
+    frame = {
+        "protocol_version": 1,
+        "type": "tool.request",
+        "request_id": str(uuid.uuid4()),
+        "task_id": assignment.task_id,
+        "tool": body["tool"],
+        "payload": body["arguments"],
+        "model_call": {"turn_id": body["turn_id"], "call_id": body["call_id"]},
+    }
+    validate_child_frame(frame, assignment.task_id)
+    if scenario in {"lost_claim", "wrong_receipt"}:
+        with pytest.raises(TaskRunClientError):
+            worker._cyber(assignment, body["attempt"], frame)
+        assert effects == []
+        if scenario == "lost_claim":
+            assert worker._cyber(assignment, body["attempt"], frame)["operation_status"] == "unknown"
+        return
+    first = worker._cyber(assignment, body["attempt"], frame)
+    assert first["operation_status"] == ("confirmed" if scenario == "success" else "unknown")
+    again = worker._cyber(assignment, body["attempt"], {**frame, "request_id": str(uuid.uuid4())})
+    assert again["operation_status"] == ("unknown" if scenario == "tool_unknown" else "confirmed")
+    assert len(effects) == 1
+    assert "owner_token" not in str(first) + str(again)
+    assert "private-provider-detail" not in str(first) + str(again)
+    if again["operation_status"] == "confirmed":
+        assert again["result"] == {"verified": True}
+        assert again["content"] == journal.service.read(assignment.task_id, "call_1")["content"]

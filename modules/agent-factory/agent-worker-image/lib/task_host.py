@@ -425,6 +425,10 @@ class TaskHost:
         }
 
     def _cyber(self, assignment, attempt: dict, frame: dict) -> dict:
+        if "model_call" in frame:
+            from lib.task_codex_tools import execute_codex_tool
+            return execute_codex_tool(self.client, task_id=assignment.task_id, attempt=attempt, frame=frame,
+                invoke=lambda: self._cyber(assignment, attempt, {key: value for key, value in frame.items() if key != "model_call"}))
         generic = frame["type"] == "tool.request"
         operation = frame["tool"].split(".", 1)[1] if generic else frame["operation"]
         body = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
@@ -1113,6 +1117,10 @@ class TaskHost:
                                 deliver_model(frame)
 
                         elif frame["type"] in {"cyber.request", "tool.request"}:
+                            if "model_call" in frame and not responses:
+                                raise TaskProtocolError("Codex tool claim requires Responses profile")
+                            if responses and (frame["type"] != "tool.request" or "model_call" not in frame):
+                                raise TaskProtocolError("Responses tools require a confirmed model-call binding")
                             if not sdk or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
                                 raise TaskProtocolError("cyber operation is not admitted")
                             if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:

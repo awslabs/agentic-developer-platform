@@ -26,6 +26,7 @@
     "host_to_child": {
       "description": "Host-to-child frame types: artifact.chunk before start, then start, turn, model.result, report.ack, cancel.",
       "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/tool_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/artifact_chunk_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/start_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/control_result_frame" },
@@ -39,6 +40,7 @@
     "child_to_host": {
       "description": "Child-to-host frame types: ready, progress, model.request, input.required, result, cancelled, error.",
       "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/tool_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/ready_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/control_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/progress_frame" },
@@ -554,6 +556,160 @@
         },
         "message": { "$ref": "common.schema.json#/$defs/safe_message" }
       }
+    },
+
+    "tool_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "tool",
+        "payload"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "tool.request"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}\\.[a-z][a-z0-9_]{0,63}$"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "model_call": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turn_id",
+            "call_id"
+          ],
+          "properties": {
+            "turn_id": {
+              "$ref": "common.schema.json#/$defs/uuid4"
+            },
+            "call_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        }
+      },
+      "description": "Generic tool request; Codex tools require a confirmed model_call binding. Host enforces admitted payload schemas and byte bounds. Legacy investigator does not support this frame."
+    },
+
+    "tool_result_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "tool",
+        "operation_status",
+        "result"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "tool.result"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}\\.[a-z][a-z0-9_]{0,63}$"
+        },
+        "operation_status": {
+          "enum": [
+            "pending",
+            "confirmed",
+            "unknown",
+            "rejected"
+          ]
+        },
+        "result": {
+          "type": "object"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifact_id",
+            "content_type",
+            "content_sha256",
+            "byte_length"
+          ],
+          "properties": {
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/artifact_id"
+            },
+            "content_type": {
+              "const": "application/json"
+            },
+            "content_sha256": {
+              "$ref": "common.schema.json#/$defs/sha256_digest"
+            },
+            "byte_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32768
+            }
+          }
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 32768
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "error_code": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "content"
+            ]
+          },
+          "then": {
+            "required": [
+              "artifact",
+              "is_error"
+            ],
+            "properties": {
+              "operation_status": {
+                "const": "confirmed"
+              }
+            }
+          }
+        }
+      ],
+      "description": "Host-owned tool outcome. Codex confirmed content is canonical JSON bounded to 32768 UTF-8 bytes. Unconfirmed outcomes cannot continue SDK execution; owner tokens never cross IPC."
     }
   }
 }

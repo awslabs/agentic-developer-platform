@@ -22,7 +22,7 @@ export function decode(line) {
   const value = JSON.parse(line);
   if (!value || value.protocol_version !== 1 || !UUID.test(value.request_id) || !TASK.test(value.task_id)) throw new ProtocolError('invalid host frame');
   if (!['start', 'turn', 'cancel', 'control.result', 'model.result', 'cyber.result', 'tool.result', 'report.ack', 'artifact.chunk'].includes(value.type)) throw new ProtocolError('unknown host frame');
-  for (const forbidden of ['run_credential', 'gateway_token', 'aws_access_key_id', 'github_token', 'api_key']) {
+  for (const forbidden of ['run_credential', 'gateway_token', 'aws_access_key_id', 'github_token', 'api_key', 'owner_token']) {
     if (forbidden in value) throw new ProtocolError('host frame contains authority');
   }
   return value;
@@ -85,7 +85,7 @@ export class HostBridge {
       const response = await this.request('model.request', turn_id, { turn_id, responses_request });
       if (response.operation_status !== 'confirmed') throw new ProtocolError(response.operation_status === 'unknown' ? 'model_outcome_unknown' : 'model request rejected');
       if (!response.responses_response || typeof response.responses_response !== 'object') throw new ProtocolError('missing confirmed Responses content');
-      return { operationStatus: 'confirmed', response: response.responses_response };
+      return { operationStatus: 'confirmed', turnId: turn_id, response: response.responses_response };
     });
   }
   async _model(sdk_request, max_tokens) {
@@ -97,11 +97,19 @@ export class HostBridge {
     if (!Array.isArray(response.content) || typeof response.stop_reason !== 'string') throw new ProtocolError('missing confirmed model content');
     return { ...response, turn_id };
   }
-  async tool(name, payload) {
+  async tool(name, payload, modelCall) {
     if (!/^[a-z][a-z0-9_]{0,63}\.[a-z][a-z0-9_]{0,63}$/.test(name)) throw new ProtocolError('invalid tool name');
+    let model_call;
+    if (modelCall !== undefined) {
+      if (!modelCall || typeof modelCall !== 'object' || Array.isArray(modelCall) ||
+          Object.keys(modelCall).sort().join(',') !== 'call_id,turn_id' ||
+          !UUID.test(modelCall.turn_id) || typeof modelCall.call_id !== 'string' ||
+          modelCall.call_id.length < 1 || modelCall.call_id.length > 200) throw new ProtocolError('invalid model call');
+      model_call = { ...modelCall };
+    }
     const request_id = randomUUID();
     return this.exclusive(async () => {
-      const response = await this.request('tool.request', request_id, { request_id, tool: name, payload });
+      const response = await this.request('tool.request', request_id, { request_id, tool: name, payload, ...(model_call ? { model_call } : {}) });
       if (response.artifact?.artifact_id && response.operation_status === 'confirmed') {
         const id = response.artifact.artifact_id;
         this.evidence.set(id, { ref: id, source: 'artifact', artifact_id: id });

@@ -64,7 +64,7 @@ Only a newly created claim returns an owner token to the trusted worker. Public
 receipts, duplicate claims and settlement responses exclude that token and raw
 arguments. A lost claim response therefore cannot become permission to reexecute.
 The worker client has a run-bound `tool_operation` method; SDK frames do not carry
-receipt ownership. TaskHost invocation wiring is still outstanding.
+receipt ownership. TaskHost invocation wiring is described below.
 
 Ten HTTP tests exercise actual parsing and DynamoDB receipts, while substituting
 IAM and attempt authentication delivery. They cover the production journal
@@ -73,6 +73,32 @@ request fields, settlement without a claim, ownership disclosure and replay.
 All 45 route/journal/authorization tests, 30 worker-client tests and four shared
 Task adapter tests pass. This is fixture evidence, not a deployed IAM test.
 
-The model tool profile, worker claim→execute→settle wiring, durable model-history
-verification and persona registration remain incomplete. No live tool operation
+The model tool profile, durable model-history verification and persona
+registration remain incomplete. No live tool operation
 or agent story is enabled by the route alone.
+
+
+## Worker claim, execution and settlement
+
+TaskHost now claims a model-bound generic tool call before invoking the existing
+host tool implementation. It verifies task, attempt, turn, call, permission and
+canonical argument digest on the journal receipt. Only the newly returned owner
+may execute and settle. The SDK receives confirmed canonical result/artifact
+content only after settlement acknowledgement; ownership never crosses IPC.
+Duplicate claims read receipts without invoking the effect. Lost settlement
+acknowledgements produce an unknown child outcome while preserving any committed
+receipt for a later read. Uncertain effects are never automatically replayed.
+
+The shared child bridge preserves the canonical model turn ID, snapshots the
+optional model-call binding and refuses owner tokens in host frames. The published
+process schema documents generic tool frames; legacy investigator capability is
+unchanged. TaskHost refuses unbound tools in the Responses path.
+
+Five HTTP/worker scenarios cover success, lost claim, lost settlement, uncertain
+effect and wrong receipt binding. They use the actual TaskHost, FastAPI route and
+Moto-backed journal; IAM delivery, confirmed model-call insertion and the domain
+effect remain fixtures. All 27 route/journal tests, 78 worker host tests, 59 shared
+harness/IPC tests and 383 contract checks pass. TypeScript build and Python lint
+pass. Live auth-store fingerprints remain unchanged from the tool-session
+checkpoint. This increment does not qualify a tool-capable Task model or complete
+a live persona story.

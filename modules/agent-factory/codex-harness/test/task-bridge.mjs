@@ -23,7 +23,7 @@ for (const status of ['confirmed', 'unknown', 'rejected']) {
       ...(status === 'confirmed' ? { responses_response: { status: 'completed' } } : {}) };
     bridge.receive(decode(encode(response).toString()));
     const result = await checked;
-    if (status === 'confirmed') assert.deepEqual(result, { operationStatus: 'confirmed', response: { status: 'completed' } });
+    if (status === 'confirmed') assert.deepEqual(result, { operationStatus: 'confirmed', turnId: turn_id, response: { status: 'completed' } });
     assert.equal(bridge.pending.size, 0);
   });
 }
@@ -85,4 +85,25 @@ test('Malformed and overlapping steering cannot mutate admitted turn or evidence
   bridge.receive({ task_id, type: 'turn', turn_id, messages: [{ command_id: randomUUID(), text: 'valid' }] });
   assert.throws(() => bridge.receive({ task_id, type: 'turn', turn_id: randomUUID(), messages: [] }), /not been consumed/);
   assert.equal(bridge.nextTurn, turn_id);
+});
+
+
+test('Task tool IPC snapshots model correlation and refuses authority in replies', async () => {
+  const task_id = `tsk_${randomUUID()}`;
+  let sent;
+  const bridge = new HostBridge({ task_id }, value => { sent = value; });
+  const modelCall = { turn_id: randomUUID(), call_id: 'call_123' };
+  const expected = { ...modelCall };
+  const pending = bridge.tool('repository.read_change', {}, modelCall);
+  modelCall.call_id = 'changed';
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(sent.model_call, expected);
+  const reply = { ...sent, type: 'tool.result', operation_status: 'unknown' };
+  assert.throws(() => decode(encode({ ...reply, owner_token: randomUUID() }).toString()), /authority/);
+  bridge.receive(reply);
+  assert.equal((await pending).operation_status, 'unknown');
+  for (const invalid of [null, [], {}, { ...expected, owner_token: 'secret' }, { ...expected, turn_id: 'bad' }, { ...expected, call_id: '' }]) {
+    await assert.rejects(bridge.tool('repository.read_change', {}, invalid), /invalid model call/);
+  }
+  assert.equal(bridge.pending.size, 0);
 });
