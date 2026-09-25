@@ -164,6 +164,13 @@ async def test_shared_reader_acknowledgement_binds_exact_revision_and_namespace(
             db, org=org, target=target, snapshot=snapshot
         )
         assert result["membership_credential"] == target["membership_credential"]
+        # An existing governed manager may observe a new member without granting
+        # that provisional member any assignments or workload authority.
+        snapshot["mode"] = "governed"
+        result = await verified_observation(
+            db, org=org, target=target, snapshot=snapshot
+        )
+        assert result["membership_credential"] == target["membership_credential"]
         for field, replacement in (
             ("revision", 2),
             ("namespace_uid", "replacement"),

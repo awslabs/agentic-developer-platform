@@ -256,7 +256,12 @@ async def verified_observation(db, *, org, target, snapshot):
             if credential_expiry.tzinfo is None or credential_expiry <= now:
                 raise ValueError("bootstrap reader credential expired")
         if (
-            snapshot.get("mode") != "management"
+            snapshot.get("mode")
+            not in (
+                {"management", "governed"}
+                if target.get("shared_membership") is True
+                else {"management"}
+            )
             or snapshot.get("registry_ready") is not True
             or reconciled.tzinfo is None
             or expiry.tzinfo is None
