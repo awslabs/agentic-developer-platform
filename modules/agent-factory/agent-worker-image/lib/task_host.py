@@ -317,7 +317,11 @@ class TaskHost:
     def _model_request(self, assignment, attempt: dict, frame: dict, max_tokens: int) -> dict:
         if self._pending_turn_id is not None and frame["turn_id"] != self._pending_turn_id:
             raise TaskProtocolError("child model request skipped its assigned input turn")
-        if "sdk_request" in frame:
+        if "responses_request" in frame:
+            request = frame["responses_request"]
+            if request["max_output_tokens"] > max_tokens:
+                raise TaskProtocolError("Responses output bound exceeds grant")
+        elif "sdk_request" in frame:
             request = {**frame["sdk_request"], "max_tokens": frame.get("max_tokens", max_tokens)}
         else:
             messages = frame["messages"]
@@ -343,7 +347,11 @@ class TaskHost:
             "request_digest": _canonical_digest(request),
             **request,
         }
-        if "sdk_request" in frame:
+        if "responses_request" in frame:
+            prepared = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
+                        "turn_id": frame["turn_id"], "request_digest": _canonical_digest(request),
+                        "responses_request": request}
+        elif "sdk_request" in frame:
             prepared = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
                         "turn_id": frame["turn_id"], "request_digest": _canonical_digest(request),
                         "max_tokens": request["max_tokens"], "sdk_request": frame["sdk_request"]}
@@ -352,7 +360,7 @@ class TaskHost:
         if (len(json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES
                 or len(json.dumps(request, ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES):
             raise TaskProtocolError("wrapped model request exceeds 65536-byte bound")
-        turn = self._turn(assignment, attempt, frame["turn_id"], allow_autonomous="sdk_request" in frame)
+        turn = self._turn(assignment, attempt, frame["turn_id"], allow_autonomous="sdk_request" in frame or "responses_request" in frame)
         if turn is None:
             raise TaskProtocolError("child requested a model without a committed turn")
         self._pending_turn_id = None
@@ -388,8 +396,12 @@ class TaskHost:
             raise TaskHostError(
                 "confirmed model receipt has no stored result", code="protocol_violation"
             )
+        if status == "confirmed" and "responses_request" in prepared and (
+                not isinstance(response.get("responses_response"), dict)
+                or response["responses_response"].get("status") != "completed"):
+            raise TaskHostError("confirmed Responses receipt has no complete result", code="protocol_violation")
         if status != "confirmed" and (
-            response.get("content") is not None or response.get("stop_reason") is not None
+            response.get("content") is not None or response.get("stop_reason") is not None or response.get("responses_response") is not None
         ):
             raise TaskHostError(
                 "unconfirmed model receipt exposes result content", code="protocol_violation"
@@ -404,6 +416,7 @@ class TaskHost:
             "turn_id": frame["turn_id"],
             "operation_status": status,
             **({"usage": response["usage"]} if isinstance(response.get("usage"), dict) else {}),
+            **({"responses_response": response["responses_response"]} if "responses_request" in prepared and status == "confirmed" else {}),
             "content": response.get("content"),
             "stop_reason": response.get("stop_reason"),
             "error_code": (
@@ -723,6 +736,7 @@ class TaskHost:
         finalized = False
         heartbeat_stopped = False
         sdk = False
+        responses = False
         cyber_cleanup_confirmed = False
 
         def stop_heartbeat() -> None:
@@ -770,6 +784,7 @@ class TaskHost:
             artifacts = self._input_artifacts(assignment, bootstrap)
             command = self.command_resolver(bootstrap["persona"])
             sdk = bootstrap["persona"] == "agent-task-cyber"
+            responses = bootstrap["model_binding"]["transport"] == "openai_responses"
             self.work_root.mkdir(parents=True, exist_ok=True)
             workspace = Path(
                 tempfile.mkdtemp(prefix=f"task-{assignment.invocation_id[:8]}-", dir=self.work_root)
@@ -777,9 +792,9 @@ class TaskHost:
             workspace.chmod(0o700)
             stderr: list[str] = []
             process = subprocess.Popen(
-                command if sdk else _network_wrapped_command(command),
+                command if sdk or responses else _network_wrapped_command(command),
                 cwd=workspace,
-                env=_child_environment(workspace, sdk=sdk),
+                env=_child_environment(workspace, sdk=sdk or responses),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -804,6 +819,7 @@ class TaskHost:
                     "invocation_id": assignment.invocation_id,
                     "generation": assignment.generation,
                     "runtime_attempt_id": runtime_attempt_id,
+                    **({"model_binding": bootstrap["model_binding"], "persona": bootstrap["persona"]} if responses else {}),
                     "instructions": task_input["instructions"],
                     "inputs": task_input.get("inputs", {}),
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),
@@ -852,6 +868,8 @@ class TaskHost:
                 nonlocal model_job
                 if model_job is not None or cyber_job is not None:
                     raise TaskProtocolError("task child emitted concurrent operations")
+                if ("responses_request" in model_frame) != responses:
+                    raise TaskProtocolError("model transport does not match bootstrap binding")
                 if "sdk_request" in model_frame and not sdk:
                     raise TaskProtocolError("SDK model transport is not authorized for persona")
                 admission = self._control(assignment, attempt, cursor)

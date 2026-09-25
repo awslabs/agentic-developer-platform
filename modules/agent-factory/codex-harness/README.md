@@ -54,9 +54,10 @@ Application bootstrap must install the existing approved OTLP pipeline; the OTEL
 API is a no-op without one. Trace IDs, run IDs and model strings are not metric
 labels; prompts, tool text, provider errors and model reasoning are not exported.
 
-The current Task API model path is Anthropic Messages-only. Codex needs an
-explicitly admitted Responses transport and bounded request/usage/history
-contracts; it cannot be made compatible by relabeling an existing SDK request.
+The Task API now has an additive bounded text Responses transport alongside
+Messages, including durable model-operation and host IPC handling. GPT persona
+registration, complete SDK history/tool support and a runtime entrypoint remain
+required before it can run a GPT Task.
 The local SDK probe is not a live model, cost or latency evaluation. Run it after
 build with `python3 test/run-isolated.py -- node test/sdk-request-shape.mjs`.
 The `--baseline` variant compares the pinned SDK's default tool advertisement.
@@ -73,7 +74,9 @@ strict SDK request normalization, model/effort checks, output/operation/deadline
 limits, validated SSE completion and refusal of further requests after uncertain
 host outcomes. It discards SDK cache IDs and metadata and removes the two residual
 native tool declarations from the host request. The host callback must supply a
-confirmed durable model receipt. This callback is not wired to Task API yet.
+confirmed durable model receipt. `HostBridge.responses` provides the IPC method;
+TaskHost and the gateway understand the corresponding request/receipt. The
+Codex runtime entrypoint must connect these components before registration.
 
 The current bridge intentionally accepts only complete text-message history.
 Function calls, reasoning items, hosted tools, external history, media and

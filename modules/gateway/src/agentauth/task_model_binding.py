@@ -1,7 +1,7 @@
-"""Resolve explicit Task Messages selection using live policy and exact evidence.
+"""Resolve explicit Task model selection using live policy and exact evidence.
 
-This is a Messages transport, not a Claude CLI/SDK persona. Its own probe key
-prevents a successful CLI probe from silently certifying a different payload.
+Each Task transport has its own probe key. A successful CLI/reviewer probe
+cannot silently certify a different Task payload.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 
 from sqlalchemy import select
 
-from src.admin.persona_models.catalogue import catalogue_lookup
+from src.admin.persona_models.catalogue import catalogue_lookup, persona_compatibility_class
 from src.admin.persona_models.catalogue_service import (
     _model_matches_patterns,
     _model_matches_service_restrictions,
@@ -52,11 +52,26 @@ TASK_CYBER_PROBE_BODY = {
 TASK_CYBER_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_CYBER_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+# Probe the gateway-normalized text transport, not the legacy reviewer's direct
+# SDK/proxy grant. Full tool/reasoning history will require a new contract probe.
+TASK_RESPONSES_PROBE_BODY = {
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Reply OK."}]}],
+    "reasoning": {"effort": "medium"},
+    "max_output_tokens": 64,
+}
+TASK_RESPONSES_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_RESPONSES_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version, include_context=False, persona=TASK_PERSONA):
-    if persona not in {TASK_PERSONA, TASK_CYBER_PERSONA}:
+    from src.agentauth.task_responses_contract import TASK_RESPONSES_REVISION, TASK_RESPONSES_TRANSPORT
+
+    responses = persona.startswith("agent-task-") and persona_compatibility_class(persona) == "codex-sdk"
+    if persona not in {TASK_PERSONA, TASK_CYBER_PERSONA} and not responses:
         raise ModelPolicyError("task_model_transport_unsupported")
-    revision = TASK_CYBER_CONTRACT_REVISION if persona == TASK_CYBER_PERSONA else TASK_CONTRACT_REVISION
-    shape = TASK_CYBER_REQUEST_SHAPE if persona == TASK_CYBER_PERSONA else TASK_REQUEST_SHAPE
+    transport = TASK_RESPONSES_TRANSPORT if responses else TASK_TRANSPORT
+    compatibility = "codex-sdk" if responses else TASK_TRANSPORT
+    revision = TASK_RESPONSES_REVISION if responses else TASK_CYBER_CONTRACT_REVISION if persona == TASK_CYBER_PERSONA else TASK_CONTRACT_REVISION
+    shape = TASK_RESPONSES_REQUEST_SHAPE if responses else TASK_CYBER_REQUEST_SHAPE if persona == TASK_CYBER_PERSONA else TASK_REQUEST_SHAPE
     policy = await _resolve_active_allowlist_policy(
         db, tenant_id=tenant, principal_kind="service_account", principal_id=principal, expires_at=deadline
     )
@@ -76,7 +91,11 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
         raise ModelPolicyError("task_model_selection_missing")
     model_id = preference.canonical_model_id
     model = catalogue_lookup(model_id)
-    if model is None or model.lifecycle == "retired" or ".anthropic." not in model_id:
+    from pricing_policy import canonical_billing_model_id
+    from pricing_policy.policy import is_openai_model
+
+    supported = is_openai_model(canonical_billing_model_id(model_id)) if responses else ".anthropic." in model_id
+    if model is None or model.lifecycle == "retired" or not supported:
         raise ModelPolicyError("task_model_transport_unsupported")
     if not _model_matches_patterns(model_id, policy.tenant_patterns) or not _model_matches_service_restrictions(
         model_id, policy.service_restriction_pattern_sets
@@ -95,14 +114,13 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
         account_id=account,
         region=region,
         canonical_model_id=model_id,
-        compatibility_class=TASK_TRANSPORT,
+        compatibility_class=compatibility,
         harness_contract_revision=revision,
         request_shape_sha256=shape,
     )
     if evidence is None or evidence.is_stale or not evidence.is_proven or not evidence.provider_request_id:
         raise ModelPolicyError("task_model_probe_required")
     state = await get_rate_state(db)
-    from pricing_policy import canonical_billing_model_id
     from pricing_policy.policy import model_rate_candidates, staleness_reasons
     from pricing_policy.storage import utc_now_iso
 
@@ -119,7 +137,7 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
     ).hexdigest()
     binding = {
         "model_id": model_id,
-        "transport": TASK_TRANSPORT,
+        "transport": transport,
         "model_policy_version": str(preference.revision),
         "request_shape_version": shape,
         "pricing_evidence_version": pricing_version,

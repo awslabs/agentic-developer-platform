@@ -134,8 +134,8 @@
       "properties": {
         "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "transport": {
-          "const": "anthropic_messages",
-          "description": "The implemented Messages/InvokeModel transport, not an assumed Converse endpoint."
+          "enum": ["anthropic_messages", "openai_responses"],
+          "description": "The admitted Messages or bounded Codex Responses transport; never selected or overridden by the child."
         },
         "model_policy_version": { "type": "string", "minLength": 1, "maxLength": 64 },
         "request_shape_version": { "type": "string", "minLength": 1, "maxLength": 64 },

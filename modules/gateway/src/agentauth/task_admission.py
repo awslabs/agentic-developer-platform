@@ -76,7 +76,7 @@ class TaskAdmission:
             principal=caller.principal_id,
             deadline=deadline,
             expected_policy_version=policy["model_policy_version"],
-            **({"persona": submit["persona"]} if submit["persona"] == "agent-task-cyber" else {}),
+            persona=submit["persona"],
         )
         refs = []
         total_bytes = 0

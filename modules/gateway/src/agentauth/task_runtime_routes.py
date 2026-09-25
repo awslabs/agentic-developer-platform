@@ -14,6 +14,7 @@ from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.routes import require_agent_transport
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.task_agent_runtime import get_task_agent_runtime as get_agent_runtime
+from src.agentauth.task_responses_contract import TaskResponsesRequest
 from src.agentauth.task_routes import task_delivery
 from src.agentauth.task_runtime import TaskRuntime
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
@@ -314,19 +315,27 @@ class ModelBody(BaseModel):
     turn_id: str = Field(pattern=UUID4)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     messages: list[ModelMessage] | None = Field(default=None, min_length=1, max_length=32)
-    max_tokens: int = Field(ge=1, le=4096, strict=True)
+    max_tokens: int | None = Field(default=None, ge=1, le=4096, strict=True)
     system: str | None = Field(default=None, max_length=16000)
     sdk_request: SdkRequest | None = None
+    responses_request: TaskResponsesRequest | None = None
 
     @model_validator(mode="after")
     def exclusive_request(self):
-        if (self.messages is None) == (self.sdk_request is None):
+        if sum(value is not None for value in (self.messages, self.sdk_request, self.responses_request)) != 1:
             raise ValueError("supply exactly one model request form")
+        if self.responses_request is not None:
+            if self.max_tokens is not None or self.system is not None:
+                raise ValueError("Responses fields belong inside responses_request")
+        elif self.max_tokens is None:
+            raise ValueError("Messages requests require max_tokens")
         if self.sdk_request is not None and self.system is not None:
             raise ValueError("SDK system belongs inside sdk_request")
         return self
 
     def invocation(self):
+        if self.responses_request is not None:
+            return self.responses_request.model_dump(exclude_none=True, exclude_unset=True)
         if self.sdk_request is not None:
             return {**self.sdk_request.model_dump(exclude_none=True), "max_tokens": self.max_tokens}
         return self.model_dump(include={"messages", "max_tokens", "system"}, exclude_none=True)
@@ -347,7 +356,12 @@ async def model(body: ModelBody, request: Request, runtime=Depends(get_agent_run
         raise HTTPException(413, "task model request too large")
     try:
         return await TaskModel(task_runtime(runtime).repository, db=db).execute(
-            identity=identity, turn_id=body.turn_id, request_digest=body.request_digest, request=invocation, sdk_request=body.sdk_request is not None
+            identity=identity,
+            turn_id=body.turn_id,
+            request_digest=body.request_digest,
+            request=invocation,
+            sdk_request=body.sdk_request is not None,
+            responses_request=body.responses_request is not None,
         )
     except (TaskStoreError, WorkBindingError, ModelPolicyError, TaskBudgetError):
         raise HTTPException(409, "task model refused") from None

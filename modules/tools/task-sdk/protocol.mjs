@@ -68,6 +68,16 @@ export class HostBridge {
     this.input = null;
   }
   model(sdk_request, max_tokens) { return this.exclusive(() => this._model(sdk_request, max_tokens)); }
+  responses(responses_request) {
+    return this.exclusive(async () => {
+      const turn_id = this.nextTurn || randomUUID();
+      this.nextTurn = null;
+      const response = await this.request('model.request', turn_id, { turn_id, responses_request });
+      if (response.operation_status !== 'confirmed') throw new ProtocolError(response.operation_status === 'unknown' ? 'model_outcome_unknown' : 'model request rejected');
+      if (!response.responses_response || typeof response.responses_response !== 'object') throw new ProtocolError('missing confirmed Responses content');
+      return { operationStatus: 'confirmed', response: response.responses_response };
+    });
+  }
   async _model(sdk_request, max_tokens) {
     if ([...this.pending.values()].some(value => value.kind === 'model.request')) throw new ProtocolError('concurrent model operation');
     const turn_id = this.nextTurn || randomUUID();

@@ -8,7 +8,7 @@ const message = z.strictObject({
   content: z.union([z.string(), z.array(textPart).max(64)]),
   id: z.string().max(200).optional(), status: z.literal("completed").optional(),
   internal_chat_message_metadata_passthrough: z.unknown().optional(),
-}).transform(({ internal_chat_message_metadata_passthrough: _discarded, ...item }) => item);
+}).transform(({ internal_chat_message_metadata_passthrough: _discarded, id: _discardedId, ...item }) => item);
 const sdkRequest = z.strictObject({
   model: z.string(), input: z.union([z.string().min(1), z.array(message).min(1).max(64)]),
   instructions: z.string().optional(), stream: z.literal(true), store: z.literal(false),

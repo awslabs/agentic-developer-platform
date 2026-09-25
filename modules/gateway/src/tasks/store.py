@@ -3624,7 +3624,7 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
     }
     if not isinstance(model, dict) or set(model) != required_model:
         raise TaskStoreError("model binding does not match the closed v1 schema")
-    if model.get("transport") != "anthropic_messages" or model.get("invocability_verified") is not True:
+    if model.get("transport") not in {"anthropic_messages", "openai_responses"} or model.get("invocability_verified") is not True:
         raise TaskStoreError("model binding is not verified for the supported transport")
     for field_name in required_model - {"transport", "invocability_verified"}:
         value = model.get(field_name)

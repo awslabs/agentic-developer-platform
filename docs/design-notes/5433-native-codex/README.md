@@ -267,3 +267,29 @@ reroute to Claude. Implementation/PR creation is not production enablement.
 
 All persona stories have a native blocked-by relationship to #6195. No ADP agent
 assignment or trigger was issued. Specialist qualification does not imply enablement.
+
+### Task Responses integration milestone
+
+The gateway now recognizes a separate, closed `responses_request` form on the
+existing model operation endpoint. It uses `openai_responses` bindings, the
+`task-codex-sdk-text-responses-v1` contract and a distinct normalized probe digest;
+Messages or existing reviewer evidence cannot certify it. Readiness resolves the
+Task service principal through the authoritative persona compatibility registry.
+No new persona is registered by this transport implementation.
+
+The existing TaskModel journal owns claiming, generation fencing, reservation,
+provider handoff, confirmed receipts, usage events and settlement. The provider
+transport reuses the gateway's destination signer, inference-profile rewriting
+and Responses pricing; it does not invoke the generic proxy settlement path a
+second time. SDK metadata and message IDs are removed before handoff. There is
+no remote history lookup, direct child credential, model fallback or retry after
+an uncertain outcome. The worker IPC preserves request digests and committed
+turn IDs; `HostBridge.responses` returns only confirmed model results.
+
+This milestone remains text-only. GPT reasoning output and multi-step tool
+history must be qualified and added before general GPT persona readiness. The
+current pilot task spend/turn limits must also be reconciled with the evidenced
+Responses reservation ceiling through explicit policy and contract changes;
+limits must not be silently bypassed to make a canary pass. Deployment, persona
+registration, full runtime lifecycle, OTLP export and live story acceptance remain
+open work under #6195 and the persona stories.

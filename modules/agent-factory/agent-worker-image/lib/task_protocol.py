@@ -118,7 +118,7 @@ def validate_bootstrap(value: object, assignment) -> dict:
     if (
         not isinstance(model["model_id"], str)
         or not 1 <= len(model["model_id"]) <= 128
-        or model["transport"] != "anthropic_messages"
+        or model["transport"] not in {"anthropic_messages", "openai_responses"}
         or model["invocability_verified"] is not True
     ):
         raise TaskProtocolError("task model binding is not invocable")
@@ -178,7 +178,44 @@ def validate_child_frame(value: object, task_id: str) -> dict:
         ):
             raise TaskProtocolError("task progress frame is invalid")
     elif frame_type == "model.request":
-        if "sdk_request" in value:
+        if "responses_request" in value:
+            body = _exact(value, common | {"turn_id", "responses_request"})
+            response = _exact(body["responses_request"], {"input", "reasoning", "max_output_tokens"}, {"instructions"})
+            reasoning = _exact(response["reasoning"], {"effort"})
+            if reasoning["effort"] not in {"minimal", "low", "medium", "high", "xhigh"}:
+                raise TaskProtocolError("Responses effort is invalid")
+            maximum = response["max_output_tokens"]
+            if type(maximum) is not int or not 1 <= maximum <= 4096:
+                raise TaskProtocolError("Responses output bound is invalid")
+            if "instructions" in response and (not isinstance(response["instructions"], str) or len(response["instructions"]) > 32000):
+                raise TaskProtocolError("Responses instructions exceed bound")
+            inputs = response["input"]
+            if isinstance(inputs, str):
+                if not 1 <= len(inputs) <= 32000:
+                    raise TaskProtocolError("Responses input exceeds bound")
+            elif isinstance(inputs, list) and 1 <= len(inputs) <= 64:
+                for item in inputs:
+                    entry = _exact(item, {"role", "content"}, {"type", "status"})
+                    if (entry["role"] not in {"system", "developer", "user", "assistant"}
+                            or entry.get("type", "message") != "message"
+                            or entry.get("status", "completed") != "completed"):
+                        raise TaskProtocolError("Responses message is invalid")
+                    content = entry["content"]
+                    if isinstance(content, str):
+                        if len(content) > 32000:
+                            raise TaskProtocolError("Responses text exceeds bound")
+                    elif isinstance(content, list) and len(content) <= 64:
+                        for part in content:
+                            text = _exact(part, {"type", "text"}, {"annotations"})
+                            if (text["type"] not in {"input_text", "output_text"}
+                                    or not isinstance(text["text"], str) or len(text["text"]) > 32000
+                                    or text.get("annotations", []) != []):
+                                raise TaskProtocolError("Responses content is invalid")
+                    else:
+                        raise TaskProtocolError("Responses content is invalid")
+            else:
+                raise TaskProtocolError("Responses input is invalid")
+        elif "sdk_request" in value:
             body = _exact(value, common | {"turn_id", "sdk_request"}, {"max_tokens"})
             sdk = _exact(body["sdk_request"], {"messages"},
                          {"system", "tools", "tool_choice", "stop_sequences"})

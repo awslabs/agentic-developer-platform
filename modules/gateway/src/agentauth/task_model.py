@@ -1,4 +1,4 @@
-"""One durable, budgeted Messages invocation per canonical Task turn."""
+"""One durable, budgeted model invocation per canonical Task turn."""
 
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ _RECEIPT_FIELDS = {
     "content",
     "stop_reason",
     "error_code",
+    "responses_response",
 }
 
 
@@ -139,7 +140,7 @@ async def write_task_usage_event(*, context, identity, binding, decision, usage,
         root_human_id="",
         account_type="service",
         model=binding["model_id"],
-        api_format="anthropic",
+        api_format="openai" if binding["transport"] == "openai_responses" else "anthropic",
         latency_ms=latency_ms,
         scrubbed_request={},
         scrubbed_response={"model": binding["model_id"], "usage": usage},
@@ -169,7 +170,7 @@ class TaskModel:
         db,
         budget=None,
         readiness=resolve_task_model,
-        provider=invoke_task_messages,
+        provider=None,
         enforcement=None,
         usage_writer=None,
         event_writer=write_task_usage_event,
@@ -360,7 +361,13 @@ class TaskModel:
                     raise
         raise TaskStoreError("model receipt persistence unavailable")
 
-    async def execute(self, *, identity, turn_id, request_digest, request, sdk_request=False):
+    async def execute(self, *, identity, turn_id, request_digest, request, sdk_request=False, responses_request=False):
+        if sdk_request and responses_request:
+            raise TaskStoreError("ambiguous model transport")
+        if responses_request:
+            from src.agentauth.task_responses_contract import TaskResponsesRequest
+
+            TaskResponsesRequest.model_validate(request)
         if payload_digest(request) != request_digest:
             raise TaskStoreError("model request digest mismatch")
         task = await run_in_threadpool(self._current, identity)
@@ -376,7 +383,16 @@ class TaskModel:
         grant = await run_in_threadpool(
             self.repository._get_authority, "TENANT#" + identity.tenant, f"TASK_RUN#{identity.invocation_id}#GEN#{identity.generation:010d}"
         )
-        if request["max_tokens"] > int(grant["limits"]["max_output_tokens_per_turn"]):
+        transport = "openai_responses" if responses_request else "anthropic_messages"
+        if grant["model_binding"].get("transport") != transport:
+            raise TaskStoreError("task model transport does not match grant")
+        if responses_request:
+            from src.admin.persona_models.catalogue import persona_compatibility_class
+
+            if persona_compatibility_class(task["persona"]) != "codex-sdk":
+                raise TaskStoreError("Responses requires an admitted Codex persona")
+        output_field = "max_output_tokens" if responses_request else "max_tokens"
+        if request[output_field] > int(grant["limits"]["max_output_tokens_per_turn"]):
             raise TaskStoreError("task model output bound exceeded")
         binding, policy, target = await self.readiness(
             self.db,
@@ -401,7 +417,7 @@ class TaskModel:
         context = policy.context
         try:
             quote_body = json.dumps({"model": binding["model_id"], **request}, separators=(",", ":")).encode()
-            quote = await quote_request(quote_body, "/v1/messages")
+            quote = await quote_request(quote_body, "/openai/v1/responses" if responses_request else "/v1/messages")
             budget_target = replace(self.budget._target(scope="task:" + identity.task_id, cap=grant["limits"]["max_usd"]), entity_type="run")
             await self.budget._initialize(budget_target)
             context._budget_enforcement_enabled = True
@@ -417,7 +433,10 @@ class TaskModel:
             await run_in_threadpool(self._current, identity)
             operation = await run_in_threadpool(self._save, operation, authorize_identity=identity, reservation_status="reserved", handoff="prepared")
             sent = True  # Every failure from this point conservatively retains the upper bound.
-            result = await self.provider(self.db, identity=identity, binding=binding, target=target, request=request, operation_id=turn_id)
+            from src.agentauth.task_responses import invoke_task_responses
+
+            provider = self.provider or (invoke_task_responses if responses_request else invoke_task_messages)
+            result = await provider(self.db, identity=identity, binding=binding, target=target, request=request, operation_id=turn_id)
             decision = result["price"]
             measured_cost = Decimal(decision.ledger_cost_usd)
             # Missing pricing facts retain the full upper bound, never a guessed
@@ -435,6 +454,7 @@ class TaskModel:
                 usage=receipt_usage,
                 content=result["content"],
                 stop_reason=result["stop_reason"],
+                **({"responses_response": result["responses_response"]} if responses_request else {}),
                 reservation_status="reserved",
                 pricing_decision=decision.to_dict(),
                 provider_request_id=result["provider_request_id"],
