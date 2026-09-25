@@ -7,19 +7,18 @@
 # Upstream commit pinned for reproducible builds; bump explicitly when updating.
 # Vulnerability constraints applied via constraints.txt after install.
 
-FROM public.ecr.aws/docker/library/python:3.14-slim-trixie
+FROM public.ecr.aws/docker/library/python:3.14-alpine3.24@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01 AS runtime-base
 
 LABEL maintainer="agent-operations"
 LABEL description="MCP Agent Mail - Agent registration, messaging, FTS5 search, Web UI"
 LABEL source="https://github.com/Dicklesworthstone/mcp_agent_mail"
 
-# Upgrade system packages to pick up Debian security patches, then install
-# only the runtime dependencies: git (required by GitPython at import time)
-# and sqlite3 (FTS5 full-text search). Remove apt caches to keep image slim.
-RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
-    git \
-    sqlite3 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Keep Git remote/local operations and SQLite FTS5 available at runtime.
+RUN apk upgrade --no-cache && apk add --no-cache git sqlite libstdc++
+
+# Native extensions build here; the compiler and headers never enter runtime.
+FROM runtime-base AS build
+RUN apk add --no-cache build-base cargo linux-headers libffi-dev openssl-dev
 
 # Upgrade pip to resolve CVEs in the bundled version (PYSEC-2026-1795/1796/
 # 2875/2876/196/3721), then install uv for fast package management.
@@ -50,6 +49,15 @@ RUN pip uninstall -y ruff diskcache 2>/dev/null || true
 # Build caches retain superseded wheels and unpacked vulnerable dependencies even
 # after the runtime constraints upgrade them. Keep only the installed runtime.
 RUN rm -rf /root/.cache/uv /root/.cache/pip
+
+COPY patch_naive_datetimes.py /tmp/patch_naive_datetimes.py
+RUN python /tmp/patch_naive_datetimes.py && rm /tmp/patch_naive_datetimes.py
+
+# Copy installed application/dependencies, not compilers or build caches.
+FROM runtime-base AS runtime
+COPY --from=build /usr/local /usr/local
+COPY --from=build /app /app
+WORKDIR /app
 
 # Create data directory with correct ownership
 RUN mkdir -p /data && chown 10001:10001 /data
