@@ -266,6 +266,11 @@ async def test_consumed_command_tracks_provider_handoff_without_replaying(model,
     assert commands.commands(model.identity.task_id)[0]["handoff"] == "not_started"
     if outcome == "unknown":
         model.provider.side_effect = TimeoutError()
+    if outcome == "event_race":
+        from src.tasks.records import TaskState
+
+        task = model.repository.read_task(model.identity.task_id)
+        model.repository.transition(task_id=model.identity.task_id, expected_version=int(task["version"]), target_state=TaskState.RUNNING)
     if outcome in {"version_race", "event_race"}:
         original = model.repository._client.transact_write_items
         raced = False
