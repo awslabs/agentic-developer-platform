@@ -32,6 +32,7 @@ _ACTIONS = frozenset(
         "model",
         "cyber",
         "tool-authorize",
+        "tool-operation",
         "control",
         "artifact",
         "finalize",
@@ -283,6 +284,10 @@ class TaskRunClient:
 
     def model(self, body: dict) -> dict:
         return self._post("model", body, run_bound=True)
+
+    def tool_operation(self, body: dict) -> dict:
+        # Trusted host only. Owner tokens must not be included in child frames.
+        return self._post("tool-operation", body, run_bound=True)
 
     def tool(self, name: str, body: dict) -> dict:
         # Exact host-configured registry. The child supplies a name, never a URL.

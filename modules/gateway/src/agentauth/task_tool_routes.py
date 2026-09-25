@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,7 +25,7 @@ from src.agentauth.task_runtime_routes import (
 )
 from src.agentauth.task_service_policy import TaskServicePolicyError, TaskServicePolicyStore
 from src.agentauth.task_tool_policy import TOOL_PATTERN, TaskToolPolicyError, persona_tools, valid_tools
-from src.tasks.store import WorkBindingError, _protected_grant_digest
+from src.tasks.store import TaskStoreError, WorkBindingError, _protected_grant_digest
 
 router = APIRouter(prefix="/internal/v1/agent/task", tags=["task-api"], dependencies=[Depends(require_agent_transport)])
 
@@ -116,3 +117,97 @@ async def tool_authorize(body: ToolAuthorizationBody, request: Request):
         return result
     except (TaskToolPolicyError, TaskServicePolicyError, WorkBindingError):
         raise HTTPException(403, "Task tool authority unavailable") from None
+
+
+# These operations are trusted-host calls, never model-visible tools. The host
+# retains owner_token; only the public receipt is sent to the SDK child.
+class ToolClaimBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"]
+    action: Literal["claim"]
+    attempt: TaskAttemptBody
+    turn_id: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    call_id: str = Field(min_length=1, max_length=200)
+    tool: str = Field(pattern=TOOL_PATTERN)
+    arguments: dict = Field(max_length=128)
+
+
+class ToolSettleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["1.0"]
+    action: Literal["settle"]
+    attempt: TaskAttemptBody
+    call_id: str = Field(min_length=1, max_length=200)
+    owner_token: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    status: Literal["confirmed", "unknown", "rejected"]
+    content: str | None = Field(default=None, max_length=32768)
+    is_error: bool = Field(default=False, strict=True)
+
+
+def tool_journal(identity):
+    from src.agentauth.task_tool_policy import codex_tool_name
+    from src.agentauth.task_tool_receipts import TaskToolReceipts
+
+    repo = task_runtime(get_task_agent_runtime()).repository
+    task = repo.read_task(identity.task_id)
+    if not task or not valid_tools(task.get("tool_grants", [])):
+        raise HTTPException(403, "Task tool grants unavailable")
+    policies = TaskServicePolicyStore(table_name=repo.authority_table_name, client=repo._client)
+    return TaskToolReceipts(
+        repo,
+        authorize=lambda current, tool: authorize_tool(repo, policies, current, tool),
+        catalogue={tool: codex_tool_name(tool) for tool in task.get("tool_grants", [])},
+        clock=repo._clock,
+    )
+
+
+def public_tool_receipt(row):
+    return {
+        key: row[key]
+        for key in (
+            "schema_version",
+            "task_id",
+            "turn_id",
+            "call_id",
+            "tool",
+            "request_digest",
+            "operation_status",
+            "automatic_replay_permitted",
+            "content",
+            "is_error",
+        )
+        if key in row
+    }
+
+
+@router.post("/tool-operation")
+async def tool_operation(body: Annotated[ToolClaimBody | ToolSettleBody, Field(discriminator="action")], request: Request):
+    identity = await authenticate_task_attempt(request)
+    require_body_attempt(identity, body.attempt)
+    try:
+        journal = await run_in_threadpool(tool_journal, identity)
+        if body.action == "claim":
+            row, created = await run_in_threadpool(
+                journal.claim, identity=identity, turn_id=body.turn_id, call_id=body.call_id, tool=body.tool, arguments=body.arguments
+            )
+            result = {"schema_version": "1.0", "action": "claim", "created": created, "receipt": public_tool_receipt(row)}
+            if created:
+                result["owner_token"] = row["owner_token"]
+        else:
+            row = await run_in_threadpool(
+                journal.settle,
+                identity=identity,
+                call_id=body.call_id,
+                owner_token=body.owner_token,
+                status=body.status,
+                content=body.content,
+                is_error=body.is_error,
+            )
+            result = {"schema_version": "1.0", "action": "settle", "receipt": public_tool_receipt(row)}
+        if await authenticate_task_attempt(request) != identity:
+            raise HTTPException(403, "Task tool identity changed")
+        return result
+    except (TaskToolPolicyError, TaskServicePolicyError, WorkBindingError):
+        raise HTTPException(403, "Task tool authority unavailable") from None
+    except TaskStoreError:
+        raise HTTPException(409, "Task tool operation could not be confirmed") from None

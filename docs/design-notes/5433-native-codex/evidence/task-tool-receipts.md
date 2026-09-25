@@ -28,9 +28,9 @@ racing a claim. Existing tool-authority tests run alongside them.
 
 The fixture inserts a confirmed tool-call model record explicitly. The current
 Task Responses profile cannot yet create that record through its public model
-contract. No HTTP claim/settlement route, worker invocation or persona registration
-is enabled by this increment. Those integrations and a distinct qualified tool
-transport profile remain required before end-to-end tool claims are possible.
+contract. The HTTP integration is described below. Worker invocation, persona registration
+and a distinct qualified tool transport profile remain required before
+end-to-end tool execution is possible.
 
 Reproduce from the repository root with the gateway development environment:
 
@@ -44,3 +44,35 @@ python3 modules/agent-factory/codex-harness/test/run-isolated.py -- env \
 
 All configuration/token stores are isolated. The separate current authentication
 checkpoint remains unchanged; the earlier differing token baseline is preserved.
+
+## Trusted-host HTTP claim and settlement
+
+`POST /internal/v1/agent/task/tool-operation` now exposes closed, discriminated
+claim/settle bodies through the existing IAM transport and authenticated Task
+attempt boundary. Body attempt assertions must match the credential. Authority
+is checked again before returning the result. No cleanup exception, repository,
+endpoint, arbitrary owner or alternate identity can be inserted into a claim.
+
+The route builds its catalogue from frozen Task tool grants. Its stable v1 SDK
+function name is `adp_` followed by the first 56 SHA-256 hex characters of the
+original gateway tool permission. Python and TypeScript share a fixed test vector.
+This avoids delimiter collisions and the SDK name limit; reviewed implementations
+still supply descriptions, argument schemas and routing. The mapping grants no
+new permission and does not add a second persona registry.
+
+Only a newly created claim returns an owner token to the trusted worker. Public
+receipts, duplicate claims and settlement responses exclude that token and raw
+arguments. A lost claim response therefore cannot become permission to reexecute.
+The worker client has a run-bound `tool_operation` method; SDK frames do not carry
+receipt ownership. TaskHost invocation wiring is still outstanding.
+
+Ten HTTP tests exercise actual parsing and DynamoDB receipts, while substituting
+IAM and attempt authentication delivery. They cover the production journal
+factory, stable mapping, identity/permission refusal, unverified transport, closed
+request fields, settlement without a claim, ownership disclosure and replay.
+All 45 route/journal/authorization tests, 30 worker-client tests and four shared
+Task adapter tests pass. This is fixture evidence, not a deployed IAM test.
+
+The model tool profile, worker claim→execute→settle wiring, durable model-history
+verification and persona registration remain incomplete. No live tool operation
+or agent story is enabled by the route alone.

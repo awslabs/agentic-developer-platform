@@ -50,3 +50,13 @@ test("Shared gateway bootstrap fixture is accepted by the SDK snapshot and Task 
   const { snapshot } = taskHarness(value);
   assert.deepEqual(snapshot, value.harness.snapshot);
 });
+
+
+test("Task tool names match the gateway v1 vector without delimiter collisions", async () => {
+  const { taskToolName } = await import("./task-adapter.js");
+  assert.equal(taskToolName("repository.read_change"), "adp_75ac58ef0e809a16d800561c0d85bc1bbbd842ae3416488c2b846848");
+  assert.notEqual(taskToolName("a_b.c"), taskToolName("a.b_c"));
+  assert.ok(taskToolName("a".repeat(48) + "." + "b".repeat(64)).length <= 64);
+  assert.throws(() => taskToolName("repository.*"));
+  assert.throws(() => taskToolName("https://foreign.invalid"));
+});

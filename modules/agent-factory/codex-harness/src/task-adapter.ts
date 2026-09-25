@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { capabilitySchema, personaSchema, verifySnapshot } from "./persona.js";
+import { capabilitySchema, personaSchema, verifySnapshot, sha256 } from "./persona.js";
 import { HARNESS_CONTRACT_REVISION, type VerifiedRunPolicy } from "./admission.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -54,4 +54,12 @@ export function parseTaskReport(raw: string, evidence: ReadonlyMap<string, Citat
   }
   if (parsed.findings.some(finding => finding.evidence_refs.some(ref => !declared.has(ref)))) throw new Error("Task finding has an undeclared citation");
   return report;
+}
+
+
+/** Stable Task v1 permission-to-function encoding; this does not grant authority.
+ * Reviewed tool implementations still provide schemas, descriptions and routing. */
+export function taskToolName(permission: string): string {
+  if (!/^[a-z][a-z0-9_]{0,47}\.[a-z][a-z0-9_]{0,63}$/.test(permission)) throw new Error("Invalid Task tool permission");
+  return `adp_${sha256(permission).slice(0, 56)}`;
 }
