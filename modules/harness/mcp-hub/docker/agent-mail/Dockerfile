@@ -47,6 +47,10 @@ RUN uv pip install --system -r /tmp/constraints.txt && rm /tmp/constraints.txt
 # Uninstalling after the editable install is safe; serve-http does not import them.
 RUN pip uninstall -y ruff diskcache 2>/dev/null || true
 
+# Build caches retain superseded wheels and unpacked vulnerable dependencies even
+# after the runtime constraints upgrade them. Keep only the installed runtime.
+RUN rm -rf /root/.cache/uv /root/.cache/pip
+
 # Create data directory with correct ownership
 RUN mkdir -p /data && chown 10001:10001 /data
 
