@@ -6,8 +6,9 @@
   "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
-    "pending-source-review": 1277,
+    "pending-source-review": 1276,
     "nonsecurity-test-assertion": 187,
+    "fixed-source-runtime-open": 1,
     "fixed": 4,
     "reviewed-parameterized-sql": 2
   },
@@ -9362,8 +9363,14 @@
       "rule": "B310",
       "line": 139,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "evidence": {
+        "review_document": "docs/security/runs/2026-09-21/bandit-ingest-resolver-review.md",
+        "source_boundary": "Configured HTTP(S) endpoint only; redirects refused before internal API key can be forwarded. Existing internal HTTP, 5-second timeout, cache and 404 magic-link contract retained.",
+        "test": "modules/agent-factory/tests/lambda/test_user_resolver_transport.py",
+        "runtime_acceptance": "Source verified with loopback HTTP servers and synthetic key only. No ingest Lambda deployment or live gateway/tick acceptance; owner remains #6108."
+      }
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=653",
