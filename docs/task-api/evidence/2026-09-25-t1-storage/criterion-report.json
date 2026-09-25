@@ -3,7 +3,6 @@
   "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
   "reviewer": "runtime_contracts independent operator review",
   "environment": "879318057152/us-east-1 dev",
-  "no_tasks_submitted": true,
   "criteria": {
     "T1-AC01": {
       "status": "PASS",
@@ -77,5 +76,7 @@
       "path": "t1-worker-artifact-iam-simulation.json",
       "sha256": "560d7458e58be4c18a8af0d024c3f4749c780ee925174e83a60cf45120f6e95d"
     }
-  ]
+  ],
+  "independent_reviewer_submitted_tasks": false,
+  "live_concurrency_fixture_submitted_by": "root operator"
 }
