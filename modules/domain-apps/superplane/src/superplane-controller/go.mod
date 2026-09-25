@@ -2,7 +2,7 @@ module github.com/aws-innovate/AISuperPlane/src/superplane-controller
 
 go 1.23.0
 
-toolchain go1.23.8
+toolchain go1.26.8
 
 require (
 	k8s.io/api v0.32.1

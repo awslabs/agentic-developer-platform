@@ -141,6 +141,27 @@ def test_controller_still_runs_as_non_root() -> None:
     )
 
 
+def test_builder_uses_supported_go_version() -> None:
+    """The builder stage should use a supported Go version, not an EOL toolchain.
+
+    Go 1.23 reached end-of-life and its stdlib carries unpatched CVEs that show up
+    as scanner findings. Go supports the two most recent releases (N and N-1).
+    """
+    builder_froms = [
+        ln for ln in _effective_lines() if ln.startswith("FROM") and "golang:" in ln
+    ]
+    assert builder_froms, "no Go builder FROM found in the controller Dockerfile"
+
+    for line in builder_froms:
+        match = re.search(r"golang:(\d+)\.(\d+)", line)
+        assert match, f"builder must pin a Go major.minor version: {line!r}"
+        major, minor = int(match.group(1)), int(match.group(2))
+        assert minor >= 25, (
+            f"golang:{major}.{minor} is end-of-life. Go supports the two most recent "
+            f"releases. Update to a supported version to avoid stdlib CVE findings."
+        )
+
+
 def test_controller_starts_no_subprocess() -> None:
     """The premise behind removing helm/aws-cli/ssh: the controller never execs anything.
 

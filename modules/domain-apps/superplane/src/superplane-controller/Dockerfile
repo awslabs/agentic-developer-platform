@@ -3,7 +3,7 @@
 # ============================================================================
 
 # Stage 1: Build the Go binary
-FROM public.ecr.aws/docker/library/golang:1.23-alpine AS builder
+FROM public.ecr.aws/docker/library/golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
