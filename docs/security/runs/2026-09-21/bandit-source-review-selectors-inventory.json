@@ -6,9 +6,9 @@
   "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
-    "pending-source-review": 1276,
+    "pending-source-review": 1275,
     "nonsecurity-test-assertion": 187,
-    "fixed-source-runtime-open": 1,
+    "fixed-source-runtime-open": 2,
     "fixed": 4,
     "reviewed-parameterized-sql": 2
   },
@@ -9383,8 +9383,14 @@
       "rule": "B310",
       "line": 55,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "evidence": {
+        "review_document": "docs/security/runs/2026-09-21/bandit-slack-router-review.md",
+        "source_boundary": "Initial Slack URL is fixed HTTPS. Per-request opener refuses redirects before Bearer-token forwarding, bounds request time at 10 seconds, and redacts raw failure details.",
+        "test": "modules/agent-factory/tests/lambda/test_slack_router_transport.py",
+        "runtime_acceptance": "Synthetic-token loopback source validation only; no real Slack send or response Lambda rollout. Runtime acceptance remains open under #6108."
+      }
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=654",

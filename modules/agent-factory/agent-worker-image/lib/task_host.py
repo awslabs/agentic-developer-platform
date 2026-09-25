@@ -165,6 +165,8 @@ class TaskHost:
         self._turn_number = 0
         self._turns: dict[str, dict] = {}
         self._pending_turn_id: str | None = None
+        self._report_renderer = None
+        self._report_context = {"steps": []}
 
     def _binding(self, assignment, runtime_attempt_id: str) -> dict:
         return {
@@ -414,6 +416,7 @@ class TaskHost:
         operation = frame["tool"].split(".", 1)[1] if generic else frame["operation"]
         body = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
                 "operation_id": frame["request_id"], "operation": operation, "payload": frame["payload"]}
+        started_at = _now()
         response = self.client.tool(frame["tool"], body) if generic else self.client.cyber(body)
         if (response.get("schema_version") != SCHEMA_VERSION or response.get("task_id") != assignment.task_id
                 or response.get("operation_id") != frame["request_id"]
@@ -429,6 +432,16 @@ class TaskHost:
                     or not isinstance(artifact.get("content_sha256"), str) or len(artifact["content_sha256"]) != 64
                     or type(artifact.get("byte_length")) is not int or not 0 < artifact["byte_length"] <= 32768):
                 raise TaskRunClientError("cyber artifact metadata is invalid")
+        if self._report_renderer is not None:
+            steps = self._report_context["steps"]
+            if len(steps) < 128:
+                steps.append({"tool": frame.get("tool", "cyber." + operation),
+                              "payload": frame["payload"], "started_at": started_at,
+                              "finished_at": _now(), "operation_status": response["operation_status"],
+                              "result": response.get("result") if isinstance(response.get("result"), dict) else None,
+                              "artifact": response.get("artifact")})
+            else:
+                self._report_context["steps_truncated"] = True
         return {"protocol_version": PROTOCOL_VERSION, "type": "tool.result" if generic else "cyber.result",
             **({"tool": frame["tool"]} if generic else {"operation": operation}),
             "request_id": frame["request_id"], "task_id": assignment.task_id,
@@ -487,15 +500,20 @@ class TaskHost:
             raise TaskProtocolError("result report is not valid JSON") from None
         if not isinstance(report, dict) or not 0 < len(content) <= 1048576:
             raise TaskProtocolError("result artifact exceeds its fixed bound")
+        return self._output_artifact(assignment, content, "application/json")
+
+    def _output_artifact(self, assignment, content: bytes, content_type: str) -> str:
+        if content_type not in {"text/plain", "application/json", "text/html"} or not isinstance(content, bytes) or not 0 < len(content) <= 1048576:
+            raise TaskProtocolError("Invalid rendered output artifact")
         digest = hashlib.sha256(content).hexdigest()
         expected_id = "art_" + str(uuid.UUID(bytes=hashlib.sha256(
-            f"{assignment.task_id}:application/json:{digest}".encode()
+            f"{assignment.task_id}:{content_type}:{digest}".encode()
         ).digest()[:16], version=4))
         body = {
             "schema_version": SCHEMA_VERSION,
             "run": {"task_id": assignment.task_id, "invocation_id": assignment.invocation_id,
                     "generation": assignment.generation},
-            "content_type": "application/json",
+            "content_type": content_type,
             "content_sha256": digest,
             "content_base64": base64.b64encode(content).decode("ascii"),
         }
@@ -514,7 +532,7 @@ class TaskHost:
             or receipt.get("artifact_id") != expected_id
             or type(receipt.get("version")) is not int
             or receipt["version"] != 1
-            or receipt.get("content_type") != "application/json"
+            or receipt.get("content_type") != content_type
             or receipt.get("content_sha256") != digest
             or receipt.get("expires_at", "missing") is not None
         ):
@@ -540,6 +558,14 @@ class TaskHost:
             if exit_code != 0 or not isinstance(report, dict):
                 raise TaskProtocolError("completed result requires a validated report and zero child exit")
             result_refs = [self._result_artifact(assignment, report)]
+            if self._report_renderer is not None:
+                try:
+                    rendered = self._report_renderer(report=report, context=self._report_context)
+                    if not isinstance(rendered, dict) or set(rendered) != {"content", "content_type"}:
+                        raise ValueError("Invalid renderer output")
+                except Exception as exc:
+                    raise TaskHostError("Task report rendering failed") from exc
+                result_refs.append(self._output_artifact(assignment, rendered["content"], rendered["content_type"]))
             result = {
                 "schema_version": SCHEMA_VERSION,
                 "outcome": "completed",
@@ -719,6 +745,12 @@ class TaskHost:
             )
             runtime_attempt_id = _request_id()
             attempt = self._binding(assignment, runtime_attempt_id)
+            self._report_renderer = None
+            self._report_context = {"task_id": assignment.task_id, "started_at": _now(),
+                                    "inputs": bootstrap["input"].get("inputs", {}), "steps": []}
+            if os.environ.get("ADP_TASK_REPORT_RENDERERS"):
+                from adp_tools.reports import report_renderer
+                self._report_renderer = report_renderer(bootstrap["persona"])
             attempt_response = self.client.attempt(
                 {
                     "schema_version": SCHEMA_VERSION,

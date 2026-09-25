@@ -187,7 +187,8 @@ def test_prs_cannot_reach_live_jobs_and_standalone_refs_are_guarded():
         assert (
             job["outputs"]["cleanup_ok"] == "${{ steps.cleanup.outcome == 'success' }}"
         )
-        assert job["if"] == "github.event_name != 'pull_request'"
+        assert "github.event_name != 'pull_request'" in job["if"]
+        assert "github.ref == 'refs/heads/main'" in job["if"]
         assert job["steps"][0]["name"] == "Refuse an untrusted ref"
         assert "refs/heads/main|refs/tags/*)" in job["steps"][0]["run"]
         cleanup = next(
@@ -853,3 +854,20 @@ pass() { :; }
         timeout=10,
     )
     assert (result.returncode == 0) is allowed, result.stdout + result.stderr
+
+
+def test_reusable_callers_forward_the_child_oidc_permission():
+    """GitHub rejects the entire workflow if a child exceeds caller grants."""
+    parent = workflow("nightly-cli-regression.yml")[0]
+    assert parent["permissions"] == {"contents": "read"}
+    for name, filename in zip(("onboarding", "budgets", "ec2"), CHILDREN):
+        child = workflow(filename)[0]
+        assert any(
+            job.get("permissions", {}).get("id-token") == "write"
+            for job in child["jobs"].values()
+        )
+        assert parent["jobs"][name]["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
+        assert "needs.prepare.result == 'success'" in parent["jobs"][name]["if"]

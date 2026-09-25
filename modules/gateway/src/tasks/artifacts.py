@@ -306,7 +306,8 @@ async def download_artifact(task_id: str, artifact_id: str, request: Request, db
         media_type=artifact.content_type,
         headers={
             "Cache-Control": "no-store",
-            "Content-Disposition": "attachment",
+            "Content-Disposition": (f'attachment; filename="{artifact.artifact_id}.html"' if artifact.content_type == "text/html" else "attachment"),
+            "Content-Security-Policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
             "X-Content-Type-Options": "nosniff",
             # The digest travels with the bytes so a consumer can verify what it
             # received against what the investigator's report cited, without a

@@ -129,6 +129,9 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
             self.artifact_bodies.append(body)
             return super().artifact(body)
 
+    sys.path.insert(0, str(FACTORY.parents[1] / 'modules/tools'))
+    sys.path.insert(0, str(FACTORY.parents[1] / 'modules/domain-apps/cyber/tools'))
+    monkeypatch.setenv('ADP_TASK_REPORT_RENDERERS', '{"agent-task-cyber":"cyber_tools.task_report:render_report"}')
     client = Client(bootstrap, events)
     monkeypatch.setattr('lib.task_host.workload_identity', lambda: {'pod_uid': str(uuid.uuid4()), 'namespace': 'test'})
     executable = FACTORY / 'task-agents/cyber/dist/index.js'
@@ -153,7 +156,12 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
     assert events.count('cyber:cancel_jobs') == 1
     assert events.index('cyber:cancel_jobs') < events.index('finalize:completed') < events.index('ack')
     assert client.finalize_body['outcome'] == 'completed'
-    durable_report = json.loads(base64.b64decode(client.artifact_bodies[-1]['content_base64']))
+    durable_report = json.loads(base64.b64decode(client.artifact_bodies[-2]['content_base64']))
+    html_body = client.artifact_bodies[-1]
+    assert html_body['content_type'] == 'text/html'
+    assert b'url analysis' in base64.b64decode(html_body['content_base64'])
+    assert len(client.finalize_body['result']['artifact_ids']) == 2
+    assert len(client.finalize_body['committed_result_refs']) == 2
     assert durable_report == report
     assert durable_report['evidence_refs'][0]['source'] == 'artifact'
     assert durable_report['findings'][0]['evidence_refs'] == [artifact_id]
