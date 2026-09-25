@@ -684,10 +684,13 @@ def test_delayed_finalizer_cannot_publish_after_recovery(
     from superplane_bootstrap.state import claim_fingerprint
 
     runtime = shared_runtime
-    original = runtime.store.finalize
+    store_type = type(runtime.store)
+    original = store_type.finalize
     recovered = []
 
-    def delayed_finalize(target, attempt_token=""):
+    def delayed_finalize(store, target, attempt_token=""):
+        if store is not runtime.store:
+            return original(store, target, attempt_token)
         recovery = runtime.factory.recover(
             binding=runtime.binding,
             target=runtime.target,
@@ -698,9 +701,11 @@ def test_delayed_finalizer_cannot_publish_after_recovery(
         with ThreadPoolExecutor(max_workers=1) as pool:
             pool.submit(recovery.recover_member).result(timeout=10)
         recovered.append(recovery)
-        original(target, attempt_token)
+        original(store, target, attempt_token)
 
-    monkeypatch.setattr(runtime.store, "finalize", delayed_finalize)
+    # The registration store is frozen. Patch its class while interleaving only
+    # this fixture's publication; recovery uses its own real SQL store unchanged.
+    monkeypatch.setattr(store_type, "finalize", delayed_finalize)
     result = runtime.run()
     assert recovered and not result.ready
     assert "publication authority" in str(result.refusal)
