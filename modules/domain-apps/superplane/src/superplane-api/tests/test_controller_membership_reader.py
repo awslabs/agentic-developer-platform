@@ -61,6 +61,10 @@ async def shared_reader(monkeypatch, *, state="active"):
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
             state=state,
             projection_uid="secret-uid",
+            projection_namespace="superplane",
+            projection_namespace_uid="management-namespace-uid",
+            projection_name="superplane-workspace-access",
+            content_digest="b" * 64,
             projection_version="5",
             observed_at=datetime.now(UTC) if state == "active" else None,
         )
