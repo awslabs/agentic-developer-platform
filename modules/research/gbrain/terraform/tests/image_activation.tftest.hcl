@@ -19,7 +19,7 @@ run "refuse_unpublished_bootstrap_image" {
     task_role_arn      = "arn:aws:iam::111122223333:role/task-test"
     execution_role_arn = "arn:aws:iam::111122223333:role/exec-test"
   }
-  expect_failures = [aws_ecs_task_definition.serve]
+  expect_failures = [aws_ecs_task_definition.serve, aws_ecs_task_definition.dream]
 }
 
 run "consume_exact_registry_digest" {
@@ -110,7 +110,7 @@ run "preserve_runtime_settings_during_image_delivery" {
 }
 
 run "dream_is_a_separate_batch_task" {
-  command = plan
+  command = apply
   module { source = "./modules/fargate" }
   variables {
     name_prefix        = "gbrain-test"
@@ -126,9 +126,18 @@ run "dream_is_a_separate_batch_task" {
     task_role_arn      = "arn:aws:iam::111122223333:role/task-test"
     execution_role_arn = "arn:aws:iam::111122223333:role/exec-test"
   }
+  # ECS adds default fields when it normalizes a registered serve container.
+  # Dream must remain derived from configuration rather than this provider state.
+  override_resource {
+    target = aws_ecs_task_definition.serve
+    values = {
+      container_definitions = "[{\"name\":\"gbrain\",\"image\":\"111122223333.dkr.ecr.us-east-1.amazonaws.com/gbrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"cpu\":0,\"mountPoints\":[],\"systemControls\":[],\"volumesFrom\":[],\"secrets\":[{\"name\":\"GBRAIN_DB_PASSWORD\",\"valueFrom\":\"arn:aws:secretsmanager:us-east-1:111122223333:secret:db-test:password::\"},{\"name\":\"GBRAIN_DB_USER\",\"valueFrom\":\"arn:aws:secretsmanager:us-east-1:111122223333:secret:db-test:username::\"}]}]"
+    }
+  }
   assert {
     condition = (
       aws_ecs_task_definition.dream.family == "gbrain-test-dream" &&
+      !contains(keys(jsondecode(aws_ecs_task_definition.dream.container_definitions)[0]), "cpu") &&
       jsondecode(aws_ecs_task_definition.dream.container_definitions)[0].image == var.container_image &&
       !contains(keys(jsondecode(aws_ecs_task_definition.dream.container_definitions)[0]), "healthCheck") &&
       !contains(keys(jsondecode(aws_ecs_task_definition.dream.container_definitions)[0]), "portMappings") &&
