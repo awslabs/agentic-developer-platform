@@ -140,3 +140,19 @@ def test_prepared_network_intent_rejects_link_local_endpoints(native, cidr):
     env["paid_worker"]["egress"]["gateway"]["cidr"] = cidr
     with pytest.raises(Refusal, match="routable host CIDRs"):
         paid_worker.validate(env, lock)
+
+
+def test_verified_caller_receipt_cannot_bypass_worker_activation_gate(native):
+    from installation import adapter_staging
+
+    env, _ = native
+    installer = SimpleNamespace(
+        env=env,
+        receipt={"adapter_stage": {"state": "verified-disabled"}},
+        apply=Mock(),
+        save=Mock(),
+    )
+    with pytest.raises(Refusal, match=paid_worker.UNAVAILABLE):
+        adapter_staging.activate(installer)
+    installer.apply.assert_not_called()
+    installer.save.assert_not_called()

@@ -150,7 +150,7 @@ def test_image_contract_cannot_be_live_capabilities():
 @pytest.mark.parametrize("state", [None, "activation-pending", "disabled-restored"])
 def test_activation_without_verified_stage_has_no_mutation(state):
     installer = SimpleNamespace(
-        receipt={"adapter_stage": {"state": state}}, apply=Mock(), save=Mock()
+        env={}, receipt={"adapter_stage": {"state": state}}, apply=Mock(), save=Mock()
     )
     with pytest.raises(Refusal):
         adapter_staging.activate(installer)
@@ -160,6 +160,7 @@ def test_activation_without_verified_stage_has_no_mutation(state):
 
 def test_secret_or_role_drift_refuses_before_activation_intent(monkeypatch):
     installer = SimpleNamespace(
+        env={},
         receipt={
             "adapter_stage": {
                 "state": "verified-disabled",
@@ -274,7 +275,7 @@ def test_credential_expiring_before_activation_never_enables_dispatch(monkeypatc
         "binding": {},
     }
     installer = SimpleNamespace(
-        receipt={"adapter_stage": stage}, save=Mock(), apply=Mock()
+        env={}, receipt={"adapter_stage": stage}, save=Mock(), apply=Mock()
     )
     monkeypatch.setattr(adapter_staging, "snapshot", lambda _: {})
     with pytest.raises(Refusal):
