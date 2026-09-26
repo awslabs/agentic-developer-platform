@@ -115,7 +115,81 @@ def verify_nodeadm_source(source):
             )
 
 
+def cni_sources(plan):
+    """Return a validated copy; never rewrite an approved canonical input plan."""
+    upstream = plan["upstream"]
+    if type(plan["version"]) is not int:
+        raise image.ImageRefused("unsupported producer input")
+    if plan["version"] == 1:
+        sources = [{"image": upstream["cni_image"], "files": upstream["cni_files"]}]
+    elif plan["version"] == 2:
+        sources = upstream["cni_sources"]
+        if not isinstance(sources, list) or not 1 <= len(sources) <= 2:
+            raise image.ImageRefused("one or two explicit CNI sources required")
+    else:
+        raise image.ImageRefused("unsupported producer input")
+    destinations = set()
+    validated = []
+    for source in sources:
+        image.exact(source, {"image", "files"})
+        image.pattern(
+            source["image"], r"[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}"
+        )
+        files = source["files"]
+        if not isinstance(files, dict) or not 1 <= len(files) <= 64:
+            raise image.ImageRefused("bounded explicit CNI image paths required")
+        for original, target in files.items():
+            image.pattern(original, r"/[A-Za-z0-9._/-]+")
+            image.pattern(target, r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+            if ".." in PurePosixPath(original).parts:
+                raise image.ImageRefused("CNI image path escapes")
+            if plan["version"] == 2 and (
+                str(PurePosixPath(original)) != original or original.startswith("//")
+            ):
+                raise image.ImageRefused("canonical CNI image path required")
+            if target in destinations:
+                raise image.ImageRefused("duplicate global CNI destination")
+            destinations.add(target)
+        validated.append({"image": source["image"], "files": dict(files)})
+    return validated
+
+
+def assemble_cni(plan, cni):
+    sources = cni_sources(plan)  # Refuse all map conflicts before commands/writes.
+    cni.mkdir()
+    provenance = []
+    for source in sources:
+        command(["docker", "pull", "--platform", "linux/amd64", source["image"]])
+        created = subprocess.run(
+            ["docker", "create", "--platform", "linux/amd64", source["image"]],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).stdout.strip()
+        image.pattern(created, r"[a-f0-9]{64}")
+        files = {}
+        try:
+            for original, name in source["files"].items():
+                target = cni / name
+                command(["docker", "cp", created + ":" + original, str(target)])
+                if target.is_symlink() or not target.is_file():
+                    raise image.ImageRefused(
+                        "CNI image path is not a regular executable"
+                    )
+                target.chmod(0o755)
+                files[original] = {
+                    "destination": name,
+                    "sha256": image.file_sha(target),
+                }
+        finally:
+            command(["docker", "rm", created])
+        provenance.append({"image": source["image"], "files": files})
+    return provenance
+
+
 def assemble(plan, inputs, stage):
+    cni_sources(plan)
     """Run only in the approved remote build lane. No EC2 or target boot here."""
     upstream = plan["upstream"]
     # Verify every input before running the compiler or creating an output tree.
@@ -185,25 +259,7 @@ def assemble(plan, inputs, stage):
     shutil.copyfile(crictl, binaries / "crictl")
     (binaries / "crictl").chmod(0o755)
     cni = stage / "cni"
-    cni.mkdir()
-    command(["docker", "pull", "--platform", "linux/amd64", upstream["cni_image"]])
-    created = subprocess.run(
-        ["docker", "create", "--platform", "linux/amd64", upstream["cni_image"]],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    ).stdout.strip()
-    image.pattern(created, r"[a-f0-9]{64}")
-    try:
-        for original, name in upstream["cni_files"].items():
-            target = cni / name
-            command(["docker", "cp", created + ":" + original, str(target)])
-            if target.is_symlink() or not target.is_file():
-                raise image.ImageRefused("CNI image path is not a regular executable")
-            target.chmod(0o755)
-    finally:
-        command(["docker", "rm", created])
+    cni_provenance = assemble_cni(plan, cni)
     # The portable Python is used by the helper, so no target-side provisioning
     # Python/package installation is required. No shell or target init is started.
     command(
@@ -224,6 +280,7 @@ def assemble(plan, inputs, stage):
         "nodeadm_source_files": NODEADM_SOURCE_FILES,
         "binaries": {path.name: image.file_sha(path) for path in binaries.iterdir()},
         "cni": {path.name: image.file_sha(path) for path in cni.iterdir()},
+        "cni_sources": cni_provenance,
         "python_files": {
             str(path.relative_to(stage / "python")): image.file_sha(path)
             for path in (stage / "python").rglob("*")
