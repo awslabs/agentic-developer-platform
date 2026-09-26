@@ -36,6 +36,11 @@ that the canonical create schema does not support.
 
 Registration and reindex acknowledgements return `pending` (exit 4). Inspect the
 real run and stages with status/watch; queued or registered does not mean usable.
+The ingestion callback and run tracker use `complete` for successful completion.
+That status is eligible for reindex, like legacy `indexed` and `failed` states.
+Status/watch report usability only when a correlated run succeeded, at least one
+stage performed verified work, and all stages succeeded or were skipped. An old
+`complete` row without run evidence, or an entirely skipped run, remains pending.
 Status contains run/stage timestamps and hashes of source/artifact references.
 Free-text errors, metadata, and protected URLs are omitted; error presence and
 stage failure remain visible. Successful indexing evidence does not itself prove

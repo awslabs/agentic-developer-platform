@@ -337,7 +337,7 @@ def execute(config, evidence):
                 original["revision"],
                 "--yes",
             ]
-            require_refusal(admin.run(stale, expected=None), code="revision_conflict")
+            require_refusal(admin.run(stale, expected=None), code="stale_revision")
             common.require(
                 snapshot() == after_alias, "Stale command modified canonical metadata"
             )

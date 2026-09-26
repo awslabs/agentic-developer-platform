@@ -50,6 +50,7 @@ SUITES = (
     "hosted-coding",
     "hosted-chat",
     "vault-lifecycle",
+    "knowledge-lifecycle",
     "machine-lifecycle",
     "budget-lifecycle",
     "hierarchy-lifecycle",
@@ -109,6 +110,7 @@ HOSTED = "hosted"
 HUMAN_TASK_CODING = "human_task_coding"
 HUMAN_TASK_CHAT = "human_task_chat"
 VAULT_LIFECYCLE = "vault_lifecycle"
+KNOWLEDGE_LIFECYCLE = "knowledge_lifecycle"
 BUDGET_LIFECYCLE = "budget_lifecycle"
 MACHINE_LIFECYCLE = "machine_lifecycle"
 HIERARCHY_LIFECYCLE = "hierarchy_lifecycle"
@@ -454,6 +456,13 @@ LOGIN_CHECKPOINT = Case(
     (EC2, COGNITO),
 )
 DIAGNOSTICS = (
+    Case(
+        "D04",
+        "#5632",
+        "knowledge-lifecycle",
+        "Owned document registration, watch, same-key reindex and terminal cleanup",
+        (EC2, PLATFORM, COGNITO, KNOWLEDGE_LIFECYCLE),
+    ),
     Case(
         "D06",
         "#5589/#5627",

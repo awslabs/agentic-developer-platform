@@ -4302,6 +4302,7 @@
         "--isolation",
         "--json",
         "--name",
+        "--operation-id",
         "--yes"
       ],
       "arguments": [],

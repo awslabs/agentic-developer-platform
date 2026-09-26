@@ -167,9 +167,8 @@ async def onboarding_capabilities(
         policy, modes, ready = None, set(), False
     return {
         "version": 1,
-        "features": ["create-operation-id-v1", "adopt-operation-id-v1"]
-        if ready
-        else [],
+        "features": ["provider-connection-operation-id-v1"]
+        + (["create-operation-id-v1", "adopt-operation-id-v1"] if ready else []),
         "modes": sorted(modes) if ready else [],
         "providers": ["aws"] if ready else [],
         "isolation_modes": sorted(policy.isolation_modes) if ready else [],

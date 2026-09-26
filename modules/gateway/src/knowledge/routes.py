@@ -477,7 +477,9 @@ async def reindex_asset(
         if len(receipts) >= 256:
             raise HTTPException(409, detail={"reason": "reindex_receipts_full"})
         metadata["_cli_reindex_requests"] = [*receipts, receipt]
-    if row.status not in {"indexed", "failed"}:
+    # The signed ingestion callback persists its successful terminal state as
+    # "complete"; legacy indexed rows remain eligible too.
+    if row.status not in {"indexed", "complete", "failed"}:
         raise HTTPException(409, detail={"reason": "indexing_not_terminal"})
     reserved = await db.execute(
         text("""
