@@ -513,7 +513,11 @@ def suite_cases(suite):
         return (
             BY_ID["E01"],
             LOGIN_CHECKPOINT,
-            *(case for case in CASES if case.suite in {"story-reads", "hosted-coding"}),
+            *(
+                case
+                for case in CASES
+                if case.suite in {"story-reads", "hosted-coding", "tenant-isolation"}
+            ),
         )
     if suite == "capability-contrast":
         return (BY_ID["E19"],)

@@ -1,6 +1,6 @@
 # Tenant default isolation across users — E27 extension
 
-The existing `tenant-isolation` suite can additionally check CLI-09-AC-04's user-default separation without inference, account mutations, or another schedule. The installed CLI performs all tenant reads and default writes; legitimate session acquisition and swapping in the disposable EC2 client's private stores are fixture setup, not login-flow acceptance.
+E27 runs in the existing `nightly` suite and remains selectable with `tenant-isolation`. It can additionally check CLI-09-AC-04's user-default separation without inference, account mutations, or another schedule. The installed CLI performs all tenant reads and default writes; legitimate session acquisition and swapping in the disposable EC2 client's private stores are fixture setup, not login-flow acceptance.
 
 Add this optional object to the existing `tenant_isolation` fixture:
 
@@ -20,3 +20,5 @@ The original installed session must see both explicit tenants. The ordinary fixt
 After existing concurrent tenant/default/refresh checks, E27 records the original saved default, switches to the ordinary fixture, verifies that a single membership selects natively or multiple memberships require explicit selection, confirms the ordinary identity and native selection without inheriting the original default, saves an ordinary default and checks a tenant-scoped capability read. It restores the original config/token files even on a partial write or failed command, switches back and verifies the original identity/default. Only successful complete execution records `user_switch` evidence. The enclosing session handoff retains the original login.
 
 No tokens are included in evidence. Existing fixtures without `user_switch` keep their behavior. The extension does not establish local inference isolation, membership revocation, lost mutation acknowledgement, deployment alias behavior, or full #5622 acceptance. Live EC2 execution remains required.
+
+Scheduled runs receive these non-secret identifiers through the existing `CLI_UPLIFT_NIGHTLY_FIXTURES_JSON` repository variable. Missing tenant fixtures block E27 rather than reporting a pass. Enable the user-switch object only after its owned fixture has been qualified. No additional schedule or EC2 instance is introduced.
