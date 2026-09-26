@@ -676,6 +676,7 @@ def run_script(execute, argv=None):
         assert_owned_instance(config)
         execute(config, evidence)
     except Exception as exc:  # noqa: BLE001 - evidence must always be emitted
+        evidence["success"] = False
         evidence["error_type"] = type(exc).__name__
         if isinstance(exc, RemoteError):
             evidence["error"] = str(exc)

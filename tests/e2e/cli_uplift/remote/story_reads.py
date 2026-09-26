@@ -731,3 +731,9 @@ def execute(config, evidence):
         evidence["qualification"] = (
             "served CLI read/error regression; not full story acceptance"
         )
+    evidence["detail"] = {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"success", "stage", "transcript", "detail"}
+    }
+    evidence.update(stage="complete", success=True)

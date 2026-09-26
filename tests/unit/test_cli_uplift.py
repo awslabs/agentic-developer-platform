@@ -10931,3 +10931,104 @@ def test_pending_launch_cleanup_finishes_discovery_before_any_termination(
         if operation == "terminate_instances"
     ]
     assert terminated == ([] if foreign_last_page else [["i-0ab1"], ["i-0ab2"]])
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_story_read_script_reports_real_completion(
+    tmp_path, monkeypatch, capsys, fails
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    payload = tmp_path / "read.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "mode": "capabilities",
+                "cli_path": "/served/adp",
+                "gateway_url": "https://adp.example",
+                "region": "us-east-1",
+                "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+            }
+        )
+    )
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+    monkeypatch.setattr(common, "session_tokens", lambda _: {})
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    monkeypatch.setattr(common, "Cli", lambda *args, **kwargs: object())
+
+    def scenario(cli, evidence):
+        if fails:
+            raise common.RemoteError("actual CLI assertion failed")
+        evidence["operation_count"] = 65
+
+    monkeypatch.setitem(script.SCENARIOS, "capabilities", scenario)
+    code = common.run_script(script.execute, [str(payload)])
+    emitted = json.loads(capsys.readouterr().out)
+    assert code == int(fails)
+    assert emitted["success"] is not fails
+    if not fails:
+        assert emitted["stage"] == "complete"
+        assert emitted["detail"]["operation_count"] == 65
+        assert "not full story acceptance" in emitted["detail"]["qualification"]
+    else:
+        assert emitted["error"] == "actual CLI assertion failed"
+
+
+def test_remote_exception_after_success_cannot_emit_green(
+    tmp_path, monkeypatch, capsys
+):
+    _, common = shipped_script(tmp_path, "story_reads")
+    payload = tmp_path / "failure.json"
+    payload.write_text("{}")
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+
+    def execute(config, evidence):
+        evidence["success"] = True
+        raise common.RemoteError("cleanup failed")
+
+    assert common.run_script(execute, [str(payload)]) == 1
+    assert json.loads(capsys.readouterr().out)["success"] is False
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_tenant_script_completion_requires_session_preservation(
+    tmp_path, monkeypatch, capsys, cleanup_fails
+):
+    script, common = shipped_script(tmp_path, "tenant_isolation")
+    payload = tmp_path / "tenant.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "mode": "smoke",
+                "cli_path": "/served/adp",
+                "gateway_url": "https://adp.example",
+                "region": "us-east-1",
+                "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+                "session_ref": str(tmp_path / "session.json"),
+            }
+        )
+    )
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+    monkeypatch.setattr(common, "load_session", lambda _: {})
+    monkeypatch.setattr(common, "session_tokens", lambda _: {})
+
+    def write_session(home, *args):
+        target = home / ".bedrock-gateway"
+        target.mkdir()
+        (target / "tokens.json").write_text("{}")
+
+    monkeypatch.setattr(script, "_write_session", write_session)
+    monkeypatch.setattr(common, "Cli", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        script, "smoke", lambda cli, evidence: evidence.update(tenant_count=2)
+    )
+
+    def save(*args, **kwargs):
+        if cleanup_fails:
+            raise common.RemoteError("session preservation failed")
+
+    monkeypatch.setattr(common, "save_session", save)
+    assert common.run_script(script.execute, [str(payload)]) == int(cleanup_fails)
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["success"] is not cleanup_fails
+    if not cleanup_fails:
+        assert emitted["detail"]["tenant_count"] == 2
