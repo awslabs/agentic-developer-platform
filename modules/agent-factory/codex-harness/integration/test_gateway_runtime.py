@@ -1,7 +1,8 @@
 """Real gateway storage/lifecycle -> TaskHost -> official SDK, fixture inference.
 
 Run separately from worker tests: their Python packages both use the name tests.
-No live model, IAM or service endpoints participate. DynamoDB and S3 use moto.
+Default scenarios use fixture inference and providers. Explicit live scenarios
+may call the model gateway and GitHub. DynamoDB and S3 always use Moto.
 """
 
 # ruff: noqa: E402, F811
@@ -31,7 +32,7 @@ from lib.run_identity import CONTROL_ENDPOINT_ENV
 from lib.task_dispatch import parse_task_envelope
 from lib.task_host import TaskHost
 from lib.task_run_client import TaskRunClient
-from src.agentauth import task_harness, task_model
+from src.agentauth import task_model
 from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.task_admission import TaskAdmission
 from src.agentauth.task_responses_contract import TaskResponsesResult
@@ -131,6 +132,7 @@ def sdk_otel_collector(request, monkeypatch):
         "tools_developer_many_turns",
         "tools_developer_live",
         "tools_developer_live_retry",
+        "tools_developer_live_github",
     ],
 )
 def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario, caplog):
@@ -139,12 +141,19 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
 
     store._clock = now
     many_turns = scenario == "tools_developer_many_turns"
-    retry_story = scenario == "tools_developer_live_retry"
-    actual_live = scenario in {"tools_developer_live", "tools_developer_live_retry"}
+    live_github = scenario == "tools_developer_live_github"
+    retry_story = scenario == "tools_developer_live_retry" or live_github
+    actual_live = scenario in {"tools_developer_live", "tools_developer_live_retry"} or live_github
     if actual_live and not os.environ.get("ADP_CODEX_LIVE_CONFIG_SOURCE"):
         pytest.skip("requires explicit isolated live gateway qualification")
     if actual_live:
         monkeypatch.syspath_prepend(str(Path(__file__).parent))
+    github = None
+    if live_github:
+        if not os.environ.get("ADP_CODEX_LIVE_GITHUB_BINDING"):
+            pytest.skip("requires explicit repository and operator credential for real GitHub publication")
+        from live_github import LiveGitHub
+        github = LiveGitHub(monkeypatch)
     live_metrics = []
     live_messages = []
     runtime_source = None
@@ -340,6 +349,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 "base_branch": "main",
             }
         }
+    if github:
+        policy["repositories"]["application"].update({key: value for key, value in github.binding.items() if key != "source_revision"})
     if actual_workflow:
         policy["repositories"]["application"]["validation_checks"] = [
             {
@@ -713,6 +724,12 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                     store, SimpleNamespace(get=lambda **kw: policy), current, permission
                 ),
             )
+            if github and staging.read(identity) is None:
+                async def authorize_live_source():
+                    authorize_tool(store, SimpleNamespace(get=lambda **kw: policy), identity, "repository.read")
+                archive = asyncio.run(github.source(policy["repositories"]["application"], authorize_live_source))
+                staging.stage(identity, archive)
+                events.append("source-staged")
             if staging.read(identity) is None:
                 source = io.BytesIO()
                 with tarfile.open(fileobj=source, mode="w:gz") as archive:
@@ -750,10 +767,12 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 proposal = kwargs["manifest"]
                 workflow["manifest"] = proposal
                 events.append("publication-effect")
+                if github:
+                    return await github.publish(**kwargs)
                 return {"schema_version": "1.0", "task_id": assignment.task_id, "provider": "github",
                         "repository_id": proposal["repository_id"], "source_revision": proposal["source_revision"],
                         "local_head": proposal["local_head"], "tree": proposal["tree"], "provider_head": "e" * 40,
-                        "branch": "adp/task-" + assignment.task_id.removeprefix("tsk_"), "number": 7,
+                        "branch": "adp-task-" + assignment.task_id.removeprefix("tsk_"), "number": 7,
                         "url": "https://github.com/" + proposal["repository"] + "/pull/7", "state": "open", "draft": False}
             service = TaskPublicationService(store, artifacts=reads,
                 staging=TaskSourceStaging(store, s3=reads.s3, bucket=reads.bucket, authorize=authorize),
@@ -775,6 +794,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             async def observe(**kwargs):
                 await kwargs["reauthorize"]()
                 events.append("completion-observed")
+                if github:
+                    return await github.observe(**kwargs)
                 receipt = dict(kwargs["receipt"])
                 if scenario == "tools_developer_moved":
                     receipt["provider_head"] = "f" * 40
@@ -930,7 +951,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 "status": task["state"], "error": task.get("error"), "final_messages": live_messages,
                 "runtime_source": runtime_source, "validation_image": image, "model_calls": live_metrics, "tool_effects": events.count("tool-effect"),
                 "publication": workflow.get("publication", {}).get("result"), "manifest": workflow.get("manifest"), "tool_results": workflow.get("tool_results"),
-                "limitations": ["Task admission identity and ledger use Moto fixtures", "provider source and PR publication use fixtures", "gateway inference is live and charged to the authenticated user"]}, indent=2))
+                "limitations": ["Task admission identity and ledger use Moto fixtures", "GitHub source/publication/observation are live; Task and installation authorization use fixtures with an operator credential" if github else "provider source and PR publication use fixtures", "gateway inference is live and charged to the authenticated user"]}, indent=2))
     expected_state = {"cancel": "cancelled", "unknown": "failed", "tools_developer_moved": "failed"}.get(scenario, "completed")
     if actual_live and task["state"] != expected_state:
         print(json.dumps({"events": events, "model_requests": len(model_requests), "responses": len(live_metrics)}))

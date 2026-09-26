@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.task_repository_policy import TaskValidationCheck
-from src.agentauth.task_repository_publication import TaskChangeManifest
+from src.agentauth.task_repository_publication import TaskChangeManifest, task_publication_branch
 from src.tasks.records import payload_digest, task_ops_partition, task_partition
 from src.tasks.store import TaskStoreError, _serialize
 
@@ -209,7 +209,7 @@ class TaskPublicationService:
             not isinstance(result, dict)
             or any(result.get(k) != v for k, v in expected.items())
             or not re.fullmatch(r"[a-f0-9]{40}", str(result.get("provider_head", "")))
-            or result.get("branch") != "adp/task-" + identity.task_id.removeprefix("tsk_")
+            or result.get("branch") != task_publication_branch(identity.task_id)
             or type(result.get("number")) is not int
             or result["number"] < 1
             or result.get("url") != f"https://github.com/{manifest['repository']}/pull/{result['number']}"

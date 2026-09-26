@@ -36,7 +36,7 @@ def scope(monkeypatch):
     monkeypatch.setattr(resolver, "resolve_installation_owner", owner)
     monkeypatch.setattr(publication, "installation_token", token)
     state.owner, state.token, state.authorize = owner, token, AsyncMock()
-    state.branch_name = "adp/task-" + TASK.removeprefix("tsk_")
+    state.branch_name = "adp-task-" + TASK.removeprefix("tsk_")
 
     def handle(request):
         import json
@@ -184,3 +184,22 @@ async def test_invalid_proposal_never_reaches_token_or_provider(scope, fault):
         await publish(scope, proposal)
     scope.token.assert_not_awaited()
     assert scope.requests == []
+
+
+def test_task_publication_branch_coexists_with_adp_memory_ref(tmp_path):
+    import subprocess
+
+    def git(*args, input=None):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
+            cwd=tmp_path, input=input, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+
+    git("init", "--bare")
+    tree = git("mktree", input="")
+    commit = git("commit-tree", tree, input="Fixture source")
+    git("update-ref", "refs/heads/adp", commit)
+    branch = publication.task_publication_branch(TASK)
+    git("update-ref", "refs/heads/" + branch, commit)
+    assert git("rev-parse", "refs/heads/adp") == commit
+    assert git("rev-parse", "refs/heads/" + branch) == commit

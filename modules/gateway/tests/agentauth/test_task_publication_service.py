@@ -66,7 +66,7 @@ def publication(store, monkeypatch):
         "local_head": LOCAL,
         "tree": TREE,
         "provider_head": REMOTE,
-        "branch": "adp/task-" + identity.task_id.removeprefix("tsk_"),
+        "branch": "adp-task-" + identity.task_id.removeprefix("tsk_"),
         "number": 7,
         "url": "https://github.com/org/repo/pull/7",
         "state": "open",

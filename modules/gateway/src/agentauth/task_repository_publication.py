@@ -74,13 +74,18 @@ class TaskChangeManifest(BaseModel):
         return changes
 
 
+def task_publication_branch(task_id):
+    if not isinstance(task_id, str) or not re.fullmatch(r"tsk_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", task_id):
+        raise OperationRefusedError("Task publication identity invalid")
+    # ADP memory uses refs/heads/adp. Git cannot also store refs/heads/adp/...
+    return "adp-task-" + task_id.removeprefix("tsk_")
+
+
 class TaskGitHubPublication(GitHubProvider):
     def __init__(self, *, token, binding, task_id, manifest, reauthorize, client=None):
-        if not re.fullmatch(r"tsk_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", task_id):
-            raise OperationRefusedError("Task publication identity invalid")
         self.manifest, self.reauthorize = manifest, reauthorize
         self.task_id = task_id
-        branch = "adp/task-" + task_id.removeprefix("tsk_")
+        branch = task_publication_branch(task_id)
         if branch == binding["base_branch"]:
             raise OperationRefusedError("Task branch must differ from base")
         super().__init__(
@@ -181,7 +186,7 @@ async def observe_task_change(*, db, tenant, task_id, frozen, receipt, reauthori
     """Fresh read-only completion observation, using no content-write credential."""
     validate_frozen_repository(frozen)
     binding = frozen["binding"]
-    branch = "adp/task-" + task_id.removeprefix("tsk_")
+    branch = task_publication_branch(task_id)
     if (
         receipt.get("task_id") != task_id
         or receipt.get("repository_id") != binding["repository_id"]
