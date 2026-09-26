@@ -157,3 +157,9 @@ def execute(config, evidence):
             common.save_session(
                 {**session, **refreshed}, work_dir=Path(config["session_ref"]).parent
             )
+    evidence["detail"] = {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"success", "stage", "transcript", "detail"}
+    }
+    evidence.update(stage="complete", success=True)
