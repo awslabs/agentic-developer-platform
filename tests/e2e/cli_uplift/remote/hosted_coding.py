@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 
 import common
@@ -21,6 +22,13 @@ def fixture_valid(fixture):
         and type(fixture.get("max_task_usd")) in (int, float)
         and 0 < fixture["max_task_usd"] <= 1
         and fixture.get("scenario") in {"complete", "cancel"}
+        and fixture.get("control_when", "observed") in {"observed", "running"}
+        and type(fixture.get("running_wait_seconds", 30)) is int
+        and 1 <= fixture.get("running_wait_seconds", 30) <= 60
+        and (
+            fixture.get("control_when") != "running"
+            or fixture.get("scenario") == "cancel"
+        )
         and fixture.get("persona")
         in {"agent-task-claude-developer", "agent-task-codex-developer"}
         and isinstance(fixture.get("snapshot"), dict)
@@ -33,6 +41,49 @@ def fixture_valid(fixture):
 TASK_ID = re.compile(
     r"tsk_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
+
+
+def observe_before_control(cli, task_id, fixture, evidence):
+    deadline = time.monotonic() + fixture.get("running_wait_seconds", 30)
+    evidence["control_when"] = fixture.get("control_when", "observed")
+    evidence["observed_states"] = []
+    while True:
+        detail = cli.json(["agent", "status", "--run", task_id]).get("detail") or {}
+        common.require(detail.get("task_id") == task_id, "Status changed task identity")
+        state = detail.get("status")
+        common.require(
+            state
+            in {
+                "accepted",
+                "queued",
+                "running",
+                "waiting_for_input",
+                "cancel_requested",
+                "completed",
+                "failed",
+                "cancelled",
+            },
+            "Unknown Task state",
+        )
+        evidence["observed_states"].append(state)
+        evidence["pre_control_status"] = state
+        if (
+            evidence["control_when"] != "running"
+            or state in {"running", "completed", "failed", "cancelled"}
+            or time.monotonic() >= deadline
+        ):
+            return state
+        time.sleep(1)
+
+
+def require_control_receipt(control, task_id, command_id):
+    detail = control.get("detail") or {}
+    common.require(
+        control.get("status") == "pending"
+        and detail.get("task_id") == task_id
+        and detail.get("command_id") == command_id,
+        "Control acceptance unconfirmed; reconcile the original command identity",
+    )
 
 
 def local_receipt(home):
@@ -215,28 +266,37 @@ def _execute(config, evidence):
                 (repeated.get("detail") or {}).get("task_id") == task_id,
                 "Idempotent submit changed task identity",
             )
-            observed = cli.json(["agent", "status", "--run", task_id])
-            common.require(
-                (observed.get("detail") or {}).get("task_id") == task_id,
-                "Status changed task identity",
-            )
-            action = "abort" if fixture["scenario"] == "cancel" else "steer"
-            text_flag = "--reason" if action == "abort" else "--instruction"
-            command = [
-                "agent",
-                action,
-                "--run",
-                task_id,
-                "--command-id",
-                evidence["command_id"],
-                text_flag,
-                "E42 owned fixture cancellation"
-                if action == "abort"
-                else "Keep the change limited to the requested issue and submit the actual patch.",
-            ]
-            cli.json([*command, "--dry-run"])
-            control = cli.json([*command, "--yes"], expected=4)
-            evidence["control_receipt"] = control.get("detail")
+            observed = observe_before_control(cli, task_id, fixture, evidence)
+            terminal = observed in {"completed", "failed", "cancelled"}
+            action = "abort" if fixture["scenario"] == "cancel" else None
+            if action:
+                common.require(
+                    not terminal,
+                    "Task became terminal before cancellation; active control unconfirmed",
+                )
+                common.require(
+                    fixture.get("control_when", "observed") != "running"
+                    or observed == "running",
+                    "Task did not reach running before the bounded control deadline",
+                )
+                command = [
+                    "agent",
+                    "abort",
+                    "--run",
+                    task_id,
+                    "--command-id",
+                    evidence["command_id"],
+                    "--reason",
+                    "E42 owned fixture cancellation",
+                ]
+                cli.json([*command, "--dry-run"])
+                control = cli.json([*command, "--yes"], expected=4)
+                evidence["control_receipt"] = control.get("detail")
+                require_control_receipt(control, task_id, evidence["command_id"])
+            else:
+                evidence["steering_effect"] = (
+                    "unsupported: coding runtime has no input-consumption path"
+                )
             # Preserve each actual streamed frame, not just the final CLI envelope.
             code, stdout, _ = common.bounded(
                 [
@@ -283,6 +343,10 @@ def _execute(config, evidence):
                 timeout=70,
             )
             detail = (result or {}).get("detail") or {}
+            common.require(
+                detail.get("task_id") == task_id,
+                "Terminal readback changed task identity",
+            )
             evidence["terminal_status"] = detail.get("status")
             terminal = detail.get("status") in {"completed", "failed", "cancelled"}
             common.require(

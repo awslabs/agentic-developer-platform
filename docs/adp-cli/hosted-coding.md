@@ -12,8 +12,6 @@ adp agent trigger --repo owner/repo --issue 123 \
 # Review the preview, then use the same arguments with --yes.
 adp agent status --run tsk_UUID --json
 adp agent logs --run tsk_UUID --follow --timeout 60 --json
-adp agent steer --run tsk_UUID --command-id SAVED_UUID \
-  --instruction 'Keep the patch scoped to the requested CLI behavior' --yes --json
 adp agent wait --run tsk_UUID --timeout 120 --json
 adp agent abort --run tsk_UUID --command-id ANOTHER_SAVED_UUID \
   --reason 'Cancel this owned task' --yes --json
@@ -21,8 +19,9 @@ adp agent abort --run tsk_UUID --command-id ANOTHER_SAVED_UUID \
 
 Use real IDs returned by the commands. The `tsk_` handle identifies the canonical
 Task; its `invocation_id` is a separate Activity identity. Task pause/resume are
-unavailable. Abort and steer acceptance are pending until worker/terminal
-readback; a timeout only detaches the client. Retry submissions with the same
+unavailable. Coding runtimes do not consume follow-up input, so E42 does not
+send steer commands. Abort acceptance remains pending until
+terminal cancellation readback; a timeout only detaches the client. Retry submissions with the same
 request ID and unchanged files. A locally recorded unknown artifact upload is
 not automatically repeated and never dispatches a paid Task.
 
@@ -104,3 +103,11 @@ and conflict with the original Task fingerprint. Treat that outcome as pending
 reconciliation; the durable plan prevents a replacement paid request key but
 does not prove automatic recovery of accepted work after complete instance loss.
 A same-instance rerun with an existing recovery directory also refuses dispatch.
+
+E42 `scenario=complete` observes completion and streaming without sending an
+unsupported steer. `scenario=cancel` records the actual pre-control Task state
+and verifies the exact command receipt plus terminal cancellation. Set
+`control_when=running` and optional `running_wait_seconds` (1–60, default 30)
+to wait for the same Task to run before cancellation. A Task that finishes first
+or never reaches running fails the active-control scenario; no replacement Task
+is created. These controls are retained in the immutable recovery plan.
