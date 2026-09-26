@@ -16,10 +16,10 @@ with no raw candidate values or source-line content published.
 | Existing Git object identifiers, independently resolved | 217 |
 | Exact AWS published example identifier or secret-access-key example | 72 |
 | Complete public PEM delimiter literal, without key payload | 6 |
-| Artifact SHA256 with immutable bytes and verified checksum context | 496 |
+| Artifact SHA256 with immutable bytes and verified checksum context | 512 |
 | Derived checksums recomputed from immutable source inputs | 36 |
 | Resource references with explicit field/consumer binding | 33 |
-| Pending context review, retained by #6110 | 999 |
+| Pending context review, retained by #6110 | 983 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -173,3 +173,26 @@ The complete verifier suite passes 71 tests.
 Current verified nonsecret dispositions: **860/1859**, with **999** pending under
 #6110. All 3,708 original identities and audit joins are preserved. The original
 story remains open; no credential was exercised or additional scope accepted.
+
+A further **16** source-document hashes exactly reproduce four public AWS
+documents: a versioned Bedrock pricing JSON and three Markdown model cards.
+The compressed public response bytes are retained under
+`public-pricing-documents/`, with URL, response time, size and SHA512 integrity
+metadata in `S21-detect-secrets-public-document-review.json`. SHA512 provenance
+avoids publishing the candidate SHA256 values. The retrieval used an isolated
+environment, no authentication/cookies/proxy, an HTTPS host allowlist, rejected
+redirects, and bounded response size/time. Unmatched or changed public pages
+remain pending; absence of a match is not an acceptance decision.
+
+The offline verifier `scripts/security/s21/verify_public_document_digests.py`
+recomputes hashes from the retained bytes and binds each exact original scan
+index/full private audit hash to its immutable JSON scalar path and source line.
+The paired URL must be in that same source object. Nineteen new tests cover
+archive/payload corruption, bounds, URL/path substitution, duplicate keys and
+selectors, full original hash mismatches, and repeated-digest field/line
+misbinding. The complete verifier suite passes **90 tests**.
+
+Current verified nonsecret dispositions: **876/1859**, with **983** pending under
+#6110. All 3,708 original identities and audit joins are retained. This is
+partial evidence adjudication; the story remains open. No credential was
+exercised or private candidate used in a request.
