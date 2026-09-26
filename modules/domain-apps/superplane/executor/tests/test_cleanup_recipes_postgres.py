@@ -179,3 +179,172 @@ async def test_partial_or_changed_native_recipe_is_not_a_cleanup_graph(
     with pytest.raises(OperationRefused):
         network_recipes(runtime.plan, original)
     assert aws.calls == calls
+
+
+@pytest.mark.parametrize("sharing", ["owned", "peer", "adopted"])
+async def test_completed_network_stage_observation_preserves_peers_after_lost_reply(
+    network, pool, sharing
+):
+    from dataclasses import replace
+
+    from harness_jobs.leases import fence_expired_lease
+    from network_support import make_network
+    from superplane_executor import cleanup_network
+
+    runtime, aws = network
+    await runtime.establish(REMOTE)
+    recipe = next(
+        r
+        for r in network_recipes(
+            runtime.plan, await rows(runtime.provider, runtime.operation)
+        )
+        if r["reference"]["kind"] == "security-rule"
+    )
+    peer = None
+    if sharing == "peer":
+        peer, _ = await make_network(
+            pool,
+            aws,
+            org=runtime.journal.lease.org_id,
+            workspace=runtime.journal.lease.workspace_id,
+            cluster=runtime.target["cluster_id"],
+        )
+        await peer.establish(REMOTE)
+    elif sharing == "adopted":
+        # Simulate the retained source proof for an originally adopted native rule.
+        async with pool.acquire() as c:
+            await c.execute(
+                "UPDATE controller_network_resources SET owned=false WHERE resource_key=$1",
+                recipe["key"],
+            )
+        recipe["owned"] = False
+    actor = principal(
+        org=runtime.operation.grant.lease.org_id,
+        workspace=runtime.operation.grant.lease.workspace_id,
+    )
+    request = OperationRequest(
+        action="teardown",
+        idempotency_key=str(uuid4()),
+        parameters={
+            "allocation_id": runtime.journal.allocation,
+            "controller_source_operation_id": runtime.operation.grant.lease.operation_id,
+        },
+    )
+    async with pool.acquire() as c:
+        admitted = await admit_paid(OperationStore(), c, actor, request)
+        lease = await acquire(
+            c,
+            operation_id=admitted.record.operation_id,
+            holder=actor.subject,
+            attempt_id=str(uuid4()),
+        )
+    operation = SimpleNamespace(grant=SimpleNamespace(lease=lease), request=request)
+    runtime.provider.execution_pool = pool
+
+    async def session_for(*_):
+        return aws, None
+
+    async def authorize():
+        async with pool.acquire() as c, c.transaction():
+            assert await lock_lease(c, operation.grant.lease)
+
+    runtime.provider.session_for = session_for
+    # Install the actual membership relation consumed by Network.authority;
+    # this path does not replace its authority check with a fixture no-op.
+    async with pool.acquire() as c:
+        await c.execute("""CREATE TABLE clusters(id uuid,org_id uuid,workspace_id uuid,eks_cluster_arn text);
+            CREATE TABLE workspaces(id uuid,org_id uuid,cluster_id uuid,namespace_name text);
+            CREATE TABLE cluster_memberships(workspace_id uuid,org_id uuid,cluster_id uuid,generation text,namespace text,state text);""")
+        await c.execute(
+            "INSERT INTO clusters VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,$4)",
+            runtime.target["cluster_id"],
+            lease.org_id,
+            lease.workspace_id,
+            runtime.plan.data["cluster_arn"],
+        )
+        await c.execute(
+            "INSERT INTO workspaces VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,'original-workspace')",
+            lease.workspace_id,
+            lease.org_id,
+            runtime.target["cluster_id"],
+        )
+        await c.execute(
+            "INSERT INTO cluster_memberships VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,$4,'original-workspace','active')",
+            lease.workspace_id,
+            lease.org_id,
+            runtime.target["cluster_id"],
+            runtime.plan.network["cluster"]["membership_generation"],
+        )
+    start = len(aws.calls)
+    if sharing == "owned":
+        aws.lost = (
+            "revoke_security_group_egress"
+            if recipe["reference"]["egress"]
+            else "revoke_security_group_ingress"
+        )
+        with pytest.raises(TimeoutError):
+            await cleanup_network.execute(
+                runtime.provider,
+                operation,
+                runtime.target,
+                runtime.plan,
+                recipe,
+                authorize,
+            )
+    else:
+        await cleanup_network.execute(
+            runtime.provider, operation, runtime.target, runtime.plan, recipe, authorize
+        )
+    # The worker is now lost before shared acknowledgement; only a real new
+    # recovery claim may publish the observation for the same original allocation.
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE harness_operation_leases SET expires_at=clock_timestamp()-interval '1 second' WHERE operation_id=$1",
+            lease.operation_id,
+        )
+        takeover = await fence_expired_lease(
+            c,
+            operation_id=lease.operation_id,
+            recovery_principal=replace(
+                actor, permissions=frozenset({"workspace:recover"})
+            ),
+        )
+    assert takeover is not None
+    operation.grant.lease = takeover.lease
+    after_effect = len(aws.calls)
+    assert await cleanup_network.observe(
+        runtime.provider, operation, runtime.plan, recipe, authorize
+    )
+    assert await cleanup_network.observe(
+        runtime.provider, operation, runtime.plan, recipe, authorize
+    )
+    mutations = [
+        name
+        for _, name, _ in aws.calls[start:]
+        if not name.startswith(("describe_", "get_", "search_"))
+    ]
+    assert len(mutations) == int(sharing == "owned")
+    assert all(
+        name.startswith(("describe_", "get_", "search_"))
+        for _, name, _ in aws.calls[after_effect:]
+    )
+    assert (recipe["reference"]["id"] in aws.rules) is (sharing != "owned")
+    async with pool.acquire() as c:
+        assert await c.fetchval(
+            "SELECT released_at IS NOT NULL FROM controller_network_members WHERE resource_key=$1 AND allocation_id=$2",
+            recipe["key"],
+            runtime.journal.allocation,
+        )
+        if peer is not None:
+            assert (
+                await c.fetchval(
+                    "SELECT released_at FROM controller_network_members WHERE resource_key=$1 AND allocation_id=$2",
+                    recipe["key"],
+                    peer.journal.allocation,
+                )
+                is None
+            )
+        assert await c.fetchval(
+            "SELECT count(*) FROM controller_network_effects WHERE resource_key=$1 AND action='delete'",
+            recipe["key"],
+        ) == int(sharing == "owned")
