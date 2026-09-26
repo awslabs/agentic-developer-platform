@@ -90,7 +90,7 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStrea
 
   return (
     <div
-      className="border-b border-gray-200 dark:border-gray-700 last:border-b-0 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
+      className="activity-run-card border-b border-gray-200 dark:border-gray-700 last:border-b-0 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
       tabIndex={0}
@@ -111,7 +111,8 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStrea
         </h3>
         <div className="flex flex-col items-end gap-1">
           <span
-            className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
+            className={`activity-status-badge inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
+            data-status={item.status}
           >
             <span aria-hidden="true">{statusConfig.glyph}</span>
             <span>{statusConfig.label}</span>
