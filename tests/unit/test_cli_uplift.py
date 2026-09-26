@@ -1739,6 +1739,41 @@ def test_a_real_report_satisfies_the_published_schema():
     assert report.validate(published_report()) == []
 
 
+@pytest.mark.parametrize("suite", cases.SUITES)
+@pytest.mark.parametrize(
+    "status", (cases.PASSED, cases.FAILED, cases.BLOCKED, cases.NOT_RUN)
+)
+def test_every_supported_suite_and_case_can_be_published(tmp_path, suite, status):
+    """Partial diagnostics must publish the same JSON/JUnit contract as full runs."""
+    import xml.etree.ElementTree as ET
+
+    matrix = cases.new_matrix((suite,))
+    for case_id in matrix:
+        cases.record(matrix, case_id, status)
+    document = published_report(matrix=matrix, suites=(suite,))
+    assert report.validate(document) == []
+    paths = report.write(tmp_path, document, matrix, document["evaluation_id"])
+    assert json.loads(Path(paths["report"]).read_text()) == document
+    assert len(ET.parse(paths["junit"]).findall(".//testcase")) == len(matrix)
+
+
+@pytest.mark.parametrize("diagnostic", ("D01", "D02", "D03", "D04"))
+def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
+    # D04's guarded source is separately reviewed; schema support must land
+    # before its harness so completed remote mutations remain reportable.
+    document = published_report()
+    document["suites"] = ["knowledge-lifecycle"]
+    document["cases"][0]["id"] = diagnostic
+    assert report.validate(document) == []
+
+
+@pytest.mark.parametrize("invalid_id", ("D00", "D05", "E43", "C02", "diagnostic"))
+def test_schema_still_rejects_unknown_case_identifiers(invalid_id):
+    document = published_report()
+    document["cases"][0]["id"] = invalid_id
+    assert report.validate(document)
+
+
 def test_schema_accepts_every_status_the_harness_can_emit():
     """Each of the four verdicts must round-trip; a rejected one is unreportable."""
     for status in (cases.PASSED, cases.FAILED, cases.BLOCKED, cases.NOT_RUN):
