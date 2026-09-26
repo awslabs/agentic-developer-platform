@@ -505,11 +505,19 @@ def _tables_created_by_migrations() -> set[str]:
             # upgrade(), so an unused string or downgrade-only table is excluded.
             import re
 
-            referenced = {node.id for node in ast.walk(upgrade_fn) if isinstance(node, ast.Name)}
+            referenced = {
+                node.id for node in ast.walk(upgrade_fn) if isinstance(node, ast.Name)
+            }
             for constant in referenced & constants.keys():
                 value = constants[constant]
                 if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                    created.update(re.findall(r"\bCREATE\s+TABLE\s+([a-z_][a-z0-9_]*)\s*\(", value.value, flags=re.IGNORECASE))
+                    created.update(
+                        re.findall(
+                            r"\bCREATE\s+TABLE\s+([a-z_][a-z0-9_]*)\s*\(",
+                            value.value,
+                            flags=re.IGNORECASE,
+                        )
+                    )
             for node in ast.walk(upgrade_fn):
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
