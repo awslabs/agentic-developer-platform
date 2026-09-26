@@ -155,6 +155,8 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-hierarchy.py", ["adp", "admin"]),
         ("adp-vault.py", ["adp"]),
         ("adp-machine.py", ["adp", "admin"]),
+
+        ("adp-gitlab.py", ["adp"]),
         ("adp-usage.py", ["adp"]),
         ("adp-knowledge.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
@@ -191,6 +193,8 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         admin.pop("adp admin " + area)
 
     admin.pop("adp admin indexing")
+
+    admin.pop("adp admin gitlab")
     admin.pop("adp admin budget")
     admin.pop("adp admin ratelimit")
 

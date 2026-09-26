@@ -53,6 +53,8 @@ PURPOSES = {
     "story_machine": ("story_reads", {"mode": "machine"}),
 
     "story_knowledge": ("story_reads", {"mode": "knowledge"}),
+
+    "story_gitlab": ("story_reads", {"mode": "gitlab"}),
     # E01/E02/E03 — install the served release, then a real Cognito login.
     "install_auth": ("install_auth", {}),
     # E04/E05 — `adp aws connect`, provisioned and handoff variants.

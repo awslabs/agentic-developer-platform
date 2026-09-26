@@ -68,3 +68,5 @@ The [command inventory](command-inventory.md) lists parser-backed command forms 
 Access/session #5625 supplies seven additional source forms and nightly E33;
 see [scope and examples](access-and-sessions.md). Live membership/spend and
 revocation timing are not inferred from those source forms.
+
+#5635 GitLab source adapter: six leaves and [published human API contract](gitlab.md), with E30 discovery/refusal regression. Real dedicated-project webhook/run/artifact and disconnect cleanup acceptance remains held.

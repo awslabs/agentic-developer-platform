@@ -102,6 +102,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-flow.py": (_CLI_DIR / "adp-flow.py").resolve(),
     "adp-doctor.py": (_CLI_DIR / "adp-doctor.py").resolve(),
     "command-manifest.json": (_CLI_DIR / "command-manifest.json").resolve(),
+    "adp-gitlab.py": (_CLI_DIR / "adp-gitlab.py").resolve(),
     "adp-vault.py": (_CLI_DIR / "adp-vault.py").resolve(),
     "adp-access.py": (_CLI_DIR / "adp-access.py").resolve(),
 
@@ -141,6 +142,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-flow.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-doctor.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "command-manifest.json": "application/json",
+    "adp-gitlab.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-vault.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-access.py": PYTHON_SCRIPT_MEDIA_TYPE,
 

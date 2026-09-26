@@ -8462,6 +8462,8 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E32",
 
         "E37",
+
+        "E30",
     }
 
 
@@ -10272,6 +10274,8 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E32",
 
         "E37",
+
+        "E30",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10570,6 +10574,29 @@ def test_bedrock_lifecycle_nightly_does_not_hide_missing_server(tmp_path):
     )
     with pytest.raises(common.RemoteError, match="Unexpected personal Bedrock refusal"):
         module.bedrock_lifecycle(cli, {})
+
+def test_gitlab_nightly_does_not_claim_live_delivery_or_write(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "contract": "gitlab_cli_v1",
+            "providers": [],
+            "identity_linked": False,
+            "webhook_delivery": "unverified",
+            "agent_runtime": "unverified",
+        },
+    }
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.gitlab(cli, evidence)
+    assert evidence["provider_count"] == 0
+    assert "live_acceptance_hold" in evidence
+    assert all("--yes" not in call.args[0] for call in cli.method_calls)
+    assert cases.BY_ID["E30"].owner == "#5635"
+    assert "E30" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E30"] in bundle.purposes()
 
 
 @pytest.mark.parametrize("bad_group", [False, True])

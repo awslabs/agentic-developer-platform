@@ -812,6 +812,8 @@ JOURNEY_DRIVERS = {
     "E31": "story_machine",
 
     "E32": "story_knowledge",
+
+    "E30": "story_gitlab",
     "E26": "story_budget",
     "E36": "story_ratelimit",
 

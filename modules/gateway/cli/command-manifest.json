@@ -8796,6 +8796,232 @@
       "required_capabilities": [
         "flows.recovery.write"
       ]
+    },
+    {
+      "command": "adp admin gitlab configure",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "gitlab.admin.write",
+      "flags": [
+        "--dry-run",
+        "--expect-provider-revision",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--provider",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.admin.write"
+      ]
+    },
+    {
+      "command": "adp admin gitlab revalidate",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "gitlab.admin.read",
+      "flags": [
+        "--credential",
+        "--json",
+        "--repo"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.admin.read"
+      ]
+    },
+    {
+      "command": "adp admin gitlab status",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "gitlab.admin.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.admin.read"
+      ]
+    },
+    {
+      "command": "adp gitlab connect",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "gitlab.connection.write",
+      "flags": [
+        "--credential",
+        "--dry-run",
+        "--expect-provider-revision",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--project-id",
+        "--repo",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.connection.write"
+      ]
+    },
+    {
+      "command": "adp gitlab disconnect",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "gitlab.connection.write",
+      "flags": [
+        "--dry-run",
+        "--expect-provider-revision",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--project-id",
+        "--repo",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.connection.write"
+      ]
+    },
+    {
+      "command": "adp gitlab status",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "gitlab.connection.read",
+      "flags": [
+        "--credential",
+        "--json",
+        "--repo"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.connection.read"
+      ]
     }
   ]
 }

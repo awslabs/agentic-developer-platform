@@ -166,6 +166,8 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 
 GitHub maintenance (#5634) adds six leaf commands: `github disconnect`, `admin github rotate-key`, `admin github disconnect`, and `admin github org-binding list|add|remove`. `admin github status --maintenance` reads the revision needed for reviewed App writes. See [GitHub maintenance](github-maintenance.md) for exact flags, staged key recovery and live acceptance holds. The checked manifest is the source inventory; deployed availability and functioning OAuth/webhook consumers require separate evidence.
 
+GitLab (#5635) adds `gitlab status|connect|disconnect` and `admin gitlab status|configure|revalidate`. The [GitLab human API contract](gitlab.md) records approved-host discovery, vault references, exact project/root admission, preserved external hooks, recovery and live acceptance holds. These are source command forms; deployment and real hosted delivery require separate evidence.
+
 ## Knowledge and indexing (#5632)
 
 Source implementation; dedicated live indexing/retrieval acceptance remains held. See [knowledge](knowledge.md).

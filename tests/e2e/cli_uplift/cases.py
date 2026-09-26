@@ -316,6 +316,14 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
+        "E30",
+        "#5635",
+        "story-reads",
+        "GitLab approved-provider discovery and invalid project refusal through the served CLI; no provider writes",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    ),
+    Case(
         "E37",
         "#5630",
         "story-reads",

@@ -59,6 +59,8 @@ def parser():
         commands.add_parser(area, help="Explicit machine identity lifecycle")
 
     commands.add_parser("indexing", help="Inspect canonical indexing runs")
+
+    commands.add_parser("gitlab", help="Manage deployment-approved GitLab integration")
     commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
@@ -197,6 +199,12 @@ def main(argv=None):
             if not module:
                 raise common.CliError("Knowledge helper is missing. Run adp update.", "provider_unavailable", 4)
             return module.main(["admin", "indexing", *argv[1:]])
+
+        if argv and argv[0] == "gitlab":
+            module = common.load_provider("adp-gitlab.py")
+            if not module:
+                raise common.CliError("GitLab helper missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "gitlab", *argv[1:]])
         if argv and argv[0] == "budget":
             module = common.load_provider("adp-budget.py")
             if not module:

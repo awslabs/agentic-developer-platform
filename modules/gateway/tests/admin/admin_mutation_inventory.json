@@ -1,5 +1,250 @@
 [
   {
+    "method": "DELETE",
+    "path": "/admin/agents/{client_id}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/bedrock-routing/connection-links/{destination_id}",
+    "module": "src.admin.bedrock_routing.routes",
+    "endpoint": "unlink_existing_connection",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/bedrock-routing/mappings/{scope}",
+    "module": "src.admin.bedrock_routing.routes",
+    "endpoint": "delete_mapping",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/connections/github/{installation_id}",
+    "module": "src.admin.connections.routes",
+    "endpoint": "disconnect_github",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_organization",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_budget",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision",
+    "module": "src.admin.routes",
+    "endpoint": "delete_exact_budget_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/connections/github/{installation_id}",
+    "module": "src.admin.org_connections.routes",
+    "endpoint": "detach_github_connection",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/departments/{dept_id}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_department",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "remove",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+    "module": "src.admin.ratelimit_cli",
+    "endpoint": "delete_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_ratelimit",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "delete_machine_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/service-accounts/{sa_id}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_service_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/teams/{team_id}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_team",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/teams/{team_id}/members/{user_id}",
+    "module": "src.admin.routes",
+    "endpoint": "remove_team_member",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/users/{user_id}",
+    "module": "src.admin.routes",
+    "endpoint": "remove_user",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/pool/accounts/{account_id}",
+    "module": "src.admin.routes",
+    "endpoint": "remove_pool_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/registry/agents/{agent_id}",
+    "module": "src.admin.routes",
+    "endpoint": "delete_registry_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/tenants/{tenant_id}/orgs/{github_org_id}",
+    "module": "src.admin.tenants.routes",
+    "endpoint": "unlink_org_from_tenant",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/identity/organizations/{org_id}",
+    "module": "src.admin.identity.router",
+    "endpoint": "delete_organization",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/identity/organizations/{org_id}/users/{user_id}",
+    "module": "src.admin.identity.router",
+    "endpoint": "delete_user",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/admin/identity/users/{user_id}/identities/{identity_id}",
+    "module": "src.admin.identity.router",
+    "endpoint": "delete_identity",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/me/bedrock-routing/selection",
+    "module": "src.admin.bedrock_routing.self_routes",
+    "endpoint": "delete_my_selection",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "DELETE",
+    "path": "/me/persona-models/{persona_key}",
+    "module": "src.admin.persona_models.self_routes",
+    "endpoint": "reset_my_preference",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "DELETE",
+    "path": "/service-principals/{canonical_id}/aliases/{alias_row_id}",
+    "module": "src.admin.persona_models.routes",
+    "endpoint": "revoke_alias",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "DELETE",
+    "path": "/service-principals/{canonical_id}/persona-models/{persona_key}",
+    "module": "src.admin.persona_models.routes",
+    "endpoint": "reset_service_principal_preference",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "GET",
+    "path": "/admin/connections/github/app/register-callback",
+    "module": "src.admin.connections.routes",
+    "endpoint": "github_app_register_callback",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "GET",
+    "path": "/admin/connections/github/install-callback",
+    "module": "src.admin.connections.routes",
+    "endpoint": "github_install_callback",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/machine-agents/{kind}/{key}/identity",
+    "module": "src.admin.machine_agents",
+    "endpoint": "update_machine_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "patch",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "update_machine_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/registry/agents/{agent_id}",
+    "module": "src.admin.routes",
+    "endpoint": "update_registry_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/admin/identity/organizations/{org_id}",
+    "module": "src.admin.identity.router",
+    "endpoint": "update_organization",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/service-principals/{canonical_id}/status",
+    "module": "src.admin.persona_models.routes",
+    "endpoint": "transition_service_principal_status",
+    "classification": "existing-writer"
+  },
+  {
     "method": "POST",
     "path": "/access/request",
     "module": "src.admin.onboarding.handler",
@@ -49,31 +294,10 @@
     "classification": "durable-operation"
   },
   {
-    "method": "DELETE",
-    "path": "/admin/agents/{client_id}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_agent",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/agents/{client_id}",
-    "module": "src.admin.routes",
-    "endpoint": "update_agent",
-    "classification": "durable-operation"
-  },
-  {
     "method": "POST",
     "path": "/admin/bedrock-routing/connection-links",
     "module": "src.admin.bedrock_routing.routes",
     "endpoint": "link_existing_connection",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/bedrock-routing/connection-links/{destination_id}",
-    "module": "src.admin.bedrock_routing.routes",
-    "endpoint": "unlink_existing_connection",
     "classification": "existing-writer"
   },
   {
@@ -88,20 +312,6 @@
     "path": "/admin/bedrock-routing/destinations/{destination_id}/verify",
     "module": "src.admin.bedrock_routing.routes",
     "endpoint": "verify_destination",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/bedrock-routing/mappings/{scope}",
-    "module": "src.admin.bedrock_routing.routes",
-    "endpoint": "delete_mapping",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/bedrock-routing/mappings/{scope}",
-    "module": "src.admin.bedrock_routing.routes",
-    "endpoint": "put_mapping",
     "classification": "existing-writer"
   },
   {
@@ -123,13 +333,6 @@
     "path": "/admin/connections/github/app/maintenance/rotate-key",
     "module": "src.admin.connections.routes",
     "endpoint": "github_app_activate_supplied_key",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "GET",
-    "path": "/admin/connections/github/app/register-callback",
-    "module": "src.admin.connections.routes",
-    "endpoint": "github_app_register_callback",
     "classification": "durable-operation"
   },
   {
@@ -161,13 +364,6 @@
     "classification": "durable-operation"
   },
   {
-    "method": "GET",
-    "path": "/admin/connections/github/install-callback",
-    "module": "src.admin.connections.routes",
-    "endpoint": "github_install_callback",
-    "classification": "durable-operation"
-  },
-  {
     "method": "POST",
     "path": "/admin/connections/github/install-start",
     "module": "src.admin.connections.routes",
@@ -175,24 +371,10 @@
     "classification": "durable-operation"
   },
   {
-    "method": "DELETE",
-    "path": "/admin/connections/github/{installation_id}",
-    "module": "src.admin.connections.routes",
-    "endpoint": "disconnect_github",
-    "classification": "durable-operation"
-  },
-  {
     "method": "POST",
     "path": "/admin/connections/switch-tenant",
     "module": "src.admin.connections.routes",
     "endpoint": "switch_tenant",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/identity/organizations/{org_id}/users/{user_id}/cognito",
-    "module": "src.admin.identity.recovery_routes",
-    "endpoint": "link_cognito_user",
     "classification": "durable-operation"
   },
   {
@@ -210,60 +392,11 @@
     "classification": "durable-operation"
   },
   {
-    "method": "PATCH",
-    "path": "/admin/machine-agents/{kind}/{key}/identity",
-    "module": "src.admin.machine_agents",
-    "endpoint": "update_machine_agent",
-    "classification": "durable-operation"
-  },
-  {
     "method": "POST",
     "path": "/admin/organizations",
     "module": "src.admin.routes",
     "endpoint": "create_organization_gone",
     "classification": "nonmutating-or-retired"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_organization",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/organizations/{org_id}",
-    "module": "src.admin.routes",
-    "endpoint": "update_organization",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}",
-    "module": "src.admin.routes",
-    "endpoint": "update_budget_config",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_budget",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
-    "module": "src.admin.routes",
-    "endpoint": "set_exact_budget_config",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision",
-    "module": "src.admin.routes",
-    "endpoint": "delete_exact_budget_config",
-    "classification": "durable-operation"
   },
   {
     "method": "POST",
@@ -280,31 +413,10 @@
     "classification": "durable-operation"
   },
   {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/connections/github/{installation_id}",
-    "module": "src.admin.org_connections.routes",
-    "endpoint": "detach_github_connection",
-    "classification": "durable-operation"
-  },
-  {
     "method": "POST",
     "path": "/admin/organizations/{org_id}/departments",
     "module": "src.admin.routes",
     "endpoint": "create_department",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/departments/{dept_id}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_department",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/organizations/{org_id}/departments/{dept_id}",
-    "module": "src.admin.routes",
-    "endpoint": "update_department",
     "classification": "durable-operation"
   },
   {
@@ -315,52 +427,10 @@
     "classification": "durable-operation"
   },
   {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
-    "module": "src.admin.hierarchy",
-    "endpoint": "remove",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PATCH",
-    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
-    "module": "src.admin.hierarchy",
-    "endpoint": "patch",
-    "classification": "durable-operation"
-  },
-  {
     "method": "POST",
     "path": "/admin/organizations/{org_id}/members",
     "module": "src.admin.routes",
     "endpoint": "add_org_member",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
-    "module": "src.admin.ratelimit_cli",
-    "endpoint": "delete_config",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
-    "module": "src.admin.ratelimit_cli",
-    "endpoint": "set_config",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_ratelimit",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}",
-    "module": "src.admin.routes",
-    "endpoint": "update_ratelimit_config",
     "classification": "durable-operation"
   },
   {
@@ -385,52 +455,10 @@
     "classification": "durable-operation"
   },
   {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
-    "module": "src.admin.machine_accounts",
-    "endpoint": "delete_machine_account",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PATCH",
-    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
-    "module": "src.admin.machine_accounts",
-    "endpoint": "update_machine_account",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/service-accounts/{sa_id}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_service_account",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/teams/{team_id}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_team",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PUT",
-    "path": "/admin/organizations/{org_id}/teams/{team_id}",
-    "module": "src.admin.routes",
-    "endpoint": "update_team",
-    "classification": "durable-operation"
-  },
-  {
     "method": "POST",
     "path": "/admin/organizations/{org_id}/teams/{team_id}/members",
     "module": "src.admin.routes",
     "endpoint": "add_team_member",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/teams/{team_id}/members/{user_id}",
-    "module": "src.admin.routes",
-    "endpoint": "remove_team_member",
     "classification": "durable-operation"
   },
   {
@@ -441,10 +469,164 @@
     "classification": "durable-operation"
   },
   {
-    "method": "DELETE",
-    "path": "/admin/organizations/{org_id}/users/{user_id}",
+    "method": "POST",
+    "path": "/admin/policies/preview",
     "module": "src.admin.routes",
-    "endpoint": "remove_user",
+    "endpoint": "preview_policies",
+    "classification": "nonmutating-or-retired"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/pool/accounts",
+    "module": "src.admin.routes",
+    "endpoint": "add_pool_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/registry/agents",
+    "module": "src.admin.routes",
+    "endpoint": "create_registry_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/tenants/{tenant_id}/orgs",
+    "module": "src.admin.tenants.routes",
+    "endpoint": "link_org_to_tenant",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/identity/organizations",
+    "module": "src.admin.identity.router",
+    "endpoint": "create_organization",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/identity/organizations/{org_id}/users",
+    "module": "src.admin.identity.router",
+    "endpoint": "create_user",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin/identity/users/{user_id}/identities",
+    "module": "src.admin.identity.router",
+    "endpoint": "add_identity",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/admin/revoke-user-tokens/{user_id}/revision",
+    "module": "src.auth.session_admin",
+    "endpoint": "revoke_reviewed_sessions",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/admin/configure",
+    "module": "src.gitlab.routes",
+    "endpoint": "configure",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/connect",
+    "module": "src.gitlab.routes",
+    "endpoint": "connect",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/disconnect",
+    "module": "src.gitlab.routes",
+    "endpoint": "disconnect",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/service-principals/register",
+    "module": "src.admin.persona_models.routes",
+    "endpoint": "register_service_principal",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "POST",
+    "path": "/service-principals/{canonical_id}/aliases",
+    "module": "src.admin.persona_models.routes",
+    "endpoint": "link_alias",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/agents/{client_id}",
+    "module": "src.admin.routes",
+    "endpoint": "update_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/bedrock-routing/mappings/{scope}",
+    "module": "src.admin.bedrock_routing.routes",
+    "endpoint": "put_mapping",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/identity/organizations/{org_id}/users/{user_id}/cognito",
+    "module": "src.admin.identity.recovery_routes",
+    "endpoint": "link_cognito_user",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}",
+    "module": "src.admin.routes",
+    "endpoint": "update_organization",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}",
+    "module": "src.admin.routes",
+    "endpoint": "update_budget_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+    "module": "src.admin.routes",
+    "endpoint": "set_exact_budget_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/departments/{dept_id}",
+    "module": "src.admin.routes",
+    "endpoint": "update_department",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+    "module": "src.admin.ratelimit_cli",
+    "endpoint": "set_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}",
+    "module": "src.admin.routes",
+    "endpoint": "update_ratelimit_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/teams/{team_id}",
+    "module": "src.admin.routes",
+    "endpoint": "update_team",
     "classification": "durable-operation"
   },
   {
@@ -476,136 +658,10 @@
     "classification": "existing-writer"
   },
   {
-    "method": "POST",
-    "path": "/admin/policies/preview",
-    "module": "src.admin.routes",
-    "endpoint": "preview_policies",
-    "classification": "nonmutating-or-retired"
-  },
-  {
-    "method": "POST",
-    "path": "/admin/pool/accounts",
-    "module": "src.admin.routes",
-    "endpoint": "add_pool_account",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/pool/accounts/{account_id}",
-    "module": "src.admin.routes",
-    "endpoint": "remove_pool_account",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "POST",
-    "path": "/admin/registry/agents",
-    "module": "src.admin.routes",
-    "endpoint": "create_registry_agent",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/registry/agents/{agent_id}",
-    "module": "src.admin.routes",
-    "endpoint": "delete_registry_agent",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PATCH",
-    "path": "/admin/registry/agents/{agent_id}",
-    "module": "src.admin.routes",
-    "endpoint": "update_registry_agent",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "POST",
-    "path": "/admin/tenants/{tenant_id}/orgs",
-    "module": "src.admin.tenants.routes",
-    "endpoint": "link_org_to_tenant",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/admin/tenants/{tenant_id}/orgs/{github_org_id}",
-    "module": "src.admin.tenants.routes",
-    "endpoint": "unlink_org_from_tenant",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "POST",
-    "path": "/api/admin/identity/organizations",
-    "module": "src.admin.identity.router",
-    "endpoint": "create_organization",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/admin/identity/organizations/{org_id}",
-    "module": "src.admin.identity.router",
-    "endpoint": "delete_organization",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "PATCH",
-    "path": "/api/admin/identity/organizations/{org_id}",
-    "module": "src.admin.identity.router",
-    "endpoint": "update_organization",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "POST",
-    "path": "/api/admin/identity/organizations/{org_id}/users",
-    "module": "src.admin.identity.router",
-    "endpoint": "create_user",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/admin/identity/organizations/{org_id}/users/{user_id}",
-    "module": "src.admin.identity.router",
-    "endpoint": "delete_user",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "POST",
-    "path": "/api/admin/identity/users/{user_id}/identities",
-    "module": "src.admin.identity.router",
-    "endpoint": "add_identity",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/api/admin/identity/users/{user_id}/identities/{identity_id}",
-    "module": "src.admin.identity.router",
-    "endpoint": "delete_identity",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "POST",
-    "path": "/auth/admin/revoke-user-tokens/{user_id}/revision",
-    "module": "src.auth.session_admin",
-    "endpoint": "revoke_reviewed_sessions",
-    "classification": "durable-operation"
-  },
-  {
-    "method": "DELETE",
-    "path": "/me/bedrock-routing/selection",
-    "module": "src.admin.bedrock_routing.self_routes",
-    "endpoint": "delete_my_selection",
-    "classification": "existing-writer"
-  },
-  {
     "method": "PUT",
     "path": "/me/bedrock-routing/selection",
     "module": "src.admin.bedrock_routing.self_routes",
     "endpoint": "put_my_selection",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "DELETE",
-    "path": "/me/persona-models/{persona_key}",
-    "module": "src.admin.persona_models.self_routes",
-    "endpoint": "reset_my_preference",
     "classification": "existing-writer"
   },
   {
@@ -616,45 +672,10 @@
     "classification": "existing-writer"
   },
   {
-    "method": "POST",
-    "path": "/service-principals/register",
-    "module": "src.admin.persona_models.routes",
-    "endpoint": "register_service_principal",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "POST",
-    "path": "/service-principals/{canonical_id}/aliases",
-    "module": "src.admin.persona_models.routes",
-    "endpoint": "link_alias",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "DELETE",
-    "path": "/service-principals/{canonical_id}/aliases/{alias_row_id}",
-    "module": "src.admin.persona_models.routes",
-    "endpoint": "revoke_alias",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "DELETE",
-    "path": "/service-principals/{canonical_id}/persona-models/{persona_key}",
-    "module": "src.admin.persona_models.routes",
-    "endpoint": "reset_service_principal_preference",
-    "classification": "existing-writer"
-  },
-  {
     "method": "PUT",
     "path": "/service-principals/{canonical_id}/persona-models/{persona_key}",
     "module": "src.admin.persona_models.routes",
     "endpoint": "set_service_principal_preference",
-    "classification": "existing-writer"
-  },
-  {
-    "method": "PATCH",
-    "path": "/service-principals/{canonical_id}/status",
-    "module": "src.admin.persona_models.routes",
-    "endpoint": "transition_service_principal_status",
     "classification": "existing-writer"
   },
   {

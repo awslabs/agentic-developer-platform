@@ -134,6 +134,8 @@ class TestCliScriptDownload:
             "adp-access.py",
 
             "adp-machine.py",
+
+            "adp-gitlab.py",
             "adp-usage.py",
             "adp-agent.py",
             "adp-knowledge.py",

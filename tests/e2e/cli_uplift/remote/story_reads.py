@@ -579,7 +579,51 @@ def recovery(cli, evidence):
     )
 
 
+def gitlab(cli, evidence):
+    value = detail(cli.json(["gitlab", "status"]))
+    common.require(
+        value.get("contract") == "gitlab_cli_v1"
+        and isinstance(value.get("providers"), list),
+        "GitLab discovery lacks human API contract",
+    )
+    common.require(
+        type(value.get("identity_linked")) is bool,
+        "GitLab identity status is malformed",
+    )
+    common.require(
+        value.get("webhook_delivery") == "unverified"
+        and value.get("agent_runtime") == "unverified",
+        "GitLab discovery falsely claimed delivery or runtime evidence",
+    )
+    code, result = cli.run(
+        [
+            "gitlab",
+            "disconnect",
+            "--repo",
+            "cli-regression/absent",
+            "--project-id",
+            "0",
+            "--operation-id",
+            str(uuid.uuid4()),
+            "--expect-provider-revision",
+            "a" * 64,
+            "--dry-run",
+        ],
+        expected=None,
+    )
+    common.require(
+        code == 1 and result.get("status") == "failed",
+        "Invalid GitLab project was not refused",
+    )
+    evidence.update(
+        provider_count=len(value["providers"]),
+        cases=["gitlab-discovery", "invalid-project-refusal"],
+        live_acceptance_hold="No provider writes or hosted task; real project connect/disconnect and delivery remain unqualified",
+    )
+
+
 SCENARIOS = {
+    'gitlab': gitlab,
     'recovery': recovery,
     'knowledge': knowledge,
     'bedrock_lifecycle': bedrock_lifecycle,
