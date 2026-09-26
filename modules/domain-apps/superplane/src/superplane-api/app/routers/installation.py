@@ -8,9 +8,9 @@ from superplane_contracts import Submitter
 
 from app.config import settings
 from app.database import get_session
-from app.middleware.auth import get_current_org
 from app.installation import capabilities_async
 from app.management import management_only
+from app.middleware.auth import get_current_org
 from app.routers.heartbeat import _authenticated_submitter
 
 router = APIRouter(prefix="/internal")
@@ -57,21 +57,21 @@ async def installation_credential_evidence(
 ):
     """Private metadata-only positive control under the real caller's live grant."""
     from fastapi import HTTPException
+    from sqlalchemy import select
     from superplane_auth.policy import Permission
 
     from app.auth import authorize_workspace_operation
-    from app.operation_activation import dispatch_enabled
-    from sqlalchemy import select
     from app.models.provider_connection import (
         ProviderConnection,
         ProviderConnectionBinding,
     )
+    from app.operation_activation import dispatch_enabled
     from app.routers.provider_connections import (
         _authorize,
         _load_or_404,
-        _state,
         _mutation_authority,
         _require_binding,
+        _state,
     )
 
     if not management_only() or dispatch_enabled():
