@@ -21,7 +21,8 @@
     "max_input_artifacts_total_bytes": 1048576,
     "max_result_artifacts_total_bytes": 1048576,
     "permitted_content_types_investigator_v1": ["text/plain", "application/json"],
-    "unclaimed_upload_expiry_hours": 24
+    "unclaimed_upload_expiry_hours": 24,
+    "max_run_artifact_bytes": 16777216
   },
   "commands": {
     "max_message_characters": 4000,

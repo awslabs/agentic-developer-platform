@@ -396,3 +396,7 @@ The versioned [request/response schemas](contracts/v1/schemas/public-api.schema.
 and [limits](contracts/v1/limits.json) are the detailed contract. The examples in
 this guide were checked against the source contracts; writing this guide did not
 submit live tasks or qualify the cyber deployment.
+
+Cyber tool evidence and generated reports share a bounded 16 MiB storage allowance
+per task. Each worker output artifact remains limited to 1 MiB. An aggregate
+capacity refusal returns HTTP 413; it is not a retryable storage outage.

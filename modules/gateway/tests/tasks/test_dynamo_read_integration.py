@@ -168,8 +168,23 @@ def test_result_upload_is_bound_idempotent_and_charges_aggregate_once(adapter, s
     with pytest.raises(TaskStateConflictError):
         store.transition(task_id=attempt.task_id, expected_version=2, target_state=TaskState.FAILED)
     large = b"y" * 800000
-    with pytest.raises(TaskStoreError, match="Aggregate"):
-        adapter.put_run_artifact(attempt=attempt, content=large, content_type="text/plain", digest=hashlib.sha256(large).hexdigest())
+    adapter.put_run_artifact(attempt=attempt, content=large, content_type="text/plain", digest=hashlib.sha256(large).hexdigest())
+    html = b"<html>DOMAIN MRI report after more than 1 MiB of evidence</html>"
+    artifact = adapter.put_run_artifact(attempt=attempt, content=html, content_type="text/html", digest=hashlib.sha256(html).hexdigest())
+    assert adapter.read_artifact(record=artifact) == html
+    assert int(store.read_task(attempt.task_id)["result_artifact_bytes"]) == len(content) + len(large) + len(html)
+
+
+def test_run_artifact_aggregate_cap_is_still_enforced(adapter, store):
+    from src.tasks.limits import MAX_RUN_ARTIFACT_BYTES
+    from src.tasks.read_store import ArtifactCapacityError
+
+    attempt = _attempt(store)
+    for index in range(MAX_RUN_ARTIFACT_BYTES // 1048576):
+        content = bytes([index]) * 1048576
+        adapter.put_run_artifact(attempt=attempt, content=content, content_type="text/plain", digest=hashlib.sha256(content).hexdigest())
+    with pytest.raises(ArtifactCapacityError, match="Aggregate"):
+        adapter.put_run_artifact(attempt=attempt, content=b"overflow", content_type="text/plain", digest=hashlib.sha256(b"overflow").hexdigest())
 
 
 def test_current_policy_revocation_denies_reads_and_result_commit(adapter, store, client):
@@ -389,3 +404,43 @@ def test_owner_discovery_write_is_atomic_with_admission(adapter, store, client):
         store.accept(request)
     assert adapter.load_task(task_id=request.task_id) is None
     assert client.scan(TableName=store.table_name)["Items"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_artifact_capacity_is_413_not_retryable_503(adapter, store, monkeypatch):
+    import base64
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.agentauth import task_runtime_routes
+    from src.agentauth.routes import require_agent_transport
+    from src.tasks import http, internal_artifacts
+    from src.tasks.read_store import ArtifactCapacityError
+
+    attempt = _attempt(store)
+
+    async def authenticate(_):
+        return attempt
+
+    def refuse(**kwargs):
+        raise ArtifactCapacityError("aggregate limit")
+
+    monkeypatch.setattr(task_runtime_routes, "authenticate_task_attempt", authenticate)
+    monkeypatch.setattr(adapter, "put_run_artifact", refuse)
+    monkeypatch.setattr(internal_artifacts, "get_store", lambda: adapter)
+    monkeypatch.setenv(http.FLAG_WORKER, "true")
+    app = FastAPI()
+    app.dependency_overrides[require_agent_transport] = lambda: None
+    app.include_router(internal_artifacts.router)
+    body = {
+        "schema_version": "1.0",
+        "run": {"task_id": attempt.task_id, "invocation_id": attempt.invocation_id, "generation": 1},
+        "content_type": "text/html",
+        "content_sha256": hashlib.sha256(b"report").hexdigest(),
+        "content_base64": base64.b64encode(b"report").decode(),
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/internal/v1/agent/task/artifact", json=body)
+        assert response.status_code == 413
+        assert response.json()["code"] == "payload_too_large"

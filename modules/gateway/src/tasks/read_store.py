@@ -24,6 +24,10 @@ class TaskStoreError(Exception):
     """
 
 
+class ArtifactCapacityError(TaskStoreError):
+    """A known artifact capacity refusal, not a transient storage outage."""
+
+
 class EventBudgetExhaustedError(Exception):
     """The task has used its event budget, including the reserved tail.
 

@@ -13,8 +13,10 @@ from botocore.exceptions import BotoCoreError, ClientError
 from src.tasks import errors
 from src.tasks import store as durable
 from src.tasks.events import TaskEvent
+from src.tasks.limits import MAX_RUN_ARTIFACT_BYTES
 from src.tasks.read_store import (
     AppendResult,
+    ArtifactCapacityError,
     ArtifactRecord,
     EventBudgetExhaustedError,
     ReportConflictError,
@@ -361,8 +363,8 @@ class DynamoTaskReadStore:
             self.read_artifact(record=prior)
             return prior
         total = int(task.get("result_artifact_bytes", 0))
-        if total + len(content) > 1048576:
-            raise TaskStoreError("Aggregate result artifact limit exceeded")
+        if total + len(content) > MAX_RUN_ARTIFACT_BYTES:
+            raise ArtifactCapacityError("Aggregate run artifact limit exceeded")
         key = artifact_object_key(attempt.tenant, attempt.canonical_principal, artifact_id, 1)
         now = self.repository._clock()
         created = now.isoformat().replace("+00:00", "Z")
