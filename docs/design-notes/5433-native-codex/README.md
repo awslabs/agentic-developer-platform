@@ -144,6 +144,52 @@ billing. Never infer customer installation, AWS role or repository authority fro
 service-account task content. Test a tenant with no GitHub connection, including
 Codex progress, follow-up input, reconnect, cancellation and result retrieval.
 
+### Required remote controls for every Codex persona
+
+Owner requirement (2026-09-26): pause, resume, abort and steer are shared-harness
+capabilities required for persona qualification on both existing ADP remote-control
+surfaces and the Task API. Invocation adapters translate into one durable control
+contract; persona prompts cannot implement, disable or grant control authority.
+The existing Task cancellation/input foundations do not establish pause/resume
+support. Add the missing Task states, API/CLI contracts and worker transitions
+before advertising parity.
+
+| Control | Required behavior |
+| --- | --- |
+| Pause | Record the request durably and fence new model calls and tool actions. Confirm paused only after active work reaches a verified safe boundary or is interrupted and reconciled. Preserve workspace, thread and pending inputs. Report pause pending while an in-flight effect remains unresolved. |
+| Resume | Resume only the same paused run with matching attempt/checkpoint, workspace/source and admitted persona/skill snapshot. Revalidate current authorization, revocation, deadline and remaining budget. Do not recreate or replay uncertain effects. |
+| Abort | Stop current execution, prevent further effects and confirm child exit, terminal cancellation and queue acknowledgement. Abort also works while paused or pausing; acceptance alone is not terminal cancellation. |
+| Steer | Persist an ordered instruction amendment and its command identity. Apply it to the active turn through a qualified runtime interface, or explicitly queue it for the next safe boundary. Distinguish accepted, queued, applied and rejected states; never claim mid-turn delivery from a queued message. Steering while paused must not resume execution. |
+
+Use existing ADP authenticated owner/delegation checks, tenant/run/generation
+fences and durable command receipts. Repeating an identical command ID returns
+the existing receipt; changed payloads conflict. Stale controls cannot affect a
+replacement attempt. Command ordering, pause/resume races, abort precedence and
+terminal-run behavior must be explicit and consistent across adapters. No control
+extends budget, deadline or authority implicitly, and idle pause must not cause
+model polling or new billed inference. In-flight usage still requires settlement.
+
+SDK thread restoration is not proof of live pause/resume or mid-turn steering.
+Qualify the pinned SDK's interruption and continuation behavior. If a required
+operation needs the supported app-server interface, keep it behind the shared
+runtime adapter and include it in compatibility evidence. Do not substitute an OS
+process freeze or silently degrade a control.
+
+Expose requested and effective state, delivery mode, command identity and safe
+refusal reason through CLI/API/UI progress and OTEL. Measure command acceptance,
+pause/abort completion, resume and steering-application latency without recording
+instruction text or secrets in telemetry. Confirmed paused state must prohibit
+new commits, PR publication, merges, AWS mutations and child-agent dispatch.
+
+Qualification must exercise real SDK/model runs through the actual control
+surfaces: pause during inference and tool work, no new effects after confirmed
+pause, continuation after resume, steering before/during a turn and while paused,
+abort from every nonterminal state, repeated/conflicting commands, reconnect,
+worker replacement and revocation. Verify actual application of steering in the
+result, not merely a successful API response. Include developer publication,
+reviewer repair/merge and operations/delegation boundaries. Fixture tests alone
+cannot complete this requirement.
+
 ## 6. Delegation and AWS access
 
 Retain `adp-trigger` semantics through the existing trusted delegation service:
