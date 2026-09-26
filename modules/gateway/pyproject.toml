@@ -27,6 +27,8 @@ dependencies = [
     "prometheus-client==0.22.0",
     "passlib[bcrypt]==1.7.4",
     "PyJWT[crypto]==2.13.0",
+    # Keep bare pip image builds on the same patched crypto runtime as uv.lock.
+    "cryptography==50.0.0",
     "python-json-logger==2.0.7",
     "email-validator==2.1.1",
     "python-multipart>=0.0.9",
