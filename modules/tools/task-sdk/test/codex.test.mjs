@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { responsesRequest, responsesResult, responsesEvents, startResponsesProxy } from '../responses-proxy.mjs';
 import { codexEnvironment, runCodexTask, startToolServer } from '../codex-runner.mjs';
@@ -89,7 +90,15 @@ test('actual Codex CLI uses fake loopback model and approved MCP without provide
     } };
   const definitions = [{ name: 'submit_patch', description: 'Submit patch', inputSchema: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'], additionalProperties: false },
     async execute(input) { bridge.report = { summary: input.summary }; return { content: [{ type: 'text', text: 'accepted' }] }; } }];
-  const report = await runCodexTask({ instructions: 'Submit the completed patch using the repository MCP tool.', limits: { max_output_tokens_per_turn: 512, max_turns: 3, deadline_at: new Date(Date.now() + 30000).toISOString() } }, bridge, definitions, { binary: process.env.CODEX_BRIDGE_TEST_BIN });
+  // Exercise the same strict parser used by the embedded coding adapter.
+  const { parseHostFrame } = await import('../../../agent-factory/task-agents/investigator/dist/protocol.js');
+  const wire = JSON.parse(await readFile(new URL('../../../../docs/task-api/contracts/v1/fixtures/valid/process-start-frame.json', import.meta.url), 'utf8'));
+  delete wire.$fixture;
+  wire.instructions = 'Submit the completed patch using the repository MCP tool.';
+  wire.limits = { max_output_tokens_per_turn: 512, max_turns: 3, deadline_at: new Date(Date.now() + 30000).toISOString() };
+  const start = parseHostFrame(JSON.stringify(wire));
+  assert.equal(start.limits.deadline_at, wire.limits.deadline_at);
+  const report = await runCodexTask(start, bridge, definitions, { binary: process.env.CODEX_BRIDGE_TEST_BIN });
   assert.equal(report.summary, 'Done'); assert.ok(calls >= 1 && calls <= 3);
 });
 
@@ -112,4 +121,16 @@ test('Responses namespace calls round trip without widening the function allowli
   assert.equal(output.output[0].name, 'read_file'); assert.equal(output.output[0].namespace, 'mcp__repository');
   const next = responsesRequest({ input: [{ role: 'user', content: 'Read' }, output.output[0], { type: 'function_call_output', call_id: 'call_1', output: [{ type: 'input_text', text: 'contents' }] }], tools: [tool] }, options);
   assert.equal(next.sdk_request.messages[1].content[0].name, allowedTools[0]);
+});
+
+test('missing or expired host deadline refuses Codex before process or model startup', async () => {
+  for (const deadline_at of [undefined, 'invalid', new Date(Date.now() - 1000).toISOString()]) {
+    let started = false;
+    await assert.rejects(runCodexTask({ limits: { max_turns: 3, max_output_tokens_per_turn: 512, deadline_at } },
+      { controller: new AbortController() }, [], {
+        spawnProcess: () => { started = true; }, proxyFactory: () => { started = true; },
+        toolFactory: () => { started = true; },
+      }), /Missing live Codex Task limits/);
+    assert.equal(started, false);
+  }
 });

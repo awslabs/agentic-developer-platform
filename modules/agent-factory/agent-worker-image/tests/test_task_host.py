@@ -261,6 +261,12 @@ def test_progress_and_result_are_durable_before_acknowledgement(
     events = []
     client = FakeClient(bootstrap, events)
     executable = child_script(tmp_path)
+    # Assert the actual wire start frame, not a hand-authored runner fixture.
+    executable.write_text(executable.read_text().replace(
+        "assert start['type'] == 'start'",
+        "assert start['type'] == 'start'\n"
+        + "assert start['limits']['deadline_at'] == " + repr(bootstrap["limits"]["deadline_at"]),
+    ))
     monkeypatch.setattr(
         "lib.task_host.workload_identity",
         lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
