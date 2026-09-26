@@ -101,3 +101,27 @@ correlated log records**, and metrics. See `evidence-20260926/retry-clean-commit
 and `retry-clean-commit-otel.json`. This is repeatable live model qualification of
 the committed local runtime; Task authority/storage/billing and GitHub provider
 remain fixtures, not deployed ADP acceptance.
+
+## One-hour checkpoint: 28-case repair and completion
+
+Independent review exposed tiny-base overflow and huge-attempt/zero-base edge
+cases missed by the original 24 checks. The detached checker now has 28 cases.
+A live repair run passed those checks but failed before publication because the
+bridge incorrectly applied the normalized request bound to the raw SDK envelope.
+Commit `54f831b638774e7d037065e6a0dbea8f19bd4a17` separates the raw envelope
+bound (at most 256 KiB) from the unchanged 63 KiB normalized gateway bound.
+
+A clean-commit live GPT-6 Sol medium evaluation passed in **60.10 seconds**
+(pytest wall time), with 13 model calls and 12 recorded tool effects. It detected
+a failing acceptance check, repaired the code, passed all 28 cases, published
+through the fixture GitHub adapter, and completed with artifact-grounded reporting.
+This demonstrates repair-to-completion, not one-shot correctness. See
+`evidence-20260926/retry-28-envelope-fix.json`. Task identity/storage and GitHub
+publication remain fixtures; inference used the real ADP Gateway.
+
+The latest TypeScript suite passes 90 tests. The broad gateway run had 2,840
+passes, one refusal-wording assertion failure and five skips; the wording was
+then corrected and the affected runtime suite passed all 33 tests. Full gateway
+regression was not repeated after that wording correction. Latest-head CI was
+still running at the checkpoint. Both foundation #6195 and developer #6196 remain
+open: the release gates above are not satisfied by local fixture qualification.
