@@ -31,6 +31,15 @@ PREFIX = "/internal/v1/controller-execution"
 TERMINAL = {"succeeded", "failed", "unknown", "cancelled"}
 
 
+def require_selected_task_mode(*, lifecycle):
+    """A native-only deployment never inherits lifecycle authority from a queue."""
+    mode = os.environ.get("SUPERPLANE_PAID_WORKER_MODE", "legacy")
+    if mode not in {"legacy", "native-controller"}:
+        raise OperationRefused("paid worker deployment mode is unavailable")
+    if lifecycle and mode == "native-controller":
+        raise OperationRefused("native paid worker refuses workspace lifecycle tasks")
+
+
 def write_private(path, value, *, mode=0o600):
     path = Path(path)
     if not path.is_absolute() or not path.parent.is_dir():
@@ -217,6 +226,9 @@ async def execute(transport, original, deadline, stop):
     async with AsyncExitStack() as stack:
         if original["mode"] == "recovery":
             scope = await transport.post(PREFIX + "/recovery/scope", {})
+            require_selected_task_mode(
+                lifecycle=scope.get("operation_type") == "workspace_lifecycle"
+            )
             authority = RecoveryAuthority(transport)
             await authority.recovery_scope()
             domain, execution = await pools(stack)
@@ -255,6 +267,9 @@ async def execute(transport, original, deadline, stop):
             original["workspace_id"],
         ):
             raise OperationRefused("paid lease changed original admission")
+        require_selected_task_mode(
+            lifecycle="runtime_config_sha256" in operation.request.parameters
+        )
         domain, execution = await pools(stack)
         if "runtime_config_sha256" in operation.request.parameters:
             from workspace_provisioning.runtime import run_lifecycle

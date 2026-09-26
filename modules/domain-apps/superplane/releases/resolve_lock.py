@@ -95,7 +95,7 @@ class BuildInputs:
         values = {
             "image": (
                 self.image,
-                r"superplane-(api|controller|platform-monitor|executor)",
+                r"superplane-(api|controller|platform-monitor|executor|paid-worker)",
             ),
             "origin repository": (
                 self.origin_repository,
@@ -115,7 +115,7 @@ class BuildInputs:
             self.source_path
             != (
                 "executor"
-                if self.image == "superplane-executor"
+                if self.image in {"superplane-executor", "superplane-paid-worker"}
                 else "src/" + self.image
             )
             or self.ecr_repository != "adp-" + self.image

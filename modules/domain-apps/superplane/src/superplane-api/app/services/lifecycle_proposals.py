@@ -153,7 +153,7 @@ async def continue_lifecycle(
 ):
     from app.operation_activation import require_admission_enabled
 
-    require_admission_enabled()
+    require_admission_enabled(lifecycle=True)
     workspace, _ = await workspace_scope(db, org_id, workspace_id)
     async with composition.operation_connect() as connection:
         existing = await connection.fetchrow(

@@ -7,11 +7,20 @@ def dispatch_enabled() -> bool:
     return settings.superplane_operation_dispatch_enabled is True
 
 
-def require_admission_enabled(*, enabled: bool | None = None) -> None:
+def require_admission_enabled(
+    *, enabled: bool | None = None, lifecycle: bool = False
+) -> None:
+    from app.config import settings
     from app.services.provisioning import ProvisioningUnavailable
 
     if enabled is False or not dispatch_enabled():
-        raise ProvisioningUnavailable("operation admission is disabled for adapter verification")
+        raise ProvisioningUnavailable(
+            "operation admission is disabled for adapter verification"
+        )
+    if lifecycle and settings.superplane_paid_worker_mode == "native-controller":
+        raise ProvisioningUnavailable(
+            "native paid worker does not support workspace lifecycle admission"
+        )
 
 
 # Syntactically valid, deliberately without a reviewed plan or human approval.

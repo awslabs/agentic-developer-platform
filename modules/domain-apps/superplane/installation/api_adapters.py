@@ -150,6 +150,7 @@ def project(env, docs, *, active=False):
         "SUPERPLANE_OPERATION_GATEWAY_URL": producer["endpoint"],
         "SUPERPLANE_OPERATION_GATEWAY_REGION": producer["region"],
         "SUPERPLANE_OPERATION_DISPATCH_ENABLED": "true" if active else "false",
+        "SUPERPLANE_PAID_WORKER_MODE": env.get("paid_worker", {}).get("mode", "legacy"),
         "SUPERPLANE_MANAGEMENT_ONLY": "false" if active else "true",
         "AWS_EC2_METADATA_DISABLED": "true",
         "AWS_STS_REGIONAL_ENDPOINTS": "regional",
