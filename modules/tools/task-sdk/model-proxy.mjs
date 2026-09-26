@@ -3,6 +3,33 @@ import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { MAX_FRAME_BYTES, ProtocolError } from './protocol.mjs';
 
+const MAX_SDK_HTTP_BYTES = 1024 * 1024;
+const MAX_MODEL_REQUEST_BYTES = MAX_FRAME_BYTES - 4096;
+
+function boundToolPreviews(request) {
+  const size = () => Buffer.byteLength(JSON.stringify(request));
+  if (size() <= MAX_MODEL_REQUEST_BYTES) return;
+  // Preserve instructions, schemas and tool-call correlation. Only compact tool
+  // previews; original evidence remains in host artifacts. Oldest previews go first.
+  for (const message of request.messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type !== 'tool_result') continue;
+      const original = JSON.stringify(block.content);
+      if (Buffer.byteLength(original) <= 4096) continue;
+      const text = Array.isArray(block.content)
+        ? block.content.filter(item => item.type === 'text').map(item => item.text).join('\n')
+        : typeof block.content === 'string' ? block.content : '';
+      const refs = [...new Set(text.match(/\bart_[A-Za-z0-9_-]+\b/g) || [])].slice(0, 100);
+      block.content = [{ type: 'text', text: JSON.stringify({
+        context_notice: 'Earlier tool preview shortened to fit Task transport. Image previews may be omitted. Do not infer omitted content; use retained evidence and disclose coverage limitations.',
+        preview_start: text.slice(0, 1000), preview_end: text.slice(-1000), artifact_refs: refs,
+      }) }];
+      if (size() <= MAX_MODEL_REQUEST_BYTES) return;
+    }
+  }
+}
+
 export function normalizeRequest(body, limit) {
   if (!body || !Array.isArray(body.messages) || !body.messages.length) throw new ProtocolError('SDK messages required');
   const select = (value, keys) => Object.fromEntries(keys.filter(key => value[key] !== undefined && value[key] !== null).map(key => [key, value[key]]));
@@ -38,7 +65,8 @@ export function normalizeRequest(body, limit) {
   if (body.stop_sequences != null) sdk_request.stop_sequences = body.stop_sequences;
   // The host chooses the model. SDK model/stream/metadata never become authority.
   const max_tokens = Math.min(Number.isInteger(body.max_tokens) && body.max_tokens > 0 ? body.max_tokens : limit, limit);
-  if (Buffer.byteLength(JSON.stringify(sdk_request)) > MAX_FRAME_BYTES - 1024) throw new ProtocolError('SDK request exceeds Task frame bound');
+  boundToolPreviews(sdk_request);
+  if (Buffer.byteLength(JSON.stringify(sdk_request)) > MAX_MODEL_REQUEST_BYTES) throw new ProtocolError('SDK request exceeds Task frame bound');
   return { sdk_request, max_tokens };
 }
 
@@ -75,7 +103,7 @@ export async function startProxy(bridge, { maxTokens, maxTurns, finalReportTool 
       const chunks = []; let size = 0;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > MAX_FRAME_BYTES) throw new ProtocolError('SDK HTTP request exceeds bound');
+        if (size > MAX_SDK_HTTP_BYTES) throw new ProtocolError('SDK HTTP request exceeds bound');
         chunks.push(chunk);
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -88,12 +116,12 @@ export async function startProxy(bridge, { maxTokens, maxTurns, finalReportTool 
         if (finalReportTool && Number.isInteger(maxTurns)) {
           const remaining = maxTurns - modelTurns;
           const guidance = `Task model turns remaining (including this one): ${remaining}. ` +
-            (remaining <= 1 ? `Submit the final report now using ${finalReportTool}. Disclose missing coverage; do not invent evidence.` :
-             remaining === 2 ? 'Finish essential evidence collection and close browser sessions now. The next turn is reserved for the final report.' :
-             'Batch independent tool calls; reserve the last turn for the final report.');
+            (remaining <= 2 ? `Submit the final report now using ${finalReportTool}. Disclose missing coverage; do not invent evidence.` :
+             remaining === 3 ? 'Finish essential evidence collection and close browser sessions now. The next two turns are reserved for report submission and any validation correction.' :
+             'Batch independent tool calls; reserve the last two turns for report submission and validation correction.');
           const system = normalized.sdk_request.system;
           normalized.sdk_request.system = [...(Array.isArray(system) ? system : system ? [{type:'text', text:system}] : []), {type:'text', text:guidance}];
-          if (remaining <= 1 && normalized.sdk_request.tools?.some(tool => tool.name === finalReportTool)) {
+          if (remaining <= 2 && normalized.sdk_request.tools?.some(tool => tool.name === finalReportTool)) {
             normalized.sdk_request.tool_choice = { type: 'tool', name: finalReportTool, disable_parallel_tool_use: true };
           }
         }

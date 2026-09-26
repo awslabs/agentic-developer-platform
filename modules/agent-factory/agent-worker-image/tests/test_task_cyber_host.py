@@ -38,8 +38,9 @@ def test_sdk_preserves_structured_tools_and_canonical_turn(assignment_and_bootst
         validate_child_frame({**request, 'sdk_request': {**sdk, 'model': 'untrusted'}}, assignment.task_id)
 
 
+@pytest.mark.parametrize('report_outage', [False, True])
 @pytest.mark.parametrize('persona, cancel', [('agent-task-cyber', False), ('agent-task-cyber', True), ('agent-task-cyber', 'unknown'), ('agent-task-cyber', 'completion_unknown'), ('agent-task-cyber', 'failure_unknown'), ('agent-task-investigator', False), ('agent-task-claude-developer', False), ('agent-task-codex-developer', False)])
-def test_broker_is_persona_gated_and_cancel_responsive(tmp_path, monkeypatch, assignment_and_bootstrap, persona, cancel):
+def test_broker_is_persona_gated_and_cancel_responsive(tmp_path, monkeypatch, assignment_and_bootstrap, persona, cancel, report_outage):
     assignment, envelope, bootstrap = assignment_and_bootstrap
     assignment = dataclasses.replace(assignment, persona=persona)
     bootstrap['persona'] = persona
@@ -59,6 +60,19 @@ def test_broker_is_persona_gated_and_cancel_responsive(tmp_path, monkeypatch, as
                     'result': {'status': 'complete'}, 'artifact': {'artifact_id': 'art_fixture', 'version': 1,
                     'content_sha256': hashlib.sha256(b'{}').hexdigest(), 'content_type': 'application/json', 'byte_length': 2}}
     client = Client(bootstrap, events)
+    failures = int(report_outage)
+    original_report = client.report
+    def report(body):
+        nonlocal failures
+        if body["data"].get("message") == "Before browser close":
+            if failures:
+                failures -= 1
+                from lib.task_run_client import TaskRunClientError
+                raise TaskRunClientError("transient progress storage outage")
+            events.append("report.recovered")
+        return original_report(body)
+    client.report = report
+    monkeypatch.setattr('lib.task_host._REPORT_RETRY_SECONDS', 0.01)
     script = child_script(tmp_path)
     source = script.read_text()
     start = source.index('try:\n    socket.socket()')
@@ -67,8 +81,10 @@ def test_broker_is_persona_gated_and_cancel_responsive(tmp_path, monkeypatch, as
         source = source[:start] + "assert os.environ['ADP_TASK_NETWORK'] == 'host-mediated-sdk'\nwith socket.socket() as sock: sock.bind(('127.0.0.1', 0))\n" + source[end:]
     idx = source.index("report = {'summary'")
     source = source[:idx] + """
+progress = base('progress'); progress.update(report_id=str(uuid.uuid4()), message='Before browser close', stage='analysis'); send(progress)
 request = base('cyber.request'); request.update(operation='triage', payload={'sample_s3_uri': 's3://authorized/sample'}); send(request)
 reply = json.loads(sys.stdin.readline())
+while reply['type'] == 'report.ack': reply = json.loads(sys.stdin.readline())
 if reply['type'] == 'cancel':
     ack = base('cancelled'); ack['command_id'] = reply['command_id']; send(ack); sys.exit(0)
 assert reply['type'] == 'cyber.result' and reply['request_id'] == request['request_id']
@@ -89,6 +105,7 @@ assert reply['artifact']['artifact_id'] == 'art_fixture'
         assert client.finalize_body['outcome'] == 'failed'
     else:
         assert events.count('cyber') == 1
+        assert events.index('report.recovered') < events.index('cyber')
         if cancel in ('unknown', 'completion_unknown', 'failure_unknown'):
             assert client.finalize_body is None and client.settlements
             assert 'ack' not in events
