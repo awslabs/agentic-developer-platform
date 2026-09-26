@@ -12800,3 +12800,43 @@ def test_capability_ordinary_fixture_login_uses_existing_secret_without_token_st
         assert module.ordinary_session(cfg, contrast) == {
             "access_token": "private-token"
         }
+
+
+def test_tenant_isolation_dispatch_fixture_reaches_evaluate_and_recovery():
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    value = {"tenant_isolation": {"tenant_ids": ["adp-platform", "aws-e"]}}
+    env = {"CLI_UPLIFT_EVAL_FIXTURES": json.dumps(value)}
+    evaluated = config.from_environment(env, base=dict(VALID))
+    recovered = config.from_environment(env, base=dict(VALID))
+    assert evaluated == recovered
+    assert evaluated["tenant_isolation"] == value["tenant_isolation"]
+    assert parse(json.dumps(value)) == value
+    assert cases.TENANT_ISOLATION in preflight.evaluate_fixtures(evaluated)
+    assert {row.id for row in cases.resolve_suites(["tenant-isolation"])} == {"E27"}
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        {},
+        {"tenant_ids": []},
+        {"tenant_ids": ["one"]},
+        {"tenant_ids": ["one", "two", "three"]},
+        {"tenant_ids": ["same", "same"]},
+        {"tenant_ids": "one,two"},
+        {"tenant_ids": ["one", 2]},
+        {"tenant_ids": ["one", {}]},
+        {"tenant_ids": ["one", ""]},
+        {"tenant_ids": ["one", "a" * 129]},
+        {"tenant_ids": ["one", "https://other"]},
+        {"tenant_ids": ["one", "two"], "gateway_url": "https://other"},
+        {"tenant_ids": ["one", "two"], "password": "not-allowed"},
+        {"tenant_ids": ["one", "two"], "owned_mutations_authorized": True},
+    ],
+)
+def test_tenant_isolation_dispatch_refuses_invalid_or_extra_fields(fixture):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    with pytest.raises(config.ConfigError):
+        parse(json.dumps({"tenant_isolation": fixture}))
