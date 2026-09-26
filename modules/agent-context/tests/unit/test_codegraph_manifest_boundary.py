@@ -41,7 +41,7 @@ def test_rendered_workload_has_only_prebaked_startup_and_explicit_storage(receip
     assert pod['automountServiceAccountToken'] is False
     assert not pod.get('initContainers')
     assert pod['securityContext'] == {
-        'runAsUser': 1001, 'runAsGroup': 1001, 'fsGroup': 1001,
+        'runAsUser': 10001, 'runAsGroup': 10001, 'fsGroup': 10001,
         'fsGroupChangePolicy': 'OnRootMismatch', 'seccompProfile': {'type': 'RuntimeDefault'},
     }
     container, = pod['containers']

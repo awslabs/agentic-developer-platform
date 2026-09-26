@@ -998,8 +998,8 @@ class TestParserJobManifest:
 
     def test_non_root_user(self):
         sec_ctx = self.pod_spec.get("securityContext", {})
-        assert sec_ctx.get("runAsUser") == 1001
-        assert sec_ctx.get("runAsGroup") == 1001
+        assert sec_ctx.get("runAsUser") == 10001
+        assert sec_ctx.get("runAsGroup") == 10001
 
     def test_seccomp_runtime_default(self):
         sec_ctx = self.pod_spec.get("securityContext", {})

@@ -6,24 +6,62 @@
 
 # Official upstream commit d92819a9c9f3b99416e3580ff235fc9d3adf8b89.
 # Upstream publishes main/latest/sha tags; the configured v1.2.2 tag is unavailable.
+FROM ghcr.io/asyncfuncai/deepwiki-open@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f AS web-builder
+USER root
+WORKDIR /source
+ADD --checksum=sha256:2a6f3d7feba176d7700a0a069b2c6c8a720e06f58ce37ffecdaf8a1093f0abbe https://codeload.github.com/AsyncFuncAI/deepwiki-open/tar.gz/d92819a9c9f3b99416e3580ff235fc9d3adf8b89 /tmp/upstream.tar.gz
+COPY security/prepare.py security/source-lock.json security/next-15.5.24.patch /opt/deepwiki-security/
+RUN tar -xzf /tmp/upstream.tar.gz --strip-components=1 -C /source \
+    && apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/deepwiki-security/prepare.py \
+    && npm ci --include=dev --legacy-peer-deps --no-audit --no-fund
+ENV NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=4096
+RUN NODE_ENV=production npm run build
+
 FROM ghcr.io/asyncfuncai/deepwiki-open@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f
+# Replace the complete standalone UI built from the retained upstream commit.
+RUN rm -rf /app/.next /app/node_modules
+COPY --from=web-builder /source/.next/standalone /app/
+COPY --from=web-builder /source/.next/static /app/.next/static
+COPY --from=web-builder /source/public /app/public
+COPY security/source-lock.json /opt/deepwiki-security/source-lock.json
+
+# Apply available vendor security updates while preserving upstream entrypoints.
+RUN apt-get update && apt-get -y upgrade \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir GitPython==3.1.59 \
+    && python -m pip check
+# Reviewed CPython3.11 port; helpers/checks are canonical, source hashes are branch-specific.
+COPY security/stdlib311/ /opt/adp-stdlib-security/
+COPY security-stdlib/apply.py security-stdlib/check.py security-stdlib/PSF-LICENSE.txt /opt/adp-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/adp-stdlib-security/apply.py --patch-file cpython-3.11.16.patch \
+    && python /opt/adp-stdlib-security/check.py \
+    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# npm is needed only in web-builder; the runtime starts node server.js directly.
+RUN rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx \
+    && test ! -e /usr/lib/node_modules/npm \
+    && ! command -v npm && ! command -v npx
 
 # Override default config with our LiteLLM-proxy-aware configs
 # These point the "openai" provider at our LiteLLM proxy which routes to Bedrock
 COPY config/generator.json /app/api/config/generator.json
 COPY config/embedder.json /app/api/config/embedder.json
 
-# Create wiki cache directory and non-root user for security
-RUN mkdir -p /root/.adalflow/wikicache && \
-    addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --ingroup appgroup appuser && \
-    chmod 755 /root && \
-    chown -R appuser:appgroup /root/.adalflow /app
+# Preserve upstream startup/configuration; only cache paths are writable.
+RUN addgroup --system --gid 10001 appgroup && \
+    adduser --system --uid 10001 --ingroup appgroup --home /home/appuser appuser && \
+    install -d -m 0700 -o appuser -g appgroup /home/appuser /home/appuser/.adalflow && \
+    install -d -m 0750 -o appuser -g appgroup /app/.next/cache
+ENV HOME=/home/appuser \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Environment defaults (overridden by K8s manifest)
 ENV PORT=8001
 ENV NODE_ENV=production
 ENV LOG_LEVEL=INFO
+ENV LOG_FILE_PATH=/tmp/deepwiki/application.log
 
 EXPOSE 8001 3000
 

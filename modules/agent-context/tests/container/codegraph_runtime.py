@@ -29,7 +29,7 @@ def refused_write(path):
 
 
 def main():
-    assert os.getuid() == 1001 and os.getgid() == 1001
+    assert os.getuid() == 10001 and os.getgid() == 10001
     assert Path.home() == Path('/data'), 'CGC_HOME alone does not configure upstream storage'
     status = Path('/proc/self/status').read_text()
     for expected in ['NoNewPrivs:\t1', 'Seccomp:\t2', 'CapEff:\t0000000000000000',

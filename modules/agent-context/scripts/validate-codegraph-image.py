@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -34,6 +35,8 @@ def main():
     archive = subprocess.check_output(
         ['git', 'archive', '--format=tar', revision, '--',
          str(MODULE / 'images/codegraph-context'),
+         str(MODULE / 'images/shared'),
+         'modules/gateway/security/stdlib',
          str(MODULE / 'tests/container/codegraph_runtime.py')], cwd=ROOT
     )
     digest = hashlib.sha256(archive).hexdigest()
@@ -63,6 +66,9 @@ def main():
 
         image = f'adp-codegraph-validation:{revision[:12]}-{uuid.uuid4().hex[:12]}'
         source = work / 'source' / MODULE
+        shutil.copytree(work / 'source/modules/gateway/security/stdlib', source / 'images/codegraph-context/security-stdlib')
+        if (source / 'images/shared').is_dir():
+            shutil.copytree(source / 'images/shared', source / 'images/codegraph-context/security-build')
         execute(docker + ['build', '--label', f'org.opencontainers.image.revision={revision}',
                          '--label', f'adp.validation.source-archive={digest}', '-t', image,
                          str(source / 'images/codegraph-context')])
@@ -75,11 +81,11 @@ def main():
         (args.output / 'image-inspect.json').write_text(json.dumps(metadata, indent=2) + '\n')
         receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
         command = docker + [
-            'run', '--rm', '--network', 'none', '--read-only', '--user', '1001:1001',
+            'run', '--rm', '--network', 'none', '--read-only', '--user', '10001:10001',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges=true',
             '--pids-limit', '128', '--memory', '2g', '--cpus', '2',
             '--tmpfs', '/tmp:rw,nosuid,nodev,size=128m,mode=1777',
-            '--tmpfs', '/data:rw,nosuid,nodev,size=256m,uid=1001,gid=1001,mode=0700',
+            '--tmpfs', '/data:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700',
             '--mount', f'type=bind,source={source / "tests/container/codegraph_runtime.py"},target=/validation.py,readonly',
             '-e', 'AWS_EC2_METADATA_DISABLED=true',
             metadata['Id'], 'python', '/validation.py',
@@ -87,7 +93,7 @@ def main():
         output = execute(command)
         (args.output / 'runtime.log').write_text(output)
         negative = command.copy()
-        data_mount = negative.index('/data:rw,nosuid,nodev,size=256m,uid=1001,gid=1001,mode=0700')
+        data_mount = negative.index('/data:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700')
         del negative[data_mount - 1:data_mount + 1]
         output = execute(negative + ['--missing-data'])
         (args.output / 'negative.log').write_text(output)

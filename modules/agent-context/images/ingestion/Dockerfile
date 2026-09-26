@@ -93,9 +93,16 @@ RUN curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_S
     curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
         | tar xz -C /usr/local/bin trivy
 
+# Regenerate the verified legacy SCIP bindings before resolving modern protobuf.
+COPY security-build/patch-codegraph-wheel.py /tmp/patch-codegraph-wheel.py
+RUN pip download --no-deps --only-binary=:all: --dest /tmp/upstream codegraphcontext==0.6.13 && \
+    python /tmp/patch-codegraph-wheel.py \
+        /tmp/upstream/codegraphcontext-0.6.13-py3-none-any.whl \
+        /tmp/patched/codegraphcontext-0.6.13-py3-none-any.whl
+
 # Python deps
 RUN pip install --no-cache-dir \
-    codegraphcontext \
+    /tmp/patched/codegraphcontext-0.6.13-py3-none-any.whl \
     "httpx>=0.27.0" \
     "python-ulid>=2.0.0" \
     python-hcl2 \
@@ -122,7 +129,8 @@ RUN pip install --no-cache-dir \
     opentelemetry-sdk>=1.20.0 \
     opentelemetry-exporter-otlp-proto-grpc>=1.20.0 \
     opentelemetry-sdk-extension-aws>=2.0.0 \
-    opentelemetry-propagator-aws-xray>=1.0.0
+    opentelemetry-propagator-aws-xray>=1.0.0 \
+    && pip check && rm -rf /tmp/upstream /tmp/patched /tmp/patch-codegraph-wheel.py
 
 # Download Amazon RDS/Neptune CA bundle for TLS verification (#2224)
 RUN curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
@@ -192,15 +200,15 @@ WORKDIR /app
 #   /tmp          — clone scratch, tool temp files, pip/trivy caches
 #   /home/appuser — HOME for Go mod cache, Git config, npm temp, dotfiles
 #
-# /platform-data is a PVC mounted with fsGroup:1001 in the manifests so files
+# /platform-data is a PVC mounted with fsGroup:10001 in the manifests so files
 # are group-writable without blanket chmod.
-RUN addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --ingroup appgroup --home /home/appuser appuser
+RUN addgroup --system --gid 10001 appgroup && \
+    adduser --system --uid 10001 --ingroup appgroup --home /home/appuser appuser
 
 # Ensure the home directory exists and is owned by appuser (adduser usually
 # creates it, but be explicit).
 # Upstream multi-stage COPY/tar metadata carries its original numeric owner;
-# Trivy's release tar uses UID 1001, which is our runtime user. Normalize these
+# Trivy's release tar uses UID 10001, which is our runtime user. Normalize these
 # two installed binaries explicitly before dropping privilege.
 RUN chown 0:0 /usr/local/bin/zoekt-git-index /usr/local/bin/trivy && \
     mkdir -p /home/appuser && chown appuser:appgroup /home/appuser
@@ -211,6 +219,13 @@ ENV HOME="/home/appuser" \
     XDG_CACHE_HOME="/home/appuser/.cache" \
     NPM_CONFIG_CACHE="/home/appuser/.npm" \
     PYTHONDONTWRITEBYTECODE="1"
+
+# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+COPY security-stdlib/ /opt/adp-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/adp-stdlib-security/apply.py \
+    && python /opt/adp-stdlib-security/check.py \
+    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 USER appuser
 

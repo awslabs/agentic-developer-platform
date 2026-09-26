@@ -34,12 +34,12 @@ spec:
         serviceAccountName: ${SERVICE_ACCOUNT}
         restartPolicy: Never
         # Pod-level security context (#6038 — S15 non-root hardening).
-        # runAsUser/runAsGroup match the image's appuser (UID/GID 1001).
-        # fsGroup:1001 makes PVC files group-writable without chmod 777.
+        # runAsUser/runAsGroup match the image's appuser (UID/GID 10001).
+        # fsGroup:10001 makes PVC files group-writable without chmod 777.
         securityContext:
-          runAsUser: 1001
-          runAsGroup: 1001
-          fsGroup: 1001
+          runAsUser: 10001
+          runAsGroup: 10001
+          fsGroup: 10001
           fsGroupChangePolicy: OnRootMismatch
           seccompProfile:
             type: RuntimeDefault
@@ -52,7 +52,7 @@ spec:
             # refuses to execute repository-authored build logic at all; this
             # limits the damage if any execution path is ever reintroduced.
             # readOnlyRootFilesystem: writable scratch via emptyDir mounts.
-            # runAsNonRoot: image declares USER appuser (UID 1001) (#6038).
+            # runAsNonRoot: image declares USER appuser (UID 10001) (#6038).
             securityContext:
               runAsNonRoot: true
               readOnlyRootFilesystem: true

@@ -92,7 +92,7 @@ def main():
                 command += ['--cap-drop', capability]
             for mount in container['volumeMounts']:
                 # Fresh fixtures only: no host/PVC content is mounted.
-                command += ['--tmpfs', f"{mount['mountPath']}:rw,nosuid,nodev,size=256m,uid=1001,gid=1001,mode=0700"]
+                command += ['--tmpfs', f"{mount['mountPath']}:rw,nosuid,nodev,size=256m,uid={security['runAsUser']},gid={security['runAsGroup']},mode=0700"]
             for variable in container['env']:
                 if 'value' in variable:
                     command += ['-e', f"{variable['name']}={variable['value']}"]

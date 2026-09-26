@@ -6,11 +6,27 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir 'litellm[proxy]==1.102.1'
+# Auth error classification imports prisma even when no database is configured.
+RUN pip install --no-cache-dir 'litellm[proxy]==1.102.1' 'prisma==0.15.0' && pip check
+
+# 1.102.1 includes the embedding health fix; fail builds if it regresses.
+COPY validate-health.py /tmp/validate-health.py
+RUN python /tmp/validate-health.py && rm /tmp/validate-health.py
 
 # Non-root user for security
-RUN addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --ingroup appgroup appuser
+RUN addgroup --system --gid 10001 appgroup && \
+    adduser --system --uid 10001 --ingroup appgroup --home /home/appuser appuser && \
+    install -d -m 0700 -o appuser -g appgroup /home/appuser
+ENV HOME=/home/appuser \
+    XDG_CACHE_HOME=/home/appuser/.cache \
+    PYTHONDONTWRITEBYTECODE=1
+# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+COPY security-stdlib/ /opt/adp-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/adp-stdlib-security/apply.py \
+    && python /opt/adp-stdlib-security/check.py \
+    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 USER appuser
 
 EXPOSE 4000

@@ -26,9 +26,9 @@ spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
       # Requires the reviewed pre-baked image and writable data volume (#6105).
       securityContext:
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault

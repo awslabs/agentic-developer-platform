@@ -23,8 +23,8 @@ COPY door/ ./door/
 COPY personal_context/ ./personal_context/
 
 # Non-root user for security
-RUN addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --ingroup appgroup appuser && \
+RUN addgroup --system --gid 10001 appgroup && \
+    adduser --system --uid 10001 --ingroup appgroup appuser && \
     chown -R appuser:appgroup /app
 
 # Expose MCP port
@@ -32,6 +32,13 @@ EXPOSE 5100
 
 # Drop to non-root before the runtime instructions (USER must precede
 # HEALTHCHECK/CMD so the missing-user check is satisfied).
+# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+COPY security-stdlib/ /opt/adp-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/adp-stdlib-security/apply.py \
+    && python /opt/adp-stdlib-security/check.py \
+    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 USER appuser
 
 # Health check
