@@ -10,7 +10,11 @@ RUN apt-get update && \
 
 # Non-root user for security
 RUN addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --ingroup appgroup appuser
+    adduser --system --uid 1001 --ingroup appgroup appuser && \
+    install -d -m 0700 -o appuser -g appgroup /data
+# CodeGraphContext 0.6.13 uses Path.home(), not CGC_HOME. Mount /data
+# writable when running with a read-only root filesystem.
+ENV HOME=/data
 USER appuser
 
 EXPOSE 8080
