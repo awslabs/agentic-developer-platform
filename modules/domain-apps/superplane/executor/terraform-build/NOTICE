@@ -1,0 +1,17 @@
+ADP downstream Terraform 1.9.8 security rebuild
+
+Upstream: https://github.com/hashicorp/terraform
+Commit: e044e569c5bc81f82e9a4d7891f37c6fbb0a8a10 (v1.9.8)
+
+This binary contains downstream changes. The exact version remains 1.9.8 because
+workspace saved-plan and state consumers explicitly require it. It is compiled
+with Go 1.26.8 and the dependency/source compatibility changes in security.patch.
+
+The patch upgrades vulnerable runtime libraries, adapts the S3 single-role
+configuration to the new SDK representation, migrates OpenTelemetry gRPC hooks
+to stats handlers, and corrects diagnostic formatting flagged by the new Go vet.
+Test-only updates preserve literal diffs and validate the new telemetry scope
+representation without dropping assertions. HCL and cty versions remain unchanged.
+
+Original HashiCorp license and copyright remain in LICENSE. This is not an
+unmodified upstream release. No live workspace state migration is implied.
