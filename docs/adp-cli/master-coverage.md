@@ -1,8 +1,28 @@
 # ADP CLI master coverage
 
-This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues/5644), reconciled in the reviewed integration batch against main `93785ab6f` on 26 September 2026. A target entry does not mean the command is installed or the server permits it. The final leaf-command/flag inventory is the checked command manifest from #5621, reconciled with parser source and the served bundle.
+This is the source coverage and acceptance ledger for Epic [#5644](https://github.com/aws-e/adp/issues/5644), reconciled against the final integration [#6262](https://github.com/aws-e/adp/pull/6262) on 26 September 2026. The checked [command inventory](command-inventory.md) contains **274 parser-backed command forms**. Forms count parser leaves, not completed stories, deployed capabilities or accepted live scenarios.
 
-The reviewed batches [#6253](https://github.com/aws-e/adp/pull/6253) and [#6256](https://github.com/aws-e/adp/pull/6256) contain **274 parser-backed command forms**. This is source coverage; deployment parity and live story acceptance are recorded separately. The batch combines hierarchy, access/session controls, machine identities, person caps, rate limits, model policy, Bedrock routing, knowledge, GitLab, research and recovery, with scenarios in the existing nightly EC2 harness. The platform and Superplane lifecycle adapters are included in the second reviewed batch; their live deployment/cleanup acceptance remains open. The next integration adds human Task enrollment and durable investigator chat through the existing Task API. The final integration adds bounded Claude/Codex repository patch Tasks and the E42 installed-CLI scenario. Live chat, coding/control, and full story acceptance remain pending.
+| Integration checkpoint | Parser-backed forms | Source coverage |
+|---|---:|---|
+| First batch [#6253](https://github.com/aws-e/adp/pull/6253) | 252 | Hierarchy, access/session controls, machine identities, person caps, rate limits, model policy, routing, knowledge, GitLab, research and recovery |
+| Lifecycle batch [#6256](https://github.com/aws-e/adp/pull/6256) | 266 | Platform and Superplane lifecycle adapters |
+| Final coding batch [#6262](https://github.com/aws-e/adp/pull/6262), including [#6260](https://github.com/aws-e/adp/pull/6260) | 274 | Human Task enrollment, durable investigator chat, Claude/Codex repository patch Tasks and bounded model probes |
+
+The hosted coding and chat implementations are integrated in the final source batch. Both reuse the existing Task API; the CLI does not introduce a replacement dispatcher. Coding includes server-verified repository/issue/commit context and the E42 installed-CLI scenario. Chat retains stable requests and task-correlated conversation history. Their live chat, coding/control, publication and story acceptance holds remain open.
+
+## Final CLI master at a glance
+
+| Surface | Integrated command coverage | Acceptance boundary |
+|---|---|---|
+| Identity and administration | Sessions, tenants, hierarchy, memberships, access, machine identities, credentials and identity claims | Authorized tenant/member scope and each lifecycle's live evidence |
+| Spend and model controls | Budgets, person caps, rate limits, usage, model policy, routing and Task model catalogue/probes | Standing policy, enforcement and provider evidence |
+| Hosted work and remote control | Task submission/status/monitor/abort, hosted coding/chat, Activity reads/SSE and advertised controls | Existing Task API and Activity/ControlService; accepted submission is not completion |
+| Delivery and integrations | Flows, GitHub/GitLab, knowledge, research, Superplane and platform lifecycle | Deployment support, scoped effects, publication and cleanup evidence |
+| CLI operation | Install/update, deployment selection, capabilities, doctor and checked inventory | Parser/help/manifest/served-bundle parity and installed-client checks |
+
+## Latest retained live checkpoint
+
+Disposable-EC2 run [36208849774](https://github.com/aws-e/adp/actions/runs/36208849774) passed installation and login, and its retained report records cleanup **complete**. The overall run **failed** and `full_acceptance` is false. Scenario verdict/evidence propagation and expected nonzero-refusal handling were corrected in source after that run; the corrected source still requires a deployed rerun. This checkpoint does not close any story acceptance criterion or establish live parity for the final 274 forms.
 
 ## Available in baseline source
 
@@ -51,7 +71,7 @@ The reviewed batches [#6253](https://github.com/aws-e/adp/pull/6253) and [#6256]
 | #5639 | [Research reads and proposal review](research.md), E25 nightly reads; bounded scan/generation held | Existing Superplane research APIs; idempotent proposal identity and human revision checks |
 
 | #5638 | Superplane workspace/deployment/provider lifecycle | App-owned lifecycle adapters, revisions, namespace assertions, scoped events, E39 read-only scenario; live compute/cleanup held |
-| #5640 | Durable hosted conversation start/resume/readback | Existing hosted chat APIs; no replacement Task dispatcher |
+| #5640 | Durable hosted conversation start/resume/readback; source integrated, live acceptance held | Existing hosted chat APIs backed by Task API; stable requests and exact task-correlated history |
 | #5641 ([platform facade](platform.md), source implementation; live held) | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
 
 The resulting CLI is a common terminal surface for identity, infrastructure connections, budgets, models, delivery, hosted work and domain operations. A single selected deployment and authorized tenant scope apply throughout. Task submission reuses Task API, and control commands advertise only runtime-supported operations.
