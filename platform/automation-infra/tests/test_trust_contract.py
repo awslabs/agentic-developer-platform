@@ -193,6 +193,26 @@ def test_webhook_code_workflow_uses_dedicated_identity_and_main_guard():
         assert not re.search(r"\b(terraform|kubectl)\s", step.get("run", "")), "Webhook-code workflow must not use Terraform or kubectl"
 
 
+def test_frontend_publisher_has_separate_main_only_authority():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gateway-frontend-deploy.yml").read_text())
+    triggers = workflow.get("on", workflow.get(True))
+    assert triggers["push"]["branches"] == ["main"]
+    assert "modules/gateway/frontend/**" in triggers["push"]["paths"]
+    job = workflow["jobs"]["publish"]
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert job["environment"].startswith("adp-frontend-deploy-")
+    assert job["permissions"]["id-token"] == "write"
+    steps = job["steps"]
+    identity = next(i for i, step in enumerate(steps) if step.get("uses") == "./.github/actions/trusted-deployment")
+    assert steps[identity]["with"]["role_arn"] == "${{ vars.ADP_FRONTEND_DEPLOY_ROLE_ARN }}"
+    assert "git merge-base --is-ancestor HEAD FETCH_HEAD" in steps[identity - 1]["run"]
+    assert not any(re.search(r"\baws\s", step.get("run", "")) for step in steps[:identity])
+    assert not any(re.search(r"\b(terraform|kubectl)\s", step.get("run", "")) for step in steps)
+    gateway = yaml.safe_load((ROOT / ".github/workflows/gateway-deploy.yml").read_text())
+    assert "modules/gateway/frontend/**" not in gateway.get("on", gateway.get(True))["push"]["paths"]
+    assert "github.event_name == 'workflow_dispatch'" in gateway["jobs"]["deploy-frontend"]["if"]
+
+
 def test_scan_jobs_keep_scoped_identity_and_no_schedule():
     for name in ["security-scan.yml", "security-agent-nightly.yml"]:
         raw = (ROOT / ".github/workflows" / name).read_text()

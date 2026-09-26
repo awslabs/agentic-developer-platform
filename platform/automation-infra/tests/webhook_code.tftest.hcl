@@ -10,6 +10,14 @@ mock_provider "aws" {
   mock_resource "aws_iam_role" { defaults = { arn = "arn:aws:iam::123456789012:role/test" } }
   mock_resource "aws_iam_policy" { defaults = { arn = "arn:aws:iam::123456789012:policy/test" } }
 }
+override_data {
+  target = data.aws_ssm_parameter.frontend_bucket
+  values = { value = "adp-test-frontend" }
+}
+override_data {
+  target = data.aws_ssm_parameter.frontend_cloudfront_id
+  values = { value = "E1234567890" }
+}
 variables {
   name_prefix         = "adp-test"
   environment         = "test"

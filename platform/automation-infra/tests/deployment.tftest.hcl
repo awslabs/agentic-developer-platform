@@ -10,6 +10,14 @@ mock_provider "aws" {
   mock_resource "aws_iam_role" { defaults = { arn = "arn:aws:iam::123456789012:role/test" } }
   mock_resource "aws_iam_policy" { defaults = { arn = "arn:aws:iam::123456789012:policy/test" } }
 }
+override_data {
+  target = data.aws_ssm_parameter.frontend_bucket
+  values = { value = "adp-test-frontend" }
+}
+override_data {
+  target = data.aws_ssm_parameter.frontend_cloudfront_id
+  values = { value = "E1234567890" }
+}
 variables {
   name_prefix         = "adp-test"
   environment         = "test"
@@ -152,7 +160,7 @@ run "empty_inventory_cannot_gain_cluster_admin_through_kubectl" {
     error_message = "IAM API denies do not contain kubectl; do not grant EKS cluster access before workload admission."
   }
   assert {
-    condition = one([for s in jsondecode(aws_iam_role_policy.deployment_identity_management.policy).Statement : s if s.Sid == "AwaitWorkloadAdmission"]).Action == ["*"]
+    condition     = one([for s in jsondecode(aws_iam_role_policy.deployment_identity_management.policy).Statement : s if s.Sid == "AwaitWorkloadAdmission"]).Action == ["*"]
     error_message = "Empty admission must deny all AWS actions, including indirect event/source mutation paths."
   }
 }
