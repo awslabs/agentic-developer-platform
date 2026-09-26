@@ -59,6 +59,7 @@ def mock_admin_service(mock_db):
     """Create a mock admin service."""
     service = MagicMock(spec=AdminService)
     service.db = mock_db
+    service.resolve_budget_target = AsyncMock(side_effect=lambda org, kind, key: (key, None))
     return service
 
 
@@ -1188,3 +1189,31 @@ class TestCognitoDepartmentListEndpoint:
         data = response.json()
         assert data["total"] == 0
         assert len(data["items"]) == 0
+
+
+def test_exact_budget_delete_requires_revision(client, mock_admin_service):
+    response = client.delete("/admin/organizations/org1/budget/org/org1/daily/revision")
+    assert response.status_code == 422
+    mock_admin_service.delete_exact_budget.assert_not_called()
+
+
+def test_exact_budget_rejects_unsupported_period(client, mock_admin_service):
+    response = client.get("/admin/organizations/org1/budget/org/org1/lifetime")
+    assert response.status_code == 422
+    mock_admin_service.exact_budget.assert_not_called()
+
+
+def test_exact_budget_get_returns_missing_as_null(client, mock_admin_service):
+    mock_admin_service.exact_budget = AsyncMock(return_value=None)
+    response = client.get("/admin/organizations/org1/budget/org/org1/daily")
+    assert response.status_code == 200
+    assert response.json() is None
+    mock_admin_service.exact_budget.assert_awaited_once_with("org1", "org", "org1", "daily")
+
+
+def test_exact_budget_delete_forwards_only_selected_period(client, mock_admin_service):
+    mock_admin_service.delete_exact_budget = AsyncMock()
+    revision = datetime.now(UTC)
+    response = client.delete("/admin/organizations/org1/budget/org/org1/weekly/revision", params={"expected_revision": revision.isoformat()})
+    assert response.status_code == 204
+    mock_admin_service.delete_exact_budget.assert_awaited_once_with("org1", "org", "org1", "weekly", revision)

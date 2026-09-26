@@ -74,6 +74,14 @@ ConfigMap, mounted read-only in the API at
 `SUPERPLANE_CONTROLLER_PROFILES_FILE`. Missing ConfigMap content prevents the API
 pod from starting. Policy changes select a new ConfigMap and replace the API pod;
 resume and rollback retain the policy in the exact environment/receipt identity.
+Regional profiles with an approved `network` may also include the closed
+`node_bootstrap` descriptor documented in
+[`executor/node-command/README.md`](../executor/node-command/README.md). Local
+planning checks its shape; preflight and verification use the pinned API image's
+canonical native validator for the complete runtime manifest and digest contract.
+This supports native batch profiles without installing executor dependencies in
+the operator's Python environment. It does not prepare an AMI, install SSM
+documents, or grant native execution authority.
 Preflight runs the maintained `build_deployment_preview`/plan validator in the
 pinned API image, and private verification checks the mounted policy and digest
 again. In cluster mode these checks run in the isolated preflight pod; execute CLI

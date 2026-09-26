@@ -215,6 +215,8 @@ _READINESS = {
     "ingestion_queue": _queue_ready,
     "agent_worker": _agent_worker_ready,
     "model_route": _model_route_ready,
+    # Provider tables/pools require actual service observation; discovery does not probe or mint identities.
+    "machine_provider": lambda: None,
 }
 
 
@@ -225,6 +227,41 @@ _READINESS = {
 # IDs are `area.action[.scope]` and are STABLE — a client keys off them, so an ID
 # is renamed only with a schema version bump.
 OPERATIONS = (
+    Operation("access.self.read", summary="Read membership access separately from login"),
+    Operation("access.self.request", summary="Submit a pending request to join an existing tenant", mutates=True),
+    Operation("access.managed.read", summary="Review exact visible tenant requests", permission=Permission.USER_MANAGE),
+    Operation("access.managed.decide", summary="Decide an exact reviewed access request", mutates=True, permission=Permission.USER_MANAGE),
+    Operation("auth.session.revoke", summary="Revoke applicable gateway-issued user tokens", mutates=True, permission=Permission.USER_MANAGE),
+    Operation("hierarchy.read", summary="Read scoped organization hierarchy and revisions", permission=Permission.ORG_READ),
+    Operation(
+        "hierarchy.write",
+        summary="Revision-guarded hierarchy changes; exact route permissions still apply",
+        permission=Permission.ORG_UPDATE,
+        mutates=True,
+    ),
+    Operation("hierarchy.platform.write", summary="Create organizations and place existing members", permission=Permission.ORG_CREATE, mutates=True),
+    Operation("hierarchy.member.write", summary="Update scoped membership roles", permission=Permission.USER_MANAGE, mutates=True),
+    Operation(
+        "machine.agent.registry.manage",
+        summary="Guarded IAM registry lifecycle",
+        permission=Permission.AGENT_REGISTER,
+        readiness="machine_provider",
+        mutates=True,
+    ),
+    Operation(
+        "machine.agent.cognito.manage",
+        summary="Guarded Cognito client lifecycle",
+        permission=Permission.ORG_UPDATE,
+        readiness="machine_provider",
+        mutates=True,
+    ),
+    Operation("machine.account.manage", summary="Guarded SQL IAM service-account lifecycle", permission=Permission.ORG_UPDATE, mutates=True),
+    Operation("machine.principal.manage", summary="Guarded canonical principal lifecycle", permission=Permission.ORG_UPDATE, mutates=True),
+    Operation("vault.credentials.register", summary="Register an own credential; shared scopes require additional server authority", mutates=True),
+    Operation("vault.credentials.metadata", summary="Update visible credential metadata with revision and ownership checks", mutates=True),
+    Operation("vault.credentials.delete", summary="Delete an authorized credential; running work is not stopped", mutates=True),
+    Operation("vault.identities.claim", summary="Record an own unverified identity claim; does not establish access", mutates=True),
+    Operation("vault.identities.unlink", summary="Unlink an own external identity", mutates=True),
     Operation(
         "auth.session.read",
         summary="Read the signed-in session and its expiry",
@@ -233,14 +270,25 @@ OPERATIONS = (
         "capabilities.read",
         summary="Read this capability document",
     ),
+    Operation("ratelimit.self.read", summary="Read your own applicable rate-limit configuration"),
+    Operation("ratelimit.managed.read", summary="Read scoped rate-limit overrides", permission=Permission.RATELIMIT_READ),
+    Operation("ratelimit.managed.write", summary="Change scoped rate-limit overrides", permission=Permission.RATELIMIT_UPDATE, mutates=True),
     Operation(
         "budget.self.read",
         summary="Read your own cap and settled spend",
     ),
+    Operation("budget.person.read", summary="Read person caps, defaults and member budgets", platform_admin=True),
+    Operation("budget.person.write", summary="Change admin-governed person caps and defaults", platform_admin=True, mutates=True),
     Operation(
         "budget.managed.read",
         summary="Read budgets for entities you administer",
         permission=Permission.BUDGET_READ,
+    ),
+    Operation(
+        "budget.managed.write",
+        summary="Change exact-period budgets for entities you administer",
+        permission=Permission.BUDGET_UPDATE,
+        mutates=True,
     ),
     Operation(
         "usage.self.read",
@@ -263,6 +311,9 @@ OPERATIONS = (
         feature="FEATURE_AGENT_MODELS_ENABLED",
         readiness="model_route",
     ),
+    Operation("models.costs.read", summary="Read attributable persona/model costs"),
+    Operation("models.policy.read", summary="Read platform model default and posture policy", platform_admin=True),
+    Operation("models.policy.write", summary="Change platform defaults/posture with audited replay and rollback", platform_admin=True, mutates=True),
     Operation(
         "models.mapping.self.write",
         summary="Set or reset your own persona model mapping",
@@ -303,6 +354,13 @@ OPERATIONS = (
         feature="FEATURE_ORCHESTRATION_ENGINE_ENABLED",
     ),
     Operation(
+        "flows.recovery.write",
+        summary="Recover a reviewed engine node or exact PR association",
+        feature="FEATURE_ORCHESTRATION_ENGINE_ENABLED",
+        permission=Permission.PLAN_APPROVE,
+        mutates=True,
+    ),
+    Operation(
         "flows.approve.write",
         summary="Answer a delivery gate",
         feature="FEATURE_ORCHESTRATION_ENGINE_ENABLED",
@@ -327,6 +385,11 @@ OPERATIONS = (
         mutates=True,
     ),
     Operation(
+        "routing.bedrock.own.write",
+        summary="Select or reset your own permitted Bedrock connection",
+        mutates=True,
+    ),
+    Operation(
         "routing.bedrock.own.read",
         summary="Read your effective Bedrock routing",
     ),
@@ -347,6 +410,10 @@ OPERATIONS = (
         platform_admin=True,
         mutates=True,
     ),
+    Operation("gitlab.connection.read", summary="Read approved GitLab integration"),
+    Operation("gitlab.connection.write", summary="Manage own approved GitLab association", mutates=True),
+    Operation("gitlab.admin.read", summary="Read GitLab provider readiness", platform_admin=True),
+    Operation("gitlab.admin.write", summary="Select approved GitLab provider", platform_admin=True, mutates=True),
     Operation(
         "github.app.admin.read",
         summary="Read deployment GitHub App status",
@@ -361,6 +428,18 @@ OPERATIONS = (
     Operation(
         "github.app.admin.revalidate.write",
         summary="Refresh stored GitHub App configuration evidence",
+        platform_admin=True,
+        mutates=True,
+    ),
+    Operation(
+        "github.app.admin.maintenance.write",
+        summary="Maintain deployment GitHub App credentials",
+        platform_admin=True,
+        mutates=True,
+    ),
+    Operation(
+        "github.org_binding.write",
+        summary="Manage organization installation bindings",
         platform_admin=True,
         mutates=True,
     ),
@@ -423,6 +502,8 @@ async def _permitted(operation: Operation, caller: TokenContext, access: AccessC
     client refusing a mutation on that basis would be refusing on evidence the
     server never gave.
     """
+    if operation.id.startswith("machine.") and (caller.account_type != "human" or caller.auth_source != "jwt"):
+        return False
     if operation.permission is None:
         if operation.platform_admin:
             return caller.is_admin

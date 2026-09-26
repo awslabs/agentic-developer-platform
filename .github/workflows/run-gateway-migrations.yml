@@ -108,9 +108,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      group: Default
-      labels: arc-runner-org
+    runs-on: arc-runner-org
     steps:
       - name: Guard engine delivery revisions
         env:

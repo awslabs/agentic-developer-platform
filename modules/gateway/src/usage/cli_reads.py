@@ -202,7 +202,7 @@ def encode_cursor(row, binding):
     return base64.urlsafe_b64encode(json.dumps({"binding": binding, "timestamp": timestamp.isoformat(), "id": row.id}).encode()).decode()
 
 
-async def read_records(db, user, *, org_id, start, end, request_id, cursor, limit, run_id=None):
+async def read_records(db, user, *, org_id, start, end, request_id, cursor, limit, run_id=None, request=None):
     start, end = utc_range(start, end)
     scope, owners = await read_scope(db, user, org_id)
     root_human_id = None
@@ -211,9 +211,19 @@ async def read_records(db, user, *, org_id, start, end, request_id, cursor, limi
 
         invocation = ActivityService().get_invocation(run_id, user_id=scope["user_id"], tenant_id=scope["org_id"])
         if invocation is None:
-            raise HTTPException(404, "No visible usage target")
-        root_human_id = invocation.root_human_id
-        owners = None  # The Activity owner/tenant gate authorizes only this run.
+            from src.activity import task_readthrough
+
+            task = (
+                await task_readthrough.resolve(request, db, run_id, canonical_user_id=scope["user_id"], tenant_id=scope["org_id"])
+                if request is not None
+                else None
+            )
+            if task is None:
+                raise HTTPException(404, "No visible usage target")
+            root_human_id = task.owner_principal_id.removeprefix("human:")
+        else:
+            root_human_id = invocation.root_human_id
+        owners = None  # The Activity/Task owner and tenant gate authorizes only this run.
     scope["coverage"] = "selected_run" if run_id else "managed_tenant" if org_id else "direct_identity_records"
     binding = cursor_binding(scope, start, end, request_id, run_id)
     conditions = [UsageLog.org_id == scope["org_id"], UsageLog.timestamp >= start, UsageLog.timestamp < end]
@@ -296,7 +306,7 @@ def aggregate(result, group):
     }
 
 
-async def dispatch_read(db, user, view, org_id, start, end, request_id, cursor, limit, run_id=None):
+async def dispatch_read(db, user, view, org_id, start, end, request_id, cursor, limit, run_id=None, *, request=None):
     if view != "requests" and cursor:
         raise HTTPException(422, "Aggregate views do not accept cursors")
     result = await read_records(
@@ -309,6 +319,7 @@ async def dispatch_read(db, user, view, org_id, start, end, request_id, cursor, 
         cursor=cursor,
         limit=limit if view == "requests" else MAX_AGGREGATE_ROWS,
         run_id=run_id,
+        request=request,
     )
     if view == "requests":
         return result
@@ -332,7 +343,7 @@ async def own_read(
 ):
     if set(request.query_params) - {"start", "end", "request_id", "run_id", "cursor", "limit"}:
         raise HTTPException(422, "Unsupported usage filter or scope override")
-    return await dispatch_read(db, current_user, view, None, start, end, request_id, cursor, limit, run_id)
+    return await dispatch_read(db, current_user, view, None, start, end, request_id, cursor, limit, run_id, request=request)
 
 
 @router.get("/managed/{org_id}/{view}")
@@ -351,4 +362,4 @@ async def managed_read(
 ):
     if set(request.query_params) - {"start", "end", "request_id", "run_id", "cursor", "limit"}:
         raise HTTPException(422, "Unsupported usage filter or scope override")
-    return await dispatch_read(db, current_user, view, org_id, start, end, request_id, cursor, limit, run_id)
+    return await dispatch_read(db, current_user, view, org_id, start, end, request_id, cursor, limit, run_id, request=request)

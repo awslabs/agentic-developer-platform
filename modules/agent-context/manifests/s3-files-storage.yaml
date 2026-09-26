@@ -27,10 +27,10 @@ spec:
     - allow-delete
     - allow-overwrite
     # CSI v1.15 systemd does not delegate fsGroup. Synthetic FUSE ownership
-    # grants UID1001 owner writes and GID1001 read/traverse only; never chown S3.
+    # grants UID10001 owner writes and GID10001 read/traverse only; never chown S3.
     - allow-other
-    - uid=1001
-    - gid=1001
+    - uid=10001
+    - gid=10001
     - file-mode=0640
     - dir-mode=0750
   csi:

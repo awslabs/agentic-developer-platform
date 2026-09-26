@@ -38,7 +38,10 @@ BUILD_CONFIG = {
     },
     "modules/agent-factory/agent-worker-image/Dockerfile": {"context": "."},
     "modules/agent-factory/agent/Dockerfile": {"context": "modules/agent-factory"},
-    "modules/agent-factory/gateway/Dockerfile": {"context": "modules/agent-factory"},
+    "modules/agent-factory/gateway/Dockerfile": {
+        "context": "modules/agent-factory",
+        "prepare": [["run", "bash", "modules/agent-factory/scripts/stage-security-bundles.sh"]],
+    },
     "modules/domain-apps/superplane/src/superplane-api/Dockerfile": {
         "prepare": [["run", "bash", "modules/domain-apps/superplane/src/superplane-api/scripts/stage-domain-auth.sh"]],
     },
@@ -47,6 +50,16 @@ BUILD_CONFIG = {
     },
     "modules/research/gbrain/docker/Dockerfile": {"context": "modules/research/gbrain"},
 }
+
+# Keep scanner builds on the same canonical source bundles as release builds.
+for _image in ("codegraph-context", "ingestion", "context-mcp", "litellm-proxy", "parser", "deepwiki"):
+    _dockerfile = f"modules/agent-context/images/{_image}/Dockerfile"
+    _build = BUILD_CONFIG.setdefault(_dockerfile, {})
+    _context = _build.get("context", str(Path(_dockerfile).parent))
+    _prepare = _build.setdefault("prepare", [])
+    _prepare.append(["copy-tree", "modules/gateway/security/stdlib", f"{_context}/security-stdlib"])
+    if _image in ("codegraph-context", "ingestion"):
+        _prepare.append(["copy-tree", "modules/agent-context/images/shared", f"{_context}/security-build"])
 
 
 def discover(root: Path, scope: str = "all") -> list[dict]:

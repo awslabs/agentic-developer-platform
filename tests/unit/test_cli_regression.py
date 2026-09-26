@@ -873,3 +873,52 @@ def test_reusable_callers_forward_the_child_oidc_permission():
             "id-token": "write",
         }
         assert "needs.prepare.result == 'success'" in parent["jobs"][name]["if"]
+
+
+def test_nightly_forwards_optional_fixtures_without_changing_scheduled_scope():
+    parent, triggers = workflow("nightly-cli-regression.yml")
+    field = triggers["workflow_dispatch"]["inputs"]["fixtures_json"]
+    assert field["type"] == "string"
+    assert field["required"] is False
+    assert field["default"] == "{}"
+    ec2 = parent["jobs"]["ec2"]
+    assert ec2["with"]["fixtures_json"] == (
+        "${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}"
+    )
+    assert ec2["with"]["suites"] == "${{ inputs.ec2_scope || 'nightly' }}"
+    assert triggers["schedule"] == [{"cron": "0 5 * * *"}]
+    child, child_triggers = workflow("eval-cli-uplift.yml")
+    assert (
+        child_triggers["workflow_call"]["inputs"]["fixtures_json"]["type"] == "string"
+    )
+    for job in ("evaluate", "recover"):
+        assert (
+            child["jobs"][job]["env"]["CLI_UPLIFT_EVAL_FIXTURES"]
+            == "${{ inputs.fixtures_json }}"
+        )
+
+
+@pytest.mark.parametrize(
+    "raw,valid",
+    [
+        ("{}", True),
+        (
+            '{"usage_tenant":{"login_user_id":"login","canonical_user_id":"owner","tenant_id":"tenant"}}',
+            True,
+        ),
+        (
+            '{"usage_tenant":{"login_user_id":"login","canonical_user_id":"owner","tenant_id":"tenant","access_token":"forbidden"}}',
+            False,
+        ),
+        ('{"gateway_url":"https://different.example"}', False),
+        ('{"usage_tenant":', False),
+    ],
+)
+def test_forwarded_nightly_fixture_uses_existing_strict_child_validation(raw, valid):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    if valid:
+        assert parse(raw) == json.loads(raw)
+    else:
+        with pytest.raises(config.ConfigError):
+            parse(raw)

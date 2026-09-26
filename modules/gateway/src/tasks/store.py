@@ -793,6 +793,31 @@ class TaskStore:
                     }
                 }
             )
+        # Append last: existing cancellation-reason positions remain stable.
+        # Discovery is atomic with acceptance, contains no mutable state, and
+        # grants no access independently of the canonical Task snapshot.
+        from src.tasks.records import task_owner_prefix
+
+        transaction.append(
+            {
+                "Put": {
+                    "TableName": self._authority_table_name,
+                    "Item": _serialize_authority(
+                        {
+                            "pk": authority_pk,
+                            "sk": task_owner_prefix(request.tenant, request.canonical_principal) + now_iso + "#" + request.task_id,
+                            "record_type": "TASK_OWNER_BINDING",
+                            "schema_version": "1.0",
+                            "tenant": request.tenant,
+                            "canonical_principal": request.canonical_principal,
+                            "task_id": request.task_id,
+                            "created_at": now_iso,
+                        }
+                    ),
+                    "ConditionExpression": "attribute_not_exists(pk)",
+                }
+            }
+        )
         return transaction
 
     def _artifact_claim_items(self, *, request: AcceptanceRequest, now_iso: str) -> list[dict[str, Any]]:

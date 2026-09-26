@@ -4,6 +4,7 @@ import hashlib
 import time
 
 from fastapi import HTTPException
+from botocore.exceptions import ClientError
 from adp_tools.storage import base_item, serialize, task_ops_partition
 from common_crawl import CrawlConfig, query_for, domain_of, MAX_ROWS, MAX_SCAN_BYTES
 from case_contract import digest as content_digest, redact_url, sanitize, utcnow
@@ -105,21 +106,60 @@ class CommonCrawlTools:
             if capture is None:
                 raise HTTPException(404, "Select a completed scan capture")
             # Limit unique reads per scan. Existing operation claims deduplicate the same capture.
-            repo._client.update_item(
-                TableName=repo.table_name,
-                Key=serialize({"event_id": partition, "arrived_at": row["arrived_at"]}),
-                UpdateExpression="ADD read_count :one",
-                ConditionExpression="attribute_not_exists(read_count) OR read_count < :max",
-                ExpressionAttributeValues=serialize({":one": 1, ":max": 8}),
-            )
+            try:
+                repo._client.update_item(
+                    TableName=repo.table_name,
+                    Key=serialize(
+                        {"event_id": partition, "arrived_at": row["arrived_at"]}
+                    ),
+                    UpdateExpression="ADD read_count :one",
+                    ConditionExpression="attribute_not_exists(read_count) OR read_count < :max",
+                    ExpressionAttributeValues=serialize({":one": 1, ":max": 8}),
+                )
+            except ClientError as error:
+                if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                return {
+                    "status": "partial",
+                    "reason": "archive_read_limit_reached",
+                    "scan_id": payload["scan_id"],
+                    "capture_id": payload["capture_id"],
+                    "limitations": LIMITATIONS,
+                }
             from archive_content import fetch_record, parse_record, extract_content
 
-            raw = fetch_record(capture, client=self.s3)
+            # Content validation failures are evidence limitations, not task failures.
+            # Storage, authorization and infrastructure exceptions still propagate.
+            try:
+                raw = fetch_record(capture, client=self.s3)
+            except ValueError:
+                return {
+                    "status": "partial",
+                    "reason": "archive_range_unavailable",
+                    "scan_id": payload["scan_id"],
+                    "capture_id": payload["capture_id"],
+                    "limitations": LIMITATIONS,
+                }
             from adp_tools.evidence import put_blob
 
             original = put_blob(evidence, identity, raw, "application/warc+gzip")
-            content, metadata = parse_record(raw, capture)
-            extracted = extract_content(content, metadata)
+            metadata = None
+            try:
+                content, metadata = parse_record(raw, capture)
+                extracted = extract_content(content, metadata)
+            except ValueError:
+                return {
+                    "status": "partial",
+                    "reason": "archive_content_not_extractable",
+                    "scan_id": payload["scan_id"],
+                    "capture_id": payload["capture_id"],
+                    "original": original,
+                    "metadata": metadata,
+                    "limitations": LIMITATIONS
+                    + [
+                        "This capture could not be safely extracted; do not infer its page content."
+                    ],
+                }
             # The complete bounded extracted document is an artifact; the model gets a preview.
             import json
 

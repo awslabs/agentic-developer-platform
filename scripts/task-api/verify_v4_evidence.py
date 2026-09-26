@@ -7,6 +7,12 @@ import json
 from pathlib import Path
 
 
+def _require(condition: bool, message: str) -> None:
+    """Enforce receipt integrity even when Python omits assert statements."""
+    if not condition:
+        raise AssertionError(message)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, required=True)
@@ -14,30 +20,48 @@ def main():
     directory = args.directory.resolve()
     report = json.loads((directory / "v4-criterion-report.json").read_text())
     expected = {f"V4-{i:02d}" for i in range(1, 8)}
-    assert set(report["criteria"]) == expected, "All seven mandatory IDs required"
-    assert report["overall_outcome"] == "PASS", "Live matrix remains incomplete"
+    _require(set(report["criteria"]) == expected, "All seven mandatory IDs required")
+    _require(report["overall_outcome"] == "PASS", "Live matrix remains incomplete")
     for criterion in report["criteria"].values():
-        assert criterion["outcome"] == "PASS", criterion
-        assert criterion["evidence"], "Missing evidence"
+        _require(criterion["outcome"] == "PASS", "Criterion outcome must be PASS")
+        _require(criterion["evidence"], "Missing evidence")
         for name in criterion["evidence"]:
-            assert (directory / name).is_file(), f"Missing evidence: {name}"
+            _require(
+                (directory / name).is_file(), "Referenced evidence file is missing"
+            )
     hashes = json.loads((directory / "sha256-manifest.json").read_text())
     for name, digest in hashes.items():
-        assert hashlib.sha256((directory / name).read_bytes()).hexdigest() == digest, (
-            name
+        _require(
+            hashlib.sha256((directory / name).read_bytes()).hexdigest() == digest,
+            "Evidence file digest does not match manifest",
         )
     observation = json.loads(
         (directory / "held-completion/final-observation.json").read_text()
     )
-    assert observation["snapshot"]["status"] == "completed"
-    assert observation["snapshot"]["queue_ack_status"] == "confirmed"
+    _require(
+        observation["snapshot"]["status"] == "completed",
+        "Task snapshot must be completed",
+    )
+    _require(
+        observation["snapshot"]["queue_ack_status"] == "confirmed",
+        "Task queue acknowledgement must be confirmed",
+    )
     for artifact in observation["artifacts"]:
         content = (
             directory / "held-completion" / (artifact["artifact_id"] + ".json")
         ).read_bytes()
-        assert len(content) == artifact["bytes"]
-        assert hashlib.sha256(content).hexdigest() == artifact["sha256"]
-        assert json.loads(content) == observation["snapshot"]["result"]["report"]
+        _require(
+            len(content) == artifact["bytes"],
+            "Artifact byte length does not match its receipt",
+        )
+        _require(
+            hashlib.sha256(content).hexdigest() == artifact["sha256"],
+            "Artifact digest does not match its receipt",
+        )
+        _require(
+            json.loads(content) == observation["snapshot"]["result"]["report"],
+            "Artifact content does not match the completed report",
+        )
     progress = json.loads(
         (directory / "held-completion/held-progress-proof.json").read_text()
     )
@@ -47,8 +71,14 @@ def main():
         if entry["type"] == "progress.updated"
         and entry["conservative_upper_seconds"] < 5
     ]
-    assert len({entry["message"] for entry in timely}) >= 2
-    assert not progress["terminal_observed"] and not progress["release_gate_present"]
+    _require(
+        len({entry["message"] for entry in timely}) >= 2,
+        "At least two distinct timely progress updates required",
+    )
+    _require(
+        not progress["terminal_observed"] and (not progress["release_gate_present"]),
+        "Terminal progress or a release gate invalidates held progress evidence",
+    )
     print(
         json.dumps(
             {

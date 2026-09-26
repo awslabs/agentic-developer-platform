@@ -342,6 +342,15 @@ class BudgetCreateRequest(BaseModel):
     enforcement_mode: str = Field(default="hard", description="Enforcement mode: soft or hard")
 
 
+class BudgetPeriodSetRequest(BaseModel):
+    """Exact period upsert with a caller's inspected-state precondition."""
+
+    budget_amount_usd: Decimal = Field(..., gt=0, max_digits=10, decimal_places=2)
+    enforcement_mode: Literal["hard", "soft"] = "hard"
+    expected_revision: datetime | None = None
+    expect_absent: bool = False
+
+
 class BudgetStatusResponse(BaseModel):
     """Response schema for budget status with current spend."""
 

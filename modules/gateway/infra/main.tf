@@ -257,6 +257,20 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       },
       {
+        # Authorized machine-agent lifecycle (#5624). Cognito client creation,
+        # protected credential delivery and terminal retirement all use this
+        # existing gateway pool. This is static gateway authority, not worker
+        # or per-task permission, and grants no client update/secret rotation.
+        Sid    = "CognitoMachineClientLifecycle"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:CreateUserPoolClient",
+          "cognito-idp:DescribeUserPoolClient",
+          "cognito-idp:DeleteUserPoolClient"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      },
+      {
         # Web CLI login (/auth/cli): mints tokens on the CLI app client the
         # same way the github-auth-broker does — fresh random permanent
         # password + admin auth. Only invoked after the signed-in browser
@@ -536,6 +550,14 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
         ]
       },
       {
+        # #5634: staged supplied-key activation moves only this deployment's
+        # GitHub App key version. Never grant version-stage writes to the vault.
+        Sid      = "GitHubAppKeyActivation"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:UpdateSecretVersionStage"]
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.environment}/github-app/adp-agent-platform-key-??????"
+      },
+      {
         # ListSecrets is account-wide by necessity (no resource-level scoping).
         # The gateway uses it to enumerate its own vault inventory (e.g. for
         # the orphan sweeper, admin listings, and per-user quota checks).
@@ -780,6 +802,8 @@ module "s3_cloudfront_logs" {
 # -----------------------------------------------------------------------------
 # Broker origin for CloudFront (see enable_broker_cloudfront_route)
 # -----------------------------------------------------------------------------
+# Shared Task ingress / GitHub broker origin. Task-only routing must not turn
+# on the GitHub OAuth behavior.
 # Resolved from the published invoke URL rather than from module.api_gateway
 # outputs, which would create a dependency cycle:
 #
@@ -798,14 +822,14 @@ module "s3_cloudfront_logs" {
 # the same shape as enable_vpc_origin, which likewise depends on a value from an
 # earlier apply.
 data "aws_ssm_parameter" "apigw_invoke_url_for_broker_origin" {
-  count = var.enable_broker_cloudfront_route ? 1 : 0
+  count = var.enable_broker_cloudfront_route || var.enable_task_api_route ? 1 : 0
 
   name = "/adp/${var.environment}/gateway/apigw-invoke-url"
 }
 
 locals {
   # https://<id>.execute-api.<region>.amazonaws.com/<stage>
-  broker_origin_match = var.enable_broker_cloudfront_route ? regexall(
+  broker_origin_match = var.enable_broker_cloudfront_route || var.enable_task_api_route ? regexall(
     "https://([a-z0-9]+)\\.execute-api\\.[a-z0-9-]+\\.amazonaws\\.com/(.+)$",
     nonsensitive(data.aws_ssm_parameter.apigw_invoke_url_for_broker_origin[0].value)
   ) : []
@@ -832,8 +856,10 @@ module "cloudfront" {
   # VITE_GITHUB_AUTH_BROKER_URL and the broker's CALLBACK_URL point at it, so
   # enabling it should be a deliberate step rather than a side effect of having
   # an API Gateway.
-  broker_origin_domain_name = local.broker_origin_domain_name
-  broker_origin_path        = local.broker_origin_path
+  broker_origin_domain_name      = local.broker_origin_domain_name
+  broker_origin_path             = local.broker_origin_path
+  enable_broker_cloudfront_route = var.enable_broker_cloudfront_route
+  enable_task_api_route          = var.enable_task_api_route
 
   waf_web_acl_arn        = var.cloudfront_waf_web_acl_arn
   enable_ipv6            = var.cloudfront_enable_ipv6

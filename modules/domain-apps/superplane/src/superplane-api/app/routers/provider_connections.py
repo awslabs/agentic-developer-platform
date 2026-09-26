@@ -53,9 +53,9 @@ import logging
 import uuid
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,6 +79,7 @@ from app.models.provider_connection import ProviderConnection, ProviderConnectio
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.services import provider_connections as service
+from app.services.cli_lifecycle import connection_revision, require_connection_revision
 from app.services.credential_evidence import (
     VerifiedCredentialEvidence,
     get_credential_evidence_reader,
@@ -508,6 +509,12 @@ async def register_connection(
     """
     payload = await _body(request)
     reference = _reference_or_400(payload)
+    operation_id = None
+    if "operation_id" in payload:
+        try:
+            operation_id = uuid.UUID(payload["operation_id"])
+        except (ValueError, TypeError, AttributeError):
+            raise HTTPException(400, "operation_id must be a UUID") from None
 
     if RENEW_CREDENTIAL_PERMISSION not in _permissions(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_DENIED)
@@ -525,23 +532,41 @@ async def register_connection(
 
     await _registry_reference(db, org_id, reference, provider)
     evidence = await _vault_evidence(request, org_id, workspace_id, reference)
+    registration = {
+        "org_id": org_id,
+        "workspace_id": workspace_id,
+        "reference": reference,
+        "provider": provider,
+        "owner_principal": evidence.ownership.owner_principal,
+        "bound_by": _caller_principal(request, org_id),
+        "verify_authority": lambda: _mutation_authority(
+            db, request, org_id, workspace_id, provider, evidence
+        ),
+    }
     try:
-        connection, binding = await service.register(
-            db,
-            org_id=org_id,
-            workspace_id=workspace_id,
-            reference=reference,
-            provider=provider,
-            owner_principal=evidence.ownership.owner_principal,
-            bound_by=_caller_principal(request, org_id),
-            verify_authority=lambda: _mutation_authority(
-                db, request, org_id, workspace_id, provider, evidence
-            ),
-        )
-    except IntegrityError:
+        try:
+            connection, binding = await service.register(
+                db, operation_id=operation_id, **registration
+            )
+        except IntegrityError:
+            await db.rollback()
+            # Concurrent exact registration may have committed while our insert
+            # waited. Recheck current authority and the entire immutable binding.
+            recovered = (
+                await service.replay_registration(
+                    db, operation_id=operation_id, **registration
+                )
+                if operation_id is not None
+                else None
+            )
+            if recovered is None:
+                raise service.RegistrationConflict() from None
+            connection, binding = recovered
+    except service.RegistrationConflict:
         await db.rollback()
         raise HTTPException(
-            status_code=409, detail="credential already has a connection or binding"
+            409,
+            "registration identity conflicts with an existing connection or binding",
         ) from None
     # The service verified authority before and after flush. A successful commit
     # is durable; later expiry cannot turn its outcome into a refusal.
@@ -568,7 +593,10 @@ async def get_connection(
     connection, binding = await _load_or_404(db, org_id, connection_id)
     state = _state(connection, binding)
     _require_binding(workspace_id=workspace_id, state=state, binding=binding)
-    return connection_response(state)
+    return {
+        **connection_response(state),
+        "revision": connection_revision(connection, binding),
+    }
 
 
 @router.post(_CONNECTIONS + "/{connection_id}/validation")
@@ -578,6 +606,7 @@ async def record_validation(
     connection_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> dict[str, Any]:
     """Record a validation reading and activate the connection if it passed.
 
@@ -601,6 +630,8 @@ async def record_validation(
         org_id=org_id,
         require_renewal=True,
     )
+
+    require_connection_revision(expected_revision, connection, binding)
 
     report = _report_or_400(await _body(request), field="validation")
     evidence = await _vault_evidence(
@@ -649,6 +680,7 @@ async def rotate_connection(
     connection_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> dict[str, Any]:
     """Switch onto an already-validated replacement, atomically (acceptance 5).
 
@@ -675,6 +707,8 @@ async def rotate_connection(
         org_id=org_id,
         require_renewal=True,
     )
+
+    require_connection_revision(expected_revision, connection, binding)
 
     payload = await _body(request)
     if not isinstance(payload, dict):
@@ -748,6 +782,7 @@ async def disable_connection(
     connection_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> dict[str, Any]:
     """Block new admissions and renewals, and say what that does not accomplish.
 
@@ -772,6 +807,8 @@ async def disable_connection(
         org_id=org_id,
         require_renewal=False,
     )
+
+    require_connection_revision(expected_revision, connection, binding)
 
     state = await service.record_disablement(
         db,

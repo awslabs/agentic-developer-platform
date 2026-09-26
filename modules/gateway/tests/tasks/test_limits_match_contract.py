@@ -72,6 +72,7 @@ PAIRS: list[tuple[str, str]] = [
     ("MAX_EVENTS_PER_TASK", "process_and_reporting/max_events_per_task"),
     ("RESERVED_TERMINAL_EVENT_SLOTS", "process_and_reporting/reserved_terminal_event_slots"),
     ("MAX_REPORT_FRAME_BYTES", "process_and_reporting/max_frame_bytes"),
+    ("MAX_RUN_ARTIFACT_BYTES", "artifacts/max_run_artifact_bytes"),
     ("MAX_INPUT_ARTIFACT_BYTES", "artifacts/max_input_artifact_bytes"),
     ("UNCLAIMED_UPLOAD_EXPIRY_HOURS", "artifacts/unclaimed_upload_expiry_hours"),
     ("TOMBSTONE_RESPONSE_CODE", "retention/tombstone_response_code"),

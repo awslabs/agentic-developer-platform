@@ -4982,7 +4982,15 @@
       6124,
       6125
     ],
-    "new_followons_outside_original_denominator": 25
+    "new_followons_outside_original_denominator": 25,
+    "verified_followon_acceptance": {
+      "6102": {
+        "status": "verified-fixed",
+        "original_selector": "checkov|original/checkov/results_sarif.sarif|ri=196",
+        "receipt": "docs/security/runs/2026-09-21/evidence/followon-g-live-acceptance.json",
+        "note": "Later live acceptance; frozen scan counts and original issue snapshot are retained."
+      }
+    }
   },
   "preparation_migration_heads": {
     "source_revision": "3ea9fee8d34d68d019c690e35333b4326a393dc0",

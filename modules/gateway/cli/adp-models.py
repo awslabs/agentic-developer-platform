@@ -17,6 +17,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,7 +65,8 @@ class HttpError(CliError):
         }
         exit_code = 2 if status == 401 else 3 if status == 403 else 4 if reason in WAITABLE_REASONS else 5
         super().__init__(
-            MODEL_MESSAGES.get(reason) or hints.get(status, "ADP could not complete the request. Read your settings before retrying; the request may have changed them."),
+            MODEL_MESSAGES.get(reason)
+            or hints.get(status, "ADP could not complete the request. Read your settings before retrying; the request may have changed them."),
             reason,
             exit_code,
         )
@@ -244,8 +246,7 @@ def _published_model(client, persona, model, service_principal=None):
     if not row.get("selectable"):
         exit_code = 4 if reason in WAITABLE_REASONS else 5
         raise CliError(
-            f"Model '{model}' cannot be selected for '{persona}'. "
-            + MODEL_MESSAGES.get(reason, "Choose another available model."),
+            f"Model '{model}' cannot be selected for '{persona}'. " + MODEL_MESSAGES.get(reason, "Choose another available model."),
             reason or "not_selectable",
             exit_code,
         )
@@ -380,8 +381,8 @@ def _print_mapping(row):
 
 def emit_result(result, as_json=False):
     """Summarize choices for people; preserve the full API contract in JSON."""
-    if as_json:
-        return common.emit(result, True)
+    if as_json or result.get("command") == "models costs":
+        return common.emit(result, as_json)
     command = result.get("command")
     detail = result.get("detail") or {}
     heading = f"{command}: {result['status']}"
@@ -409,8 +410,10 @@ def emit_result(result, as_json=False):
             if price.get("input_per_million_tokens") is not None or price.get("output_per_million_tokens") is not None:
                 input_price = price.get("input_per_million_tokens")
                 output_price = price.get("output_per_million_tokens")
-                print(f"  Input: {'unknown' if input_price is None else '$' + str(input_price)}; "
-                      f"output: {'unknown' if output_price is None else '$' + str(output_price)} per 1M tokens")
+                print(
+                    f"  Input: {'unknown' if input_price is None else '$' + str(input_price)}; "
+                    f"output: {'unknown' if output_price is None else '$' + str(output_price)} per 1M tokens"
+                )
         if not detail.get("models"):
             print("No model choices are available for this persona.")
     elif command == "models service-principals":
@@ -436,10 +439,96 @@ def emit_result(result, as_json=False):
     return 4 if result["status"] in {"pending", "unavailable"} else 5 if result["status"] == "failed" else 0
 
 
+def persona_costs(args, client):
+    _assert_target_allowed(client, args.service_principal)
+    owner = _list(client, args.service_principal)
+    tenant = _tenant_id(owner)
+    principal = _principal_id(owner)
+    if not isinstance(principal, str) or not principal:
+        raise CliError("Missing canonical preference owner.", "invalid_response")
+    if args.service_principal and principal != args.service_principal:
+        raise CliError("Wrong service-principal response.", "invalid_response")
+    path = _base_path(args.service_principal) + "/costs"
+    if args.chain:
+        path += "?" + urllib.parse.urlencode({"chain_id": args.chain})
+    result = client.request("GET", path)
+    if not isinstance(result, dict):
+        raise CliError("Malformed persona cost report.", "invalid_response")
+    _assert_same_tenant(tenant, result)
+    if (
+        result.get("principal_id") != principal
+        or result.get("principal_kind") != owner.get("principal_kind")
+        or result.get("chain_id") != args.chain
+        or result.get("principal_dimension") != "preference_owner"
+        or not isinstance(result.get("entries"), list)
+        or not isinstance(result.get("preferences"), list)
+    ):
+        raise CliError("Persona costs have inconsistent owner/chain attribution.", "invalid_response")
+    seen = set()
+    try:
+        for row in [result, *result["entries"]]:
+            if (
+                not isinstance(row, dict)
+                or row.get("status") not in {"known", "none_incurred", "estimated", "partial", "unknown"}
+                or type(row.get("partial")) is not bool
+            ):
+                raise ValueError
+            for key in ("call_count", "unpriced_call_count", "estimated_call_count"):
+                if type(row.get(key)) is not int or row[key] < 0:
+                    raise ValueError
+            value = row.get("amount_usd")
+            if value is not None and (not isinstance(value, str) or not Decimal(value).is_finite() or Decimal(value) < 0):
+                raise ValueError
+            if row["status"] in {"known", "none_incurred"} and value is None or row["status"] == "unknown" and value is not None:
+                raise ValueError
+            if not isinstance(row.get("estimate_reasons"), list) or not all(isinstance(reason, str) for reason in row["estimate_reasons"]):
+                raise ValueError
+            if row is not result:
+                key = (row.get("persona_key"), row.get("model_id"))
+                if not all(isinstance(item, str) and item for item in key) or key in seen:
+                    raise ValueError
+                seen.add(key)
+                if any(type(row.get(key)) is not int or row[key] < 0 for key in ("input_tokens", "output_tokens")):
+                    raise ValueError
+    except (ValueError, InvalidOperation):
+        raise CliError("Malformed, duplicate or non-finite persona cost data.", "invalid_response") from None
+    # Preserve the authoritative total with its original all-persona scope;
+    # filtering entries must never silently relabel that total as one persona.
+    result["entries"] = [row for row in result["entries"] if row["persona_key"] == args.persona]
+    result["preferences"] = [row for row in result["preferences"] if isinstance(row, dict) and row.get("persona_key") == args.persona]
+    result.update(selected_persona=args.persona, aggregate_scope="all_personas_for_selected_owner_and_chain")
+    return common.envelope(
+        "ok",
+        "models costs",
+        result,
+        "Entry amounts retain observed/estimated/partial/unknown status; the aggregate remains all-persona, not the filtered persona total.",
+    )
+
+
 def run(args, client):
+    if args.area == "costs":
+        return persona_costs(args, client)
     if args.area == "catalog":
-        result = _catalogue(client, args.persona)
+        result = _catalogue(client, args.persona, getattr(args, "service_principal", None))
         _tenant_id(result)
+        if (
+            result.get("persona_key") != args.persona
+            or not isinstance(result.get("compatibility_class"), str)
+            or not isinstance(result.get("models"), list)
+        ):
+            raise CliError("Malformed selected persona catalogue.", "invalid_response")
+        seen = set()
+        for row in result["models"]:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("canonical_model_id"), str)
+                or not row["canonical_model_id"]
+                or row["canonical_model_id"] in seen
+                or type(row.get("selectable")) is not bool
+                or row.get("compatibility_class") != result["compatibility_class"]
+            ):
+                raise CliError("Malformed or repeated model catalogue row.", "invalid_response")
+            seen.add(row["canonical_model_id"])
         return common.envelope("ok", _command_name(args), result)
 
     if args.area == "service-principals":
@@ -590,7 +679,14 @@ def parser():
 
     catalog = areas.add_parser("catalog")
     catalog.add_argument("--persona", required=True)
+    catalog.add_argument("--service-principal")
     catalog.add_argument("--json", action="store_true")
+
+    costs = areas.add_parser("costs")
+    costs.add_argument("--persona", required=True)
+    costs.add_argument("--service-principal")
+    costs.add_argument("--chain")
+    costs.add_argument("--json", action="store_true")
 
     mappings = areas.add_parser("mappings")
     mapping_actions = mappings.add_subparsers(dest="action", required=True)

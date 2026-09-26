@@ -14,12 +14,13 @@ import logging
 import os
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import boto3
 import jwt
 from botocore.exceptions import ClientError
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -235,6 +236,7 @@ async def _resolve_user_profile(db: AsyncSession, cognito_sub: str) -> dict:
     },
 )
 async def gitlab_sso_redirect(
+    request: Request,
     current_user: TokenContext = Depends(get_current_user_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -251,6 +253,26 @@ async def gitlab_sso_redirect(
                 "error_code": "GITLAB_NOT_CONFIGURED",
             },
         )
+
+    # The configured deployment URL is the handoff authority. Never derive the
+    # destination from a followed redirect or a caller-provided URL.
+    try:
+        parsed_url = urlsplit(gitlab_url)
+        valid_url = (
+            parsed_url.scheme in {"http", "https"}
+            and parsed_url.hostname
+            and not parsed_url.username
+            and not parsed_url.password
+            and not parsed_url.query
+            and not parsed_url.fragment
+            and not any(character.isspace() or ord(character) < 32 for character in gitlab_url)
+            and "\\" not in gitlab_url
+        )
+        parsed_url.port  # Reject malformed ports before minting a credential.
+    except ValueError:
+        valid_url = False
+    if not valid_url:
+        return JSONResponse(status_code=503, content={"error_code": "GITLAB_SSO_URL_INVALID"})
 
     # 2. Load RSA private key (lazy — Secrets Manager, cached 5 min)
     private_key = _load_signing_key()
@@ -279,12 +301,14 @@ async def gitlab_sso_redirect(
         private_key_pem=private_key,
     )
 
-    # 5. Redirect
+    # 5. Browser fetches obtain the authorized handoff without following it.
     redirect_url = f"{gitlab_url}/users/auth/jwt/callback?jwt={token}"
+    if "application/json" in request.headers.get("accept", "").lower():
+        return JSONResponse(content={"redirect_url": redirect_url}, headers={"Cache-Control": "no-store", "Vary": "Accept"})
     return RedirectResponse(
         url=redirect_url,
         status_code=302,
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "Vary": "Accept"},
     )
 
 

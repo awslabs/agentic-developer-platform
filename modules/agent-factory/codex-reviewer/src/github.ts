@@ -140,7 +140,7 @@ export class GitHubClient {
       throw new Error(`GitHub request path must start with "/": ${path}`);
     }
     const token = await this.tokenProvider();
-    const response = await fetch(`${GITHUB_API_ORIGIN}${path}`, {
+    const options: RequestInit = {
       ...init,
       headers: {
         accept: "application/vnd.github+json",
@@ -150,12 +150,28 @@ export class GitHubClient {
         ...(init.headers ?? {}),
       },
       signal: init.signal ?? AbortSignal.timeout(30_000),
-    });
-    // A cross-origin redirect cannot leak the token (Node strips Authorization
-    // when the origin changes) but it can substitute the response body — and
-    // these bodies drive the merge gate in `checks()`. Confirm the response
-    // actually came from GitHub. Same-origin redirects, which GitHub issues for
-    // renamed repositories, are unaffected.
+      redirect: "manual",
+    };
+    let url = `${GITHUB_API_ORIGIN}${path}`;
+    let response: Response;
+    for (let redirects = 0; ; redirects += 1) {
+      response = await fetch(url, options);
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      const location = response.headers.get("location");
+      await response.body?.cancel();
+      if (!location || redirects >= 3) throw new Error("GitHub redirect unavailable or limit exceeded");
+      const target = new URL(location, url);
+      if (target.origin !== GITHUB_API_ORIGIN || target.username || target.password) {
+        throw new Error("GitHub redirect must remain on api.github.com");
+      }
+      // Do not silently rewrite or replay mutations after method-changing redirects.
+      // 307/308 explicitly preserve the original method/body for renamed resources.
+      if (!["GET", "HEAD"].includes(options.method ?? "GET") && [301, 302, 303].includes(response.status)) {
+        throw new Error("GitHub mutation requires a method-preserving redirect");
+      }
+      url = target.href;
+    }
+    // Retain a final-origin defense as well as validating every hop before transit.
     if (response.url && new URL(response.url).origin !== GITHUB_API_ORIGIN) {
       throw new Error(
         `GitHub ${init.method ?? "GET"} ${path} was redirected off api.github.com`,

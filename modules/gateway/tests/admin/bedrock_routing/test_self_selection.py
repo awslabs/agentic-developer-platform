@@ -168,7 +168,8 @@ def test_s1b_the_write_body_names_a_connection_and_not_a_person():
     """
     from src.admin.bedrock_routing.schemas import MySelectionRequest
 
-    assert set(MySelectionRequest.model_fields) == {"credential_id"}
+    assert set(MySelectionRequest.model_fields) == {"credential_id", "expected_account_id"}
+    assert not {"user_id", "scope", "destination_id"} & set(MySelectionRequest.model_fields)
 
 
 async def test_s1c_a_plain_member_is_served_on_every_route(session, seeded, routable_connection, probe_ok):

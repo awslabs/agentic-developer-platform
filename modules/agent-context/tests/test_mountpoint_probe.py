@@ -47,7 +47,10 @@ def test_production_mount_modes_and_reader_group_are_consistent(module):
     )
     deployment = next(doc for doc in yaml.safe_load_all(rendered) if doc["kind"] == "Deployment")
     pod = deployment["spec"]["template"]["spec"]
-    assert pod["securityContext"] == {"supplementalGroups": [1001]}
+    assert pod["securityContext"] == {
+        "supplementalGroups": [10001],
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
     readers = pod["initContainers"] + pod["containers"]
     mounts = [
         mount
@@ -134,7 +137,7 @@ def test_jobs_have_no_app_credentials_and_bounded_execution(plan, module):
         assert pod["volumes"][0]["persistentVolumeClaim"]["claimName"] == "probe-data"
     reader = plan["jobs"]["reader"]["spec"]["template"]["spec"]["securityContext"]
     outsider = plan["jobs"]["outsider"]["spec"]["template"]["spec"]["securityContext"]
-    assert (reader["runAsUser"], reader["runAsGroup"]) == (0, 1001)
+    assert (reader["runAsUser"], reader["runAsGroup"]) == (0, 10001)
     assert (outsider["runAsUser"], outsider["runAsGroup"], outsider["supplementalGroups"]) == (
         2002,
         2002,

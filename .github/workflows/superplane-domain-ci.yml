@@ -461,11 +461,11 @@ jobs:
             --cov-report=term-missing --cov-fail-under=85
 
       - name: Set up Go for the transferred components
-        # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
-        # toolchain that judges this code is the one it was written against.
+        # Match the maintained controller toolchain; patched x/net requires Go 1.25+.
+        # Install it explicitly instead of downloading a second toolchain during tests.
         uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version: '1.26.8'
           cache-dependency-path: |
             modules/domain-apps/superplane/src/superplane-controller/go.sum
             modules/domain-apps/superplane/src/superplane-platform-monitor/go.sum
@@ -643,7 +643,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version: '1.26.8'
           cache-dependency-path: modules/domain-apps/superplane/src/superplane-controller/go.sum
       - name: Verify Go execution client against shared RPC and PostgreSQL
         # Isolate harness dependencies from the API's production importability

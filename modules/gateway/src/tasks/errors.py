@@ -25,6 +25,7 @@ from src.tasks.events import SCHEMA_VERSION
 CODES_BY_STATUS: dict[int, frozenset[str]] = {
     400: frozenset({"invalid_request", "invalid_cursor"}),
     401: frozenset({"invalid_credential"}),
+    402: frozenset({"budget_exceeded"}),
     403: frozenset({"disallowed_scope", "disallowed_persona"}),
     404: frozenset({"not_found"}),
     409: frozenset({"idempotency_conflict", "command_conflict", "state_conflict"}),

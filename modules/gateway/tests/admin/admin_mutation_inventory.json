@@ -15,9 +15,23 @@
   },
   {
     "method": "POST",
+    "path": "/admin/access-requests/{request_id}/approve/revision",
+    "module": "src.admin.onboarding.cli_contract",
+    "endpoint": "approve_reviewed",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
     "path": "/admin/access-requests/{request_id}/deny",
     "module": "src.admin.onboarding.handler",
     "endpoint": "deny_access_request",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/access-requests/{request_id}/deny/revision",
+    "module": "src.admin.onboarding.cli_contract",
+    "endpoint": "deny_reviewed",
     "classification": "durable-operation"
   },
   {
@@ -95,6 +109,20 @@
     "path": "/admin/connections/github/app/disconnect",
     "module": "src.admin.connections.routes",
     "endpoint": "github_app_disconnect",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/connections/github/app/maintenance/disconnect",
+    "module": "src.admin.connections.routes",
+    "endpoint": "github_app_disconnect_reviewed",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/connections/github/app/maintenance/rotate-key",
+    "module": "src.admin.connections.routes",
+    "endpoint": "github_app_activate_supplied_key",
     "classification": "durable-operation"
   },
   {
@@ -176,6 +204,20 @@
   },
   {
     "method": "POST",
+    "path": "/admin/machine-agents/{kind}/register",
+    "module": "src.admin.machine_agents",
+    "endpoint": "register_machine_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/machine-agents/{kind}/{key}/identity",
+    "module": "src.admin.machine_agents",
+    "endpoint": "update_machine_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
     "path": "/admin/organizations",
     "module": "src.admin.routes",
     "endpoint": "create_organization_gone",
@@ -207,6 +249,20 @@
     "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
     "module": "src.admin.routes",
     "endpoint": "delete_budget",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+    "module": "src.admin.routes",
+    "endpoint": "set_exact_budget_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision",
+    "module": "src.admin.routes",
+    "endpoint": "delete_exact_budget_config",
     "classification": "durable-operation"
   },
   {
@@ -259,10 +315,38 @@
     "classification": "durable-operation"
   },
   {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "remove",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "patch",
+    "classification": "durable-operation"
+  },
+  {
     "method": "POST",
     "path": "/admin/organizations/{org_id}/members",
     "module": "src.admin.routes",
     "endpoint": "add_org_member",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+    "module": "src.admin.ratelimit_cli",
+    "endpoint": "delete_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+    "module": "src.admin.ratelimit_cli",
+    "endpoint": "set_config",
     "classification": "durable-operation"
   },
   {
@@ -291,6 +375,27 @@
     "path": "/admin/organizations/{org_id}/service-accounts",
     "module": "src.admin.routes",
     "endpoint": "create_service_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/organizations/{org_id}/service-accounts/register",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "register_machine_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "delete_machine_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "update_machine_account",
     "classification": "durable-operation"
   },
   {
@@ -368,6 +473,13 @@
     "path": "/admin/persona-models/posture/{compatibility_class}",
     "module": "src.admin.persona_models.posture_routes",
     "endpoint": "set_runtime_posture",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/persona-models/posture/{compatibility_class}/rollback",
+    "module": "src.admin.persona_models.posture_routes",
+    "endpoint": "rollback_runtime_posture",
     "classification": "existing-writer"
   },
   {
@@ -474,6 +586,41 @@
     "module": "src.admin.identity.router",
     "endpoint": "delete_identity",
     "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/admin/revoke-user-tokens/{user_id}/revision",
+    "module": "src.auth.session_admin",
+    "endpoint": "revoke_reviewed_sessions",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/admin/configure",
+    "module": "src.gitlab.routes",
+    "endpoint": "configure",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/connect",
+    "module": "src.gitlab.routes",
+    "endpoint": "connect",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/gitlab/disconnect",
+    "module": "src.gitlab.routes",
+    "endpoint": "disconnect",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/human-principals/{user_id}/task-policy",
+    "module": "src.admin.persona_models.human_task_routes",
+    "endpoint": "put_policy",
+    "classification": "existing-writer"
   },
   {
     "method": "DELETE",

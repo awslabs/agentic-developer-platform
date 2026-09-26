@@ -552,4 +552,9 @@ async def test_capabilities_only_advertise_executable_policy_modes(
     report = await onboarding_capabilities(request, lifecycle.org_id)
     assert report["modes"] == expected
     assert report["ready"] is bool(expected)
-    assert bool(report["features"]) is bool(expected)
+    # Provider connection identity is independent of workspace execution modes.
+    # Lifecycle readiness gates only the create/adopt contracts.
+    features = set(report["features"])
+    lifecycle_features = {"create-operation-id-v1", "adopt-operation-id-v1"}
+    assert features & lifecycle_features == (lifecycle_features if expected else set())
+    assert "provider-connection-operation-id-v1" in features

@@ -1,0 +1,48 @@
+{
+  "issue": 6108,
+  "frozen_source": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "reviewed_delta": 4,
+  "reviewed_records": [
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1312",
+      "file": "platform/scripts/operator/wave3/collect_fixture_pr.py",
+      "original_line": 14,
+      "rule": "B405",
+      "severity": "LOW",
+      "current_file_sha256": "3a21709bf2504bb455c609e15cbb3161f1edd0389356147ebcb2c8e13f5b6f07",
+      "rationale": "Operator JUnit parser now explicitly rejects every DTD through XMLParser/TreeBuilder.doctype before declarations can define entities. Stdlib import remains, but its only parsing consumer is the explicit guarded parser. Qualification additionally parses retained bytes from the validated artifact digest map and refuses outside/unbound test reports. Local CLI acceptance complete; no serving deployment."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1316",
+      "file": "platform/scripts/operator/wave3/collect_fixture_pr.py",
+      "original_line": 55,
+      "rule": "B314",
+      "severity": "MEDIUM",
+      "current_file_sha256": "3a21709bf2504bb455c609e15cbb3161f1edd0389356147ebcb2c8e13f5b6f07",
+      "rationale": "Operator JUnit parser now explicitly rejects every DTD through XMLParser/TreeBuilder.doctype before declarations can define entities. Stdlib import remains, but its only parsing consumer is the explicit guarded parser. Qualification additionally parses retained bytes from the validated artifact digest map and refuses outside/unbound test reports. Local CLI acceptance complete; no serving deployment."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1442",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 8,
+      "rule": "B405",
+      "severity": "LOW",
+      "current_file_sha256": "ef7bab49721c6fac5cf7d60f1916a11c7ebb00d294d38b9a7e32b697d282ec14",
+      "rationale": "Operator JUnit parser now explicitly rejects every DTD through XMLParser/TreeBuilder.doctype before declarations can define entities. Stdlib import remains, but its only parsing consumer is the explicit guarded parser. Qualification additionally parses retained bytes from the validated artifact digest map and refuses outside/unbound test reports. Local CLI acceptance complete; no serving deployment."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1446",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 24,
+      "rule": "B314",
+      "severity": "MEDIUM",
+      "current_file_sha256": "ef7bab49721c6fac5cf7d60f1916a11c7ebb00d294d38b9a7e32b697d282ec14",
+      "rationale": "Operator JUnit parser now explicitly rejects every DTD through XMLParser/TreeBuilder.doctype before declarations can define entities. Stdlib import remains, but its only parsing consumer is the explicit guarded parser. Qualification additionally parses retained bytes from the validated artifact digest map and refuses outside/unbound test reports. Local CLI acceptance complete; no serving deployment."
+    }
+  ],
+  "baseline": "6failed/2passed: both native operator consumers accepted internal entities and external DTD declarations; qualification accepted an unbound or outside JUnit report with an unrelated digest-bound artifact. No claim that stdlib ET fetched the external DTD; unsafe declaration acceptance is the boundary under test.",
+  "candidate": "35focused JUnit+qualification tests pass;7existing fixturecollector/evaluator tests pass. Real retained v1criterionreport still verifies9criteria/9artifacts. No added dependency.",
+  "implementation": "XMLParser uses a TreeBuilder subclass with doctype that raises ValueError. Qualification stores already-hashed artifact bytes by resolved contained path and uses those bytes for parsing, eliminating a second file read as well as unbound-path substitution.",
+  "runtime": "Operator scripts only; no cloud/serving rollout required. No live fixturecollection performed.",
+  "supersedes": "Earlier qualification guard receipt remains historical proof at its recorded source revision; original ri1445 hash predicate now references retained content, preserving hash comparison while reading only once."
+}

@@ -497,6 +497,16 @@ def evaluate_fixtures(
     # No supplied boolean can manufacture the missing E18 recovery producer.
     # Remove this guard only alongside its implemented durable recovery path.
     available.discard(cases.SUPERPLANE_DOMAIN)
+    tenants = (cfg.get("tenant_isolation") or {}).get("tenant_ids") or []
+    if (
+        isinstance(tenants, list)
+        and len(tenants) == 2
+        and all(isinstance(t, str) and t for t in tenants)
+        and len(set(tenants)) == 2
+    ):
+        available.add(cases.TENANT_ISOLATION)
+    else:
+        available.discard(cases.TENANT_ISOLATION)
     return available
 
 
@@ -507,10 +517,15 @@ def missing_fixture_report(cfg, available):
     go and create the fixture, instead of a bare 'blocked'.
     """
     names = {
+        cases.SUPERPLANE_RESEARCH: "an existing Superplane domain selected for read-only checks (research_readback=true); actual CLI reads must establish readiness",
         cases.DESTINATION: "cross-account destination and provisioner roles (config destination_role_arn + provisioner_role_arn)",
         cases.GITHUB_APP: "an isolated GitHub App fixture (config github.org + github.app_fixture/existing_app_fixture)",
         cases.GITHUB_REPO: "a dedicated evaluation repository (config github.repo)",
         cases.SECOND_DESTINATION: "a second destination AWS account (config second_destination_account)",
+        cases.HUMAN_TASK_CHAT: "explicit bounded human chat fixture (human_task_chat)",
+        cases.HIERARCHY_LIFECYCLE: "explicit independent hierarchy fixture",
+        cases.VAULT_LIFECYCLE: "explicit owned vault fixture (vault_lifecycle)",
+        cases.HUMAN_TASK_CODING: "explicit human Task repository/model enrollment and shared-budget authorization (human_task_coding)",
         cases.HOSTED: "hosted dispatch configuration (config websocket_url + hosted_tasks_queue_url)",
         cases.THREE_DEPLOYMENTS: (
             "three separately reachable ADP deployments, each with its own sign-in "
@@ -533,6 +548,7 @@ def missing_fixture_report(cfg, available):
             "permitted', so every answer would be 'available' and the case would "
             "pass with all four capability axes collapsed into one"
         ),
+        cases.TENANT_ISOLATION: "two existing memberships for the installed human fixture (tenant_isolation.tenant_ids); no membership grant is performed",
         cases.SUPERPLANE_DOMAIN: (
             cleanup.SUPERPLANE_RECOVERY_BLOCKER
             + " A deployed domain and an ordinary-session fixture are also required."

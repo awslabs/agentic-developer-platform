@@ -92,8 +92,8 @@ class TestDockerfileNonRootUser:
         """Dockerfile creates a system group and user with fixed IDs."""
         assert "addgroup" in dockerfile_text, "Dockerfile must create a system group"
         assert "adduser" in dockerfile_text, "Dockerfile must create a system user"
-        assert "--gid 1001" in dockerfile_text, "Group must use GID 1001"
-        assert "--uid 1001" in dockerfile_text, "User must use UID 1001"
+        assert "--gid 10001" in dockerfile_text, "Group must use GID 10001"
+        assert "--uid 10001" in dockerfile_text, "User must use UID 10001"
 
     def test_gopath_not_under_root_home(self, dockerfile_text: str):
         """GOPATH must not be under /root (inaccessible to non-root user)."""
@@ -154,21 +154,21 @@ def consumer(request):
 class TestConsumerPodSecurityContext:
     """Every consumer must set pod-level security context fields."""
 
-    def test_runs_as_uid_1001(self, consumer):
+    def test_runs_as_uid_10001(self, consumer):
         filename, _, _, _, ps, _ = consumer
         pod_sc = ps.get("securityContext", {})
-        assert pod_sc.get("runAsUser") == 1001, f"{filename}: pod runAsUser must be 1001"
+        assert pod_sc.get("runAsUser") == 10001, f"{filename}: pod runAsUser must be 10001"
 
-    def test_runs_as_gid_1001(self, consumer):
+    def test_runs_as_gid_10001(self, consumer):
         filename, _, _, _, ps, _ = consumer
         pod_sc = ps.get("securityContext", {})
-        assert pod_sc.get("runAsGroup") == 1001, f"{filename}: pod runAsGroup must be 1001"
+        assert pod_sc.get("runAsGroup") == 10001, f"{filename}: pod runAsGroup must be 10001"
 
-    def test_fsgroup_1001(self, consumer):
+    def test_fsgroup_10001(self, consumer):
         filename, _, _, _, ps, _ = consumer
         pod_sc = ps.get("securityContext", {})
-        assert pod_sc.get("fsGroup") == 1001, (
-            f"{filename}: pod fsGroup must be 1001 for PVC group-write"
+        assert pod_sc.get("fsGroup") == 10001, (
+            f"{filename}: pod fsGroup must be 10001 for PVC group-write"
         )
 
     def test_seccomp_runtime_default(self, consumer):
@@ -286,8 +286,8 @@ class TestPlatformDataPvcConsumers:
     def test_platform_data_pvc_with_fsgroup(self, pvc_consumer):
         filename, ps = pvc_consumer
         pod_sc = ps.get("securityContext", {})
-        assert pod_sc.get("fsGroup") == 1001, (
-            f"{filename}: fsGroup must be 1001 so platform-data PVC files are group-writable"
+        assert pod_sc.get("fsGroup") == 10001, (
+            f"{filename}: fsGroup must be 10001 so platform-data PVC files are group-writable"
         )
         # Verify the PVC is actually mounted
         volumes = {v["name"]: v for v in ps.get("volumes", [])}

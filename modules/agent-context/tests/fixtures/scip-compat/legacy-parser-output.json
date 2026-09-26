@@ -1,0 +1,52 @@
+{
+  "files": {
+    "/fixtures/repo/sample.py": {
+      "functions": [
+        {
+          "name": "greet",
+          "line_number": 1,
+          "end_line": 1,
+          "docstring": "Synthetic fixture function",
+          "lang": "python",
+          "is_dependency": false,
+          "return_type": null,
+          "args": [],
+          "cyclomatic_complexity": 1,
+          "decorators": [],
+          "context": null,
+          "class_context": null
+        }
+      ],
+      "classes": [],
+      "variables": [],
+      "imports": [],
+      "function_calls_scip": [],
+      "module_level_calls_scip": [
+        {
+          "callee_symbol": "scip-python python fixture 1 sample/greet().",
+          "callee_file": "/fixtures/repo/sample.py",
+          "callee_line": 1,
+          "callee_name": "greet",
+          "callee_kind": 17,
+          "ref_line": 4,
+          "caller_file": "/fixtures/repo/sample.py",
+          "caller_symbol": null,
+          "caller_line": 0
+        }
+      ],
+      "path": "/fixtures/repo/sample.py",
+      "lang": "python",
+      "is_dependency": false
+    }
+  },
+  "symbol_table": {
+    "scip-python python fixture 1 sample/greet().": {
+      "file": "sample.py",
+      "line": 1,
+      "display_name": "greet",
+      "documentation": "Synthetic fixture function",
+      "kind": 17,
+      "bases": []
+    }
+  }
+}

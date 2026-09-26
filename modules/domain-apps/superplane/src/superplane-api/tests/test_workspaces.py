@@ -132,9 +132,7 @@ class TestListEligibleClusters:
         assert response.status_code in (401, 403)
 
     @pytest.mark.asyncio
-    async def test_legacy_org_token_cannot_discover_shared_clusters(
-        self, client
-    ):
+    async def test_legacy_org_token_cannot_discover_shared_clusters(self, client):
         from app.models.cluster import Cluster
         from app.models.organization import Organization
 
@@ -1465,6 +1463,7 @@ def connection_security(request, monkeypatch, domain_signing_keys):
     """
     if not request.cls or request.cls.__name__ not in {
         "TestRegistrationRefusesSecretMaterial",
+        "TestProviderRegistrationOperationRecovery",
         "TestTheTwoChecksAreIndependent",
         "TestFourSeparateReadings",
         "TestRotationIsAtomicAndKeepsTheOldCredential",
@@ -1473,6 +1472,7 @@ def connection_security(request, monkeypatch, domain_signing_keys):
         "TestMalformedBodiesAreRefusedAsBadRequests",
         "TestTrustedCredentialEvidence",
         "TestConnectionLifecycleIntegrity",
+        "TestCliLifecycleRevision",
     }:
         yield None
         return
@@ -3728,3 +3728,202 @@ class TestConnectionLifecycleIntegrity:
             f"/vault/credentials/{row_id}", headers=_auth_header(org)
         )
         assert response.status_code == 409, response.text
+
+
+class TestCliLifecycleRevision:
+    async def test_revision_fences_rotation_and_revoke(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        path = f"{CONNECTIONS.format(ws=workspace)}/{connection_id}"
+        initial = (await client.get(path, headers=headers)).json()
+        assert len(initial["revision"]) == 64
+        body = {
+            "replacement": {
+                "credential_id": CRED_B,
+                "service": "nebius",
+                "label": "next",
+            },
+            "validation": _passing_report(observed_capacity=2),
+        }
+        stale = await client.post(
+            path + "/rotation?expected_revision=" + "0" * 64, headers=headers, json=body
+        )
+        assert stale.status_code == 409
+        changed = await client.post(
+            path + "/rotation?expected_revision=" + initial["revision"],
+            headers=headers,
+            json=body,
+        )
+        assert changed.status_code == 200, changed.text
+        current = (await client.get(path, headers=headers)).json()
+        assert (
+            current["revision"] != initial["revision"]
+            and current["credential"]["credential_id"] == CRED_B
+        )
+        stale = await client.delete(
+            path + "?expected_revision=" + initial["revision"], headers=headers
+        )
+        assert stale.status_code == 409
+        disabled = await client.delete(
+            path + "?expected_revision=" + current["revision"], headers=headers
+        )
+        assert disabled.status_code == 200 and disabled.json()["status"] == "disabled"
+        assert disabled.json()["limitation"]
+
+    async def test_workspace_review_readonly_foreign_refused(self, client):
+        from app.services.cli_lifecycle import workspace_snapshot
+        from fastapi import HTTPException
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        async with async_session_test() as db:
+            first = (await workspace_snapshot(db, org, workspace))[1]
+            second = (await workspace_snapshot(db, org, workspace))[1]
+            assert first == second and first["billing_state"] == "unconfirmed"
+            assert not db.new and not db.dirty and not db.deleted
+            with pytest.raises(HTTPException) as foreign:
+                await workspace_snapshot(db, uuid.uuid4(), workspace)
+            assert foreign.value.status_code == 404
+
+    async def test_workspace_events_stable_scope_bound(self, client):
+        from datetime import datetime, timezone
+        from app.models.event import Event
+
+        org, workspace, other = await _seed_org_workspace_credentials(
+            CRED_A, workspaces=2
+        )
+        instant = datetime.now(timezone.utc)
+        async with async_session_test() as db:
+            for selected in (workspace, workspace, other):
+                db.add(
+                    Event(
+                        id=uuid.uuid4(),
+                        org_id=org,
+                        action="read",
+                        resource_type="workspace",
+                        resource_id=selected,
+                        event_type="api_call",
+                        created_at=instant,
+                    )
+                )
+            await db.commit()
+        headers = _auth_header(org)
+        path = f"/events/workspaces/{workspace}?limit=1"
+        first = await client.get(path, headers=headers)
+        assert first.status_code == 200, first.text
+        data = first.json()
+        assert len(data["events"]) == 1 and data["has_more"]
+        second = await client.get(
+            path + "&after=" + data["next_cursor"], headers=headers
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["events"][0]["id"] != data["events"][0]["id"]
+        assert not second.json()["has_more"]
+        foreign = await client.get(
+            f"/events/workspaces/{other}?after=" + data["next_cursor"], headers=headers
+        )
+        assert foreign.status_code == 422
+
+    async def test_workspace_delete_stale_revision_refused(self, client):
+        from fastapi import HTTPException
+        from app.routers.workspaces import delete_workspace
+        from app.services.cli_lifecycle import workspace_snapshot
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        async with async_session_test() as db:
+            reviewed = (await workspace_snapshot(db, org, workspace))[1]
+            with pytest.raises(HTTPException) as refused:
+                await delete_workspace(workspace, org, db, expected_revision="0" * 64)
+            assert refused.value.status_code == 409
+            after = (await workspace_snapshot(db, org, workspace))[1]
+            assert after == reviewed
+
+
+class TestProviderRegistrationOperationRecovery:
+    @pytest.mark.asyncio
+    async def test_exact_operation_replays_and_existing_get_recovers(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers, operation = _auth_header(org), str(uuid.uuid4())
+        first = await _register(client, headers, workspace, operation_id=operation)
+        assert first.status_code == 201, first.text
+        assert first.json()["connection_id"] == operation
+        second = await _register(client, headers, workspace, operation_id=operation)
+        assert second.status_code == 201, second.text
+        assert second.json() == first.json()
+        read = await client.get(
+            CONNECTIONS.format(ws=workspace) + "/" + operation, headers=headers
+        )
+        assert read.status_code == 200
+        assert (
+            read.json()["connection_id"] == operation
+            and read.json()["status"] == "pending"
+        )
+
+    @pytest.mark.asyncio
+    async def test_replay_never_reactivates_disabled_connection(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers, operation = _auth_header(org), str(uuid.uuid4())
+        assert (
+            await _register(client, headers, workspace, operation_id=operation)
+        ).status_code == 201
+        removed = await client.delete(
+            CONNECTIONS.format(ws=workspace) + "/" + operation, headers=headers
+        )
+        assert removed.status_code == 200, removed.text
+        replay = await _register(client, headers, workspace, operation_id=operation)
+        assert replay.status_code == 201, replay.text
+        assert replay.json()["status"] == "disabled"
+        assert (
+            not replay.json()["admits_new_work"] and not replay.json()["allows_renewal"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_changed_reference_and_cross_tenant_collision_conflict(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        operation = str(uuid.uuid4())
+        assert (
+            await _register(
+                client, _auth_header(org), workspace, operation_id=operation
+            )
+        ).status_code == 201
+        changed = await _register(
+            client, _auth_header(org), workspace, CRED_B, operation_id=operation
+        )
+        assert changed.status_code == 409, changed.text
+        other_org, other_workspace = await _seed_org_workspace_credentials(CRED_A)
+        foreign = await _register(
+            client, _auth_header(other_org), other_workspace, operation_id=operation
+        )
+        assert foreign.status_code == 409 and foreign.json() == changed.json()
+        read = await client.get(
+            CONNECTIONS.format(ws=other_workspace) + "/" + operation,
+            headers=_auth_header(other_org),
+        )
+        assert read.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_current_grant_revocation_blocks_replay(self, client):
+        from sqlalchemy import update
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers, operation = _auth_header(org), str(uuid.uuid4())
+        assert (
+            await _register(client, headers, workspace, operation_id=operation)
+        ).status_code == 201
+        async with async_session_test() as db:
+            await db.execute(
+                update(WorkspaceGrantRecord)
+                .where(WorkspaceGrantRecord.workspace_id == workspace)
+                .values(permissions="workspace:read")
+            )
+            await db.commit()
+        refused = await _register(client, headers, workspace, operation_id=operation)
+        assert refused.status_code == 403, refused.text
+
+    @pytest.mark.asyncio
+    async def test_malformed_operation_is_refused(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        result = await _register(
+            client, _auth_header(org), workspace, operation_id="not-a-uuid"
+        )
+        assert result.status_code == 400

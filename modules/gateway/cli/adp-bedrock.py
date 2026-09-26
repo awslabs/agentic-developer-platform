@@ -20,6 +20,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -286,6 +287,450 @@ def assign(api, destination, scope, previous):
     return api.request("PUT", ROUTING + "/mappings/" + scope["path"], {"destination_id": destination["id"]})
 
 
+SELF_ROUTING = "/me/bedrock-routing/selection"
+LIFECYCLE = {"select", "reset", "mappings", "connection-link"}
+
+
+def lifecycle_parser(commands):
+    for action in ("select", "reset"):
+        p = commands.add_parser(action, help="Change only your own Bedrock selection")
+        if action == "select":
+            p.add_argument("--connection", required=True)
+        mutation_flags(p)
+    mappings = commands.add_parser("mappings", help="Manage exact routing scopes, not destination resources").add_subparsers(
+        dest="action", required=True
+    )
+    for action in ("list", "show", "set", "delete"):
+        p = mappings.add_parser(action)
+        p.add_argument("--scope", required=True, choices=["org", "team", "user"])
+        p.add_argument("--target", required=True, help="Exact target ID; team scope also requires --org")
+        p.add_argument("--org", help="Exact parent organization ID, required only for team scope")
+        if action == "set":
+            p.add_argument("--destination", required=True)
+        if action in {"set", "delete"}:
+            mutation_flags(p)
+        else:
+            p.add_argument("--json", action="store_true")
+        if action == "list":
+            p.add_argument("--page", type=int, default=1)
+            p.add_argument("--page-size", type=int, choices=range(1, 101), default=20)
+    links = commands.add_parser("connection-link", help="Link an exact compatible connection-backed destination").add_subparsers(
+        dest="action", required=True
+    )
+    for action in ("add", "remove"):
+        p = links.add_parser(action)
+        p.add_argument("--destination", required=True)
+        p.add_argument("--connection", required=True)
+        mutation_flags(p)
+
+
+def mutation_flags(p):
+    p.add_argument("--expect-revision", help="Revision returned by the reviewed preview; required with --yes")
+    p.add_argument("--operation-id", help="Stable UUID; reuse it after an uncertain response")
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--json", action="store_true")
+
+
+def route_id(value):
+    if not isinstance(value, str) or not value or len(value) > 255 or any(c in value for c in ":/\\\r\n\t "):
+        raise CliError("Use an exact routing target ID.", "usage_error", 1)
+    return value
+
+
+def lifecycle_scope(args):
+    target = route_id(args.target)
+    if args.scope == "team":
+        if not args.org:
+            raise CliError("Team scope requires its exact --org.", "usage_error", 1)
+        return f"team:{route_id(args.org)}:{target}"
+    if args.org:
+        raise CliError("--org is only used to bind a team target.", "usage_error", 1)
+    return args.scope + ":" + target
+
+
+def checked_revision(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(?:absent|[a-f0-9]{64})", value):
+        raise CliError("The gateway did not return a routing revision. Upgrade it before changing routing.", "unsupported_operation", 5)
+    return value
+
+
+def safe_routing(value):
+    fields = {
+        "id",
+        "revision",
+        "scope",
+        "scope_type",
+        "scope_id_org",
+        "scope_id_team",
+        "scope_id_user",
+        "destination_id",
+        "destination_account_id",
+        "destination_label",
+        "destination_usable",
+        "source",
+        "updated_at",
+        "rung",
+        "account_id",
+        "user_id",
+        "overrides_self_selection",
+        "own_selection_destination_id",
+        "own_selection_account_id",
+        "own_selection_credential_id",
+        "own_selection_active",
+        "pinned_by_platform_admin",
+        "credential_id",
+        "connection_id",
+        "source_connection_id",
+        "owner_org_id",
+        "region",
+        "routing_capable",
+        "usable_for_routing",
+        "verified_at",
+        "status",
+        "selectable",
+        "reason",
+        "used_by",
+        "label",
+        "page",
+        "page_size",
+        "has_more",
+    }
+    if isinstance(value, list):
+        return [safe_routing(row) for row in value]
+    if not isinstance(value, dict):
+        return None
+    result = {key: val for key, val in value.items() if key in fields and (val is None or isinstance(val, (str, bool, int)))}  # noqa: UP038 -- Python 3.9 CLI
+    for key in ("effective", "fallback", "connections", "items", "destination"):
+        if key in value:
+            result[key] = safe_routing(value[key])
+    return result
+
+
+def checked_selection(value):
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("effective"), dict)
+        or not isinstance(value.get("connections"), list)
+        or type(value.get("pinned_by_platform_admin")) is not bool
+        or type(value.get("own_selection_active")) is not bool
+    ):
+        raise CliError("Malformed personal routing response.", "invalid_response", 5)
+    checked_revision(value.get("revision"))
+    effective = value["effective"]
+    if (
+        effective.get("rung") not in {"user", "team", "org", "platform"}
+        or (effective.get("account_id") is not None and not isinstance(effective["account_id"], str))
+        or (effective.get("account_id") is not None and not re.fullmatch(r"[0-9]{12}", effective["account_id"]))
+    ):
+        raise CliError("Malformed effective billing route.", "invalid_response", 5)
+    ids = set()
+    for row in value["connections"]:
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("credential_id"), str)
+            or not row["credential_id"]
+            or type(row.get("selectable")) is not bool
+            or not isinstance(row.get("status"), str)
+        ):
+            raise CliError("Malformed selectable connection metadata.", "invalid_response", 5)
+        if row["credential_id"] in ids:
+            raise CliError("Duplicate selectable connection metadata.", "invalid_response", 5)
+        ids.add(row["credential_id"])
+        if row["selectable"] and (
+            row["status"] != "verified" or not isinstance(row.get("account_id"), str) or not re.fullmatch(r"[0-9]{12}", row["account_id"])
+        ):
+            raise CliError("Selectable connection lacks a verified billing account.", "invalid_response", 5)
+    return value
+
+
+def selection(api):
+    return safe_routing(checked_selection(api.request("GET", SELF_ROUTING)))
+
+
+def checked_destination(value):
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("id"), str)
+        or not value["id"]
+        or not isinstance(value.get("account_id"), str)
+        or not re.fullmatch(r"[0-9]{12}", value["account_id"])
+        or type(value.get("usable_for_routing")) is not bool
+        or type(value.get("used_by")) is not int
+        or value["used_by"] < 0
+    ):
+        raise CliError("Malformed Bedrock destination metadata.", "invalid_response", 5)
+    checked_revision(value.get("revision"))
+    for key in ("connection_id", "source_connection_id", "owner_org_id"):
+        if value.get(key) is not None and (not isinstance(value[key], str) or not value[key]):
+            raise CliError("Malformed destination ownership metadata.", "invalid_response", 5)
+    return value
+
+
+def lifecycle_destinations(api):
+    rows = destinations(api)
+    if not isinstance(rows, list):
+        raise CliError("Malformed destination inventory.", "invalid_response", 5)
+    ids = set()
+    for row in rows:
+        checked_destination(row)
+        if row["id"] in ids:
+            raise CliError("Duplicate destination metadata.", "invalid_response", 5)
+        ids.add(row["id"])
+    return rows
+
+
+def lifecycle_destination(api, target):
+    rows = [row for row in lifecycle_destinations(api) if row["id"] == target]
+    if len(rows) != 1:
+        raise CliError("Exact destination was not found.", "destination_not_found", 5)
+    return rows[0]
+
+
+def mapping_page(api, scope, page=1, page_size=20):
+    if page < 1:
+        raise CliError("Page must be positive.", "usage_error", 1)
+    query = urllib.parse.urlencode({"scope": scope, "page": page, "page_size": page_size})
+    value = api.request("GET", ROUTING + "/mappings?" + query)
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list) or type(value.get("has_more")) is not bool:
+        raise CliError("Gateway lacks paginated routing mappings; upgrade before changing them.", "unsupported_operation", 5)
+    for row in value["items"]:
+        if not isinstance(row, dict) or row.get("scope") != scope or not row.get("destination_id"):
+            raise CliError("Mapping response did not bind the requested target.", "invalid_response", 5)
+        checked_revision(row.get("revision"))
+    return safe_routing(value)
+
+
+def exact_mapping(api, scope):
+    value = mapping_page(api, scope, page_size=2)
+    if value["has_more"] or len(value["items"]) > 1:
+        raise CliError("Mapping target is not unique.", "invalid_response", 5)
+    return value["items"][0] if value["items"] else {"scope": scope, "revision": "absent", "destination_id": None}
+
+
+def lifecycle_operation(api, args, method, path, body, before, readback, matches):
+    """At-most-once local delivery plus authoritative revision-bound server writes.
+
+    Readback corroborates state; it does not turn a missing acknowledgement into
+    proof that this operation won against a later writer.
+    """
+    command = "bedrock " + args.command + (" " + args.action if hasattr(args, "action") else "")
+    plan = {
+        "before": before,
+        "expected_revision": before["revision"],
+        "effect": body or {"action": args.command, "scope": before.get("scope")},
+        "aws_resources_preserved": True,
+    }
+    if args.dry_run or not args.yes:
+        return common.envelope("dry_run", command, plan, "Pass --yes, --expect-revision and a stable --operation-id after reviewing this state.")
+    if not args.expect_revision or not args.operation_id:
+        raise CliError("--yes requires the reviewed --expect-revision and a stable --operation-id.", "usage_error", 1)
+    checked_revision(args.expect_revision)
+    try:
+        key = str(uuid.UUID(args.operation_id))
+    except ValueError:
+        raise CliError("--operation-id must be a UUID.", "usage_error", 1) from None
+    operation = "routing.bedrock.own.write" if args.command in {"select", "reset"} else "routing.bedrock.write"
+    common.ensure_can_mutate(operation, request=api.request)
+    bound_path = path + "?" + urllib.parse.urlencode({"expected_revision": args.expect_revision})
+    binding = {"gateway": api.base, "scope": common.authenticated_scope(), "method": method, "path": bound_path, "body": body}
+    fingerprint = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+    directory = common.private_directory(common.state_dir() / "bedrock-routing")
+    target = directory / (key + ".json")
+    with common.file_lock(target.with_suffix(".lock"), "This routing operation is already running."):
+        if target.exists():
+            previous = common.read_private_json(target)
+            if previous.get("fingerprint") != fingerprint:
+                raise CliError("This operation ID belongs to different routing inputs or scope.", "stale_revision", 4)
+            # Never overwrite a newer route on replay, including after an acknowledged write.
+            return common.envelope(
+                "pending",
+                command,
+                {
+                    "before": previous.get("before"),
+                    "current": readback(),
+                    "acknowledged": previous.get("acknowledged", False),
+                    "operation_id": key,
+                    "replayed_without_write": True,
+                },
+                "No mutation was resent. Review current routing before any new intent.",
+            )
+        if args.expect_revision != before["revision"]:
+            return common.envelope(
+                "pending",
+                command,
+                {"before": before, "current": readback(), "conflict": "stale_revision"},
+                "Read and review the new revision; this operation was not sent.",
+            )
+        record = {"fingerprint": fingerprint, "before": before, "acknowledged": False}
+        common.write_json(target, record)
+        try:
+            acknowledged = api.request(method, bound_path, body)
+            try:
+                if args.command in {"select", "reset"}:
+                    checked_selection(acknowledged)
+                elif args.command == "connection-link" and method == "POST":
+                    checked_destination(acknowledged.get("destination") if isinstance(acknowledged, dict) else None)
+            except CliError:
+                raise CliError("Malformed routing acknowledgement; inspect the exact target.", "unknown_mutation_outcome", 4) from None
+            if not isinstance(acknowledged, dict) or not (
+                (method == "DELETE" and path != SELF_ROUTING and acknowledged == {}) or matches(acknowledged)
+            ):
+                raise CliError("Routing acknowledgement is malformed or names another target.", "unknown_mutation_outcome", 4)
+        except CliError as exc:
+            try:
+                current = readback()
+            except CliError:
+                current = {"unavailable": True}
+            return common.envelope(
+                "pending",
+                command,
+                {"before": before, "current": current, "operation_id": key, "outcome": "unknown_or_refused", "reason": exc.code},
+                "No retry sent; retain this operation ID and reconcile the current route.",
+            )
+        record["acknowledged"] = True
+        common.write_json(target, record)
+        try:
+            after = readback()
+        except CliError as exc:
+            return common.envelope(
+                "pending",
+                command,
+                {"before": before, "operation_id": key, "acknowledged": True, "readback_unavailable": True, "reason": exc.code},
+                "The change was acknowledged, but its current state could not be verified.",
+            )
+        matched = matches(after)
+        return common.envelope(
+            "configured" if matched else "pending",
+            command,
+            {
+                "before": before,
+                "after": after,
+                "operation_id": key,
+                "acknowledged": True,
+                "matches_requested_state": matched,
+                "aws_resources_preserved": True,
+            },
+            "Configured routing is not proof of recorded local/hosted inference billing.",
+        )
+
+
+def lifecycle_run(args, api):
+    if args.command in {"select", "reset"}:
+        before = selection(api)
+        if before["pinned_by_platform_admin"]:
+            raise CliError("A platform administrator controls your winning user rule.", "pinned_by_platform_admin", 3)
+        if args.command == "select":
+            connection_id = route_id(args.connection)
+            matches = [row for row in before["connections"] if row.get("credential_id") == connection_id]
+            if len(matches) != 1 or matches[0].get("selectable") is not True:
+                raise CliError("That connection is not an owned, verified, selectable route.", "connection_not_selectable", 3)
+            account = matches[0].get("account_id")
+            return lifecycle_operation(
+                api,
+                args,
+                "PUT",
+                SELF_ROUTING,
+                {"credential_id": connection_id, "expected_account_id": account},
+                before,
+                lambda: selection(api),
+                lambda value: value.get("own_selection_credential_id") == connection_id
+                and value.get("own_selection_account_id") == account
+                and value.get("own_selection_active") is True
+                and (value.get("effective") or {}).get("account_id") == account
+                and not value.get("pinned_by_platform_admin"),
+            )
+        return lifecycle_operation(
+            api,
+            args,
+            "DELETE",
+            SELF_ROUTING,
+            None,
+            before,
+            lambda: selection(api),
+            lambda value: value.get("own_selection_destination_id") is None and value.get("pinned_by_platform_admin") is False,
+        )
+    if args.command == "mappings":
+        scope = lifecycle_scope(args)
+        if args.action == "list":
+            return common.envelope("ok", "bedrock mappings list", mapping_page(api, scope, args.page, args.page_size))
+        before = exact_mapping(api, scope)
+        if args.action == "show":
+            return common.envelope("ok", "bedrock mappings show", before)
+        destination = None
+        if args.action == "set":
+            destination = lifecycle_destination(api, route_id(args.destination))
+            checked_revision(destination.get("revision"))
+            if not destination.get("usable_for_routing"):
+                raise CliError("Verify this destination before assigning its billing route.", "destination_not_verified", 4)
+        body = {"destination_id": destination["id"], "expected_destination_revision": destination["revision"]} if destination else None
+        check = (
+            (
+                lambda value: value.get("scope") == scope
+                and value.get("destination_id") == destination["id"]
+                and value.get("destination_account_id") == destination["account_id"]
+            )
+            if destination
+            else (lambda value: value.get("scope") == scope and value.get("destination_id") is None)
+        )
+        return lifecycle_operation(
+            api,
+            args,
+            "PUT" if destination else "DELETE",
+            ROUTING + "/mappings/" + segment(scope),
+            body,
+            before,
+            lambda: exact_mapping(api, scope),
+            check,
+        )
+    connection = route_id(args.connection)
+    destination_id = route_id(args.destination)
+    before = safe_routing(lifecycle_destination(api, destination_id))
+    checked_revision(before.get("revision"))
+    if (
+        before.get("source_connection_id") != connection
+        or not before.get("owner_org_id")
+        or (args.action == "remove" and before.get("connection_id") != connection)
+    ):
+        raise CliError("Destination does not belong to this exact connection and organization.", "connection_destination_mismatch", 3)
+    if args.action == "remove" and before.get("used_by") != 0:
+        raise CliError("Remove the destination's mappings before unlinking it.", "destination_in_use", 4)
+
+    def readback():
+        rows = lifecycle_destinations(api)
+        found = [row for row in rows if row.get("id") == destination_id]
+        return safe_routing(found[0]) if len(found) == 1 else {"id": destination_id, "absent": True} if not found else {"ambiguous": True}
+
+    body = (
+        {"source": "shared_connection", "credential_id": connection, "link_to_org_id": before["owner_org_id"], "destination_id": destination_id}
+        if args.action == "add"
+        else None
+    )
+
+    def check(value):
+        if not isinstance(value, dict):
+            return False
+        value = value.get("destination", value)
+        if not isinstance(value, dict):
+            return False
+        return (
+            (value.get("id") == destination_id and value.get("absent") is True)
+            if args.action == "remove"
+            else (value.get("id") == destination_id and value.get("connection_id") == connection and value.get("account_id") == before["account_id"])
+        )
+
+    return lifecycle_operation(
+        api,
+        args,
+        "POST" if body else "DELETE",
+        ROUTING + "/connection-links" + ("/" + segment(destination_id) if not body else ""),
+        body,
+        before,
+        readback,
+        check,
+    )
+
+
 def parser():
     root = common.Parser(prog="adp admin bedrock", description="Connect an AWS account and route Bedrock usage to it.")
     commands = root.add_subparsers(dest="command", required=True)
@@ -315,6 +760,7 @@ def parser():
     selection = commands.add_parser("status", help="Show the effective routing rule and its source")
     selection.add_argument("--user", help="Inspect another user (requires administrator authority)")
     selection.add_argument("--json", action="store_true")
+    lifecycle_parser(commands)
     return root
 
 
@@ -349,6 +795,8 @@ def resume_details(api, args):
 
 
 def run(args, api):
+    if args.command in LIFECYCLE:
+        return lifecycle_run(args, api)
     mutation_capability = {
         "connect": "routing.bedrock.write",
         "verify": "routing.bedrock.verify.write",
@@ -611,6 +1059,8 @@ def main(argv=None):
     try:
         args = parser().parse_args(argv)
         result = run(args, Api())
+        if args.command in LIFECYCLE:
+            return common.emit(result, args.json)
         display(result, args.json, args.command)
         return 4 if result.get("output_dir") else 0
     except (CliError, OSError, ValueError, KeyError, TypeError) as exc:

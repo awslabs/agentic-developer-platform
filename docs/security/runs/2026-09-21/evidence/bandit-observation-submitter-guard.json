@@ -1,0 +1,76 @@
+{
+  "issue": 6108,
+  "source_revision": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "candidate_source_commit": "d48d040c587860bcb960737834adb441f3b28663",
+  "file": "modules/domain-apps/superplane/src/superplane-api/app/services/observations.py",
+  "candidate_file_sha256": "2dfba95c20d0eddba8ed984b8c8197383fb2712b0b8441257886b5239abcdd27",
+  "method": "Replace removable submitter assertion with explicit caller-safe ObservationRefused 401 before storage lookup; retain existing authentication and authorization paths. Import order follows Ruff.",
+  "fixed_delta": 1,
+  "pending_before": 912,
+  "pending_after": 911,
+  "fixed_records": [
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=763",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/services/observations.py",
+      "original_line": 347,
+      "rule": "B101",
+      "native_severity": "LOW"
+    }
+  ],
+  "behavior_evidence": {
+    "baseline": "Synthetic malformed authenticated result raises AssertionError normally; -O/-OO reach forbidden DB lookup. No claim that real verify_submission produces such results or that baseline commits unauthorized observations.",
+    "baseline_failed_regressions": 3,
+    "candidate_guard_regressions": 3,
+    "candidate_contract_and_guard_tests": 38,
+    "candidate_existing_api_tests": 117,
+    "test_file": "modules/domain-apps/superplane/tests/test_observation_submitter_guard.py",
+    "existing_api_test_files": [
+      "tests/test_heartbeat_auth.py",
+      "tests/test_observation_security.py"
+    ],
+    "modes": [
+      "normal",
+      "-O",
+      "-OO"
+    ],
+    "isolation": "run-isolated-cli-test.py; synthetic AuthResult and DB sentinel; API suites use existing in-memory SQLite fixture. No live provider calls or workload writes."
+  },
+  "fresh_scan": {
+    "tool": "bandit",
+    "version": "1.7.9",
+    "selected_rule": "B101",
+    "results": 0,
+    "errors": 0,
+    "raw_json_sha256": "07c641270b8468bb2fece8f343643362c31d70892c285884c7facd6516d285db",
+    "local_raw_artifact": "/tmp/security6108-submitter-bandit.json"
+  },
+  "scope_complete": false,
+  "current_revalidation": {
+    "base_commit": "ecab57dbd3aa40b1b48fbab464f1e6745325ddf9",
+    "pending_before": 588,
+    "pending_after": 587,
+    "source_outcome": "fixed-source-runtime-open",
+    "current_file_sha256": "2dfba95c20d0eddba8ed984b8c8197383fb2712b0b8441257886b5239abcdd27",
+    "ci_repair": "Ruff formatting of existing regression fixture; prior domain CI failed only format-check. Current main merged with exact selector conservation.",
+    "merge_validation": "Preserved every current-main selector; applied only original ri763 outcome. Source/test files unchanged from independently reviewed head ae3b47f."
+  },
+  "prior_revalidation": {
+    "base_commit": "6b1a153e5aa6ad88935fba3bacde1b800986a7e5",
+    "pending_before": 911,
+    "pending_after": 910,
+    "source_outcome": "fixed-source-runtime-open",
+    "current_file_sha256": "2dfba95c20d0eddba8ed984b8c8197383fb2712b0b8441257886b5239abcdd27",
+    "ci_repair": "Ruff formatting of existing regression fixture; prior domain CI failed only format-check. Current main merged with exact selector conservation."
+  },
+  "revalidation_history": [
+    {
+      "base_commit": "e9b3851799e7d3cf1ad53c86dde70c5f70a61531",
+      "pending_before": 664,
+      "pending_after": 663,
+      "source_outcome": "fixed-source-runtime-open",
+      "current_file_sha256": "2dfba95c20d0eddba8ed984b8c8197383fb2712b0b8441257886b5239abcdd27",
+      "ci_repair": "Ruff formatting of existing regression fixture; prior domain CI failed only format-check. Current main merged with exact selector conservation.",
+      "merge_validation": "Preserved every current-main selector; applied only original ri763 outcome. Source/test files unchanged from independently reviewed head ae3b47f."
+    }
+  ]
+}

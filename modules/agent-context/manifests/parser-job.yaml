@@ -9,7 +9,7 @@
 # - No envFrom or secretRef (no inherited secrets)
 # - No platform-data PVC (no shared storage)
 # - readOnlyRootFilesystem with bounded emptyDir scratch
-# - Non-root UID 1001, all capabilities dropped
+# - Non-root UID 10001, all capabilities dropped
 # - activeDeadlineSeconds for hard timeout
 # - Resource requests/limits for CPU and memory
 # - seccompProfile RuntimeDefault
@@ -102,9 +102,9 @@ spec:
       hostIPC: false
       # Pod security context
       securityContext:
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       # Prevent scheduling on nodes with shared secrets
@@ -126,7 +126,7 @@ spec:
               memory: "4Gi"
           securityContext:
             runAsNonRoot: true
-            runAsUser: 1001
+            runAsUser: 10001
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             privileged: false

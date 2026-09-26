@@ -175,7 +175,7 @@ async def _reconcile_after_failed_switch(
         membership = await db.scalar(
             select(TenantMembership).where(TenantMembership.id == membership.id).with_for_update().execution_options(populate_existing=True)
         )
-        if membership is None or not membership.is_active:
+        if membership is None or membership.revoked_at is not None or not membership.is_active:
             raise RuntimeError("Workspace membership no longer exists or is inactive")
     org = await db.get(Organization, org_id)
     if org is None:
@@ -217,7 +217,7 @@ async def select_workspace(db: AsyncSession, context: TokenContext, org_id: str,
         membership = await db.scalar(
             select(TenantMembership).where(TenantMembership.id == membership.id).with_for_update().execution_options(populate_existing=True)
         )
-        if not membership:
+        if not membership or membership.revoked_at is not None:
             raise HTTPException(403, "Membership no longer exists")
     selected = await _workspace(db, context, org, user, membership)
     previous_claims = None
@@ -261,3 +261,25 @@ async def switch_workspace(
     claims: CognitoWorkspaceClaims = Depends(get_workspace_claims),
 ) -> Workspace:
     return await select_workspace(db, current_user, body.org_id, claims)
+
+
+class TenantContextRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    org_id: str = Field(min_length=1, max_length=255)
+    expected_membership: str | None = Field(default=None, max_length=300)
+
+
+@router.post("/workspaces/context")
+async def tenant_context_exchange(
+    body: TenantContextRequest,
+    current_user: TokenContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Issue a process-local tenant lease without changing global selection."""
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+
+    from src.auth.tenant_context import issue_context
+
+    result = await issue_context(db, current_user, body.org_id, body.expected_membership)
+    return JSONResponse(jsonable_encoder(result), headers={"Cache-Control": "no-store"})

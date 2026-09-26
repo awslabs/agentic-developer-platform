@@ -3,7 +3,7 @@
 Story #5199 · PR #5221 · workflow `.github/workflows/eval-cli-uplift.yml`.
 
 The [combined nightly regression](nightly-cli-regression.md) invokes this suite
-with `login` after onboarding and budget enforcement; its manual `ec2_scope=full`
+with `nightly` after onboarding and budget enforcement; its manual `ec2_scope=full`
 option selects the full acceptance matrix. The instructions below are
 for standalone diagnosis; the `login` default is not used by the nightly.
 
@@ -128,7 +128,7 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
   -f mode=start -f suites=full
 ```
 
-Suites: `nightly`, `story-reads`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+Suites: `capability-contrast`, `usage-exports`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `knowledge-lifecycle`, `machine-lifecycle`, `budget-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
 
 **E16/E17 model execution is currently disabled**, even with reachable gateways.
@@ -343,3 +343,148 @@ two fresh full runs against the same deployed revision, plus interruption/resume
 repeat cleanup, and failure-injection evidence. The shared nightly workflow now
 schedules the key install/login checkpoint; full runs remain manually selectable,
 and blocked cases still prevent full acceptance.
+
+E28 (#5634): GitHub maintenance read/preview regression through the installed CLI, requiring `github_app`. Missing fixture blocks the case. The scenario does not claim real rotation, uninstall, consumer continuation or cleanup acceptance.
+
+CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
+E30 (#5635) runs GitLab discovery/refusal through the installed CLI. It needs only the ordinary platform/login fixture and does not mutate a GitLab host. Dedicated project connect/retry/rename/delivery/disconnect remains a live acceptance hold.
+
+Tenant story #5622 adds E23 to the default nightly story reads: visible memberships, explicit current selection and unknown selector refusal. E27 (`tenant-isolation`) requires `tenant_isolation.tenant_ids` with two distinct existing memberships for the installed human fixture; it checks concurrent reads through local default changes and Cognito refresh. No membership is granted and no global workspace selection or model inference occurs. E27 is blocked when that fixture is absent; inference, revoked-membership and uncertain-mutation live acceptance remains open.
+Budget story #5589 adds E26 to `story-reads` and `nightly`: served `adp budget me` reads daily, weekly and monthly periods without inference or cap mutation. This checks response and uncapped semantics; it does not establish live hard/soft enforcement.
+
+The dev fixture explicitly selects `sg-0f497fc6d4ec88610`, the existing private
+Devbox security group with no inbound rules and outbound HTTP/HTTPS. The VPC's
+hardened default group has no egress: evaluation `36202597045` launched with
+that implicit default, could not register with SSM, and terminated its instance
+with verified cleanup. The harness now validates the selected group's VPC,
+absence of ingress and HTTPS egress before launch. It does not modify group
+rules or runner/instance roles. `CLI_UPLIFT_EVAL_SECURITY_GROUP_ID` can override
+the reviewed binding for another explicitly configured fixture.
+
+
+### Bounded fixture input for hosted work and owned vault scenarios
+
+The existing workflow accepts optional `fixtures_json` on dispatch and reusable
+calls. Both evaluate and recover use the same overlay. It accepts only
+`human_task_coding`, `human_task_chat` and `vault_lifecycle` objects; deployment,
+role, secret, endpoint and budget-counter overrides are refused. Supply non-secret
+fixture identities and existing authorization attestations, never login tokens.
+Unknown keys, duplicate JSON keys, credentials and bounds violations fail before
+resource creation.
+
+Use `suites=login,hosted-coding` for E42 and the published snapshot contract in
+[hosted coding](../adp-cli/hosted-coding.md). Include native `login_user_id`,
+selected-tenant `canonical_user_id` and `tenant_id`, plus `enrollment_verified`,
+`shared_budget_authorized`, `max_dispatches: 1`, `max_task_usd` in `(0,1]`,
+`scenario`, `persona`, `snapshot` and `instructions`. The gateway still verifies
+standing enrollment, source ownership and policy limits. Fixture assertions do
+not grant permissions or reset shared qualification spend.
+
+Use `suites=login,hosted-chat` for explicit diagnostic D01 or
+`suites=login,vault-lifecycle` for D02. Their fixture shapes are documented in
+[chat](../evaluations/cli-uplift/hosted-chat-diagnostic.md) and
+[vault](../evaluations/cli-uplift/vault-lifecycle-diagnostic.md). D01/D02 are opt-in
+and do not change the nightly/full matrix, E40 read-only claims or story
+acceptance. Missing fixtures block their case. Reports retain results and
+recovery evidence; normal owned EC2 cleanup still runs.
+
+All three hosted/owned journeys retain immutable recovery plans in the external
+manifest before SSM. Reuse the same evaluation ID and identical fixture input
+for status/recovery. Do not restart unresolved diagnostics to manufacture new
+requests. Coding recovery keeps original snapshot/instructions and stable Task
+request/control IDs; an unknown upload or acceptance boundary still needs
+reconciliation using retained Task/journal evidence, never a replacement key.
+
+For multiline JSON use the GitHub API's structured input or `gh workflow run`
+with `--json` and a JSON object read from a private file. Never interpolate fixture
+content into a shell command. The workflow passes the input only through its
+environment and validates it before producing the run config. No schedule was
+added.
+
+
+E42's artifact upload receipt remains local to the fixture until returned in
+case evidence. If the entire instance disappears before that evidence returns,
+the caller retains the original Task request key but may not know the accepted
+artifact/Task ID. Re-uploading the snapshot can produce a different artifact ID
+and conflict with the original Task fingerprint. Treat that outcome as pending
+reconciliation; the durable plan prevents a replacement paid request key but
+does not prove automatic recovery of accepted work after complete instance loss.
+A same-instance rerun with an existing recovery directory also refuses dispatch.
+
+
+D03 uses `suites=login,hierarchy-lifecycle` with an independent ordinary fixture
+and a predeclared empty-team membership baseline. See
+[hierarchy lifecycle](../evaluations/cli-uplift/hierarchy-lifecycle-diagnostic.md)
+for exact scope, retained recovery intent and restoration. It is excluded from
+`full` and `nightly` and performs no inference.
+
+### Explicit knowledge lifecycle diagnostic
+
+`login,knowledge-lifecycle` selects D04 (#5632); it is excluded from full/nightly. It requires an owned uploaded document receipt and caller-verified deployed attempt/spend bounds. See [the knowledge diagnostic guide](../adp-cli/knowledge-lifecycle-diagnostic.md). Without actual runtime cost evidence, leave the fixture unset and do not dispatch indexing.
+By default, nightly story reads explicitly select the native tenant verified by the login checkpoint and retained in its private session. Multiple memberships do not change that selection. A missing or mismatched native tenant fails before the story commands run; the harness never chooses the first visible membership. Owned cross-tenant diagnostics retain their separately declared fixtures.
+
+`login,capability-contrast` selects the existing E19 supported/disabled/permission and doctor scenario without the unrelated parity journeys. Its `fixtures_json.capability_contrast` accepts only the existing seven non-secret selectors from the evaluator config. The ordinary fixture reference can point to the existing admin fixture secret with `non_admin_username`/`non_admin_password`; E19 authenticates it freshly in memory when no `ordinary_session` is provided. It pins the verified native tenant and private `BG_CONFIG_DIR`, changes neither deployment feature flags nor operator settings, and compares the same HOME's two identity caches.
+
+E42 retains the served CLI's tenant-scoped Task journal before its temporary
+home is removed. A missing journal means acceptance is unknown, not that no Task
+was submitted. Recovery must first reconcile the original request ID and any
+existing artifact; never upload a replacement snapshot to resolve uncertainty.
+Reports retain only bounded trigger status, error code and HTTP status fields,
+not response bodies or credential-bearing error prose.
+
+### D05: owned machine metadata and access/session boundaries
+
+Select `login,machine-lifecycle` explicitly in the existing EC2 evaluation
+workflow. D05 is excluded from `full` and `nightly`. Supply this object through
+the workflow's diagnostic fixture input (identifiers must match the deployment):
+
+```json
+{"machine_lifecycle":{"login_user_id":"ACTUAL_COGNITO_ADMIN_SUBJECT","canonical_user_id":"ADMIN_SELECTED_TENANT_CANONICAL_ID","tenant_id":"aws-e","ordinary_canonical_user_id":"ORDINARY_SELECTED_TENANT_CANONICAL_ID","ordinary_native_tenant":"adp-platform","owned_mutations_authorized":true}}
+```
+
+The administrator and ordinary user must be distinct existing fixtures. The
+credential secret supplies `non_admin_username` and `non_admin_password`; the
+installed administrator login uses its Cognito subject, not its native canonical
+user ID. Each session uses independent temporary configuration/token stores,
+including an explicit `BG_CONFIG_DIR`.
+
+The caller retains deterministic registration intent and both exact alias names
+in its durable manifest before SSM dispatch. D05 previews and registers one
+owned canonical service principal, replays its original operation ID, reads its
+mapping identity, checks ordinary denial, duplicate alias refusal and foreign
+tenant refusal, adds its second alias, rejects a stale revision, and suspends it.
+Cleanup revokes only the recorded aliases and retires the exact principal;
+metadata and audit history remain. Identity/name/alias drift prevents cleanup.
+An uncertain registration retains the original operation ID for reconciliation;
+creating a replacement identity is not recovery.
+
+The aliases are unused synthetic metadata under `eventbridge` and
+`github_actions`; no provider account, credential, permission, or model request
+is created. D05 also reads ordinary access in both tenants and previews an
+administrator review of its gateway token family, checking ordinary denial and
+unchanged membership/session review after cleanup. It never revokes a session.
+This qualifies metadata lifecycle and read/denial coverage for #5624/#5625,
+not access-request approval, token revocation, or provider delivery. Access
+requests still need an independently verified GitHub actor fixture.
+
+E21 (`login,usage-exports`) optionally accepts `fixtures_json.usage_tenant` with
+required `login_user_id`, `canonical_user_id`, and `tenant_id`, identifying an
+existing login and workspace membership. This read-only fixture selects the
+existing membership through `ADP_TENANT` in the isolated CLI process, then verifies
+canonical owner and tenant through `models mappings list` before reading usage.
+Every usage/export scope must match that owner and tenant. The native login
+session and default nightly selection remain unchanged; no membership, role,
+credential, or shared configuration is changed. Without the fixture E21 keeps
+its verified native tenant. CSV/NDJSON still read at most two one-record pages per
+format; evidence reports counts and continuation, never the private records.
+Populated exports do not establish complete accounting or late settlement.
+
+The same `usage_tenant` object optionally accepts `usage_run_id`, an exact
+lowercase invocation UUID for an existing owned Activity/Task. E21 passes it as
+`--run` to every read/export, requires `selected_run` coverage, and checks every
+request/export record's public `invocation_id` (the serialized `agent_run_id`).
+A missing/foreign invocation fails through the existing gateway authorization;
+there is no fallback to broad usage. Omit the field to retain ordinary own-usage
+coverage. The fixture dispatches no Task or inference. Empty or incomplete
+pages still cannot establish complete run accounting.

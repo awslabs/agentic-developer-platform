@@ -124,3 +124,35 @@ test('report derives metadata from exact finding citations but refuses an unknow
  assert.equal((await submit.handler(bad)).isError,true);
  assert.equal(bridge.report,null);
 });
+
+test('accepted report is acknowledged without another model call or fabricated usage',async()=>{
+ const bridge=new HostBridge(start(),()=>{});bridge.report=report();bridge.model=()=>{throw new Error('must not invoke provider after report');};
+ const proxy=await startProxy(bridge,{maxTokens:100});
+ try {
+  const response=await fetch(proxy.url+'/v1/messages',{method:'POST',headers:{authorization:'Bearer '+proxy.token},body:JSON.stringify({messages:[{role:'user',content:'tool report accepted'}]})});
+  const value=await response.json();assert.equal(response.status,200);assert.equal(value.stop_reason,'end_turn');assert.deepEqual(value.content,[]);assert.equal(value.usage,undefined);assert.equal(bridge.failure,null);
+ } finally {await proxy.close();}
+});
+test('last two turns require report with an earlier cleanup warning',async()=>{
+ const bridge=new HostBridge(start(),()=>{});const requests=[];
+ bridge.model=async (request)=>{requests.push(request);return {turn_id:randomUUID(),content:[],stop_reason:'end_turn'};};
+ const proxy=await startProxy(bridge,{maxTokens:100,maxTurns:3,finalReportTool:'mcp__cyber__submit_report'});
+ try {
+  for(let i=0;i<3;i++) {
+   const response=await fetch(proxy.url+'/v1/messages',{method:'POST',headers:{authorization:'Bearer '+proxy.token},body:JSON.stringify({messages:[{role:'user',content:'investigate'}],tools:[{name:'mcp__cyber__submit_report',input_schema:{type:'object'}}]})});assert.equal(response.status,200);
+  }
+  assert.match(requests[0].system.at(-1).text,/close browser sessions/);assert.equal(requests[0].tool_choice,undefined);
+  for (const request of requests.slice(1)) assert.deepEqual(request.tool_choice,{type:'tool',name:'mcp__cyber__submit_report',disable_parallel_tool_use:true});
+ } finally {await proxy.close();}
+});
+
+test('oversized tool history compacts previews without changing instructions or call IDs',()=>{
+ const body={messages:[{role:'user',content:'Keep these instructions'},...Array.from({length:10},(_,i)=>({role:'user',content:[{type:'tool_result',tool_use_id:'tool_'+i,content:[{type:'text',text:JSON.stringify({artifact_id:'art_'+i,result:'x'.repeat(8000)})}]}]}))],tools:[{name:'mcp__cyber__submit_report',input_schema:{type:'object'}}]};
+ const before=JSON.stringify(body);const {sdk_request}=normalizeRequest(body,100);
+ assert.ok(Buffer.byteLength(JSON.stringify(sdk_request))<61440);
+ assert.equal(JSON.stringify(body),before);assert.equal(sdk_request.messages[0].content,body.messages[0].content);
+ assert.deepEqual(sdk_request.tools,body.tools);
+ assert.match(sdk_request.messages[1].content[0].content[0].text,/context_notice/);
+ for(let i=0;i<10;i++) {assert.equal(sdk_request.messages[i+1].content[0].tool_use_id,'tool_'+i);assert.match(JSON.stringify(sdk_request.messages[i+1]),new RegExp('art_'+i));}
+ assert.throws(()=>normalizeRequest({messages:[{role:'user',content:'x'.repeat(70000)}]},100),/frame bound/);
+});

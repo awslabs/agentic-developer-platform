@@ -46,6 +46,7 @@ class CreateDeploymentRequest(BaseModel):
     model_name: str = Field(
         ..., min_length=1, max_length=500, description="HuggingFace model name"
     )
+    expected_namespace: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     precision: str = Field(default="fp16", pattern="^(fp16|bf16|fp8|awq|int8)$")
     serving_framework: str = Field(default="vllm", pattern="^(vllm|sglang)$")
     replicas: int = Field(default=1, ge=1, le=32)

@@ -525,9 +525,32 @@ async def get_my_invocation_chain(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/me/agent-invocations/tasks", response_model=InvocationListResponse)
+async def get_my_task_invocations(
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page_size: Annotated[int, Query(ge=1, le=20)] = 20,
+    last_key: Annotated[str | None, Query(max_length=80)] = None,
+) -> InvocationListResponse:
+    """Owner-only canonical Task projection, independently paginated from native runs."""
+    from src.activity import task_readthrough
+
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    return await task_readthrough.list_owned(
+        request,
+        db,
+        canonical_user_id=canonical_user_id,
+        tenant_id=current_user.org_id,
+        page_size=page_size,
+        after=last_key,
+    )
+
+
 @router.get("/me/agent-invocations/{invocation_id}", response_model=InvocationItem)
 async def get_my_invocation_detail(
     invocation_id: Annotated[str, Path(description="The invocation ID to fetch detail for")],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -543,7 +566,12 @@ async def get_my_invocation_detail(
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Invocation not found")
+        from src.activity import task_readthrough
+
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
+        if task_record is None:
+            raise HTTPException(status_code=404, detail="Invocation not found")
+        item = task_readthrough.detail(task_record, request)
 
     # Enrich with cost data
     try:
@@ -694,6 +722,7 @@ async def _fetch_transcript(transcript_key: str) -> str:
 @router.get("/me/agent-invocations/{invocation_id}/transcript")
 async def get_my_invocation_transcript(
     invocation_id: Annotated[str, Path(description="The invocation ID to fetch transcript for")],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -706,7 +735,12 @@ async def get_my_invocation_transcript(
     canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Invocation not found")
+        from src.activity import task_readthrough
+
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
+        if task_record is None:
+            raise HTTPException(status_code=404, detail="Invocation not found")
+        return PlainTextResponse(content=task_readthrough.report(task_record), media_type="text/markdown")
 
     if not item.transcript_key:
         raise HTTPException(status_code=404, detail="Transcript not available for this invocation")

@@ -164,9 +164,7 @@ jobs:
 
   deploy-backend:
     name: Build and Deploy Backend
-    runs-on:
-      group: Default
-      labels: arc-runner-org
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
     if: github.ref == 'refs/heads/main' && (needs.changes.outputs.backend == 'true')
@@ -956,9 +954,7 @@ jobs:
 
   deploy-frontend:
     name: Build and Deploy Frontend
-    runs-on:
-      group: Default
-      labels: arc-runner-org
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, deploy-backend]
     # Backend job is optional — run the frontend even when backend is skipped.
@@ -1137,9 +1133,7 @@ jobs:
     name: Verify and activate daily pricing
     needs: [deploy-backend, run-migrations]
     if: github.ref == 'refs/heads/main' && (needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success')
-    runs-on:
-      group: Default
-      labels: arc-runner-org
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       contents: read

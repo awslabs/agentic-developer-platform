@@ -375,3 +375,219 @@ def test_gateway_finished_is_detach_not_execution_success(capsys):
     assert result["detail"] == {"event": "finished", "detached": True, "last_event_id": f"{RUN}:1:1"}
     assert client.raw.call_count == 1
     client.post.assert_not_called()
+
+
+@pytest.fixture
+def coding_trigger(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"repository": "owner/repo", "issue": 5}))
+    instructions = tmp_path / "instructions.txt"
+    instructions.write_text("Update the attached CLI file")
+    monkeypatch.setattr(agent.common, "state_dir", lambda: tmp_path / "state")
+    monkeypatch.setattr(agent.common, "authenticated_scope", lambda **kw: "human:owner")
+    options = agent.parser().parse_args(
+        [
+            "trigger",
+            "--repo",
+            "owner/repo",
+            "--issue",
+            "5",
+            "--persona",
+            "agent-task-codex-developer",
+            "--snapshot-file",
+            str(snapshot),
+            "--instructions-file",
+            str(instructions),
+            "--request-id",
+            "coding-test",
+        ]
+    )
+    task = Mock(gateway="https://gateway.example", token="pinned")
+    helper = Mock()
+    helper.bounded_read.side_effect = lambda response, *a: response.read()
+    task.open.return_value = io.BytesIO(
+        json.dumps(
+            {
+                "artifact_id": "art_67eb5564-4dce-4fa0-9320-72cf728ca140",
+                "content_type": "application/json",
+                "content_sha256": agent.hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+            }
+        ).encode()
+    )
+    task.submit.return_value = {"task_id": "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140", "status": "accepted"}
+    return options, helper, task
+
+
+def test_coding_preview_never_uploads_or_submits(coding_trigger):
+    options, helper, task = coding_trigger
+    assert agent.task_trigger(options, helper, task)["status"] == "dry_run"
+    task.open.assert_not_called()
+    task.submit.assert_not_called()
+
+
+def test_coding_replay_retains_artifact_and_task_idempotency(coding_trigger):
+    options, helper, task = coding_trigger
+    options.yes = True
+    first = agent.task_trigger(options, helper, task)
+    second = agent.task_trigger(options, helper, task)
+    assert first == second
+    assert task.open.call_count == 1
+    assert task.submit.call_args_list[0] == task.submit.call_args_list[1]
+    body, key = task.submit.call_args.args
+    assert key == "coding-test"
+    assert body["inputs"]["repository_snapshot_artifact"] == body["artifact_ids"][0]
+    assert first["status"] == "pending"
+
+
+def test_coding_lost_upload_does_not_dispatch_or_reupload(coding_trigger):
+    options, helper, task = coding_trigger
+    options.yes = True
+    task.open.side_effect = agent.common.CliError("response lost", "pending", 4)
+    with pytest.raises(agent.common.CliError):
+        agent.task_trigger(options, helper, task)
+    result = agent.task_trigger(options, helper, task)
+    assert result["status"] == "pending"
+    assert task.open.call_count == 1
+    task.submit.assert_not_called()
+
+
+def test_coding_reused_request_with_new_inputs_refused(coding_trigger):
+    options, helper, task = coding_trigger
+    options.yes = True
+    agent.task_trigger(options, helper, task)
+    Path(options.instructions_file).write_text("Different task")
+    with pytest.raises(agent.common.CliError, match="different task inputs"):
+        agent.task_trigger(options, helper, task)
+    assert task.submit.call_count == 1
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "status", "wait", "abort", "steer"])
+def test_task_handles_use_canonical_task_helper(monkeypatch, action):
+    from types import SimpleNamespace
+
+    task_id = "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140"
+    task = Mock()
+    task.snapshot.return_value = {"task_id": task_id, "status": "completed"}
+    from src.tasks.task_commands import receipt
+
+    task.command.return_value = receipt(
+        {
+            "task_id": task_id,
+            "command_id": ID,
+            "kind": "cancel" if action == "abort" else "input",
+            "status": "accepted",
+            "handoff": "not_started",
+            "command_sequence": 2,
+            "created_at": "2026-09-26T05:00:00Z",
+        }
+    )
+    helper = SimpleNamespace(
+        TaskClient=Mock(return_value=task),
+        token_expiry=lambda token: 9999999999,
+        TERMINAL={"completed", "failed", "cancelled"},
+        snapshot_exit=lambda value: 0,
+    )
+    monkeypatch.setattr(agent.common, "load_provider", lambda name: helper)
+    monkeypatch.setattr(agent.common, "gateway_url", lambda: "https://gateway.example")
+    flags = ["--command-id", ID, "--instruction" if action == "steer" else "--reason", "bounded", "--yes"] if action in agent.ACTIONS else []
+    options = agent.parser().parse_args([action, "--run", task_id, *flags])
+    client = Mock(token="pinned-human-token")
+    result = agent.execute(options, client)
+    assert task.token == "pinned-human-token"
+    client.get.assert_not_called()
+    client.post.assert_not_called()
+    if action in {"pause", "resume"}:
+        assert result["status"] == "unavailable"
+        task.command.assert_not_called()
+    elif action in {"abort", "steer"}:
+        assert result["status"] == "pending"
+        assert result["detail"]["task_id"] == task_id
+        assert "task_id" not in task.command.return_value
+        assert task.command.call_args.args[0] == task_id
+        assert task.command.call_args.args[1] == ("cancel" if action == "abort" else "messages")
+    else:
+        assert result["status"] == "ok"
+
+
+def test_task_listing_uses_owner_projection_and_follows_empty_authorized_page():
+    client = Mock()
+    client.get.side_effect = [dict(items=[], last_key="next"), dict(items=[dict(task_id="tsk-owned")], last_key=None)]
+    result = agent.execute(agent.parser().parse_args(["list", "--tasks", "--max-pages", "2"]), client)
+    assert result["detail"]["items"] == [dict(task_id="tsk-owned")]
+    assert client.get.call_args_list[0].args[0] == "/me/agent-invocations/tasks?page_size=20"
+    assert client.get.call_args_list[1].args[0].endswith("last_key=next")
+    client.post.assert_not_called()
+
+
+@pytest.mark.parametrize("extra", [["--admin"], ["--page-size", "21"]])
+def test_task_listing_rejects_admin_and_unbounded_page_before_io(extra):
+    client = Mock()
+    with pytest.raises(agent.common.CliError):
+        agent.execute(agent.parser().parse_args(["list", "--tasks", *extra]), client)
+    client.get.assert_not_called()
+
+
+@pytest.mark.parametrize("persona", ["agent-task-claude-developer", "agent-task-codex-developer"])
+@pytest.mark.parametrize("mode", ["--dry-run", "--yes"])
+def test_coding_steer_is_unavailable_before_any_command(monkeypatch, persona, mode):
+    from types import SimpleNamespace
+
+    task_id = "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140"
+    task = Mock()
+    task.snapshot.return_value = {"task_id": task_id, "status": "running", "persona": persona}
+    helper = SimpleNamespace(TaskClient=Mock(return_value=task), token_expiry=lambda _: 9999999999)
+    monkeypatch.setattr(agent.common, "load_provider", lambda name: helper)
+    monkeypatch.setattr(agent.common, "gateway_url", lambda: "https://gateway.example")
+    options = agent.parser().parse_args(["steer", "--run", task_id, "--command-id", ID, "--instruction", "marker", mode])
+    result = agent.execute(options, Mock(token="pinned-human-token"))
+    assert result["status"] == "unavailable"
+    task.command.assert_not_called()
+
+
+@pytest.mark.parametrize("fault", [None, "command", "task", "kind", "schema", "status"])
+def test_task_abort_uses_real_terminal_command_receipt_without_preflight(monkeypatch, fault):
+    from types import SimpleNamespace
+
+    from src.tasks.task_commands import receipt
+
+    task_id = "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140"
+    wire = receipt(
+        {
+            "task_id": task_id,
+            "command_id": ID,
+            "kind": "cancel",
+            "status": "cancelled",
+            "handoff": "not_started",
+            "command_sequence": 2,
+            "created_at": "2026-09-26T05:00:00Z",
+        }
+    )
+    assert "task_id" not in wire
+    if fault == "command":
+        wire["command_id"] = "another-command"
+    if fault == "task":
+        wire["task_id"] = "tsk-foreign"
+    if fault == "kind":
+        wire["kind"] = "input"
+    if fault == "schema":
+        wire["schema_version"] = "unknown"
+    if fault == "status":
+        wire["status"] = "unknown"
+    task = Mock()
+    task.command.return_value = wire
+    monkeypatch.setattr(
+        agent.common, "load_provider", lambda name: SimpleNamespace(TaskClient=Mock(return_value=task), token_expiry=lambda token: 9999999999)
+    )
+    monkeypatch.setattr(agent.common, "gateway_url", lambda: "https://gateway.example")
+    options = agent.parser().parse_args(["abort", "--run", task_id, "--command-id", ID, "--reason", "owned cancellation", "--yes"])
+    if fault:
+        with pytest.raises(agent.common.CliError, match="acknowledgement mismatch"):
+            agent.execute(options, Mock(token="pinned-human-token"))
+    else:
+        result = agent.execute(options, Mock(token="pinned-human-token"))
+        assert result["status"] == "pending"  # Durable receipt is not terminal proof.
+        assert result["detail"]["task_id"] == task_id
+        assert result["detail"]["command_id"] == ID
+        assert result["detail"]["status"] == "cancelled"
+    task.snapshot.assert_not_called()  # Replay still reaches API after cancellation.
+    task.command.assert_called_once_with(task_id, "cancel", ID, "owned cancellation")

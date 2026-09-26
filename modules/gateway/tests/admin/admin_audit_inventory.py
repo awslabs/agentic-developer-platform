@@ -20,7 +20,7 @@ def mounted_admin_app():
     )
     app = FastAPI()
     for module_name in modules:
-        if module_name.startswith("src.admin."):
+        if module_name.startswith("src.admin.") or module_name in {"src.auth.session_admin", "src.gitlab.routes"}:
             app.include_router(importlib.import_module(module_name).router)
     return app
 

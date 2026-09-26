@@ -1921,7 +1921,10 @@ class LiveBaselineObserver:
         if inventory is None or not inventory.services:
             return ()
         listing = self._ledger().service_inventory
-        assert listing is not None  # an inventory exists only when a listing does
+        require(
+            listing is not None,
+            "serving inventory requires its authoritative retained listing",
+        )
         reference = _Reference(inventory.evidence_reference, inventory.evidence_sha256)
         facts: list[ObservedFact] = []
         for index, service in enumerate(inventory.services):

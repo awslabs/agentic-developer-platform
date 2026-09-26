@@ -33,8 +33,9 @@ def main():
     revision = subprocess.check_output(
         ["git", "rev-parse", "--verify", args.revision + "^{commit}"], cwd=ROOT, text=True
     ).strip()
-    paths = [str(MODULE / "images/ingestion"), str(MODULE / "tests/container")]
+    paths = [str(MODULE / "images/ingestion"), str(MODULE / "images/shared"), str(MODULE / "tests/container")]
     paths += [str(MODULE / item) for item in STAGED]
+    paths += ["modules/gateway/security/stdlib"]
     archive = subprocess.check_output(
         ["git", "archive", "--format=tar", revision, "--", *paths], cwd=ROOT
     )
@@ -51,6 +52,8 @@ def main():
             source.extractall(work / "source", filter="data")
         source_root = work / "source" / MODULE
         context = source_root / "images/ingestion"
+        shutil.copytree(work / "source/modules/gateway/security/stdlib", context / "security-stdlib")
+        shutil.copytree(source_root / "images/shared", context / "security-build")
         for item in STAGED:
             destination = context / item
             if destination.exists():
@@ -111,7 +114,7 @@ def main():
 import os
 root=Path('/platform-data')
 for name in ['repos','code-indexes','learning','state']:
- p=root/name; p.mkdir(); os.chown(p,0,1001); p.chmod(0o2770)
+ p=root/name; p.mkdir(); os.chown(p,0,10001); p.chmod(0o2770)
 p=root/'unrelated'; p.mkdir(mode=0o700); (p/'private').write_text('untouched')
 """
             execute(
@@ -145,7 +148,7 @@ p=root/'unrelated'; p.mkdir(mode=0o700); (p/'private').write_text('untouched')
                 "none",
                 "--read-only",
                 "--user",
-                "1001:1001",
+                "10001:10001",
                 "--cap-drop",
                 "ALL",
                 "--security-opt",
@@ -161,7 +164,7 @@ p=root/'unrelated'; p.mkdir(mode=0o700); (p/'private').write_text('untouched')
                 "--tmpfs",
                 "/tmp:rw,nosuid,nodev,size=2g,mode=1777",
                 "--tmpfs",
-                "/home/appuser:rw,nosuid,nodev,size=512m,uid=1001,gid=1001,mode=0700",
+                "/home/appuser:rw,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=0700",
                 "--mount",
                 f"type=volume,source={volume},target=/platform-data",
                 "--mount",
