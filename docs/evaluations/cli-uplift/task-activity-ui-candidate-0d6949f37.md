@@ -1,5 +1,10 @@
 # Task Activity UI candidate
 
+**Superseded; do not deploy this candidate.** Its CLI command manifest omitted
+`agent list --tasks`. The corrected candidate source is
+`8cfd14826112915ee984ebf3b38d2c0a65bedb4c`. The original frontend artifact remains
+valid through the separately recorded source-tree equivalence proof.
+
 Build-only evidence for `0d6949f37ea33de2d6113302167737262bcea647`, combining the current direct-ID release
 `41aea17eda2652576eeab70ec6c10d0d7fb739b9` with reviewed Task list/stream UI #6308
 (`8fc5faa70`). The only cherry-pick conflict appended independent CLI tests; both
