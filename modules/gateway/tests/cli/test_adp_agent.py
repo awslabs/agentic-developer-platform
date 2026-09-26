@@ -468,7 +468,19 @@ def test_task_handles_use_canonical_task_helper(monkeypatch, action):
     task_id = "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140"
     task = Mock()
     task.snapshot.return_value = {"task_id": task_id, "status": "completed"}
-    task.command.return_value = {"task_id": task_id, "command_id": ID}
+    from src.tasks.task_commands import receipt
+
+    task.command.return_value = receipt(
+        {
+            "task_id": task_id,
+            "command_id": ID,
+            "kind": "cancel" if action == "abort" else "input",
+            "status": "accepted",
+            "handoff": "not_started",
+            "command_sequence": 2,
+            "created_at": "2026-09-26T05:00:00Z",
+        }
+    )
     helper = SimpleNamespace(
         TaskClient=Mock(return_value=task),
         token_expiry=lambda token: 9999999999,
@@ -489,6 +501,9 @@ def test_task_handles_use_canonical_task_helper(monkeypatch, action):
         task.command.assert_not_called()
     elif action in {"abort", "steer"}:
         assert result["status"] == "pending"
+        assert result["detail"]["task_id"] == task_id
+        assert "task_id" not in task.command.return_value
+        assert task.command.call_args.args[0] == task_id
         assert task.command.call_args.args[1] == ("cancel" if action == "abort" else "messages")
     else:
         assert result["status"] == "ok"
@@ -527,3 +542,52 @@ def test_coding_steer_is_unavailable_before_any_command(monkeypatch, persona, mo
     result = agent.execute(options, Mock(token="pinned-human-token"))
     assert result["status"] == "unavailable"
     task.command.assert_not_called()
+
+
+@pytest.mark.parametrize("fault", [None, "command", "task", "kind", "schema", "status"])
+def test_task_abort_uses_real_terminal_command_receipt_without_preflight(monkeypatch, fault):
+    from types import SimpleNamespace
+
+    from src.tasks.task_commands import receipt
+
+    task_id = "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140"
+    wire = receipt(
+        {
+            "task_id": task_id,
+            "command_id": ID,
+            "kind": "cancel",
+            "status": "cancelled",
+            "handoff": "not_started",
+            "command_sequence": 2,
+            "created_at": "2026-09-26T05:00:00Z",
+        }
+    )
+    assert "task_id" not in wire
+    if fault == "command":
+        wire["command_id"] = "another-command"
+    if fault == "task":
+        wire["task_id"] = "tsk-foreign"
+    if fault == "kind":
+        wire["kind"] = "input"
+    if fault == "schema":
+        wire["schema_version"] = "unknown"
+    if fault == "status":
+        wire["status"] = "unknown"
+    task = Mock()
+    task.command.return_value = wire
+    monkeypatch.setattr(
+        agent.common, "load_provider", lambda name: SimpleNamespace(TaskClient=Mock(return_value=task), token_expiry=lambda token: 9999999999)
+    )
+    monkeypatch.setattr(agent.common, "gateway_url", lambda: "https://gateway.example")
+    options = agent.parser().parse_args(["abort", "--run", task_id, "--command-id", ID, "--reason", "owned cancellation", "--yes"])
+    if fault:
+        with pytest.raises(agent.common.CliError, match="acknowledgement mismatch"):
+            agent.execute(options, Mock(token="pinned-human-token"))
+    else:
+        result = agent.execute(options, Mock(token="pinned-human-token"))
+        assert result["status"] == "pending"  # Durable receipt is not terminal proof.
+        assert result["detail"]["task_id"] == task_id
+        assert result["detail"]["command_id"] == ID
+        assert result["detail"]["status"] == "cancelled"
+    task.snapshot.assert_not_called()  # Replay still reaches API after cancellation.
+    task.command.assert_called_once_with(task_id, "cancel", ID, "owned cancellation")

@@ -460,9 +460,22 @@ def task_execute(args, client):
         result = task.command(
             args.run, "cancel" if args.action == "abort" else "messages", args.command_id, args.reason if args.action == "abort" else args.instruction
         )
-        if result.get("task_id") != args.run or result.get("command_id") != args.command_id:
+        # Command receipts identify the command; the authenticated request URL
+        # binds its Task. Do not require a task_id absent from the API contract.
+        if (
+            result.get("command_id") != args.command_id
+            or result.get("kind") != ("cancel" if args.action == "abort" else "input")
+            or result.get("task_id", args.run) != args.run
+            or result.get("schema_version") != "1.0"
+            or result.get("status") not in {"accepted", "consumed", "cancelled", "rejected"}
+        ):
             invalid("Task command acknowledgement mismatch; reconcile the same command ID.")
-        return common.envelope("pending", command, result, "Command acceptance is not execution or cancellation confirmation; inspect the same Task.")
+        return common.envelope(
+            "pending",
+            command,
+            {**result, "task_id": args.run},
+            "Command acceptance is not execution or cancellation confirmation; inspect the same Task.",
+        )
     if args.action == "logs" and args.follow:
         code = helper.monitor(
             task, args.run, SimpleNamespace(cursor=args.last_event_id, cursor_file=None, max_events=10000, timeout=args.timeout, json=True)
