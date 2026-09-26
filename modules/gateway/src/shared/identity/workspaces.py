@@ -116,14 +116,18 @@ async def memberships_for_login(
 
 async def workspace_user(db: AsyncSession, subject: str, org_id: str, *, username: str = "") -> User | None:
     # Keep the common single-org/FK lookup to one query on model-call paths.
-    local = (await db.execute(select(User).where(User.org_id == org_id, or_(User.cognito_sub == subject, User.id == subject)))).scalar_one_or_none()
-    if local is not None:
-        revoked = await db.scalar(
-            select(TenantMembership.id).where(
-                TenantMembership.user_id == local.id, TenantMembership.tenant_id == org_id, TenantMembership.revoked_at.is_not(None)
-            )
+    revoked = (
+        select(TenantMembership.id)
+        .where(
+            TenantMembership.user_id == User.id,
+            TenantMembership.tenant_id == org_id,
+            TenantMembership.revoked_at.is_not(None),
         )
-        return None if revoked else local
+        .exists()
+    )
+    local = (await db.execute(select(User, revoked).where(User.org_id == org_id, or_(User.cognito_sub == subject, User.id == subject)))).one_or_none()
+    if local is not None:
+        return None if local[1] else local[0]
     _, memberships = await memberships_for_login(db, subject, username=username)
     pair = memberships.get(org_id)
     return pair[0] if pair else None

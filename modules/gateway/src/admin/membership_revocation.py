@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import MultipleResultsFound
 
 from src.admin.exceptions import ResourceConflictError, ResourceNotFoundError
 from src.admin.memberships import project_member_org_ids
@@ -74,7 +75,11 @@ async def require_not_revoked_context(context, db=None):
     if db is None:
         async with get_session_factory()() as session:
             return await require_not_revoked_context(context, session)
-    if await is_revoked(db, subject=context.user_id, org_id=context.org_id, username=context.cognito_username):
+    try:
+        revoked = await is_revoked(db, subject=context.user_id, org_id=context.org_id, username=context.cognito_username)
+    except MultipleResultsFound:
+        raise HTTPException(403, {"error": "ambiguous_identity", "message": "The login does not resolve to one canonical identity."}) from None
+    if revoked:
         raise HTTPException(
             403, {"error": "tenant_membership_revoked", "message": "This organization membership was removed; select another authorized workspace."}
         )
