@@ -12231,6 +12231,12 @@ def test_fixture_input_exposed_identically_to_evaluate_and_recover():
         "restore_failure",
         "cleanup_failure",
         "changed_default",
+        "wrong_parentage",
+        "ordinary_read_allowed",
+        "ordinary_write_allowed",
+        "name_selector_accepted",
+        "duplicate_create_accepted",
+        "delete_retry_accepted",
     ],
 )
 def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
@@ -12309,7 +12315,19 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
                 return 3, {"error": {"code": "permission_denied"}}
             if argv[:1] == ["--tenant"]:
                 return 3, {"error": {"code": "tenant_not_visible"}}
-            assert self.admin and argv[0] == "admin"
+            assert argv[0] == "admin"
+            if not self.admin:
+                if fault == "ordinary_read_allowed" and argv[2] == "show":
+                    return 0, {"detail": {}}
+                if fault == "ordinary_write_allowed" and argv[2] == "update":
+                    return 0, {"detail": {}}
+                return 5, {"error": {"http_status": 403}}
+            if argv[1:3] == ["team", "show"] and "--name" in argv:
+                return (
+                    (0, {})
+                    if fault == "name_selector_accepted"
+                    else (1, {"error": {"code": "usage_error"}})
+                )
             kind, action = argv[1:3]
             if kind == "member" and action == "remove" and "--dry-run" in argv:
                 return 0, {"status": "dry_run", "detail": {"before": snapshot()}}
@@ -12337,6 +12355,22 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
                 and any(k[0] == "team" and k[2] == org for k in resources)
             ):
                 return 4, {"error": {"code": "hierarchy_has_dependencies"}}
+            if action == "create" and (kind, key, org) in resources:
+                return (
+                    (0, {})
+                    if fault == "duplicate_create_accepted"
+                    else (5, {"error": {"http_status": 409}})
+                )
+            if (
+                action == "delete"
+                and (kind, key, org) not in resources
+                and kind != "member"
+            ):
+                return (
+                    (0, {})
+                    if fault == "delete_retry_accepted"
+                    else (5, {"error": {"http_status": 404}})
+                )
             mutations.append(argv)
             revision[0] += 1
             if kind == "member":
@@ -12372,7 +12406,13 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
                 resources[resource_key] = {
                     "id": key,
                     "revision": str(revision[0]),
-                    "resource": {"name": key},
+                    "resource": {
+                        "name": key,
+                        "org_id": org,
+                        "department_id": "foreign-department"
+                        if fault == "wrong_parentage"
+                        else plan["department_id"],
+                    },
                 }
                 if kind == "org":
                     for child_kind, child_id in (
@@ -12462,10 +12502,28 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
         script.execute(cfg, evidence)
         assert evidence["success"] is True
         assert "revoked-tenant-denied-native-preserved" in evidence["detail"]["checks"]
+        assert {
+            "explicit-department-team-parentage",
+            "ordinary-hierarchy-read-write-refused",
+            "canonical-id-required-name-selector-refused",
+            "same-id-create-conflict-original-unchanged",
+            "same-id-delete-retry-reports-absence",
+        } <= set(evidence["detail"]["checks"])
+        assert (
+            evidence["detail"]["parentage"][plan["team_ids"][0]]["department_id"]
+            == plan["department_id"]
+        )
+        assert not any(
+            "--role" in argv and argv[argv.index("--role") + 1] != "member"
+            for argv in mutations
+        )
     if fault in {"wrong_actor", "foreign_baseline"}:
         assert mutations == []
-    if fault not in {"cleanup_failure", "changed_default"}:
+    if fault not in {"cleanup_failure", "changed_default", "wrong_parentage"}:
         assert not resources
+    if fault == "wrong_parentage":
+        assert ("team", plan["team_ids"][0], fixture["tenant_id"]) in resources
+        assert evidence["detail"]["cleanup"][plan["team_ids"][0]] == "pending"
     if fault == "changed_default":
         assert ("team", plan["default_team_id"], plan["org_id"]) in resources
         assert evidence["detail"]["cleanup"][plan["default_team_id"]] == "pending"
