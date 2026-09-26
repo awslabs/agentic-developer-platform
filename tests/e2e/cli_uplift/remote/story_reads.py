@@ -565,8 +565,8 @@ def recovery(cli, evidence):
             "--reason",
             "nightly refusal",
             "--dry-run",
-            "--json",
-        ]
+        ],
+        expected=None,
     )
     common.require(
         rc != 0 and isinstance(refused, dict) and refused.get("status") == "failed",

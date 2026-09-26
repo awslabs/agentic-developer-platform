@@ -11032,3 +11032,20 @@ def test_tenant_script_completion_requires_session_preservation(
     assert emitted["success"] is not cleanup_fails
     if not cleanup_fails:
         assert emitted["detail"]["tenant_count"] == 2
+
+
+def test_recovery_negative_scenario_accepts_actual_cli_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    replies = iter(
+        [
+            (0, json.dumps({"status": "ok", "detail": {"flows": []}}), ""),
+            (1, json.dumps({"status": "failed", "error": {"code": "usage_error"}}), ""),
+        ]
+    )
+    monkeypatch.setattr(common, "bounded", lambda *args, **kwargs: next(replies))
+    evidence = {}
+    cli = common.Cli("adp", {}, [])
+    script.recovery(cli, evidence)
+    assert evidence["malformed_target_refused"] is True
