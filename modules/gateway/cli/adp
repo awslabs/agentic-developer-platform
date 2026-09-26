@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-gitlab.py adp-vault.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-budget.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-gitlab.py adp-vault.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-budget.py adp-tenant.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -650,7 +650,7 @@ ensure_proxy() {
     # identity record, so ownership cannot be established strongly enough to
     # signal them. Fail closed with a direct repair instead of reusing them or
     # timing out after a doomed bind attempt.
-    if { [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; } \
+    if [ -z "${ADP_TENANT_ID:-}" ] && { [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; } \
        && proxy_listening "${CODEX_PROXY_PORT}" && proxy_identity_matches "${CODEX_PROXY_PORT}"; then
         _release_proxy_spawn_lock
         print_error "An insecure legacy auth proxy is running without verifiable ownership."
@@ -665,7 +665,7 @@ ensure_proxy() {
     # every existing config.toml and doc already names.
     local requested_port="${CODEX_PROXY_PORT}"
     local where="127.0.0.1:${CODEX_PROXY_PORT}"
-    if [ -n "${named}" ]; then
+    if [ -n "${named}${ADP_TENANT_ID:-}" ]; then
         requested_port="${ADP_PROXY_PORT:-0}"
         if [ -f "${ADP_RUNTIME_DIR}/setup-port.json" ]; then
             requested_port="$(jq -er '.port' "${ADP_RUNTIME_DIR}/setup-port.json")"
@@ -1113,7 +1113,7 @@ cmd_codex_setup() {
     fi
 
     local setup_proxy_port="${CODEX_PROXY_PORT}"
-    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
+    if { [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; } || [ -n "${ADP_TENANT_ID:-}" ]; then
         setup_proxy_port="$(deployments setup-port)"
     fi
     mkdir -p "$(dirname "${CODEX_CONFIG_FILE}")"
@@ -1686,7 +1686,7 @@ usage() {
 adp ${ADP_VERSION} — one command for the ADP gateway CLI
 
 Usage:
-    adp [--deployment <name>] <command> [options]
+    adp [--deployment <name>] [--tenant <id>] <command> [options]
 
 Work with more than one ADP deployment (each keeps its own sign-in):
     deployment add <name> --url <url>
@@ -1834,6 +1834,11 @@ Check what works here, and why something failed:
     agent steer           Send --instruction TEXT when runtime capability allows
     agent abort           Request abort; acknowledgement alone does not prove exit
 
+    tenant list           List visible ADP tenant memberships
+    tenant current        Show canonical tenant and selection source
+    tenant use TENANT_ID   Save a deployment/login-specific default (--dry-run supported)
+    --tenant TENANT_ID     Pin a tenant for this command; ADP_TENANT selects per terminal
+
     task submit           Submit a Task request file with a durable --key
     task status           Read Task state, result and artifact references
     task monitor          Follow bounded progress with a saved resume cursor
@@ -1890,6 +1895,10 @@ reject_post_verb_deployment() {
     local argument
     for argument in "$@"; do
         case "${argument}" in
+            --tenant|--tenant=*)
+                print_error "--tenant must appear before the command."
+                exit 1
+                ;;
             --deployment|--deployment=*)
                 print_error "--deployment selects the deployment for the whole command, so it goes BEFORE the verb."
                 print_warning "Use: adp --deployment <name> ${ADP_CURRENT_VERB:-<command>}"
@@ -1908,8 +1917,25 @@ main() {
     # token they do not own straight through to the tool — accepting it after the
     # verb would mean stealing a flag that might belong to Codex or Claude Code.
     local requested_deployment=""
+    local requested_tenant=""
     while [ $# -gt 0 ]; do
         case "${1:-}" in
+            --tenant)
+                if [ -n "${requested_tenant}" ] || [ -z "${2:-}" ]; then
+                    print_error "Supply --tenant once with an ID before the command."
+                    exit 1
+                fi
+                requested_tenant="$2"
+                shift 2
+                ;;
+            --tenant=*)
+                if [ -n "${requested_tenant}" ] || [ -z "${1#--tenant=}" ]; then
+                    print_error "Supply --tenant once with an ID before the command."
+                    exit 1
+                fi
+                requested_tenant="${1#--tenant=}"
+                shift
+                ;;
             --deployment)
                 if [ -n "${requested_deployment}" ]; then
                     print_error "Supply --deployment only once, before the command."
@@ -1959,6 +1985,40 @@ main() {
         *) resolve_deployment "${requested_deployment}" ;;
     esac
 
+    # Tenant selection is separate from deployment and never changes Cognito's
+    # global workspace. Repair/local commands remain usable without a tenant.
+    local local_tool_setup=false
+    case "${command}:${1:-}" in
+        codex:setup|claude:setup|hermes:setup)
+            # Offline configuration needs no membership lookup. An explicit
+            # selector still requests the selected tenant's proxy namespace.
+            if [ -z "${requested_tenant}${ADP_TENANT:-}${ADP_TENANT_ID:-}" ]; then
+                local_tool_setup=true
+            fi
+            ;;
+    esac
+    case "${command}" in
+        deployment|help|--help|-h|version|--version|-v|login|logout|import|refresh|update|status|tenant|task|daemon|"")
+            if [ -n "${requested_tenant}" ] && [ "${command}" != "tenant" ]; then
+                print_error "This command does not accept --tenant."
+                exit 1
+            fi
+            ;;
+        *)
+            if [ "${local_tool_setup}" = false ] && [ "${1:-}" != "--help" ] && [ "${1:-}" != "-h" ] && ! { [ "${command}" = "admin" ] && [ "${1:-}" = "login" ]; }; then
+                local tenant_exports
+                if [ -f "$(adp_dir)/adp-tenant.py" ]; then
+                    tenant_exports="$(python3 "$(adp_dir)/adp-tenant.py" --resolve-env "${requested_tenant}")" || return $?
+                    eval "${tenant_exports}"
+                    resolve_deployment "${requested_deployment}"
+                elif [ -n "${requested_tenant}${ADP_TENANT:-}" ]; then
+                    print_error "Tenant helper missing. Run adp update."
+                    exit 1
+                fi
+            fi
+            ;;
+    esac
+
     # Every verb below EXCEPT the tool launchers owns its own flag surface, so
     # a `--deployment` among its arguments is a misplaced global option rather than
     # the tool's own flag, and is refused instead of silently ignored.
@@ -1969,6 +2029,10 @@ main() {
 
     case "${command}" in
         deployment) cmd_deployment "$@" ;;
+        tenant)
+            if [ -n "${requested_tenant}" ]; then export ADP_TENANT_FLAG="${requested_tenant}"; fi
+            exec_python_helper "adp-tenant.py" "$@"
+            ;;
         aws)     exec_python_helper "adp-aws.py" "$@" ;;
         bedrock) exec_python_helper "adp-bedrock.py" "$@" ;;
         admin)   exec_python_helper "adp-admin.py" "$@" ;;

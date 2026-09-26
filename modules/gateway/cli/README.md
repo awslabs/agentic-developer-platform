@@ -768,3 +768,5 @@ Usage and redacted inference metadata: [Usage CLI](../../../docs/adp-cli/usage.m
 Human run discovery, transcripts, explanation streaming and supported controls: [Agent Activity CLI](../../../docs/adp-cli/agent.md). Task submission continues to use `adp task`.
 
 GitLab: `adp gitlab status|connect|disconnect` and `adp admin gitlab status|configure|revalidate` use deployment-approved providers and owned vault references. See the [GitLab command/API contract](../../../docs/adp-cli/gitlab.md) for operation IDs, exact project scope and live evidence holds.
+
+Authorized tenant selection and concurrent terminal isolation: [Tenant CLI](../../../docs/adp-cli/tenant.md).

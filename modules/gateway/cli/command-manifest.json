@@ -4831,6 +4831,106 @@
         "tests/cli/test_command_manifest.py"
       ],
       "required_capabilities": []
+    },
+    {
+      "command": "adp tenant list",
+      "helper": "adp-tenant.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/workspaces"
+        ],
+        "schema": "WorkspaceList; tenant lease; use persists only local identity-bound default"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_tenant.py",
+        "tests/auth/test_tenant_context.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp tenant current",
+      "helper": "adp-tenant.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/workspaces",
+          "/workspaces/context"
+        ],
+        "schema": "WorkspaceList; tenant lease; use persists only local identity-bound default"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_tenant.py",
+        "tests/auth/test_tenant_context.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp tenant use",
+      "helper": "adp-tenant.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--dry-run",
+        "--json"
+      ],
+      "arguments": [
+        "tenant"
+      ],
+      "request": {
+        "kind": "local",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/workspaces",
+          "/workspaces/context"
+        ],
+        "schema": "WorkspaceList; tenant lease; use persists only local identity-bound default"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_tenant.py",
+        "tests/auth/test_tenant_context.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
     }
   ]
 }
