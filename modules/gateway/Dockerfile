@@ -30,6 +30,14 @@ RUN pip install --no-cache-dir ".[tracing]" || echo "Tracing dependencies not av
 # infra/modules/orchestration-tick/main.tf instead, so the pod path is untouched.
 RUN pip install --no-cache-dir awslambdaric==3.1.1
 
+# Reviewed official CPython 3.13 security fixes, with exact before/after guards.
+# Patch tooling stays in the builder; a changed base requires explicit review.
+COPY security/stdlib /tmp/gateway-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /tmp/gateway-stdlib-security/apply.py \
+    && python /tmp/gateway-stdlib-security/check.py \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Runtime stage
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
@@ -71,6 +79,12 @@ ENV HOME=/home/appuser
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /usr/local/lib/python3.13/stringprep.py /usr/local/lib/python3.13/stringprep.py
+COPY --from=builder /usr/local/lib/python3.13/tarfile.py /usr/local/lib/python3.13/tarfile.py
+COPY --from=builder /usr/local/lib/python3.13/urllib/request.py /usr/local/lib/python3.13/urllib/request.py
+COPY security/stdlib /opt/gateway-stdlib-security/
+RUN python /opt/gateway-stdlib-security/apply.py --verify-only \
+    && python /opt/gateway-stdlib-security/check.py
 COPY src/ src/
 # Issue #4969: the shared Bedrock pricing policy and its immutable rate snapshots.
 # src/budget and src/proxy import it at request time, and the migration seed in
