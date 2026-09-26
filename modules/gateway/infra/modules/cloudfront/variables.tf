@@ -159,7 +159,7 @@ variable "additional_connect_src" {
 }
 
 variable "broker_origin_domain_name" {
-  description = "API Gateway regional endpoint hosting the GitHub auth broker, e.g. abc123.execute-api.us-east-1.amazonaws.com. When set, adds an origin and a /auth/github/* behaviour so the OAuth flow stays on the distribution's hostname instead of sending the browser to the API Gateway hostname. Empty (default) adds neither."
+  description = "API Gateway regional endpoint hosting the GitHub auth broker, e.g. abc123.execute-api.us-east-1.amazonaws.com. When set, adds the shared REST API origin and, unless explicitly disabled, a /auth/github/* behaviour so the OAuth flow stays on the distribution's hostname instead of sending the browser to the API Gateway hostname. Empty (default) adds neither."
   type        = string
   default     = ""
 }
@@ -182,6 +182,18 @@ variable "enable_ipv6" {
     block. Combined with a 403 -> 200 /index.html error response the viewer sees a
     blank page and nothing is logged as a 4xx anywhere.
   DESC
+  type        = bool
+  default     = true
+}
+
+variable "enable_task_api_route" {
+  description = "Route the exact /api/v1/tasks collection endpoint to canonical Task ingress on the shared REST API origin. Child event streams retain the ALB path."
+  type        = bool
+  default     = false
+}
+
+variable "enable_broker_cloudfront_route" {
+  description = "Publish /auth/github/* when the shared REST API origin is configured. Default true preserves existing module callers; the root passes its explicit broker flag."
   type        = bool
   default     = true
 }
