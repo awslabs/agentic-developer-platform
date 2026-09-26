@@ -24,8 +24,8 @@ case "${1:-}" in
     DEB_BUILD_PROFILES=pkg.curl.openssl-only DEB_BUILD_OPTIONS=parallel=2 \
         dpkg-buildpackage -b -us -uc -j2
     mkdir -p /out
-    cp ../curl_8.14.1-2+deb13u5+adp1_*.deb /out/
-    cp ../libcurl4t64_8.14.1-2+deb13u5+adp1_*.deb /out/
+    cp ../curl_8.14.1-2+deb13u5+adp2_*.deb /out/
+    cp ../libcurl4t64_8.14.1-2+deb13u5+adp2_*.deb /out/
     ;;
   *)
     echo 'usage: build.sh prepare|compile' >&2

@@ -129,8 +129,10 @@ COPY cli/ cli/
 # The Lambda path (orchestration tick, issue #4203) overrides entry_point but not
 # the user, so it inherits this too.
 COPY security/curl/check.py /opt/gateway-curl-security-check.py
+COPY security/curl/check-proxy.py /opt/gateway-curl-proxy-check.py
 USER 65532:65532
-RUN --network=none python /opt/gateway-curl-security-check.py
+RUN --network=none python /opt/gateway-curl-security-check.py \
+    && python /opt/gateway-curl-proxy-check.py
 
 EXPOSE 8080
 CMD ["uvicorn", "src.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]

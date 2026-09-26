@@ -1,6 +1,6 @@
 {
   "source_version": "8.14.1-2+deb13u5",
-  "package_version": "8.14.1-2+deb13u5+adp1",
+  "package_version": "8.14.1-2+deb13u5+adp2",
   "upstream_commit": "51beed175dbfc37da3113f6acce60c630c070ce8",
   "files": {
     "curl_8.14.1-2+deb13u5.dsc": {
@@ -27,5 +27,10 @@
   "cookie_source_sha256": {
     "before": "3167e1f86ca0eac599a45b858b07cea8d088e49ec6f27fa439347781351dfc68",
     "after": "44058de7ac6cc061318211a4a2ebabc49b29492937962a0f6e36b9714dc4880e"
+  },
+  "proxy_credentials_upstream_commit": "88c7e16cceec816a2df45c899d49b1e85513f193",
+  "setopt_source_sha256": {
+    "before": "b0f9b2d591692fc6a02e3ea4d8e4ccc44cbf010de8a167c7846534cd12398cb7",
+    "after": "e8318f67fd0788f8b551d49d24c7a0f0296c3cf991665e136ddd033810fe49a0"
   }
 }

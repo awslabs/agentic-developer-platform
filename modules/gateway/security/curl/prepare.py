@@ -63,10 +63,26 @@ def prepare(destination):
     )
     if digest(cookie) != LOCK["cookie_source_sha256"]["after"]:
         raise RuntimeError("Unexpected patched cookie source")
+    setopt = source_dir / "lib/setopt.c"
+    if digest(setopt) != LOCK["setopt_source_sha256"]["before"]:
+        raise RuntimeError("Unexpected baseline proxy credential source")
+    proxy_patch = source_dir / "debian/patches/CVE-2026-9079.patch"
+    shutil.copyfile(BUNDLE / proxy_patch.name, proxy_patch)
+    with (source_dir / "debian/patches/series").open("a") as series:
+        series.write("CVE-2026-9079.patch\n")
+    subprocess.run(
+        ["quilt", "push"],
+        cwd=source_dir,
+        env={**os.environ, "QUILT_PATCHES": "debian/patches", "QUILT_PATCH_OPTS": "--fuzz=0"},
+        check=True,
+    )
+    if digest(setopt) != LOCK["setopt_source_sha256"]["after"]:
+        raise RuntimeError("Unexpected patched proxy credential source")
     changelog = source_dir / "debian/changelog"
     changelog.write_text(
         f"curl ({LOCK['package_version']}) unstable; urgency=medium\n\n"
         "  * Apply upstream CVE-2026-8924 PSL trailing-dot fix and regression1629.\n"
+        "  * Apply upstream CVE-2026-9079 proxy credential reset and regression1648.\n"
         "    Preserve Debian configure options and runtime protocol/features.\n\n"
         " -- Security Maintenance <security-maintenance@users.noreply.github.com>  "
         "Sat, 26 Sep 2026 07:00:00 +0000\n\n" + changelog.read_text()
