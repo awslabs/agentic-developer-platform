@@ -12460,6 +12460,129 @@ def test_hierarchy_plan_precedes_instance_loss_and_rejects_changed_inputs(tmp_pa
 
 
 @pytest.mark.parametrize(
+    "states,expected",
+    [
+        (["queued", "running"], "running"),
+        (["completed"], "completed"),
+        (["queued"] * 4, "queued"),
+    ],
+)
+def test_coding_control_records_actual_state_with_bounded_same_task_poll(
+    tmp_path, monkeypatch, states, expected
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+    ticks = iter(range(10))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    pending = iter(states)
+
+    class Cli:
+        def json(self, argv):
+            calls.append(argv)
+            return {"detail": {"task_id": "tsk-owned", "status": next(pending)}}
+
+    evidence = {}
+    assert (
+        module.observe_before_control(
+            Cli(),
+            "tsk-owned",
+            {"control_when": "running", "running_wait_seconds": 2},
+            evidence,
+        )
+        == expected
+    )
+    assert evidence["pre_control_status"] == expected
+    assert all(argv == ["agent", "status", "--run", "tsk-owned"] for argv in calls)
+
+
+@pytest.mark.parametrize(
+    "status,task_id,command_id",
+    [
+        ("error", "tsk-owned", "command"),
+        ("pending", "tsk-other", "command"),
+        ("pending", "tsk-owned", "other"),
+    ],
+)
+def test_coding_control_does_not_mistake_exit_four_for_receipt(
+    tmp_path, status, task_id, command_id
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    with pytest.raises(common.RemoteError, match="acceptance unconfirmed"):
+        module.require_control_receipt(
+            {
+                "status": status,
+                "detail": {"task_id": task_id, "command_id": command_id},
+            },
+            "tsk-owned",
+            "command",
+        )
+    module.require_control_receipt(
+        {
+            "status": "pending",
+            "detail": {"task_id": "tsk-owned", "command_id": "command"},
+        },
+        "tsk-owned",
+        "command",
+    )
+
+
+def test_coding_terminal_before_control_fails_without_replacement_or_abort(
+    tmp_path, monkeypatch
+):
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    calls = []
+
+    class Cli:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def json(self, argv, **kwargs):
+            calls.append(argv)
+            if argv == ["models", "mappings", "list"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "principal_id": "fixture-human",
+                    }
+                }
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            return {"detail": {"task_id": task_id, "status": "completed"}}
+
+        def run(self, *args, **kwargs):
+            pytest.fail("Terminal Task must not be cancelled or replaced")
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {})
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        control_when="running",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo", "issue": 42},
+        instructions="bounded edit",
+    )
+    evidence = {"transcript": []}
+    with pytest.raises(remote_common.RemoteError, match="terminal before cancellation"):
+        module.execute(coding_remote_config(module, fixture, tmp_path), evidence)
+    assert evidence["pre_control_status"] == "completed"
+    assert not any(argv[1] in {"abort", "steer"} for argv in calls)
+    triggers = [argv for argv in calls if argv[1] == "trigger" and "--yes" in argv]
+    assert len(triggers) == 2 and triggers[0] == triggers[1]
+
+
+@pytest.mark.parametrize(
     "fault", [None, "missing_native", "missing_vault_native", "different_native"]
 )
 def test_story_reads_pin_verified_native_tenant_with_multiple_memberships(

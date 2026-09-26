@@ -12,7 +12,15 @@ PAID = {"enrollment_verified", "shared_budget_authorized", "max_task_usd"}
 KEYS = {
     "human_task_coding": IDENTITY
     | PAID
-    | {"max_dispatches", "scenario", "persona", "snapshot", "instructions"},
+    | {
+        "max_dispatches",
+        "scenario",
+        "persona",
+        "snapshot",
+        "instructions",
+        "control_when",
+        "running_wait_seconds",
+    },
     "human_task_chat": IDENTITY | PAID | {"max_tasks"},
     "vault_lifecycle": IDENTITY | {"owned_mutations_authorized"},
     "hierarchy_lifecycle": IDENTITY
@@ -87,6 +95,19 @@ def validate_fixture(name, value):
         "Coding fixture requires exactly one dispatch",
     )
     require(value.get("scenario") in {"complete", "cancel"}, "Unknown coding scenario")
+    require(
+        value.get("control_when", "observed") in {"observed", "running"},
+        "Unknown coding control timing",
+    )
+    require(
+        type(value.get("running_wait_seconds", 30)) is int
+        and 1 <= value.get("running_wait_seconds", 30) <= 60,
+        "Running wait must be 1..60 seconds",
+    )
+    require(
+        value.get("control_when") != "running" or value["scenario"] == "cancel",
+        "Running coding control supports cancellation only",
+    )
     require(
         value.get("persona")
         in {"agent-task-claude-developer", "agent-task-codex-developer"},

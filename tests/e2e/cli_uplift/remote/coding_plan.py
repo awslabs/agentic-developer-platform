@@ -31,6 +31,8 @@ def recovery_plan(config):
         ),
         "persona": fixture["persona"],
         "scenario": fixture["scenario"],
+        "control_when": fixture.get("control_when", "observed"),
+        "running_wait_seconds": fixture.get("running_wait_seconds", 30),
         "max_dispatches": fixture["max_dispatches"],
         "max_task_usd": fixture["max_task_usd"],
         "snapshot": fixture["snapshot"],
