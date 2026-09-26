@@ -154,3 +154,35 @@ CLI envelope with `status:"failed"`, `command`, and `error.code/message`.
 A completed task may retain failure findings in its application report; inspect
 the result content as well as the transport/task exit status. Commands do not
 convert a task failure or an accepted-only cancellation into success.
+
+## Explicit human Task enrollment (#5516)
+
+Deployments enabling `ADP_TASK_API_HUMAN_ENABLED=true` can enroll a human through
+`GET|PUT /human-principals/{canonical-user-uuid}/task-policy`. Enrollment requires
+an authenticated current human organization administrator and an active target
+membership. The body uses the existing versioned Task policy schema, including
+allowed personas/tools, task scopes, explicit model-policy revision and per-task
+limits. Task submission never creates this standing policy.
+
+`adp task submit REQUEST.json --key REQUEST_ID --human-login --wait` uses the
+selected deployment's existing ADP login. The same flag works for `status`,
+`monitor` and `abort`. It is mutually exclusive with service credentials/token
+files. The command pins one access token and does not silently switch identities
+on retry. API authority comes from current human membership and standing policy,
+not caller token scope strings or a caller-supplied owner.
+
+Durable owner IDs use `human:<canonical User.id>` so an unrelated service ID
+cannot collide. The model/budget layer resolves that locator back to the real
+human identity and its model preference, routing and budget hierarchy. Reads,
+commands and SSE rechecks revalidate current membership and policy. Paid model
+calls and new tool authority also recheck membership; stop-only cleanup remains
+available. Existing service owners and their aliases remain unchanged.
+
+This foundation supports the installed `agent-task-investigator` and
+`agent-task-cyber` executables, with their existing Task protocol. It does not
+qualify repository developer authority or hosted Codex/Claude CLI execution.
+Those require server-bound repository/issue permissions and a compatible worker
+adapter; renaming a persona or using an investigator is not that acceptance.
+Existing per-task/pilot admission reservations and per-model personal/team/tenant
+budget enforcement remain in effect. Live human, repository and engine acceptance
+must be recorded separately before #5516 closes.

@@ -510,3 +510,28 @@ def test_unknown_snapshot_cannot_report_success(cli, snapshot):
     with pytest.raises(cli.CliError) as error:
         cli.snapshot_exit(snapshot)
     assert error.value.exit_code == 3
+
+
+def test_human_login_pins_token_without_reading_service_credentials(cli, monkeypatch):
+    from unittest.mock import Mock
+
+    token = Mock(return_value=TOKEN)
+    monkeypatch.setattr(cli.common, "access_token", token)
+    opener = Opener([response({"ok": True}), response({"ok": True})])
+    client = cli.TaskClient({"gateway_url": GATEWAY}, GATEWAY, human_login=True, opener=opener)
+    assert client.json("GET", "/v1/tasks/" + TASK) == {"ok": True}
+    assert client.json("GET", "/v1/tasks/" + TASK) == {"ok": True}
+    token.assert_called_once()
+    assert all(request.headers["Authorization"] == "Bearer " + TOKEN for request in opener.requests)
+    with pytest.raises(cli.CliError):
+        client.authenticate(force=True)
+    token.assert_called_once()
+
+
+def test_human_login_conflicts_with_service_files_before_auth(cli, token_file, monkeypatch):
+    from unittest.mock import Mock
+
+    token = Mock()
+    monkeypatch.setattr(cli.common, "access_token", token)
+    assert cli.main(["status", TASK, "--human-login", "--token-file", str(token_file), "--json"]) == 1
+    token.assert_not_called()
