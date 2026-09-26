@@ -235,6 +235,12 @@ resource "aws_cloudfront_vpc_origin" "gitlab" {
 
 # CloudFront Distribution
 resource "aws_cloudfront_distribution" "frontend" {
+  lifecycle {
+    precondition {
+      condition     = !var.enable_task_api_route || local.broker_origin_enabled
+      error_message = "Task routing requires the published REST API origin and stage."
+    }
+  }
   enabled             = true
   is_ipv6_enabled     = var.enable_ipv6
   default_root_object = "index.html"
@@ -330,6 +336,28 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
+  # Only the collection endpoint uses canonical Task ingress. Exact matching
+  # leaves /api/v1/tasks/<id>/events on the ALB streaming path below.
+  dynamic "ordered_cache_behavior" {
+    for_each = var.enable_task_api_route && local.broker_origin_enabled ? [1] : []
+    content {
+      path_pattern     = "/api/v1/tasks"
+      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+      cached_methods   = ["GET", "HEAD"]
+      target_origin_id = local.broker_origin_id
+
+      viewer_protocol_policy   = "redirect-to-https"
+      cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
+
+      function_association {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.strip_api_prefix.arn
+      }
+      compress = true
+    }
+  }
+
   # API Cache Behavior — proxy /api/* to ALB (no caching, forward all headers)
   # Uses either custom origin (internet-facing ALB) or VPC origin (internal ALB)
   dynamic "ordered_cache_behavior" {
@@ -371,7 +399,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   #
   # Caching is disabled: these are OAuth redirects carrying single-use state.
   dynamic "ordered_cache_behavior" {
-    for_each = local.broker_origin_enabled ? [1] : []
+    for_each = local.broker_origin_enabled && var.enable_broker_cloudfront_route ? [1] : []
     content {
       path_pattern     = "/auth/github/*"
       allowed_methods  = ["GET", "HEAD", "OPTIONS"]

@@ -9,9 +9,8 @@ concurrency:
 jobs:
   inspect:
     if: github.ref == 'refs/heads/main'
-    runs-on:
-      group: Default
-      labels: arc-runner-org
+    # Match the established ARC scale-set selector (observed runner group: Default).
+    runs-on: arc-runner-org
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
