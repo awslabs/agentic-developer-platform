@@ -44,6 +44,7 @@ locals {
 resource "aws_iam_role" "api_producer" {
   count               = var.api_producer_role == null ? 0 : 1
   name                = "${local.name_prefix}-api-producer"
+  path                = "/"
   assume_role_policy  = local.api_producer_trust
   managed_policy_arns = []
   inline_policy {
