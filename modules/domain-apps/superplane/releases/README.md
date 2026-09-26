@@ -56,3 +56,5 @@ to `image_sources`, remove `blocked_by`, add registry provenance, and record the
 produced digest under `images`. The resolver retains those source inputs for
 subsequent builds. An image cannot be both pending and resolved; removing its
 source metadata makes rebuilding fail closed.
+
+The separately released native paid worker uses the app-owned project-manifest and exact-commit dispatcher described in [PAID-WORKER-RELEASE.md](PAID-WORKER-RELEASE.md). Its pending lock entry is source enrollment, not evidence of a provisioned project or completed build.

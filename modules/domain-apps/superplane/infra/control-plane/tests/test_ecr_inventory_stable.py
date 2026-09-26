@@ -50,6 +50,7 @@ EXPECTED_REPOSITORIES = {
     "superplane-controller": "adp-superplane-controller",
     "superplane-platform-monitor": "adp-superplane-platform-monitor",
     "superplane-executor": "adp-superplane-executor",
+    "superplane-paid-worker": "adp-superplane-paid-worker",
 }
 
 TERRAFORM = shutil.which("terraform")

@@ -155,8 +155,15 @@ class TestPendingImagesCarryNoDigest:
     ) -> None:
         repo_root = Path(__file__).resolve().parents[4]
         for name, entry in (lock.get("pending_images") or {}).items():
-            wf = entry.get("build_workflow")
-            assert wf, f"pending_images.{name} names no build workflow"
+            if name == "superplane-paid-worker":
+                assert "build_workflow" not in entry
+                wf = entry.get("build_entrypoint")
+                assert (
+                    wf == "modules/domain-apps/superplane/releases/build_paid_worker.py"
+                )
+            else:
+                wf = entry.get("build_workflow")
+            assert wf, f"pending_images.{name} names no maintained build entrypoint"
             assert (repo_root / wf).is_file(), (
                 f"pending_images.{name} names {wf}, which does not exist"
             )

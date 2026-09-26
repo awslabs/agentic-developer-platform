@@ -1546,12 +1546,12 @@ def test_every_resource_type_is_actually_observed(config):
     is what catches an object silently dropped from the observation loop.
     """
     inventory = derived_for()
-    # 18 AWS resources (including executor and SkyPilot ECR) + 10 rendered Kubernetes objects.
+    # 19 AWS resources (including paid-worker ECR) + 10 rendered Kubernetes objects.
     # The split is asserted so a
     # derivation that stops producing some of them cannot quietly shrink this test.
-    assert len(aws_scope(inventory)) == 18
+    assert len(aws_scope(inventory)) == 19
     assert len(k8s_scope(inventory=inventory)) == 10
-    assert len(inventory) == 28
+    assert len(inventory) == 29
     for entry in inventory:
         key = _resource_key(entry)
         if entry.get("lifecycle") == t.RETAINED:
@@ -2838,7 +2838,7 @@ def test_the_kubernetes_requirement_is_scoped_to_the_deletion_set(config, monkey
     without_deletions = [
         entry for entry in derived_for() if entry.get("lifecycle") != t.DELETED
     ]
-    assert len(without_deletions) == 19
+    assert len(without_deletions) == 20
     assert any(entry["type"] == "kubernetes_namespace" for entry in without_deletions)
     assert (
         t.verify_k8s_teardown(
