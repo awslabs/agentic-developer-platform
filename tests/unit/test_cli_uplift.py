@@ -10819,3 +10819,64 @@ def test_superplane_lifecycle_story_is_bounded_preview(tmp_path):
     assert evidence["mutations"] == 0
     assert cli.json.call_args_list[1].args[0][-1] == "--dry-run"
     cli.run.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", ["absent", "owned", "foreign", "denied"])
+def test_pending_launch_cleanup_discovers_only_exact_attempt(outcome):
+    attempt = "adp-e2e-20260926-012131-df70e8-a1"
+    owner = attempt.rsplit("-a", 1)[0]
+
+    def describe(**kwargs):
+        if "InstanceIds" in kwargs:
+            assert kwargs["InstanceIds"] == ["i-0abc"]
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"InstanceId": "i-0abc", "State": {"Name": "terminated"}}
+                        ]
+                    }
+                ]
+            }
+        assert kwargs["Filters"] == [
+            {"Name": "tag:" + cleanup.OWNER_TAG, "Values": [owner]},
+            {"Name": "tag:Name", "Values": ["cli-uplift-eval-" + attempt]},
+        ]
+        if outcome == "denied":
+            raise ports.PortError(
+                "ec2.describe_instances failed: UnauthorizedOperation"
+            )
+        if outcome == "absent":
+            return {"Reservations": []}
+        return {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": "i-0abc",
+                            "Tags": [
+                                {
+                                    "Key": cleanup.OWNER_TAG,
+                                    "Value": owner
+                                    if outcome == "owned"
+                                    else "another-evaluation",
+                                },
+                                {"Key": "Name", "Value": "cli-uplift-eval-" + attempt},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+
+    aws = FakeAws({"ec2.describe_instances": describe, "ec2.terminate_instances": {}})
+    delete = live._deleters(aws, VALID)(VALID)["ec2_instance"]
+    if outcome in {"foreign", "denied"}:
+        with pytest.raises(ports.PortError):
+            delete("pending:" + attempt)
+    else:
+        delete("pending:" + attempt)
+    mutations = [
+        kw for service, operation, kw in aws.calls if operation == "terminate_instances"
+    ]
+    assert mutations == ([{"InstanceIds": ["i-0abc"]}] if outcome == "owned" else [])

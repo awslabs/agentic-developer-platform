@@ -14,6 +14,7 @@ stage logic it is trying to exercise.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import shlex
 import time
@@ -821,6 +822,54 @@ def _deleters(aws, cfg, http=None, ssm=None):
 
     def terminate(instance_id, *, account=None, region=None):
         scoped = session_for(account)
+        if instance_id.startswith("pending:"):
+            attempt = instance_id.removeprefix("pending:")
+            match = re.fullmatch(
+                r"(adp-e2e-[0-9]{8}-[0-9]{6}-[0-9a-f]{6})-a[0-9]+", attempt
+            )
+            if match is None:
+                raise ports_module.PortError(
+                    "Malformed pending evaluation instance identity"
+                )
+            expected = {
+                cleanup.OWNER_TAG: match[1],
+                "Name": "cli-uplift-eval-" + attempt,
+            }
+            request = {
+                "Filters": [
+                    {"Name": "tag:" + key, "Values": [value]}
+                    for key, value in expected.items()
+                ]
+            }
+            found = set()
+            cursors = set()
+            while True:
+                page = scoped.call("ec2", "describe_instances", **request)
+                for reservation in page.get("Reservations", []):
+                    for instance in reservation.get("Instances", []):
+                        tags = {
+                            tag["Key"]: tag["Value"] for tag in instance.get("Tags", [])
+                        }
+                        actual = instance.get("InstanceId", "")
+                        if any(
+                            tags.get(key) != value for key, value in expected.items()
+                        ) or not re.fullmatch(r"i-[0-9a-f]+", actual):
+                            raise ports_module.PortError(
+                                "Pending instance recovery returned a foreign identity"
+                            )
+                        found.add(actual)
+                cursor = page.get("NextToken")
+                if not cursor:
+                    break
+                if cursor in cursors or len(cursors) >= 100:
+                    raise ports_module.PortError(
+                        "Pending instance recovery pagination incomplete"
+                    )
+                cursors.add(cursor)
+                request["NextToken"] = cursor
+            for actual in sorted(found):
+                terminate(actual, account=account, region=region)
+            return
         # An instance EC2 has already reclaimed answers InvalidInstanceID.NotFound
         # instead of terminating. That is the end state this deleter wants, so it
         # returns rather than polling a describe that can only raise.
