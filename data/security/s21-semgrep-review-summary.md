@@ -9,8 +9,8 @@ checks its result index and rule against the frozen SARIF artifact.
 | --- | ---: |
 | Informational AI technology detection | 7728 |
 | Non-security localization rules | 1286 |
-| Pending source review, retained by #6119 | 4049 |
-| Source fixed, runtime acceptance open | 1 |
+| Pending source review, retained by #6119 | 4048 |
+| Source fixed, runtime acceptance open | 2 |
 | Existing suppressions needing revalidation | 75 |
 | Total | 13139 |
 
@@ -56,3 +56,20 @@ The receipt at `docs/security/runs/2026-09-26/reviewer-redirect-boundary/review.
 preserves the complete original identity/severity/candidate join. All13,139
 original identities remain, and no runtime deployment or whole-story closure
 is claimed. Earlier installation receipts remain independently applicable.
+
+## Explanation event-source redirect boundary
+
+Exact original selector `run=0|ri=9866` retains native CRITICAL rule metadata
+and is source-fixed with runtime acceptance open. This is browser code; the
+review does not assert server-side SSRF or a browser CORS bypass. The configured
+API event stream now refuses redirects before transit and delivery of redirected
+events. Direct streams preserve authentication headers, cursors and aborts.
+
+Native-fetch loopback tests reproduce ten baseline destination requests and
+ten redirected event deliveries across same-origin/cross-origin301/302/303/307/308;
+the candidate makes zero. Two direct200 controls still pass. All21 service/UI
+tests and focused ESLint pass. The exact Semgrep1.80.0 rule still emits one
+observation before/after with zero errors. Full identity/severity/candidate joins
+are in `docs/security/runs/2026-09-26/explanations-redirect-boundary/review.json`.
+Redirected API deployments now fail closed; configured endpoints must serve the
+stream directly. All13,139 original identities and all runtime holds remain.
