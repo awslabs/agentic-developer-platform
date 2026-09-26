@@ -308,6 +308,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.PROVISION,
     ),
+    ("GET", "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}"): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
     ("GET", "/workspaces/{workspace_id}/lifecycle-proposals"): (
         Scope.WORKSPACE,
         Permission.PROVISION,

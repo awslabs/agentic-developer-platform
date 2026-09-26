@@ -49,6 +49,8 @@ from app.services.provisioning import (
     ProvisioningUnavailable,
 )
 
+from app.operation_activation import require_admission_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,8 +62,11 @@ class HarnessOperationFacade:
     are the domain's and which the service refuses to be built without.
     """
 
-    def __init__(self, service: Any) -> None:
+    def __init__(self, service: Any, *, enabled: bool = True) -> None:
         self._service = service
+        if type(enabled) is not bool:
+            raise ValueError("operation admission enabled must be a boolean")
+        self._enabled = enabled
 
     async def open_operation(
         self,
@@ -73,6 +78,7 @@ class HarnessOperationFacade:
         parameters: dict[str, str],
     ) -> OperationProgress:
         """Authorize and start one operation, returning the facade's first report."""
+        require_admission_enabled(enabled=self._enabled)
         progress = await self._call(
             self._service.open_operation(
                 action=action,

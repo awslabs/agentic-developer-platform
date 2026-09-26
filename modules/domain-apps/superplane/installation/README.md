@@ -292,3 +292,51 @@ For image/configuration rollback, pass a prior **successful receipt from this sa
 ## Code validation
 
 The offline integration harness uses instrumented tool processes and HTTP responses. It exercises the real installer sequence, missing prerequisites, account/source/image/ownership boundaries, migration and rollout failure, public verification failure, lock retention, schema-incompatible rollback, and secret-free receipts. Separate API tests exercise schema confinement against disposable PostgreSQL. Gateway tests compare the public route list with the maintained API inventory and exercise authentication forwarding and private-route denial. Go tests validate signed controller observations and SkyPilot token/redirect handling. None is presented as live installation acceptance.
+
+### Staging existing API adapters
+
+The optional `api_adapters` environment mapping configures existing vault evidence
+and IAM producer transports on **the API only**. Omission keeps the previous
+manifest and installer path. This feature creates no key, Secret, IAM role, Gateway
+registry or producer binding. See [API-ADAPTER-STAGING.md](API-ADAPTER-STAGING.md)
+for the reviewed boundaries and verification limits.
+
+The closed mapping requires `vault`, `dispatcher` and `verification`:
+
+- `vault.url` must be the exact `http://SERVICE.NAMESPACE.svc.cluster.local:PORT`.
+  `secret_key_ref` contains only the existing API-namespace Secret `name` and `key`.
+  `transport` contains `namespace`, `service`, numeric `port` and `target_port`,
+  the actual Service `selector` mapping, and
+  `security: reviewed-cluster-http`. Select this boundary only after reviewing
+  the installation's internal HTTP trust contract. Other transports are refused.
+- `dispatcher` contains the existing `endpoint`, `region`, `role_arn`, `api_id`
+  and `stage`. The endpoint must exactly match that API Gateway invoke API/stage
+  in the selected account's region. The dedicated role must trust only the
+  management cluster OIDC and API ServiceAccount, and grant only POST invoke on
+  `producer-readiness`, `verify-run` and `dispatch`. Other role authorities require
+  separate review and are refused by this installer.
+- `verification` contains an existing `workspace_id`, `connection_id`,
+  `credential_id`, `service` and `label`. The installation verification token must
+  belong to a real user with the current workspace credential grant and the
+  existing organization administration grant. The private metadata check uses
+  that authenticated caller; the API IAM role never supplies human authority.
+
+The existing execute command disables routing, refuses outstanding admitted or
+active work, and rolls out the API in management mode with admission and dispatch
+explicitly disabled. An isolated image contract check is not a production
+capability verdict. The actual installed API must pass the original four composed
+ports, workload STS identity, tenant producer readiness, live credential metadata,
+management reads and a deliberately unapproved admission-refusal control. The
+Secret's UID/resourceVersion and selected Service/role/profile/environment/release
+are bound to a private receipt. Full mode activates only a fresh unchanged stage;
+management-only mode stays disabled. Changed metadata or expired proof requires
+verification again. Public routing still uses the existing publication fence.
+
+An activation failure restores the same release's disabled API and independently
+checks its internal management process; public routing stays disabled. This does
+not promise uninterrupted management availability or cancel previously admitted
+workers. Credential version proof is unavailable in the current evidence contract;
+the receipt reports that limitation rather than inventing a version. Existing
+broad API TCP443/5432 egress remains; the selected Gateway peer receives only the
+explicit Service/target ports. Cluster-specific denied-neighbor network evidence
+and all behavioral tests still require remote CI and authorized live verification.

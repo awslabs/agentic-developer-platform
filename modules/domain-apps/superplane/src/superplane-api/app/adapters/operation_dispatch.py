@@ -15,6 +15,8 @@ import httpx
 from harness_jobs.identity import decode_payload, payload_digest
 from harness_jobs.outbox import DispatchOutbox
 
+from app.operation_activation import dispatch_enabled
+
 logger = logging.getLogger(__name__)
 PREFIX = "/internal/v1/controller-execution"
 
@@ -128,9 +130,12 @@ class ProducerTransport:
 
 
 class OperationDispatcher:
-    def __init__(self, connect, transport, *, policy_for=None, interval=5):
+    def __init__(self, connect, transport, *, policy_for=None, interval=5, enabled=True):
         self.connect, self.transport, self.policy_for = connect, transport, policy_for
         self.outbox = DispatchOutbox()
+        if type(enabled) is not bool:
+            raise ValueError("operation dispatch enabled must be a boolean")
+        self.enabled = enabled
         self.interval = interval
         self._task = None
         self._recovery_cursor = ""
@@ -198,6 +203,8 @@ class OperationDispatcher:
             return False
 
     async def deliver(self, envelope):
+        if not self.enabled or not dispatch_enabled():
+            return False
         # Re-read the durable registration after claim. Creation admission commits
         # independently; a lost API transaction must not dispatch an orphan request.
         async with self.connect() as connection:
@@ -249,6 +256,8 @@ class OperationDispatcher:
         return await self._dispatch(request, policy)
 
     async def _dispatch(self, request, policy):
+        if not self.enabled or not dispatch_enabled():
+            return False
         data = await self.transport.post("/dispatch", request)
         try:
             deadline = datetime.fromisoformat(data["not_after"])
@@ -275,6 +284,8 @@ class OperationDispatcher:
         generation before queue publication. The cursor bounds each pass and keeps
         one persistently unavailable operation from starving later candidates.
         """
+        if not self.enabled or not dispatch_enabled():
+            return ()
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("recovery batch must contain between 1 and 100 tasks")
         async with self.connect() as connection:
@@ -328,6 +339,8 @@ class OperationDispatcher:
         return tuple(delivered)
 
     async def drain_once(self):
+        if not self.enabled or not dispatch_enabled():
+            return ()
         async with self.connect() as connection:
             rows = await connection.fetch(
                 "SELECT o.operation_id FROM harness_dispatch_outbox o "
@@ -344,6 +357,8 @@ class OperationDispatcher:
             )
 
     def start(self):
+        if not self.enabled or not dispatch_enabled():
+            return None
         if self._task is None:
             self._task = asyncio.create_task(
                 self._run(), name="superplane-operation-outbox"

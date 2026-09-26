@@ -325,6 +325,9 @@ async def admit_controller_deployment(
     with the router's domain intent/tombstone. Shared admission is separately
     durable; replay recovers that exact paid identity after a lost domain commit.
     """
+    from app.operation_activation import require_admission_enabled
+
+    require_admission_enabled()
     request = preview.request
     if payload_digest(request) != revision:
         raise ProvisioningRefused("controller deployment preview revision changed")

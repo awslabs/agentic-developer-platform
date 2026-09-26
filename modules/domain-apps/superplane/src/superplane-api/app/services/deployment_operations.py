@@ -137,6 +137,9 @@ def require_target(deployment, workspace, cluster):
 
 
 async def create(request, db, org_id, workspace_id, body):
+    from app.operation_activation import require_admission_enabled
+
+    require_admission_enabled()
     owner = composition(request)
     if not body.approval_id or not body.plan_revision:
         raise ProvisioningRefused(
@@ -330,6 +333,9 @@ async def preview_delete(
 async def delete(
     request, db, org_id, workspace_id, deployment_id, body, *, workload_kind="serving"
 ):
+    from app.operation_activation import require_admission_enabled
+
+    require_admission_enabled()
     owner = composition(request)
     if body is None or not body.approval_id or not body.plan_revision:
         raise ProvisioningRefused(

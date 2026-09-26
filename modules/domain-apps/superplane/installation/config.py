@@ -174,12 +174,16 @@ def validate(
         "execution",
         "controller_profiles",
         "credential_controller",
+        "api_adapters",
     }
     require(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
     )
     cluster_dns_address(env)
+    from .api_adapters import validate as validate_api_adapters
+
+    validate_api_adapters(env)
     from .execution import validate_execution
 
     validate_execution(env, lock)
