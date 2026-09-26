@@ -208,12 +208,61 @@ def budget(cli, evidence):
     )
 
 
+def person_budget(cli, evidence):
+    for period in ("daily", "weekly", "monthly"):
+        result = detail(cli.json(["budget", "person-cap", "show", "--period", period]))
+        cap = result.get("configuration")
+        common.require(
+            isinstance(cap, dict) and cap.get("period_type") == period,
+            "Person limit period mismatch",
+        )
+        common.require(
+            cap.get("cap_status") in {"capped", "uncapped"},
+            "Person limit status missing",
+        )
+        common.require(
+            result.get("authority") == "platform_admin",
+            "Person limit authority missing",
+        )
+        if cap["cap_status"] == "uncapped":
+            common.require(
+                cap.get("cap_usd") is None, "Uncapped person limit rendered as zero"
+            )
+        else:
+            common.require(
+                cap.get("source")
+                in {"own", "admin", "team_default", "org_default", "platform_default"},
+                "Person limit source missing",
+            )
+    for action in ("set", "delete"):
+        flags = ["--amount-usd", "1"] if action == "set" else []
+        code, refusal = cli.run(
+            ["budget", "person-cap", action, *flags, "--yes"], expected=None
+        )
+        common.require(
+            code != 0
+            and (refusal.get("error") or {}).get("code") == "permission_denied",
+            "Self person-limit write was not refused",
+        )
+    evidence.update(
+        periods=["daily", "weekly", "monthly"],
+        self_write_refusals=2,
+        live_holds=[
+            "explicit-default-reset",
+            "multi-tenant-privacy",
+            "org-admin-refusal",
+            "spend-through-and-restoration",
+        ],
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "budget": budget,
+    "person_budget": person_budget,
 }
 
 

@@ -1793,6 +1793,10 @@ Check what works here, and why something failed:
 
   Budgets:
     budget me            Read your direct/cloud budget envelope for --period
+    budget person-cap show|set|delete  Read own limit; self writes refuse by policy
+    admin budget person-cap show|set|delete  Platform-admin person limits
+    admin budget person-default show|set|delete  Platform/org/team inherited rules
+    admin budget member-report  Selected-org member spend, platform-admin only
     admin budget list|show|set|delete|status  Exact tenant/target/period caps
 
   Administration:

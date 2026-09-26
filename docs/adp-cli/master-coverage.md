@@ -31,7 +31,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5623 | Organizations, departments, teams and memberships | Existing administration APIs |
 | #5624 | Service accounts, agent registrations and canonical principals | Existing identity/registration APIs |
 | #5625 | Access requests and session revocation | Existing authorized access administration |
-| #5626 | Person-wide caps and inherited defaults | Existing person budget policy |
+| #5626 | [Person-wide caps/defaults](person-budgets.md), revision-safe admin writes and member reports; E35 nightly self reads/refusal, live enforcement held | Canonical person APIs; self writes unavailable by existing policy |
 | #5627 | Rate-limit administration and client enforcement | Existing rate-limit services |
 | #5628 ([usage CLI](usage.md), source implementation; live held) | Usage, spend and request-log exports | Existing scoped readers |
 | #5629 | [Activity CLI](agent.md): list/chain/detail/status/wait/transcript/SSE and capability-gated controls; live acceptance held | Existing Activity/ControlService; Task input/cancel remain Task API operations |

@@ -8442,6 +8442,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E22",
         "E24",
         "E26",
+        "E35",
     }
 
 
@@ -10233,6 +10234,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E24",
         "E26",
+        "E35",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
@@ -10448,3 +10450,38 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_person_budget_story_is_wired_into_nightly():
+    assert cases.BY_ID["E35"].owner == "#5626"
+    assert "E35" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E35"] in bundle.purposes()
+
+
+def test_person_budget_story_retains_authority_and_refusal(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "configuration": {
+                    "period_type": p,
+                    "cap_status": "uncapped",
+                    "cap_usd": None,
+                },
+                "authority": "platform_admin",
+            },
+        }
+        for p in ("daily", "weekly", "monthly")
+    ]
+    cli.run.return_value = (
+        3,
+        {"status": "failed", "error": {"code": "permission_denied"}},
+    )
+    evidence = {}
+    module.person_budget(cli, evidence)
+    assert cli.json.call_count == 3
+    assert cli.run.call_count == 2
+    assert evidence["self_write_refusals"] == 2
+    assert "spend-through-and-restoration" in evidence["live_holds"]

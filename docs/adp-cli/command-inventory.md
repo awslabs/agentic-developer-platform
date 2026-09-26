@@ -168,3 +168,20 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+## Person limits (#5626)
+
+See [authority and revision contract](person-budgets.md).
+
+| Command | Options |
+|---|---|
+| `adp budget person-cap show` | `--json`, `--period` |
+| `adp budget person-cap set` | `--amount-usd`, `--dry-run`, `--expected-revision`, `--json`, `--period`, `--yes` |
+| `adp budget person-cap delete` | `--dry-run`, `--expected-revision`, `--json`, `--period`, `--yes` |
+| `adp admin budget person-cap show` | `--json`, `--period`, `--person` |
+| `adp admin budget person-cap set` | `--amount-usd`, `--dry-run`, `--expected-revision`, `--json`, `--period`, `--person`, `--yes` |
+| `adp admin budget person-cap delete` | `--dry-run`, `--expected-revision`, `--json`, `--period`, `--person`, `--yes` |
+| `adp admin budget person-default show` | `--json`, `--period`, `--scope` |
+| `adp admin budget person-default set` | `--amount-usd`, `--dry-run`, `--expected-revision`, `--json`, `--period`, `--scope`, `--yes` |
+| `adp admin budget person-default delete` | `--dry-run`, `--expected-revision`, `--json`, `--period`, `--scope`, `--yes` |
+| `adp admin budget member-report` | `--json`, `--max-pages`, `--org`, `--page`, `--page-size`, `--period` |

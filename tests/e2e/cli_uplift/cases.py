@@ -299,6 +299,13 @@ CASES = (
         "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E35",
+        "#5626",
+        "story-reads",
+        "Own person limits retain source and self-write refusal; no spend-through or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance
