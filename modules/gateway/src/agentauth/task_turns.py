@@ -50,8 +50,10 @@ class TaskTurnStore:
             identity.runtime_attempt_id,
         ):
             raise TaskStoreError("task attempt changed")
-        if type(allow_autonomous) is not bool or (allow_autonomous and task["persona"] != "agent-task-cyber"):
-            raise TaskStoreError("autonomous turn requires cyber persona")
+        if type(allow_autonomous) is not bool or (
+            allow_autonomous and task["persona"] not in {"agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"}
+        ):
+            raise TaskStoreError("autonomous turn requires an SDK Task persona")
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         existing = next((turn for turn in self.list_turns(identity.task_id) if turn["turn_id"] == request_id), None)
         if existing:
