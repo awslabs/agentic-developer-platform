@@ -10300,6 +10300,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E31",
         "E25",
         "E26",
+        "E27",
         "E40",
         "E41",
         "E28",
