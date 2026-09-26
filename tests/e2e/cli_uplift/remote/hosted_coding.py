@@ -87,7 +87,11 @@ def require_control_receipt(control, task_id, command_id):
 
 
 def local_receipt(home):
-    paths = list((home / ".adp/state/hosted-tasks").glob("*.json"))
+    state = home / ".adp/state"
+    paths = list((state / "hosted-tasks").glob("*.json"))
+    # The served shell pins ADP_TENANT_ID/SUB before launching its helper.
+    # That moves legacy state into a subject/tenant hash namespace.
+    paths.extend(state.glob("tenants/*/hosted-tasks/*.json"))
     common.require(len(paths) <= 1, "Unexpected multiple owned Task journals")
     if not paths:
         return {}
@@ -214,6 +218,7 @@ def _execute(config, evidence):
             env[name] = str(target)
         # The seeded session helper uses ~/.bedrock-gateway; pin inherited BG_CONFIG_DIR too.
         env["BG_CONFIG_DIR"] = str(home / ".bedrock-gateway")
+        env["ADP_HOME"] = str(home / ".adp")
         _write_session(home, config["gateway_url"], common.session_tokens(config))
         snapshot = home / "snapshot.json"
         snapshot.write_text(json.dumps(fixture["snapshot"]))
@@ -254,7 +259,24 @@ def _execute(config, evidence):
             recovery["phase"] = "submit_attempted"
             persist_recovery(recovery_path, recovery)
             submitted = True
-            accepted = cli.json([*trigger, "--yes"], expected=4)
+            accepted = cli.json([*trigger, "--yes"], expected=None)
+            # Preserve only bounded machine fields, never API prose or stderr.
+            error = accepted.get("error") or {}
+            evidence["trigger_outcome"] = {
+                key: value
+                for key, value in {
+                    "status": accepted.get("status"),
+                    "code": error.get("code"),
+                    "http_status": error.get("http_status", error.get("status_code")),
+                }.items()
+                if type(value) is int
+                or isinstance(value, str)
+                and re.fullmatch(r"[a-zA-Z0-9_.-]{1,80}", value)
+            }
+            common.require(
+                accepted.get("status") == "pending",
+                "Task trigger was not accepted; inspect retained machine outcome",
+            )
             task_id = (accepted.get("detail") or {}).get("task_id")
             common.require(
                 isinstance(task_id, str) and task_id.startswith("tsk_"),
@@ -397,7 +419,7 @@ def _execute(config, evidence):
             if submitted and not task_id:
                 evidence["cleanup_status"] = (
                     "acceptance_unknown"
-                    if recovery["journal"].get("artifact_id")
+                    if recovery["journal"].get("artifact_id") or not recovery["journal"]
                     else "no_task_submitted"
                 )
                 common.require(

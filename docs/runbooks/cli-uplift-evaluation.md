@@ -421,6 +421,13 @@ for exact scope, retained recovery intent and restoration. It is excluded from
 
 Nightly story reads explicitly select the native tenant verified by the login checkpoint and retained in its private session. Multiple memberships do not change that selection. A missing or mismatched native tenant fails before the story commands run; the harness never chooses the first visible membership. Owned cross-tenant diagnostics retain their separately declared fixtures.
 
+E42 retains the served CLI's tenant-scoped Task journal before its temporary
+home is removed. A missing journal means acceptance is unknown, not that no Task
+was submitted. Recovery must first reconcile the original request ID and any
+existing artifact; never upload a replacement snapshot to resolve uncertainty.
+Reports retain only bounded trigger status, error code and HTTP status fields,
+not response bodies or credential-bearing error prose.
+
 ### D05: owned machine metadata and access/session boundaries
 
 Select `login,machine-lifecycle` explicitly in the existing EC2 evaluation

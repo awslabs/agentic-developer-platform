@@ -11001,11 +11001,14 @@ def test_coding_lost_cli_receipt_recovers_owned_task_and_cleans_up(
     assert "access_token" not in record
 
 
-def test_coding_acceptance_replay_keeps_same_key_and_retains_unknown(tmp_path):
+@pytest.mark.parametrize("namespace", ["", "tenants/" + "a" * 24 + "/"])
+def test_coding_acceptance_replay_keeps_same_key_and_retains_unknown(
+    tmp_path, namespace
+):
     import json
 
     module, _ = shipped_script(tmp_path, "hosted_coding")
-    journal = tmp_path / ".adp/state/hosted-tasks"
+    journal = tmp_path / (".adp/state/" + namespace + "hosted-tasks")
     journal.mkdir(parents=True)
     (journal / "receipt.json").write_text(
         json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
@@ -11030,8 +11033,9 @@ def test_coding_acceptance_replay_keeps_same_key_and_retains_unknown(tmp_path):
     assert module.local_receipt(tmp_path)["artifact_id"] == "art-fixture"
 
 
+@pytest.mark.parametrize("journal_mode", ["legacy", "tenant", "missing"])
 def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, journal_mode
 ):
     import shutil
 
@@ -11054,12 +11058,21 @@ def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
                 }
             if "--dry-run" in argv:
                 return {"status": "dry_run"}
-            journal = self.home / ".adp/state/hosted-tasks"
-            journal.mkdir(parents=True)
-            (journal / "receipt.json").write_text(
-                json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
-            )
-            raise RuntimeError("acceptance receipt unavailable")
+            if journal_mode != "missing":
+                suffix = "tenants/" + "b" * 24 + "/" if journal_mode == "tenant" else ""
+                journal = self.home / (".adp/state/" + suffix + "hosted-tasks")
+                journal.mkdir(parents=True)
+                (journal / "receipt.json").write_text(
+                    json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
+                )
+            return {
+                "status": "failed",
+                "error": {
+                    "code": "task_http_error",
+                    "http_status": 422,
+                    "message": "private-response-must-not-escape",
+                },
+            }
 
         def run(self, argv, **kwargs):
             calls.append(argv)
@@ -11099,6 +11112,12 @@ def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
         len(emitted.encode()) < 24000
     )  # SSM inline output limit; no full repository snapshot.
     assert "session-must-not-escape" not in emitted
+    assert "private-response-must-not-escape" not in emitted
+    assert evidence["detail"]["trigger_outcome"] == {
+        "status": "failed",
+        "code": "task_http_error",
+        "http_status": 422,
+    }
     document = json.loads(emitted)
     matrix = {"E42": {"status": cases.NOT_RUN}}
     ctx = {
@@ -11128,6 +11147,11 @@ def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
     assert retained["phase"] == "acceptance_unknown"
     assert retained["task_id"] is None
     assert retained["gateway"] == "https://gateway"
+    if journal_mode == "missing":
+        assert retained["submit_body"] is None
+        assert retained["journal"] == {}
+        assert calls == []
+        return
     assert retained["submit_body"] == {
         "schema_version": "1.0",
         "persona": fixture["persona"],
@@ -12572,7 +12596,10 @@ def test_coding_terminal_before_control_fails_without_replacement_or_abort(
                 }
             if "--dry-run" in argv:
                 return {"status": "dry_run"}
-            return {"detail": {"task_id": task_id, "status": "completed"}}
+            return {
+                "status": "pending" if argv[:2] == ["agent", "trigger"] else "ok",
+                "detail": {"task_id": task_id, "status": "completed"},
+            }
 
         def run(self, *args, **kwargs):
             pytest.fail("Terminal Task must not be cancelled or replaced")
