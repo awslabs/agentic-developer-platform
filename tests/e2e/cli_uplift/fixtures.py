@@ -15,6 +15,13 @@ KEYS = {
     | {"max_dispatches", "scenario", "persona", "snapshot", "instructions"},
     "human_task_chat": IDENTITY | PAID | {"max_tasks"},
     "vault_lifecycle": IDENTITY | {"owned_mutations_authorized"},
+    "hierarchy_lifecycle": IDENTITY
+    | {
+        "owned_mutations_authorized",
+        "ordinary_login_user_id",
+        "ordinary_canonical_user_id",
+        "ordinary_native_tenant",
+    },
 }
 
 
@@ -32,10 +39,29 @@ def validate_fixture(name, value):
             and re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", value[key]),
             f"{name}.{key} requires an explicit fixture identity",
         )
-    if name == "vault_lifecycle":
+    if name == "hierarchy_lifecycle":
+        for key in (
+            "ordinary_login_user_id",
+            "ordinary_canonical_user_id",
+            "ordinary_native_tenant",
+        ):
+            require(
+                isinstance(value.get(key), str)
+                and re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", value[key]),
+                "Explicit ordinary fixture identity required",
+            )
+        require(
+            value["ordinary_login_user_id"] != value["login_user_id"],
+            "Independent fixture subjects required",
+        )
+        require(
+            value["ordinary_native_tenant"] != value["tenant_id"],
+            "Two fixture tenants required",
+        )
+    if name in {"vault_lifecycle", "hierarchy_lifecycle"}:
         require(
             value.get("owned_mutations_authorized") is True,
-            "Vault mutations must be explicitly authorized",
+            "Owned metadata mutations must be explicitly authorized",
         )
         return
     require(
@@ -149,7 +175,7 @@ def parse(raw):
         raise ConfigError("Fixture input must be valid bounded JSON") from None
     require(
         isinstance(value, dict) and set(value) <= set(KEYS),
-        "Fixture input permits only coding/chat/vault fixtures",
+        "Fixture input permits only supported owned diagnostic fixtures",
     )
     no_secrets(value, "fixtures")
     for name, fixture in value.items():

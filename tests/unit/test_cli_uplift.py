@@ -12157,3 +12157,160 @@ def test_fixture_input_exposed_identically_to_evaluate_and_recover():
             workflow["jobs"][job]["env"]["CLI_UPLIFT_EVAL_FIXTURES"]
             == "${{ inputs.fixtures_json }}"
         )
+
+
+@pytest.mark.parametrize("fault", [None, "lost_create_reply", "foreign_baseline", "wrong_actor", "revoked_still_allowed", "restore_failure", "cleanup_failure"])
+def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(tmp_path, monkeypatch, fault):
+    script, remote_common = shipped_script(tmp_path, "hierarchy_lifecycle")
+    fixture = {"owned_mutations_authorized": True, "login_user_id": "admin-native", "canonical_user_id": "admin-tenant", "tenant_id": "aws-e",
+               "ordinary_login_user_id": "ordinary-native", "ordinary_canonical_user_id": "ordinary-tenant", "ordinary_native_tenant": "native"}
+    cfg = {"evaluation_id": "hierarchy-test", "test_user_id": "admin-native", "gateway_url": "https://gateway", "cli_path": "/served/adp",
+           "hierarchy_lifecycle": fixture}
+    cfg["recovery_plan"] = script.recovery_plan(cfg)
+    plan = cfg["recovery_plan"]
+    resources, mutations = {}, []
+    member = {"role": "member", "team_id": "", "teams": [], "membership_status": "active"}
+    if fault == "foreign_baseline":
+        member["teams"] = [{"team_id": "unrelated", "role": "member", "is_primary": True}]
+    revision = [0]
+
+    def snapshot():
+        return {"revision": str(revision[0]), "resource": copy.deepcopy(member)}
+
+    class Cli:
+        def __init__(self, binary, env, *args, **kwargs):
+            self.admin = pathlib.Path(env["HOME"]).name == "admin"
+            self.tenant = env["ADP_TENANT"]
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            code, result = self.run(argv, **kwargs)
+            if code != 0:
+                raise remote_common.RemoteError("CLI failed")
+            return result
+
+        def run(self, argv, **kwargs):
+            def option(name):
+                return argv[argv.index(name) + 1]
+            if argv[:3] == ["models", "mappings", "list"]:
+                if not self.admin and self.tenant == "aws-e" and member["membership_status"] == "revoked" and fault != "revoked_still_allowed":
+                    return 3, {"error": {"code": "tenant_not_visible"}}
+                actor = "admin-tenant" if self.admin else "ordinary-tenant" if self.tenant == "aws-e" else "ordinary-native"
+                if fault == "wrong_actor" and not self.admin:
+                    actor = "foreign"
+                return 0, {"detail": {"principal_id": actor, "tenant_id": self.tenant}}
+            if argv[:2] == ["admin", "login"]:
+                return 3, {"error": {"code": "permission_denied"}}
+            if argv[:1] == ["--tenant"]:
+                return 3, {"error": {"code": "tenant_not_visible"}}
+            assert self.admin and argv[0] == "admin"
+            kind, action = argv[1:3]
+            if kind == "member" and action == "remove" and "--dry-run" in argv:
+                return 0, {"status": "dry_run", "detail": {"before": snapshot()}}
+            if "--dry-run" in argv:
+                return 0, {"status": "dry_run"}
+            org = option("--org") if "--org" in argv else option("--id")
+            key = org if kind == "org" else option("--id") if "--id" in argv else None
+            if action == "show":
+                row = resources.get((kind, key, org))
+                return (0, {"detail": copy.deepcopy(row)}) if row else (5, {"error": {"http_status": 404}})
+            if kind == "org" and action == "update" and option("--expected-revision") != resources[(kind, key, org)]["revision"]:
+                return 4, {"error": {"code": "stale_revision"}}
+            if kind == "department" and action == "delete" and any(k[0] == "team" for k in resources):
+                return 4, {"error": {"code": "hierarchy_has_dependencies"}}
+            mutations.append(argv)
+            revision[0] += 1
+            if kind == "member":
+                if action == "remove":
+                    member.update(membership_status="revoked", team_id="", teams=[])
+                else:
+                    if fault == "restore_failure":
+                        return 5, {}
+                    member["membership_status"] = "active"
+                return 0, {"detail": snapshot()}
+            if kind == "team" and action == "members":
+                team = option("--team")
+                if argv[3] == "add":
+                    member["teams"].append({"team_id": team, "role": "member", "is_primary": not member["teams"]})
+                else:
+                    member["teams"] = [r for r in member["teams"] if r["team_id"] != team]
+                member["team_id"] = member["teams"][0]["team_id"] if member["teams"] else ""
+                if member["teams"]:
+                    member["teams"][0]["is_primary"] = True
+                return 0, {"detail": snapshot()}
+            resource_key = (kind, key, org)
+            if action == "create":
+                resources[resource_key] = {"id": key, "revision": str(revision[0]), "resource": {"name": key}}
+                if fault == "lost_create_reply":
+                    raise remote_common.RemoteError("Accepted create lost reply")
+            elif action == "update":
+                resources[resource_key]["revision"] = str(revision[0])
+                resources[resource_key]["resource"]["name"] = option("--name")
+            else:
+                assert action == "delete"
+                if fault == "cleanup_failure":
+                    return 5, {}
+                resources.pop(resource_key, None)
+            return 0, {"detail": {}}
+
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def __init__(self, value):
+            self.value = value
+        def read(self):
+            return json.dumps(self.value).encode()
+
+    def urlopen(request, **kwargs):
+        if request.full_url.endswith("/workspaces/context"):
+            return Response({"canonical_user_id": "ordinary-tenant", "tenant_id": "aws-e", "context_token": "private-ordinary-lease"})
+        if request.full_url.endswith("/me/persona-models"):
+            raise script.urllib.error.HTTPError(request.full_url, 403, "revoked", {}, None)
+        return Response({"access_token": "private-ordinary-token"})
+
+    monkeypatch.setattr(script.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(remote_common, "clean_env", lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()})
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {"access_token": "private-admin-token"})
+    monkeypatch.setattr(remote_common, "fixture_secret", lambda cfg, env, key: "private-ordinary-password" if key.endswith("password") else "owned-ordinary")
+    monkeypatch.setattr(script, "_write_session", lambda *a: None)
+    evidence = {"success": False, "transcript": []}
+    if fault:
+        with pytest.raises(remote_common.RemoteError):
+            script.execute(cfg, evidence)
+        assert evidence["success"] is False
+    else:
+        script.execute(cfg, evidence)
+        assert evidence["success"] is True
+        assert "revoked-tenant-denied-native-preserved" in evidence["detail"]["checks"]
+    if fault in {"wrong_actor", "foreign_baseline"}:
+        assert mutations == []
+    if fault != "cleanup_failure":
+        assert not resources
+    if fault not in {"foreign_baseline", "restore_failure"}:
+        assert member == plan["restore"]
+    if fault == "restore_failure":
+        assert evidence["detail"]["membership_restoration"] == "pending"
+    serialized = json.dumps(remote_common.redact(evidence))
+    assert "private-ordinary" not in serialized and "private-admin" not in serialized
+
+
+def test_hierarchy_plan_precedes_instance_loss_and_rejects_changed_inputs(tmp_path):
+    from tests.e2e.cli_uplift.remote.hierarchy_plan import recovery_plan
+    payload = {"evaluation_id": "owned", "gateway_url": "https://gateway", "hierarchy_lifecycle": {"tenant_id": "aws-e"}}
+    payload["recovery_plan"] = recovery_plan(payload)
+    saved = []
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "hierarchy", on_change=lambda doc, **kw: saved.append(copy.deepcopy(doc)))
+    ssm = Mock()
+    ssm.json_result.side_effect = RuntimeError("Instance lost")
+    worker = live._run_worker(ssm, {}, lambda *a: None)
+    with pytest.raises(RuntimeError):
+        worker("i-owned", "hierarchy_lifecycle", payload, manifest=manifest)
+    assert saved[-1]["diagnostic_intents"]["hierarchy_lifecycle:owned"] == recovery_plan(payload)
+    assert ssm.json_result.call_count == 1
+    payload["recovery_plan"]["team_ids"] = ["foreign"]
+    with pytest.raises(PortError):
+        worker("i-owned", "hierarchy_lifecycle", payload, manifest=manifest)
+    assert ssm.json_result.call_count == 1

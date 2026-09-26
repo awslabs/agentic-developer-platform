@@ -49,6 +49,7 @@ SUITES = (
     "hosted-coding",
     "hosted-chat",
     "vault-lifecycle",
+    "hierarchy-lifecycle",
     "story-reads",
     "research",
     "tenant-isolation",
@@ -105,6 +106,7 @@ HOSTED = "hosted"
 HUMAN_TASK_CODING = "human_task_coding"
 HUMAN_TASK_CHAT = "human_task_chat"
 VAULT_LIFECYCLE = "vault_lifecycle"
+HIERARCHY_LIFECYCLE = "hierarchy_lifecycle"
 # #5413: three separately-reachable ADP deployments and a sign-in fixture for
 # each. Deliberately its own class rather than a count on DESTINATION — those are
 # AWS accounts a rule routes TO, whereas these are three gateways the CLI signs in
@@ -447,6 +449,13 @@ LOGIN_CHECKPOINT = Case(
     (EC2, COGNITO),
 )
 DIAGNOSTICS = (
+    Case(
+        "D03",
+        "#5623/#5622",
+        "hierarchy-lifecycle",
+        "Owned hierarchy lifecycle and ordinary tenant revocation/restoration",
+        (EC2, PLATFORM, COGNITO, HIERARCHY_LIFECYCLE),
+    ),
     Case(
         "D01",
         "#5640",

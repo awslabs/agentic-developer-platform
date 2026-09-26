@@ -786,6 +786,7 @@ def fixture_classes(config):
         ("human_task_coding", cases.HUMAN_TASK_CODING),
         ("human_task_chat", cases.HUMAN_TASK_CHAT),
         ("vault_lifecycle", cases.VAULT_LIFECYCLE),
+        ("hierarchy_lifecycle", cases.HIERARCHY_LIFECYCLE),
     ):
         if config.get(key):
             try:

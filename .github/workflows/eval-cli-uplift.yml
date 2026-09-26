@@ -50,7 +50,7 @@ on:
         options: [start, resume, status, cleanup]
         default: start
       fixtures_json:
-        description: 'Optional bounded non-secret coding/chat/vault fixture JSON; existing policy authorization required'
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy fixture JSON; existing policy authorization required'
         required: false
         type: string
         default: '{}'
@@ -89,7 +89,7 @@ on:
         required: true
         type: string
       fixtures_json:
-        description: 'Optional bounded non-secret coding/chat/vault fixture JSON; existing policy authorization required'
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy fixture JSON; existing policy authorization required'
         required: false
         type: string
         default: '{}'
