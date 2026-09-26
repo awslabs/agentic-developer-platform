@@ -12742,3 +12742,53 @@ def test_capability_ordinary_fixture_login_uses_existing_secret_without_token_st
         assert module.ordinary_session(cfg, contrast) == {
             "access_token": "private-token"
         }
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "foreign_task",
+        "foreign_invocation",
+        "stale_status",
+        "missing_source",
+        "missing_id",
+    ],
+)
+def test_coding_activity_readback_requires_exact_task_identity(tmp_path, fault):
+    from unittest.mock import MagicMock
+
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    task = {
+        "task_id": "tsk-owned",
+        "invocation_id": "invocation-owned",
+        "status": "cancelled",
+    }
+    activity = {
+        "source_type": "task",
+        "task_id": "tsk-owned",
+        "invocation_id": "invocation-owned",
+        "task_snapshot": dict(task),
+        "transcript_status": "available",
+    }
+    if fault == "foreign_task":
+        activity["task_id"] = "foreign"
+    elif fault == "foreign_invocation":
+        activity["task_snapshot"]["invocation_id"] = "foreign"
+    elif fault == "stale_status":
+        activity["task_snapshot"]["status"] = "running"
+    elif fault == "missing_source":
+        activity.pop("source_type")
+    elif fault == "missing_id":
+        task.pop("invocation_id")
+    cli = MagicMock()
+    cli.json.return_value = {"detail": activity}
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.activity_readback(cli, task)
+    else:
+        evidence = module.activity_readback(cli, task)
+        assert evidence["task_status"] == "cancelled"
+        cli.json.assert_called_once_with(
+            ["agent", "status", "--run", "invocation-owned"]
+        )

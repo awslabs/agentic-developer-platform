@@ -18,7 +18,12 @@ adp agent abort --run tsk_UUID --command-id ANOTHER_SAVED_UUID \
 ```
 
 Use real IDs returned by the commands. The `tsk_` handle identifies the canonical
-Task; its `invocation_id` is a separate Activity identity. Task pause/resume are
+Task; its returned `invocation_id` resolves owner-only Activity detail through
+the canonical Task reader (`adp agent status --run INVOCATION_UUID`). Activity
+`/me/agent-invocations/{invocation_id}/transcript` returns a labelled retained
+Task report when available, not a full native client transcript. This direct-ID
+bridge requires Task reads and current human enrollment; it adds no Activity
+list projection, UI listing, or legacy remote controls. Task pause/resume are
 unavailable. Coding runtimes do not consume follow-up input, so E42 does not
 send steer commands. Abort acceptance remains pending until
 terminal cancellation readback; a timeout only detaches the client. Retry submissions with the same

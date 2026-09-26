@@ -1,6 +1,6 @@
 # Agent Activity CLI
 
-`adp agent` uses the selected deployment and your existing human login to inspect Activity and control owned runs. `--admin` selects tenant-admin reads, checked by the server. It never supplies owner/tenant headers or worker credentials. Submit new work using the existing `adp task` Task API surface and its Task service credentials.
+`adp agent` uses the selected deployment and your existing human login to inspect Activity and control owned runs. `--admin` selects tenant-admin reads, checked by the server. It never supplies owner/tenant headers or worker credentials. Service callers submit work using the existing `adp task` Task API surface. Enrolled humans use [`adp agent trigger`](hosted-coding.md), backed by the same Task API. Returned Task invocation IDs resolve owner-only Activity detail and retained reports; Task runs are not yet projected into Activity lists.
 
 ```bash
 adp agent list --max-pages 5 --page-size 20 --json

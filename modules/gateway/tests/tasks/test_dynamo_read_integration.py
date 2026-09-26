@@ -283,3 +283,48 @@ def test_generated_html_result_preserves_binding_digest_and_replay(adapter, stor
     assert adapter.read_artifact(record=record) == content
     assert adapter.put_run_artifact(attempt=attempt, content=content, content_type="text/html", digest=digest) == record
     assert int(store.read_task(attempt.task_id)["result_artifact_bytes"]) == len(content)
+
+
+def test_invocation_locator_uses_transactional_authority(adapter, store):
+    request = _request()
+    store.accept(request)
+    assert adapter.resolve_invocation(tenant=request.tenant, principal=request.canonical_principal, invocation_id=request.invocation_id) == (
+        request.task_id,
+        1,
+    )
+    assert adapter.resolve_invocation(tenant=request.tenant, principal="foreign", invocation_id=request.invocation_id) is None
+    assert adapter.resolve_invocation(tenant="foreign", principal=request.canonical_principal, invocation_id=request.invocation_id) is None
+
+
+def test_invocation_locator_malformed_and_dependency_failure(adapter, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from botocore.exceptions import ClientError
+
+    query = MagicMock(side_effect=ClientError({"Error": {"Code": "AccessDeniedException"}}, "Query"))
+    monkeypatch.setattr(adapter.repository._client, "query", query)
+    assert adapter.resolve_invocation(tenant="tenant-a", principal="owner", invocation_id="bad") is None
+    query.assert_not_called()
+    with pytest.raises(TaskStoreError):
+        adapter.resolve_invocation(tenant="tenant-a", principal="owner", invocation_id=str(uuid.uuid4()))
+
+
+@pytest.mark.parametrize("field,value", [("task_id", "bad"), ("generation", 0), ("invocation_id", "wrong"), ("schema_version", "unknown")])
+def test_invocation_locator_rejects_corrupt_binding(adapter, store, client, field, value):
+    from src.tasks import store as durable
+
+    request = _request()
+    store.accept(request)
+    key = {"pk": {"S": "TENANT#" + request.tenant}, "sk": {"S": "TASK_RUN#" + request.invocation_id + "#GEN#0000000001"}}
+    row = durable._deserialize(client.get_item(TableName=store.authority_table_name, Key=key)["Item"])
+    row[field] = value
+    client.put_item(TableName=store.authority_table_name, Item=durable._serialize(row))
+    with pytest.raises(TaskStoreError):
+        adapter.resolve_invocation(tenant=request.tenant, principal=request.canonical_principal, invocation_id=request.invocation_id)
+
+
+def test_activity_locator_does_not_project_into_legacy_index(adapter, store, client):
+    request = _request()
+    store.accept(request)
+    adapter.resolve_invocation(tenant=request.tenant, principal=request.canonical_principal, invocation_id=request.invocation_id)
+    assert client.scan(TableName=store.table_name, IndexName="tenant-index")["Items"] == []
