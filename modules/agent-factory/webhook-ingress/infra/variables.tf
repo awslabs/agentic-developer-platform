@@ -443,6 +443,12 @@ variable "task_api_admission_enabled" {
   default     = false
 }
 
+variable "task_api_human_enabled" {
+  description = "Enable authenticated human Task admission; standing enrollment, tenant membership, model and budget authorization remain required."
+  type        = bool
+  default     = false
+}
+
 # Issue #575: the gateway's API Gateway invoke URL is resolved at apply time
 # from SSM (published by modules/gateway/infra/) rather than passed in as a
 # tfvar. Keeps new environments repeatable — no per-env hardcoding.

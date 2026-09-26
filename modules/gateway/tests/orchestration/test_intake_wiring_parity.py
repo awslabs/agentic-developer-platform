@@ -260,7 +260,7 @@ class TestTheGrantIsReadOnlyAndNarrow:
         a cycle. Pinned so a later edit does not "fix" the literal name into a data
         source.
         """
-        assert 'role = "adp-${var.environment}-role-gateway-service"' in intake_tf
+        assert re.search(r'role\s*=\s*"adp-\$\{var.environment\}-role-gateway-service"', intake_tf)
         # The file explains in prose why it does not use a remote-state read, so the
         # check is against the effective configuration.
         assert "terraform_remote_state" not in _without_comments(intake_tf)
