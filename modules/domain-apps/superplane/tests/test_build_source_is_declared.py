@@ -283,7 +283,9 @@ class TestLockRecordsTheTransferredMechanism:
         lock = self._lock()
         for component, entry in (lock["pending_images"] or {}).items():
             expected = (
-                "executor" if component == "superplane-executor" else f"src/{component}"
+                "executor"
+                if component in {"superplane-executor", "superplane-paid-worker"}
+                else f"src/{component}"
             )
             assert entry["source_path"] == expected, (
                 f"{component} does not resolve to its maintained directory: {entry!r}"
