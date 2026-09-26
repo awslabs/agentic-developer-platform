@@ -788,6 +788,7 @@ def fixture_classes(config):
         ("vault_lifecycle", cases.VAULT_LIFECYCLE),
         ("hierarchy_lifecycle", cases.HIERARCHY_LIFECYCLE),
         ("machine_lifecycle", cases.MACHINE_LIFECYCLE),
+        ("budget_lifecycle", cases.BUDGET_LIFECYCLE),
     ):
         if config.get(key):
             try:

@@ -51,6 +51,7 @@ SUITES = (
     "hosted-chat",
     "vault-lifecycle",
     "machine-lifecycle",
+    "budget-lifecycle",
     "hierarchy-lifecycle",
     "story-reads",
     "research",
@@ -108,6 +109,7 @@ HOSTED = "hosted"
 HUMAN_TASK_CODING = "human_task_coding"
 HUMAN_TASK_CHAT = "human_task_chat"
 VAULT_LIFECYCLE = "vault_lifecycle"
+BUDGET_LIFECYCLE = "budget_lifecycle"
 MACHINE_LIFECYCLE = "machine_lifecycle"
 HIERARCHY_LIFECYCLE = "hierarchy_lifecycle"
 # #5413: three separately-reachable ADP deployments and a sign-in fixture for
@@ -452,6 +454,13 @@ LOGIN_CHECKPOINT = Case(
     (EC2, COGNITO),
 )
 DIAGNOSTICS = (
+    Case(
+        "D06",
+        "#5589/#5627",
+        "budget-lifecycle",
+        "Owned ordinary budget periods/ledgers and rate-limit dimensions with revision-fenced cleanup; no inference",
+        (EC2, PLATFORM, COGNITO, BUDGET_LIFECYCLE),
+    ),
     Case(
         "D05",
         "#5624/#5625",
