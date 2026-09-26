@@ -11602,3 +11602,164 @@ def test_diagnostic_manifest_refuses_replacement_request_and_local_only_sink(tmp
         manifest.record_diagnostic(
             "hosted_chat", {**plan, "turns": [{"request_id": "replacement"}]}
         )
+
+
+@pytest.mark.parametrize("fault", [None, "lost_create_receipt", "stale_write_accepted", "unlink_unavailable", "externally_verified", "wrong_fixture"])
+def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, monkeypatch, fault):
+    script, remote_common = shipped_script(tmp_path, "vault_lifecycle")
+    work = tmp_path / "worker"
+    work.mkdir()
+    vault = {"unrelated": {"id": "unrelated", "service": "existing", "label": "retain", "scope": "user", "revision": "old"}}
+    links = {"unrelated-link": {"id": "unrelated-link", "provider": "github", "provider_user_id": "existing", "verification_method": "oauth", "verified_at": "then"}}
+    mutations = []
+    synthetic_values = []
+    operation = [None]
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+            assert env["ADP_TENANT"] == "fixture-tenant"
+
+        def json(self, args, **kwargs):
+            if args[:3] == ["models", "mappings", "list"]:
+                return {"detail": {"principal_id": "wrong" if fault == "wrong_fixture" else "fixture-user", "tenant_id": "fixture-tenant"}}
+            if args[1] == "list":
+                rows = vault if args[0] == "credential" else links
+                return {"detail": {"items": [dict(row) for row in rows.values()], "complete": True}}
+            assert "--dry-run" in args
+            return {"status": "dry_run"}
+
+        def run(self, args, **kwargs):
+            area, action = args[:2]
+            if action == "update" and "--value-stdin" in args:
+                return 1, {"error": {"code": "usage_error"}}
+            if action == "link" and "--resume" in args:
+                row = next(row for row in links.values() if row.get("provider_user_id") == args[args.index("--provider-user-id") + 1])
+                return 4, {"detail": dict(row)}
+            mutations.append(list(args))
+            if area == "credential":
+                if action == "add":
+                    value = kwargs["stdin_text"]
+                    synthetic_values.append(value)
+                    assert value.startswith("ADP_SYNTHETIC_NOT_A_PROVIDER_CREDENTIAL_")
+                    key = args[args.index("--operation-id") + 1]
+                    operation[0] = key
+                    new = key not in vault
+                    vault.setdefault(key, {"id": key, "service": args[args.index("--service") + 1], "label": args[args.index("--label") + 1], "scope": "user", "revision": "r1"})
+                    if fault == "lost_create_receipt" and new:
+                        return 5, None
+                    return 0, {"detail": dict(vault[key])}
+                key = args[2]
+                assert key != "unrelated"
+                if action == "delete":
+                    vault.pop(key, None)
+                    return 0, {"detail": {"id": key}}
+                assert action == "update"
+                revision = args[args.index("--expected-revision") + 1]
+                if revision != vault[key]["revision"] and fault != "stale_write_accepted":
+                    return 4, {"error": {"http_status": 409}}
+                vault[key].update(label=args[args.index("--label") + 1], revision="r2")
+                return 0, {"detail": dict(vault[key])}
+            if action == "link":
+                links["owned-link"] = {"id": "owned-link", "provider": "discord", "provider_user_id": args[args.index("--provider-user-id") + 1],
+                                       "verification_method": "oauth" if fault == "externally_verified" else "self_asserted", "verified_at": "now" if fault == "externally_verified" else None}
+                return 4, {"detail": {"identity_id": "owned-link"}}
+            assert action == "unlink" and args[2] == "owned-link"
+            if fault == "unlink_unavailable":
+                return 5, None
+            links.pop("owned-link")
+            return 0, {"detail": {"id": "owned-link"}}
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(remote_common, "clean_env", lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()})
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {"access_token": "do-not-persist"})
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    cfg = {"evaluation_id": "stable-vault-run", "gateway_url": "https://gateway", "cli_path": "/installed/adp", "work_dir": str(work), "test_user_id": "fixture-login",
+           "vault_lifecycle": {"owned_mutations_authorized": True, "login_user_id": "fixture-login", "canonical_user_id": "fixture-user", "tenant_id": "fixture-tenant"}}
+    cfg["recovery_plan"] = script.recovery_plan(cfg)
+    evidence = {"success": False, "transcript": []}
+    if fault in {"stale_write_accepted", "unlink_unavailable", "externally_verified", "wrong_fixture"}:
+        with pytest.raises(remote_common.RemoteError):
+            script.execute(cfg, evidence)
+        assert evidence["success"] is False
+    else:
+        script.execute(cfg, evidence)
+        assert evidence["success"] is True
+        assert evidence["detail"]["entry_phase"] == "metadata_absent"
+        assert evidence["detail"]["identity_phase"] == "absent"
+        assert "stale-update-refused" in evidence["detail"]["checks"]
+        assert len(synthetic_values) == 2 and synthetic_values[0] == synthetic_values[1]
+    assert "unrelated" in vault and "unrelated-link" in links
+    if fault == "wrong_fixture":
+        assert not mutations
+        return
+    assert operation[0] not in vault  # Cleanup proceeds even when the link cannot be removed.
+    durable = evidence["detail"]
+    assert durable["operation_id"] == operation[0]
+    assert durable["provider_user_id"].startswith("adp-evaluation-")
+    if fault in {"unlink_unavailable", "externally_verified"}:
+        assert durable["identity_phase"] == "cleanup_pending"
+        if fault == "externally_verified":
+            assert not any(args[:2] == ["identity", "unlink"] for args in mutations)
+    import shutil
+    shutil.rmtree(work)
+    published = json.dumps(remote_common.redact(evidence))
+    assert "do-not-persist" not in published and all(value not in published for value in synthetic_values)
+    assert json.loads(published)["detail"]["operation_id"] == operation[0]
+    assert len(published.encode()) < 24000
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_vault_lifecycle_requires_exact_predeclared_plan_before_any_access(tmp_path, monkeypatch, changed):
+    script, remote_common = shipped_script(tmp_path, "vault_lifecycle")
+    cfg = {"evaluation_id": "stable-run", "gateway_url": "https://gateway", "cli_path": "/installed/adp", "work_dir": str(tmp_path / "work"),
+           "test_user_id": "fixture-login", "vault_lifecycle": {"owned_mutations_authorized": True, "login_user_id": "fixture-login",
+                                                                   "canonical_user_id": "fixture-user", "tenant_id": "fixture-tenant"}}
+    plan = script.recovery_plan(cfg)
+    assert script.recovery_plan(cfg) == plan
+    assert set(plan).isdisjoint({"password", "token", "value", "secret"})
+    if changed:
+        cfg["recovery_plan"] = {**plan, "operation_id": "changed"}
+    monkeypatch.setattr(remote_common, "session_tokens", lambda _: pytest.fail("No fixture auth before plan verification"))
+    with pytest.raises(remote_common.RemoteError, match="durably recorded"):
+        script.execute(cfg, {"success": False, "transcript": []})
+    assert not Path(cfg["work_dir"]).exists()
+
+
+@pytest.mark.parametrize("fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"])
+def test_vault_plan_durable_before_dispatch(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.vault_lifecycle_plan import recovery_plan
+
+    payload = {"evaluation_id": "vault-run", "gateway_url": "https://gateway",
+               "vault_lifecycle": {"tenant_id": "tenant", "canonical_user_id": "owner", "login_user_id": "login"}}
+    payload["recovery_plan"] = recovery_plan(payload)
+    snapshots, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("External sink unavailable")
+        snapshots.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "vault", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert snapshots[-1]["diagnostic_intents"]["vault_lifecycle:vault-run"] == recovery_plan(payload)
+            raise RuntimeError("Lost instance before any output")
+
+    if fault == "changed_plan":
+        payload["recovery_plan"]["operation_id"] = "different-target"
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker("i-owned", "vault_lifecycle", payload, manifest=None if fault == "no_manifest" else manifest)
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        import shutil
+        shutil.rmtree(tmp_path)
+        retained = snapshots[-1]["diagnostic_intents"]["vault_lifecycle:vault-run"]
+        assert retained == recovery_plan(payload)
+        assert retained["operation_id"] and retained["provider_user_id"]
+    else:
+        assert calls == []
