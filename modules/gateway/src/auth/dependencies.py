@@ -277,6 +277,9 @@ async def get_current_user(
             )
 
         token = authorization[7:]  # Remove "Bearer " prefix
+        from src.auth.tenant_context import apply_context, split_token
+
+        token, tenant_lease = split_token(token)
 
         # Get Cognito validator
         validator = _get_cognito_validator()
@@ -291,7 +294,7 @@ async def get_current_user(
             claims = validator.validate_token(token)
 
             # Convert claims to TokenContext
-            context = _cognito_claims_to_context(claims)
+            context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
 
             # Issue #5419 (PMM-02): stamp trusted alias source for service callers
             if context.account_type == "service":

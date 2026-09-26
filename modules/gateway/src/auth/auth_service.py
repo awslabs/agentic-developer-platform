@@ -217,6 +217,11 @@ class AuthService(IAuthService):
         """
         try:
             logger.debug("Validating token")
+            if token.startswith("adpctx1~"):
+                # Scoped envelopes never fall back to legacy token authority.
+                from src.auth.middleware import validate_cognito_jwt
+
+                return await validate_cognito_jwt("Bearer " + token)
 
             # Try Cognito validation first if enabled
             if self._cognito_enabled:

@@ -323,7 +323,10 @@ def deployment_stamp():
     directory the user is about to hand to somebody else.
     """
     resolved = deployment()
-    return {"deployment_id": resolved.id if resolved else "", "deployment": resolved.name if resolved else ""}
+    result = {"deployment_id": resolved.id if resolved else "", "deployment": resolved.name if resolved else ""}
+    if os.environ.get("ADP_TENANT_ID"):
+        result.update(tenant_id=os.environ["ADP_TENANT_ID"], tenant_identity=os.environ.get("ADP_TENANT_SUB", ""))
+    return result
 
 
 def check_handoff_deployment(metadata, what="setup"):
@@ -338,6 +341,11 @@ def check_handoff_deployment(metadata, what="setup"):
     than rejected: refusing it would strand a setup a user is part-way through, and
     the pre-existing gateway-URL check still applies to it.
     """
+    recorded_tenant = (metadata or {}).get("tenant_id")
+    if recorded_tenant and (
+        recorded_tenant != os.environ.get("ADP_TENANT_ID") or metadata.get("tenant_identity") != os.environ.get("ADP_TENANT_SUB")
+    ):
+        raise CliError("This handoff belongs to another tenant or login. Select its original tenant before resuming.", "tenant_mismatch", 1)
     recorded = (metadata or {}).get("deployment_id")
     if not recorded:
         return
@@ -365,6 +373,11 @@ def write_state(name, value):
 def _jwt_claims(token):
     """Decode JWT claims only to partition local cache state, never to authorize."""
     try:
+        if token.startswith("adpctx1~"):
+            _, lease, original = token.split("~")
+            claims = _jwt_claims(original)
+            claims["org_id"] = claims["custom:org_id"] = _jwt_claims(lease).get("tenant", "")
+            return claims
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload))
@@ -503,6 +516,8 @@ def ensure_can_mutate(operation_id, *, refresh=False, request=None, token=None):
         raise CliError(f"{CAPABILITY_MESSAGES[reason]} Nothing was sent.", reason, exit_code)
     unknown = [axis for axis in CAPABILITY_AXES if operation.get(axis) == "unknown"]
     return record_capability_preflight(operation_id, {"checked": True, "reason": "", "source": source, "unknown": unknown})
+
+
 @contextlib.contextmanager
 def file_lock(path, busy_message, timeout=30):
     """Hold an exclusive lock across processes for the duration of the block.

@@ -1182,7 +1182,11 @@ cmd_token() {
 
     # Output just the access token to stdout (no newline for clean output)
     # This is used by Claude Code's apiKeyHelper configuration
-    printf "%s" "${ACCESS_TOKEN}"
+    if [ -n "${ADP_TENANT_ID:-}" ]; then
+        printf "%s" "${ACCESS_TOKEN}" | python3 "$(dirname "$(script_path)")/adp-tenant.py" --wrap-token
+    else
+        printf "%s" "${ACCESS_TOKEN}"
+    fi
 }
 
 # Serve command (Issue #4154)
@@ -1202,7 +1206,7 @@ cmd_serve() {
     # single-deployment run keeps 9191, which is what every existing
     # config.toml, doc and the /setup page already say.
     local port="${DEFAULT_PROXY_PORT}"
-    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+    if { [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; } || [ -n "${ADP_TENANT_ID:-}" ]; then
         port=0
         if [ -f "${PROXY_RUNTIME_DIR}/setup-port.json" ]; then
             port="$(jq -er '.port' "${PROXY_RUNTIME_DIR}/setup-port.json")"
