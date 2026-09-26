@@ -6,7 +6,8 @@
   "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
-    "pending-source-review": 1036,
+    "reviewed-import-only-observation": 107,
+    "pending-source-review": 929,
     "nonsecurity-test-assertion": 187,
     "fixed-source-runtime-open": 10,
     "reviewed-optimization-safe-guard": 35,
@@ -26,8 +27,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1",
@@ -1650,8 +1653,10 @@
       "rule": "B404",
       "line": 49,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=103",
@@ -1776,8 +1781,10 @@
       "rule": "B404",
       "line": 25,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=112",
@@ -1832,8 +1839,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=116",
@@ -4800,8 +4809,10 @@
       "rule": "B404",
       "line": 7,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=328",
@@ -5276,8 +5287,10 @@
       "rule": "B404",
       "line": 7,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=361",
@@ -6312,8 +6325,10 @@
       "rule": "B404",
       "line": 25,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=435",
@@ -6382,8 +6397,10 @@
       "rule": "B404",
       "line": 18,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=440",
@@ -6438,8 +6455,10 @@
       "rule": "B404",
       "line": 39,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=444",
@@ -6480,8 +6499,10 @@
       "rule": "B404",
       "line": 25,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=447",
@@ -6550,8 +6571,10 @@
       "rule": "B404",
       "line": 22,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=452",
@@ -6914,8 +6937,10 @@
       "rule": "B404",
       "line": 34,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=478",
@@ -7180,8 +7205,10 @@
       "rule": "B404",
       "line": 24,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=497",
@@ -7222,8 +7249,10 @@
       "rule": "B404",
       "line": 21,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=500",
@@ -7432,8 +7461,10 @@
       "rule": "B404",
       "line": 30,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=515",
@@ -7586,8 +7617,10 @@
       "rule": "B404",
       "line": 15,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=526",
@@ -7810,8 +7843,10 @@
       "rule": "B404",
       "line": 25,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=542",
@@ -7852,8 +7887,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=545",
@@ -7978,8 +8015,10 @@
       "rule": "B404",
       "line": 38,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=554",
@@ -8048,8 +8087,10 @@
       "rule": "B404",
       "line": 17,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=559",
@@ -8202,8 +8243,10 @@
       "rule": "B404",
       "line": 25,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=570",
@@ -8832,8 +8875,10 @@
       "rule": "B404",
       "line": 8,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=615",
@@ -8860,8 +8905,10 @@
       "rule": "B404",
       "line": 17,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=617",
@@ -8986,8 +9033,10 @@
       "rule": "B404",
       "line": 64,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=626",
@@ -9028,8 +9077,10 @@
       "rule": "B404",
       "line": 50,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=629",
@@ -9210,8 +9261,10 @@
       "rule": "B404",
       "line": 15,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=642",
@@ -9404,8 +9457,10 @@
       "rule": "B404",
       "line": 31,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=655",
@@ -10046,8 +10101,10 @@
       "rule": "B404",
       "line": 13,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=698",
@@ -10102,8 +10159,10 @@
       "rule": "B404",
       "line": 14,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=702",
@@ -10158,8 +10217,10 @@
       "rule": "B404",
       "line": 19,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=706",
@@ -10200,8 +10261,10 @@
       "rule": "B404",
       "line": 16,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=709",
@@ -10242,8 +10305,10 @@
       "rule": "B404",
       "line": 16,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=712",
@@ -10284,8 +10349,10 @@
       "rule": "B404",
       "line": 13,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=715",
@@ -10396,8 +10463,10 @@
       "rule": "B404",
       "line": 51,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=723",
@@ -10438,8 +10507,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=726",
@@ -10466,8 +10537,10 @@
       "rule": "B404",
       "line": 78,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=728",
@@ -10494,8 +10567,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=730",
@@ -10564,8 +10639,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=735",
@@ -10718,8 +10795,10 @@
       "rule": "B404",
       "line": 16,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=746",
@@ -11528,8 +11607,10 @@
       "rule": "B404",
       "line": 13,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=800",
@@ -11584,8 +11665,10 @@
       "rule": "B404",
       "line": 119,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=804",
@@ -11750,8 +11833,10 @@
       "rule": "B404",
       "line": 69,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=815",
@@ -12328,8 +12413,10 @@
       "rule": "B404",
       "line": 50,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=852",
@@ -12384,8 +12471,10 @@
       "rule": "B404",
       "line": 62,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=856",
@@ -12496,8 +12585,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=864",
@@ -12706,8 +12797,10 @@
       "rule": "B404",
       "line": 23,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=879",
@@ -12734,8 +12827,10 @@
       "rule": "B404",
       "line": 17,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=881",
@@ -12762,8 +12857,10 @@
       "rule": "B404",
       "line": 13,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=883",
@@ -12804,8 +12901,10 @@
       "rule": "B404",
       "line": 79,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=886",
@@ -12874,8 +12973,10 @@
       "rule": "B404",
       "line": 85,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=891",
@@ -13616,8 +13717,10 @@
       "rule": "B404",
       "line": 4,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=939",
@@ -13658,8 +13761,10 @@
       "rule": "B404",
       "line": 6,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=942",
@@ -13770,8 +13875,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=950",
@@ -13826,8 +13933,10 @@
       "rule": "B404",
       "line": 3,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=954",
@@ -14016,8 +14125,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=967",
@@ -14044,8 +14155,10 @@
       "rule": "B404",
       "line": 5,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=969",
@@ -14100,8 +14213,10 @@
       "rule": "B404",
       "line": 1,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=973",
@@ -14170,8 +14285,10 @@
       "rule": "B404",
       "line": 1,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=978",
@@ -14240,8 +14357,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=983",
@@ -14394,8 +14513,10 @@
       "rule": "B404",
       "line": 8,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=994",
@@ -14436,8 +14557,10 @@
       "rule": "B404",
       "line": 6,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=997",
@@ -14478,8 +14601,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1000",
@@ -14618,8 +14743,10 @@
       "rule": "B404",
       "line": 7,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1010",
@@ -14660,8 +14787,10 @@
       "rule": "B404",
       "line": 4,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1013",
@@ -14730,8 +14859,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1018",
@@ -14772,8 +14903,10 @@
       "rule": "B404",
       "line": 13,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1021",
@@ -15322,8 +15455,10 @@
       "rule": "B404",
       "line": 8,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1056",
@@ -15392,8 +15527,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1061",
@@ -15490,8 +15627,10 @@
       "rule": "B404",
       "line": 5,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1068",
@@ -15546,8 +15685,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1072",
@@ -15574,8 +15715,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1074",
@@ -15602,8 +15745,10 @@
       "rule": "B404",
       "line": 15,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1076",
@@ -15658,8 +15803,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1080",
@@ -15686,8 +15833,10 @@
       "rule": "B404",
       "line": 13,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1082",
@@ -15756,8 +15905,10 @@
       "rule": "B404",
       "line": 4,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1087",
@@ -17342,8 +17493,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1193",
@@ -17460,8 +17613,10 @@
       "rule": "B404",
       "line": 6,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1201",
@@ -17664,8 +17819,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1214",
@@ -18376,8 +18533,10 @@
       "rule": "B404",
       "line": 41,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1259",
@@ -18432,8 +18591,10 @@
       "rule": "B404",
       "line": 88,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1263",
@@ -18502,8 +18663,10 @@
       "rule": "B404",
       "line": 29,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1269",
@@ -18558,8 +18721,10 @@
       "rule": "B404",
       "line": 18,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1273",
@@ -18586,8 +18751,10 @@
       "rule": "B404",
       "line": 9,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1275",
@@ -18614,8 +18781,10 @@
       "rule": "B404",
       "line": 11,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1277",
@@ -18656,8 +18825,10 @@
       "rule": "B404",
       "line": 16,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1280",
@@ -18684,8 +18855,10 @@
       "rule": "B404",
       "line": 19,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1282",
@@ -18712,8 +18885,10 @@
       "rule": "B404",
       "line": 16,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1284",
@@ -18740,8 +18915,10 @@
       "rule": "B404",
       "line": 54,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1286",
@@ -18796,8 +18973,10 @@
       "rule": "B404",
       "line": 54,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1290",
@@ -18866,8 +19045,10 @@
       "rule": "B404",
       "line": 22,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1295",
@@ -18894,8 +19075,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1297",
@@ -18950,8 +19133,10 @@
       "rule": "B404",
       "line": 1310,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1301",
@@ -18992,8 +19177,10 @@
       "rule": "B404",
       "line": 514,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1304",
@@ -19048,8 +19235,10 @@
       "rule": "B404",
       "line": 6,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1308",
@@ -19104,8 +19293,10 @@
       "rule": "B404",
       "line": 12,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1312",
@@ -19272,8 +19463,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1325",
@@ -19300,8 +19493,10 @@
       "rule": "B404",
       "line": 6,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1327",
@@ -19342,8 +19537,10 @@
       "rule": "B404",
       "line": 139,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1330",
@@ -19412,8 +19609,10 @@
       "rule": "B404",
       "line": 8,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1335",
@@ -19440,8 +19639,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1337",
@@ -19482,8 +19683,10 @@
       "rule": "B404",
       "line": 28,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1340",
@@ -19524,8 +19727,10 @@
       "rule": "B404",
       "line": 32,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1343",
@@ -19566,8 +19771,10 @@
       "rule": "B404",
       "line": 6,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1346",
@@ -19594,8 +19801,10 @@
       "rule": "B404",
       "line": 4,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1348",
@@ -19636,8 +19845,10 @@
       "rule": "B404",
       "line": 14,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1351",
@@ -19882,8 +20093,10 @@
       "rule": "B404",
       "line": 14,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1367",
@@ -21032,8 +21245,10 @@
       "rule": "B404",
       "line": 10,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-import-only-observation",
+      "owner_issue": 6108,
+      "rationale": "Exact frozen AST statement imports subprocess and does not invoke a subprocess at this location. The import-only B404 diagnostic is reviewed; original execution observations in this file retain their separate identities, dispositions and #6108 ownership. No command-boundary, runtime import-path or whole-module safety claim is inherited.",
+      "evidence": "evidence/bandit-subprocess-import-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1440",

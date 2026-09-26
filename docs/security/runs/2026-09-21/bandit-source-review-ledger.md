@@ -17,7 +17,8 @@ non-applicable. Runtime and operator assertions still require review.
 | Reviewed parameterized SQL boundaries | 2 |
 | Fixed source boundary, runtime acceptance open | 10 |
 | Reviewed assertions with explicit optimization-safe guards | 35 |
-| Pending source review, owned by #6108 | 1036 |
+| Reviewed import-only observations; execution scopes retained | 107 |
+| Pending source review, owned by #6108 | 929 |
 | Total original selectors | 1470 |
 
 Every original selector is retained exactly once in
@@ -107,3 +108,28 @@ source leaves the other 12 B101 observations unchanged. Evidence:
 
 The full **1,470** original identities/severities remain; **1,036** observations
 are still pending source review. #6108 and its separate runtime holds stay open.
+
+## Subprocess import-only observations
+
+107 original LOW B404 observations are exact `Import`/absolute `ImportFrom`
+statements for Python's subprocess API, with separately retained original
+execution observations in each source file. B404 flags the availability of the
+API; these statements do not invoke a subprocess. Their import-only diagnostic
+is reviewed, while command safety, runtime import-path integrity and the
+containing modules remain outside this acceptance. Every linked execution
+observation retains its original identity, disposition, native severity and
+#6108 owner; none inherits the import review. Three B404 records without linked
+original execution coverage remain pending.
+
+`evidence/bandit-subprocess-import-review.json` retains all 297 execution-selector
+links, exact source imports and review date. The verifier
+`scripts/security/s21/verify_bandit_import_observations.py` checks the frozen
+SARIF identities, AST locations, native severities and independent execution
+ownership/dispositions. Twenty regressions reject call/import confusion,
+relative or wildcard imports, wrong source lines/indexes and migrated execution
+acceptance. A fresh Bandit 1.7.9 scan still reports all 107 import observations
+with zero errors; no source suppression or disappearance supplies the decision.
+
+All **1,470** original selectors and original disposition-candidate links remain;
+**929** observations are pending source review. #6108 stays open, including
+execution-boundary review and separate runtime acceptance holds.
