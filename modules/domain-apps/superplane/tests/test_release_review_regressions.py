@@ -89,6 +89,7 @@ def test_build_inputs_cannot_inject_workflow_environment(revision):
         ("superplane-api", "api"),
         ("superplane-controller", "controller"),
         ("superplane-platform-monitor", "monitor"),
+        ("superplane-executor", "executor"),
     ],
 )
 @pytest.mark.parametrize(
@@ -121,7 +122,10 @@ def test_buildspec_runs_only_the_selected_domain_build(
     shutil.copy(ROOT / RELEASE / "build-image.sh", script)
     # The maintained tree, laid out exactly as the transfer placed it: the build context is
     # <module root>/src/<component>, a sibling of releases/ rather than a directory under it.
-    context = script.parent.parent / "src" / component
+    source_path = (
+        "executor" if component == "superplane-executor" else "src/" + component
+    )
+    context = script.parent.parent / source_path
     context.mkdir(parents=True)
     (context / "Dockerfile").write_text("FROM scratch\n")
     if component == "superplane-api":
@@ -170,7 +174,7 @@ def test_buildspec_runs_only_the_selected_domain_build(
         # Provenance only — the script must not use this to fetch anything.
         "ORIGIN_REPOSITORY": "https://github.com/aws-innovate/AISuperPlane",
         "ORIGIN_REVISION": "a" * 40,
-        "SOURCE_PATH": "src/" + component,
+        "SOURCE_PATH": source_path,
         "ECR_REPO": "adp-" + component,
         "ACCOUNT_ID": "111122223333",
         "AWS_REGION": "us-east-1",
@@ -178,6 +182,8 @@ def test_buildspec_runs_only_the_selected_domain_build(
         # The ADP commit, which is what identifies the built image after the transfer.
         "IMAGE_TAG": adp_commit,
     }
+    if component == "superplane-executor":
+        env["PYTHON_IMAGE"] = "python:3.12-slim@sha256:" + "d" * 64
     if bad_input == "repository":
         env["ECR_REPO"] = "adp-gateway"
     if bad_input == "revision":
@@ -247,10 +253,20 @@ def test_buildspec_runs_only_the_selected_domain_build(
         assert "org.opencontainers.image.revision=" + adp_commit in calls
         assert "com.adp.superplane.origin.revision=" + "a" * 40 in calls
         assert (
-            "org.opencontainers.image.source=modules/domain-apps/superplane/src/"
-            + component
+            "org.opencontainers.image.source=modules/domain-apps/superplane/"
+            + source_path
             in calls
         )
+        if component == "superplane-executor":
+            build_call = next(
+                line for line in calls.splitlines() if "docker build " in line
+            )
+            assert "--target controller-service" in build_call
+            assert "--target paid-worker" not in build_call
+            assert "--build-arg PYTHON_IMAGE=" + env["PYTHON_IMAGE"] in build_call
+            assert build_call.endswith(" ."), (
+                "executor needs the repository build context"
+            )
         # The origin revision must never become the tag: rebuilds from later ADP commits
         # would collide on it, so "which build is running" would stop having an answer.
         assert ":" + "a" * 40 not in calls
