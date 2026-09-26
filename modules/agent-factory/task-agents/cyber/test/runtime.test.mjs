@@ -124,3 +124,24 @@ test('report derives metadata from exact finding citations but refuses an unknow
  assert.equal((await submit.handler(bad)).isError,true);
  assert.equal(bridge.report,null);
 });
+
+test('accepted report is acknowledged without another model call or fabricated usage',async()=>{
+ const bridge=new HostBridge(start(),()=>{});bridge.report=report();bridge.model=()=>{throw new Error('must not invoke provider after report');};
+ const proxy=await startProxy(bridge,{maxTokens:100});
+ try {
+  const response=await fetch(proxy.url+'/v1/messages',{method:'POST',headers:{authorization:'Bearer '+proxy.token},body:JSON.stringify({messages:[{role:'user',content:'tool report accepted'}]})});
+  const value=await response.json();assert.equal(response.status,200);assert.equal(value.stop_reason,'end_turn');assert.deepEqual(value.content,[]);assert.equal(value.usage,undefined);assert.equal(bridge.failure,null);
+ } finally {await proxy.close();}
+});
+test('final permitted turn requires report and preceding turn warns about cleanup',async()=>{
+ const bridge=new HostBridge(start(),()=>{});const requests=[];
+ bridge.model=async (request)=>{requests.push(request);return {turn_id:randomUUID(),content:[],stop_reason:'end_turn'};};
+ const proxy=await startProxy(bridge,{maxTokens:100,maxTurns:2,finalReportTool:'mcp__cyber__submit_report'});
+ try {
+  for(let i=0;i<2;i++) {
+   const response=await fetch(proxy.url+'/v1/messages',{method:'POST',headers:{authorization:'Bearer '+proxy.token},body:JSON.stringify({messages:[{role:'user',content:'investigate'}],tools:[{name:'mcp__cyber__submit_report',input_schema:{type:'object'}}]})});assert.equal(response.status,200);
+  }
+  assert.match(requests[0].system.at(-1).text,/close browser sessions/);assert.equal(requests[0].tool_choice,undefined);
+  assert.deepEqual(requests[1].tool_choice,{type:'tool',name:'mcp__cyber__submit_report',disable_parallel_tool_use:true});
+ } finally {await proxy.close();}
+});

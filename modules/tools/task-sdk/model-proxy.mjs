@@ -61,7 +61,8 @@ export function streamedMessage(message) {
   return events.join('');
 }
 
-export async function startProxy(bridge, { maxTokens }) {
+export async function startProxy(bridge, { maxTokens, maxTurns, finalReportTool }) {
+  let modelTurns = 0;
   const token = randomBytes(32).toString('hex');
   const server = http.createServer(async (req, res) => {
     try {
@@ -79,7 +80,26 @@ export async function startProxy(bridge, { maxTokens }) {
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       const normalized = normalizeRequest(body, maxTokens);
-      const response = await bridge.model(normalized.sdk_request, normalized.max_tokens);
+      // Report acceptance is a local terminal acknowledgment, never another paid turn.
+      let response;
+      if (bridge.report && !bridge.failure && !bridge.cancelCommand) {
+        response = { turn_id: 'report_complete', content: [], stop_reason: 'end_turn' };
+      } else {
+        if (finalReportTool && Number.isInteger(maxTurns)) {
+          const remaining = maxTurns - modelTurns;
+          const guidance = `Task model turns remaining (including this one): ${remaining}. ` +
+            (remaining <= 1 ? `Submit the final report now using ${finalReportTool}. Disclose missing coverage; do not invent evidence.` :
+             remaining === 2 ? 'Finish essential evidence collection and close browser sessions now. The next turn is reserved for the final report.' :
+             'Batch independent tool calls; reserve the last turn for the final report.');
+          const system = normalized.sdk_request.system;
+          normalized.sdk_request.system = [...(Array.isArray(system) ? system : system ? [{type:'text', text:system}] : []), {type:'text', text:guidance}];
+          if (remaining <= 1 && normalized.sdk_request.tools?.some(tool => tool.name === finalReportTool)) {
+            normalized.sdk_request.tool_choice = { type: 'tool', name: finalReportTool, disable_parallel_tool_use: true };
+          }
+        }
+        modelTurns++;
+        response = await bridge.model(normalized.sdk_request, normalized.max_tokens);
+      }
       const message = { id: `msg_${response.turn_id}`, type: 'message', role: 'assistant', model: 'task-authorized',
         content: response.content, stop_reason: response.stop_reason, stop_sequence: null,
         ...(response.usage ? { usage: response.usage } : {}) };
