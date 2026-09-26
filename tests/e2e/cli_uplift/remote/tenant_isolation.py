@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 import common
-from capability_contrast import _write_session
+from capability_contrast import _write_session, ordinary_session
 
 
 def detail(value):
@@ -115,6 +115,81 @@ def isolated_reads(cli, fixture, evidence):
     )
 
 
+def user_switch_reads(cli, config, fixture, home, evidence):
+    """Swap legitimate fixture sessions only in this disposable client's stores."""
+    before = detail(cli.json(["tenant", "current"]))
+    common.require(
+        before.get("selection_source") == "saved_default"
+        and before.get("identity")
+        and before["identity"] != fixture["ordinary_login_user_id"]
+        and before.get("tenant_id") != fixture["ordinary_tenant_id"],
+        "User switch requires distinct identities and observable tenant defaults",
+    )
+    tokens = ordinary_session(config, fixture)  # Fixture setup, not login acceptance.
+    directory = home / ".bedrock-gateway"
+    original = {
+        directory / name: (directory / name).read_bytes()
+        for name in ("config.json", "tokens.json")
+    }
+    try:
+        _write_session(home, config["gateway_url"], tokens)
+        rows = detail(cli.json(["tenant", "list"])).get("items")
+        common.require(
+            isinstance(rows, list)
+            and len(rows) == 1
+            and rows[0].get("org_id") == fixture["ordinary_tenant_id"],
+            "User-switch fixture must have its one known native membership",
+        )
+        current = detail(cli.json(["tenant", "current"]))
+        common.require(
+            current.get("identity") == fixture["ordinary_login_user_id"]
+            and current.get("tenant_id") == fixture["ordinary_tenant_id"]
+            and current.get("selection_source") == "single_membership",
+            "Original user's saved default leaked into the ordinary session",
+        )
+        saved = detail(cli.json(["tenant", "use", fixture["ordinary_tenant_id"]]))
+        common.require(
+            saved.get("identity") == fixture["ordinary_login_user_id"]
+            and saved.get("tenant_id") == fixture["ordinary_tenant_id"]
+            and saved.get("selection_source") == "saved_default",
+            "Ordinary user's identity-specific default was not saved",
+        )
+        readback = detail(cli.json(["tenant", "current"]))
+        common.require(
+            all(
+                readback.get(key) == saved.get(key)
+                for key in ("identity", "tenant_id", "selection_source")
+            ),
+            "Ordinary user's saved default did not survive the next command",
+        )
+        scoped_capabilities(cli, fixture["ordinary_tenant_id"])
+    finally:
+        # Restore even on a refused command or partial fixture write. The outer
+        # session handoff must never replace the original login with this fixture.
+        for path, content in original.items():
+            path.write_bytes(content)
+            os.chmod(path, 0o600)
+    restored = detail(cli.json(["tenant", "current"]))
+    common.require(
+        all(
+            restored.get(key) == before.get(key)
+            for key in ("identity", "tenant_id", "selection_source")
+        ),
+        "Switching back did not restore the original user's saved default",
+    )
+    evidence["user_switch"] = {
+        "original_login_user_id": before["identity"],
+        "original_tenant_id": before["tenant_id"],
+        "ordinary_login_user_id": fixture["ordinary_login_user_id"],
+        "ordinary_tenant_id": fixture["ordinary_tenant_id"],
+        "ordinary_identity_verified": True,
+        "ordinary_default_isolated": True,
+        "original_default_preserved": True,
+        "original_session_restored": True,
+        "qualification": "served CLI default isolation with legitimate session fixture setup; no login, inference or revocation acceptance claim",
+    }
+
+
 def execute(config, evidence):
     common.require(config.get("cli_path"), "install_auth did not retain the served CLI")
     with tempfile.TemporaryDirectory(prefix="adp-tenant-isolation-") as directory:
@@ -147,7 +222,12 @@ def execute(config, evidence):
         cli = common.Cli(config["cli_path"], env, evidence["transcript"], timeout=60)
         try:
             if config.get("mode") == "isolation":
-                isolated_reads(cli, config.get("tenant_isolation") or {}, evidence)
+                fixture = config.get("tenant_isolation") or {}
+                isolated_reads(cli, fixture, evidence)
+                if fixture.get("user_switch"):
+                    user_switch_reads(
+                        cli, config, fixture["user_switch"], home, evidence
+                    )
             else:
                 smoke(cli, evidence)
         finally:
