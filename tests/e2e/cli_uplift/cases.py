@@ -47,6 +47,7 @@ SUITES = (
     "full",
     "nightly",
     "capability-contrast",
+    "usage-exports",
     "hosted-coding",
     "hosted-chat",
     "vault-lifecycle",
@@ -294,7 +295,7 @@ CASES = (
         "E21",
         "#5628",
         "story-reads",
-        "Own usage views and bounded JSON export preserve scope, shape and incomplete-result exit status; no spend reconciliation claim",
+        "Own usage views and bounded JSON/NDJSON/CSV exports preserve scope, shape and continuation/exit status; no spend reconciliation claim",
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
@@ -516,6 +517,8 @@ def suite_cases(suite):
         )
     if suite == "capability-contrast":
         return (BY_ID["E19"],)
+    if suite == "usage-exports":
+        return (BY_ID["E21"],)
     if suite == "research":
         return (BY_ID["E25"],)
     if suite == "login":
