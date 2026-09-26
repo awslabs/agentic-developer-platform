@@ -136,15 +136,36 @@ def user_switch_reads(cli, config, fixture, home, evidence):
         rows = detail(cli.json(["tenant", "list"])).get("items")
         common.require(
             isinstance(rows, list)
-            and len(rows) == 1
-            and rows[0].get("org_id") == fixture["ordinary_tenant_id"],
-            "User-switch fixture must have its one known native membership",
+            and rows
+            and all(
+                isinstance(row, dict) and isinstance(row.get("org_id"), str)
+                for row in rows
+            )
+            and len({row["org_id"] for row in rows}) == len(rows)
+            and fixture["ordinary_tenant_id"] in {row["org_id"] for row in rows},
+            "User-switch fixture lacks its known native membership",
         )
-        current = detail(cli.json(["tenant", "current"]))
+        if len(rows) == 1:
+            current = detail(cli.json(["tenant", "current"]))
+            expected_source = "single_membership"
+        else:
+            code, current = cli.run(["tenant", "current"], expected=4)
+            common.require(
+                code == 4
+                and (current.get("error") or {}).get("code")
+                == "tenant_selection_required",
+                "Original user's default leaked into an ambiguous ordinary session",
+            )
+            current = detail(
+                cli.json(
+                    ["--tenant", fixture["ordinary_tenant_id"], "tenant", "current"]
+                )
+            )
+            expected_source = "flag"
         common.require(
             current.get("identity") == fixture["ordinary_login_user_id"]
             and current.get("tenant_id") == fixture["ordinary_tenant_id"]
-            and current.get("selection_source") == "single_membership",
+            and current.get("selection_source") == expected_source,
             "Original user's saved default leaked into the ordinary session",
         )
         saved = detail(cli.json(["tenant", "use", fixture["ordinary_tenant_id"]]))

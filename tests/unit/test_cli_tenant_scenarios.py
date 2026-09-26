@@ -78,8 +78,9 @@ def test_two_tenant_scenario_refreshes_but_does_not_claim_inference(scenario):
     "failure",
     [None, "foreign_identity", "leaked_default", "command_error", "partial_write"],
 )
+@pytest.mark.parametrize("membership_count", [1, 2])
 def test_user_switch_restores_original_stores_and_rejects_false_passes(
-    scenario, tmp_path, monkeypatch, failure
+    scenario, tmp_path, monkeypatch, failure, membership_count
 ):
     import json
 
@@ -114,7 +115,10 @@ def test_user_switch_restores_original_stores_and_rejects_false_passes(
             if ordinary and failure == "command_error":
                 raise scenario.common.RemoteError("fixture read refused")
             if args == ["tenant", "list"]:
-                data = {"items": [{"org_id": "native"}]}
+                data = {
+                    "items": [{"org_id": "native"}]
+                    + ([{"org_id": "managed"}] if membership_count == 2 else [])
+                }
             elif "capabilities" in args:
                 data = {"tenant": {"org_id": "native"}}
             else:
@@ -129,7 +133,17 @@ def test_user_switch_restores_original_stores_and_rejects_false_passes(
                     if not ordinary or self.saved or failure == "leaked_default"
                     else "single_membership",
                 }
+            if args[:1] == ["--tenant"]:
+                data["selection_source"] = "flag"
             return {"status": "ok", "detail": data}
+
+        def run(self, args, **kwargs):
+            if failure == "leaked_default":
+                return 0, {"status": "ok", "detail": {"tenant_id": "managed"}}
+            return 4, {
+                "status": "failed",
+                "error": {"code": "tenant_selection_required"},
+            }
 
     evidence = {}
     fixture = {
