@@ -73,3 +73,30 @@ observation before/after with zero errors. Full identity/severity/candidate join
 are in `docs/security/runs/2026-09-26/explanations-redirect-boundary/review.json`.
 Redirected API deployments now fail closed; configured endpoints must serve the
 stream directly. All13,139 original identities and all runtime holds remain.
+
+## GitLab browser handoff boundary
+
+Exact original selector `run=0|ri=9878` is source-fixed with runtime acceptance
+open. The browser now requests a JSON handoff from the authenticated backend
+with `redirect: error`, instead of following an opaque redirect and using its
+final response URL. The configured GitLab URL is the destination authority;
+caller `redirect_uri` and `next` parameters cannot override it. The backend
+validates that URL before minting, returns a non-cacheable JSON handoff to the
+SPA, and retains 302 responses for legacy clients. Existing external HTTPS,
+same-origin `/gitlab`, and configured internal HTTP deployments remain supported.
+
+Thirty frontend tests cover native loopback redirect refusal, direct JSON
+controls, malformed destinations and browser opaque-response retry prevention.
+Six fail against the baseline implementation. Thirty-nine backend tests cover
+signed canonical/tenant identity, legacy behavior, JSON auth and outage refusal,
+and malformed configured URLs rejected before credential minting. The frozen
+Semgrep rule reports one match before and after; no scanner absence or severity
+change is claimed. All 13,139 selector identities remain and 4,047 source reviews
+are pending. Receipt: `docs/security/runs/2026-09-26/gitlab-handoff-boundary/review.json`.
+
+Remaining acceptance belongs to #6119: deploy the additive backend before the
+frontend and demonstrate actual browser GitLab login on the configured topology.
+Frontend-first rollout against an older backend falls back to `/gitlab/` rather
+than following a redirect; authenticated handoff needs the new backend. No live
+probes or rollout were performed. Existing HTTP transport and callback JWT query
+handling are separate open concerns; this patch does not claim to resolve them.
