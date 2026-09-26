@@ -741,10 +741,20 @@ def execute(config, evidence):
     common.require(config.get("cli_path"), "install_auth did not retain served CLI")
     mode = config.get("mode")
     common.require(mode in SCENARIOS, "Unknown story read scenario")
+    # install_auth verified this native org through /auth/cli/admin-session and
+    # persisted it with the session. Never guess from visible membership order.
+    session = common.load_session(config)
+    tenant = config.get("org_id")
+    common.require(
+        isinstance(tenant, str)
+        and bool(tenant.strip())
+        and tenant == session.get("org_id"),
+        "Story reads require the verified login session native tenant",
+    )
     with tempfile.TemporaryDirectory(prefix="adp-story-reads-") as directory:
         home = Path(directory)
         os.chmod(home, 0o700)
-        env = common.clean_env(config, HOME=home)
+        env = common.clean_env(config, HOME=home, ADP_TENANT=tenant)
         for name in (
             "XDG_CONFIG_HOME",
             "XDG_DATA_HOME",
@@ -755,8 +765,11 @@ def execute(config, evidence):
             path = home / name
             path.mkdir(mode=0o700)
             env[name] = str(path)
-        _write_session(home, config["gateway_url"], common.session_tokens(config))
+        env["BG_CONFIG_DIR"] = str(home / ".bedrock-gateway")
+        _write_session(home, config["gateway_url"], session)
         cli = common.Cli(config["cli_path"], env, evidence["transcript"], timeout=30)
+        evidence["tenant_id"] = tenant
+        evidence["tenant_selection"] = "verified_native_login_session"
         SCENARIOS[mode](cli, evidence)
         evidence["qualification"] = (
             "served CLI read/error regression; not full story acceptance"
