@@ -1,0 +1,36 @@
+{
+  "source_version": "8.14.1-2+deb13u5",
+  "package_version": "8.14.1-2+deb13u5+adp2",
+  "upstream_commit": "51beed175dbfc37da3113f6acce60c630c070ce8",
+  "files": {
+    "curl_8.14.1-2+deb13u5.dsc": {
+      "url": "https://deb.debian.org/debian/pool/main/c/curl/curl_8.14.1-2+deb13u5.dsc",
+      "sha256": "9a9a2c95cdc8b5d76892c70858f25eaf2dc0b0a475a1e43e0b4ad428414752df",
+      "size": 3263
+    },
+    "curl_8.14.1-2+deb13u5.debian.tar.xz": {
+      "url": "https://deb.debian.org/debian/pool/main/c/curl/curl_8.14.1-2+deb13u5.debian.tar.xz",
+      "sha256": "ebdfcfab1c2001c7a539fe2a4044dbf666a544393f191bedce9ee2d07c4ea925",
+      "size": 72312
+    },
+    "curl_8.14.1.orig.tar.gz": {
+      "url": "https://deb.debian.org/debian/pool/main/c/curl/curl_8.14.1.orig.tar.gz",
+      "sha256": "6766ada7101d292b42b8b15681120acd68effa4a9660935853cf6d61f0d984d4",
+      "size": 4250332
+    },
+    "curl_8.14.1.orig.tar.gz.asc": {
+      "url": "https://deb.debian.org/debian/pool/main/c/curl/curl_8.14.1.orig.tar.gz.asc",
+      "sha256": "39cc2ec8ddc39d04e3e7101bbed46d858d0875cbb297a6bfa20959fa2bc7d5c7",
+      "size": 488
+    }
+  },
+  "cookie_source_sha256": {
+    "before": "3167e1f86ca0eac599a45b858b07cea8d088e49ec6f27fa439347781351dfc68",
+    "after": "44058de7ac6cc061318211a4a2ebabc49b29492937962a0f6e36b9714dc4880e"
+  },
+  "proxy_credentials_upstream_commit": "88c7e16cceec816a2df45c899d49b1e85513f193",
+  "setopt_source_sha256": {
+    "before": "b0f9b2d591692fc6a02e3ea4d8e4ccc44cbf010de8a167c7846534cd12398cb7",
+    "after": "e8318f67fd0788f8b551d49d24c7a0f0296c3cf991665e136ddd033810fe49a0"
+  }
+}

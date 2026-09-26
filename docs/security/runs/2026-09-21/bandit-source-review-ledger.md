@@ -12,11 +12,13 @@ non-applicable. Runtime and operator assertions still require review.
 
 | Original selector disposition | Count |
 | --- | ---: |
-| Fixed fail-soft logging gaps | 4 |
+| Fixed source controls | 213 |
 | Verified test assertions | 187 |
 | Reviewed parameterized SQL boundaries | 2 |
-| Fixed source boundary, runtime acceptance open | 2 |
-| Pending source review, owned by #6108 | 1275 |
+| Fixed source boundary, runtime acceptance open | 10 |
+| Reviewed assertions with explicit optimization-safe guards | 35 |
+| Reviewed import-only observations; execution scopes retained | 107 |
+| Pending source review, owned by #6108 | 916 |
 | Total original selectors | 1470 |
 
 Every original selector is retained exactly once in
@@ -62,3 +64,129 @@ identity/severity and #6108 ownership remain, with runtime acceptance open.
 ## Optimization-safe validation follow-up
 
 203 retained B101 selectors now use explicit conditional failures that survive `python -O` and `python -OO`. These cover deployment target selection, archive identity, replay/journal state, workload inventory, recovery validation, pricing rollout and identity-policy invariants. The ten files retain the same guard expressions and AssertionError messages, verified by AST normalization. Six refusal regressions fail on baseline and pass on candidate; 243 component tests pass. No AWS deployment was performed. The eight gateway identity-module selectors retain runtime-open status pending the owning rollout. Evidence: `evidence/bandit-optimization-guards.json`. The full 1,470-selector inventory is preserved; 1,072 remain pending source review.
+
+## Superplane acceptance guard review
+
+35 original LOW B101 observations in `operation_receipts.py`, `live_observer.py`
+and `live_baseline.py` are type-narrowing assertions immediately preceded by
+explicit `require(...)` enforcement. Their source-specific review proves the
+same predicate (or the first conjunction) is checked in the immediately prior
+statement, with no intervening reassignment, and that the imported helper raises
+`EvidenceError` using ordinary conditional code. No production source edit or
+scanner suppression was needed. The remaining observer inventory invariant at
+original line 1924 has no such direct guard and stays pending.
+
+The verifier and per-selector receipt are
+`scripts/security/s21/verify_bandit_guarded_assertions.py` and
+`evidence/bandit-superplane-guard-review.json`. Sixteen negative/positive verifier
+regressions pass. The existing offline acceptance suites pass **420 tests in each
+of normal Python, -O and -OO**; synthetic transports cannot publish live evidence.
+The subject files are byte-identical to the original frozen source. A fresh
+Bandit 1.7.9 B101 scan still reports all **36** observations with zero errors:
+35 reviewed guards plus the one pending invariant. Native LOW severity is
+retained; scan disappearance is not the evidence for this review.
+
+All **1,470** original identities, severities and disposition-candidate joins are
+preserved; **1,037** observations remain pending source review. #6108 stays open,
+including its separate runtime acceptance holds.
+
+## Explicit serving-inventory refusal
+
+Original LOW B101 selector `ri=833` (observer line 1924) now uses an explicit
+`require` guard before deriving any serving facts. An inconsistent inventory
+without its retained listing raises a static `EvidenceError` in normal Python,
+`-O` and `-OO`. The baseline already rejected the synthetic inconsistent state,
+but through `AssertionError` normally and `AttributeError` under optimization;
+this fixes predictable guard handling, not a demonstrated forged-evidence pass.
+
+All three rejection regressions fail on the baseline and pass after the change;
+the combined offline acceptance suites pass **423 tests**. The fixture constructs
+an observer without transports and forbids fact derivation, so no live observer
+or resource is contacted. A fresh Bandit 1.7.9 scan on the immutable candidate
+source leaves the other 12 B101 observations unchanged. Evidence:
+`evidence/bandit-superplane-inventory-guard.json`.
+
+The full **1,470** original identities/severities remain; **1,036** observations
+are still pending source review. #6108 and its separate runtime holds stay open.
+
+## Subprocess import-only observations
+
+107 original LOW B404 observations are exact `Import`/absolute `ImportFrom`
+statements for Python's subprocess API, with separately retained original
+execution observations in each source file. B404 flags the availability of the
+API; these statements do not invoke a subprocess. Their import-only diagnostic
+is reviewed, while command safety, runtime import-path integrity and the
+containing modules remain outside this acceptance. Every linked execution
+observation retains its original identity, disposition, native severity and
+#6108 owner; none inherits the import review. Three B404 records without linked
+original execution coverage remain pending.
+
+`evidence/bandit-subprocess-import-review.json` retains all 297 execution-selector
+links, exact source imports and review date. The verifier
+`scripts/security/s21/verify_bandit_import_observations.py` checks the frozen
+SARIF identities, AST locations, native severities and independent execution
+ownership/dispositions. Twenty regressions reject call/import confusion,
+relative or wildcard imports, wrong source lines/indexes and migrated execution
+acceptance. A fresh Bandit 1.7.9 scan still reports all 107 import observations
+with zero errors; no source suppression or disappearance supplies the decision.
+
+All **1,470** original selectors and original disposition-candidate links remain;
+**929** observations are pending source review. #6108 stays open, including
+execution-boundary review and separate runtime acceptance holds.
+
+## V4 recorded-evidence integrity guards
+
+Thirteen original B101 observations in `scripts/task-api/verify_v4_evidence.py`
+now use explicit guards with the same AST predicates. The original verifier
+printed PASS for fourteen tampered receipt variants under both `-O` and `-OO`: its
+assertions had disappeared. A normal-mode criterion failure also echoed a
+synthetic private report field. The new guards survive optimization and use
+static errors without raw report objects or manifest values.
+
+All **45** fixture regressions pass: valid evidence in three interpreter modes
+and fourteen tampered variants in each mode. The baseline fails 29 of those
+checks. Fixtures cover missing criteria/evidence, failed verdicts, manifest
+digests, task/queue status, artifact size/hash/content and held-progress
+invariants. A fresh pinned Bandit scan reports zero B101 results for the
+immutable repaired verifier; predicate equivalence and behavior tests establish
+the fix. Receipt: `evidence/bandit-v4-evidence-guards.json`.
+
+The tool still checks recorded evidence integrity only; no test or source change
+performs live qualification. All **1,470** original identities/severities remain
+with **916** observations pending source review. #6108 and its runtime holds
+remain open.
+
+## Frozen qualification report guards
+
+Four original B101 observations in `scripts/task-api/verify-qualified-report.py`
+now use explicit guards preserving every original AST predicate. The baseline
+falsely prints PASS for eight tampered receipt/JUnit variants under both `-O`
+and `-OO`; the repaired verifier passes all **27** regressions across normal
+and optimized modes. Coverage includes absent/failed criteria, absent artifact
+bindings, wrong artifact digests, wrong test counts, failures, errors and skips.
+A fresh Bandit 1.7.9 scan reports zero B101 results and zero errors. Receipt:
+`evidence/bandit-qualified-report-guards.json`.
+
+All **1,470** original identities, severities and candidate links remain;
+**912** observations remain pending source review. This repair validates recorded
+integrity only, without live qualification or removal of runtime holds.
+#6108 remains open.
+
+## Observation submitter refusal before storage
+
+The one original B101 assertion in the Superplane observation receiver now
+explicitly refuses missing authenticated submitters with caller-safe HTTP 401
+before database access. Synthetic malformed AuthResult tests reproduce baseline
+AssertionError normally and premature database lookup under `-O`/`-OO`; the fix
+refuses consistently in all three modes. This does not claim the real
+authenticator emits malformed results or that baseline writes unauthorized data.
+
+All **38** offline contract/guard tests and **117** existing API authentication
+and observation-security tests pass. The latter use isolated in-memory SQLite.
+Fresh pinned Bandit reports zero B101 observations/errors. Receipt:
+`evidence/bandit-observation-submitter-guard.json`. All **1,470** original
+identities/severities remain. Current revalidation has **587** observations pending
+source review and **31** source-fixed/runtime-open observations, including this
+production guard. The fresh review reran all three guard regressions and the 117
+API tests successfully; the earlier 38-test contract run remains historical evidence.
+#6108 and all runtime/provider holds remain open.

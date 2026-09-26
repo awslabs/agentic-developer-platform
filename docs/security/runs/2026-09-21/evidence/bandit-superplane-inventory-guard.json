@@ -1,0 +1,37 @@
+{
+  "issue": 6108,
+  "source_revision": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "candidate_source_commit": "6008f7d9abb103a0e2278f8c548b868311e3d112",
+  "selector": "bandit|bandit-results.sarif|run=0|ri=833",
+  "file": "modules/domain-apps/superplane/superplane_acceptance/live_observer.py",
+  "original_line": 1924,
+  "rule": "B101",
+  "native_severity": "LOW",
+  "sarif_level": "note",
+  "candidate_file_sha256": "75d23b40c2d742b2654cd40521a370a6d6d5f5af25f7fa38cc2c698f195b19c9",
+  "change": "Replace the serving listing invariant assert with explicit require and static EvidenceError message before any serving facts are derived. Original predicate preserved.",
+  "baseline_behavior": {
+    "normal": "AssertionError",
+    "optimized": "AttributeError",
+    "optimized_no_docstrings": "AttributeError",
+    "security_limit": "Baseline already failed on the synthetic inconsistent state; no forged-evidence acceptance is claimed."
+  },
+  "candidate_behavior": "EvidenceError with the same static message under normal Python, -O and -OO; no serving fact or cluster/provider call occurs.",
+  "tests": {
+    "regressions": "modules/domain-apps/superplane/tests/test_u12_inventory_guard.py",
+    "baseline_failed": 3,
+    "candidate_passed": 3,
+    "combined_offline_acceptance_passed": 423,
+    "isolation": "run-isolated-cli-test.py; regression constructs object without transports; all fixtures synthetic"
+  },
+  "fresh_scan": {
+    "tool": "bandit",
+    "version": "1.7.9",
+    "selected_rule": "B101",
+    "remaining_results": 12,
+    "errors": 0,
+    "raw_json_sha256": "4eb50c7b6a90594c3031c50a8f2e78991b80ecaa8eb2b426a8e169db084eaa05",
+    "local_raw_artifact": "/tmp/security6108-inventory-guard-bandit.json"
+  },
+  "scope_complete": false
+}

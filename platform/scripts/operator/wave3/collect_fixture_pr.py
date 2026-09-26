@@ -51,8 +51,13 @@ def file_observation(repo, path, revision, fetch=gh_json):
     return dict(repository=repo, path=path, ref=revision, sha=digest, content=content.decode('utf-8'), observed_at=now())
 
 
+class _NoDTDTreeBuilder(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        raise ValueError("DTD declarations are not permitted in JUnit evidence")
+
+
 def junit_passes(path):
-    root = ET.parse(path).getroot()
+    root = ET.parse(path, parser=ET.XMLParser(target=_NoDTDTreeBuilder())).getroot()
     cases = list(root.iter('testcase'))
     if not cases or any(case.find('failure') is not None or case.find('error') is not None for case in cases):
         raise ValueError('target tests are absent or failed')

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Request
 
 from src.agentauth.routes import require_agent_transport
 from src.tasks import errors, http
-from src.tasks.read_store import SequenceFencedError, TaskStoreError
+from src.tasks.read_store import ArtifactCapacityError, SequenceFencedError, TaskStoreError
 from src.tasks.routes import get_store
 
 router = APIRouter(prefix="/internal/v1/agent/task", tags=["task-api"], dependencies=[Depends(require_agent_transport)])
@@ -120,5 +120,7 @@ async def artifact(request: Request):
         )
     except SequenceFencedError:
         raise errors.state_conflict("This run no longer accepts artifact writes.") from None
+    except ArtifactCapacityError:
+        raise errors.payload_too_large("Task evidence and result artifacts exceed the aggregate storage limit.") from None
     except TaskStoreError:
         raise errors.prerequisite_unavailable("Artifact storage could not confirm this operation.") from None

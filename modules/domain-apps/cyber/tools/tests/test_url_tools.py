@@ -198,14 +198,17 @@ def test_reject_untrusted_tool_options(operation, payload):
         validate_url_payload(operation, payload)
 
 
+@pytest.mark.parametrize("content_type", ["text/html", "application/xml"])
 @mock_aws
-def test_selected_archive_read_preserves_original_and_extracts_inert_text():
+def test_selected_archive_read_preserves_original_and_extracts_inert_text(content_type):
     import gzip
     import io
     from adp_tools.storage import serialize
 
     html = b'<html><title>Archived</title><body>Historical page<script>throw "never execute"</script></body></html>'
-    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + html
+    response = (
+        f"HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\r\n".encode() + html
+    )
     raw = gzip.compress(
         (
             f"WARC/1.0\r\nWARC-Type: response\r\nWARC-Target-URI: https://example.com\r\nWARC-Date: 2026-01-01T00:00:00Z\r\nContent-Length: {len(response)}\r\n\r\n"
@@ -255,7 +258,20 @@ def test_selected_archive_read_preserves_original_and_extracts_inert_text():
     result = call(
         "common_crawl_read", {"scan_id": scan_id, "capture_id": "capture-001"}
     )["result"]
-    assert "Historical page" in result["text_preview"]
+    if content_type == "text/html":
+        assert "Historical page" in result["text_preview"]
+    else:
+        assert result["status"] == "partial"
+        assert result["reason"] == "archive_content_not_extractable"
+        assert result["metadata"]["content_type"] == "application/xml"
+        assert "text_preview" not in result
+    # The partial result is durable and can be replayed without another range read.
+    assert (
+        call("common_crawl_read", {"scan_id": scan_id, "capture_id": "capture-001"})[
+            "result"
+        ]
+        == result
+    )
     assert result["original"]["sha256"] == hashlib.sha256(raw).hexdigest()
     assert result["original"]["media_type"] == "application/warc+gzip"
 
@@ -274,3 +290,35 @@ def test_blob_chunks_reassemble_with_matching_digest():
     assert restored == content
     assert result["sha256"] == hashlib.sha256(restored).hexdigest()
     assert all(len(value) < 1048576 for value in evidence.contents)
+
+
+@mock_aws
+def test_archive_read_limit_returns_durable_partial_result():
+    from adp_tools.storage import serialize
+
+    athena = Athena()
+    tools = CommonCrawlTools(
+        athena, CrawlConfig("archive", "ccindex", "bounded", ("CC-MAIN-2026-01",))
+    )
+    verified, service, call, evidence = setup_service(tools)
+    scan_id = call("common_crawl_scan", {"url": "https://example.com"})["result"][
+        "scan_id"
+    ]
+    athena.state = "SUCCEEDED"
+    call("common_crawl_result", {"scan_id": scan_id})
+    key = {
+        "event_id": task_ops_partition(verified.identity.task_id),
+        "arrived_at": "CC_SCAN#" + scan_id,
+    }
+    service.repo._client.update_item(
+        TableName=service.repo.table_name,
+        Key=serialize(key),
+        UpdateExpression="SET read_count = :max",
+        ExpressionAttributeValues=serialize({":max": 8}),
+    )
+    payload = {"scan_id": scan_id, "capture_id": "capture-001"}
+    result = call("common_crawl_read", payload)
+    assert result["operation_status"] == "confirmed"
+    assert result["result"]["reason"] == "archive_read_limit_reached"
+    assert call("common_crawl_read", payload)["result"] == result["result"]
+    assert service.repo._get(key["event_id"], key["arrived_at"])["read_count"] == 8

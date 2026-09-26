@@ -261,6 +261,12 @@ def test_progress_and_result_are_durable_before_acknowledgement(
     events = []
     client = FakeClient(bootstrap, events)
     executable = child_script(tmp_path)
+    # Assert the actual wire start frame, not a hand-authored runner fixture.
+    executable.write_text(executable.read_text().replace(
+        "assert start['type'] == 'start'",
+        "assert start['type'] == 'start'\n"
+        + "assert start['limits']['deadline_at'] == " + repr(bootstrap["limits"]["deadline_at"]),
+    ))
     monkeypatch.setattr(
         "lib.task_host.workload_identity",
         lambda: {"pod_uid": str(__import__("uuid").uuid4()), "namespace": "test"},
@@ -1382,3 +1388,33 @@ def test_closed_child_input_does_not_discard_buffered_result(
         assert events.index("artifact") < events.index("finalize:completed") < events.index("ack")
     else:
         assert "artifact" not in events
+
+
+@pytest.mark.parametrize(
+    "status,handoff,usage,code,expected",
+    [
+        ("rejected", "not_started", None, "budget_exceeded", "budget_exceeded"),
+        ("rejected", "not_started", None, "model_access_denied", "model_access_denied"),
+        ("unknown", "unknown", None, "budget_exceeded", None),
+        ("rejected", "prepared", None, "budget_exceeded", None),
+        ("rejected", "not_started", {"input_tokens": 1}, "budget_exceeded", None),
+        ("rejected", "not_started", None, "private error text", None),
+        ("rejected", None, None, "budget_exceeded", None),
+    ],
+)
+def test_only_known_predispatch_refusals_are_marked(
+    assignment_and_bootstrap, status, handoff, usage, code, expected
+):
+    assignment, _, bootstrap = assignment_and_bootstrap
+    turn_id = str(__import__("uuid").uuid4())
+    client = FakeClient(bootstrap, [], model_response={
+        "schema_version": "1.0", "task_id": assignment.task_id,
+        "turn_id": turn_id, "request_digest": "bound",
+        "automatic_replay_permitted": False, "operation_status": status,
+        "handoff": handoff, "usage": usage, "error_code": code,
+    })
+    result = TaskHost(client=client)._model(
+        assignment, {}, {"turn_id": turn_id}, 32,
+        prepared={"request_digest": "bound"},
+    )
+    assert result.get("pre_provider_refusal") == expected

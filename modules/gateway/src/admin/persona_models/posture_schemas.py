@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated
+from uuid import UUID
 
 from pydantic import BaseModel, Field, StrictInt
 
@@ -27,6 +28,7 @@ class SetRuntimePostureRequest(BaseModel):
     boundary, where the untrusted value actually arrives.
     """
 
+    operation_id: UUID | None = None
     posture: str = Field(description="Target posture: disabled, report_only or enforcing.")
     expected_revision: Annotated[StrictInt, Field(ge=1)] = Field(
         description="The posture_revision the caller believes is current. A stale value is refused.",
@@ -53,3 +55,10 @@ class RuntimePostureResponse(BaseModel):
             "observes this value. Operational rollback waits this long, then verifies."
         ),
     )
+
+
+class RollbackRuntimePostureRequest(BaseModel):
+    expected_revision: Annotated[StrictInt, Field(ge=1)]
+    historical_revision: Annotated[StrictInt, Field(ge=1)]
+    operation_id: UUID
+    reason: str = Field(min_length=1, max_length=512)

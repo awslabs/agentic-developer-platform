@@ -19,6 +19,7 @@ Nothing here interprets a result. These are transports; the assertions live in
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -136,15 +137,23 @@ class HttpPort:
         return self.request(url, method="GET", token=token, expect=expect)
 
     def get_bytes(self, url, *, expect=200):
-        try:
-            with urllib.request.urlopen(url, timeout=self.timeout) as response:
-                if response.status != expect:
-                    raise PortError(f"{url} returned HTTP {response.status}")
-                return response.read()
-        except urllib.error.HTTPError as exc:
-            raise PortError(f"{url} returned HTTP {exc.code}") from None
-        except urllib.error.URLError as exc:
-            raise PortError(f"{url} unreachable: {type(exc).__name__}") from None
+        # CLI artifacts are immutable reads. Brief edge 502/503/504 responses
+        # during rollout may retry; persistent failure and all other statuses
+        # still fail preflight. Mutation requests never use this path.
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=self.timeout) as response:
+                    if response.status != expect:
+                        raise PortError(f"{url} returned HTTP {response.status}")
+                    return response.read()
+            except urllib.error.HTTPError as exc:
+                if expect == 200 and exc.code in {502, 503, 504} and attempt < 2:
+                    exc.close()
+                    time.sleep(attempt + 1)
+                    continue
+                raise PortError(f"{url} returned HTTP {exc.code}") from None
+            except urllib.error.URLError as exc:
+                raise PortError(f"{url} unreachable: {type(exc).__name__}") from None
 
 
 class SsmPort:

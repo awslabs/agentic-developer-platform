@@ -87,7 +87,9 @@ jobs:
           pip install pytest pytest-asyncio httpx respx pydantic pydantic-settings asgi-lifespan \
             boto3 sqlalchemy fastapi 'mcp<2' requests pyyaml uvicorn defusedxml \
             psycopg2-binary python-hcl2 neo4j python-ulid \
-            opentelemetry-sdk opentelemetry-exporter-otlp 'playwright==1.63.0'
+            opentelemetry-sdk opentelemetry-exporter-otlp \
+            opentelemetry-sdk-extension-aws opentelemetry-propagator-aws-xray \
+            'playwright==1.63.0'
 
       - name: Install Chromium for ingestion security regression
         run: python -m playwright install --with-deps chromium

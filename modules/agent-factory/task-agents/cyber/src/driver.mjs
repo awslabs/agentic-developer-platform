@@ -123,7 +123,7 @@ import { runTaskSdk } from '../../../../tools/task-sdk/runner.mjs';
 
 export async function runCyber(start, bridge, { sdkQuery = query, proxyFactory = startProxy, toolOptions = {} } = {}) {
   bridge.progress('Starting cyber investigation with host-authorized tools.', 'evidence_inventory');
-  return runTaskSdk(start, bridge, { sdkQuery, proxyFactory, toolNames: TOOL_NAMES,
+  return runTaskSdk(start, bridge, { sdkQuery, proxyFactory, toolNames: TOOL_NAMES, finalReportTool: 'mcp__cyber__submit_report',
     mcpServers: { cyber: createSdkMcpServer({ name: 'cyber', version: '1.0.0', tools: cyberTools(bridge, toolOptions) }) },
     systemPrompt: 'You are agent-task-cyber, a cyber investigator using the existing seven-stage malware and URL analysis skills. Read the relevant packaged skills with read_skill. ' +
         'This is a Task API invocation, not a GitHub workflow: never post issues/comments, use GitHub identity, call AWS directly, run shell/code, or fetch arbitrary URLs. ' +

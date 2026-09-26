@@ -11,11 +11,11 @@ export function sdkEnvironment(proxy) {
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1' };
 }
 
-export async function runTaskSdk(start, bridge, { sdkQuery, proxyFactory, toolNames, mcpServers, systemPrompt }) {
+export async function runTaskSdk(start, bridge, { sdkQuery, proxyFactory, toolNames, mcpServers, systemPrompt, finalReportTool }) {
   const maxTokens = start.limits?.max_output_tokens_per_turn;
   const maxTurns = start.limits?.max_turns;
   if (!Number.isInteger(maxTokens) || maxTokens < 1 || !Number.isInteger(maxTurns) || maxTurns < 1) throw new ProtocolError('missing host limits');
-  const proxy = await proxyFactory(bridge, { maxTokens });
+  const proxy = await proxyFactory(bridge, { maxTokens, maxTurns, finalReportTool });
   let session, home;
   try {
     home = await mkdtemp(join(tmpdir(), 'adp-task-sdk-'));

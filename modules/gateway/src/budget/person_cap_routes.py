@@ -138,7 +138,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -326,6 +326,45 @@ async def _read_cap_row(db: AsyncSession, person_anchor: str, period_type: str) 
     )
 
 
+def _check_revision(row, expected_revision: str | None) -> None:
+    """Optional compare-and-swap contract; legacy browser writers remain valid."""
+    if expected_revision is None:
+        return
+    actual = row.updated_at.isoformat() if row is not None else "absent"
+    if actual != expected_revision:
+        raise HTTPException(status_code=409, detail="Person limit changed since review; read it again before writing.")
+
+
+async def _revision_update(db, row, amount: Decimal, authored_by_user_id: str) -> None:
+    # Compare in the UPDATE itself: a read followed by an unconstrained ORM flush
+    # would still clobber a writer that committed between those statements.
+    result = await db.execute(
+        update(type(row))
+        .where(type(row).id == row.id, type(row).updated_at == row.updated_at)
+        .values(budget_amount_usd=amount, enforcement_mode=_ENFORCING_MODE, authored_by_user_id=authored_by_user_id, updated_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Person limit changed during write; review again.")
+    await db.commit()
+    await db.refresh(row)
+
+
+async def _revision_delete(db, model, predicates, expected_revision: str | None) -> None:
+    if expected_revision is not None:
+        row = await db.scalar(select(model).where(*predicates))
+        _check_revision(row, expected_revision)
+        if row is None:
+            return
+        predicates = (*predicates, model.id == row.id, model.updated_at == row.updated_at)
+    result = await db.execute(delete(model).where(*predicates))
+    if expected_revision is not None and result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Person limit changed during delete; review again.")
+    await db.commit()
+
+
 async def _upsert_cap(
     db: AsyncSession,
     *,
@@ -333,6 +372,7 @@ async def _upsert_cap(
     period_type: str,
     amount: Decimal,
     authored_by_user_id: str,
+    expected_revision: str | None = None,
 ) -> PersonBudgetConfig:
     """Create or replace this person's limit for one period.
 
@@ -346,6 +386,10 @@ async def _upsert_cap(
     changed the number).
     """
     row = await _read_cap_row(db, person_anchor, period_type)
+    _check_revision(row, expected_revision)
+    if expected_revision is not None and row is not None:
+        await _revision_update(db, row, amount, authored_by_user_id)
+        return row
     if row is None:
         row = PersonBudgetConfig(
             id=new_uuid(),
@@ -367,6 +411,8 @@ async def _upsert_cap(
             # the winner stored exactly this limit. The loser retries as the
             # UPDATE it semantically was.
             await db.rollback()
+            if expected_revision is not None:
+                raise HTTPException(status_code=409, detail="Person limit was created concurrently; review again.") from None
             row = await _read_cap_row(db, person_anchor, period_type)
             if row is None:
                 # The violation was not this race; let the fault mapping have it.
@@ -566,6 +612,7 @@ async def _upsert_default(
     period_type: str,
     amount: Decimal,
     authored_by_user_id: str,
+    expected_revision: str | None = None,
 ) -> PersonBudgetDefault:
     """Create or replace the default rule for one scope and period.
 
@@ -583,6 +630,10 @@ async def _upsert_default(
     list to abstract over it would be longer than the duplication.
     """
     row = await _read_default_row(db, scope_type, scope_id_org, scope_id_team, period_type)
+    _check_revision(row, expected_revision)
+    if expected_revision is not None and row is not None:
+        await _revision_update(db, row, amount, authored_by_user_id)
+        return row
     if row is None:
         row = PersonBudgetDefault(
             id=new_uuid(),
@@ -599,6 +650,8 @@ async def _upsert_default(
             await db.commit()
         except IntegrityError:
             await db.rollback()
+            if expected_revision is not None:
+                raise HTTPException(status_code=409, detail="Person limit was created concurrently; review again.") from None
             row = await _read_default_row(db, scope_type, scope_id_org, scope_id_team, period_type)
             if row is None:
                 # Not this race — e.g. a scope shape the CHECK constraint refused.
@@ -812,6 +865,7 @@ async def put_person_cap(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     period_type: PersonCapPeriod = "monthly",
+    expected_revision: str | None = None,
 ) -> PersonCapResponse:
     """Set any person's platform-wide limit. **Platform admin only.**
 
@@ -855,6 +909,7 @@ async def put_person_cap(
             person_anchor=resolved_anchor,
             period_type=period_type,
             amount=request.budget_amount_usd,
+            expected_revision=expected_revision,
             # Canonical id for the audit column — the admin's token id is a sub on
             # the JWT path (review fix; see put_my_person_cap).
             authored_by_user_id=await resolve_canonical_user_id(db, current_user.user_id),
@@ -882,6 +937,7 @@ async def delete_person_cap(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     period_type: PersonCapPeriod = "monthly",
+    expected_revision: str | None = None,
 ) -> None:
     """Remove a person's individual limit for one period. **Platform admin only.**
 
@@ -906,13 +962,15 @@ async def delete_person_cap(
 
     try:
         resolved_anchor = await resolve_person_anchor(db, person_anchor)
-        await db.execute(
-            delete(PersonBudgetConfig).where(
+        await _revision_delete(
+            db,
+            PersonBudgetConfig,
+            (
                 PersonBudgetConfig.person_anchor == resolved_anchor,
                 PersonBudgetConfig.period_type == period_type,
-            )
+            ),
+            expected_revision,
         )
-        await db.commit()
     except _INFRASTRUCTURE_FAULTS as exc:
         raise _unavailable(exc) from exc
 
@@ -968,6 +1026,7 @@ async def put_person_default(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     period_type: PersonCapPeriod = "monthly",
+    expected_revision: str | None = None,
 ) -> PersonDefaultResponse:
     """Set one scope's default person limit. **Platform admin only.**
 
@@ -1022,6 +1081,7 @@ async def put_person_default(
             scope_id_team=scope_id_team,
             period_type=period_type,
             amount=request.budget_amount_usd,
+            expected_revision=expected_revision,
             # Canonical id for the audit column — the admin's token id is a Cognito
             # sub on the JWT path (the #4647 contract; see put_my_person_cap).
             authored_by_user_id=await resolve_canonical_user_id(db, current_user.user_id),
@@ -1041,6 +1101,7 @@ async def delete_person_default(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     period_type: PersonCapPeriod = "monthly",
+    expected_revision: str | None = None,
 ) -> None:
     """Remove one scope's default person limit. **Platform admin only.**
 
@@ -1069,13 +1130,15 @@ async def delete_person_default(
     scope_type, scope_id_org, scope_id_team = _parse_scope(scope)
 
     try:
-        await db.execute(
-            delete(PersonBudgetDefault).where(
+        await _revision_delete(
+            db,
+            PersonBudgetDefault,
+            (
                 *_default_row_predicate(scope_type, scope_id_org, scope_id_team),
                 PersonBudgetDefault.period_type == period_type,
-            )
+            ),
+            expected_revision,
         )
-        await db.commit()
     except _INFRASTRUCTURE_FAULTS as exc:
         raise _default_unavailable(exc) from exc
 

@@ -2,8 +2,21 @@
 # Uses Claude via Bedrock directly — no TypeScript, no subprocess.
 # Build context: modules/agent-factory (shared personas are baked in).
 # docker build -f gateway/Dockerfile .
+# First run: bash modules/agent-factory/scripts/stage-security-bundles.sh
+
+FROM public.ecr.aws/docker/library/python:3.13-slim AS stdlib-security
+COPY security/stdlib/ /opt/stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/stdlib-security/apply.py \
+    && python /opt/stdlib-security/check.py
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
+COPY --from=stdlib-security /usr/local/lib/python3.13/stringprep.py /usr/local/lib/python3.13/stringprep.py
+COPY --from=stdlib-security /usr/local/lib/python3.13/tarfile.py /usr/local/lib/python3.13/tarfile.py
+COPY --from=stdlib-security /usr/local/lib/python3.13/urllib/request.py /usr/local/lib/python3.13/urllib/request.py
+COPY security/stdlib/ /opt/stdlib-security/
+RUN python /opt/stdlib-security/apply.py --verify-only \
+    && python /opt/stdlib-security/check.py
 
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
     dumb-init curl git bash unzip && \

@@ -1,6 +1,42 @@
 # ADP CLI master coverage
 
-This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues/5644), checked against main `200e97aa7` and open PRs on 25 September 2026. A target entry does not mean the command is installed or the server permits it. The final leaf-command/flag inventory is the checked command manifest from #5621, reconciled with parser source and the served bundle.
+This is the source coverage and acceptance ledger for Epic [#5644](https://github.com/aws-e/adp/issues/5644), reconciled against the final integration [#6262](https://github.com/aws-e/adp/pull/6262) on 26 September 2026. The checked [command inventory](command-inventory.md) contains **274 parser-backed command forms**. Forms count parser leaves, not completed stories, deployed capabilities or accepted live scenarios.
+
+| Integration checkpoint | Parser-backed forms | Source coverage |
+|---|---:|---|
+| First batch [#6253](https://github.com/aws-e/adp/pull/6253) | 252 | Hierarchy, access/session controls, machine identities, person caps, rate limits, model policy, routing, knowledge, GitLab, research and recovery |
+| Lifecycle batch [#6256](https://github.com/aws-e/adp/pull/6256) | 266 | Platform and Superplane lifecycle adapters |
+| Final coding batch [#6262](https://github.com/aws-e/adp/pull/6262), including [#6260](https://github.com/aws-e/adp/pull/6260) | 274 | Human Task enrollment, durable investigator chat, Claude/Codex repository patch Tasks and bounded model probes |
+
+The hosted coding and chat implementations are integrated in the final source batch. Both reuse the existing Task API; the CLI does not introduce a replacement dispatcher. Coding includes server-verified repository/issue/commit context and the E42 installed-CLI scenario. Chat retains stable requests and task-correlated conversation history. Their live chat, coding/control, publication and story acceptance holds remain open.
+
+## Final CLI master at a glance
+
+| Surface | Integrated command coverage | Acceptance boundary |
+|---|---|---|
+| Identity and administration | Sessions, tenants, hierarchy, memberships, access, machine identities, credentials and identity claims | Authorized tenant/member scope and each lifecycle's live evidence |
+| Spend and model controls | Budgets, person caps, rate limits, usage, model policy, routing and Task model catalogue/probes | Standing policy, enforcement and provider evidence |
+| Hosted work and remote control | Task submission/status/monitor/abort, hosted coding/chat, Activity reads/SSE and advertised controls | Existing Task API and Activity/ControlService; accepted submission is not completion |
+| Delivery and integrations | Flows, GitHub/GitLab, knowledge, research, Superplane and platform lifecycle | Deployment support, scoped effects, publication and cleanup evidence |
+| CLI operation | Install/update, deployment selection, capabilities, doctor and checked inventory | Parser/help/manifest/served-bundle parity and installed-client checks |
+
+## Latest retained live checkpoint
+
+The [pricing maintenance release](../evaluations/cli-uplift/task-pricing-refresh-release-20260926.md), source `0ed7116fb8dbb8c0399a9f8dd28edb22303db990`, was deployed and verified across seven gateway replicas, the scheduled engine and all 35 CLI downloads. It permits validated pricing refresh between Task admission and a model call while retaining original model/policy and budget restrictions. The preceding [usage release](../evaluations/cli-uplift/usage-gateway-release-20260926.md) remains included. It fixes Task-invocation usage lookup and publishes the reviewed Codex help patch. Nightly fixture forwarding and the corrected cancellation harness are merged; [combined EC2 acceptance](../evaluations/cli-uplift/populated-usage-36222747391.md) passed populated selected-Task exports and exposed a pricing-refresh failure before cancellation.
+
+An earlier gateway release served the final coding batch (source `b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0`), with all 35 downloaded files verified against the release. Disposable-EC2 run [36212510138](https://github.com/aws-e/adp/actions/runs/36212510138) passed installation, login and all 19 executable nightly story-read scenarios: **21 passed, 1 failed, 3 blocked**. The hierarchy lifecycle passed seven authorization/membership checks but failed cleanup because the harness omitted the organization's automatically created default children. Exact CLI recovery subsequently removed those children and the organization with absence readback; the original case remains failed. EC2 cleanup completed and the instance was independently confirmed terminated.
+
+The earlier run [36211848174](https://github.com/aws-e/adp/actions/runs/36211848174) passed all eight vault lifecycle checks. AWS metadata corroborated scheduled deletion of its exact owned secret; physical purge and recovery-window expiry were not claimed. Its original overall failure remains recorded. Research and Superplane reads still require domain fixtures; hosted coding requires explicit enrollment and its bounded scenario. Passing reads does not establish mutation, inference, remote-control or full story acceptance.
+
+The later [configuration lifecycle run 36215959470](../evaluations/cli-uplift/budget-lifecycle-36215959470.md) passed D06: six budget period/ledger caps and rate configuration, authorization/stale-write refusals, verified removal, and unchanged settled usage. Its overall batch remains failed because D05 omitted its success marker despite completing all checks; #6309 fixes the harness. The EC2 instance was independently confirmed terminated. These checks do not establish actual client enforcement or full budget/rate story acceptance.
+
+[Run 36216938747](../evaluations/cli-uplift/tenant-hierarchy-machine-36216938747.md) subsequently passed all five selected cases, including E27 concurrent tenant reads/default/refresh, D03's 13 hierarchy checks and corrected D05's six canonical-principal checks. Membership restoration, resource cleanup and EC2 termination were verified. Simultaneous tenant inference, role-change authority, provider identity lifecycle and actual session revocation remain separate acceptance gaps.
+
+[Claude completion run 36218768106](../evaluations/cli-uplift/claude-completion-36218768106.md) passed E42 on gateway `8cfd14826112915ee984ebf3b38d2c0a65bedb4c`: canonical completion, idempotent submission, Activity detail/list and cursor replay through the terminal event. Its returned CLI help patch was reviewed separately. Codex, running cancellation and full story acceptance remain pending.
+
+The later [Codex/Cognito checkpoint 36219042697](../evaluations/cli-uplift/codex-cognito-failure-36219042697.md) remained **0 passed, 2 failed**: D05 stopped at a Cognito permission rejection after canonical cleanup, and E42 stopped before model dispatch because the worker omitted its deadline. Exact client absence, retained incomplete registration, zero model/turn records and EC2 termination were independently verified. Only the proven unused Codex reservation was reconciled; original failures and the shared $5 ceiling remain. Subsequent fixes require fresh live acceptance.
+
+[Codex completion run 36220558371](../evaluations/cli-uplift/codex-completion-36220558371.md) passed all three selected cases: real Codex runtime completion with the policy-selected Haiku model, canonical/Cognito lifecycle and empty usage exports. Activity list/detail and stream cursor replay passed; the initial monitor timed out. The returned tenant help patch is independently reviewed in #6333. Populated selected-Task exports subsequently passed on EC2 in run 36222747391, including CSV/NDJSON continuation. The verified existing-workspace fixture is configured for nightly regression. Running cancellation and other story acceptance gaps remain open.
 
 ## Available in baseline source
 
@@ -24,32 +60,48 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 
 | Story | Coverage to add or complete | Reuse |
 |---|---|---|
-| #5516 | Hosted submission and authoritative follow/status/logs/wait | Existing Task API; reconcile human authority and repository-persona support, no new dispatcher |
-| #5589 | Budget configuration and actual enforcement | Existing budget APIs and usage accounting |
-| #5621 | Capabilities, diagnostics and command inventory | PR #5716 merged; live acceptance pending |
-| #5622 | Tenant selection and isolation | Existing deployment/session selection and server-authorized membership |
-| #5623 | Organizations, departments, teams and memberships | Existing administration APIs |
-| #5624 | Service accounts, agent registrations and canonical principals | Existing identity/registration APIs |
+| #5516 | Hosted submission and authoritative follow/status/logs/wait | [Hosted coding](hosted-coding.md) via existing Task API, human repository enrollment, Claude/Codex engines, Task model catalogue/probes and E42; live acceptance and test/publication evidence remain held |
+| #5589 | [Budget CLI](budgets.md): own reads and exact-period administrator list/show/set/delete/status; E26 nightly reads, live enforcement acceptance pending | Existing budget APIs and usage accounting |
+| #5621 | Capabilities, diagnostics and command inventory | [Four-criterion acceptance evidence](../evaluations/cli-uplift/capabilities-acceptance-36214604673.md): E19 passed on fresh EC2; 124 contract tests passed; cleanup and instance termination verified. Mixed batch remains failed for D05. |
+| #5622 ([tenant CLI](tenant.md), source; live held) | Tenant selection and isolation | Existing deployment/session selection and server-authorized membership |
+| #5623 | [Hierarchy CLI](hierarchy.md): organizations, departments, teams, memberships and tenant-org links; E29 reads, live lifecycle acceptance pending | Protected administration APIs, revision adapters and durable membership removal |
+| #5624 | [Machine identity CLI](machine-identities.md): 15 lifecycle leaves; source implemented, live acceptance held | Existing SQL IAM, IAM registry, Cognito and canonical persona principal services; guarded revisions and durable registration/retirement receipts |
+
 | #5625 | Access requests and session revocation | Existing authorized access administration |
-| #5626 | Person-wide caps and inherited defaults | Existing person budget policy |
-| #5627 | Rate-limit administration and client enforcement | Existing rate-limit services |
+| #5626 | [Person-wide caps/defaults](person-budgets.md), revision-safe admin writes and member reports; E35 nightly self reads/refusal, live enforcement held | Canonical person APIs; self writes unavailable by existing policy |
+| #5627 — source implementation | Rate-limit administration and client enforcement | Existing rate-limit services |
+
 | #5628 ([usage CLI](usage.md), source implementation; live held) | Usage, spend and request-log exports | Existing scoped readers |
 | #5629 | [Activity CLI](agent.md): list/chain/detail/status/wait/transcript/SSE and capability-gated controls; live acceptance held | Existing Activity/ControlService; Task input/cancel remain Task API operations |
-| #5630 | Recovery and integrated CLI qualification | Existing AI-DLC and regression runner |
-| #5631 | Vault credentials and linked identities | Existing vault and identity APIs; never print secret values |
-| #5632 | Knowledge assets and indexing progress | Existing knowledge/indexing APIs |
-| #5633 | Personal Bedrock routing and administrator mappings | Existing routing helpers/services |
+| #5630 | `flow node resume`, `flow recover-pr` with reviewed revisions; E37 nightly reads/refusals | Integrated inception/amendment and bounded live recovery acceptance pending |
+| #5631 | [Credential and identity CLI](vault.md), source implementation; live acceptance held | Existing vault and identity APIs; metadata revision adapter, protected input and unverified claim readback |
+| #5632 | [Knowledge assets and indexing progress](knowledge.md) | CRUD/status/watch, keyed reindex, exact bulk receipts, guarded admin indexing; E32 reads/previews; live retrieval acceptance held |
+| #5633 | [Personal Bedrock routing and administrator mappings](bedrock-routing.md) | Revision-bound self selection/reset, exact mappings and compatible connection links; E34 previews; live inference/restoration held |
+
 | #5634 | GitHub installations, App keys and org bindings | Existing GitHub helpers/services |
 | #5635 | GitLab connection and agent readiness | Existing GitLab integration |
-| #5636 | Model defaults, runtime posture and persona cost | Existing model-policy APIs; retain upstream evidence dependencies |
+| #5636 ([model policy/costs](model-policy.md), source implementation; live held) | Model defaults, runtime posture and persona cost | Existing model-policy APIs; retain upstream evidence dependencies |
 | #5637 | Superplane wire-contract repairs | Already closed; regression only |
-| #5638 | Superplane workspace/deployment/provider lifecycle | Existing Superplane commands and domain contracts |
-| #5639 | Research inspection and proposal review | Existing Superplane research APIs |
-| #5640 | Durable hosted conversation start/resume/readback | Existing hosted chat APIs; no replacement Task dispatcher |
-| #5641 | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
+| #5639 | [Research reads and proposal review](research.md), E25 nightly reads; bounded scan/generation held | Existing Superplane research APIs; idempotent proposal identity and human revision checks |
+
+| #5638 | Superplane workspace/deployment/provider lifecycle | App-owned lifecycle adapters, revisions, namespace assertions, scoped events, E39 read-only scenario; live compute/cleanup held |
+| #5640 | Durable hosted conversation start/resume/readback; source integrated, live acceptance held | Existing hosted chat APIs backed by Task API; stable requests and exact task-correlated history |
+| #5641 ([platform facade](platform.md), source implementation; live held) | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
 
 The resulting CLI is a common terminal surface for identity, infrastructure connections, budgets, models, delivery, hosted work and domain operations. A single selected deployment and authorized tenant scope apply throughout. Task submission reuses Task API, and control commands advertise only runtime-supported operations.
 
 Completion requires parser/help/manifest/install/update/download parity, stable machine output, authorization/refusal tests and each story's required live evidence. Source merged, bundle published and live accepted are distinct states.
 
 The [command inventory](command-inventory.md) lists parser-backed command forms and options, including the delegated Superplane onboarding helper. Task and capability publication are tracked in the [qualification record](../design-notes/5644-cli-control-qualification/README.md).
+
+#5634 GitHub maintenance source: [commands and acceptance hold](github-maintenance.md). Six new leaves cover disconnect, key activation and org binding; E28 is read/preview regression only, with live isolated maintenance and consumer continuation still held.
+
+Access/session #5625 supplies seven additional source forms and nightly E33;
+see [scope and examples](access-and-sessions.md). Live membership/spend and
+revocation timing are not inferred from those source forms.
+
+#5635 GitLab source adapter: six leaves and [published human API contract](gitlab.md), with E30 discovery/refusal regression. Real dedicated-project webhook/run/artifact and disconnect cleanup acceptance remains held.
+
+The [26 September acceptance assessment](../evaluations/cli-uplift/remaining-acceptance-20260926.md) records concrete remaining fixtures and runtime dependencies across all 23 stories. The focused `usage-exports` suite extends existing E21 with bounded CSV/NDJSON checks; successful serialization does not establish inference or complete accounting acceptance.
+
+[Running cancellation run 36224895411](../evaluations/cli-uplift/running-cancellation-36224895411.md) passed E42: accepted agent abort, canonical Task replay/conflict, seven stream events and exact terminal replay, Activity visibility, confirmed child exit and queue acknowledgement. EC2 termination and restored $0.25 Task policy were independently verified. Supported pause/resume and other #5629 acceptance remain open. [E27 user-switch regression](../evaluations/cli-uplift/tenant-switch-36226270638.md) passed on disposable EC2: concurrent tenant/default/refresh checks and separate defaults across two real login subjects. E27 and its verified fixture are enabled in the existing nightly suite; no inference or extra schedule is added.

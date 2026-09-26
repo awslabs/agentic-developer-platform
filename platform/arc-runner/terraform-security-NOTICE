@@ -1,0 +1,8 @@
+Terraform 1.14.9 security rebuild for ADP ARC runners.
+Upstream: https://github.com/hashicorp/terraform
+Source commit: c3c23dd8f1201506dbd21788f482420ee3c1b248
+Copyright (c) HashiCorp, Inc. Licensed under BUSL-1.1; see LICENSE.
+
+ADP modifications: Go 1.26.8 compiler/runtime and the dependency graph in
+terraform-security-dependencies.patch. No Terraform application source changes.
+This is an ADP rebuild, not an official HashiCorp release binary.

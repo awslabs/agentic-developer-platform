@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import UTC
 
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -43,6 +44,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Exceptions (mapped to HTTP codes by routes)
 # ---------------------------------------------------------------------------
+
+
+class CredentialRevisionConflictError(Exception):
+    """Metadata changed after the caller inspected it."""
 
 
 class CredentialNotFoundError(Exception):
@@ -420,6 +425,15 @@ async def update_credential(
     Value updates are not allowed — callers must delete + re-register.
     """
     cred = await _get_owned_credential(cred_id, db, caller, lock=True)
+
+    if data.expected_revision is not None:
+        current = cred.updated_at or cred.created_at
+        expected = data.expected_revision
+        # Database timestamps may be naive UTC; wire timestamps must carry UTC.
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=UTC)
+        if expected.tzinfo is None or current != expected:
+            raise CredentialRevisionConflictError()
 
     if data.label is not None:
         cred.label = data.label

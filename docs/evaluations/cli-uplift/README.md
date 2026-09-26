@@ -7,6 +7,7 @@ evaluation under issue #5248 and are tagged `Purpose=cli-uplift-eval`).
 
 | File | Role | Policy name | Why |
 |------|------|-------------|-----|
+| `orchestrator-policy.json` | `adp-cli-uplift-eval-orchestrator` | `cli-uplift-eval-orchestrator` | Existing base policy captured September 26, 2026; only launch dependency security-group ARN changed from the egress-disabled default group to the already configured no-ingress, HTTP/HTTPS-egress devbox group. |
 | `orchestrator-e02-fixtures-policy.json` | `adp-cli-uplift-eval-orchestrator` | `cli-uplift-eval-e02-fixtures` | E02 provisions its own Cognito challenge + non-admin identities and a run-owned secret; the base policy is read-only for Cognito and could not create or delete them. |
 
 ## Scoping notes
@@ -183,3 +184,40 @@ empty evaluation ID and the verified full gateway revision. Preserve the exact
 run handle and inspect both evaluation and recovery. `login` is E01+C01, not full
 E02 or complete CLI acceptance. `mode=status` is not a read-only workflow probe:
 restoration claims a durable lease, and cleanup/recovery still run.
+
+### CLI stories release, 25 September 2026
+
+The catalog includes gateway source `890b5d1a8b16d0fbf657dd258bf7535730592f04`,
+published by canonical operator image maintenance. The successful CodeBuild
+`fe111093-4da2-4157-9026-dea660396386` push log binds its full SHA tag to
+`sha256:3f2b46db9b17b33921e31246dc95a8e15ecffdf556ae5ae89f2dbe85b2577aa4`.
+The S3 source ZIP matches a fresh `git archive --format=zip` of that commit
+byte for byte (`a90982364f324a298e2c5467942ee3e99fcdf3011b6af949fc93cc25f47e53b2`).
+Migration completed before the gateway image change; all seven replicas became
+available and the scheduled engine was synchronized and verified. All 22 public
+CLI downloads match that source. Live evaluation run `36202049241` stopped at
+the missing catalog receipt before creating EC2; cleanup reported no instances.
+This receipt permits retrying the existing preflight, without weakening its
+rollout, source revision, or public artifact comparisons. It does not claim
+that the story scenarios have passed.
+
+### EC2 launch security-group binding
+
+Evaluation 36207990534 reached preflight and then `RunInstances` was refused for
+`sg-0f497fc6d4ec88610`. The configured group has no ingress and only TCP 80/443
+egress; the previous allowed default group has no egress and could not register
+with SSM. `orchestrator-policy.json` preserves every existing base-policy
+statement and replaces only that security-group ARN in
+`LaunchDependenciesInApprovedSubnet`. This is a permanent evaluation fixture
+binding; no worker role or task-dependent permission changes are involved.
+
+```bash
+aws iam put-role-policy --role-name adp-cli-uplift-eval-orchestrator \
+  --policy-name cli-uplift-eval-orchestrator \
+  --policy-document file://docs/evaluations/cli-uplift/orchestrator-policy.json
+```
+
+For uncertain launches, the harness retains a stable EC2 client token and finds
+pending cleanup intents by both exact evaluation and attempt tags. It requires
+complete discovery, rejects mismatched tags and verifies termination before
+claiming cleanup. An AWS refusal is not evidence that an instance was launched.

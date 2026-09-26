@@ -925,3 +925,11 @@ when its public contract changes, or when evidence changes its advertised status
 See the [cluster authority scope contract](workspace_provisioning/cluster-authority-contract.md)
 for bounded storage and discovery. Shared runtime admission remains disabled
 pending current ADP identity and approval/effect revalidation interfaces.
+
+### CLI lifecycle adapters (#5638)
+
+The app owns `cli/adp-superplane-lifecycle.py`, loaded by the shared Superplane CLI dispatcher. The gateway's flat downloadable bundle contains an identical regular-file copy; a contract test checks byte equality because a symlink outside the CLI Docker copy context would break installation. Shared integration is limited to parser dispatch, bundle installation, manifest and proxy allowlist.
+
+The adapter adds reviewed workspace deletion, credential-reference connection create/show/validate/rotate/revoke, eligible-cluster discovery, installed deployment profiles and cursor-based workspace audit events. [Command semantics and examples](../../../docs/adp-cli/superplane.md#lifecycle-review-and-scoped-events-5638) describe mutation receipts, revision fences and bounded follow. Snapshot reads do not reconcile teardown or probe provider resources. Revisions fence mutations under the existing workspace/connection locks; uncertain mutations are never automatically replayed.
+
+Namespace flags are assertions against server-owned workspace isolation, not overrides. Connection validation retains vault attestation of exact caller readings; disablement retains its explicit issued-credential limitation. Default protection and protected retirement's staged-cleanup admission remain authoritative. Cluster home region and allocation compute region remain independent. E39 qualifies only authenticated preview/event reads, not live inference, provider cleanup or stopped billing.

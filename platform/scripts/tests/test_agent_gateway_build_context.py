@@ -101,10 +101,16 @@ elif args[0] == 'build':
                         and context.parent.parent.parent == Path(os.environ['TMPDIR']).resolve())
     assert context == source_context or archived_context, 'Unexpected Docker context'
     inputs = []
+    stages = set()
     for line in dockerfile.read_text().splitlines():
+        if line.startswith('FROM ') and ' AS ' in line:
+            stages.add(line.split(' AS ')[1].strip())
         if not line.startswith('COPY '):
             continue
         words = shlex.split(line)
+        if words[1].startswith('--from='):
+            assert words[1].split('=',1)[1] in stages, 'Unknown build stage'
+            continue
         if words and words[0] == 'COPY':
             for source in words[1:-1]:
                 path = context / source
@@ -136,6 +142,32 @@ def build_commands(path):
 
 
 class AgentGatewayBuildTests(unittest.TestCase):
+    def test_security_staging_removes_stale_files_and_refuses_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            module = root / "modules/agent-factory"
+            source = root / "modules/gateway/security/stdlib"
+            shutil.copytree(ROOT / "modules/gateway/security/stdlib", source)
+            (module / "scripts").mkdir(parents=True)
+            script = module / "scripts/stage-security-bundles.sh"
+            shutil.copyfile(MODULE / "scripts/stage-security-bundles.sh", script)
+            destination = module / "security/stdlib"
+            destination.mkdir(parents=True)
+            (destination / "json.py").write_text("raise RuntimeError('stale shadow')")
+            subprocess.run(["bash", str(script)], check=True, capture_output=True)
+            self.assertFalse((destination / "json.py").exists())
+            for path in destination.iterdir():
+                self.assertEqual(path.read_bytes(), (source / path.name).read_bytes())
+            shutil.rmtree(destination)
+            outside = root / "outside"
+            outside.mkdir()
+            marker = outside / "retained.txt"
+            marker.write_text("must remain")
+            destination.symlink_to(outside, target_is_directory=True)
+            result = subprocess.run(["bash", str(script)], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(marker.read_text(), "must remain")
+
     def execute(self, path, fail=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -143,6 +175,15 @@ class AgentGatewayBuildTests(unittest.TestCase):
             (module / "gateway").mkdir(parents=True)
             shutil.copytree(MODULE / "gateway/app", module / "gateway/app")
             shutil.copytree(MODULE / "rules/personas", module / "rules/personas")
+            shutil.copytree(
+                ROOT / "modules/gateway/security/stdlib",
+                root / "modules/gateway/security/stdlib",
+            )
+            (module / "scripts").mkdir()
+            shutil.copyfile(
+                MODULE / "scripts/stage-security-bundles.sh",
+                module / "scripts/stage-security-bundles.sh",
+            )
             for name in ("Dockerfile", "Dockerfile.dockerignore", "entrypoint.sh"):
                 shutil.copyfile(MODULE / "gateway" / name, module / "gateway" / name)
             helper = root / "platform/scripts/publish-shared-image.sh"
@@ -196,13 +237,27 @@ import os,shutil,sys
 from pathlib import Path
 if len(sys.argv)!=3 or sys.argv[1] not in ('-f','-rf'): sys.exit(97)
 p=Path(sys.argv[2]).resolve()
+if sys.argv[1]=='-rf' and p.parts[-4:]==('modules','agent-factory','security','stdlib'):
+ base=p.parents[3]
+ if base==Path(os.environ['REPO_ROOT']).resolve() or (base.name.startswith('adp-local-image.') and base.parent==Path(os.environ['TMPDIR']).resolve()):
+  if p.exists(): shutil.rmtree(p)
+  sys.exit(0)
 if p.parent!=Path(os.environ['TMPDIR']).resolve(): sys.exit(97)
 if sys.argv[1]=='-rf':
  if not p.name.startswith('adp-local-image.'): sys.exit(97)
  shutil.rmtree(p)
 else: p.unlink(missing_ok=True)
 """,
-                "cp": "#!/bin/sh\nexit 97\n",
+                "cp": """#!/usr/bin/env python3
+import shutil,sys
+from pathlib import Path
+if len(sys.argv)!=3: sys.exit(97)
+source,target=map(lambda p:Path(p).resolve(),sys.argv[1:])
+if source.parts[-5:-1]!=('modules','gateway','security','stdlib'): sys.exit(97)
+expected=source.parents[4]/'modules/agent-factory/security/stdlib'/source.name
+if target!=expected: sys.exit(97)
+shutil.copyfile(source,target)
+""",
             }
             for name, body in stubs.items():
                 tool = binaries / name

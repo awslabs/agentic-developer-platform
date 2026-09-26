@@ -24,6 +24,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -43,6 +44,7 @@ from lib.abort_sentinel import (
     read_abort_sentinel,
     verify_abort_authorization,
 )
+from lib.authenticated_http import open_authenticated
 from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
@@ -287,6 +289,24 @@ _MEDIATED_WITHHELD_TOKEN_VARS = (
 MEDIATED_TOKEN_FILE_PATHS = ("/tmp/.adp-gh-token",)
 
 
+
+def _write_pat_token_file(token: str, path: str = "/tmp/.adp-gh-token") -> None:
+    """Publish a private token without opening an attacker-precreated file.
+
+    Exclusive random temporary creation avoids following a predictable symlink
+    or retaining the permissions of an existing file. Atomic replace replaces
+    the destination directory entry, including a symlink, without following it.
+    """
+    destination = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix=".adp-gh-token-", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(token.encode())
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def _remove_token_file() -> None:
     """Delete the on-disk token, so the shell helpers have nothing to fall back to.
 
@@ -509,7 +529,7 @@ def _resolve_execution_token(
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             user_data = json.loads(resp.read().decode("utf-8"))
             github_login = user_data.get("login", "")
     except urllib.error.HTTPError as exc:
@@ -1033,7 +1053,7 @@ def _handle_gitlab_mention(
     ack_failed = False
     try:
         req = urllib.request.Request(notes_url, data=note_payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             logger.info(
                 "GitLab ack comment posted: project=%s issue=%s status=%s",
                 project_id,
@@ -1049,7 +1069,7 @@ def _handle_gitlab_mention(
     project_url = f"{base_url}/api/v4/projects/{project_id}"
     try:
         req = urllib.request.Request(project_url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             project_data = json.loads(resp.read().decode("utf-8"))
             default_branch = project_data.get("default_branch", "main") or "main"
             logger.info(
@@ -1071,7 +1091,7 @@ def _handle_gitlab_mention(
         req = urllib.request.Request(
             branches_url, data=branch_payload, headers=headers, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with open_authenticated(req, timeout=15) as resp:
             logger.info("GitLab branch created: %s (status=%s)", branch_name, resp.status)
     except urllib.error.HTTPError as exc:
         if exc.code == 400:
@@ -2229,15 +2249,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
-        # Use 0o600 + atomic rename to prevent world-readable window.
-        _token_tmp = "/tmp/.adp-gh-token.tmp"
-        _token_path = "/tmp/.adp-gh-token"
-        fd = os.open(_token_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, token.encode())
-        finally:
-            os.close(fd)
-        os.replace(_token_tmp, _token_path)
+        _write_pat_token_file(token)
     else:
         # Credentials the agent-worker.ts TokenManager needs to re-mint an
         # installation token before the 1-hour expiry (#1502). Without a working

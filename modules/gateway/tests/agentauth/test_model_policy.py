@@ -683,11 +683,21 @@ class _UnavailablePreferenceSession:
             return SimpleNamespace(id="cache-user", team_id="team-a")
         if "FROM service_principals" in rendered:
             return SimpleNamespace(status="active")
+        if "FROM teams" in rendered:
+            return SimpleNamespace(id="team-a", department_id="department-a")
         raise AssertionError(f"unexpected scalar query: {rendered}")
+
+    async def execute(self, query):
+        if "FROM users" in str(query):
+            user = SimpleNamespace(id="cache-user", team_id="team-a")
+            return SimpleNamespace(scalar_one_or_none=lambda: user, one_or_none=lambda: (user, False))
+        raise AssertionError(f"unexpected execute query: {query}")
 
     async def scalars(self, query):
         if "FROM service_principal_aliases" in str(query):
             return []
+        if "FROM team_memberships" in str(query):
+            return SimpleNamespace(all=lambda: [])
         raise OperationalError("preferences unavailable", {}, RuntimeError("offline"))
 
 

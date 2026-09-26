@@ -68,3 +68,6 @@ UNCLAIMED_UPLOAD_EXPIRY_HOURS = 24
 # Retention (limits.json#/retention). A read of expired history answers 410 with
 # the retained bounds, never an empty success.
 TOMBSTONE_RESPONSE_CODE = 410
+
+# Tool evidence and final outputs share storage; individual writes remain <= 1 MiB.
+MAX_RUN_ARTIFACT_BYTES = 16 * 1024 * 1024

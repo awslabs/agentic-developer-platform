@@ -11,7 +11,11 @@ current task policy"):
 3. that canonical principal is the task's recorded owner;
 4. the task is readable in its current state.
 
-V1 is service-owner-only, and the three things that are *not* here matter as much
+The original service-owner path remains unchanged. Explicitly enabled human
+Task enrollment resolves a separate human:<User.id> owner namespace from live
+membership and standing Task policy, never from a service alias.
+
+The three things that are *not* here matter as much
 as the four that are: a same-tenant service gets no implicit access, there is no
 public delegation, and there is no human-admin override. Each would widen the
 accepted access model, which this story may not do.
@@ -37,7 +41,7 @@ import logging
 from dataclasses import dataclass
 
 import jwt
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.persona_models import service as principal_service
@@ -108,8 +112,11 @@ def authenticate(request: Request) -> tuple[TokenContext, frozenset[str]]:
         raise errors.prerequisite_unavailable("Credential validation is not configured.")
 
     try:
-        claims = validator.validate_token(header[7:])
-    except jwt.InvalidTokenError:
+        from src.auth.tenant_context import split_token
+
+        token, tenant_lease = split_token(header[7:])
+        claims = validator.validate_token(token)
+    except (jwt.InvalidTokenError, HTTPException):
         raise errors.TaskApiError(401, "invalid_credential", "The access token is invalid or expired.") from None
     except Exception:
         logger.warning("Task API token validation failed unexpectedly", exc_info=True)
@@ -127,6 +134,7 @@ def authenticate(request: Request) -> tuple[TokenContext, frozenset[str]]:
     except Exception:
         raise errors.TaskApiError(401, "invalid_credential", "The access token is not coherent.") from None
 
+    context._task_tenant_lease = tenant_lease
     scopes = frozenset(scope for scope in (claims.scope or "").split() if scope.startswith("adp-tasks/"))
     return context, scopes
 
@@ -134,12 +142,29 @@ def authenticate(request: Request) -> tuple[TokenContext, frozenset[str]]:
 async def resolve_caller(context: TokenContext, scopes: frozenset[str], db: AsyncSession) -> Caller:
     """Resolve the canonical service principal behind a validated token.
 
-    Refuses in four ways that are distinguishable to us and identical to the
-    caller: a human token (V1 has no human path here), a service token with no
+    Explicitly enrolled humans use their own ownership namespace.
+    The service path refuses a service token with no
     tenant, one whose alias source is not the M2M one, and one whose alias or
     principal is not active. Which applies is information about the platform's
     registration state that an unregistered caller has no claim to.
     """
+    if getattr(context, "_task_tenant_lease", None) is not None:
+        from src.auth.tenant_context import apply_context
+
+        try:
+            selected = await apply_context(context, context._task_tenant_lease, db)
+            # Route callers retain this authenticated object for tenant/team and
+            # stream expiry. Preserve its identity while applying verified fields.
+            for field in ("org_id", "attributed_org_id", "team_id", "department_id", "expires_at"):
+                setattr(context, field, getattr(selected, field))
+            context._task_tenant_lease = None
+        except HTTPException:
+            raise errors.disallowed_scope("The signed tenant selection is no longer authorized.") from None
+    if context.account_type == "human":
+        from src.tasks.human_authority import resolve_human
+
+        principal, tenant, granted = await resolve_human(context, db)
+        return Caller(principal_id=principal, tenant_id=tenant, scopes=granted)
     if context.account_type != "service":
         # A human operator reading another principal's task would be exactly the
         # human-admin override the design excludes from v1.

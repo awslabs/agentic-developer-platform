@@ -8,7 +8,7 @@
 # - GitHub auth modules
 # - Secret mounting or credential injection
 #
-# It runs as non-root (UID 1001), with read-only root filesystem,
+# It runs as non-root (UID 10001), with read-only root filesystem,
 # dropped capabilities, and no network access.
 
 # Stage 1: Copy zoekt-git-index (not needed for SCIP, but keeps parity)
@@ -56,8 +56,8 @@ assert not found, f'FORBIDDEN packages found: {found}'; \
 print('Import discipline verified: no forbidden packages')"
 
 # Create non-root user (same UID/GID as ingestion image for mount compat)
-RUN groupadd -r -g 1001 appgroup \
-    && useradd -r -u 1001 -g appgroup -m -d /home/appuser appuser
+RUN groupadd -r -g 10001 appgroup \
+    && useradd -r -u 10001 -g appgroup -m -d /home/appuser appuser
 
 # Set up directories
 ENV HOME=/home/appuser \
@@ -87,6 +87,13 @@ print('Parser manifest import OK'); \
 "
 
 # Switch to non-root user
+# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+COPY security-stdlib/ /opt/adp-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/adp-stdlib-security/apply.py \
+    && python /opt/adp-stdlib-security/check.py \
+    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 USER appuser
 WORKDIR /app
 

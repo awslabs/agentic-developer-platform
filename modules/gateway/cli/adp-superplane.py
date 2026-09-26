@@ -29,7 +29,6 @@ listing on the machine. Request bodies are never traced for the same reason.
 from __future__ import annotations
 
 import argparse
-import base64
 import binascii
 import fcntl
 import getpass
@@ -138,6 +137,15 @@ REDIRECTED = {
 # growing this file also means the onboarding work and the concurrent changes to
 # the operational verbs do not have to land on top of each other.
 ONBOARDING_HELPER = "adp-superplane-onboarding.py"
+LIFECYCLE_HELPER = "adp-superplane-lifecycle.py"
+
+
+def lifecycle_helper():
+    module = common.load_provider(LIFECYCLE_HELPER)
+    if module is None:
+        raise CliError("Superplane lifecycle extension is not installed. Run adp update.", "provider_unavailable", 4)
+    return module
+
 
 CANCELLED = (
     "Cancelled locally. This did NOT cancel work already accepted by the domain API "
@@ -465,8 +473,7 @@ def current_recovery_context(api=None):
     gateway = api.session_gateway() if isinstance(api, SessionApi) else common.gateway_url()
     try:
         token = api.session_token() if isinstance(api, SessionApi) else common.access_token()
-        payload = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        claims = common._jwt_claims(token)
     except (
         IndexError,
         ValueError,
@@ -707,6 +714,8 @@ def replay_safe_create(api, command, path, body, *, expected_name, id_field, ope
 
 
 def workspace(args, api):
+    if args.subcommand == "delete":
+        return lifecycle_helper().workspace_delete(args, api)
     if args.subcommand == "use":
         # Purely local, and deliberately not validated against the API: selecting
         # a context is not an authorization decision. The next call carries the
@@ -720,6 +729,7 @@ def workspace(args, api):
         )
 
     if args.subcommand == "create":
+        operation_id = deployment_uuid(args.operation_id, "--operation-id") if args.operation_id else None
         if args.isolation == "research" and not args.account:
             raise CliError("Research workspaces need --account <name>.", "usage_error", 1)
         body = {"name": args.name, "isolation_mode": args.isolation}
@@ -733,7 +743,7 @@ def workspace(args, api):
         preview = mutation_guard(
             args,
             "superplane workspace create",
-            {"workspace": body},
+            {"workspace": body, **({"operation_id": operation_id} if operation_id else {})},
             f"Create workspace {args.name!r}?",
         )
         if preview:
@@ -746,6 +756,7 @@ def workspace(args, api):
             body,
             expected_name=args.name,
             id_field="id",
+            operation_id=operation_id,
         )
         if created["status"].lower() in CREATE_PENDING_STATUSES:
             return common.envelope(
@@ -832,6 +843,8 @@ def events(args, api):
     which is worse than not offering the filter. It is now refused with a pointer
     to the filters that exist (see parser()).
     """
+    if getattr(args, "workspace", None) or getattr(args, "follow", False) or getattr(args, "after", None):
+        return lifecycle_helper().events(args, api)
     path = query(
         API_BASE + "/events",
         {
@@ -940,6 +953,8 @@ def deployment_preview(args, api, identifier, path, body):
 
 
 def deploy(args, api):
+    if args.subcommand == "profiles":
+        return lifecycle_helper().deployment_profiles(args, api)
     if args.subcommand != "list":
         operation_id = deployment_uuid(args.operation_id, "--operation-id")
         if args.subcommand in {"delete", "teardown-preview"} and not looks_like_uuid(args.id):
@@ -962,6 +977,8 @@ def deploy(args, api):
             "precision": args.precision,
             "profile_id": args.profile_id,
         }
+        if getattr(args, "namespace", None) is not None:
+            body["expected_namespace"] = args.namespace
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", args.profile_id):
             raise CliError("Use a configured deployment --profile-id (lowercase letters, digits and hyphens).", "usage_error", 1)
         # Sent only when the user asked for them, so the server's own defaults
@@ -1816,6 +1833,7 @@ def parser():
     workspace_subcommands = workspace_command.add_subparsers(dest="subcommand", required=True)
     create_workspace = mutation(leaf(workspace_subcommands, "create", help="Create a workspace"))
     create_workspace.add_argument("--name", required=True)
+    create_workspace.add_argument("--operation-id", help="Stable request UUID; retain externally and reuse unchanged after client loss")
     create_workspace.add_argument(
         "--isolation",
         default="dedicated",
@@ -1890,6 +1908,7 @@ def parser():
     ):
         create_deploy = mutation(leaf(deploy_subcommands, name, help=help_text))
         create_deploy.add_argument("--model", required=True, help="Model to serve, for example a HuggingFace name")
+        create_deploy.add_argument("--namespace", help="Assert the workspace-owned namespace; never override placement")
         create_deploy.add_argument("--precision", default="fp16", choices=("fp8", "fp16", "bf16", "awq", "int8"))
         create_deploy.add_argument("--name", required=True, help="Deployment name (lowercase letters, digits, hyphens)")
         create_deploy.add_argument("--workspace")
@@ -2014,13 +2033,20 @@ def parser():
     # Onboarding is a separate helper file, and it is advertised only when that
     # file actually shipped. An install missing it must not list a verb that then
     # fails — the same rule `adp-admin.py` applies to its sub-areas.
+    research = common.load_provider("adp-superplane-research.py")
+    if research:
+        commands.add_parser("research", parents=[research.parser()], add_help=False, help="Read research and review exact proposal revisions")
     if Path(__file__).with_name(ONBOARDING_HELPER).is_file():
         commands.add_parser("onboarding", add_help=False, help="Discover, plan and bind workspace and provider onboarding")
 
+    if Path(__file__).with_name(LIFECYCLE_HELPER).is_file():
+        lifecycle_helper().configure(commands, workspace_subcommands, deploy_subcommands, leaf, mutation, events_command)
     return root
 
 
 HANDLERS = {
+    "cluster": lambda args, api: lifecycle_helper().cluster_list(args, api),
+    "provider-connection": lambda args, api: lifecycle_helper().provider_connection(args, api),
     "workspace": workspace,
     "node": node,
     "quota": quota,
@@ -2050,6 +2076,11 @@ def main(argv=None):
         # one. Rejecting here first would answer with the wrong remedy — "type it at
         # the prompt instead" — for a surface that has no such prompt. The helper's
         # check is a superset of this one and is the first thing its main() runs.
+        if argv and argv[0] == "research":
+            module = common.load_provider("adp-superplane-research.py")
+            if not module:
+                raise CliError("Research helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv[1:])
         if argv and argv[0] == "onboarding":
             module = common.load_provider(ONBOARDING_HELPER)
             if not module:
@@ -2060,7 +2091,8 @@ def main(argv=None):
         reject_secret_arguments(argv)
         # Also before argparse: a filter that was silently dropped server-side must
         # name that, not fail as an unknown flag (Issue #5637).
-        reject_ignored_event_filter(argv)
+        if not Path(__file__).with_name(LIFECYCLE_HELPER).is_file():
+            reject_ignored_event_filter(argv)
         # Also before argparse, and before any gateway or token is resolved: a
         # redirected verb performs nothing, so neither its arguments nor the
         # user's session are relevant. Parsing them would mean either rebuilding

@@ -182,9 +182,39 @@ class _JWKSCache:
         # path never runs, and the module must import cleanly in test and
         # offline environments regardless.
         import json
-        from urllib.request import urlopen
+        from urllib.parse import urlsplit
+        from urllib.request import HTTPRedirectHandler, build_opener
 
-        with urlopen(url, timeout=5) as response:  # noqa: S310 - fixed https config value
+        try:
+            parsed = urlsplit(url)
+            valid_endpoint = (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname
+                and parsed.username is None
+                and parsed.password is None
+                and not parsed.fragment
+                and "\\" not in url
+                and not any(
+                    character.isspace() or ord(character) < 32 or ord(character) == 127
+                    for character in url
+                )
+            )
+            parsed.port  # Validate the port before invoking any URL handler.
+        except ValueError:
+            valid_endpoint = False
+        if not valid_endpoint:
+            raise TokenPolicyError(
+                "JWKS URL must be an HTTP(S) endpoint without credentials or fragment"
+            )
+
+        class RefuseJWKSRedirect(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                # Only the configured endpoint may supply authentication keys.
+                # A redirect must not expand that authority to another location.
+                return None
+
+        opener = build_opener(RefuseJWKSRedirect())
+        with opener.open(url, timeout=5) as response:
             document = json.loads(response.read())
         self.load(document.get("keys", []))
 

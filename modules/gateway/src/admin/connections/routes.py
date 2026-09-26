@@ -26,7 +26,9 @@ import urllib.parse
 from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -45,6 +47,7 @@ from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
 from . import service as connection_service
+from .maintenance import AppKeyRequest, AppMaintenanceRequest, maintenance_status, require_revision, rotate_supplied_key
 from .schemas import (
     AppStatusResponse,
     ConnectionsListResponse,
@@ -80,6 +83,30 @@ logger = logging.getLogger(__name__)
 async def _get_access_control(db: AsyncSession = Depends(get_db)) -> AccessControl:
     """Provide an AccessControl instance for platform_admin checks."""
     return AccessControl(db)
+
+
+async def _app_lifecycle_lock(db: AsyncSession = Depends(get_db)):
+    """Hold a dedicated transaction across service commits and provider writes."""
+    if db.get_bind().dialect.name == "postgresql":
+        async with db.bind.begin() as connection:
+            await connection.execute(text("SELECT pg_advisory_xact_lock(5634, 1)"))
+            yield
+    else:
+        yield
+
+
+class _SecretSafeRoute(AuditedAdminRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def safe(request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                # FastAPI normally echoes invalid field inputs, including keys.
+                return JSONResponse(status_code=422, content={"detail": "Invalid App maintenance request"})
+
+        return safe
 
 
 # NOTE: prefix is "/admin/connections", NOT "/api/admin/connections". CloudFront
@@ -466,7 +493,7 @@ async def github_app_register_start(
         raise HTTPException(status_code=500, detail="Failed to initiate GitHub App registration") from exc
 
 
-@router.get("/github/app/register-callback")
+@router.get("/github/app/register-callback", dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_register_callback(
     code: str = "",
     state: str = "",
@@ -533,7 +560,7 @@ async def github_app_register_callback(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/github/app/register-manual", response_model=RegisterManualResponse)
+@router.post("/github/app/register-manual", response_model=RegisterManualResponse, dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_register_manual(
     body: RegisterManualRequest,
     current_user: TokenContext = Depends(get_current_user),
@@ -609,7 +636,7 @@ async def github_app_status(
         raise HTTPException(status_code=500, detail="Failed to retrieve App status") from exc
 
 
-@router.post("/github/app/revalidate", response_model=RevalidateAppResponse)
+@router.post("/github/app/revalidate", response_model=RevalidateAppResponse, dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_revalidate(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
@@ -650,7 +677,7 @@ async def github_app_revalidate(
         raise HTTPException(status_code=500, detail="Failed to re-validate App configuration") from exc
 
 
-@router.post("/github/app/rotate-key", response_model=RotateKeyResponse)
+@router.post("/github/app/rotate-key", response_model=RotateKeyResponse, dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_rotate_key(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
@@ -688,7 +715,7 @@ async def github_app_rotate_key(
         raise HTTPException(status_code=500, detail="Failed to rotate App key") from exc
 
 
-@router.post("/github/app/disconnect", response_model=DisconnectAppResponse)
+@router.post("/github/app/disconnect", response_model=DisconnectAppResponse, dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_disconnect(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
@@ -724,3 +751,61 @@ async def github_app_disconnect(
     except Exception as exc:
         logger.error("app-disconnect failed for user=%s: %s", current_user.user_id, exc)
         raise HTTPException(status_code=500, detail="Failed to disconnect App") from exc
+
+
+async def _maintenance_admin(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+):
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(403, "Platform administrator privileges required") from None
+    return current_user
+
+
+@router.get("/github/app/maintenance", dependencies=[Depends(_maintenance_admin)])
+async def github_app_maintenance_status():
+    return await maintenance_status()
+
+
+async def github_app_activate_supplied_key(
+    request: AppKeyRequest,
+    current_user: TokenContext = Depends(_maintenance_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    mark_admin_effects()
+    result = await rotate_supplied_key(request)
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="connection_activate_supplied_key",
+        target_type="github_app",
+        target_id=request.expected_app_id,
+        best_effort=True,
+    )
+    return result
+
+
+@router.post("/github/app/maintenance/disconnect", dependencies=[Depends(_app_lifecycle_lock)])
+async def github_app_disconnect_reviewed(
+    request: AppMaintenanceRequest,
+    current_user: TokenContext = Depends(_maintenance_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_revision(request)
+    mark_admin_effects()
+    result = await disconnect_app()
+    await write_admin_audit(
+        db, actor=current_user, action="connection_disconnect_app", target_type="github_app", target_id=request.expected_app_id, best_effort=True
+    )
+    return result
+
+
+router.add_api_route(
+    "/github/app/maintenance/rotate-key",
+    github_app_activate_supplied_key,
+    methods=["POST"],
+    dependencies=[Depends(_app_lifecycle_lock)],
+    route_class_override=_SecretSafeRoute,
+)

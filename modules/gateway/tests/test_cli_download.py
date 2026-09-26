@@ -112,6 +112,7 @@ class TestCliScriptDownload:
             # point of the story, so publishing it exposes nothing.
             "adp-superplane.py",
             "adp-models.py",
+            "adp-model-policy.py",
             # Issue #5331: `adp flow`. Same property — it reads the session
             # `adp login` already wrote and adds no credential store of its own,
             # so serving it publicly exposes nothing. Added in the PR that ships
@@ -127,8 +128,19 @@ class TestCliScriptDownload:
             COMMAND_MANIFEST,
             # Task commands and reusable protocol code; no embedded credentials.
             "adp-task.py",
+            "adp-tenant.py",
+            "adp-hierarchy.py",
+            "adp-vault.py",
+            "adp-access.py",
+            "adp-machine.py",
+            "adp-gitlab.py",
             "adp-usage.py",
             "adp-agent.py",
+            "adp-knowledge.py",
+            "adp-budget.py",
+            "adp-ratelimit.py",
+            "adp-platform.py",
+            "adp-chat.py",
             "adp_task_client.py",
             # Issue #5730: `adp superplane onboarding`. A sibling helper rather
             # than more verbs inside adp-superplane.py, so it stays separable
@@ -137,6 +149,8 @@ class TestCliScriptDownload:
             # any credential-shaped flag before parsing, and moves credential
             # references only — never values.
             "adp-superplane-onboarding.py",
+            "adp-superplane-research.py",
+            "adp-superplane-lifecycle.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

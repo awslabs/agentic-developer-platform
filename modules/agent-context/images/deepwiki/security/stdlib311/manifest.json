@@ -1,0 +1,14 @@
+{
+  "stringprep.py": {
+    "before": "60b6c83581093029312efb6670b11c540090b3f78bcf72264467b494f02f21a5",
+    "after": "dcf3a723057546a275bf2a57bcd356957f181fb51434e321a320cf5c1cbfa262"
+  },
+  "urllib/request.py": {
+    "before": "a9cf43cba43ffd83956d4b14be76869585ac9c0fbf935f8772cfad24dbce4c03",
+    "after": "f084fd652ccd61bb4550924492940fe45b084438790b2058e24f9cd05197d023"
+  },
+  "tarfile.py": {
+    "before": "9e0fd86283caaaf15a884e5f36a5c319a21b74cfc8ae15f853d783d81a2be2e6",
+    "after": "cc5519f9f4203730d02d9c5e5a0fcf36d305e249ea41befceb7820ffded13936"
+  }
+}

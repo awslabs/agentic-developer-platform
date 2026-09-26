@@ -4059,7 +4059,7 @@ class TestHandleGitLabMention:
         monkeypatch.setenv("GITLAB_URL", "http://gitlab.dev.adp.internal")
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_happy_path_ack_comment_and_branch(
         self,
@@ -4152,7 +4152,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_branch_create_400_already_exists_tolerated(
         self,
@@ -4218,7 +4218,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_ack_comment_failure_returns_1_but_still_deletes_message(
         self,
@@ -4287,7 +4287,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_missing_trusted_gitlab_url_fails_before_token_read(
         self,
@@ -4314,7 +4314,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_envelope_gitlab_url_is_ignored(
         self,
@@ -4371,7 +4371,7 @@ class TestHandleGitLabMention:
         assert "attacker.example" not in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_configured_url_used_when_legacy_envelope_url_empty(
         self,
@@ -4438,7 +4438,7 @@ class TestHandleGitLabMention:
         assert "override-gitlab.internal" in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_branch_create_400_invalid_ref_returns_1(
         self,
@@ -4504,7 +4504,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint.open_authenticated")
     @patch("entrypoint._delete_message")
     def test_default_branch_resolved_from_project_api(
         self,

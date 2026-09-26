@@ -25,6 +25,14 @@ db_engine = fixtures.db_engine
 
 @pytest.fixture
 async def setup(db, monkeypatch):
+    from src.admin.membership_revocation import require_not_revoked_context
+
+    async def fixture_membership_check(context):
+        # Auth shares this integration fixture's authoritative database, just
+        # like the route's get_db override; it must never open a live DB pool.
+        await require_not_revoked_context(context, db)
+
+    monkeypatch.setattr("src.admin.membership_revocation.require_not_revoked_context", fixture_membership_check)
     user = await db.get(User, "user-mallory")
     user.cognito_sub = "sub-mallory"
     await db.commit()

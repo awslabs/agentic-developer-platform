@@ -13,13 +13,13 @@ with no raw candidate values or source-line content published.
 
 | Original scan record disposition | Count |
 | --- | ---: |
-| Existing Git object identifiers, independently resolved | 209 |
+| Existing Git object identifiers, independently resolved | 217 |
 | Exact AWS published example identifier or secret-access-key example | 72 |
 | Complete public PEM delimiter literal, without key payload | 6 |
-| Artifact SHA256 with immutable bytes and verified checksum context | 496 |
-| Derived checksums recomputed from immutable source inputs | 26 |
-| Resource references with explicit field/consumer binding | 33 |
-| Pending context review, retained by #6110 | 1017 |
+| Artifact SHA256 with immutable bytes and verified checksum context | 512 |
+| Derived checksums recomputed from immutable source inputs | 36 |
+| Resource references with explicit field/consumer binding | 60 |
+| Pending context review, retained by #6110 | 956 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -139,3 +139,110 @@ verifier checks the complete original scan/audit joins and immutable Git blobs;
 context. This reaches **842 / 1,859** verified nonsecret records, with **1,017**
 pending. All original selectors, overlapping audit links and supplemental
 proposals remain intact. No candidate credential was exercised.
+
+A further **eight** source-revision findings resolve to locally available commit
+objects. The verifier rehashes each complete commit object with the Git object
+header, binds the complete candidate to its explicit source-revision field at
+the immutable source line, and checks the original scan index and full private
+audit hash join. Working-copy contents cannot supply this evidence. See
+`S21-detect-secrets-source-commit-review.json` and
+`scripts/security/s21/verify_secret_git_objects.py`. Fourteen regressions cover
+inexact selectors, full-hash mismatches, absent objects, context substitution,
+dirty worktrees and failure-output redaction. No network lookup or credential
+exercise occurred.
+
+Current verified nonsecret dispositions: **850/1859**, with **1,009** pending
+under #6110. All 3,708 original selector identities and audit joins are retained;
+these eight observations do not establish acceptance of the complete story.
+
+A further **ten** fixture content hashes are independently recomputed from
+strict base64-decoded canonical fixture payloads, with verified byte lengths.
+Seven invalid variants preserve the canonical artifact fields and differ only
+by their explicitly named deliberate mutation plus fixture metadata. Two
+canonical fixtures prove their own payload hashes; one start-frame reference
+matches the complete canonical artifact identity, content type, length and hash.
+A fixture pathname or checksum-shaped value alone supplies no acceptance.
+
+The receipt is `S21-detect-secrets-fixture-payload-review.json`; verifier
+`scripts/security/s21/verify_fixture_payload_digests.py` checks the exact original
+scan index and full private audit join against immutable Git source. Twelve new
+regression tests exercise candidate/payload/context/identity/length mismatches,
+undeclared mutations, original selector misbinding and dirty working copies.
+The complete verifier suite passes 71 tests.
+
+Current verified nonsecret dispositions: **860/1859**, with **999** pending under
+#6110. All 3,708 original identities and audit joins are preserved. The original
+story remains open; no credential was exercised or additional scope accepted.
+
+A further **16** source-document hashes exactly reproduce four public AWS
+documents: a versioned Bedrock pricing JSON and three Markdown model cards.
+The compressed public response bytes are retained under
+`public-pricing-documents/`, with URL, response time, size and SHA512 integrity
+metadata in `S21-detect-secrets-public-document-review.json`. SHA512 provenance
+avoids publishing the candidate SHA256 values. The retrieval used an isolated
+environment, no authentication/cookies/proxy, an HTTPS host allowlist, rejected
+redirects, and bounded response size/time. Unmatched or changed public pages
+remain pending; absence of a match is not an acceptance decision.
+
+The offline verifier `scripts/security/s21/verify_public_document_digests.py`
+recomputes hashes from the retained bytes and binds each exact original scan
+index/full private audit hash to its immutable JSON scalar path and source line.
+The paired URL must be in that same source object. Nineteen new tests cover
+archive/payload corruption, bounds, URL/path substitution, duplicate keys and
+selectors, full original hash mismatches, and repeated-digest field/line
+misbinding. The complete verifier suite passes **90 tests**.
+
+Current verified nonsecret dispositions: **876/1859**, with **983** pending under
+#6110. All 3,708 original identities and audit joins are retained. This is
+partial evidence adjudication; the story remains open. No credential was
+exercised or private candidate used in a request.
+
+A further **19** fixture reference literals are directly bound to the imported
+`UserCredential(secret_arn=...)` constructor in two vault model tests. The
+verifier requires exact original full scan/audit joins, complete source literals
+and their constructor/import lines, and rejects class rebinding, shadowing,
+concatenation and dynamic constructor arguments. The frozen ORM column and
+typed delivery path pass this attribute to `SecretsManagerHelper` and ultimately
+the AWS `SecretId` argument. Shape or test pathname alone supplies no acceptance.
+
+See `S21-detect-secrets-model-reference-review.json` and
+`scripts/security/s21/verify_model_reference_fixtures.py`. Nineteen new tests
+reject substituted imports, payload fields, helper types, consumer arguments,
+original hashes/indexes, and duplicate selectors. Only source ASTs are read;
+no fixture, application credential flow or resource lookup is executed.
+
+Current verified nonsecret dispositions: **895/1859**, with **964** pending under
+#6110. All 3,708 original identities and audit joins are preserved. The original
+story remains open.
+
+A further **3** complete synthetic resource literals are bound to the `SecretId`
+argument of exact mocked AWS operation expectations. Each expectation follows
+the helper call with the same literal, using a fixture that injects a `MagicMock`
+client. Frozen helper code carries the identifier to provider `SecretId`,
+including the delete helper's keyword dictionary. Source shape alone does not
+supply acceptance, and no fixture/provider operation is executed by the verifier.
+
+`S21-detect-secrets-mock-secret-id-review.json` retains exact original records
+and source hashes. The new verifier's **25** regressions pass in normal and
+optimized Python, rejecting substituted constructors, client injection, payload
+fields, provider arguments, original lines/full hashes and duplicate selectors.
+Full original scan/audit candidate joins are privately reverified without values
+in output. Verified nonsecret dispositions are now **898/1859**, with **961**
+pending under #6110. All **3,708** original identities and supplemental proposals
+are retained; the story remains open.
+
+A further **5** complete SecretId-name literals are passed to the imported
+`UserCredential(secret_arn=...)` constructor. Three use module-level direct
+imports and two use direct imports local to the containing function. The
+extended verifier requires an unconditional import in the containing scope
+before the call, rejects shadowing/rebinding and preserves the existing
+ORM-to-delivery-to-provider `SecretId` proof. Names alone do not establish
+resource-reference status.
+
+`S21-detect-secrets-model-name-reference-review.json` retains the exact source
+records and file hashes. Seven new import/name regressions join the existing
+model/mock-reference tests: **51** pass normally and **51** under optimized
+Python. Both the original 19-reference receipt and this five-reference receipt
+reverify against full private scan/audit joins without candidate output. All
+**3,708** original identities and supplemental proposals are retained. Current
+verified dispositions: **903/1859**, with **956** pending; #6110 remains open.

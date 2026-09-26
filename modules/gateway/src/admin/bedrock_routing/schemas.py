@@ -43,7 +43,9 @@ class DestinationSummary(BaseModel):
     """
 
     id: str
+    revision: str = ""
     connection_id: str | None = None
+    source_connection_id: str | None = None
     account_id: str
     label: str
     region: str
@@ -69,6 +71,7 @@ class MappingSummary(BaseModel):
     """A mapping row as the panel's rules table renders it."""
 
     id: str
+    revision: str = ""
     scope_type: MappingScopeType
     scope_id_org: str | None
     scope_id_team: str | None
@@ -87,6 +90,13 @@ class MappingSummary(BaseModel):
     updated_at: datetime
 
 
+class MappingPage(BaseModel):
+    items: list[MappingSummary]
+    page: int
+    page_size: int
+    has_more: bool
+
+
 class MappingUpsertRequest(BaseModel):
     """Body for ``PUT /admin/bedrock-routing/mappings/{scope}``.
 
@@ -98,6 +108,7 @@ class MappingUpsertRequest(BaseModel):
     """
 
     destination_id: str = Field(min_length=1)
+    expected_destination_revision: str | None = Field(None, pattern=r"^[a-f0-9]{64}$")
 
 
 class EffectiveMappingResponse(BaseModel):
@@ -191,6 +202,7 @@ class MySelectionResponse(BaseModel):
     #: Where the caller's calls actually go, from R4's ladder walk. ``rung`` is
     #: ``platform`` when nothing matched, which is an answer (ambient IRSA), not an
     #: absence.
+    revision: str = ""
     effective: EffectiveMappingResponse
     #: The caller's own user-rung selection, when they have authored one and it is still
     #: theirs. None when they have authored none, and None when a platform admin has
@@ -234,6 +246,7 @@ class MySelectionRequest(BaseModel):
     """
 
     credential_id: str = Field(min_length=1)
+    expected_account_id: str | None = Field(None, pattern=r"^[0-9]{12}$")
 
 
 class RegisterConnectionDestination(BaseModel):
@@ -312,6 +325,7 @@ class RegisterSharedConnectionDestination(BaseModel):
     """Explicitly authorize an existing connection for one organization's Bedrock use."""
 
     source: Literal["shared_connection"]
+    destination_id: str | None = None
     credential_id: str = Field(min_length=1)
     link_to_org_id: str = Field(min_length=1)
 

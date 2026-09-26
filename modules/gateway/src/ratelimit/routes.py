@@ -57,6 +57,38 @@ def require_admin(context: TokenContext) -> TokenContext:
     return context
 
 
+@router.get("/me")
+async def own_effective_limits(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    context: Annotated[TokenContext, Depends(get_current_user)],
+):
+    """Token-derived hierarchy metadata; does not debit or probe limiter buckets."""
+    from src.admin.ratelimit_cli import DIMENSIONS, runtime_metadata, saved, serialize
+
+    runtime = runtime_metadata(request)
+    service = getattr(request.app.state, "ratelimit_service", None)
+    if service is None:
+        return {"org_id": context.attributed_org_id, "lines": [], "runtime": runtime}
+    entities = service._get_hierarchy_entities(context)
+    if not service._config.enforce_hierarchy:
+        entities = entities[:1]
+    defaults = runtime["defaults"]["service" if context.account_type == "service" else "human"]
+    lines = []
+    for kind, key in entities:
+        config = serialize(await saved(db, context.attributed_org_id, kind.value, key))
+        lines.append(
+            {
+                "entity_type": kind.value,
+                "entity_id": key,
+                "saved": config,
+                "effective": {name: config[name] if config and config[name] is not None else defaults[name] for name in DIMENSIONS},
+                "sources": {name: kind.value if config and config[name] is not None else "account_type_default" for name in DIMENSIONS},
+            }
+        )
+    return {"org_id": context.attributed_org_id, "lines": lines, "runtime": runtime}
+
+
 @router.get("", response_model=list[RateLimitConfigResponse])
 async def list_rate_limits(
     entity_type: Annotated[str | None, Query(description="Filter by entity type")] = None,

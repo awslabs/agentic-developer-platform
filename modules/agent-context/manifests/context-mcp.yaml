@@ -42,9 +42,9 @@ spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
       # Pod-level security context (#6105 — pod security reconciliation).
       securityContext:
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:

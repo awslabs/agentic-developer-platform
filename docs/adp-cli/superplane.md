@@ -56,6 +56,12 @@ adp superplane workspace create --name research --isolation research \
 Supported isolation values are `dedicated` (default), `namespace` and
 `research`. Research isolation requires `--account`.
 
+Current domain workspace creation starts governed provisioning and requires its
+reviewed plan/approval path; it is not metadata-only. The basic create flags do
+not establish that approval or a compute ceiling. E18 remains guarded until
+staged recovery and provider teardown are implemented; see the
+[workspace recovery prerequisite](../evaluations/cli-uplift/superplane-workspace-recovery.md).
+
 Mutations and recovery require an access token with a nonblank tenant claim.
 Org-less password sessions are refused before mutation and existing receipts
 are retained. Supporting these sessions remains an unresolved production
@@ -67,15 +73,18 @@ A login, organization switch or gateway configuration change in another terminal
 cannot retarget that command's recovery context; if its token expires, the request
 fails and must be retried.
 
-Workspace creation generates an operation ID; deployment creation requires the
-explicit `--operation-id` used during preview. Both save that ID in private CLI
+Workspace creation accepts optional `--operation-id UUID`; retain it outside
+the client when recovery must survive loss of local state. If omitted, the CLI
+generates an ID. Deployment creation requires the explicit `--operation-id` used
+during preview. Both save that ID in private CLI
 state before the create POST. Identical invocations in the same
 signed-in deployment and tenant reuse that operation ID, including concurrent
 invocations and retries after the server completes the operation.
 If delivery times out, disconnects, returns a 5xx, or returns a malformed success,
 the CLI reports the operation ID; rerun the identical command to reconcile it.
-Changing workspace inputs starts a different operation and retains the earlier
-receipt. Deployment inputs are bound to the reviewed operation ID: changing them
+Without an explicit workspace operation ID, changing workspace inputs starts a
+different operation and retains the earlier receipt. With an explicit ID, changed
+inputs or signed-in context are refused by the existing receipt. Deployment inputs are bound to the reviewed operation ID: changing them
 requires a new preview and approval, and cannot reuse that ID. Successful creates retain the resource ID and receipt because a server
 success does not prove the result reached your terminal. An identical create
 therefore reconciles the original resource. Failed, deleting or deleted resources
@@ -304,3 +313,44 @@ If a continuation response is lost, retain its request reference and use
 `lifecycle continue` recovers the submitted receipt, including after the API has
 advanced past its source proposal. A completed phase does not establish workspace
 readiness; check `adp superplane onboarding readiness --workspace WORKSPACE_ID`.
+
+## Lifecycle review and scoped events (#5638)
+
+The installed CLI exposes these app-owned adapters over existing Superplane APIs:
+
+```bash
+adp superplane workspace delete WORKSPACE_UUID --dry-run
+adp superplane workspace delete WORKSPACE_UUID --yes --expected-revision REVISION --operation-id OPERATION_UUID
+adp superplane provider-connection create --workspace WORKSPACE_UUID --provider aws --credential-id CREDENTIAL_REFERENCE --service aws --label LABEL --dry-run
+adp superplane provider-connection show --workspace WORKSPACE_UUID --connection CONNECTION_UUID
+adp superplane provider-connection validate --workspace WORKSPACE_UUID --connection CONNECTION_UUID --validation-file PRIVATE_JSON --dry-run
+adp superplane provider-connection rotate --workspace WORKSPACE_UUID --connection CONNECTION_UUID --credential-id REPLACEMENT_REFERENCE --service aws --label LABEL --validation-file PRIVATE_JSON --dry-run
+adp superplane provider-connection revoke --workspace WORKSPACE_UUID --connection CONNECTION_UUID --dry-run
+adp superplane cluster list --eligible-for workspace-sharing
+adp superplane deploy profiles --workspace WORKSPACE_UUID
+adp superplane events --workspace WORKSPACE_UUID --limit 100
+adp superplane events --workspace WORKSPACE_UUID --follow --after CURSOR --timeout 60 --max-pages 10
+```
+
+Provider-connection creation now retains `--operation-id` as the connection UUID
+on domains advertising `provider-connection-operation-id-v1`. Retain the UUID
+outside the client. After a lost response, use `provider-connection show` with
+that exact connection UUID and original workspace; local create retries also
+perform that scoped read without another POST. A recreated client can replay the
+original create arguments: the server rechecks current vault, registry and grant
+authority and returns the same record only for the original workspace,
+principal, owner and reference. A disabled record stays disabled; changed input,
+rotation or a UUID collision conflicts. No provider validation is synthesized.
+Older domains fail the capability check before creation rather than accepting an
+unrecoverable server-generated ID. This requires both the updated domain and
+served CLI bundle; source support does not establish deployed parity.
+
+Mutations require `--yes` and a stable `--operation-id`; existing connections also require the exact reviewed `--expected-revision`. Without `--yes`, these commands preview. Local receipts bind operation IDs to gateway, authenticated scope, path and request; retries do not send another mutation after an uncertain result. An acknowledgement remains `pending`: it does not prove workload completion, provider credential revocation, resource deletion or stopped billing. Default workspaces are protected. Protected retirement still requires staged cleanup access; these commands do not bypass that admission gate.
+
+Credential arguments are existing ADP references, never secret values. The private validation JSON accepts only `credential_valid`, `permissions_sufficient`, `quota_available` booleans and optional integer `observed_capacity`. The server independently attests the exact report against the vault; caller-supplied readings alone cannot activate a connection. `revoke` disables new connection admission and renewal; already issued credentials and the superseded credential after rotation require provider/vault revocation separately.
+
+Deployment create/preview `--namespace` asserts the server-owned namespace. It cannot override workspace isolation. `deploy profiles` exposes the installed serving catalog and submission readiness; successful metadata reads do not qualify GPU capacity or inference. Workspace lifecycle snapshots distinguish the cluster home region from separately selected compute provider regions.
+
+Workspace events use a stable workspace-bound cursor and bounded `(created_at, id)` ordering. `--follow` emits NDJSON pages and a final pending envelope; without it, one JSON envelope is returned. This attributed audit feed is not a complete provider event stream. Organization event filters cannot be combined with workspace cursor mode.
+
+Nightly scenario E39 reads a disposable configured Superplane workspace, reviews deletion without writing, and reads one scoped event page. It requires the Superplane domain fixture and otherwise reports blocked. Provider lifecycle, live compute, teardown and billing acceptance remain separately held until those actions are exercised and verified.

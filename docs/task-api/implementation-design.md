@@ -251,7 +251,13 @@ first, completion is refused. Heartbeat loss sets `execution_health=unknown` and
 The existing request table keeps physical keys `event_id` and `arrived_at`.
 Each new item has `record_type`, schema version and nested `scope` metadata.
 It omits the legacy GSI attributes `tenant_id`, `user_id`, `correlation_id`,
-`root_human_id` and `engine_command_status`. V1 has no Activity run projection.
+`root_human_id` and `engine_command_status`. V1 has no legacy Activity GSI projection. A separate owner list uses an atomic
+`TASK_OWNER_BINDING` record in the existing authority table, keyed by tenant and
+owner digest plus admission time and Task ID. The owner-only Activity route
+`GET /me/agent-invocations/tasks` queries that prefix and reauthorizes every
+canonical Task; it does not scan, list foreign runs, or backfill historical Tasks. Owner-only direct-ID Activity detail
+and retained-report reads locate the canonical Task through its admission run-grant
+binding and reapply current Task authentication, ownership and policy checks.
 No task item uses the raw invocation ID as its `event_id` partition.
 
 | Record | `event_id` | `arrived_at` |

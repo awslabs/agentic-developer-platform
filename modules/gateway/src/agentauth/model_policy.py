@@ -56,7 +56,6 @@ from src.agentauth.runtime_posture import (
 from src.agentauth.store import AuthorityStoreError
 from src.shared.config import get_settings
 from src.shared.identity.resolver import resolve_root_user_entity_id
-from src.shared.models.organization import User
 from src.shared.models.persona_models import (
     ALIAS_SOURCES,
     PersonaModelPolicySetting,
@@ -781,19 +780,20 @@ async def _resolve_active_allowlist_policy(
     """Resolve the exact live policy intersection used by every PMM-06 seam."""
     principal_status: str | None = None
     if principal_kind == "human":
-        user = await session.scalar(
-            select(User).where(
-                User.id == principal_id,
-                User.org_id == tenant_id,
-            )
-        )
-        if user is None:
-            raise ModelPolicyError("principal_unavailable")
+        from src.shared.identity.workspaces import primary_team_for_workspace, workspace_user
+
+        try:
+            user = await workspace_user(session, principal_id, tenant_id)
+            if user is None or user.id != principal_id:
+                raise ModelPolicyError("principal_unavailable")
+            team = await primary_team_for_workspace(session, user, tenant_id)
+        except ValueError:
+            raise ModelPolicyError("principal_unavailable") from None
         context = TokenContext(
             user_id=user.id,
             org_id=tenant_id,
-            team_id=user.team_id,
-            department_id="",
+            team_id=team.id if team else "",
+            department_id=team.department_id if team else "",
             account_type="human",
             expires_at=expires_at,
         )

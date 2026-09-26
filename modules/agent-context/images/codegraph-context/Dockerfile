@@ -5,12 +5,31 @@ FROM public.ecr.aws/docker/library/python:3.13-slim
 RUN apt-get update && \
     apt-get -y upgrade && \
     apt-get install -y --no-install-recommends git curl gcc g++ make && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    pip install --no-cache-dir codegraphcontext==0.6.13
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Staged from images/shared by the canonical build and local validation helpers.
+COPY security-build/patch-codegraph-wheel.py /tmp/patch-codegraph-wheel.py
+RUN pip download --no-deps --only-binary=:all: --dest /tmp/upstream codegraphcontext==0.6.13 && \
+    python /tmp/patch-codegraph-wheel.py \
+        /tmp/upstream/codegraphcontext-0.6.13-py3-none-any.whl \
+        /tmp/patched/codegraphcontext-0.6.13-py3-none-any.whl && \
+    pip install --no-cache-dir /tmp/patched/codegraphcontext-0.6.13-py3-none-any.whl && \
+    pip check && rm -rf /tmp/upstream /tmp/patched /tmp/patch-codegraph-wheel.py
 
 # Non-root user for security
-RUN addgroup --system --gid 1001 appgroup && \
-    adduser --system --uid 1001 --ingroup appgroup appuser
+RUN addgroup --system --gid 10001 appgroup && \
+    adduser --system --uid 10001 --ingroup appgroup appuser && \
+    install -d -m 0700 -o appuser -g appgroup /data
+# CodeGraphContext 0.6.13 uses Path.home(), not CGC_HOME. Mount /data
+# writable when running with a read-only root filesystem.
+ENV HOME=/data
+# Canonical, hash-guarded CPython 3.13.15 source backports. No version override.
+COPY security-stdlib/ /opt/adp-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/adp-stdlib-security/apply.py \
+    && python /opt/adp-stdlib-security/check.py \
+    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 USER appuser
 
 EXPOSE 8080

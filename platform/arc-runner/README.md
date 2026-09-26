@@ -12,10 +12,10 @@ Added tooling:
 
 - **Runtimes:** Node.js 22, Python 3.12
 - **AWS:** AWS CLI v2
-- **IaC:** Terraform 1.14.9
+- **IaC:** Terraform 1.14.9 (ADP security rebuild with Go 1.26.8 and pinned dependencies)
 - **K8s:** kubectl 1.35.9, Helm 3.22.0 (archive checksum verified)
 - **Git/GitHub:** git, gh CLI
-- **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko executor (daemonless image builds)
+- **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko 1.28.5 (ADP security rebuild; daemonless image builds)
 - **Utilities:** zip, unzip, jq, curl, wget, sudo
 
 ## Build + push (CI)
@@ -55,3 +55,44 @@ Once the new image is serving workflows, remove the per-workflow install steps (
 
 - Keep the pinned runner release within GitHub's supported update window. ARC disables automatic runner updates; an expired pin can register but GitHub rejects its message requests and the pod exits. Verify the runner version, tool checks, and real job execution when updating it.
 - Terraform / kubectl / Helm pins should stay in sync with what the rest of the project uses; check `modules/agent-factory/infra/` Helm releases and cluster Kubernetes version before bumping.
+
+## Terraform security rebuild
+
+The builder checks out the exact Terraform 1.14.9 commit and applies
+`terraform-security-dependencies.patch` to its module files. The runtime/compiler
+and dependency updates address the embedded Go, SSH, NTLM, gRPC and telemetry
+advisories without changing the Terraform release or application source. The
+build uses a digest-pinned Go image, verifies modules, and forbids module-file
+changes during compilation. Upstream licensing and a modification notice ship
+with the binary under `/usr/local/share/licenses/terraform/`.
+
+Refresh the patch from the pinned upstream commit when updating dependencies;
+review the complete resolved graph and run isolated lifecycle and upstream
+compatibility tests before publishing. Runner rollout is a separate operation.
+
+## Kaniko security rebuild
+
+The maintained `osscontainertools/kaniko` v1.28.5 release supplies credential
+helpers and certificates from its digest-pinned image. A separate Go 1.26.8
+builder checks out the exact upstream commit and applies
+`kaniko-security-dependencies.patch`, updating x/crypto to 0.57.0 and its
+resolved dependencies. Module verification and checksum guards prevent
+compilation from silently changing the reviewed graph. The rebuilt executor
+ships with the upstream license and an ADP modification notice.
+
+Telemetry remains disabled unless explicitly configured through Kaniko's
+telemetry endpoint setting. Image publication and runner rollout require
+separate acceptance; a local build does not establish deployed remediation.
+
+## Bundled runner npm security updates
+
+The runner retains its bundled Node 20 and Node 24 executables. Their npm
+installations use npm 11.20.0, which supports both installed Node versions.
+Checksum-verified upstream package archives include tar 7.5.22 and patched
+transitive dependencies. Node 20 moves from npm 10 to npm 11; package packing,
+installation, execution and clean installation are tested under each runtime. The Docker build exercises tar's default decompression-ratio limit
+with an 8 MiB synthetic fixture and verifies a valid archive still extracts.
+This bounded check does not exhaust disk or require external services.
+
+Validate offline package packing, installation, execution and clean installation
+under each bundled Node runtime before publishing a changed npm package.
