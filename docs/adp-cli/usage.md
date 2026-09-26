@@ -34,3 +34,12 @@ The source adds `/usage/me/{summary,timeline,models,requests}` and `/usage/manag
 #5628 remains open for live acceptance. Source tests do not establish deployed adapter availability, installed-CLI ordinary/admin isolation, marked real inference charge linkage, or resumed multi-entity export acceptance. Missing debit linkage and settled request-level proof remain explicit limitations; no claim of complete accounting qualification follows from merging this implementation.
 
 The existing remote dispatcher registers `usage_readback` as a diagnostic, outside the full acceptance matrix. Supply the existing installed `cli_path` and session plus `usage_readback={run_id,request_id,start,end}` for an explicitly owned fixture. It runs own summary, request page, lookup and bounded JSON export (one continuation when present), with no inference, remote controls or budget changes. It records scope/linkage/completeness consistency and preserves the full live acceptance hold.
+
+The focused `usage-exports` suite selects E21, which also remains in `nightly`.
+E21 additionally exercises installed NDJSON and CSV exports with at most two
+one-record pages per format. It checks the stdout/stderr framing, stable own
+scope, continuation/exit agreement, duplicate-free observed continuation,
+protected spreadsheet cells and decimal/unknown-cost representation. Evidence
+retains counts and completeness, not raw records. Empty data or absent
+continuation is explicitly reported; these checks do not establish marked
+inference, complete multi-entity accounting or settlement acceptance.

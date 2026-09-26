@@ -15,6 +15,7 @@ from pathlib import Path
 
 import common
 from capability_contrast import _write_session
+from usage_exports import exercise as exercise_usage_exports
 
 
 def detail(envelope):
@@ -89,6 +90,7 @@ def usage(cli, evidence):
         complete or exported.get("next_cursor"), "Partial export lacks cursor"
     )
     evidence.update(commands=[" ".join(c) for c in forms], export_complete=complete)
+    exercise_usage_exports(cli, flags, evidence)
 
 
 def activity(cli, evidence):

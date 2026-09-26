@@ -10387,7 +10387,9 @@ def test_story_capabilities_rejects_unknown_auth_readiness(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["capabilities", "usage", "activity"])
-def test_story_read_success_requires_no_inference_or_control_write(tmp_path, mode):
+def test_story_read_success_requires_no_inference_or_control_write(
+    tmp_path, mode, monkeypatch
+):
     module, _ = shipped_script(tmp_path, "story_reads")
     cli = Mock()
     if mode == "capabilities":
@@ -10399,6 +10401,26 @@ def test_story_read_success_requires_no_inference_or_control_write(tmp_path, mod
             },
         ]
     elif mode == "usage":
+        cli.binary, cli.env, cli.timeout, cli.transcript = "/isolated/adp", {}, 30, []
+        exporter = module.exercise_usage_exports.__globals__
+
+        def raw_export(argv, **kwargs):
+            assert argv[1:3] == ["logs", "export"]
+            meta = {
+                "scope": {"kind": "own"},
+                "complete": True,
+                "next_cursor": None,
+                "start": argv[argv.index("--start") + 1],
+                "end": argv[argv.index("--end") + 1],
+            }
+            continuation = json.dumps(
+                {"type": "continuation", "status": "ok", "detail": meta}
+            )
+            if argv[argv.index("--format") + 1] == "ndjson":
+                return 0, continuation + "\n", ""
+            return 0, ",".join(exporter["COLUMNS"]) + "\n", continuation
+
+        monkeypatch.setattr(exporter["common"], "bounded", raw_export)
         cli.json.return_value = {
             "status": "ok",
             "detail": {"scope": {"kind": "own"}, "items": []},

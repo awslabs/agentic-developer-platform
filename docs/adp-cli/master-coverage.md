@@ -93,3 +93,5 @@ see [scope and examples](access-and-sessions.md). Live membership/spend and
 revocation timing are not inferred from those source forms.
 
 #5635 GitLab source adapter: six leaves and [published human API contract](gitlab.md), with E30 discovery/refusal regression. Real dedicated-project webhook/run/artifact and disconnect cleanup acceptance remains held.
+
+The [26 September acceptance assessment](../evaluations/cli-uplift/remaining-acceptance-20260926.md) records concrete remaining fixtures and runtime dependencies across all 23 stories. The focused `usage-exports` suite extends existing E21 with bounded CSV/NDJSON checks; successful serialization does not establish inference or complete accounting acceptance.
