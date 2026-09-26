@@ -10437,3 +10437,40 @@ def test_gitlab_nightly_does_not_claim_live_delivery_or_write(tmp_path):
     assert cases.BY_ID["E30"].owner == "#5635"
     assert "E30" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E30"] in bundle.purposes()
+
+
+@pytest.mark.parametrize("bad_group", [False, True])
+def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
+    tmp_path, bad_group
+):
+    launches = []
+    group_id = "sg-0123456789abcdef0"
+
+    def doubles(cfg):
+        ports_double = live_doubles(cfg)
+        ports_double["aws"].replies["ec2.describe_security_groups"] = {
+            "SecurityGroups": [
+                {
+                    "GroupId": group_id,
+                    "VpcId": "vpc-foreign" if bad_group else cfg["vpc_id"],
+                    "IpPermissions": [],
+                    "IpPermissionsEgress": [
+                        {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443}
+                    ],
+                }
+            ]
+        }
+
+        def launch(**kwargs):
+            launches.append(kwargs)
+            return {"Instances": [{"InstanceId": "i-0abc"}]}
+
+        ports_double["aws"].replies["ec2.run_instances"] = launch
+        return ports_double
+
+    run_live_stages(tmp_path, doubles=doubles, instance_security_group_id=group_id)
+    if bad_group:
+        assert launches == []
+    else:
+        assert len(launches) == 1
+        assert launches[0]["SecurityGroupIds"] == [group_id]

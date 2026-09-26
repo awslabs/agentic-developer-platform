@@ -346,3 +346,12 @@ and blocked cases still prevent full acceptance.
 
 E30 (#5635) runs GitLab discovery/refusal through the installed CLI. It needs only the ordinary platform/login fixture and does not mutate a GitLab host. Dedicated project connect/retry/rename/delivery/disconnect remains a live acceptance hold.
 Budget story #5589 adds E26 to `story-reads` and `nightly`: served `adp budget me` reads daily, weekly and monthly periods without inference or cap mutation. This checks response and uncapped semantics; it does not establish live hard/soft enforcement.
+
+The dev fixture explicitly selects `sg-0f497fc6d4ec88610`, the existing private
+Devbox security group with no inbound rules and outbound HTTP/HTTPS. The VPC's
+hardened default group has no egress: evaluation `36202597045` launched with
+that implicit default, could not register with SSM, and terminated its instance
+with verified cleanup. The harness now validates the selected group's VPC,
+absence of ingress and HTTPS egress before launch. It does not modify group
+rules or runner/instance roles. `CLI_UPLIFT_EVAL_SECURITY_GROUP_ID` can override
+the reviewed binding for another explicitly configured fixture.
