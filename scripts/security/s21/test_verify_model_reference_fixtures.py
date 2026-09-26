@@ -164,3 +164,54 @@ def test_exact_original_scan_and_full_audit_join(consumers, tmp_path, monkeypatc
     receipt["verified_delta"] = 2
     with pytest.raises(ValueError, match="Duplicate original selector"):
         run()
+
+
+@pytest.mark.parametrize(
+    "name", ["fixture-name", "adp/fixture/resource", "fixture.name+suffix"]
+)
+def test_secret_id_names_require_same_imported_model_and_consumer_context(name):
+    source = SOURCE.replace(REFERENCE, name)
+    verifier.verify_context(source, RECORD, name)
+    with pytest.raises(ValueError):
+        verifier.verify_context(
+            source.replace("secret_arn=", "password="), RECORD, name
+        )
+
+
+def test_function_local_import_binds_its_own_constructor():
+    source = (
+        "def test_fixture():\n"
+        "    from src.shared.models.vault import UserCredential\n"
+        f"    credential = UserCredential(secret_arn={REFERENCE!r})\n"
+    )
+    verifier.verify_context(source, dict(RECORD, import_line=2), REFERENCE)
+
+
+@pytest.mark.parametrize(
+    "source,record",
+    [
+        (
+            ("def unrelated():\n"
+            "    from src.shared.models.vault import UserCredential\n"
+            "def test_fixture():\n"
+            f"    credential = UserCredential(secret_arn={REFERENCE!r})\n"),
+            dict(RECORD, line=4, constructor_line=4, import_line=2),
+        ),
+        (
+            ("def test_fixture():\n"
+            "    if condition:\n"
+            "        from src.shared.models.vault import UserCredential\n"
+            f"    credential = UserCredential(secret_arn={REFERENCE!r})\n"),
+            dict(RECORD, line=4, constructor_line=4, import_line=3),
+        ),
+        (
+            ("def test_fixture():\n"
+            f"    credential = UserCredential(secret_arn={REFERENCE!r})\n"
+            "    from src.shared.models.vault import UserCredential\n"),
+            dict(RECORD, line=2, constructor_line=2, import_line=3),
+        ),
+    ],
+)
+def test_local_import_must_be_in_own_scope_and_precede_call(source, record):
+    with pytest.raises(ValueError):
+        verifier.verify_context(source, record, REFERENCE)

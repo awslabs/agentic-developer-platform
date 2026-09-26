@@ -39,13 +39,25 @@ def imported(tree, module, name):
 
 def verify_context(text, record, candidate):
     # This grammar alone never classifies a candidate: it only limits this
-    # reviewed cohort to short, deliberately incomplete fixture identifiers.
+    # reviewed cohort to deliberately incomplete ARN fixtures or AWS SecretId names.
     require(
-        re.fullmatch(r"arn(?::[a-z0-9-]+|[0-9]+)", candidate),
+        re.fullmatch(
+            r"(?:arn(?::[a-z0-9-]+|[0-9]+)|[A-Za-z0-9/_+=.@-]{1,512})", candidate
+        ),
         "Not a reviewed synthetic identifier",
     )
     tree = ast.parse(text)
-    imports = imported(tree, MODEL_MODULE, "UserCredential")
+    imports = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and node.module == MODEL_MODULE
+        and any(
+            alias.name == "UserCredential" and alias.asname is None
+            for alias in node.names
+        )
+    ]
     require(
         len(imports) == 1 and imports[0].lineno == record["import_line"],
         "Model import binding mismatch",
@@ -102,6 +114,20 @@ def verify_context(text, record, candidate):
         and call.lineno == record["constructor_line"],
         "Imported model constructor mismatch",
     )
+    import_scope = parents[imports[0]]
+    require(
+        isinstance(import_scope, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef)),
+        "Constructor import is conditional or in an unreviewed scope",
+    )
+    require(imports[0].lineno < call.lineno, "Constructor import follows use")
+    if not isinstance(import_scope, ast.Module):
+        cursor = call
+        while cursor is not import_scope and cursor in parents:
+            cursor = parents[cursor]
+        require(
+            cursor is import_scope,
+            "Function-local constructor import is outside call scope",
+        )
     require(
         not any(k.arg is None for k in call.keywords),
         "Dynamic constructor arguments not reviewed",

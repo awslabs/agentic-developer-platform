@@ -18,8 +18,8 @@ with no raw candidate values or source-line content published.
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 512 |
 | Derived checksums recomputed from immutable source inputs | 36 |
-| Resource references with explicit field/consumer binding | 55 |
-| Pending context review, retained by #6110 | 961 |
+| Resource references with explicit field/consumer binding | 60 |
+| Pending context review, retained by #6110 | 956 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -230,3 +230,19 @@ Full original scan/audit candidate joins are privately reverified without values
 in output. Verified nonsecret dispositions are now **898/1859**, with **961**
 pending under #6110. All **3,708** original identities and supplemental proposals
 are retained; the story remains open.
+
+A further **5** complete SecretId-name literals are passed to the imported
+`UserCredential(secret_arn=...)` constructor. Three use module-level direct
+imports and two use direct imports local to the containing function. The
+extended verifier requires an unconditional import in the containing scope
+before the call, rejects shadowing/rebinding and preserves the existing
+ORM-to-delivery-to-provider `SecretId` proof. Names alone do not establish
+resource-reference status.
+
+`S21-detect-secrets-model-name-reference-review.json` retains the exact source
+records and file hashes. Seven new import/name regressions join the existing
+model/mock-reference tests: **51** pass normally and **51** under optimized
+Python. Both the original 19-reference receipt and this five-reference receipt
+reverify against full private scan/audit joins without candidate output. All
+**3,708** original identities and supplemental proposals are retained. Current
+verified dispositions: **903/1859**, with **956** pending; #6110 remains open.
