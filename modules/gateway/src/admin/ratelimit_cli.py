@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import or_, select
+from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -14,6 +15,7 @@ from src.admin.audit_operation import AuditedAdminRoute, mark_admin_effects
 from src.admin.config import AdminRole, Permission
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
+from src.shared.identity.workspaces import login_subject_for_user, primary_team_for_workspace, workspace_user
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.usage import RateLimitConfig
 from src.shared.schemas.auth import TokenContext
@@ -61,30 +63,42 @@ def serialize(row):
 async def target(db, context, org_id, scope, supplied, permission):
     access = AccessControl(db)
     await access.check_permission(context, permission, target_org_id=org_id)
-    model = {"org": Organization, "department": Department, "team": Team, "user": User}[scope]
-    query = select(model)
+    canonical_user_id = None
     if scope == "user":
-        query = query.where(or_(User.id == supplied, User.cognito_sub == supplied))
+        candidates = (await db.execute(select(User).where(or_(User.id == supplied, User.cognito_sub == supplied)))).scalars().all()
+        if len(candidates) > 1:
+            raise HTTPException(409, "Ambiguous user ID or login subject")
+        if not candidates:
+            raise HTTPException(404, "Target not in selected organization")
+        try:
+            subject = await login_subject_for_user(db, candidates[0])
+            if not subject:
+                raise HTTPException(409, "User has no supported token identity for rate-limit enforcement")
+            member = await workspace_user(db, subject, org_id)
+            if member is None:
+                raise HTTPException(404, "Target has no active membership in selected organization")
+            team = await primary_team_for_workspace(db, member, org_id)
+        except (ValueError, MultipleResultsFound):
+            raise HTTPException(409, "Ambiguous login, membership or primary team") from None
+        canonical_user_id = member.id
+        supplied = subject
+        department = team.department_id if team else None
     else:
-        query = query.where(model.id == supplied)
-    if scope != "org":
-        query = query.where(model.org_id == org_id)
-    elif supplied != org_id:
-        raise HTTPException(404, "Target not in selected organization")
-    row = (await db.execute(query)).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(404, "Target not in selected organization")
-    department = supplied if scope == "department" else getattr(row, "department_id", None)
-    if scope == "user":
-        department = await db.scalar(select(Team.department_id).where(Team.id == row.team_id, Team.org_id == org_id))
-        if not row.cognito_sub:
-            raise HTTPException(409, "User has no supported token identity for rate-limit enforcement")
-        supplied = row.cognito_sub
+        model = {"org": Organization, "department": Department, "team": Team}[scope]
+        query = select(model).where(model.id == supplied)
+        if scope != "org":
+            query = query.where(model.org_id == org_id)
+        elif supplied != org_id:
+            raise HTTPException(404, "Target not in selected organization")
+        row = (await db.execute(query)).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(404, "Target not in selected organization")
+        department = supplied if scope == "department" else getattr(row, "department_id", None)
     role, _, allowed_department = await access.get_user_role(context)
     if role == AdminRole.DEPT_ADMIN and (not allowed_department or department != allowed_department):
         raise HTTPException(403, "Target outside your department")
     await access.check_permission(context, permission, target_org_id=org_id, target_dept_id=department)
-    return supplied
+    return supplied, canonical_user_id
 
 
 async def saved(db, org_id, scope, key, *, lock=False):
@@ -169,7 +183,8 @@ async def show_config(
     db: Annotated[AsyncSession, Depends(get_db)],
     context: Annotated[TokenContext, Depends(get_current_user)],
 ):
-    key = await target(db, context, org_id, scope, key, Permission.RATELIMIT_READ)
+    requested_target = key
+    key, canonical_user_id = await target(db, context, org_id, scope, key, Permission.RATELIMIT_READ)
     config = serialize(await saved(db, org_id, scope, key))
     runtime = runtime_metadata(request)
     effective = {
@@ -181,6 +196,8 @@ async def show_config(
         "entity_type": scope,
         "entity_id": key,
         "saved": config,
+        "requested_target": requested_target,
+        "canonical_user_id": canonical_user_id,
         "scope_effective_by_account_type": effective,
         "sources": {name: scope if config and config[name] is not None else "account_type_default" for name in DIMENSIONS},
         "runtime": runtime,
@@ -196,7 +213,7 @@ async def set_config(
     db: Annotated[AsyncSession, Depends(get_db)],
     context: Annotated[TokenContext, Depends(get_current_user)],
 ):
-    key = await target(db, context, org_id, scope, key, Permission.RATELIMIT_UPDATE)
+    key, _ = await target(db, context, org_id, scope, key, Permission.RATELIMIT_UPDATE)
     # Organization lock also serializes absent-row creation without adding a parallel store.
     await db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
     row = await saved(db, org_id, scope, key, lock=True)
@@ -229,7 +246,7 @@ async def delete_config(
     db: Annotated[AsyncSession, Depends(get_db)],
     context: Annotated[TokenContext, Depends(get_current_user)],
 ):
-    key = await target(db, context, org_id, scope, key, Permission.RATELIMIT_UPDATE)
+    key, _ = await target(db, context, org_id, scope, key, Permission.RATELIMIT_UPDATE)
     await db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
     row = await saved(db, org_id, scope, key, lock=True)
     if row is not None:

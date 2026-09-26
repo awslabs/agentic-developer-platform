@@ -617,6 +617,9 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
         )
 
     token = authorization[7:]  # Remove "Bearer " prefix
+    from src.auth.tenant_context import apply_context, split_token
+
+    token, tenant_lease = split_token(token)
 
     # Get Cognito validator
     validator = get_cognito_validator()
@@ -631,7 +634,12 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
         claims = validator.validate_token(token)
 
         # Convert claims to TokenContext
-        return _cognito_claims_to_context(claims)
+        context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+        if tenant_lease is None:
+            from src.admin.membership_revocation import require_not_revoked_context
+
+            await require_not_revoked_context(context)
+        return context
 
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -646,6 +654,8 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
             detail={"error": "invalid_token", "message": "Invalid or malformed token"},
             headers={"WWW-Authenticate": "Bearer"},
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error validating Cognito token: {e}")
         raise HTTPException(

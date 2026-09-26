@@ -47,6 +47,7 @@ SUITES = (
     "full",
     "nightly",
     "story-reads",
+    "tenant-isolation",
     "login",
     "install",
     "admin",
@@ -129,6 +130,7 @@ CAPABILITY_CONTRAST = "capability_contrast"
 # either: the allowlist is checked-in source, so it is present on every revision
 # whether or not anything is listening behind it.
 SUPERPLANE_DOMAIN = "superplane_domain"
+TENANT_ISOLATION = "tenant_isolation"
 
 CASES = (
     Case(
@@ -286,6 +288,13 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
+        "E23",
+        "#5622",
+        "story-reads",
+        "Served tenant membership/current selection and unknown-selector refusal without global workspace changes",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
         "E24",
         "#5631",
         "story-reads",
@@ -297,6 +306,20 @@ CASES = (
         "#5589",
         "story-reads",
         "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E27",
+        "#5622",
+        "tenant-isolation",
+        "Two owned memberships retain explicit tenant scope during concurrent reads, local default changes and Cognito refresh; no model inference claim",
+        (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
+    ),
+    Case(
+        "E29",
+        "#5623",
+        "story-reads",
+        "Bounded administrator hierarchy reads preserve organization scope; no mutation lifecycle acceptance claim",
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
@@ -428,11 +451,7 @@ def stage_problems(stages):
     process died mid-stage) must all veto too, and enumerating the bad states
     means a state added later defaults to being treated as success.
     """
-    return sorted(
-        f"{name}: {state}"
-        for name, state in (stages or {}).items()
-        if state != "complete"
-    )
+    return sorted(f"{name}: {state}" for name, state in (stages or {}).items() if state != "complete")
 
 
 def accept(matrix, names, *, cleanup_ok=True, stages=None):
@@ -468,9 +487,7 @@ def accept(matrix, names, *, cleanup_ok=True, stages=None):
         (BLOCKED, "blocked"),
         (NOT_RUN, "did not run"),
     ):
-        offenders = sorted(
-            case_id for case_id, entry in matrix.items() if entry["status"] == status
-        )
+        offenders = sorted(case_id for case_id, entry in matrix.items() if entry["status"] == status)
         if offenders:
             reasons.append(f"{label}: " + ", ".join(offenders))
 

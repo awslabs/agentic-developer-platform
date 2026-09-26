@@ -19,7 +19,10 @@ adp admin ratelimit delete --org ORG --scope team --target TEAM --expected-revis
 
 Scopes are `user`, `team`, `department`, `org`. Organization target must equal
 `--org`. User targets may name the SQL ID or login subject; readback returns the
-Cognito subject actually used by the limiter. Users without a supported login
+Cognito subject actually used by the limiter, the canonical workspace user and the
+exact requested target. Secondary-tenant membership, revocation and that tenant's
+primary team govern lookup and department authority. Ambiguous identity mappings
+are refused. Users without a supported login
 subject are refused rather than configuring an unused identity key. Department
 administrators use exact target reads; unfiltered listing is refused.
 
@@ -31,7 +34,8 @@ dimension at its rung; other rungs still apply. Deletion removes only this
 configuration row. Neither mutation resets counters or usage.
 
 Dry-run performs reads only. Existing rows require the reviewed timestamp;
-creation requires `--expect-absent`. `--yes` supplies no missing permission or
+creation requires `--expect-absent`. All supported legacy and CLI writers share
+the organization lock before reading or changing rows. `--yes` supplies no missing permission or
 revision. Unknown delivery returns `pending`, reads back the same target and never
 automatically replays the write. Inspect before retrying. HTTP 403/404/409/422
 retain normal permission, missing-target, conflict and validation errors. An old

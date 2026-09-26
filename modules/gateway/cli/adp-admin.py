@@ -46,6 +46,8 @@ def parser():
     if Path(__file__).with_name("adp-github-admin.py").is_file():
         commands.add_parser("github", help="Configure this deployment's GitHub App; check sign-in and repository access")
     commands.add_parser("ratelimit", help="Inspect or manage scoped rate-limit overrides")
+    for area in ("org", "department", "team", "member", "tenant"):
+        commands.add_parser(area, help="Scoped hierarchy and membership administration")
     commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
@@ -154,6 +156,11 @@ def main(argv=None):
             if not module:
                 raise common.CliError("Rate-limit helper is missing. Run adp update.", "provider_unavailable", 4)
             return module.main(["admin", "ratelimit", *argv[1:]])
+        if argv and argv[0] in {"org", "department", "team", "member", "tenant"}:
+            module = common.load_provider("adp-hierarchy.py")
+            if not module:
+                raise common.CliError("Hierarchy helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv)
         if argv and argv[0] == "budget":
             module = common.load_provider("adp-budget.py")
             if not module:

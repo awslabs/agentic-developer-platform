@@ -1007,6 +1007,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E17",
         "E18",
         "E19",
+        "E27",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
@@ -8425,6 +8426,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         # environment, so it blocks here exactly as the GitHub cases do.
         "E18",
         "E19",
+        "E27",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
@@ -8440,7 +8442,9 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E20",
         "E21",
         "E22",
+        "E23",
         "E24",
+        "E29",
         "E26",
         "E36",
     }
@@ -10232,19 +10236,22 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E20",
         "E21",
         "E22",
+        "E23",
         "E24",
         "E26",
         "E36",
+        "E29",
     }
-    assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
+    assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
         "#5628",
         "#5629",
+        "#5622",
     }
     assert not cases.is_full(("nightly",))
     assert all(
         stages.JOURNEY_DRIVERS[key] in bundle.purposes()
-        for key in ("E20", "E21", "E22")
+        for key in ("E20", "E21", "E22", "E23")
     )
     matrix = cases.new_matrix(("nightly",))
     for key in matrix:
@@ -10364,6 +10371,43 @@ def test_vault_nightly_is_selected_and_shipped():
     assert cases.BY_ID["E24"].owner == "#5631"
     assert "E24" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()
+
+
+def test_hierarchy_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E29"].owner == "#5623"
+    assert "E29" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E29"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        *[
+            {"status": "ok", "detail": {"org_id": "org", "kind": kind, "items": []}}
+            for kind in ("department", "team", "member")
+        ],
+    ]
+    evidence = {}
+    module.hierarchy(cli, evidence)
+    assert evidence["org_id"] == "org"
+    cli.run.assert_not_called()
+
+
+def test_hierarchy_read_refuses_foreign_row(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        {
+            "status": "ok",
+            "detail": {
+                "org_id": "org",
+                "kind": "department",
+                "items": [{"org_id": "foreign"}],
+            },
+        },
+    ]
+    with pytest.raises(common.RemoteError, match="Foreign hierarchy"):
+        module.hierarchy(cli, {})
 
 
 def test_story_budget_reads_all_periods_without_writes(tmp_path):

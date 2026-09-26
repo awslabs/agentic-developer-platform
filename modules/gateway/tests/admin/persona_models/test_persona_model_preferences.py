@@ -2963,6 +2963,7 @@ class TestRealCognitoM2MAuth:
         with (
             patch("src.auth.dependencies.get_settings", return_value=settings),
             patch("src.auth.dependencies._get_cognito_validator", return_value=validator),
+            patch("src.admin.membership_revocation.require_not_revoked_context", new=AsyncMock()),
         ):
             ctx = await get_current_user(self._request(), authorization="Bearer fake-m2m-token")
 

@@ -144,6 +144,13 @@ Usage and metadata commands added by #5628 (source implementation; live acceptan
 | `adp admin usage departments` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
 | `adp admin usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--org`, `--page-size`, `--request-id`, `--run`, `--start` |
 
+Tenant selection (#5622 source implementation; live acceptance held). Global `--tenant TENANT_ID` precedes the command; `ADP_TENANT` selects per terminal.
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp tenant list` |  | `--json` |
+| `adp tenant current` |  | `--json` |
+| `adp tenant use` | `tenant` | `--dry-run`, `--json` |
 Credential and identity additions ([usage](vault.md)); source implemented, live acceptance pending:
 
 | Command | Positional arguments | Options |
@@ -158,6 +165,7 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
 
 
+Hierarchy administration: `adp admin org`, `department`, `team`, `member`, `team members`, and `tenant org-links`; see [exact flags, examples and revocation semantics](hierarchy.md). The checked manifest records all 25 leaf forms. Live lifecycle qualification remains pending.
 Budget additions ([contract and examples](budgets.md)); source implemented, live enforcement acceptance pending:
 
 | Command | Purpose |

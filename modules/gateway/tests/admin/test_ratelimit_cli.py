@@ -66,7 +66,7 @@ async def test_target_maps_to_actual_login_key_and_refuses_foreign(db_session, s
     db_session.add(Team(id="team", org_id=org, department_id="dept", name="team"))
     db_session.add(User(id="canonical", org_id=org, team_id="team", email="x@example.invalid", cognito_sub="login-sub"))
     await db_session.commit()
-    assert await routes.target(db_session, caller, org, "user", "canonical", Permission.RATELIMIT_READ) == "login-sub"
+    assert await routes.target(db_session, caller, org, "user", "canonical", Permission.RATELIMIT_READ) == ("login-sub", "canonical")
     with pytest.raises(HTTPException) as foreign:
         await routes.target(db_session, caller, sample_organizations[1].id, "user", "canonical", Permission.RATELIMIT_READ)
     assert foreign.value.status_code == 404
@@ -136,3 +136,35 @@ async def test_legacy_org_alias_and_zero_are_readable(db_session, sample_organiz
     with pytest.raises(HTTPException) as duplicate:
         await routes.saved(db_session, org, "org", org)
     assert duplicate.value.status_code == 409
+
+
+async def test_secondary_membership_primary_team_and_revocation(db_session, sample_organizations, caller, monkeypatch):
+    from src.shared.models.onboarding import TenantMembership
+    from src.shared.models.organization import TeamMembership
+
+    home, work = [org.id for org in sample_organizations[:2]]
+    db_session.add(Department(id="work-dept", org_id=work, name="work"))
+    db_session.add(Team(id="work-team", org_id=work, department_id="work-dept", name="work"))
+    db_session.add(User(id="multi", org_id=home, team_id="home-team", email="multi@example.invalid", cognito_sub="multi-sub"))
+    member = TenantMembership(user_id="multi", tenant_id=work, role="member", is_active=False)
+    db_session.add(member)
+    db_session.add(TeamMembership(user_id="multi", org_id=work, team_id="work-team", is_primary=True))
+    await db_session.commit()
+    monkeypatch.setattr(routes.AccessControl, "get_user_role", AsyncMock(return_value=(AdminRole.DEPT_ADMIN, work, "work-dept")))
+    monkeypatch.setattr(routes.AccessControl, "check_permission", AsyncMock())
+    assert await routes.target(db_session, caller, work, "user", "multi", Permission.RATELIMIT_READ) == ("multi-sub", "multi")
+    member.revoked_at = datetime.now(UTC)
+    await db_session.commit()
+    with pytest.raises(HTTPException) as refused:
+        await routes.target(db_session, caller, work, "user", "multi", Permission.RATELIMIT_READ)
+    assert refused.value.status_code == 404
+
+
+async def test_ambiguous_id_subject_refuses_without_500(db_session, sample_organizations, caller):
+    org = sample_organizations[0].id
+    db_session.add(User(id="shared-id", org_id=org, team_id="", email="one@example.invalid", cognito_sub="one-sub"))
+    db_session.add(User(id="second", org_id=org, team_id="", email="two@example.invalid", cognito_sub="shared-id"))
+    await db_session.commit()
+    with pytest.raises(HTTPException) as refused:
+        await routes.target(db_session, caller, org, "user", "shared-id", Permission.RATELIMIT_READ)
+    assert refused.value.status_code == 409

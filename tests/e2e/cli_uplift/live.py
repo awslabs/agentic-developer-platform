@@ -617,6 +617,7 @@ def _journey_payload(cfg, ctx):
         # response the UI cannot render, which is the whole property under test.
         "ui_contracts": ctx.get("ui_contracts") or {},
         "capability_contrast": cfg.get("capability_contrast") or {},
+        "tenant_isolation": cfg.get("tenant_isolation") or {},
         # E18 receives references and bounded workload choices only. The admin
         # password remains in Secrets Manager and is read on the instance.
         "superplane": cfg.get("superplane") or {},

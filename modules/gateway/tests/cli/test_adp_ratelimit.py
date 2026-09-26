@@ -21,7 +21,15 @@ def row():
 
 
 def snapshot(saved=None):
-    return dict(org_id="tenant", entity_type="team", entity_id="team-a", saved=saved, runtime={"tpm": "unavailable_actual_usage_not_reconciled"})
+    return dict(
+        org_id="tenant",
+        entity_type="team",
+        entity_id="team-a",
+        requested_target="team-a",
+        canonical_user_id=None,
+        saved=saved,
+        runtime={"tpm": "unavailable_actual_usage_not_reconciled"},
+    )
 
 
 @pytest.fixture
@@ -76,3 +84,30 @@ def test_yes_cannot_approve_unseen_revision(client):
     with pytest.raises(cli.common.CliError):
         cli.execute(args("set", "--rpm", "21", "--yes"), client)
     assert client.request.call_count == 1
+
+
+@pytest.mark.parametrize("line", [{}, {"entity_type": "user", "entity_id": "u", "saved": None, "effective": {}, "sources": {}}])
+def test_malformed_own_lines_refused(line):
+    value = {
+        "org_id": "tenant",
+        "lines": [line],
+        "runtime": {
+            "state": "configured_not_probed",
+            "tpm": "unavailable_actual_usage_not_reconciled",
+            "worker_convergence": "unknown",
+            "backend": "InMemoryBackend",
+            "quota_storage": "process_local",
+            "defaults": {account: {"rpm": 60, "tpm": 100000, "concurrent_requests": 10} for account in ("human", "service")},
+        },
+    }
+    with pytest.raises(cli.common.CliError):
+        cli.own_response(value)
+
+
+def test_user_mapping_requires_requested_target(client):
+    value = snapshot(row())
+    value.update(entity_type="user", entity_id="login-sub", canonical_user_id="canonical", requested_target="different", saved=None)
+    client.request.return_value = value
+    arguments = cli.parser().parse_args(["admin", "ratelimit", "show", "--org", "tenant", "--scope", "user", "--target", "canonical"])
+    with pytest.raises(cli.common.CliError):
+        cli.execute(arguments, client)

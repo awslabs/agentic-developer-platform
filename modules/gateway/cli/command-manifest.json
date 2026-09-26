@@ -4051,6 +4051,106 @@
       "capability_source": "/activity/invocations/{invocation_id}/agent/state"
     },
     {
+      "command": "adp tenant list",
+      "helper": "adp-tenant.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/workspaces"
+        ],
+        "schema": "WorkspaceList; tenant lease; use persists only local identity-bound default"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_tenant.py",
+        "tests/auth/test_tenant_context.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp tenant current",
+      "helper": "adp-tenant.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/workspaces",
+          "/workspaces/context"
+        ],
+        "schema": "WorkspaceList; tenant lease; use persists only local identity-bound default"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_tenant.py",
+        "tests/auth/test_tenant_context.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp tenant use",
+      "helper": "adp-tenant.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--dry-run",
+        "--json"
+      ],
+      "arguments": [
+        "tenant"
+      ],
+      "request": {
+        "kind": "local",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/workspaces",
+          "/workspaces/context"
+        ],
+        "schema": "WorkspaceList; tenant lease; use persists only local identity-bound default"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_tenant.py",
+        "tests/auth/test_tenant_context.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
       "command": "adp credential list",
       "helper": "adp-vault.py",
       "status": "shipped",
@@ -4604,6 +4704,971 @@
       "tests": [
         "tests/cli/test_adp_budget.py",
         "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin department create",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--description",
+        "--dry-run",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/admin/organizations/{org_id}/departments",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department delete",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department show",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--id",
+        "--json",
+        "--org"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--description",
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member add",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--email",
+        "--existing-user",
+        "--json",
+        "--name",
+        "--new-user",
+        "--org",
+        "--role",
+        "--team",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/api/admin/identity/organizations/{org_id}/users",
+          "/admin/organizations/{org_id}/members",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member remove",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.member.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--name",
+        "--org",
+        "--role",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.member.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org create",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--id",
+        "--json",
+        "--name",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/api/admin/identity/organizations",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org delete",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org show",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--org"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team create",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--department",
+        "--description",
+        "--dry-run",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/admin/organizations/{org_id}/departments/{department_id}/teams",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team delete",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team members add",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.member.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--primary",
+        "--role",
+        "--team",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.member.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team members list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size",
+        "--team"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team members remove",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.member.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--team",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.member.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team show",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--id",
+        "--json",
+        "--org"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--description",
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin tenant org-links add",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--github-org-id",
+        "--json",
+        "--tenant",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/tenants/{tenant_id}/orgs/{github_org_id}/preview",
+          "/admin/tenants/{tenant_id}/orgs",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin tenant org-links list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size",
+        "--tenant"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/tenants/{tenant_id}/orgs/page"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin tenant org-links remove",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--github-org-id",
+        "--json",
+        "--tenant",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/tenants/{tenant_id}/orgs/{github_org_id}/preview",
+          "/admin/tenants/{tenant_id}/orgs/{github_org_id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
       ]
     },
     {

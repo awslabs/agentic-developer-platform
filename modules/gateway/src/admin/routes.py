@@ -48,6 +48,7 @@ from src.admin.config import (
     Permission,
 )
 from src.admin.exceptions import AccessDeniedError
+from src.admin.hierarchy import router as hierarchy_router
 from src.admin.log_service import LogService
 from src.admin.memberships import project_member_org_ids
 from src.admin.policy_scoping_schemas import (
@@ -2579,3 +2580,6 @@ router.include_router(_audit_sub_router)
 from src.admin.ratelimit_cli import router as _ratelimit_cli_router  # noqa: E402
 
 router.include_router(_ratelimit_cli_router)
+
+# Guarded CLI adapters reuse the services and permissions above.
+router.include_router(hierarchy_router)

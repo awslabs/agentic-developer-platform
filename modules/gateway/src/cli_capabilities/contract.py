@@ -225,6 +225,15 @@ _READINESS = {
 # IDs are `area.action[.scope]` and are STABLE — a client keys off them, so an ID
 # is renamed only with a schema version bump.
 OPERATIONS = (
+    Operation("hierarchy.read", summary="Read scoped organization hierarchy and revisions", permission=Permission.ORG_READ),
+    Operation(
+        "hierarchy.write",
+        summary="Revision-guarded hierarchy changes; exact route permissions still apply",
+        permission=Permission.ORG_UPDATE,
+        mutates=True,
+    ),
+    Operation("hierarchy.platform.write", summary="Create organizations and place existing members", permission=Permission.ORG_CREATE, mutates=True),
+    Operation("hierarchy.member.write", summary="Update scoped membership roles", permission=Permission.USER_MANAGE, mutates=True),
     Operation("vault.credentials.register", summary="Register an own credential; shared scopes require additional server authority", mutates=True),
     Operation("vault.credentials.metadata", summary="Update visible credential metadata with revision and ownership checks", mutates=True),
     Operation("vault.credentials.delete", summary="Delete an authorized credential; running work is not stopped", mutates=True),

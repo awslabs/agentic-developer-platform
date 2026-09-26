@@ -150,6 +150,8 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-models.py", ["adp", "models"]),
         ("adp-flow.py", ["adp", "flow"]),
         ("adp-task.py", ["adp", "task"]),
+        ("adp-tenant.py", ["adp", "tenant"]),
+        ("adp-hierarchy.py", ["adp", "admin"]),
         ("adp-vault.py", ["adp"]),
         ("adp-usage.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
@@ -170,6 +172,8 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     admin.pop("adp admin bedrock")
     admin.pop("adp admin github")
     admin.pop("adp admin usage")
+    for area in ("org", "department", "team", "member", "tenant"):
+        admin.pop("adp admin " + area)
     admin.pop("adp admin budget")
     admin.pop("adp admin ratelimit")
     actual.update(admin)

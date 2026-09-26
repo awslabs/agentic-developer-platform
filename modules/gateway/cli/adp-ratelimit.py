@@ -88,11 +88,56 @@ def config(value, org, scope, key):
     return value
 
 
+def own_response(value):
+    try:
+        if not isinstance(value, dict) or not isinstance(value.get("org_id"), str) or not value["org_id"]:
+            raise ValueError
+        runtime = value["runtime"]
+        if (
+            not isinstance(runtime, dict)
+            or runtime.get("state") not in {"unavailable", "configured_not_probed"}
+            or runtime.get("worker_convergence") != "unknown"
+            or runtime.get("tpm") != "unavailable_actual_usage_not_reconciled"
+        ):
+            raise ValueError
+        lines = value["lines"]
+        if not isinstance(lines, list) or len(lines) > 4 or (runtime["state"] != "unavailable" and not lines):
+            raise ValueError
+        if runtime["state"] == "configured_not_probed":
+            if runtime.get("quota_storage") not in {"shared_redis", "process_local"} or not isinstance(runtime.get("backend"), str):
+                raise ValueError
+            for account in ("human", "service"):
+                if set(runtime["defaults"][account]) != set(DIMENSIONS):
+                    raise ValueError
+                if any(type(n) is not int or n < 0 or n > 2147483647 for n in runtime["defaults"][account].values()):
+                    raise ValueError
+        seen = set()
+        for line in lines:
+            kind, key = line["entity_type"], line["entity_id"]
+            if kind not in {"user", "service_account", "team", "department", "org"} or not isinstance(key, str) or not key or kind in seen:
+                raise ValueError
+            if kind == "org" and key != value["org_id"]:
+                raise ValueError
+            seen.add(kind)
+            config(line["saved"], value["org_id"], kind, key)
+            if set(line["effective"]) != set(DIMENSIONS) or set(line["sources"]) != set(DIMENSIONS):
+                raise ValueError
+            for name in DIMENSIONS:
+                number = line["effective"][name]
+                if type(number) is not int or not 0 <= number <= 2147483647 or line["sources"][name] not in {kind, "account_type_default"}:
+                    raise ValueError
+        return value
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise common.CliError("Malformed own rate-limit response.", "invalid_response", 5) from None
+
+
 def snapshot(value, args):
     if (
         not isinstance(value, dict)
         or value.get("org_id") != args.org
         or value.get("entity_type") != args.scope
+        or value.get("requested_target") != args.target
+        or (args.scope == "user" and (not isinstance(value.get("canonical_user_id"), str) or not value["canonical_user_id"]))
         or not isinstance(value.get("entity_id"), str)
         or not value["entity_id"]
         or (args.scope != "user" and value["entity_id"] != args.target)
@@ -107,15 +152,8 @@ def snapshot(value, args):
 def execute(args, client):
     command = "adp " + ("ratelimit me" if args.action == "me" else "admin ratelimit " + args.action)
     if args.action == "me":
-        value = client.request("GET", "/ratelimits/me")
-        if (
-            not isinstance(value, dict)
-            or not isinstance(value.get("lines"), list)
-            or not isinstance(value.get("runtime"), dict)
-            or not value.get("org_id")
-        ):
-            raise common.CliError("Malformed own rate-limit response.", "invalid_response", 5)
-        return common.envelope("ok", command, value)
+        value = own_response(client.request("GET", "/ratelimits/me"))
+        return common.envelope("unavailable" if value["runtime"]["state"] == "unavailable" else "ok", command, value)
     base = "/admin/organizations/" + identifier(args.org) + "/ratelimit-cli"
     if args.action == "list":
         items = []
