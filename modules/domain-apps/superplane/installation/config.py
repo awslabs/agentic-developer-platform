@@ -175,6 +175,7 @@ def validate(
         "controller_profiles",
         "credential_controller",
         "api_adapters",
+        "api_producer_role",
     }
     require(
         set(env) <= allowed,
@@ -184,6 +185,9 @@ def validate(
     from .api_adapters import validate as validate_api_adapters
 
     validate_api_adapters(env)
+    from .producer_role import validate as validate_producer_role
+
+    validate_producer_role(env)
     from .execution import validate_execution
 
     validate_execution(env, lock)
