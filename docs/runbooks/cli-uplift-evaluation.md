@@ -418,3 +418,5 @@ and a predeclared empty-team membership baseline. See
 [hierarchy lifecycle](../evaluations/cli-uplift/hierarchy-lifecycle-diagnostic.md)
 for exact scope, retained recovery intent and restoration. It is excluded from
 `full` and `nightly` and performs no inference.
+
+Nightly story reads explicitly select the native tenant verified by the login checkpoint and retained in its private session. Multiple memberships do not change that selection. A missing or mismatched native tenant fails before the story commands run; the harness never chooses the first visible membership. Owned cross-tenant diagnostics retain their separately declared fixtures.

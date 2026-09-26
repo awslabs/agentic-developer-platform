@@ -184,23 +184,28 @@ jobs:
           python - <<'PY'
           from tests.e2e.cli_uplift import cases, config, report
 
-          matrix = cases.new_matrix(("full",))
-          for case_id in matrix:
-              cases.record(matrix, case_id, cases.PASSED)
-          document = report.build(
-              matrix=matrix,
-              suites=("full",),
-              config=config.load("tests/e2e/cli_uplift/config.example.json"),
-              evaluation_id="adp-e2e-20260915-000000-abcdef",
-              attempt_id="adp-e2e-20260915-000000-abcdef-a1",
-              cleanup_ok=True,
-              timing={"started_at": "x", "ended_at": "y", "duration_seconds": 1},
-              correlation={},
-          )
-          errors = report.validate(document)
-          if errors:
-              raise SystemExit("report.schema.json drifted: " + "; ".join(errors))
-          print(f"schema matches builder across {len(document['cases'])} cases")
+          covered = set()
+          for suite in cases.SUITES:
+              matrix = cases.new_matrix((suite,))
+              for case_id in matrix:
+                  cases.record(matrix, case_id, cases.PASSED)
+              document = report.build(
+                  matrix=matrix,
+                  suites=(suite,),
+                  config=config.load("tests/e2e/cli_uplift/config.example.json"),
+                  evaluation_id="adp-e2e-20260915-000000-abcdef",
+                  attempt_id="adp-e2e-20260915-000000-abcdef-a1",
+                  cleanup_ok=True,
+                  timing={"started_at": "x", "ended_at": "y", "duration_seconds": 1},
+                  correlation={},
+              )
+              errors = report.validate(document)
+              if errors:
+                  raise SystemExit(f"report.schema.json drifted for {suite}: " + "; ".join(errors))
+              covered.update(matrix)
+          if covered != set(cases.BY_ID):
+              raise SystemExit("Schema parity omitted supported cases")
+          print(f"schema matches builder across {len(cases.SUITES)} suites and {len(covered)} cases")
           PY
 
       - name: Assert the example config carries no secrets

@@ -1739,6 +1739,41 @@ def test_a_real_report_satisfies_the_published_schema():
     assert report.validate(published_report()) == []
 
 
+@pytest.mark.parametrize("suite", cases.SUITES)
+@pytest.mark.parametrize(
+    "status", (cases.PASSED, cases.FAILED, cases.BLOCKED, cases.NOT_RUN)
+)
+def test_every_supported_suite_and_case_can_be_published(tmp_path, suite, status):
+    """Partial diagnostics must publish the same JSON/JUnit contract as full runs."""
+    import xml.etree.ElementTree as ET
+
+    matrix = cases.new_matrix((suite,))
+    for case_id in matrix:
+        cases.record(matrix, case_id, status)
+    document = published_report(matrix=matrix, suites=(suite,))
+    assert report.validate(document) == []
+    paths = report.write(tmp_path, document, matrix, document["evaluation_id"])
+    assert json.loads(Path(paths["report"]).read_text()) == document
+    assert len(ET.parse(paths["junit"]).findall(".//testcase")) == len(matrix)
+
+
+@pytest.mark.parametrize("diagnostic", ("D01", "D02", "D03", "D04"))
+def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
+    # D04's guarded source is separately reviewed; schema support must land
+    # before its harness so completed remote mutations remain reportable.
+    document = published_report()
+    document["suites"] = ["knowledge-lifecycle"]
+    document["cases"][0]["id"] = diagnostic
+    assert report.validate(document) == []
+
+
+@pytest.mark.parametrize("invalid_id", ("D00", "D05", "E43", "C02", "diagnostic"))
+def test_schema_still_rejects_unknown_case_identifiers(invalid_id):
+    document = published_report()
+    document["cases"][0]["id"] = invalid_id
+    assert report.validate(document)
+
+
 def test_schema_accepts_every_status_the_harness_can_emit():
     """Each of the four verdicts must round-trip; a rejected one is unreportable."""
     for status in (cases.PASSED, cases.FAILED, cases.BLOCKED, cases.NOT_RUN):
@@ -11245,6 +11280,7 @@ def test_story_read_script_reports_real_completion(
         json.dumps(
             {
                 "mode": "capabilities",
+                "org_id": "native-tenant",
                 "cli_path": "/served/adp",
                 "gateway_url": "https://adp.example",
                 "region": "us-east-1",
@@ -11253,7 +11289,7 @@ def test_story_read_script_reports_real_completion(
         )
     )
     monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
-    monkeypatch.setattr(common, "session_tokens", lambda _: {})
+    monkeypatch.setattr(common, "load_session", lambda _: {"org_id": "native-tenant"})
     monkeypatch.setattr(script, "_write_session", lambda *args: None)
     monkeypatch.setattr(common, "Cli", lambda *args, **kwargs: object())
 
@@ -12544,3 +12580,54 @@ def test_coding_terminal_before_control_fails_without_replacement_or_abort(
     assert not any(argv[1] in {"abort", "steer"} for argv in calls)
     triggers = [argv for argv in calls if argv[1] == "trigger" and "--yes" in argv]
     assert len(triggers) == 2 and triggers[0] == triggers[1]
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "missing_native", "missing_vault_native", "different_native"]
+)
+def test_story_reads_pin_verified_native_tenant_with_multiple_memberships(
+    tmp_path, monkeypatch, fault
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    cfg = {
+        "mode": "capabilities",
+        "cli_path": "/served/adp",
+        "gateway_url": "https://gateway.example",
+        "region": "us-east-1",
+        "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+        "org_id": "native-tenant",
+    }
+    session = {"org_id": "native-tenant"}
+    if fault == "missing_native":
+        cfg.pop("org_id")
+    elif fault == "missing_vault_native":
+        session.pop("org_id")
+    elif fault == "different_native":
+        session["org_id"] = "another-tenant"
+    monkeypatch.setattr(common, "load_session", lambda _: session)
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    calls = []
+    memberships = ["another-tenant", "native-tenant"]
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            calls.append(env)
+            # CLI deliberately refuses ambiguous sessions without a selection.
+            assert env["ADP_TENANT"] == memberships[1]
+            assert env["ADP_TENANT"] != memberships[0]
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+
+    monkeypatch.setattr(common, "Cli", Cli)
+    monkeypatch.setitem(script.SCENARIOS, "capabilities", lambda cli, evidence: None)
+    evidence = {"transcript": []}
+    if fault:
+        with pytest.raises(
+            common.RemoteError, match="verified login session native tenant"
+        ):
+            script.execute(cfg, evidence)
+        assert calls == []
+    else:
+        script.execute(cfg, evidence)
+        assert len(calls) == 1
+        assert evidence["detail"]["tenant_id"] == "native-tenant"
+        assert evidence["detail"]["tenant_selection"] == "verified_native_login_session"
