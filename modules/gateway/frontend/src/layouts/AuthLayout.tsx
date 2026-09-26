@@ -24,7 +24,7 @@ export function AuthLayout() {
           </div>
           <div>
             <p className="blueprint-auth-kicker">SOFTWARE DELIVERY WITH AGENTS</p>
-            <h1>From intent to delivered code.</h1>
+            <h1>Your software factory in the cloud.</h1>
             <p className="blueprint-auth-description">
               Plan, build, review, and verify software in one workspace.
             </p>
