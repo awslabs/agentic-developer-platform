@@ -91,8 +91,8 @@ CANCEL_REASON = "E42 owned fixture cancellation"
 
 
 def cancellation_command(task_id, command_id, reason=CANCEL_REASON):
-    # The served agent abort bridge expects task_id in a command-only receipt.
-    # Task abort uses the existing API directly and has no terminal preflight.
+    # Direct Task replay reaches the canonical API without a terminal preflight.
+    # The initial mutation below exercises the fixed served agent abort bridge.
     return [
         "task",
         "abort",
@@ -134,8 +134,27 @@ def cancellation_receipt(response, command_id, original=None):
 
 
 def cancel_with_replay(cli, task_id, command_id):
+    control = cli.json(
+        [
+            "agent",
+            "abort",
+            "--run",
+            task_id,
+            "--command-id",
+            command_id,
+            "--reason",
+            CANCEL_REASON,
+            "--yes",
+        ],
+        expected=4,
+    )
+    require_control_receipt(control, task_id, command_id)
     command = cancellation_command(task_id, command_id)
     original = cancellation_receipt(cli.json(command, expected=4), command_id)
+    common.require(
+        all(control["detail"].get(key) == value for key, value in original.items()),
+        "Task replay differs from the initial agent cancellation receipt",
+    )
     cancellation_receipt(cli.json(command, expected=4), command_id, original)
     conflict = cli.json(
         cancellation_command(task_id, command_id, CANCEL_REASON + " changed payload"),
@@ -154,7 +173,8 @@ def cancel_with_replay(cli, task_id, command_id):
         "same_payload_replay": "confirmed",
         "changed_payload": "task_conflict",
         "original_after_conflict": "confirmed",
-        "cli": "adp task abort",
+        "initial_cli": "adp agent abort",
+        "replay_cli": "adp task abort",
     }
 
 

@@ -13225,7 +13225,15 @@ def test_coding_cancellation_replays_one_command_and_conflicts_changed_payload(
     class Cli:
         def json(self, argv, expected):
             calls.append((argv, expected))
-            if len(calls) == 3:
+            if len(calls) == 1:
+                return {
+                    "status": "pending",
+                    "detail": {
+                        "task_id": "tsk-owned",
+                        **cancellation_cli_response()["data"]["receipt"],
+                    },
+                }
+            if len(calls) == 4:
                 return {"status": "failed", "error": {"code": "task_conflict"}}
             return cancellation_cli_response(
                 "cancelled" if len(calls) > 1 else "accepted"
@@ -13234,15 +13242,19 @@ def test_coding_cancellation_replays_one_command_and_conflicts_changed_payload(
     result = module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
     assert result["same_payload_replay"] == "confirmed"
     assert result["changed_payload"] == "task_conflict"
-    assert calls[0] == calls[1] == calls[3]
+    assert calls[1] == calls[2] == calls[4]
+    assert calls[0][0][:4] == ["agent", "abort", "--run", "tsk-owned"]
+    assert calls[0][0][calls[0][0].index("--reason") + 1] == module.CANCEL_REASON
+    assert result["initial_cli"] == "adp agent abort"
     assert all(
-        argv[:4] == ["task", "abort", "tsk-owned", "--human-login"] for argv, _ in calls
+        argv[:4] == ["task", "abort", "tsk-owned", "--human-login"]
+        for argv, _ in calls[1:]
     )
     assert all(
         argv[argv.index("--command-id") + 1] == "owned-command" for argv, _ in calls
     )
-    assert calls[2][0][calls[2][0].index("--reason") + 1] != module.CANCEL_REASON
-    assert calls[2][1] == 5
+    assert calls[3][0][calls[3][0].index("--reason") + 1] != module.CANCEL_REASON
+    assert calls[3][1] == 5
 
 
 @pytest.mark.parametrize(
@@ -13262,8 +13274,16 @@ def test_coding_cancellation_replay_rejects_false_proof(tmp_path, fault):
     class Cli:
         def json(self, argv, expected):
             calls.append(argv)
+            if len(calls) == 1:
+                return {
+                    "status": "pending",
+                    "detail": {
+                        "task_id": "tsk-owned",
+                        **cancellation_cli_response()["data"]["receipt"],
+                    },
+                }
             response = cancellation_cli_response()
-            if len(calls) == 2:
+            if len(calls) == 3:
                 if fault == "preflight_success":
                     response = {
                         "type": "abort_confirmed",
@@ -13273,7 +13293,7 @@ def test_coding_cancellation_replay_rejects_false_proof(tmp_path, fault):
                     response["data"]["receipt"]["command_id"] = "foreign"
                 elif fault == "different_sequence":
                     response["data"]["receipt"]["command_sequence"] = 4
-            if len(calls) == 3:
+            if len(calls) == 4:
                 if fault == "conflict_success":
                     return response
                 return {"status": "failed", "error": {"code": "task_access_denied"}}
@@ -13356,3 +13376,34 @@ def test_coding_cancellation_requires_terminal_command_and_queue_ack(
         )
         assert evidence["queue_ack_status"] == "confirmed"
         assert evidence["terminal_same_payload_replay"] == "confirmed"
+
+
+@pytest.mark.parametrize("fault", ["foreign_task", "missing_ack", "different_identity"])
+def test_coding_agent_cancel_must_bind_initial_task_and_replayed_receipt(
+    tmp_path, fault
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+
+    class Cli:
+        def json(self, argv, expected):
+            calls.append(argv)
+            if len(calls) == 1:
+                detail = {
+                    "task_id": "tsk-owned",
+                    **cancellation_cli_response()["data"]["receipt"],
+                }
+                if fault == "foreign_task":
+                    detail["task_id"] = "tsk-foreign"
+                if fault == "different_identity":
+                    detail["command_sequence"] = 99
+                return {
+                    "status": "failed" if fault == "missing_ack" else "pending",
+                    "detail": detail,
+                }
+            return cancellation_cli_response()
+
+    with pytest.raises(common.RemoteError):
+        module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
+    assert len(calls) == (2 if fault == "different_identity" else 1)
+    assert calls[0][:2] == ["agent", "abort"]
