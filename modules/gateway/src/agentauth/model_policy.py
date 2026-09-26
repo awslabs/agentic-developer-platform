@@ -776,6 +776,7 @@ async def _resolve_active_allowlist_policy(
     principal_id: str,
     expires_at: datetime,
     settings=None,
+    require_hierarchy: bool = False,
 ) -> ActiveAllowlistPolicy:
     """Resolve the exact live policy intersection used by every PMM-06 seam."""
     principal_status: str | None = None
@@ -800,10 +801,12 @@ async def _resolve_active_allowlist_policy(
         routing_user_id = user.id
     else:
         service_principal = await session.scalar(
-            select(ServicePrincipal).where(
+            select(ServicePrincipal)
+            .where(
                 ServicePrincipal.canonical_service_principal_id == principal_id,
                 ServicePrincipal.org_id == tenant_id,
             )
+            .execution_options(populate_existing=True)
         )
         if service_principal is None:
             raise ModelPolicyError("principal_unavailable")
@@ -818,6 +821,11 @@ async def _resolve_active_allowlist_policy(
             canonical_service_principal_id=principal_id,
         )
         routing_user_id = ""
+
+    if require_hierarchy:
+        from src.agentauth.task_identity import resolve_task_identity_context
+
+        context = await resolve_task_identity_context(session, context)
 
     from src.admin.persona_models.registry_policy import resolve_managed_service_restriction_policy
     from src.proxy.model_resolver import production_model_resolver

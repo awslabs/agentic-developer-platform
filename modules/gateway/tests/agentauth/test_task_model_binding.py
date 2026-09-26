@@ -64,6 +64,7 @@ async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revis
             expected_policy_version="1",
             persona=persona,
         )
+    assert module._resolve_active_allowlist_policy.call_args.kwargs["require_hierarchy"] is True
     assert lookup.call_args.kwargs["compatibility_class"] == "anthropic_messages"
     assert lookup.call_args.kwargs["harness_contract_revision"] == revision
     assert lookup.call_args.kwargs["request_shape_sha256"] == shape

@@ -517,3 +517,14 @@ async def test_sdk_request_size_limit_applies_before_claim(model):
         await execute(model, sdk_request=True)
     model.provider.assert_not_awaited()
     assert model.service._read(model.identity.task_id, model.turn_id) is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_live_hierarchy_prevents_provider_handoff(model):
+    from src.agentauth.model_policy import ModelPolicyError
+
+    model.service.readiness.side_effect = ModelPolicyError("task_identity_hierarchy_unavailable")
+    with pytest.raises(ModelPolicyError, match="task_identity_hierarchy_unavailable"):
+        await execute(model)
+    model.provider.assert_not_awaited()
+    model.enforcement.check_budget_hierarchy.assert_not_awaited()

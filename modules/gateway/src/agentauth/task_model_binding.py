@@ -43,7 +43,9 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
     from src.tasks.human_authority import require_current_owner
 
     principal_kind, owner_id = await require_current_owner(db, tenant=tenant, principal=principal)
-    policy = await _resolve_active_allowlist_policy(db, tenant_id=tenant, principal_kind=principal_kind, principal_id=owner_id, expires_at=deadline)
+    policy = await _resolve_active_allowlist_policy(
+        db, tenant_id=tenant, principal_kind=principal_kind, principal_id=owner_id, expires_at=deadline, require_hierarchy=True
+    )
     if (principal_kind == "service_account" and policy.principal_status != "active") or policy.service_policy_unavailable_reason:
         raise ModelPolicyError("task_model_policy_unavailable")
     preference = await db.scalar(
