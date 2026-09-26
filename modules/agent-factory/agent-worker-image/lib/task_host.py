@@ -819,6 +819,7 @@ class TaskHost:
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),
                     "artifacts": [reference for reference, _ in artifacts],
                     "limits": {
+                        "deadline_at": bootstrap["limits"]["deadline_at"],
                         "max_turns": bootstrap["limits"]["max_turns"],
                         "max_output_tokens_per_turn": bootstrap["limits"][
                             "max_output_tokens_per_turn"
