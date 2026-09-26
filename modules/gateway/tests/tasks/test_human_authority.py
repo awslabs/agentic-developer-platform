@@ -160,3 +160,49 @@ async def test_human_budget_refusal_precedes_task_acceptance(monkeypatch):
     repository.accept.assert_not_called()
     budget.reserve_admission.assert_not_called()
     assert model.call_args.kwargs["include_context"] is True
+
+
+@pytest.mark.asyncio
+async def test_selected_tenant_model_and_budget_context_use_current_membership(db_session, monkeypatch):
+    from datetime import UTC, datetime
+
+    from src.agentauth.model_policy import _resolve_active_allowlist_policy
+    from src.proxy import model_resolver
+    from src.shared.models.onboarding import TenantMembership
+    from src.shared.models.organization import Team, TeamMembership, User
+
+    secondary = str(uuid.uuid4())
+    db_session.add(
+        User(id=USER, org_id=TENANT, team_id="primary-team", email="task@example.test", cognito_sub="task-sub", user_kind="human", is_shadow=False)
+    )
+    db_session.add_all(
+        [
+            Team(id="primary-team", org_id=TENANT, department_id="primary-dept", name="Primary"),
+            Team(id="secondary-team", org_id=secondary, department_id="secondary-dept", name="Secondary"),
+        ]
+    )
+    member = TenantMembership(user_id=USER, tenant_id=secondary, role="member", is_active=True)
+    db_session.add(member)
+    db_session.add(TeamMembership(user_id=USER, team_id="secondary-team", org_id=secondary, is_primary=True))
+    await db_session.commit()
+    resolver = SimpleNamespace(get_configured_allowed_models=Mock(return_value=(["*"], "test")))
+    monkeypatch.setattr(model_resolver, "production_model_resolver", lambda settings: resolver)
+    monkeypatch.setenv("ADP_TASK_API_HUMAN_ENABLED", "true")
+    await human.require_current_owner(db_session, tenant=secondary, principal=human.human_locator(USER))
+    policy = await _resolve_active_allowlist_policy(
+        db_session, tenant_id=secondary, principal_kind="human", principal_id=USER, expires_at=datetime.now(UTC), settings=object()
+    )
+    assert policy.routing_user_id == USER
+    assert (policy.context.user_id, policy.context.org_id, policy.context.team_id, policy.context.department_id) == (
+        USER,
+        secondary,
+        "secondary-team",
+        "secondary-dept",
+    )
+    enforcement = SimpleNamespace(check_budget_hierarchy=AsyncMock(return_value=SimpleNamespace(allowed=True)))
+    await human.require_admission_headroom(policy.context, "0.1", enforcement=enforcement)
+    assert enforcement.check_budget_hierarchy.call_args.args[0].org_id == secondary
+    member.is_active = False
+    await db_session.commit()
+    with pytest.raises(errors.TaskApiError):
+        await human.require_current_owner(db_session, tenant=secondary, principal=human.human_locator(USER))
