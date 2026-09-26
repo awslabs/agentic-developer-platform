@@ -28,6 +28,8 @@ The earlier run [36211848174](https://github.com/aws-e/adp/actions/runs/36211848
 
 The later [configuration lifecycle run 36215959470](../evaluations/cli-uplift/budget-lifecycle-36215959470.md) passed D06: six budget period/ledger caps and rate configuration, authorization/stale-write refusals, verified removal, and unchanged settled usage. Its overall batch remains failed because D05 omitted its success marker despite completing all checks; #6309 fixes the harness. The EC2 instance was independently confirmed terminated. These checks do not establish actual client enforcement or full budget/rate story acceptance.
 
+[Run 36216938747](../evaluations/cli-uplift/tenant-hierarchy-machine-36216938747.md) subsequently passed all five selected cases, including E27 concurrent tenant reads/default/refresh, D03's 13 hierarchy checks and corrected D05's six canonical-principal checks. Membership restoration, resource cleanup and EC2 termination were verified. Simultaneous tenant inference, role-change authority, provider identity lifecycle and actual session revocation remain separate acceptance gaps.
+
 ## Available in baseline source
 
 | Area | Current command groups |
