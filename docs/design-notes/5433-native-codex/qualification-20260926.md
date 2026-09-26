@@ -142,4 +142,28 @@ Validation performed with isolated configuration/token stores:
 - Combined gateway, worker and official SDK with fixture inference: **9 passed, 9 skipped** (opt-in image/live cases).
 - Ruff checks and whitespace validation passed.
 
-These changes do not qualify deployment, Kubernetes validation, pause/resume, GitHub mention invocation, GitLab publication or memory lifecycle/gateway integration. The disposable repository for live developer PR qualification remains unspecified. Both stories remain open and runtime registration remains off.
+These changes do not qualify deployment, Kubernetes validation, pause/resume, GitHub mention invocation, GitLab publication or memory lifecycle/gateway integration. At this recovery checkpoint the disposable repository was unspecified; the owner subsequently authorized `aws-e/adp`, qualified below. Both stories remain open and runtime registration remains off.
+
+
+## Real GitHub publication and repair qualification
+
+The owner authorized `aws-e/adp` for testing. The full ADP tree exceeds the current 48 MiB workspace expansion limit, so these workloads use the small `qualification/5433-developer-20260926` base branch, pinned to `23a931a5314468dbbef699c5c7eeb831f9c7eefd`. Neither test PR targets main.
+
+| Run | Runtime source | Result | Wall time |
+| --- | --- | --- | --- |
+| GitHub 01 | Initial diagnostic working tree | Validation passed; publication failed because the existing `adp` memory branch prevents a nested `adp/task-*` ref | 46.98 s |
+| GitHub 02 | `abdb5a9b4` (clean) | Numeric edge-case validation failed; model stopped before repair; no PR | 42.54 s |
+| GitHub 03 | `e62f77765` (clean) | All 28 checks passed; real [PR #6424](https://github.com/aws-e/adp/pull/6424) published and observed | 43.30 s |
+| GitHub 04 | `5ce7f0ca2` (clean) | Recorded baseline failure, repaired implementation, passed all 28 checks, published and observed real [PR #6425](https://github.com/aws-e/adp/pull/6425) | 60.94 s |
+
+The two failures are retained in `evidence-20260926/github-01-ref-conflict.json` and `github-02-incomplete-repair.json`; they are not excluded from the qualification history. Successful runtime and tool evidence is in `github-03-published.json` and `github-04-repair-published.json`.
+
+The actual GitHub adapters download source, publish the validated tree, enforce the expected base/head and inspect the resulting PR. A new `adp-task-<uuid>` branch format avoids the memory-ref collision. Both published commits were independently downloaded from GitHub and passed the immutable image's same 28 assertions. Replaying each production publication adapter returned the identical PR number, branch, tree and commit without creating another PR. See `github-03-independent-verification.json` and `github-04-independent-verification.json`. Each PR changes only `retry-delay.js`.
+
+Run 04 intentionally checks the known-broken baseline before editing to establish a real failing check. The agent then repairs it under the original task. Its validation sequence is **failed → passed**, with the final trusted executor output `{"passed":28}`. This is a bounded synthetic repair workload, not an arbitrary-feature or first-review-quality benchmark.
+
+The shared SDK session now permits at most two continuations after an explicit unverified completion result. It retains the same thread, workspace, frozen persona, model/operation budgets, tool receipts and deadline. Exceptions, unknown outcomes and revoked authority never authorize retry. The host advances MCP transport correlation only after SDK exit; tool-effect counters and unknown-outcome state persist. Resumed SDK usage is cumulative, so telemetry records its delta instead of counting previous tokens again. Developer definition revision 2 explicitly requires repairing actionable failed checks within budget. The detached check image adds input-case diagnostics without changing any expected result or removing assertions.
+
+Local validation: **92 harness unit tests**, **four real-SDK completion scenarios** (repair, exhausted continuations, revoked authority, unknown completion), **20 Task SDK tests** (one opt-in skip), **45 publication/completion tests**, and **13 gateway/worker/SDK scenarios** across the suite and targeted moved-head rerun. The report-only SDK session also passes with the additional current-authority check. Live validation image: `sha256:5c1c5d87388b6885e357c435f1c74703144146aac0d6a0edf3e6fc666f611512`. Model: `openai.gpt-6-sol`, medium effort; pinned official SDK `0.155.1`.
+
+Important qualification boundary: inference goes through the live ADP Gateway and GitHub operations are real, but the worker runs locally, Task admission/ledger use Moto, and GitHub installation authorization is substituted with the owner's operator credential. Budget fixture values are not measured dollar cost. No tenant-installed-App authorization, deployed Task routing or Kubernetes validation is claimed. The inspected deployed gateway has no shared Codex persona configuration. Foundation pause/resume, mentions, memory lifecycle/gateway integration, GitLab runtime parity and the other previously listed qualification gates remain open. No rollout or merge was performed. Live login/configuration stores were preserved.
