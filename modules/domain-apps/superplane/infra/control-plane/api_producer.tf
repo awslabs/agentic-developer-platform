@@ -16,7 +16,7 @@ variable "api_producer_role" {
 }
 
 locals {
-  api_producer_name  = "${local.name_prefix}-api-producer"
+  api_producer_name = "${local.name_prefix}-api-producer"
   api_producer_trust = jsonencode({
     Version = "2012-10-17"
     Statement = [{
