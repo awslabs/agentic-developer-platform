@@ -64,7 +64,8 @@ remain separate steps.
 Nightly case E42 runs only with an explicit `human_task_coding` fixture. It needs
 `snapshot`, `instructions`, `persona`, `scenario` (`complete` or `cancel`),
 `enrollment_verified: true`, `shared_budget_authorized: true`, `max_dispatches: 1`
-and `max_task_usd` in `(0,1]`. These are operator attestations of existing policy
+and `max_task_usd` in `(0,1]`, plus explicit `login_user_id`,
+`canonical_user_id` and `tenant_id` for the installed fixture. These are operator attestations of existing policy
 and budget headroom, not new enforcement counters. The existing standing Task
 policy must enforce that per-task bound. Retain the shared qualification spend
 ledger between runs; do not reset it or substitute the Task pilot's larger caps.
@@ -84,3 +85,22 @@ Session credentials are excluded. E42 fixture instructions must fit within
 recovery within SSM's output bound. This fixture bound does not change the CLI's
 16,000-character instruction limit. Large patch results are retrieved using the
 retained Task ID; the report carries their digest instead of duplicating them.
+
+
+The evaluation workflow's `fixtures_json` input supplies this bounded fixture
+without editing deployment bindings. Select `login,hosted-coding`; evaluate and
+recover apply the same validated input. Before SSM, the caller persists the
+original fixture snapshot/instructions and deterministic request/control IDs in
+the externally backed manifest. The worker rejects a changed plan. Recover an
+uncertain attempt using those original IDs and retained journal/Task evidence;
+do not restart it under a new evaluation ID.
+
+
+E42's artifact upload receipt remains local to the fixture until returned in
+case evidence. If the entire instance disappears before that evidence returns,
+the caller retains the original Task request key but may not know the accepted
+artifact/Task ID. Re-uploading the snapshot can produce a different artifact ID
+and conflict with the original Task fingerprint. Treat that outcome as pending
+reconciliation; the durable plan prevents a replacement paid request key but
+does not prove automatic recovery of accepted work after complete instance loss.
+A same-instance rerun with an existing recovery directory also refuses dispatch.

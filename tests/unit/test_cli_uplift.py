@@ -10895,6 +10895,13 @@ def test_coding_lost_cli_receipt_recovers_owned_task_and_cleans_up(
             self.home = Path(env["HOME"])
 
         def json(self, argv, **kwargs):
+            if argv == ["models", "mappings", "list"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "principal_id": "fixture-human",
+                    }
+                }
             if "--dry-run" in argv:
                 return {"status": "dry_run"}
             journal = self.home / ".adp/state/hosted-tasks"
@@ -10937,12 +10944,7 @@ def test_coding_lost_cli_receipt_recovers_owned_task_and_cleans_up(
     evidence = {"transcript": []}
     with pytest.raises(RuntimeError, match="stdout lost"):
         module.execute(
-            {
-                "human_task_coding": fixture,
-                "cli_path": "/fixture/adp",
-                "gateway_url": "https://gateway",
-                "work_dir": str(work),
-            },
+            coding_remote_config(module, fixture, work),
             evidence,
         )
     assert evidence["task_id"] == task_id
@@ -11004,6 +11006,13 @@ def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
             self.home = Path(env["HOME"])
 
         def json(self, argv, **kwargs):
+            if argv == ["models", "mappings", "list"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "principal_id": "fixture-human",
+                    }
+                }
             if "--dry-run" in argv:
                 return {"status": "dry_run"}
             journal = self.home / ".adp/state/hosted-tasks"
@@ -11042,12 +11051,7 @@ def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
     evidence = {"success": False, "transcript": []}
     with pytest.raises(remote_common.RemoteError, match="acceptance is unknown"):
         module.execute(
-            {
-                "human_task_coding": fixture,
-                "cli_path": "/fixture/adp",
-                "gateway_url": "https://gateway",
-                "work_dir": str(work),
-            },
+            coding_remote_config(module, fixture, work),
             evidence,
         )
     remote_common.emit(evidence)
@@ -11523,7 +11527,8 @@ def test_shipped_hosted_chat_two_turns_and_durable_unknown(
 def test_hosted_chat_fixture_is_explicit_and_not_e40(tmp_path):
     module, _ = shipped_script(tmp_path, "hosted_chat")
     assert not module.valid_fixture({})
-    assert "hosted_chat" not in stages.JOURNEY_DRIVERS.values()
+    assert stages.JOURNEY_DRIVERS["E40"] == "story_chat"
+    assert stages.JOURNEY_DRIVERS["D01"] == "hosted_chat"
     assert "hosted_chat" in bundle.purposes()
 
 
@@ -11604,13 +11609,41 @@ def test_diagnostic_manifest_refuses_replacement_request_and_local_only_sink(tmp
         )
 
 
-@pytest.mark.parametrize("fault", [None, "lost_create_receipt", "stale_write_accepted", "unlink_unavailable", "externally_verified", "wrong_fixture"])
-def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "lost_create_receipt",
+        "stale_write_accepted",
+        "unlink_unavailable",
+        "externally_verified",
+        "wrong_fixture",
+    ],
+)
+def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(
+    tmp_path, monkeypatch, fault
+):
     script, remote_common = shipped_script(tmp_path, "vault_lifecycle")
     work = tmp_path / "worker"
     work.mkdir()
-    vault = {"unrelated": {"id": "unrelated", "service": "existing", "label": "retain", "scope": "user", "revision": "old"}}
-    links = {"unrelated-link": {"id": "unrelated-link", "provider": "github", "provider_user_id": "existing", "verification_method": "oauth", "verified_at": "then"}}
+    vault = {
+        "unrelated": {
+            "id": "unrelated",
+            "service": "existing",
+            "label": "retain",
+            "scope": "user",
+            "revision": "old",
+        }
+    }
+    links = {
+        "unrelated-link": {
+            "id": "unrelated-link",
+            "provider": "github",
+            "provider_user_id": "existing",
+            "verification_method": "oauth",
+            "verified_at": "then",
+        }
+    }
     mutations = []
     synthetic_values = []
     operation = [None]
@@ -11622,10 +11655,22 @@ def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, m
 
         def json(self, args, **kwargs):
             if args[:3] == ["models", "mappings", "list"]:
-                return {"detail": {"principal_id": "wrong" if fault == "wrong_fixture" else "fixture-user", "tenant_id": "fixture-tenant"}}
+                return {
+                    "detail": {
+                        "principal_id": "wrong"
+                        if fault == "wrong_fixture"
+                        else "fixture-user",
+                        "tenant_id": "fixture-tenant",
+                    }
+                }
             if args[1] == "list":
                 rows = vault if args[0] == "credential" else links
-                return {"detail": {"items": [dict(row) for row in rows.values()], "complete": True}}
+                return {
+                    "detail": {
+                        "items": [dict(row) for row in rows.values()],
+                        "complete": True,
+                    }
+                }
             assert "--dry-run" in args
             return {"status": "dry_run"}
 
@@ -11634,7 +11679,12 @@ def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, m
             if action == "update" and "--value-stdin" in args:
                 return 1, {"error": {"code": "usage_error"}}
             if action == "link" and "--resume" in args:
-                row = next(row for row in links.values() if row.get("provider_user_id") == args[args.index("--provider-user-id") + 1])
+                row = next(
+                    row
+                    for row in links.values()
+                    if row.get("provider_user_id")
+                    == args[args.index("--provider-user-id") + 1]
+                )
                 return 4, {"detail": dict(row)}
             mutations.append(list(args))
             if area == "credential":
@@ -11645,7 +11695,16 @@ def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, m
                     key = args[args.index("--operation-id") + 1]
                     operation[0] = key
                     new = key not in vault
-                    vault.setdefault(key, {"id": key, "service": args[args.index("--service") + 1], "label": args[args.index("--label") + 1], "scope": "user", "revision": "r1"})
+                    vault.setdefault(
+                        key,
+                        {
+                            "id": key,
+                            "service": args[args.index("--service") + 1],
+                            "label": args[args.index("--label") + 1],
+                            "scope": "user",
+                            "revision": "r1",
+                        },
+                    )
                     if fault == "lost_create_receipt" and new:
                         return 5, None
                     return 0, {"detail": dict(vault[key])}
@@ -11656,13 +11715,23 @@ def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, m
                     return 0, {"detail": {"id": key}}
                 assert action == "update"
                 revision = args[args.index("--expected-revision") + 1]
-                if revision != vault[key]["revision"] and fault != "stale_write_accepted":
+                if (
+                    revision != vault[key]["revision"]
+                    and fault != "stale_write_accepted"
+                ):
                     return 4, {"error": {"http_status": 409}}
                 vault[key].update(label=args[args.index("--label") + 1], revision="r2")
                 return 0, {"detail": dict(vault[key])}
             if action == "link":
-                links["owned-link"] = {"id": "owned-link", "provider": "discord", "provider_user_id": args[args.index("--provider-user-id") + 1],
-                                       "verification_method": "oauth" if fault == "externally_verified" else "self_asserted", "verified_at": "now" if fault == "externally_verified" else None}
+                links["owned-link"] = {
+                    "id": "owned-link",
+                    "provider": "discord",
+                    "provider_user_id": args[args.index("--provider-user-id") + 1],
+                    "verification_method": "oauth"
+                    if fault == "externally_verified"
+                    else "self_asserted",
+                    "verified_at": "now" if fault == "externally_verified" else None,
+                }
                 return 4, {"detail": {"identity_id": "owned-link"}}
             assert action == "unlink" and args[2] == "owned-link"
             if fault == "unlink_unavailable":
@@ -11671,14 +11740,36 @@ def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, m
             return 0, {"detail": {"id": "owned-link"}}
 
     monkeypatch.setattr(remote_common, "Cli", Cli)
-    monkeypatch.setattr(remote_common, "clean_env", lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()})
-    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {"access_token": "do-not-persist"})
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common, "session_tokens", lambda cfg: {"access_token": "do-not-persist"}
+    )
     monkeypatch.setattr(script, "_write_session", lambda *args: None)
-    cfg = {"evaluation_id": "stable-vault-run", "gateway_url": "https://gateway", "cli_path": "/installed/adp", "work_dir": str(work), "test_user_id": "fixture-login",
-           "vault_lifecycle": {"owned_mutations_authorized": True, "login_user_id": "fixture-login", "canonical_user_id": "fixture-user", "tenant_id": "fixture-tenant"}}
+    cfg = {
+        "evaluation_id": "stable-vault-run",
+        "gateway_url": "https://gateway",
+        "cli_path": "/installed/adp",
+        "work_dir": str(work),
+        "test_user_id": "fixture-login",
+        "vault_lifecycle": {
+            "owned_mutations_authorized": True,
+            "login_user_id": "fixture-login",
+            "canonical_user_id": "fixture-user",
+            "tenant_id": "fixture-tenant",
+        },
+    }
     cfg["recovery_plan"] = script.recovery_plan(cfg)
     evidence = {"success": False, "transcript": []}
-    if fault in {"stale_write_accepted", "unlink_unavailable", "externally_verified", "wrong_fixture"}:
+    if fault in {
+        "stale_write_accepted",
+        "unlink_unavailable",
+        "externally_verified",
+        "wrong_fixture",
+    }:
         with pytest.raises(remote_common.RemoteError):
             script.execute(cfg, evidence)
         assert evidence["success"] is False
@@ -11693,7 +11784,9 @@ def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, m
     if fault == "wrong_fixture":
         assert not mutations
         return
-    assert operation[0] not in vault  # Cleanup proceeds even when the link cannot be removed.
+    assert (
+        operation[0] not in vault
+    )  # Cleanup proceeds even when the link cannot be removed.
     durable = evidence["detail"]
     assert durable["operation_id"] == operation[0]
     assert durable["provider_user_id"].startswith("adp-evaluation-")
@@ -11702,36 +11795,64 @@ def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(tmp_path, m
         if fault == "externally_verified":
             assert not any(args[:2] == ["identity", "unlink"] for args in mutations)
     import shutil
+
     shutil.rmtree(work)
     published = json.dumps(remote_common.redact(evidence))
-    assert "do-not-persist" not in published and all(value not in published for value in synthetic_values)
+    assert "do-not-persist" not in published and all(
+        value not in published for value in synthetic_values
+    )
     assert json.loads(published)["detail"]["operation_id"] == operation[0]
     assert len(published.encode()) < 24000
 
 
 @pytest.mark.parametrize("changed", [False, True])
-def test_vault_lifecycle_requires_exact_predeclared_plan_before_any_access(tmp_path, monkeypatch, changed):
+def test_vault_lifecycle_requires_exact_predeclared_plan_before_any_access(
+    tmp_path, monkeypatch, changed
+):
     script, remote_common = shipped_script(tmp_path, "vault_lifecycle")
-    cfg = {"evaluation_id": "stable-run", "gateway_url": "https://gateway", "cli_path": "/installed/adp", "work_dir": str(tmp_path / "work"),
-           "test_user_id": "fixture-login", "vault_lifecycle": {"owned_mutations_authorized": True, "login_user_id": "fixture-login",
-                                                                   "canonical_user_id": "fixture-user", "tenant_id": "fixture-tenant"}}
+    cfg = {
+        "evaluation_id": "stable-run",
+        "gateway_url": "https://gateway",
+        "cli_path": "/installed/adp",
+        "work_dir": str(tmp_path / "work"),
+        "test_user_id": "fixture-login",
+        "vault_lifecycle": {
+            "owned_mutations_authorized": True,
+            "login_user_id": "fixture-login",
+            "canonical_user_id": "fixture-user",
+            "tenant_id": "fixture-tenant",
+        },
+    }
     plan = script.recovery_plan(cfg)
     assert script.recovery_plan(cfg) == plan
     assert set(plan).isdisjoint({"password", "token", "value", "secret"})
     if changed:
         cfg["recovery_plan"] = {**plan, "operation_id": "changed"}
-    monkeypatch.setattr(remote_common, "session_tokens", lambda _: pytest.fail("No fixture auth before plan verification"))
+    monkeypatch.setattr(
+        remote_common,
+        "session_tokens",
+        lambda _: pytest.fail("No fixture auth before plan verification"),
+    )
     with pytest.raises(remote_common.RemoteError, match="durably recorded"):
         script.execute(cfg, {"success": False, "transcript": []})
     assert not Path(cfg["work_dir"]).exists()
 
 
-@pytest.mark.parametrize("fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"])
+@pytest.mark.parametrize(
+    "fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"]
+)
 def test_vault_plan_durable_before_dispatch(tmp_path, fault):
     from tests.e2e.cli_uplift.remote.vault_lifecycle_plan import recovery_plan
 
-    payload = {"evaluation_id": "vault-run", "gateway_url": "https://gateway",
-               "vault_lifecycle": {"tenant_id": "tenant", "canonical_user_id": "owner", "login_user_id": "login"}}
+    payload = {
+        "evaluation_id": "vault-run",
+        "gateway_url": "https://gateway",
+        "vault_lifecycle": {
+            "tenant_id": "tenant",
+            "canonical_user_id": "owner",
+            "login_user_id": "login",
+        },
+    }
     payload["recovery_plan"] = recovery_plan(payload)
     snapshots, calls = [], []
 
@@ -11746,20 +11867,289 @@ def test_vault_plan_durable_before_dispatch(tmp_path, fault):
     class Ssm:
         def json_result(self, *args, **kwargs):
             calls.append("ssm")
-            assert snapshots[-1]["diagnostic_intents"]["vault_lifecycle:vault-run"] == recovery_plan(payload)
+            assert snapshots[-1]["diagnostic_intents"][
+                "vault_lifecycle:vault-run"
+            ] == recovery_plan(payload)
             raise RuntimeError("Lost instance before any output")
 
     if fault == "changed_plan":
         payload["recovery_plan"]["operation_id"] = "different-target"
     worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
     with pytest.raises((RuntimeError, ValueError, PortError)):
-        worker("i-owned", "vault_lifecycle", payload, manifest=None if fault == "no_manifest" else manifest)
+        worker(
+            "i-owned",
+            "vault_lifecycle",
+            payload,
+            manifest=None if fault == "no_manifest" else manifest,
+        )
     if fault == "instance_loss":
         assert calls == ["install", "ssm"]
         import shutil
+
         shutil.rmtree(tmp_path)
         retained = snapshots[-1]["diagnostic_intents"]["vault_lifecycle:vault-run"]
         assert retained == recovery_plan(payload)
         assert retained["operation_id"] and retained["provider_user_id"]
     else:
         assert calls == []
+
+
+def diagnostic_fixture(name="human_task_chat"):
+    identity = {
+        "login_user_id": "fixture-login",
+        "canonical_user_id": "fixture-human",
+        "tenant_id": "fixture-tenant",
+    }
+    if name == "vault_lifecycle":
+        return {**identity, "owned_mutations_authorized": True}
+    paid = {
+        **identity,
+        "enrollment_verified": True,
+        "shared_budget_authorized": True,
+        "max_task_usd": 0.25,
+    }
+    if name == "human_task_chat":
+        return {**paid, "max_tasks": 2}
+    return {
+        **paid,
+        "max_dispatches": 1,
+        "scenario": "complete",
+        "persona": "agent-task-claude-developer",
+        "instructions": "Fix the requested CLI behavior.",
+        "snapshot": {
+            "schema_version": "1.0",
+            "repository_id": 42,
+            "repository": "owner/repo",
+            "issue": 123,
+            "commit_sha": "a" * 40,
+            "files": [
+                {
+                    "path": "cli/main.py",
+                    "blob_sha": "b" * 40,
+                    "content": "print('hello')\n",
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "name", ["human_task_coding", "human_task_chat", "vault_lifecycle"]
+)
+def test_workflow_fixture_overlay_same_for_evaluate_and_recover(name):
+    from tests.e2e.cli_uplift import fixtures
+
+    value = {name: diagnostic_fixture(name)}
+    env = {"CLI_UPLIFT_EVAL_FIXTURES": json.dumps(value)}
+    first = config.from_environment(env, base=dict(VALID))
+    second = config.from_environment(env, base=dict(VALID))
+    assert first == second and first[name] == value[name]
+    assert fixtures.parse(json.dumps(value)) == value
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "override",
+        "unknown",
+        "secret",
+        "budget",
+        "tasks",
+        "missing_identity",
+        "snapshot",
+        "duplicate",
+    ],
+)
+def test_workflow_fixture_overlay_refuses_unbounded_or_secret_inputs(fault):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    value = {"human_task_chat": diagnostic_fixture()}
+    if fault == "override":
+        value["gateway_url"] = "https://other"
+    elif fault == "unknown":
+        value["human_task_chat"]["skip_checks"] = True
+    elif fault == "secret":
+        value["human_task_chat"]["password"] = "not-allowed"
+    elif fault == "budget":
+        value["human_task_chat"]["max_task_usd"] = 2
+    elif fault == "tasks":
+        value["human_task_chat"]["max_tasks"] = 3
+    elif fault == "missing_identity":
+        del value["human_task_chat"]["login_user_id"]
+    elif fault == "snapshot":
+        value = {"human_task_coding": diagnostic_fixture("human_task_coding")}
+        value["human_task_coding"]["snapshot"]["files"][0]["path"] = "../other"
+    raw = (
+        json.dumps(value)
+        if fault != "duplicate"
+        else '{"human_task_chat": {}, "human_task_chat": {}}'
+    )
+    with pytest.raises(config.ConfigError):
+        parse(raw)
+
+
+def test_owned_diagnostics_are_explicit_and_missing_fixtures_block():
+    assert {
+        row.id
+        for row in cases.resolve_suites(["login", "hosted-chat", "vault-lifecycle"])
+    } == {"E01", "C01", "D01", "D02"}
+    assert not {"D01", "D02"}.intersection(
+        row.id for row in cases.suite_cases("nightly")
+    )
+    assert not {"D01", "D02"}.intersection(row.id for row in cases.suite_cases("full"))
+    matrix = cases.new_matrix(["hosted-chat", "vault-lifecycle"])
+    blocked = cases.block_missing_fixtures(matrix, config.fixture_classes(VALID))
+    assert set(blocked) == {"D01", "D02"}
+    cfg = {
+        **VALID,
+        "human_task_chat": diagnostic_fixture(),
+        "vault_lifecycle": diagnostic_fixture("vault_lifecycle"),
+    }
+    assert {cases.HUMAN_TASK_CHAT, cases.VAULT_LIFECYCLE} <= config.fixture_classes(cfg)
+
+
+@pytest.mark.parametrize(
+    "purpose,key",
+    [
+        ("hosted_coding", "human_task_coding"),
+        ("hosted_chat", "human_task_chat"),
+        ("vault_lifecycle", "vault_lifecycle"),
+    ],
+)
+def test_diagnostic_journey_passes_manifest_and_records_plan_before_ssm(
+    tmp_path, monkeypatch, purpose, key
+):
+    payload = {
+        "evaluation_id": "workflow-fixture",
+        "gateway_url": "https://gateway",
+        "test_user_id": "fixture-login",
+        key: diagnostic_fixture(key),
+    }
+    snapshots = []
+    manifest = cleanup.Manifest(
+        tmp_path / "manifest.json",
+        "fixture",
+        on_change=lambda doc, **kw: snapshots.append(json.loads(json.dumps(doc))),
+    )
+    monkeypatch.setattr(live, "_journey_payload", lambda cfg, ctx: dict(payload))
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            assert (
+                snapshots[-1]["diagnostic_intents"][purpose + ":workflow-fixture"][
+                    "evaluation_id"
+                ]
+                == "workflow-fixture"
+            )
+            return "command-id", {"success": True, "detail": {"cleanup": "complete"}}
+
+    driver = live._journey(Ssm(), {}, lambda *args: None)(purpose)
+    assert driver("i-owned", {"manifest": manifest})["success"] is True
+
+
+def coding_remote_config(module, fixture, work):
+    fixture = {
+        **fixture,
+        "login_user_id": "fixture-login",
+        "canonical_user_id": "fixture-human",
+        "tenant_id": "fixture-tenant",
+    }
+    cfg = {
+        "evaluation_id": "stable-coding-run",
+        "test_user_id": "fixture-login",
+        "human_task_coding": fixture,
+        "cli_path": "/fixture/adp",
+        "gateway_url": "https://gateway",
+        "work_dir": str(work),
+    }
+    cfg["recovery_plan"] = module.recovery_plan(cfg)
+    return cfg
+
+
+@pytest.mark.parametrize(
+    "fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"]
+)
+def test_coding_workflow_intent_durable_before_dispatch(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.coding_plan import recovery_plan
+
+    payload = {
+        "evaluation_id": "coding-run",
+        "gateway_url": "https://gateway",
+        "human_task_coding": diagnostic_fixture("human_task_coding"),
+    }
+    payload["recovery_plan"] = recovery_plan(payload)
+    snapshots, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("External sink unavailable")
+        snapshots.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "coding", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert snapshots[-1]["diagnostic_intents"][
+                "hosted_coding:coding-run"
+            ] == recovery_plan(payload)
+            raise RuntimeError("Lost instance before any output")
+
+    if fault == "changed_plan":
+        payload["recovery_plan"]["request_id"] = "replacement-request"
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker(
+            "i-owned",
+            "hosted_coding",
+            payload,
+            manifest=None if fault == "no_manifest" else manifest,
+        )
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        import shutil
+
+        shutil.rmtree(tmp_path)
+        retained = snapshots[-1]["diagnostic_intents"]["hosted_coding:coding-run"]
+        assert retained == recovery_plan(payload)
+        assert retained["request_id"] == recovery_plan(payload)["request_id"]
+    else:
+        assert calls == []
+
+
+def test_coding_requires_original_plan_before_fixture_session_access(
+    tmp_path, monkeypatch
+):
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    cfg = coding_remote_config(
+        module, diagnostic_fixture("human_task_coding"), tmp_path / "absent"
+    )
+    cfg["recovery_plan"]["request_id"] = "changed"
+    monkeypatch.setattr(
+        remote_common,
+        "session_tokens",
+        lambda _: pytest.fail("No fixture access before recovery guard"),
+    )
+    with pytest.raises(remote_common.RemoteError, match="exact coding recovery"):
+        module.execute(cfg, {"transcript": []})
+    assert not Path(cfg["work_dir"]).exists()
+
+
+def test_fixture_input_exposed_identically_to_evaluate_and_recover():
+    import yaml
+
+    workflow = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[2]
+            / ".github/workflows/eval-cli-uplift.yml"
+        ).read_text()
+    )
+    events = workflow.get("on", workflow.get(True))
+    for trigger in ("workflow_dispatch", "workflow_call"):
+        assert events[trigger]["inputs"]["fixtures_json"]["default"] == "{}"
+    for job in ("evaluate", "recover"):
+        assert (
+            workflow["jobs"][job]["env"]["CLI_UPLIFT_EVAL_FIXTURES"]
+            == "${{ inputs.fixtures_json }}"
+        )

@@ -740,6 +740,11 @@ def from_environment(env, *, base=None):
         # pasted into the variable fails here rather than inside the run config.
         no_secrets(parsed, DEPLOYMENTS_VARIABLE)
         document["deployments"] = parsed
+    raw_fixtures = str(env.get("CLI_UPLIFT_EVAL_FIXTURES") or "").strip()
+    if raw_fixtures:
+        from .fixtures import parse
+
+        document.update(parse(raw_fixtures))
     return validate(document)
 
 
@@ -775,21 +780,19 @@ def fixture_classes(config):
         available.add(cases.GITHUB_REPO)
     if config.get("hosted_tasks_queue_url") and config.get("websocket_url"):
         available.add(cases.HOSTED)
-    coding = config.get("human_task_coding") or {}
-    if (
-        isinstance(coding, dict)
-        and coding.get("enrollment_verified") is True
-        and coding.get("shared_budget_authorized") is True
-        and coding.get("max_dispatches") == 1
-        and type(coding.get("max_task_usd")) in (int, float)
-        and 0 < coding["max_task_usd"] <= 1
-        and coding.get("scenario") in {"complete", "cancel"}
-        and coding.get("persona")
-        in {"agent-task-claude-developer", "agent-task-codex-developer"}
-        and isinstance(coding.get("snapshot"), dict)
-        and bool(coding.get("instructions"))
+    from .fixtures import validate_fixture
+
+    for key, fixture_class in (
+        ("human_task_coding", cases.HUMAN_TASK_CODING),
+        ("human_task_chat", cases.HUMAN_TASK_CHAT),
+        ("vault_lifecycle", cases.VAULT_LIFECYCLE),
     ):
-        available.add(cases.HUMAN_TASK_CODING)
+        if config.get(key):
+            try:
+                validate_fixture(key, config[key])
+            except ConfigError:
+                continue
+            available.add(fixture_class)
     # #5413. `validate()` has already refused a binding set that is too small, or
     # that reuses a URL or a credential reference, so reaching the required count
     # here means three genuinely distinct deployments were configured.

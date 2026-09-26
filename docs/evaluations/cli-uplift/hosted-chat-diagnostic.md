@@ -1,6 +1,8 @@
 # Two-turn hosted chat diagnostic
 
 The shipped dispatcher purpose `hosted_chat` is an explicit paid diagnostic.
+Select `login,hosted-chat` with the workflow `fixtures_json` input to run D01
+through normal reporting and EC2 cleanup. It is excluded from default nightly/full suites.
 It does not replace or upgrade the read-only E40 readiness/history case, and
 neither success nor cleanup claims shared-spend reconciliation.
 
