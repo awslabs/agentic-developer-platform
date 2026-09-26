@@ -27,7 +27,7 @@ class TestPersonaCatalogue:
     def test_catalogue_has_exactly_14_personas(self):
         """AC-02: all 14 registered keys, including automatic personas."""
         catalogue = build_persona_catalogue()
-        assert len(catalogue) == 14, f"Expected 14 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
+        assert len(catalogue) == 18, f"Expected 18 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
 
     def test_catalogue_keys_match_valid_personas(self):
         """AC-01/AC-02: keys are exactly VALID_PERSONAS, no more, no less."""
@@ -35,7 +35,10 @@ class TestPersonaCatalogue:
 
         catalogue = build_persona_catalogue()
         catalogue_keys = {p.key for p in catalogue}
-        assert catalogue_keys == VALID_PERSONAS
+        from src.tasks.personas import TASK_PERSONAS
+
+        assert not (VALID_PERSONAS & set(TASK_PERSONAS))
+        assert catalogue_keys == VALID_PERSONAS | set(TASK_PERSONAS)
 
     def test_catalogue_is_sorted(self):
         """Presentation property: alphabetical by key."""
@@ -48,6 +51,8 @@ class TestPersonaCatalogue:
         catalogue = build_persona_catalogue()
         for persona in catalogue:
             expected = COMPATIBILITY_CLASS_CODEX if persona.key == "agent-codex-reviewer" else COMPATIBILITY_CLASS_CLAUDE
+            if persona.key.startswith("agent-task-"):
+                expected = "anthropic_messages"
             assert persona.compatibility_class == expected
 
     def test_pt_superpower_not_configurable(self):
@@ -84,7 +89,12 @@ class TestPersonaCatalogue:
         }
         catalogue = build_persona_catalogue()
         catalogue_keys = {p.key for p in catalogue}
-        assert catalogue_keys == expected
+        assert catalogue_keys == expected | {
+            "agent-task-investigator",
+            "agent-task-cyber",
+            "agent-task-claude-developer",
+            "agent-task-codex-developer",
+        }
 
     def test_non_vacuous_pass(self):
         """Anti-vacuity: at least 10 personas (copied from test_persona_catalogue_parity.py discipline)."""
