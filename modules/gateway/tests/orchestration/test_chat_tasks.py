@@ -21,6 +21,7 @@ from src.tasks.authz import Caller
 from src.tasks.read_store import TaskRecord
 
 TASK = "tsk_" + str(uuid.uuid4())
+REAL_CALLER_FOR = chat.caller_for
 
 
 @pytest.fixture
@@ -235,3 +236,37 @@ def test_lost_input_ack_blocks_new_turn_until_same_request_reconciled(setup, mon
     row = s.table.get_item(Key={"session_id": sid})["Item"]
     assert [message["content"] for message in row["messages"]] == ["Explain this result", "The first result"]
     assert commands.admit.call_args_list[0].kwargs["command_id"] == commands.admit.call_args_list[1].kwargs["command_id"]
+
+
+@pytest.mark.asyncio
+async def test_signed_selected_tenant_binds_chat_row_and_response(setup, monkeypatch):
+    from src.auth import tenant_context
+    from src.tasks import human_authority
+
+    s = setup
+    selected = str(uuid.uuid4())
+    s.user.user_id = str(uuid.uuid4())
+    user = SimpleNamespace(id=s.user.user_id)
+    members = {s.user.org_id: (user, SimpleNamespace(id="original")), selected: (user, SimpleNamespace(id="selected"))}
+    monkeypatch.setattr(
+        tenant_context,
+        "get_settings",
+        lambda: SimpleNamespace(token_secret_key="chat-tenant-test-secret-key-with-enough-length", cognito_user_pool_id="pool"),
+    )
+    monkeypatch.setattr(tenant_context, "memberships_for_login", AsyncMock(side_effect=lambda *a, **k: (None, members)))
+    monkeypatch.setattr(tenant_context, "primary_team_for_workspace", AsyncMock(return_value=None))
+    lease = await tenant_context.issue_context(object(), s.user, selected)
+    s.user._task_tenant_lease = lease["context_token"]
+    monkeypatch.setattr(chat, "caller_for", REAL_CALLER_FOR)
+    monkeypatch.setattr(chat.authz, "authenticate", lambda _: (s.user, frozenset()))
+    monkeypatch.setattr(
+        human_authority, "resolve_human", AsyncMock(side_effect=lambda context, db: ("human:" + context.user_id, context.org_id, s.caller.scopes))
+    )
+    response = s.client.post("/chat/sessions", json=body())
+    assert response.status_code == 202, response.text
+    assert response.json()["tenant_id"] == selected
+    row = s.table.get_item(Key={"session_id": response.json()["session_id"]})["Item"]
+    assert row["tenant_id"] == row["org_id"] == selected
+    assert row["owner_principal"] == history.owner(s.user)
+    assert s.user.team_id == "" and s.user.expires_at <= lease["expires_at"]
+    assert s.admission.admit.call_args.kwargs["caller"].tenant_id == selected

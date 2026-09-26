@@ -28,12 +28,11 @@
 # -----------------------------------------------------------------------------
 # What is deliberately NOT granted
 # -----------------------------------------------------------------------------
-# No write actions on either table. The gateway's intake modules are READERS: the
-# ingest Lambda and the chat worker are the only writers, and that is the property
-# that keeps one conversation from having two authors with different ideas of its
-# shape (`intake_session.py` has a test asserting there is no writer for state
-# production owns). Granting PutItem/UpdateItem here would make that testable
-# invariant an accident of code rather than a boundary.
+# Legacy intake rows remain read-only. Ingest and the chat worker retain ownership
+# of that shape; the gateway cannot PutItem or UpdateItem those session keys.
+# The separate Task-backed chat-* journal has static PutItem permission below,
+# guarded by its server-owned version and principal. Legacy ingest refuses those
+# journal rows, so it cannot attach an independent classifier turn to a Task.
 #
 # No `dynamodb:Scan`, and no wildcard on the Lambda resource. The readback is
 # GetItem by session id plus one Query against the resume GSI; a Scan would make a
