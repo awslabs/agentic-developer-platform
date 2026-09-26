@@ -18,8 +18,8 @@ with no raw candidate values or source-line content published.
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 512 |
 | Derived checksums recomputed from immutable source inputs | 36 |
-| Resource references with explicit field/consumer binding | 52 |
-| Pending context review, retained by #6110 | 964 |
+| Resource references with explicit field/consumer binding | 55 |
+| Pending context review, retained by #6110 | 961 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -214,3 +214,19 @@ no fixture, application credential flow or resource lookup is executed.
 Current verified nonsecret dispositions: **895/1859**, with **964** pending under
 #6110. All 3,708 original identities and audit joins are preserved. The original
 story remains open.
+
+A further **3** complete synthetic resource literals are bound to the `SecretId`
+argument of exact mocked AWS operation expectations. Each expectation follows
+the helper call with the same literal, using a fixture that injects a `MagicMock`
+client. Frozen helper code carries the identifier to provider `SecretId`,
+including the delete helper's keyword dictionary. Source shape alone does not
+supply acceptance, and no fixture/provider operation is executed by the verifier.
+
+`S21-detect-secrets-mock-secret-id-review.json` retains exact original records
+and source hashes. The new verifier's **25** regressions pass in normal and
+optimized Python, rejecting substituted constructors, client injection, payload
+fields, provider arguments, original lines/full hashes and duplicate selectors.
+Full original scan/audit candidate joins are privately reverified without values
+in output. Verified nonsecret dispositions are now **898/1859**, with **961**
+pending under #6110. All **3,708** original identities and supplemental proposals
+are retained; the story remains open.
