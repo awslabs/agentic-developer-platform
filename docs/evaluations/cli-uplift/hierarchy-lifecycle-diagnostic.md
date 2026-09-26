@@ -80,10 +80,37 @@ report absence. Neither outcome is relabeled a successful idempotent mutation.
 The original failed evaluations remain failed; this extended case requires a
 new independently reported execution before it supplies live evidence.
 
-Member role-change authority remains a concrete hold. Placing the existing
+The default D03 path does not qualify member role-change authority. Placing the existing
 ordinary person in the disposable organization creates an org-local identity;
 removing its membership intentionally retains that row and prevents clean
-organization deletion. The served CLI has no identity-deletion command, so D03
-keeps its disposable organization empty. It never elevates the shared tenant's
+organization deletion. The served CLI has no identity-deletion command, so the default
+D03 path keeps its disposable organization empty. It never elevates the shared tenant's
 ordinary member or changes AWS IAM. Role-transition qualification needs an
-explicit owned membership fixture with a supported retention/cleanup contract.
+explicit owned scope with a supported restoration contract, as provided by the
+opt-in extension below.
+
+The optional `hierarchy_lifecycle.role_transition: true` extension additionally
+requires `exclusive_ordinary_fixture: true` and `role_scope_release` set to the
+exact reviewed gateway build containing #6313. Its observed capability release
+must match that value and the evaluation's `expected_revision` before any
+hierarchy mutation. Do not select this extension on the earlier gateway.
+
+The pre-dispatch durable plan records a second owned department and the only
+allowed role transition: the existing ordinary member gains `dept_admin` while
+its primary team is a newly created team in the first owned department. CLI
+budget reads must allow that department and refuse the second; an ordinary
+bearer/tenant lease retained before promotion must reflect the same current
+server authority. The native tenant identity and membership remain unchanged.
+The role adds no organization/platform administration; #6313 scopes its newly
+granted configuration and log reads. Aggregate usage permissions already held
+by an ordinary member are unchanged.
+
+Before each role/team write, the worker persists its exact reviewed revision,
+expected membership shape and original empty/member baseline in a private
+fsynced recovery journal. The caller's external manifest already contains the
+owned IDs and restoration intent before SSM. Cleanup reconciles a lost response
+against those exact states, demotes with the current reviewed revision before
+removing the owned primary team, and verifies old-token refusal after demotion.
+Unexpected role/team drift or failed CAS restoration retains the owned hierarchy
+for operator recovery; it never overwrites unrelated membership state. No
+inference, token-family revocation or provider identity cleanup is performed.

@@ -92,6 +92,10 @@ def execute(config, evidence):
             ), env
 
         admin, env = session("admin", common.session_tokens(config), tenant)
+        if fixture.get("role_transition") is True:
+            from hierarchy_role import require_release
+
+            require_release(config, admin)
         actor = detail(admin.json(["models", "mappings", "list"]))
         common.require(
             actor.get("principal_id") == fixture["canonical_user_id"]
@@ -203,6 +207,11 @@ def execute(config, evidence):
             ("org", plan["org_id"], plan["org_id"]),
             ("department", plan["department_id"], tenant),
         ] + [("team", value, tenant) for value in plan["team_ids"]]
+        if "role_transition" in plan:
+            owned.insert(
+                2,
+                ("department", plan["role_transition"]["other_department_id"], tenant),
+            )
         default_children = [
             ("department", plan["default_department_id"], plan["org_id"]),
             ("team", plan["default_team_id"], plan["org_id"]),
@@ -419,6 +428,21 @@ def execute(config, evidence):
                 "Team removal did not restore empty membership baseline",
             )
             checks.extend(["two-teams-remove-one", "foreign-parent-refused"])
+            if "role_transition" in plan:
+                from hierarchy_role import exercise
+
+                exercise(
+                    config,
+                    state,
+                    admin,
+                    ordinary,
+                    ordinary_native,
+                    member,
+                    retained_bearer,
+                )
+                state["qualification"] = (
+                    "Owned department role transition and tenant revocation; no org/platform admin grant or inference"
+                )
             current = member()
             revoked = True  # Even a lost DELETE reply requires restoration.
             state["membership_restoration"] = "required"
@@ -474,6 +498,10 @@ def execute(config, evidence):
             checks.append("revoked-tenant-denied-native-preserved")
             complete = True
         finally:
+            common.require(
+                state.get("role_restoration") != "pending",
+                "Role restoration requires recovery; retain owned hierarchy resources",
+            )
             if revoked:
                 try:
                     restoring = baseline(member())

@@ -66,6 +66,9 @@ KEYS = {
         "ordinary_login_user_id",
         "ordinary_canonical_user_id",
         "ordinary_native_tenant",
+        "role_transition",
+        "role_scope_release",
+        "exclusive_ordinary_fixture",
     },
 }
 
@@ -147,6 +150,25 @@ def validate_fixture(name, value):
             "Independent ordinary and native tenant required",
         )
     if name == "hierarchy_lifecycle":
+        require(
+            type(value.get("role_transition", False)) is bool,
+            "Role transition selection must be boolean",
+        )
+        if value.get("role_transition") is True:
+            require(
+                value.get("exclusive_ordinary_fixture") is True,
+                "Role transition requires exclusive ordinary fixture",
+            )
+            require(
+                isinstance(value.get("role_scope_release"), str)
+                and re.fullmatch(r"[0-9a-f]{40}", value["role_scope_release"]),
+                "Exact reviewed department scope release required",
+            )
+        else:
+            require(
+                "role_scope_release" not in value,
+                "Role scope release requires explicit role transition selection",
+            )
         for key in (
             "ordinary_login_user_id",
             "ordinary_canonical_user_id",
