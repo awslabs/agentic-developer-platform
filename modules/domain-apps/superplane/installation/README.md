@@ -309,6 +309,11 @@ manifest and installer path. This feature creates no key, Secret, IAM role, Gate
 registry or producer binding. See [API-ADAPTER-STAGING.md](API-ADAPTER-STAGING.md)
 for the reviewed boundaries and verification limits.
 
+To create the dedicated API producer identity in the same reviewed Terraform
+apply, explicitly select [api_producer_role](API-PRODUCER-ROLE.md). Preserve that
+desired configuration on subsequent upgrades. The installer verifies the saved
+IAM plan and the applied live identity before changing the API service account.
+
 The closed mapping requires `vault`, `dispatcher` and `verification`:
 
 - `vault.url` must be the exact `http://SERVICE.NAMESPACE.svc.cluster.local:PORT`.

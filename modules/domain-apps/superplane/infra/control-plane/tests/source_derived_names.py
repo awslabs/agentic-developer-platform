@@ -66,15 +66,18 @@ def parameter_prefix(environment: str) -> str:
 
 def iam_role_names(environment: str) -> list[str]:
     """Every `aws_iam_role` name this module declares, resolved for `environment`."""
-    source = _read("irsa.tf")
+    source = "\n".join(
+        path.read_text() for path in sorted(CONTROL_PLANE_DIR.glob("*.tf"))
+    )
     suffixes = re.findall(
         r'resource\s+"aws_iam_role"\s+"[^"]+"\s*\{[^}]*?name\s*=\s*'
         r'"\$\{local\.name_prefix\}([^"]*)"',
         source,
         re.DOTALL,
     )
-    if not suffixes:  # pragma: no cover
-        raise AssertionError("no aws_iam_role names found in irsa.tf")
+    declared = re.findall(r'resource\s+"aws_iam_role"\s+"[^"]+"', source)
+    if not suffixes or len(suffixes) != len(declared):  # pragma: no cover
+        raise AssertionError("not every maintained aws_iam_role name could be derived")
     return [f"{name_prefix(environment)}{suffix}" for suffix in suffixes]
 
 
