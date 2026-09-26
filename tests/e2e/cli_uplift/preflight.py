@@ -497,6 +497,16 @@ def evaluate_fixtures(
     # No supplied boolean can manufacture the missing E18 recovery producer.
     # Remove this guard only alongside its implemented durable recovery path.
     available.discard(cases.SUPERPLANE_DOMAIN)
+    tenants = (cfg.get("tenant_isolation") or {}).get("tenant_ids") or []
+    if (
+        isinstance(tenants, list)
+        and len(tenants) == 2
+        and all(isinstance(t, str) and t for t in tenants)
+        and len(set(tenants)) == 2
+    ):
+        available.add(cases.TENANT_ISOLATION)
+    else:
+        available.discard(cases.TENANT_ISOLATION)
     return available
 
 
@@ -534,6 +544,7 @@ def missing_fixture_report(cfg, available):
             "permitted', so every answer would be 'available' and the case would "
             "pass with all four capability axes collapsed into one"
         ),
+        cases.TENANT_ISOLATION: "two existing memberships for the installed human fixture (tenant_isolation.tenant_ids); no membership grant is performed",
         cases.SUPERPLANE_DOMAIN: (
             cleanup.SUPERPLANE_RECOVERY_BLOCKER
             + " A deployed domain and an ordinary-session fixture are also required."

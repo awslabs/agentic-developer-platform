@@ -1008,6 +1008,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E18",
         "E19",
         "E25",
+        "E27",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
@@ -8427,6 +8428,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E18",
         "E19",
         "E25",
+        "E27",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
@@ -8442,6 +8444,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E20",
         "E21",
         "E22",
+        "E23",
         "E24",
         "E26",
     }
@@ -10233,19 +10236,21 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E20",
         "E21",
         "E22",
+        "E23",
         "E24",
         "E25",
         "E26",
     }
-    assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
+    assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
         "#5628",
         "#5629",
+        "#5622",
     }
     assert not cases.is_full(("nightly",))
     assert all(
         stages.JOURNEY_DRIVERS[key] in bundle.purposes()
-        for key in ("E20", "E21", "E22")
+        for key in ("E20", "E21", "E22", "E23")
     )
     matrix = cases.new_matrix(("nightly",))
     for key in matrix:

@@ -768,3 +768,5 @@ Usage and redacted inference metadata: [Usage CLI](../../../docs/adp-cli/usage.m
 Human run discovery, transcripts, explanation streaming and supported controls: [Agent Activity CLI](../../../docs/adp-cli/agent.md). Task submission continues to use `adp task`.
 
 `adp superplane research` reads findings/sources/stats and reviews proposals through the domain API. See `docs/adp-cli/research.md` for revision-bound decisions and unavailable scan/generation boundaries.
+
+Authorized tenant selection and concurrent terminal isolation: [Tenant CLI](../../../docs/adp-cli/tenant.md).

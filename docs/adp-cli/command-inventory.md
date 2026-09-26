@@ -159,6 +159,14 @@ Research #5639 adds 11 forms: findings list/show, sources, stats, proposal list/
 | `adp superplane research sources` |  | `--json` |
 | `adp superplane research stats` |  | `--json` |
 | `adp superplane research scan` |  | `--dry-run`, `--json`, `--request-file`, `--request-id`, `--yes` |
+
+Tenant selection (#5622 source implementation; live acceptance held). Global `--tenant TENANT_ID` precedes the command; `ADP_TENANT` selects per terminal.
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp tenant list` |  | `--json` |
+| `adp tenant current` |  | `--json` |
+| `adp tenant use` | `tenant` | `--dry-run`, `--json` |
 Credential and identity additions ([usage](vault.md)); source implemented, live acceptance pending:
 
 | Command | Positional arguments | Options |
