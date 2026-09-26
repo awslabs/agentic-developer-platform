@@ -15,6 +15,26 @@ def detail(value):
     return value.get("detail") or {}
 
 
+def refused(result, *, http=None, codes=()):
+    status, envelope = result
+    error = (envelope or {}).get("error") or {}
+    matched = error.get("code") in codes
+    if http is not None:
+        matched = (
+            matched
+            or error.get("http_status") == http
+            or f"HTTP {http}" in error.get("message", "")
+        )
+    common.require(
+        status != 0 and matched, "Expected hierarchy refusal was not observed"
+    )
+    return {
+        "exit_code": status,
+        "code": error.get("code"),
+        "expected_http_status": http,
+    }
+
+
 def execute(config, evidence):
     fixture = config.get("hierarchy_lifecycle") or {}
     common.require(
@@ -42,6 +62,7 @@ def execute(config, evidence):
         "checks": [],
         "cleanup": {},
         "membership_restoration": "not_attempted",
+        "qualification": "Role-change authority remains unqualified: adding an existing person to a disposable organization retains an org-local user after membership removal; no supported CLI identity cleanup is available.",
     }
     evidence["detail"] = state
     checks = state["checks"]
@@ -64,6 +85,7 @@ def execute(config, evidence):
                 folder.mkdir(mode=0o700)
                 env[key] = str(folder)
             env["BG_CONFIG_DIR"] = str(home / ".bedrock-gateway")
+            env["ADP_HOME"] = str(home / ".adp")
             _write_session(home, config["gateway_url"], tokens)
             return common.Cli(
                 config["cli_path"], env, evidence["transcript"], timeout=90
@@ -242,9 +264,84 @@ def execute(config, evidence):
                     # atomically. Retain them before transport, including a lost ACK.
                     attempted.extend(default_children)
                 mutate(args)
-                common.require(
-                    target(kind, identifier, org), "Created hierarchy target missing"
-                )
+                created = target(kind, identifier, org)
+                common.require(created, "Created hierarchy target missing")
+                resource = created["resource"]
+                if kind != "org":
+                    common.require(
+                        resource.get("org_id") == org,
+                        "Created hierarchy has wrong organization",
+                    )
+                if kind == "team":
+                    common.require(
+                        resource.get("department_id") == plan["department_id"],
+                        "Created team has wrong department",
+                    )
+                state.setdefault("parentage", {})[identifier] = {
+                    "org_id": org,
+                    "department_id": resource.get("department_id")
+                    if kind == "team"
+                    else None,
+                }
+                if kind == "team" and identifier == plan["team_ids"][0]:
+                    # Reuse the exact caller-selected ID/body; duplicates are
+                    # explicit conflicts, not invented successful replay receipts.
+                    state["create_retry"] = refused(
+                        admin.run(args + ["--yes"], expected=None), http=409
+                    )
+                    common.require(
+                        target(kind, identifier, org) == created,
+                        "Same-ID create retry changed the original resource",
+                    )
+                    checks.append("same-id-create-conflict-original-unchanged")
+            checks.append("explicit-department-team-parentage")
+            first_team = plan["team_ids"][0]
+            before_denials = target("team", first_team)
+            state["ordinary_hierarchy_read"] = refused(
+                ordinary.run(
+                    ["admin", "team", "show", "--org", tenant, "--id", first_team],
+                    expected=None,
+                ),
+                http=403,
+            )
+            state["ordinary_hierarchy_write"] = refused(
+                ordinary.run(
+                    [
+                        "admin",
+                        "team",
+                        "update",
+                        "--org",
+                        tenant,
+                        "--id",
+                        first_team,
+                        "--name",
+                        first_team + "-denied",
+                        "--expected-revision",
+                        before_denials["revision"],
+                        "--yes",
+                    ],
+                    expected=None,
+                ),
+                http=403,
+                codes=("permission_denied",),
+            )
+            state["name_selector_refusal"] = refused(
+                admin.run(
+                    ["admin", "team", "show", "--org", tenant, "--name", "Default"],
+                    expected=None,
+                ),
+                codes=("usage_error",),
+            )
+            common.require(
+                target("team", first_team) == before_denials,
+                "Denied or name-based operation changed the owned team",
+            )
+            checks.extend(
+                [
+                    "ordinary-hierarchy-read-write-refused",
+                    "canonical-id-required-name-selector-refused",
+                ]
+            )
             org_id = plan["org_id"]
             original = target("org", org_id, org_id)
             mutate(
@@ -420,6 +517,15 @@ def execute(config, evidence):
                     if row:
                         resource = row["resource"]
                         is_default = (kind, identifier, org) in default_children
+                        common.require(
+                            kind == "org" or resource.get("org_id") == org,
+                            "Owned hierarchy parent changed; preserve it",
+                        )
+                        if kind == "team" and not is_default:
+                            common.require(
+                                resource.get("department_id") == plan["department_id"],
+                                "Owned team department changed; preserve it",
+                            )
                         if is_default:
                             common.require(
                                 resource.get("org_id") == plan["org_id"]
@@ -450,6 +556,11 @@ def execute(config, evidence):
                         if kind != "org":
                             args += ["--id", identifier]
                         mutate(args)
+                        if kind == "team" and identifier == plan["team_ids"][0]:
+                            state["delete_retry"] = refused(
+                                admin.run(args + ["--yes"], expected=None), http=404
+                            )
+                            checks.append("same-id-delete-retry-reports-absence")
                     common.require(
                         target(kind, identifier, org) is None,
                         "Cleanup lacks exact absence proof",
