@@ -32,6 +32,7 @@ PURPOSES = {
     "hosted_coding": ("hosted_coding", {}),
     "hierarchy_lifecycle": ("hierarchy_lifecycle", {}),
     "machine_lifecycle": ("machine_lifecycle", {}),
+    "budget_lifecycle": ("budget_lifecycle", {}),
     "vault_lifecycle": ("vault_lifecycle", {}),
     "hosted_chat": ("hosted_chat", {}),
     "story_capabilities": ("story_reads", {"mode": "capabilities"}),

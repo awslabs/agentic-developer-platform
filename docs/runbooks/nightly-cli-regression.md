@@ -174,3 +174,38 @@ Disposable lifecycle/concurrency and client revocation timing remain separate
 acceptance fixtures.
 
 E29 (#5623) adds bounded administrator organization/department/team/member reads with the served CLI. It performs no mutation or inference; a missing authorized organization cannot pass. Membership lifecycle and cleanup acceptance need separate owned fixtures.
+
+### D06: owned ordinary policy lifecycle (no inference)
+
+Use the existing `eval-cli-uplift` workflow with `login,budget-lifecycle` and an
+explicit `budget_lifecycle` fixture containing `login_user_id`,
+`canonical_user_id`, `tenant_id`, `ordinary_canonical_user_id`,
+`owned_mutations_authorized: true`, and `exclusive_ordinary_fixture: true`.
+The administrator and ordinary identities must be distinct. The existing
+`non_admin_username`/`non_admin_password` fixture establishes the ordinary login;
+no credentials belong in the workflow fixture JSON.
+
+D06 refuses to modify any pre-existing selected override. It creates six exact
+user budget tuples (personal/cloud-agents × daily/weekly/monthly), updates only
+the personal daily cap, checks stale and ordinary-user refusals, and verifies the
+other tuples remain unchanged. It creates a user rate-limit override, patches
+only RPM, checks TPM/concurrency preservation and ordinary-user refusal, and
+retains the server's explicit TPM and worker-convergence limitations. Finally it
+removes only its acknowledged, unchanged revisions and compares ordinary settled
+usage before/after. No usage or limiter counter is reset.
+
+The caller manifest retains the exact recovery intent before EC2 dispatch. The
+private `budget-lifecycle-journal.json` records each attempted write before it is
+sent. A lost response or concurrent revision blocks deletion of that row; other
+known rows are still cleaned. Retain the original journal and reconcile those
+exact targets using existing CLI read/revision controls; do not rerun the
+mutation sequence against an existing journal.
+
+This is metadata coverage for #5589/#5627. It does not qualify actual Claude/Codex
+denial, RPM/concurrency enforcement, spend-through, team/department/tenant caps,
+or #5626 person defaults/overrides. Person writes require an independently owned
+canonical `github:NUMERIC_ID` anchor and platform-admin authority; no shared
+person/default is changed. Paid acceptance must remain in the existing shared
+one-EC2/60-minute/$5-per-day qualification, with independent request/token/time
+bounds and an externally reserved cost ceiling. D06 introduces no paid requests
+and no recurring workflow.

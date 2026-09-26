@@ -246,6 +246,7 @@ def _run_worker(ssm, cfg, install):
             "vault_lifecycle",
             "hierarchy_lifecycle",
             "machine_lifecycle",
+            "budget_lifecycle",
         }:
             if manifest is None:
                 raise ports_module.PortError(
@@ -289,6 +290,11 @@ def _run_worker(ssm, cfg, install):
 
                 if plan != recovery_plan(payload):
                     raise ports_module.PortError("Machine recovery plan mismatch")
+            if purpose == "budget_lifecycle":
+                from .remote.budget_lifecycle_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError("Budget recovery plan mismatch")
             manifest.record_diagnostic(purpose, plan)
         install(instance_id, payload.get("evaluation_id") or "")
         remote = f"{bundle.REMOTE_DIR}/{purpose}.json"
@@ -568,6 +574,7 @@ def _journey(ssm, cfg, install, journeys=None):
                 "vault_lifecycle",
                 "hierarchy_lifecycle",
                 "machine_lifecycle",
+                "budget_lifecycle",
             }:
                 if purpose == "hosted_coding":
                     from .remote.coding_plan import recovery_plan
@@ -575,6 +582,8 @@ def _journey(ssm, cfg, install, journeys=None):
                     from .remote.chat_plan import recovery_plan
                 elif purpose == "vault_lifecycle":
                     from .remote.vault_lifecycle_plan import recovery_plan
+                elif purpose == "budget_lifecycle":
+                    from .remote.budget_lifecycle_plan import recovery_plan
                 elif purpose == "machine_lifecycle":
                     from .remote.machine_lifecycle_plan import recovery_plan
                 else:
@@ -694,6 +703,7 @@ def _journey_payload(cfg, ctx):
         "vault_lifecycle": cfg.get("vault_lifecycle") or {},
         "hierarchy_lifecycle": cfg.get("hierarchy_lifecycle") or {},
         "machine_lifecycle": cfg.get("machine_lifecycle") or {},
+        "budget_lifecycle": cfg.get("budget_lifecycle") or {},
         # E18 receives references and bounded workload choices only. The admin
         # password remains in Secrets Manager and is read on the instance.
         "superplane": cfg.get("superplane") or {},
