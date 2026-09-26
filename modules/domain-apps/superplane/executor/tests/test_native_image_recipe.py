@@ -1071,9 +1071,13 @@ def test_native_dispatch_refuses_race_and_never_restarts_claimed_id(
             plan_path.write_text(runner.canonical(changed))
 
     def start(*args, **kwargs):
+        assert kwargs["env"]["AWS_MAX_ATTEMPTS"] == "1"
+        assert kwargs["env"]["AWS_RETRY_MODE"] == "standard"
         starts.append("shared-dispatch-invoked")
         raise OSError("lost start reply")
 
+    monkeypatch.setenv("AWS_MAX_ATTEMPTS", "9")
+    monkeypatch.setenv("AWS_RETRY_MODE", "adaptive")
     monkeypatch.setattr(native_transport, "aws", fake_aws)
     monkeypatch.setattr(native_transport, "prepare", prepare)
     monkeypatch.setattr(
